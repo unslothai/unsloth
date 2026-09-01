@@ -40,7 +40,6 @@ def test_project_document_persists_under_its_scope(rag_home, stub_embeddings, tm
     try:
         docs = store.list_documents(conn, store.project_scope("P1"))
         assert [d["filename"] for d in docs] == ["notes.txt"]
-        # Scoped: a sibling project cannot see it.
         assert store.list_documents(conn, store.project_scope("P2")) == []
         assert store.search_lexical(conn, store.project_scope("P1"), "bravo", 5)
     finally:

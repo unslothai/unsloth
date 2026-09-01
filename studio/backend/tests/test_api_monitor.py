@@ -121,7 +121,6 @@ def test_overlapping_callback_leases_do_not_disable_the_live_owner():
     older = monitor.acquire_terminal_callback(older_receipts.append)
     newer = monitor.acquire_terminal_callback(newer_receipts.append)
 
-    # Lifespan A exits while the later lifespan B remains live.
     monitor.release_terminal_callback(older)
     entry_id = monitor.start(
         endpoint = "/v1/responses",
@@ -211,7 +210,8 @@ def _get_monitor(monkeypatch, *, enabled: bool):
     monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = enabled))
     app = FastAPI()
     app.include_router(inference_route.studio_router)
-    # Dict literal, not `overrides[key] = ...`: verify_import_hoist.py does not
+    # Dict literal, not `overrides[key] = ...`: verify_import_hoist.py does not see Load names
+    # inside an assignment target and reports the import unused.
     # see Load names inside an assignment target and reports the import unused.
     app.dependency_overrides = {get_current_subject: lambda: "test-user"}
     return TestClient(app).get("/monitor")
@@ -387,7 +387,6 @@ def test_api_monitor_preserves_authoritative_total_tokens():
         completion_tokens = 20,
         total_tokens = 33,
     )
-    # A later partial chunk omitting `total_tokens` must not clobber 33.
     monitor.set_usage(entry_id, prompt_tokens = 11)
     assert monitor.snapshot()[0]["total_tokens"] == 33
 
@@ -449,7 +448,6 @@ def test_api_monitor_append_reply_caps_without_regrowing():
     capped = monitor.snapshot()[0]["reply"]
     assert len(capped) == m._MAX_REPLY_CHARS and capped.endswith("...")
 
-    # Chunks past the cap must not change or grow the stored preview.
     monitor.append_reply(entry_id, "y" * 1000)
     assert monitor.snapshot()[0]["reply"] == capped
 
@@ -464,10 +462,8 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
         model = "m",
         prompt = "go",
     )
-    # A reply landing exactly on the cap has no "..." marker yet.
     monitor.append_reply(entry_id, "x" * m._MAX_REPLY_CHARS)
     assert not monitor.snapshot()[0]["reply"].endswith("...")
-    # One more chunk must record the truncation, not silently freeze.
     monitor.append_reply(entry_id, "y")
     reply = monitor.snapshot()[0]["reply"]
     assert len(reply) == m._MAX_REPLY_CHARS and reply.endswith("...")
@@ -498,7 +494,6 @@ def test_clear_keeps_the_callers_own_request_that_is_still_running():
 
     assert [entry["id"] for entry in monitor.snapshot(subject = "alice")] == [live]
     assert monitor.active_count(subject = "alice") == 1
-    # And the row is still there to be completed.
     monitor.finish(live)
     assert monitor.get(live, subject = "alice")["status"] == "completed"
 
@@ -520,8 +515,7 @@ def test_api_monitor_clear_is_scoped_to_one_subject():
         prompt = "bob prompt",
         subject = "bob",
     )
-    # Finished first: a running row is a request in flight, not history, and clear keeps
-    # it. This test is about the subject scoping, so it clears history and nothing else.
+    # Finished first: a running row is a request in flight, not history, and clear keeps it.
     monitor.finish(alice)
 
     monitor.clear(subject = "alice")
@@ -530,7 +524,6 @@ def test_api_monitor_clear_is_scoped_to_one_subject():
     assert monitor.active_count(subject = "bob") == 1
     assert monitor.get(alice, subject = "alice") is None
 
-    # Passing no subject is the explicit "everything" path.
     monitor.clear()
     assert monitor.snapshot(subject = "bob") == []
 
@@ -579,7 +572,6 @@ def test_api_monitor_disabled_is_noop():
     )
     assert request_id == load_id == unload_id == ""
 
-    # Every mutator must be a safe no-op on the falsy id.
     monitor.append_reply(request_id, "hi")
     monitor.set_reply(request_id, "hi")
     monitor.set_usage(request_id, prompt_tokens = 4, completion_tokens = 6)
@@ -615,7 +607,6 @@ def test_api_monitor_disable_env_var_unset(monkeypatch):
     assert m._api_monitor_disabled() is False
 
 
-# ── model lifecycle rows (load / unload) ────────────────────────────
 
 
 def test_lifecycle_load_row_opens_running_then_closes():
@@ -624,7 +615,6 @@ def test_lifecycle_load_row_opens_running_then_closes():
     row = monitor.snapshot()[0]
     assert row["kind"] == "lifecycle" and row["event"] == "load"
     assert row["status"] == "running" and row["duration_ms"] is None
-    # A load in progress is not an in-flight API request.
     assert monitor.active_count() == 0
 
     monitor.relabel(event_id, "org/A-GGUF:Q4_K_M")
@@ -676,12 +666,11 @@ def test_request_rows_stay_private_to_their_subject():
 
 
 def test_discard_drops_a_row_that_never_happened():
-    # A load that found the model already resident must leave no trace.
     monitor = ApiMonitor(max_entries = 5)
     event_id = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
     monitor.discard(event_id)
     assert monitor.snapshot() == []
-    monitor.discard(event_id)  # idempotent
+    monitor.discard(event_id)
 
 
 def test_fail_open_never_touches_a_finished_row():
@@ -736,7 +725,6 @@ def test_clear_hides_shared_lifecycle_rows_for_that_caller_only():
     monitor.clear(subject = "alice")
 
     assert monitor.snapshot(subject = "alice") == []
-    # Hidden for alice, not deleted, so bob's view is untouched.
     assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {shared}
     assert monitor.get(shared, subject = "alice") is None
     assert monitor.get(shared, subject = "bob") is not None
@@ -805,15 +793,12 @@ def test_an_api_lifecycle_row_pops_the_overlay_only_for_its_own_caller():
 
     mine = {e["id"]: e for e in monitor.snapshot(subject = "alice")}
     theirs = {e["id"]: e for e in monitor.snapshot(subject = "bob")}
-    # Shared visibility is deliberate and must survive: bob still sees the load.
     assert row in mine and row in theirs
     assert mine[row]["via_api_key"] is True
     assert theirs[row]["via_api_key"] is False
 
-    # The details read is scoped the same way, so the panel cannot re-derive it.
     assert monitor.get(row, subject = "alice")["via_api_key"] is True
     assert monitor.get(row, subject = "bob")["via_api_key"] is False
-    # An unscoped read (internal callers) still sees the row's own flag.
     assert monitor.get(row)["via_api_key"] is True
 
 
@@ -833,7 +818,6 @@ def test_clearing_hides_a_shared_row_this_caller_owns_rather_than_deleting_it():
     assert monitor.get(row, subject = "bob") is not None
 
 
-# ── stream framing must not depend on the monitor ───────────────────
 
 
 def test_sse_done_detection_accepts_both_spacings():
@@ -857,7 +841,6 @@ def test_sse_done_detection_is_independent_of_the_monitor():
     assert inference_route._is_openai_sse_done(line) is True
 
 
-# ── /monitor route: the disabled state has to reach the UI ──────────
 
 
 def test_monitor_route_reports_enabled(monkeypatch):
@@ -870,8 +853,8 @@ def test_monitor_route_reports_enabled(monkeypatch):
 def test_monitor_route_reports_disabled(monkeypatch):
     response = _get_monitor(monkeypatch, enabled = False)
 
-    # An empty list on its own is indistinguishable from "no traffic yet", so the
-    # console needs the flag to explain itself instead of claiming idleness.
+    # An empty list on its own is indistinguishable from "no traffic yet", so the console needs the
+    # flag to explain itself.
     assert response.status_code == 200
     payload = response.json()
     assert payload["logging_enabled"] is False
@@ -1034,8 +1017,8 @@ def test_mark_first_token_stamps_ttft_for_reasoning_only_streams():
 
 
 def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
-    # Direct calls hold no lease, so overflow past capacity must show as queued,
-    # not get clamped out of the readout.
+    # Direct calls hold no lease, so overflow past capacity must show as queued, not get clamped out
+    # of the readout.
     from types import SimpleNamespace
 
     import routes.inference as inf
@@ -1058,7 +1041,6 @@ def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
 
 
 def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
-    # Stop reason must be read off the choice, or the row shows a blank.
     import routes.inference as inf
 
     monitor = ApiMonitor(max_entries = 3)
@@ -1074,7 +1056,6 @@ def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
         "timings": {"predicted_per_second": 12.5, "prompt_ms": 80.0},
     }
     choices = body.get("choices", [])
-    # Mirrors the call the route makes at the end of _responses_non_streaming.
     inf._monitor_usage(
         entry_id,
         {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
@@ -1419,8 +1400,8 @@ def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
 
 
 def test_disagreeing_choice_finish_reasons_report_no_stop_reason(monkeypatch):
-    # The row aggregates every choice, so one choice's reason is only the request's
-    # when they all agree.
+    # The row aggregates every choice, so one choice's reason is only the request's when they all
+    # agree.
     import routes.inference as inf
 
     monitor = ApiMonitor(max_entries = 3)
@@ -1451,8 +1432,8 @@ def test_disagreeing_choice_finish_reasons_report_no_stop_reason(monkeypatch):
 
 
 def test_streamed_choice_finish_reasons_are_compared_across_chunks(monkeypatch):
-    # llama-server streams an n > 1 request as one single-choice chunk per sample, so
-    # agreement can only be judged across the whole stream, not inside one chunk.
+    # llama-server streams an n > 1 request as one single-choice chunk per sample, so agreement can
+    # only be judged across the whole stream.
     import routes.inference as inf
 
     monitor = ApiMonitor(max_entries = 3)
@@ -1481,8 +1462,8 @@ def test_streamed_choice_finish_reasons_are_compared_across_chunks(monkeypatch):
 
 
 def test_streamed_stop_reason_is_withheld_until_the_request_finishes(monkeypatch):
-    # An n > 1 stream finishes its choices in separate chunks, so publishing the first one
-    # would state a request-level verdict while the rest are still running, then retract it.
+    # An n > 1 stream finishes its choices in separate chunks, so publishing the first would state a
+    # request-level verdict while the rest run, then retract it.
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/completions",
@@ -1509,9 +1490,8 @@ def test_streamed_stop_reason_is_withheld_until_the_request_finishes(monkeypatch
     [("completed", "stop"), ("cancelled", None), ("failed", None), ("error", None)],
 )
 def test_stop_reason_is_kept_only_by_completed_requests(writer, status, expected):
-    # A cancelled n > 1 stream stopped its remaining choices rather than hearing from
-    # them, and several local streams record "stop" through set_perf on the way out of a
-    # cancelled loop, before the cancellation is stamped. Neither describes how it ended.
+    # A cancelled n > 1 stream stopped its remaining choices rather than hearing from them, and some
+    # local streams record "stop" on the way out of a cancelled loop.
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/completions",
@@ -1533,8 +1513,7 @@ def test_stop_reason_is_kept_only_by_completed_requests(writer, status, expected
 
 
 def test_non_streaming_stop_reason_survives_the_finish(monkeypatch):
-    # Nothing accumulates on that path, so resolving at finish must not clear what
-    # set_perf already recorded.
+    # Nothing accumulates on that path, so resolving at finish must not clear what set_perf already recorded.
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/completions",
@@ -1557,9 +1536,8 @@ def test_non_streaming_stop_reason_survives_the_finish(monkeypatch):
     ],
 )
 def test_monitor_status_counts_slots_no_row_can_see(monkeypatch, queue, expected):
-    # A direct llama call (RAG caption/OCR) opens no row, logging may be off, and another
-    # subject's work is not counted here, so rows alone would report Ready beside a busy
-    # slot readout the same response carries.
+    # A direct llama call (RAG caption/OCR) opens no row, logging may be off, and another subject's
+    # work is not counted, so rows alone would report Ready beside a busy slot readout.
     import routes.inference as inf
 
     monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
@@ -1591,9 +1569,8 @@ def test_monitor_status_is_idle_without_a_model(monkeypatch):
 
 
 def test_tool_card_starts_ttft_but_not_the_token_rate_clock(monkeypatch):
-    # A tool card is client output, so it starts TTFT. It is not decoded output, so the
-    # tool run (or a human confirming one) after it must not count as decoding time --
-    # dividing by that wait reports a rate near zero.
+    # A tool card is client output so it starts TTFT, but it is not decoded output: the tool run (or
+    # a human confirming one) after it must not count as decoding time.
     import core.inference.api_monitor as m
 
     clock = [100.0]
@@ -1607,14 +1584,13 @@ def test_tool_card_starts_ttft_but_not_the_token_rate_clock(monkeypatch):
     )
 
     monitor.mark_first_token(entry_id, decoded = False)
-    clock[0] = 160.0  # a minute of tool run / human confirmation
+    clock[0] = 160.0
     monitor.append_reply(entry_id, "first real token")
-    clock[0] = 162.0  # two seconds of decoding
+    clock[0] = 162.0
     monitor.set_usage(entry_id, completion_tokens = 21)
     monitor.finish(entry_id)
 
     row = next(r for r in monitor.snapshot() if r["id"] == entry_id)
-    # TTFT still measures from the card the user actually saw.
     assert row["ttft_ms"] == 0
     # 20 gaps over 2s, not over 62s.
     assert row["tok_per_sec"] == 10.0
@@ -1633,7 +1609,6 @@ def test_a_decoded_first_token_starts_both_clocks(monkeypatch):
         prompt = "hi",
     )
 
-    # Reasoning tokens are decoded output, so they start the rate clock as before.
     monitor.mark_first_token(entry_id)
     clock[0] = 102.0
     monitor.set_usage(entry_id, completion_tokens = 21)
@@ -1643,9 +1618,8 @@ def test_a_decoded_first_token_starts_both_clocks(monkeypatch):
 
 
 def test_a_stop_reason_written_after_finish_escapes_the_clearing():
-    # Why every route records the reason before finish(): the settle runs once, at the
-    # terminal transition, so a later write would put a natural stop reason back onto a
-    # cancelled row.
+    # Why every route records the reason before finish(): the settle runs once, at the terminal
+    # transition, so a later write would put a natural stop reason onto a cancelled row.
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/chat/completions",
@@ -1665,11 +1639,10 @@ def test_a_stop_reason_written_after_finish_escapes_the_clearing():
     "line, dropped",
     [
         ('data: {"choices":[],"usage":{"completion_tokens":9}}', True),
-        # A content chunk carrying inline usage still has to reach the client.
         ('data: {"choices":[{"delta":{"content":"x"}}],"usage":{"completion_tokens":9}}', False),
         ('data: {"choices":[{"delta":{"content":"x"}}]}', False),
-        # Content that quotes the key gets past the cheap prefilter, so only the parse
-        # can tell it apart from a real usage chunk.
+        # Content that quotes the key gets past the cheap prefilter, so only the parse can tell it
+        # apart from a real usage chunk.
         ('data: {"choices":[{"delta":{"content":"\\"usage\\":1"}}]}', False),
         ("data: [DONE]", False),
         ("data: not json", False),
@@ -1677,9 +1650,9 @@ def test_a_stop_reason_written_after_finish_escapes_the_clearing():
     ],
 )
 def test_usage_only_sse_is_recognized_for_relay_filtering(line, dropped):
-    # Providers are asked for stream usage regardless of what the caller wanted, so the
-    # proxy has to drop the standalone chunk on the way out: a client that did not opt in
-    # would index choices[0] on it. Same rule _cmpl_stream_event_out applies locally.
+    # Providers are asked for stream usage regardless of what the caller wanted, so the proxy must
+    # drop the standalone chunk on the way out: a client that did not opt in would index choices[0]
+    # on it.
     import routes.inference as inf
     assert inf._is_openai_usage_only_sse(line) is dropped
 
@@ -1695,8 +1668,8 @@ def test_wants_stream_usage_reads_the_callers_opt_in(include_usage, expected):
 
 
 def test_direct_llama_work_is_busy_without_the_admission_snapshot(monkeypatch):
-    # With UNSLOTH_LLAMA_ADMISSION_CONTROL=off the queue readout is None, so a caption or
-    # OCR call (which opens no row) would leave the row saying Ready while the server works.
+    # With UNSLOTH_LLAMA_ADMISSION_CONTROL=off the queue readout is None, so a caption or OCR call
+    # (which opens no row) would leave the row saying Ready while the server works.
     import routes.inference as inf
 
     monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
@@ -1715,7 +1688,6 @@ def test_direct_llama_work_is_busy_without_the_admission_snapshot(monkeypatch):
     assert body["queue"] is None
     assert body["status"] == "generating"
 
-    # Back to ready once it finishes.
     monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
     assert TestClient(app).get("/monitor").json()["status"] == "ready"
 

@@ -44,7 +44,7 @@ from pathlib import Path
 
 import pytest
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 _HEAVY = ("torch", "transformers", "unsloth_zoo", "scipy", "sklearn", "sympy", "pandas", "pyarrow")
 
@@ -249,7 +249,6 @@ def test_warm_starts_once_and_honours_the_kill_switch(monkeypatch):
     monkeypatch.delenv(torch_warmup.DISABLE_ENV_VAR)
     monkeypatch.setattr(torch_warmup, "_STAGES", (("noop", lambda: None),))
     assert torch_warmup.start_background_warm() is True
-    # Second call is a no-op: one warm thread per process.
     assert torch_warmup.start_background_warm() is False
     assert torch_warmup.join_background_warm(60) is True
     status = torch_warmup.warm_status()
@@ -263,11 +262,10 @@ def test_the_warm_keeps_optional_gpu_consumers_cold():
 
     stage_names = [name for name, _ in torch_warmup._STAGES]
     assert stage_names == [
-        "hardware",  # torch, via utils.hardware
-        # Builds the metadata-only orchestrator after hardware detection.
+        "hardware",
         "inference_backend",
-        "transformers",  # model_config registry read
-        "datasets",  # raw-text dataset helpers
+        "transformers",
+        "datasets",
     ]
     assert "unsloth_zoo" not in stage_names
     assert not hasattr(
@@ -291,43 +289,31 @@ def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys, cap
     status = torch_warmup.warm_status()
     assert status["stages"]["boom"]["ok"] is False
     assert "stage exploded" in status["stages"]["boom"]["error"]
-    # The stage after the failure still ran, and the process is still alive.
     assert status["stages"]["after"]["ok"] is True
     assert status["finished"] is True
-    # The operator has to be able to grep it. Which sink structlog is bound to depends
-    # on what configured logging earlier, so accept stdout or the stdlib records.
+    # The operator has to grep it, and which sink structlog is bound to depends on who configured logging.
     logged = capsys.readouterr().out + "\n".join(r.getMessage() for r in caplog.records)
     assert "stage exploded" in logged
 
 
-# ---------------------------------------------------------------------------
-# The warm window: routes must not block uvicorn's loop while torch loads
-# ---------------------------------------------------------------------------
-#
-# get_device() used to be free by the time any request arrived. For the length of the
-# warm it now blocks on _DETECT_LOCK and the torch import, stalling every other request
-# on the loop (1547ms measured on a /api/liveness that touches nothing).
-#
-# First-paint and polled routes, certain to land inside the warm window. Each must
-# reach its blocking helper only through asyncio.to_thread.
+# get_device() used to be free by the time a request arrived; for the length of the warm it blocks
+# on _DETECT_LOCK and the torch import, stalling every other request on the loop (1547ms measured
+# on a /api/liveness that touches nothing). Each route below must reach its blocking helper only
+# through asyncio.to_thread.
 
 _OFFLOAD_REQUIRED = [
     ("main.py", "get_gpu_visibility", "get_backend_visible_gpu_info"),
     ("routes/training.py", "get_hardware_utilization", "get_gpu_utilization"),
-    # Not first-paint, but lands in the warm window when a start is submitted early,
-    # and its MLX streaming guard forces detection itself.
+    # Not first-paint, but it lands in the warm window on an early start, and its MLX guard forces detection.
     ("routes/training.py", "start_training", "ensure_hardware_detected"),
     ("routes/export.py", "_ensure_export_supported", "export_capability"),
     ("routes/models.py", "list_models", "get_inference_backend"),
-    # get_status is deliberately absent. It used to offload get_inference_backend; it
-    # now peeks, which constructs nothing and so needs no offload at all. The stronger
-    # invariant lives in test_async_singleton_access.py::
-    # test_read_only_endpoints_never_construct_the_singleton, which fails if it goes
-    # back to building. Listing it here would require the offload it no longer needs.
+    # get_status is deliberately absent: it now peeks rather than offloading get_inference_backend.
+    # The stronger invariant is
+    # test_async_singleton_access.py::test_read_only_endpoints_never_construct_the_singleton.
     ("routes/inference.py", "get_api_monitor", "_monitor_active_model"),
     ("routes/inference.py", "get_api_monitor", "_monitor_context_length"),
-    # Also not first-paint, but a load or validate carrying gpu_ids lands in the warm
-    # window and this probes the device before any teardown.
+    # A load or validate carrying gpu_ids lands in the warm window and probes the device before any teardown.
     ("routes/inference.py", "_resolve_gguf_gpu_ids_for_request", "get_device"),
 ]
 
@@ -369,7 +355,6 @@ def test_first_paint_routes_do_not_block_the_event_loop(rel_path, func_name, cal
     )
     offloaded = _offloaded_nodes(func)
 
-    # The bare-name form: asyncio.to_thread(callee).
     handed_off = any(
         isinstance(n, ast.Name) and n.id == callee and id(n) in offloaded for n in ast.walk(func)
     )
@@ -418,7 +403,6 @@ def test_a_failed_detection_degrades_instead_of_raising():
         assert hw.ensure_hardware_detected() == hw.DeviceType.CPU
         assert hw.CHAT_ONLY is True
         assert hw.CHAT_ONLY_REASON == "detection_failed"
-        # Cached: the second call must not re-enter the failing import.
         assert hw.ensure_hardware_detected() == hw.DeviceType.CPU
         assert len(calls) == 1, f"retried the broken import {len(calls)} times"
     finally:
@@ -452,14 +436,12 @@ def test_purge_partial_import_clears_the_zombie_and_leaves_live_ones():
     sys.modules["zzz_fake_pkg.sub"] = object()
     sys.modules["zzz_fake_pkg.sub.deep"] = object()
     try:
-        # Parent absent + submodules present: the zombie signature.
         assert sorted(purge_partial_import("zzz_fake_pkg")) == [
             "zzz_fake_pkg.sub",
             "zzz_fake_pkg.sub.deep",
         ]
         assert not [m for m in sys.modules if m.startswith("zzz_fake_pkg")]
 
-        # Parent present: a healthy (or still-importing) package is left alone.
         sys.modules["zzz_fake_pkg"] = object()
         sys.modules["zzz_fake_pkg.sub"] = object()
         assert purge_partial_import("zzz_fake_pkg") == []
@@ -485,7 +467,6 @@ def test_purge_declines_when_a_compiled_submodule_is_loaded():
     sys.modules["zzz_ext_pkg.pure"] = ModuleType("zzz_ext_pkg.pure")
     try:
         assert purge_partial_import("zzz_ext_pkg") == []
-        # Both survive: a half-purged package is not a state worth creating.
         assert "zzz_ext_pkg.binding" in sys.modules
         assert "zzz_ext_pkg.pure" in sys.modules
     finally:
@@ -508,8 +489,7 @@ def test_a_broken_torch_purges_its_own_zombie(monkeypatch):
 
     def fake_import(name, *args, **kwargs):
         if name == "torch":
-            # Zombie signature: `torch/__init__` raised after executing a pure-Python
-            # submodule, leaving it behind with the parent evicted.
+            # Zombie signature: `torch/__init__` raised after a pure-Python submodule ran, leaving it parentless.
             sys.modules["torch._early"] = ModuleType("torch._early")
             sys.modules.pop("torch", None)
             raise OSError("undefined symbol: cudaGetDeviceCount")
@@ -548,8 +528,7 @@ def test_one_detection_pass_probes_torch_once(monkeypatch):
     def fake_import(name, *args, **kwargs):
         if name == "torch":
             attempts.append(name)
-            # A loaded compiled submodule makes the purge decline, so a retry re-runs
-            # torch/__init__ in full.
+            # A loaded compiled submodule makes the purge decline, so a retry re-runs torch/__init__ in full.
             ext = ModuleType("torch._C")
             ext.__file__ = "/nonexistent/torch/_C.cpython-313-x86_64-linux-gnu.so"
             sys.modules["torch._C"] = ext

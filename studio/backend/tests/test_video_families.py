@@ -39,15 +39,12 @@ def test_the_host_floor_tracks_the_components_the_load_holds():
         H3_TRANSFORMER_BF16_GB,
     )
 
-    # Unset is the released pair, so the shipped number is unchanged to the decimal.
     assert estimate_h3_diffusers_host_ram_gb(
         126, text_encoder_gb = H3_TEXT_ENCODER_BF16_GB, transformer_gb = H3_TRANSFORMER_BF16_GB
     ) == pytest.approx(150.0, abs = 0.001)
-    # The hosted int8 conditioner + int8 denoiser: the sum, not the released one.
     assert estimate_h3_diffusers_host_ram_gb(
         126, text_encoder_gb = 27.2, transformer_gb = 20.3
     ) == pytest.approx(64.5, abs = 0.001)
-    # Above the tier the answer is the tier's, whatever the components.
     assert estimate_h3_diffusers_host_ram_gb(132, text_encoder_gb = 27.2, transformer_gb = 20.3) == 85
 
 
@@ -72,7 +69,6 @@ def test_detect_override_and_unknown():
     assert detect_video_family("x", override = "ltx-2").name == "ltx-2"
     assert detect_video_family("x", override = "ltx2").name == "ltx-2"
     assert detect_video_family("x", override = "nope") is None
-    # A short alias must not match inside an unrelated word.
     assert detect_video_family("someorg/deluxtreme-model") is None
 
 
@@ -82,13 +78,11 @@ def test_detect_override_and_unknown():
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
         "wan-ai/wan2.2-ti2v-5b-diffusers",
         "unsloth/Wan2.2-TI2V-5B-GGUF",
-        # The old curated repack: anyone who downloaded it still has it cached, so keep detecting it.
         "QuantStack/Wan2.2-TI2V-5B-GGUF",
         "some/dir/wan2.2-ti2v-5b-Q4_K_M.gguf",
     ],
 )
 def test_detect_wan_ti2v_5b(repo_id):
-    # The TI2V-5B repo ids route to the single-DiT Wan family (no MoE, no audio).
     fam = detect_video_family(repo_id)
     assert fam is not None and fam.name == "wan2.2-ti2v-5b"
     assert fam.pipeline_class == "WanPipeline"
@@ -96,7 +90,7 @@ def test_detect_wan_ti2v_5b(repo_id):
     assert fam.is_moe is False
     assert fam.cfg2_kwarg is None
     assert fam.has_audio is False
-    assert fam.frame_step == 4  # Wan VAE temporal factor is 4 (4k+1)
+    assert fam.frame_step == 4
 
 
 @pytest.mark.parametrize(
@@ -109,7 +103,7 @@ def test_detect_wan_ti2v_5b(repo_id):
     ],
 )
 def test_detect_wan_t2v_a14b(repo_id):
-    # The A14B repo ids route to the dual-expert MoE family: a second DiT plus a second guidance kwarg (guidance_scale_2).
+    # The A14B repo ids route to the dual-expert MoE family: a second DiT plus guidance_scale_2.
     fam = detect_video_family(repo_id)
     assert fam is not None and fam.name == "wan2.2-t2v-a14b"
     assert fam.pipeline_class == "WanPipeline"
@@ -121,7 +115,6 @@ def test_detect_wan_t2v_a14b(repo_id):
 
 
 def test_detect_wan_overrides():
-    # Short aliases the picker / GGUF filenames use resolve to the right family.
     assert detect_video_family("x", override = "wan2.2-5b").name == "wan2.2-ti2v-5b"
     assert detect_video_family("x", override = "wan-ti2v").name == "wan2.2-ti2v-5b"
     assert detect_video_family("x", override = "wan2.2-14b").name == "wan2.2-t2v-a14b"
@@ -129,7 +122,6 @@ def test_detect_wan_overrides():
 
 
 def test_wan_and_ltx_do_not_cross_route():
-    # LTX ids must never resolve to a Wan family and vice versa (separate engines).
     assert detect_video_family("Lightricks/LTX-2").name == "ltx-2"
     assert detect_video_family("unsloth/LTX-2.3-GGUF").name == "ltx-2"
     assert detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").name == "wan2.2-ti2v-5b"
@@ -150,7 +142,7 @@ def test_resolve_base_repo():
 
 def test_snap_num_frames_lattice():
     fam = detect_video_family("unsloth/LTX-2.3-GGUF")
-    # Valid counts are k * 8 + 1: on-lattice values pass through, everything else floors to the previous point, never below 1.
+    # Valid counts are k * 8 + 1: everything else floors to the previous point, never below 1.
     assert snap_num_frames(fam, 121) == 121
     assert snap_num_frames(fam, 120) == 113
     assert snap_num_frames(fam, 122) == 121
@@ -163,12 +155,11 @@ def test_snap_video_size_multiple():
     fam = detect_video_family("unsloth/LTX-2.3-GGUF")
     assert snap_video_size(fam, 768, 512) == (768, 512)
     assert snap_video_size(fam, 1000, 700) == (992, 672)
-    # Never snaps to zero: the floor is one multiple.
     assert snap_video_size(fam, 1, 1) == (32, 32)
 
 
 def test_generation_defaults_distilled_vs_dev():
-    # The distilled checkpoints run few-step with CFG off while the dev-config base repo wants the full schedule, so the filename wins.
+    # The distilled checkpoints run few-step with CFG off while the base repo wants the full schedule.
     assert default_video_generation_params(
         "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf", "Lightricks/LTX-2"
     ) == (8, 1.0)
@@ -190,7 +181,6 @@ def test_supported_names():
 def test_minimax_h3_family_and_frame_lattice():
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert fam is not None and fam.name == "minimax-h3"
-    # fl2va loads the superset that also serves text-only requests.
     assert fam.modular_workflow == "fl2va"
     assert fam.has_audio is True
     assert fam.supports_keyframes is True
@@ -204,58 +194,51 @@ def test_minimax_h3_family_and_frame_lattice():
 
 
 def test_wan_snap_num_frames_4k_plus_1():
-    # Wan's temporal factor is 4, so valid counts are 4k+1 (not LTX-2's 8k+1).
     fam = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     assert fam.frame_step == 4
-    assert snap_num_frames(fam, 81) == 81  # 4*20 + 1, on-lattice
-    assert snap_num_frames(fam, 121) == 121  # 4*30 + 1
-    assert snap_num_frames(fam, 120) == 117  # floors to 4*29 + 1
-    assert snap_num_frames(fam, 3) == 1  # below the first stride floors to 1
-    assert snap_num_frames(fam, 5) == 5  # 4*1 + 1
+    assert snap_num_frames(fam, 81) == 81
+    assert snap_num_frames(fam, 121) == 121
+    assert snap_num_frames(fam, 120) == 117
+    assert snap_num_frames(fam, 3) == 1
+    assert snap_num_frames(fam, 5) == 5
 
 
 def test_wan_snap_video_size_16():
-    # Wan patchifies at spatial factor 8 * patch 2 = 16; sizes floor to /16.
     fam = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert fam.resolution_multiple == 16
-    # A14B's native 720p is the true 16:9 1280x720, NOT the 1280x704 that TI2V-5B's /32 VAE floors to, and it is the default preset.
+    # A14B's native 720p is the true 1280x720, not the 1280x704 that TI2V-5B's /32 VAE floors to.
     assert fam.resolution_presets[0] == (1280, 720)
-    assert snap_video_size(fam, 1280, 720) == (1280, 720)  # native 720p, on-grid
+    assert snap_video_size(fam, 1280, 720) == (1280, 720)
     assert snap_video_size(fam, 1000, 700) == (992, 688)
 
 
 def test_wan_generation_defaults():
-    # Both Wan families default to the pipeline's 50 steps / CFG 5.0.
     assert default_video_generation_params(None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers") == (50, 5.0)
     assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B-Diffusers") == (50, 5.0)
-    # A GGUF filename carrying the family name still lands on the Wan defaults.
     assert default_video_generation_params(
         "wan2.2-ti2v-5b-Q4_K_M.gguf", "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
     ) == (50, 5.0)
 
 
 def test_generation_defaults_fallback_honors_family():
-    # When no identifier names a known variant (an opaque local path under an explicit family_override), the resolved family's own default is used, not the hardcoded LTX 40/4.0.
+    # With no identifier naming a known variant, the resolved family's own default is used, not LTX 40/4.0.
     assert default_video_generation_params("/models/my-clip", "/models/my-clip") == (40, 4.0)
     assert default_video_generation_params(
         "/models/my-clip", "/models/my-clip", fallback = (50, 5.0)
     ) == (50, 5.0)
-    # A recognised token still wins over the fallback.
     assert default_video_generation_params("wan2.2-ti2v-5b", fallback = (8, 1.0)) == (50, 5.0)
 
 
 def test_generation_defaults_wan_is_segment_not_substring():
-    # "wan" must match as a name segment, not a raw substring, so an opaque repo/path ("swan", "taiwan") does not pick up Wan's 50-step/CFG-5 schedule.
+    # "wan" must match as a name segment, not a raw substring, so "swan" or "taiwan" does not pick up Wan's schedule.
     assert default_video_generation_params(
         "user/swan-video", "Lightricks/LTX-2", fallback = (40, 4.0)
     ) == (40, 4.0)
     assert default_video_generation_params(
         "taiwan-clips.gguf", "user/taiwan-clips", fallback = (40, 4.0)
     ) == (40, 4.0)
-    # Genuine Wan identifiers (segment-initial, with a version suffix or separator) still match.
     assert default_video_generation_params("wan2.2-ti2v-5b-Q4_K_M.gguf") == (50, 5.0)
     assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B") == (50, 5.0)
-    # An "ltxv" style name still resolves to LTX (trailing letters stay free).
     assert default_video_generation_params("ltxv-2.3-distilled") == (8, 1.0)
     assert default_video_generation_params("Lightricks/LTXV-2.3") == (40, 4.0)
 
@@ -264,30 +247,25 @@ def test_wan_size_tables_present():
     ti2v = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     a14b = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert ti2v.bf16_components_gb is not None and a14b.bf16_components_gb is not None
-    # bf16-RESIDENT transformer sizes: the Wan transformers ship FP32 on disk (TI2V index 20.0 GB, A14B 57.15 GB per expert),
-    # so the table holds the halved bf16 sizes (ti2v ~10.0, a14b ~57.2). The fp32 sums over-budget the plan ~2x.
+    # The Wan transformers ship FP32 on disk, so the table holds halved bf16 sizes; fp32 over-budgets ~2x.
     assert ti2v.bf16_components_gb[0] == 10.0
     assert a14b.bf16_components_gb[0] == 57.2
-    # The A14B DiT total (two experts) still dwarfs the single TI2V-5B DiT.
     assert a14b.bf16_components_gb[0] > ti2v.bf16_components_gb[0] * 3
-    # A portrait preset is offered for the 5B (a vertical option per the task).
     assert any(h > w for (w, h) in ti2v.resolution_presets)
 
 
 def test_wan_ti2v_5b_snaps_to_32_not_16():
-    # TI2V-5B's VAE is 16x spatial with a patch of 2, so WanPipeline floors H/W to 32. The backend must snap to /32 too, or a /16-only request renders at another size.
+    # TI2V-5B's VAE is 16x spatial with a patch of 2, so the backend snaps to /32 or renders another size.
     fam = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     assert fam.resolution_multiple == 32
-    assert snap_video_size(fam, 1280, 720) == (1280, 704)  # 720 is /16 but not /32 -> floors to 704
-    assert snap_video_size(fam, 1280, 704) == (1280, 704)  # on-grid preset unchanged
-    # A14B keeps /16 (its VAE is the Wan2.1 8x VAE, so 8*2 = 16).
+    assert snap_video_size(fam, 1280, 720) == (1280, 704)
+    assert snap_video_size(fam, 1280, 704) == (1280, 704)
     a14b = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert a14b.resolution_multiple == 16
 
 
 def test_wan_families_force_vae_fp32():
-    # Wan's VAE decodes in float32 (diffusers loads AutoencoderKLWan at fp32 while the pipe runs bf16), so the loader pins it
-    # back to fp32 for these families to avoid banding / black frames. LTX-2's VAE is bf16-native.
+    # diffusers loads AutoencoderKLWan at fp32 while the pipe runs bf16, so the VAE is pinned back to fp32.
     assert detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").vae_force_fp32 is True
     assert detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers").vae_force_fp32 is True
     assert detect_video_family("unsloth/LTX-2.3-GGUF").vae_force_fp32 is False
@@ -297,8 +275,7 @@ def test_family_size_table_present():
     fam = detect_video_family("unsloth/LTX-2.3-GGUF")
     assert fam.bf16_components_gb is not None
     transformer_gb, text_encoder_gb, companions_gb = fam.bf16_components_gb
-    # RESIDENT bf16 figures: a 37.8 GB DiT and the Gemma3-12B TE at ~24.4 GB once cast (the ~49 GB fp32 hub store never sits on
-    # device). Regressing to the download size would push auto planning to offload on cards that fit.
+    # RESIDENT bf16 figures: the ~49 GB fp32 store never sits on device, and the download size would force offload.
     assert transformer_gb > text_encoder_gb > 20.0
     assert text_encoder_gb < 30.0
     assert companions_gb > 0.0
@@ -307,12 +284,11 @@ def test_family_size_table_present():
 def test_hv15_detection_and_flags():
     fam = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v")
     assert fam is not None and fam.name == "hunyuanvideo-1.5"
-    # CFG lives on the guider component (no guidance kwarg in __call__), and the HV15 VAE compresses 16x spatial / 4x temporal.
+    # CFG lives on the guider component, and the HV15 VAE compresses 16x spatial / 4x temporal.
     assert fam.guidance_via_guider is True
     assert fam.frame_step == 4 and fam.resolution_multiple == 16
     assert fam.has_audio is False
     assert detect_video_family("x/y", override = "hv15") is fam
-    # The incompatible HunyuanVideo 1.0 repos must NOT be claimed: their model_index pins HunyuanVideoPipeline.
     assert detect_video_family("hunyuanvideo-community/HunyuanVideo") is None
 
 
@@ -340,7 +316,6 @@ def test_hv15_720p_checkpoints_never_route_to_the_480p_family():
         fam = detect_video_family(repo_id)
         assert fam is not None and fam.name == "hunyuanvideo-1.5-720p", repo_id
         assert fam.base_repo.endswith("720p_t2v"), repo_id
-    # The 480p repacks are untouched.
     for repo_id in (
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v",
@@ -397,14 +372,12 @@ def test_minimax_h3_offers_every_advertised_aspect_ratio():
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     presets = fam.resolution_presets
     ratios = {round(w / h, 3) for w, h in presets}
-    # The six ratios advertised by the model card.
     for aspect in ((21, 9), (16, 9), (4, 3), (1, 1), (3, 4), (9, 16)):
         derived = h3_canvas_for_aspect(*aspect)
         assert round(derived[0] / derived[1], 3) in ratios, f"{aspect} has no preset"
     assert fam.resolution_presets[0] == (1344, 768), "16:9 stays the default"
 
-    # Reduced tiers may be smaller than the resolved canvas. The legacy 1024 square is the
-    # only entry above the area cap.
+    # Reduced tiers may be smaller than the resolved canvas; the legacy 1024 square is the only one over.
     for width, height in presets:
         assert width % 32 == 0 and height % 32 == 0, (width, height)
         if (width, height) == (1024, 1024):

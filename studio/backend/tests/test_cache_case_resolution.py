@@ -66,7 +66,6 @@ def test_resolve_cached_repo_id_case_tie_break_deterministic(tmp_path, monkeypat
 
     resolved = resolve_cached_repo_id_case("oRg/mOdEl")
 
-    # Deterministic rule: lexical sort of candidate repo ids.
     assert resolved == "Org/Model"
     stats = get_cache_case_resolution_stats()
     assert stats["variant_hits"] == 1
@@ -110,10 +109,8 @@ def test_resolve_cached_repo_id_case_late_cache_population(tmp_path, monkeypatch
     first = resolve_cached_repo_id_case("org/model")
     assert first == "org/model"
 
-    # Cache populated after first miss (e.g. another code path/download).
     _mk_cache_repo(tmp_path, "Org/Model")
 
     second = resolve_cached_repo_id_case("org/model")
 
-    # Second lookup should pick up the now-existing variant.
     assert second == "Org/Model"

@@ -16,8 +16,7 @@ import pytest
 
 _BACKEND = Path(__file__).resolve().parent.parent
 
-# Load directly, like test_llama_server_args.py: importing the package would
-# drag in the whole inference chain.
+# Load directly: importing the package would drag in the whole inference chain.
 _spec = importlib.util.spec_from_file_location(
     "_lsa_model_memory_test_only", _BACKEND / "core" / "inference" / "llama_server_args.py"
 )
@@ -80,8 +79,8 @@ class TestFlagPolicy:
         assert out == ["--temp", "0.7"]
 
     def test_load_mode_is_stripped_from_extras(self, policy):
-        # A user --load-mode would last-wins-override the managed one, and
-        # "--load-mode mlock" is a RAM reservation no-reserve must veto.
+        # A user --load-mode would last-wins-override the managed one, and "--load-mode mlock" is a
+        # RAM reservation no-reserve must veto.
         _, out = policy(
             True, False, ["--load-mode", "none", "--temp", "0.7"], supports_load_mode = True
         )
@@ -103,7 +102,6 @@ class TestFlagPolicy:
     def test_no_ram_reserve_strips_both_reservation_flags(self, policy):
         managed, out = policy(False, True, ["--mlock", "--no-mmap", "-ngl", "99"])
         assert managed == []
-        # Unrelated flags (and their values) survive untouched.
         assert out == ["-ngl", "99"]
 
     def test_no_ram_reserve_wins_over_keep_resident(self, policy):
@@ -117,9 +115,8 @@ class TestFlagPolicy:
         assert policy(False, False, None) == ([], [])
 
     def test_caller_extras_are_not_mutated(self, policy):
-        # load_model reads extra_args after this: None must stay None (inherit
-        # previous) rather than becoming [] (clear), and the user's saved flags
-        # must survive, so the policy only ever returns a launch-only copy.
+        # load_model reads extra_args after this: None must stay None (inherit) rather than becoming []
+        # (clear), so the policy only ever returns a launch-only copy.
         original = ["--mlock", "--no-mmap", "--temp", "0.7"]
         passed = list(original)
         _, out = policy(True, True, passed)
@@ -267,9 +264,9 @@ class TestMemoryEnv:
         ("var", "value"),
         [
             ("LLAMA_ARG_MLOCK", "1"),
-            ("LLAMA_ARG_MMAP", "off"),  # mmap disabled -> mode none
-            ("LLAMA_ARG_NO_MMAP", "0"),  # presence alone -> mode none
-            ("LLAMA_ARG_DIO", "off"),  # DirectIO disabled -> mode none
+            ("LLAMA_ARG_MMAP", "off"),
+            ("LLAMA_ARG_NO_MMAP", "0"),
+            ("LLAMA_ARG_DIO", "off"),
             ("LLAMA_ARG_NO_DIO", "0"),
             ("LLAMA_ARG_LOAD_MODE", "none"),
             ("LLAMA_ARG_LOAD_MODE", "mlock"),
@@ -286,12 +283,12 @@ class TestMemoryEnv:
     @pytest.mark.parametrize(
         ("var", "value"),
         [
-            ("LLAMA_ARG_MLOCK", "0"),  # measured: falsy does not lock
-            ("LLAMA_ARG_MMAP", "1"),  # mmap: maps, holds no full copy
-            ("LLAMA_ARG_DIO", "1"),  # DirectIO: streams
+            ("LLAMA_ARG_MLOCK", "0"),
+            ("LLAMA_ARG_MMAP", "1"),
+            ("LLAMA_ARG_DIO", "1"),
             ("LLAMA_ARG_LOAD_MODE", "mmap"),
             ("LLAMA_ARG_LOAD_MODE", "dio"),
-            ("LLAMA_ARG_LOAD_MODE", "future-mode"),  # unknown: leave it alone
+            ("LLAMA_ARG_LOAD_MODE", "future-mode"),
         ],
     )
     def test_a_non_reserving_loader_choice_survives(self, toggles, var, value):
@@ -337,8 +334,8 @@ class TestEffectiveMemoryState:
             (["--no-mmap"], {}, (False, True)),
             (["--load-mode", "mmap+mlock"], {}, (True, False)),
             (["--load-mode=mmap+mlock"], {}, (True, False)),
-            (["-lm", "mlock"], {}, (True, True)),  # mlock without mmap
-            (["--load-mode", "dio"], {}, (False, False)),  # DirectIO streams
+            (["-lm", "mlock"], {}, (True, True)),
+            (["--load-mode", "dio"], {}, (False, False)),
             (["--load-mode", "none"], {}, (False, True)),
             ([], {"LLAMA_ARG_MLOCK": "1"}, (True, False)),
             ([], {"LLAMA_ARG_MMAP": "off"}, (False, True)),
@@ -346,8 +343,7 @@ class TestEffectiveMemoryState:
             # argv beats env, matching llama.cpp.
             (["--load-mode", "mmap"], {"LLAMA_ARG_MLOCK": "1"}, (False, False)),
             (["--mlock", "--load-mode", "mmap"], {}, (False, False)),
-            # --no-mmap is the deprecated selector for the whole "none" mode, so
-            # it clears the mlock. Both orderings measured against the binary.
+            # --no-mmap is the deprecated selector for the whole "none" mode, so it clears the mlock.
             (["--mlock", "--no-mmap"], {}, (False, True)),
             (["--no-mmap", "--mlock"], {}, (True, True)),
             (["--mlock", "--mmap"], {}, (False, False)),
@@ -402,13 +398,12 @@ class TestReloadRequired:
         ("keep", "no_res", "state", "expected"),
         [
             # no_ram_reserve: neither reservation may survive, whoever asked.
-            (False, True, (True, False), True),  # user --mlock still live
-            (False, True, (False, True), True),  # user --no-mmap still live
+            (False, True, (True, False), True),
+            (False, True, (False, True), True),
             (False, True, (False, False), False),
             # keep_resident: satisfied by any mlock, including a user one.
             (True, False, (True, False), False),
             (True, False, (False, False), True),
-            # Both off after the policy changed the launch: it has to be undone.
             (False, False, (True, True), True),
             (False, False, (False, False), True),
         ],
@@ -471,8 +466,7 @@ class TestManagedFlagIsNotReset:
             ["--load-mode", "mmap"],
             ["--load-mode=none"],
             ["--mlock"],
-            # Deprecated load-mode selectors: measured to reset the mode in BOTH
-            # polarities, so all four spellings must go.
+            # Deprecated load-mode selectors reset the mode in BOTH polarities, so all four spellings go.
             ["--direct-io"],
             ["-dio"],
             ["--no-direct-io"],
@@ -483,8 +477,7 @@ class TestManagedFlagIsNotReset:
         managed, extras = policy(
             True, False, preset + ["--temp", "0.7"], supports_load_mode = load_mode
         )
-        assert managed  # residency emitted something
-        # The resolved state of the full argv must still be mlock.
+        assert managed
         mlock, _ = resolve_effective_memory_state(managed + extras, {})
         assert mlock is True, (managed, extras)
         assert extras == ["--temp", "0.7"], extras
@@ -503,21 +496,20 @@ class TestDuplicateLoadComparator:
     @pytest.mark.parametrize(
         ("launched", "policy_active", "keep", "no_res", "satisfied"),
         [
-            ((False, False), False, True, False, False),  # turn residency on
-            ((True, False), True, False, True, False),  # no-reserve on, mlocked
-            ((False, True), False, False, True, False),  # no-reserve on, no-mmap
-            ((True, False), True, True, False, True),  # already pinned
-            ((False, False), False, False, True, True),  # already clean
-            # Both off: anything the policy did must be undone, but a launch it
-            # never touched is left alone.
-            ((True, False), True, False, False, False),  # our flag still live
-            ((True, False), False, False, False, True),  # user's own flag
-            ((False, False), True, False, False, False),  # it suppressed theirs
+            ((False, False), False, True, False, False),
+            ((True, False), True, False, True, False),
+            ((False, True), False, False, True, False),
+            ((True, False), True, True, False, True),
+            ((False, False), False, False, True, True),
+            # Both off: anything the policy did must be undone, but a launch it never touched is left alone.
+            ((True, False), True, False, False, False),
+            ((True, False), False, False, False, True),
+            ((False, False), True, False, False, False),
             ((False, False), False, False, False, True),
             # DirectIO is not a RAM reservation, so no-reserve is satisfied.
             ((False, False), False, False, True, True),
-            # A process this policy does not govern (diffusion) always matches,
-            # else every identical /load would tear it down and reload.
+            # A process this policy does not govern (diffusion) always matches, else every identical /load
+            # would tear it down and reload.
             (None, False, True, False, True),
             (None, False, False, True, True),
             (None, True, True, True, True),
@@ -731,7 +723,7 @@ class TestRacingReadReturnsTheNewValue:
 
         def get_app_setting(key, fallback = None):
             reads.append(key)
-            mm._invalidate(key)  # a write lands during every read
+            mm._invalidate(key)
             return True
 
         monkeypatch.setattr("storage.studio_db.get_app_setting", get_app_setting)
@@ -867,8 +859,7 @@ class TestFullOffloadDetection:
             assert self._check(32, "auto", None, ["-ngl", "99", flag, "x"]) is False
 
     def test_every_unknown_answers_no(self):
-        # No block count, no extras, unparseable -ngl: all keep the old behaviour
-        # of page-locking rather than guessing a full offload.
+        # No block count, no extras, unparseable -ngl: all keep page-locking rather than guessing.
         assert self._check(None, "manual", 33) is False
         assert self._check(0, "manual", 33) is False
         assert self._check(32, "auto", None, None) is False
@@ -899,8 +890,7 @@ class TestFullOffloadDetection:
             in ast.unparse(node.test).replace("'", '"')
         ]
         assert manual_branches, "the manual offload branch moved"
-        # Only the branch body: its orelse holds the auto branch, which is the
-        # one place that does set the flag.
+        # Only the branch body: its orelse holds the auto branch, the one place that sets the flag.
         assigned = {
             target.id
             for branch in manual_branches
@@ -970,7 +960,6 @@ class TestEnvVarsAssignTheWholeMode:
                 {"LLAMA_ARG_MMAP": "off", "LLAMA_ARG_LOAD_MODE": "mmap+mlock"},
                 (True, False),
             ),
-            # Each still works alone.
             ({"LLAMA_ARG_MLOCK": "1"}, (True, False)),
             ({"LLAMA_ARG_DIO": "1"}, (False, False)),
             ({"LLAMA_ARG_DIO": "0"}, (False, True)),
@@ -1021,9 +1010,8 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
         mlock_applicable,
         state = None,
     ):
-        # A host-resident load with residency on carries the lock, so its state
-        # says so; a gated one carries nothing. Keeping the two in step matters,
-        # because the response reads the launched state rather than the flag.
+        # A host-resident load with residency on carries the lock and a gated one carries nothing; the
+        # response reads the launched state rather than the flag, so the two must stay in step.
         if state is None:
             state = (True, False) if mlock_applicable else (False, False)
         return type(
@@ -1266,7 +1254,6 @@ class TestLegacyNegativeEnvAliases:
 
     def test_mlock_has_no_negative_form_so_the_alias_is_inert(self):
         assert resolve_effective_memory_state([], {"LLAMA_ARG_NO_MLOCK": "1"}) == (False, False)
-        # And it cannot cancel the affirmative one.
         assert resolve_effective_memory_state(
             [], {"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_NO_MLOCK": "1"}
         ) == (True, False)
@@ -1641,7 +1628,7 @@ class TestCpuMoeCountIsParsed:
             (["--n-cpu-moe=4"], True),
             (["--n-cpu-moe", "-1"], False),
             (["--n-cpu-moe", "nonsense"], False),
-            (["--n-cpu-moe"], False),  # trailing, no value
+            (["--n-cpu-moe"], False),
             # No value to parse: presence is the whole signal.
             (["--cpu-moe"], True),
             (["-cmoe"], True),
@@ -1665,8 +1652,7 @@ class TestCpuMoeCountIsParsed:
         fn = tree.body[0]
         if ast.get_docstring(fn) is not None:
             fn.body = fn.body[1:]
-        # unparse drops comments and the docstring, so only real code is left;
-        # either would otherwise name the flags without being a second copy.
+        # unparse drops comments and the docstring, so only real code is left.
         code = ast.unparse(fn)
         assert "_args_place_tensors_on_cpu" in code
         for flag in ("-ncmoe", "--n-cpu-moe", "--override-tensor"):
@@ -1785,7 +1771,6 @@ class TestADefaultLaunchRecordsItsApplicability:
 
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
-        # What the gate records for a discrete full offload.
         assert memory_state_satisfies_settings((False, False), False, False) is True
 
     def test_a_partial_offload_still_demands_the_reload(self, monkeypatch):
@@ -2307,7 +2292,6 @@ class TestFitOffRetryClearsPolicyActivity:
 
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
-        # The retry child: lock dropped, so no lock and no reservation.
         return memory_state_satisfies_settings((False, False), policy_active, False)
 
     def test_an_untouched_child_is_left_alone(self, monkeypatch):
@@ -2368,8 +2352,7 @@ class TestNoDeadMemoryBookkeeping:
             except (SyntaxError, UnicodeDecodeError, OSError):
                 continue
             read |= attrs(tree, ast.Load)
-            # routes read some of these dynamically:
-            # getattr(backend, "_memory_policy_active", False).
+            # routes read some of these dynamically: getattr(backend, "_memory_policy_active", False).
             read |= {
                 n.args[1].value
                 for n in ast.walk(tree)

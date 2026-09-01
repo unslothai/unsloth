@@ -58,7 +58,6 @@ from core.inference.llama_cpp import (  # noqa: E402
 _floor = LlamaCppBackend._metal_zero_ctx_floor
 _drops = LlamaCppBackend._metal_drops_zero_ctx_override
 _REAL_POPEN = subprocess.Popen
-# argv and child env of the most recent _launch, for the tests that assert on the env.
 _LAST_LAUNCH: dict = {}
 
 
@@ -235,8 +234,7 @@ def test_every_caller_of_the_floor_states_whether_the_fitter_runs():
     assert calls, "the floor is no longer called from the backend; this guard is stale"
     for match in calls:
         line = source[: match.start()].count("\n") + 1
-        # Balance the parens rather than stopping at the first ")": the argument this
-        # guard is looking for is itself a call, so a naive scan ends inside it.
+        # Balance the parens rather than stopping at the first ")": the argument sought is itself a call.
         depth, end = 1, match.end()
         while end < len(source) and depth:
             depth += {"(": 1, ")": -1}.get(source[end], 0)
@@ -326,7 +324,6 @@ class TestTheEmittedCommand:
     def test_a_zero_override_does_not_outlive_the_floor(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"])
         assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
-        # Only the context is dropped; the rest of the user's extras survive.
         assert "--top-k" in cmd and "5" in cmd
 
     def test_the_long_spelling_is_dropped_too(self, tmp_path, monkeypatch):

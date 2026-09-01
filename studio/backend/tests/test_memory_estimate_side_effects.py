@@ -30,29 +30,22 @@ from pathlib import Path
 
 import pytest
 
-# Stub heavy / unavailable deps before importing the module under test.
-# Copied verbatim from tests/test_memory_estimate.py -- same reasons.
 
+# Stub heavy / unavailable deps before importing the module under test.
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog. Carries get_logger because this stub is process-wide: whichever test
-# module is imported first wins the setdefault, and utils/prebuilt/freshness_flow
-# calls structlog.get_logger at import time. A bare module here fails that import
-# for every later module on a runner without the real package.
+# structlog needs get_logger: the stub is process-wide and freshness_flow calls it at import time.
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx -- only stub when the real library is missing. Unconditional stubbing
-# shadows HTTPError/Response that huggingface_hub.errors imports at load time,
-# silently breaking the transformers introspection tier.
+# Only stub httpx when missing: unconditional stubbing shadows huggingface_hub.errors' imports.
 try:
     import httpx as _httpx_real  # noqa: F401
 except ImportError:
@@ -92,10 +85,8 @@ from types import SimpleNamespace  # noqa: E402
 import routes.inference as ri  # noqa: E402
 from models.inference import EstimateMemoryRequest  # noqa: E402
 
-# Reuse the GGUF blob builder rather than copying it: these tests are only worth
-# anything if the bytes they parse are the bytes the real parser was written for.
-# Loaded by path because `tests` is not importable as a package name from every
-# runner layout.
+# Reuse the GGUF blob builder rather than copying it, by path: `tests` is not importable as a
+# package name from every runner layout.
 import importlib.util as _ilu  # noqa: E402
 
 _kv_spec = _ilu.spec_from_file_location(
@@ -199,18 +190,14 @@ def _hub_offline_now() -> bool:
     return bool(_hf_constants.HF_HUB_OFFLINE)
 
 
-# D6. The on-disk gate and the network
 
 
 class TestTheOnDiskGateAndTheNetwork:
     """The gate is fail-OPEN, and what it opens onto is a Hub round trip."""
 
     def test_a_host_with_no_establishable_cache_root_yields_no_roots(self, monkeypatch):
-        # The premise the rest of this class rests on: `roots == []` is a real host
-        # state, not a hypothetical. Both tiers are driven to fail the way they fail in
-        # the field -- tier 1's import reaches through hub.utils.paths into the logging
-        # stack (a lean interpreter without structlog raises exactly here), and tier 2
-        # keeps only roots that `is_dir()`, which drops a path that does not exist.
+        # `roots == []` is a real host state, not a hypothetical: tier 1's import reaches through
+        # hub.utils.paths into the logging stack, and tier 2 keeps only roots that is_dir().
         def _tier_one_import_fails():
             raise ModuleNotFoundError("No module named 'structlog'")
 
@@ -229,25 +216,17 @@ class TestTheOnDiskGateAndTheNetwork:
         assert ri._estimate_hf_cache_roots() == []
 
     def test_no_cache_root_means_the_gate_cannot_refuse_anything(self, monkeypatch):
-        # Fail-open, stated as behaviour. Every error path in the gate returns True,
-        # and `roots == []` is the one that is live in the field.
+        # Fail-open, stated as behaviour: every error path in the gate returns True.
         monkeypatch.setattr(ri, "_estimate_hf_cache_roots", list)
         assert ri._estimate_target_is_on_this_disk("org/definitely-not-cached") is True
 
     def test_a_gate_that_could_not_be_answered_never_resolves_online(self, monkeypatch):
-        # THE claim under test: "nothing is downloaded", which the gate keeps true by
-        # stopping from_identifier before it walks to the Hub.
-        #
-        # But the gate fails OPEN, and it falls through to more than a local resolution:
-        # _cached_estimate_config tries offline first and then RETRIES ONLINE. On a host
-        # where no cache root can be established, an uncached remote id therefore gets
-        # the full identification -- model_info attempts plus an hf_hub_download of
-        # config.json writing blob, ref, snapshot and lock -- for a request whose answer
-        # is "not on this disk".
-        #
-        # The observable is the offline switch, not a socket: force_hf_offline flips
-        # huggingface_hub's own constant, so a resolution seeing it False was allowed to
-        # dial out.
+        # THE claim under test: "nothing is downloaded". But the gate fails OPEN and falls through to
+        # _cached_estimate_config, which tries offline and then RETRIES ONLINE, so on a host with no
+        # cache root an uncached remote id gets the full identification -- model_info plus an
+        # hf_hub_download of config.json -- for a request whose answer is "not on this disk".
+        # The observable is the offline switch, not a socket: force_hf_offline flips huggingface_hub's
+        # own constant, so a resolution seeing it False was allowed to dial out.
         monkeypatch.setattr(ri, "_estimate_hf_cache_roots", list)
         offline_at_each_call = []
 
@@ -267,11 +246,8 @@ class TestTheOnDiskGateAndTheNetwork:
         )
 
     def test_the_fail_open_path_dials_no_socket_and_writes_no_cache_file(self, monkeypatch):
-        # The end-to-end form of the same claim, driven through the real
-        # ModelConfig.from_identifier with the session socket guard counting. The guard
-        # is reused rather than HF_HUB_OFFLINE being set, so the ONLINE branch is the
-        # one under test -- setting the env var would select the branch that trivially
-        # passes.
+        # The end-to-end form, through the real from_identifier with the socket guard counting. The
+        # guard is used rather than HF_HUB_OFFLINE so the ONLINE branch is the one under test.
         import socket
 
         attempts = []
@@ -295,7 +271,6 @@ class TestTheOnDiskGateAndTheNetwork:
         monkeypatch.setattr(socket.socket, "connect_ex", _record_connect_ex)
         monkeypatch.setattr(socket, "getaddrinfo", _record_resolve)
 
-        # A host where the gate cannot answer.
         monkeypatch.setattr(ri, "_estimate_hf_cache_roots", list)
 
         from utils.hf_cache_settings import get_hf_cache_paths
@@ -327,12 +302,9 @@ class TestTheOnDiskGateAndTheNetwork:
         ), f"the estimate tried to leave the machine {len(outbound)}x: {outbound[:5]}"
 
     def test_an_unreadable_cache_root_answers_not_downloaded(self, tmp_path, monkeypatch):
-        # Recorded because the gate's docstring promises the opposite: "an unreadable
-        # cache root must not turn into a blanket not_downloaded". It does.
-        # _iter_hf_cache_snapshots swallows every OSError, PermissionError included,
-        # and reports the repo as absent -- so the gate's own except never fires and
-        # the answer is a refusal, not a fall-through. Safer than the docstring says,
-        # but the docstring is what a reader will believe.
+        # Recorded because the gate's docstring promises the opposite: _iter_hf_cache_snapshots swallows
+        # every OSError, PermissionError included, and reports the repo as absent, so the gate's own
+        # except never fires and an unreadable cache root DOES become a blanket not_downloaded.
         if sys.platform == "win32":
             pytest.skip("POSIX permission bits")
         import os
@@ -355,12 +327,9 @@ class TestTheOnDiskGateAndTheNetwork:
     def test_passing_the_gate_does_not_mean_the_resolution_can_stay_local(
         self, tmp_path, monkeypatch
     ):
-        # The asymmetry that survives every fix above. The gate scans EVERY cache root
-        # Studio knows; from_identifier's offline readers take only the CONFIGURED one.
-        # So a repo sitting in the legacy or a historical root passes the gate, the
-        # offline resolve then finds nothing where it looks, and the online retry runs
-        # with the gate having said yes. "On this disk" does not imply "resolvable
-        # without the network", and only the first of those is what the gate checks.
+        # The asymmetry that survives every fix above: the gate scans EVERY cache root Studio knows,
+        # while from_identifier's offline readers take only the CONFIGURED one. So a repo in a legacy
+        # root passes the gate, the offline resolve finds nothing, and the online retry runs anyway.
         from utils.models.model_config import _iter_hf_cache_snapshots
 
         other_root = tmp_path / "legacy"
@@ -370,8 +339,6 @@ class TestTheOnDiskGateAndTheNetwork:
 
         monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [other_root])
         assert ri._estimate_target_is_on_this_disk("org/Model-GGUF") is True
-        # ...while the reader the resolution actually uses, on its default root, does
-        # not see it.
         assert list(_iter_hf_cache_snapshots("org/Model-GGUF")) == []
 
         offline_at_each_call = []
@@ -383,28 +350,21 @@ class TestTheOnDiskGateAndTheNetwork:
         monkeypatch.setattr(ri.ModelConfig, "from_identifier", staticmethod(_fake_from_identifier))
         _run_estimate(model_path = "org/Model-GGUF")
         assert offline_at_each_call, "the resolution never ran"
-        # Deliberately NOT asserted as a fix: a repo that is genuinely present but
-        # whose metadata lives elsewhere is the one case the online retry exists for.
-        # This pins the shape so the trade-off is visible if it is ever revisited.
+        # Deliberately NOT asserted as a fix: a repo present but with metadata elsewhere is the case the
+        # online retry exists for. This pins the shape so the trade-off is visible.
         assert offline_at_each_call[0] is True, "the first attempt must still be offline"
 
 
-# D4. The inert-probe fallback
 
 
 class TestInertProbeFallback:
     """``_probe_backend`` must not answer a fault with a process-reaping backend."""
 
     def test_a_fault_inside_the_constructor_is_not_answered_by_reaping(self, monkeypatch):
-        # The fallback is for stand-ins that PREDATE the keyword -- two in
-        # test_chat_load_during_training.py are plain classes taking no arguments, so
-        # the keyword is a signature TypeError and the bare constructor is correct.
-        #
-        # A TypeError raised from INSIDE __init__ lands in the same except, and the bare
-        # constructor it falls back to runs _kill_orphaned_servers, which walks /proc and
-        # SIGNALS the llama-servers it recognises, then registers an atexit handler
-        # holding the instance forever. A fault would silently become "reap the user's
-        # running server", on a route the panel fires on every change.
+        # The fallback is for stand-ins that PREDATE the keyword. A TypeError raised from INSIDE
+        # __init__ lands in the same except, and the bare constructor it falls back to runs
+        # _kill_orphaned_servers, which SIGNALS the llama-servers it recognises: a fault would silently
+        # become "reap the user's running server", on a route the panel fires on every change.
         constructions = []
         reaps = []
 
@@ -412,8 +372,7 @@ class TestInertProbeFallback:
             def __init__(self, *, manages_processes: bool = True):
                 constructions.append(manages_processes)
                 if not manages_processes:
-                    # NOT a signature rejection: the keyword bound fine. This stands
-                    # for any TypeError from the constructor body.
+                    # NOT a signature rejection: the keyword bound fine. Stands for any TypeError from the body.
                     raise TypeError("'NoneType' object is not subscriptable")
                 reaps.append("_kill_orphaned_servers")
 
@@ -438,8 +397,7 @@ class TestInertProbeFallback:
     def test_a_stand_in_that_predates_the_keyword_still_gets_the_bare_constructor(
         self, monkeypatch
     ):
-        # The compatibility the narrowed except must not cost. Modelled on the real
-        # stand-ins: plain classes, no __init__ at all.
+        # The compatibility the narrowed except must not cost: plain classes, no __init__ at all.
         class _PlainStandIn:
             is_diffusion = False
             _architecture = None
@@ -455,12 +413,9 @@ class TestInertProbeFallback:
         assert ri._probe_backend().built is True
 
     def test_the_real_constructor_cannot_raise_the_typeerror_the_except_catches(self):
-        # The honest scope of the fix. Under `manages_processes = False` the real
-        # __init__ body is attribute assignment and threading primitives only: every
-        # call it makes -- _kill_orphaned_servers, atexit.register, time.monotonic --
-        # sits inside the `if manages_processes:` branch that is not taken. So the
-        # broad except was unreachable for the real class, and the narrowing matters
-        # for substituted and subclassed backends, which is the population it serves.
+        # The honest scope of the fix: under manages_processes = False every call the real __init__
+        # makes sits inside the branch that is not taken, so the broad except was unreachable for the
+        # real class and the narrowing matters for substituted and subclassed backends.
         import ast
         import inspect
 
@@ -495,7 +450,6 @@ class TestInertProbeFallback:
         )
 
 
-# D5. The blocking capability probe
 
 
 class TestSlotResolutionStaysOffTheEventLoop:
@@ -504,17 +458,10 @@ class TestSlotResolutionStaysOffTheEventLoop:
     def test_the_capability_probe_never_runs_on_the_event_loop_thread(
         self, monkeypatch, side_effect_gguf
     ):
-        # _effective_parallel_slots asks the binary about --kv-unified, and
-        # _find_llama_server_binary walks nine layouts per call before the capability
-        # cache is consulted, retrying a denied one five times at 0.2s; on a cold cache
-        # the probe is `llama-server --help` with a ten second timeout.
-        #
-        # The sibling already knows: _effective_default_slots wraps the same helper in
-        # asyncio.to_thread because inline it "stalled every other request on the first
-        # open of the panel after an update". This route's loop streams chat tokens.
-        #
-        # Asserted by thread identity, not a stopwatch: same property, cannot flake
-        # under a loaded xdist runner, and it names the thread the work belongs on.
+        # _effective_parallel_slots asks the binary about --kv-unified, and _find_llama_server_binary
+        # walks nine layouts per call before the capability cache is consulted; on a cold cache the
+        # probe is `llama-server --help` with a ten second timeout, and this route's loop streams chat
+        # tokens. Asserted by thread identity rather than a stopwatch so it cannot flake under xdist.
         _priced_locally(monkeypatch, side_effect_gguf)
 
         probe_threads = []
@@ -543,10 +490,8 @@ class TestSlotResolutionStaysOffTheEventLoop:
         )
 
     def test_the_slot_default_is_still_read_from_the_app_state(self, monkeypatch, side_effect_gguf):
-        # Moving the probe off the loop must not take the settings read with it: the
-        # published default lives on the FastAPI app state, which belongs to the loop
-        # side, and pricing 1 there underestimates the KV cache and the slot-scaled
-        # compute buffers for the default configuration.
+        # Moving the probe off the loop must not take the settings read with it: the published default
+        # lives on app state, and pricing 1 there underestimates the KV cache and compute buffers.
         _priced_locally(monkeypatch, side_effect_gguf)
         monkeypatch.setattr(
             ri.LlamaCppBackend,
@@ -565,7 +510,6 @@ class TestSlotResolutionStaysOffTheEventLoop:
 
     def test_a_single_slot_never_reaches_the_probe(self, monkeypatch):
         # One slot cannot be clamped below one, so the binary is not asked at all.
-        # Pins the cheap path so the fix cannot start paying for a probe nobody needs.
         def boom(*a, **kw):
             raise AssertionError("a single slot must not probe the binary")
 
@@ -574,16 +518,14 @@ class TestSlotResolutionStaysOffTheEventLoop:
         assert ri._effective_parallel_slots(0) == 1
 
 
-# D7. The FastAPI request parameter
 
 
 class TestTheRequestParameterAnnotation:
     """``fastapi_request: Request = None`` is the form that works, not a slip."""
 
     def test_the_route_registers_and_receives_a_real_request(self):
-        # Through the app the default is never used: FastAPI special-cases a bare
-        # `Request` annotation and always injects the live object. The None default is
-        # what lets a unit test await the coroutine directly.
+        # Through the app the default is never used: FastAPI special-cases a bare `Request` annotation.
+        # The None default is what lets a unit test await the coroutine directly.
         from fastapi import FastAPI, Request
         from fastapi.testclient import TestClient
 
@@ -598,9 +540,8 @@ class TestTheRequestParameterAnnotation:
         assert body["injected"] == "Request"
 
     def test_optional_request_would_break_route_registration(self):
-        # The obvious "correction" is not one. FastAPI recognises the Request type by
-        # the bare annotation; Optional[Request] falls through to pydantic field
-        # creation and raises at decoration time, so the module would not import.
+        # Optional[Request] falls through to pydantic field creation and raises at decoration time, so
+        # the "correction" would stop the module importing.
         from typing import Optional
 
         import fastapi
@@ -625,21 +566,17 @@ class TestTheRequestParameterAnnotation:
         assert param.default is None
 
 
-# Contract: cache eviction under concurrency
 
 
 class TestEstimateCachesUnderConcurrency:
     """Both caches are module state reached from ``asyncio.to_thread`` workers."""
 
     def test_evicting_and_inserting_from_many_threads_never_raises(self, monkeypatch):
-        # min() walks the dict through a Python key function the interpreter is free to
-        # switch out of: a concurrent pop makes that walk raise KeyError, a concurrent
-        # insert RuntimeError ("dictionary changed size during iteration"). Nothing
-        # between here and the to_thread body catches either, so it surfaces as a 500
-        # on a slider drag. This is the behavioural form of that guarantee -- the
-        # source-reading assertion in test_memory_estimate.py cannot see a torn walk.
+        # min() walks the dict through a Python key function the interpreter can switch out of: a
+        # concurrent pop raises KeyError, a concurrent insert RuntimeError, and nothing between here and
+        # the to_thread body catches either, so it surfaces as a 500 on a slider drag.
         threads = 64
-        keys = ri._ESTIMATE_CONFIG_CACHE_MAX * 4  # well past the eviction threshold
+        keys = ri._ESTIMATE_CONFIG_CACHE_MAX * 4
         _pin_on_disk(monkeypatch)
 
         class _FakeModelConfig:
@@ -669,9 +606,8 @@ class TestEstimateCachesUnderConcurrency:
             w.join()
 
         assert errors == [], f"concurrent eviction raised {errors[:3]}"
-        # The lock covers evict-and-insert, not check-then-insert across threads, so
-        # the ceiling is MAX + (concurrent inserters). Bounded is the contract; exact
-        # is not, and asserting exact would be asserting a race.
+        # The lock covers evict-and-insert, not check-then-insert across threads, so the ceiling is
+        # MAX + (concurrent inserters). Bounded is the contract; asserting exact would assert a race.
         assert max(sizes) <= ri._ESTIMATE_CONFIG_CACHE_MAX + threads
         assert len(ri._estimate_config_cache) <= ri._ESTIMATE_CONFIG_CACHE_MAX + threads
 
@@ -710,19 +646,14 @@ class TestEstimateCachesUnderConcurrency:
         assert max(sizes) <= ri._ESTIMATE_FILES_CACHE_MAX + threads
 
     def test_a_cold_key_is_resolved_once_per_caller_not_once(self, monkeypatch):
-        # Documented, not celebrated. There is no in-flight dedup, so a thundering herd
-        # on one cold key runs the expensive resolution once per caller. Harmless for a
-        # panel that prices one model at a time; the assertion exists so that if a
-        # single-flight is ever added, this test is the thing that has to change.
+        # Documented, not celebrated: there is no in-flight dedup, so a herd on one cold key runs the
+        # resolution once per caller. If a single-flight is ever added, this test has to change.
         threads = 32
         _pin_on_disk(monkeypatch)
         resolutions = []
         lock = threading.Lock()
         start = threading.Barrier(threads)
-        # Inside the resolution, so the count is decided by the code and not by the
-        # scheduler: every caller that gets here must arrive before any of them may
-        # leave. If a single-flight is ever added, fewer than `threads` arrive and this
-        # breaks rather than passing by luck.
+        # Inside the resolution, so the count is decided by the code and not the scheduler.
         inside = threading.Barrier(threads, timeout = 30)
 
         class _CountingModelConfig:
@@ -757,10 +688,8 @@ class TestEstimateCachesUnderConcurrency:
         assert len(ri._estimate_config_cache) == 1
 
     def test_an_entry_is_not_born_already_expired(self, monkeypatch):
-        # The TTL stamp is the observable. Taken BEFORE the resolution, an entry that
-        # took longer than the TTL to produce is inserted already stale, so the very
-        # next request re-resolves and the cache stops existing on exactly the slow
-        # models it was added for.
+        # The TTL stamp is taken BEFORE the resolution, so an entry that took longer than the TTL is
+        # inserted already stale and the cache stops existing on exactly the slow models it was added for.
         clock = {"t": 1000.0}
         _pin_on_disk(monkeypatch)
         monkeypatch.setattr(
@@ -776,15 +705,14 @@ class TestEstimateCachesUnderConcurrency:
             @staticmethod
             def from_identifier(*, model_id, **kw):
                 resolutions.append(model_id)
-                clock["t"] += slow  # the resolution really did take this long
+                clock["t"] += slow
                 return SimpleNamespace(identifier = model_id, is_gguf = True)
 
         monkeypatch.setattr(ri, "ModelConfig", _SlowModelConfig)
 
         ri._cached_estimate_config("org/slow", None, None, False)
         assert len(resolutions) == 1
-        # No clock advance at all between the two calls: the second request is
-        # immediate, and must be a hit.
+        # No clock advance between the two calls: the second request is immediate, and must be a hit.
         ri._cached_estimate_config("org/slow", None, None, False)
         assert len(resolutions) == 1, (
             "the entry was born expired: its TTL stamp was taken before a "
@@ -792,9 +720,7 @@ class TestEstimateCachesUnderConcurrency:
         )
 
     def test_the_files_entry_is_not_born_already_expired_either(self, monkeypatch):
-        # Same stamp, same cache, other half. A multi-shard repo whose header walk and
-        # file stats outlast the TTL must not be inserted pre-expired, or the slider
-        # re-walks it on every tick.
+        # A multi-shard repo whose header walk outlasts the TTL must not be inserted pre-expired.
         clock = {"t": 5000.0}
         monkeypatch.setattr(
             ri, "time", SimpleNamespace(monotonic = lambda: clock["t"], time = time.time)
@@ -820,7 +746,6 @@ class TestEstimateCachesUnderConcurrency:
         )
 
 
-# Contract: token and subject isolation
 
 
 class TestTokenAndSubjectIsolation:
@@ -843,18 +768,17 @@ class TestTokenAndSubjectIsolation:
 
         monkeypatch.setattr(ri, "ModelConfig", _PerTokenModelConfig)
 
-        for _round in range(3):  # interleaved, not one subject then the other
+        for _round in range(3):
             alice = ri._cached_estimate_config("org/gated", None, "token-alice", False)
             bob = ri._cached_estimate_config("org/gated", None, "token-bob", False)
             assert alice.resolved_with == "token-alice"
             assert bob.resolved_with == "token-bob"
 
-        # And the tokenless caller gets neither -- it gets the failure it earned.
         assert ri._cached_estimate_config("org/gated", None, None, False) is None
 
     def test_the_token_is_fingerprinted_not_stored_in_the_key(self):
-        # A token is a credential; it does not belong in a dict key verbatim, because
-        # module state is dumped by every debugger and every heap snapshot.
+        # A token is a credential and does not belong in a dict key verbatim: module state is dumped by
+        # every debugger and heap snapshot.
         secret = "hf_thisIsASecretToken"
         fingerprint = ri._estimate_token_fingerprint(secret)
         assert secret not in fingerprint
@@ -865,11 +789,9 @@ class TestTokenAndSubjectIsolation:
         assert ri._estimate_token_fingerprint("") == ""
 
     def test_the_subject_is_absent_from_the_key_and_the_token_is_what_isolates(self, monkeypatch):
-        # Recorded deliberately. current_subject is NOT part of the cache key: the
-        # credential is, and two subjects presenting the same token are entitled to the
-        # same answer. What this pins is that nothing else about a subject leaks in --
-        # so if per-subject state is ever added to the resolution, the key must grow
-        # with it and this test is where that shows up.
+        # current_subject is deliberately NOT part of the cache key: the credential is, and two subjects
+        # presenting the same token are entitled to the same answer. This pins that nothing else about
+        # a subject leaks in, so per-subject state added later must grow the key.
         _pin_on_disk(monkeypatch)
         monkeypatch.setattr(
             ri,
@@ -885,11 +807,9 @@ class TestTokenAndSubjectIsolation:
         assert key == ("org/model", "Q4_K_M", True, ri._estimate_token_fingerprint("tok"))
 
     def test_the_native_grant_is_keyed_as_a_flag_not_as_an_identity(self, monkeypatch):
-        # The grant changes the resolution: it passes _native_drafter_accept into
-        # from_identifier. So it has to be in the key, and it is -- but as a boolean.
-        # Two DIFFERENT subjects each holding a valid lease share one entry. That is
-        # sound only because the lease is verified before the key is built, never
-        # after; this test is the record of that reasoning.
+        # The grant passes _native_drafter_accept into from_identifier, so it is in the key -- but as a
+        # boolean, so two different subjects with valid leases share one entry. Sound only because the
+        # lease is verified before the key is built, never after.
         _pin_on_disk(monkeypatch)
         seen = []
 
@@ -913,7 +833,6 @@ class TestTokenAndSubjectIsolation:
         "overwrite the ungranted one"
 
 
-# Contract: no GPU is touched
 
 
 class TestNoDeviceIsTouched:
@@ -922,13 +841,10 @@ class TestNoDeviceIsTouched:
     def test_a_full_request_allocates_nothing_and_launches_nothing(
         self, monkeypatch, side_effect_gguf
     ):
-        # The route reaches _guard_device_count -> _tensor_split_possible ->
-        # LlamaCppBackend._effective_gpu_count, which imports torch and asks CUDA how
-        # many devices it can see. That is driver ENUMERATION, and it is as far as this
-        # is allowed to go: no context creation, no property read, no free-memory
-        # probe, no nvidia-smi, no llama-server. Each of those is a real cost on a box
-        # where a training run owns the cards, and this endpoint fires on every
-        # settings change.
+        # The route reaches LlamaCppBackend._effective_gpu_count, which imports torch and asks CUDA how
+        # many devices it sees. Driver ENUMERATION is as far as this may go: no context creation, no
+        # property read, no free-memory probe, no nvidia-smi, no llama-server, each a real cost on a box
+        # where a training run owns the cards.
         import subprocess
 
         import torch
@@ -957,7 +873,6 @@ class TestNoDeviceIsTouched:
             lambda: (enumerated.append("device_count"), real_device_count())[1],
         )
 
-        # Everything past enumeration: forbidden.
         for attr in (
             "init",
             "set_device",
@@ -980,11 +895,7 @@ class TestNoDeviceIsTouched:
         )
         assert resp.available is True
         assert touched == [], f"the estimate touched the GPU: {touched}"
-        # Recorded, not forbidden, and this is the honest edge of the claim: the
-        # device-count path really does ask the CUDA driver how many cards are
-        # visible: measured on this box, is_available() and device_count() both fire.
-        # No context is created and no property is read, but "no device is touched" is
-        # a slight overstatement of that, and this is where it shows. Subset, not
-        # equality: a CPU-only runner answers is_available() False and never reaches
-        # device_count, and a Vulkan build short-circuits before either.
+        # The honest edge of the claim: the device-count path really does ask the CUDA driver how many
+        # cards are visible (is_available() and device_count() both fire), so "no device is touched" is
+        # a slight overstatement. Subset, not equality: a CPU-only runner never reaches device_count.
         assert set(enumerated) <= {"is_available", "device_count"}, enumerated

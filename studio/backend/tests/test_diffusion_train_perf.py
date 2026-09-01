@@ -48,7 +48,8 @@ from core.training.diffusion_training_service import DiffusionTrainingService
 from models.training import DiffusionTrainingStartRequest, DiffusionTrainingStopRequest
 from routes.training import router as training_router
 
-# A trainable SDXL base so normalized() resolves a family without a network call (pure name matching).
+# A trainable SDXL base so normalized() resolves a family without a network call (pure name
+# matching).
 _SDXL = "stabilityai/stable-diffusion-xl-base-1.0"
 
 
@@ -56,7 +57,6 @@ def _cfg(**kw) -> DiffusionLoraConfig:
     return DiffusionLoraConfig(base_model = _SDXL, data_dir = "d", output_dir = "o", **kw)
 
 
-# ── _plan_cache_variants (pure, seed-deterministic) ───────────────────────────
 def test_plan_cache_variants_deterministic_and_deduped():
     # Same seed gives a byte-identical plan (its own rng stream, so it is fully reproducible).
     p1 = _plan_cache_variants(3, 4, center_crop = False, random_flip = True, seed = 123)
@@ -64,11 +64,11 @@ def test_plan_cache_variants_deterministic_and_deduped():
     assert p1 == p2
     assert len(p1) == 3
 
-    # cache_variants=1 -> exactly one variant per image.
     p_one = _plan_cache_variants(3, 1, center_crop = False, random_flip = True, seed = 7)
     assert [len(v) for v in p_one] == [1, 1, 1]
 
-    # A center crop with no flip collapses to one variant, the fixed (0.5, 0.5, False) center, however many draws are asked for.
+    # A center crop with no flip collapses to one variant, the fixed (0.5, 0.5, False) center,
+    # however many draws are asked for.
     p_cc = _plan_cache_variants(2, 8, center_crop = True, random_flip = False, seed = 7)
     assert [len(v) for v in p_cc] == [1, 1]
     assert p_cc[0][0] == (0.5, 0.5, False)
@@ -84,7 +84,6 @@ def test_plan_cache_variants_deterministic_and_deduped():
         assert isinstance(flip, bool)
 
 
-# ── per-family collate fns ────────────────────────────────────────────────────
 def test_flux_collate_shapes():
     # FLUX embeds are fixed length: 3 entries batch by a plain cat; text_ids are shared.
     entries = [(torch.randn(1, 512, 32), torch.randn(1, 16), torch.randn(512, 3)) for _ in range(3)]
@@ -100,7 +99,8 @@ def test_flux_collate_shapes():
 
 def test_qwen_collate_pads_and_masks():
     dim = 8
-    # A short (mask=None) and a long (mask=ones) entry pad to the batch max, with the short sample's padded tail masked out.
+    # A short (mask=None) and a long (mask=ones) entry pad to the batch max, with the short sample's
+    # padded tail masked out.
     short = (torch.randn(1, 5, dim), None)
     long = (torch.randn(1, 9, dim), torch.ones(1, 9, dtype = torch.int64))
     pe, mask = _qwen_collate([short, long], "cpu", torch.float32)
@@ -113,7 +113,8 @@ def test_qwen_collate_pads_and_masks():
     assert pe1.shape == (1, 5, dim)
     assert mask1 is None
 
-    # A single sample pinned to a compile pad bucket must pad AND expose a mask so the padded positions read as invalid.
+    # A single sample pinned to a compile pad bucket must pad AND expose a mask so the padded
+    # positions read as invalid.
     pe2, mask2 = _qwen_collate([(torch.randn(1, 5, dim), None)], "cpu", torch.float32, pad_to = 16)
     assert pe2.shape == (1, 16, dim)
     assert mask2 is not None
@@ -121,7 +122,8 @@ def test_qwen_collate_pads_and_masks():
 
 
 def test_zimage_collate_list():
-    # Z-Image uses list I/O: one tuple carrying a list of per-sample tensors, each cast to the requested dtype.
+    # Z-Image uses list I/O: one tuple carrying a list of per-sample tensors, each cast to the
+    # requested dtype.
     entries = [(torch.randn(7, 2560),), (torch.randn(9, 2560),)]
     out = _zimage_collate(entries, "cpu", torch.float32)
     assert isinstance(out, tuple) and len(out) == 1
@@ -130,9 +132,9 @@ def test_zimage_collate_list():
     assert all(t.dtype == torch.float32 for t in caps)
 
 
-# ── index-based sigma gather ──────────────────────────────────────────────────
 def test_gather_sigmas_matches_search_based_gather():
-    # CI installs the backend test deps without diffusers, and the scheduler math is what we check, so skip there.
+    # CI installs the backend test deps without diffusers, and the scheduler math is what we check,
+    # so skip there.
     pytest.importorskip("diffusers")
     from diffusers import FlowMatchEulerDiscreteScheduler
 
@@ -154,21 +156,17 @@ def test_gather_sigmas_matches_search_based_gather():
     assert torch.equal(sigma, expected)
 
 
-# ── config validation of the new perf fields ──────────────────────────────────
 def test_config_validates_new_fields():
-    # Defaults normalize cleanly and carry the new perf fields through.
     norm = _cfg().normalized()
     assert norm.cache_variants == 4
     assert norm.compile_transformer == "auto"
     assert norm.enable_tf32 is True
     assert norm.cache_latents is True
 
-    # cache_variants is bounded to 1..16 inclusive.
     for bad in (0, 17):
         with pytest.raises(ValueError):
             _cfg(cache_variants = bad).normalized()
 
-    # An unknown compile mode is rejected.
     with pytest.raises(ValueError):
         _cfg(compile_transformer = "banana").normalized()
 
@@ -188,7 +186,8 @@ def test_config_validates_new_fields():
     assert cfg.enable_tf32 is False
     assert cfg.cache_latents is False
 
-    # String flags from the generic Unsloth dict path are coerced: "false" is a truthy string, so an opt-out would silently no-op.
+    # String flags from the generic Unsloth dict path are coerced: "false" is a truthy string, so an
+    # opt-out would silently no-op.
     cfg = _config_from_dict(
         {
             "base_model": _SDXL,
@@ -202,11 +201,8 @@ def test_config_validates_new_fields():
     assert cfg.cache_latents is False
 
 
-# ── torch.compile policy ──────────────────────────────────────────────────────
 def test_should_compile_policy():
-    # off never compiles, even on cuda.
     assert _should_compile(_cfg(compile_transformer = "off"), False, "cuda") is False
-    # on always compiles on cuda.
     assert _should_compile(_cfg(compile_transformer = "on"), False, "cuda") is True
     # auto stays off over a bitsandbytes base (graph breaks in the dequant path).
     assert _should_compile(_cfg(compile_transformer = "auto"), True, "cuda") is False
@@ -215,12 +211,10 @@ def test_should_compile_policy():
         _should_compile(_cfg(compile_transformer = "auto"), False, "cuda", base_precision = "bf16")
         is True
     )
-    # Any mode is a no-op on cpu.
     for mode in ("off", "on", "auto"):
         assert _should_compile(_cfg(compile_transformer = mode), False, "cpu") is False
 
 
-# ── service stop save/cancel flag ─────────────────────────────────────────────
 class _StopQueue:
     """Records what stop() puts on the wire (put-only for these tests)."""
 
@@ -238,7 +232,6 @@ class _AliveProc:
 
 def test_service_stop_save_flag():
     svc = DiffusionTrainingService()
-    # Nothing running -> stop is a no-op and returns False.
     assert svc.stop() is False
 
     # Attach a fake live proc + stop queue so stop() has a target.
@@ -250,9 +243,7 @@ def test_service_stop_save_flag():
     assert svc.stop(save = False) is True
     assert q.items[-1] == {"save": False}
 
-    # The default (save) path keeps the bare-True wire format. A SECOND stop on the same job no
-    # longer reaches the child (see test_a_second_stop_does_not_change_what_the_child_was_told),
-    # so this is a fresh one.
+    # The default (save) path keeps the bare-True wire format.
     other = DiffusionTrainingService()
     other._proc = _AliveProc()
     other_q = _StopQueue()
@@ -261,7 +252,6 @@ def test_service_stop_save_flag():
     assert other_q.items[-1] is True
 
 
-# ── preparing / warning events + stopped completion messages ──────────────────
 def test_apply_event_preparing_and_warning():
     svc = DiffusionTrainingService()
     svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 4, "total": 8})
@@ -280,7 +270,6 @@ def test_apply_event_preparing_and_warning():
     assert st_no["status"] == "stopped"
     assert st_no["message"] == "Stopped (no adapter saved)."
 
-    # A stop that DID save a partial adapter reports the partial-adapter message.
     svc_partial = DiffusionTrainingService()
     svc_partial._apply_event(
         {"type": "complete", "stopped": True, "lora_path": "/o/pytorch_lora_weights.safetensors"}
@@ -288,7 +277,6 @@ def test_apply_event_preparing_and_warning():
     assert svc_partial.status()["message"] == "Stopped (partial adapter saved)."
 
 
-# ── route: stop body forwards the save flag ───────────────────────────────────
 class _FakeService:
     """Records the save flag the /diffusion/stop route forwards. A local copy of the
     test_diffusion_training.py pattern so the two suites stay decoupled."""
@@ -319,18 +307,15 @@ def client(monkeypatch):
 
 
 def test_route_stop_save_body(client):
-    # An explicit {"save": false} body forwards save=False to the service.
     r = client.post("/api/train/diffusion/stop", json = {"save": False})
     assert r.status_code == 200, r.text
     assert client._fake.stopped_with_save is False
 
-    # A body-less POST defaults to save=True.
     r2 = client.post("/api/train/diffusion/stop")
     assert r2.status_code == 200, r2.text
     assert client._fake.stopped_with_save is True
 
 
-# ── request models: new perf fields + stop schema ─────────────────────────────
 def test_request_models_new_fields():
     req = DiffusionTrainingStartRequest(base_model = "b", data_dir = "d", output_dir = "o")
     assert req.cache_latents is True
@@ -344,21 +329,20 @@ def test_request_models_new_fields():
             base_model = "b", data_dir = "d", output_dir = "o", cache_variants = 32
         )
 
-    # The stop request defaults to saving a partial adapter.
     assert DiffusionTrainingStopRequest().save is True
 
 
-# ── perf flags round-trip on cpu ──────────────────────────────────────────────
 def test_perf_flags_cpu_roundtrip():
-    # On cpu (or a torch build without cuda) applying the perf flags is a no-op snapshot, and restoring it must not raise.
+    # On cpu (or a torch build without cuda) applying the perf flags is a no-op snapshot, and
+    # restoring it must not raise.
     snap = _apply_perf_flags(_cfg(), "cpu")
     assert isinstance(snap, dict)
     _restore_perf_flags(snap)  # no exception
 
 
 def test_perf_flags_tf32_off_clears_flags():
-    # enable_tf32=False is the strict-fp32 A/B mode: it must actively clear the TF32 flags (cudnn TF32 defaults ON) rather
-    # than inherit ambient state, and restore must put them back. The flags are plain Python state, so no GPU is needed.
+    # enable_tf32=False is the strict-fp32 A/B mode: it must actively clear the TF32 flags (cudnn
+    # TF32 defaults ON) rather than inherit ambient state, and restore must put them back.
     import torch
 
     before = (
@@ -381,7 +365,6 @@ def test_perf_flags_tf32_off_clears_flags():
     assert after == before
 
 
-# ── latent cache size gate ────────────────────────────────────────────────────
 class _FakeLatentDist:
     def __init__(self, shape):
         self.mean = torch.zeros(shape, dtype = torch.float32)
@@ -394,7 +377,6 @@ class _FakeEncoded:
 
 
 class _FakeVae:
-    # Minimal VAE stand-in: encode() returns a posterior of the requested latent shape, so the builder measures a real per-variant size with no model or images.
     def __init__(self, shape):
         self._shape = shape
 
@@ -429,7 +411,6 @@ def test_latent_cache_over_budget_boundary():
     assert _latent_cache_over_budget(32, 4, budget_bytes = 200) is False
     assert _latent_cache_over_budget(32, 4, budget_bytes = 128) is False
     assert _latent_cache_over_budget(32, 4, budget_bytes = 127) is True
-    # An empty plan can never overflow.
     assert _latent_cache_over_budget(1_000_000, 0, budget_bytes = 1) is False
 
 
@@ -450,7 +431,8 @@ def test_sdxl_cache_built_under_budget(monkeypatch):
 
 
 def test_sdxl_cache_gated_over_budget(monkeypatch):
-    # A budget below one variant trips the gate on the first encode: the sentinel tells the caller to keep the VAE resident and encode per step.
+    # A budget below one variant trips the gate on the first encode: the sentinel tells the caller
+    # to keep the VAE resident and encode per step.
     monkeypatch.delenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", raising = False)
     monkeypatch.setattr(train_common, "_LATENT_CACHE_BUDGET_BYTES", 8)
     cache = _build_fake_sdxl_cache(monkeypatch, num_images = 3, latent_shape = (1, 4, 8, 8))
@@ -485,7 +467,6 @@ def test_a_no_save_stop_survives_a_child_that_dies_before_reporting_it():
     assert svc.status()["resume_blocked_reason"] is None
 
     assert svc.stop(save = False) is True
-    # ...and the child dies without a completion event.
     dead = _DeadProc()
     svc._proc = dead
 
@@ -554,8 +535,8 @@ def test_a_discard_is_applied_to_a_terminal_error_too(tmp_path, monkeypatch):
     state = svc.status()
     assert state["status"] == "error"
     assert "stopped without saving" in (state["resume_blocked_reason"] or "")
-    # And the bundles the run wrote are gone: they hold optimizer state and the UI offers no
-    # delete path once the run is marked discarded.
+    # And the bundles the run wrote are gone: they hold optimizer state and the UI offers no delete
+    # path once the run is marked discarded.
     assert not bundle.exists()
     assert dc is not None
 
@@ -603,7 +584,6 @@ def test_an_epoch_mode_target_does_not_fall_back_to_the_unused_step_count():
         _resolved_total_steps({"total_steps": 1000}, {"num_epochs": 4, "train_steps": 500}) == 1000
     )
     assert _resolved_total_steps({}, {"num_epochs": 4, "train_steps": 500}) == 0
-    # Step mode is unchanged: the configured count is the target.
     assert _resolved_total_steps({}, {"num_epochs": 0, "train_steps": 500}) == 500
 
 
@@ -678,7 +658,6 @@ def test_a_child_that_cleaned_up_is_not_cleaned_up_again(tmp_path, monkeypatch):
                 return self._events.pop(0)
             raise RuntimeError("empty")
 
-    # What the child restored into the slot this run had written over.
     restored = tmp_path / "checkpoint-10"
     restored.mkdir()
     (restored / "adapter.safetensors").write_bytes(b"other run")
@@ -699,7 +678,6 @@ def test_a_child_that_cleaned_up_is_not_cleaned_up_again(tmp_path, monkeypatch):
     )
 
     assert restored.exists(), "the bundle the child handed back is not this run's to delete"
-    # The state half of the discard still applies.
     state = svc.status()
     assert "stopped without saving" in (state["resume_blocked_reason"] or "")
     assert state["checkpoint_path"] is None
@@ -721,7 +699,6 @@ def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeyp
     svc = svc_mod.DiffusionTrainingService()
     svc._state.update(job_id = "a" * 32, output_dir = str(tmp_path / "out"), status = "running")
 
-    # A landed checkpoint asks for the record...
     svc._apply_event(
         {"type": "checkpoint_saved", "checkpoint_path": str(tmp_path / "checkpoint-40"), "step": 40}
     )
@@ -740,7 +717,6 @@ def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeyp
     assert record["status"] == "error"
 
     # ...and while the process is still on that job, the reader says so rather than offering a
-    # Resume for a directory the live run is writing into.
     svc_mod._service = svc
     try:
         assert svc_mod._restate_live_job(dict(record))["status"] == "running"
@@ -826,7 +802,6 @@ def test_one_bad_record_does_not_take_the_history_with_it(tmp_path, monkeypatch)
 
     listed = svc_mod.list_diffusion_runs()
     assert [r["job_id"] for r in listed] == ["e" * 32]
-    # ...and the detail endpoint answers with the stored record rather than a 500.
     assert svc_mod.get_diffusion_run("d" * 32)["job_id"] == "d" * 32
 
 

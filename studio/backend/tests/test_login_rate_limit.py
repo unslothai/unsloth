@@ -61,7 +61,6 @@ class _FakeRequest:
         self.headers = Headers(headers or {})
 
 
-# ---------- _client_ip ----------
 
 
 class TestClientIp:
@@ -128,8 +127,8 @@ class TestClientIp:
     def test_forwarded_isolates_first_element(self, env_trust_proxy):
         from routes.auth import _client_ip
 
-        # Pick the first Forwarded element only, else suffix variations create
-        # attacker-controlled buckets.
+        # Pick the first Forwarded element only, else suffix variations create attacker-controlled
+        # buckets.
         req = _FakeRequest(
             "127.0.0.1",
             {"forwarded": "for=198.51.100.42, for=10.0.0.1;proto=https"},
@@ -144,7 +143,6 @@ class TestClientIp:
         assert _client_ip(req) == "127.0.0.1"
 
 
-# ---------- bucket compose / blocking ----------
 
 
 class TestBucketKeyAndBlocking:
@@ -229,13 +227,12 @@ class TestBucketKeyAndBlocking:
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
-        # Saturate the per-IP dict with distinct source IPs.
         for idx in range(50):
             auth_routes._record_login_failure((f"198.51.100.{idx}", "admin"))
         assert len(auth_routes._LOGIN_IP_BUCKETS) <= 10  # bounded
 
-        # A brand-new IP arriving after saturation is still throttled: it can't get
-        # its own bucket, so its failures land in the shared overflow counter.
+        # A brand-new IP arriving after saturation is still throttled: it cannot get its own bucket,
+        # so its failures land in the shared overflow counter.
         victim = ("203.0.113.99", "admin")
         for _ in range(5):
             auth_routes._record_login_failure(victim)
@@ -280,18 +277,16 @@ class TestBucketKeyAndBlocking:
         # Neutralize account-bucket blocking so this isolates the per-IP path.
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
 
-        # Saturate the bucket dict so further new IPs fall through to overflow.
         for idx in range(10):
             auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
 
-        # Drive one IP's real overflow shard hot.
         attacker_ip = "198.51.100.7"
         for _ in range(5):
             auth_routes._record_login_failure((attacker_ip, "admin"))
         assert auth_routes._login_blocked((attacker_ip, "admin")) > 0
 
-        # A new IP in a *different* shard must not be denied (a single global
-        # counter would block it; a sharded one preserves per-source isolation).
+        # A new IP in a different shard must not be denied: a single global counter would block it,
+        # while a sharded one preserves per-source isolation.
         attacker_shard = auth_routes._overflow_shard(attacker_ip)
         victim_ip = next(
             f"203.0.113.{i}"
@@ -311,7 +306,6 @@ class TestBucketKeyAndBlocking:
         # Neutralize account-bucket blocking so this isolates the per-IP path.
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
 
-        # Saturate the dict, then drive a source's overflow shard hot.
         for idx in range(10):
             auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
         attacker = ("198.51.100.7", "admin")
@@ -323,8 +317,8 @@ class TestBucketKeyAndBlocking:
         auth_routes._clear_login_bucket(("10.0.0.0", "admin"))
         assert len(auth_routes._LOGIN_IP_BUCKETS) < auth_routes._LOGIN_MAX_BUCKETS
 
-        # Still throttled (overflow shard still hot), and a new failure that now
-        # gets a fresh per-IP bucket must not reset the throttle.
+        # Still throttled (the overflow shard is still hot), and a new failure that now gets a fresh
+        # per-IP bucket must not reset the throttle.
         assert auth_routes._login_blocked(attacker) > 0
         auth_routes._record_login_failure(attacker)
         assert auth_routes._login_blocked(attacker) > 0
@@ -340,7 +334,6 @@ class TestBucketKeyAndBlocking:
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_OVERFLOW_MAX", 8)
 
-        # Saturate the dict, then spray thousands of distinct one-off IPs.
         for idx in range(10):
             auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
         for idx in range(5000):
@@ -358,7 +351,6 @@ class TestBucketKeyAndBlocking:
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_OVERFLOW_MAX", 2)
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
-        # Force every overflow IP into one shard so we can saturate it.
         shard0 = auth_routes._LOGIN_IP_OVERFLOW[0]
         monkeypatch.setattr(auth_routes, "_overflow_shard", lambda _ip: shard0)
 
@@ -371,8 +363,8 @@ class TestBucketKeyAndBlocking:
             auth_routes._record_login_failure(("198.51.100.2", "admin"))
         assert len(shard0) == 2
 
-        # A new IP evicts the lowest-count entry; it must start clean, so one
-        # failure leaves it below the threshold and unblocked.
+        # A new IP evicts the lowest-count entry; it must start clean, so one failure leaves it
+        # below the threshold and unblocked.
         new_ip = ("203.0.113.50", "admin")
         auth_routes._record_login_failure(new_ip)
         assert auth_routes._login_blocked(new_ip) == 0
@@ -387,7 +379,6 @@ class TestBucketKeyAndBlocking:
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
 
-        # Saturate, then push one IP to 4 overflow failures (one below threshold).
         for idx in range(10):
             auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
         attacker = ("198.51.100.7", "admin")
@@ -397,7 +388,6 @@ class TestBucketKeyAndBlocking:
 
         # Free a slot so the next failure lands in a fresh per-IP bucket.
         auth_routes._clear_login_bucket(("10.0.0.0", "admin"))
-        # One more failure must throttle (4 carried + 1 = 5), not reset to 1.
         auth_routes._record_login_failure(attacker)
         assert auth_routes._login_blocked(attacker) > 0
 
@@ -415,7 +405,6 @@ class TestBucketKeyAndBlocking:
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100000)
 
-        # Saturate the dict, then hammer one IP far past the threshold in overflow.
         for idx in range(10):
             auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
         attacker_ip = "198.51.100.7"
@@ -445,7 +434,6 @@ class TestBucketKeyAndBlocking:
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
 
-        # Saturate the dict, then push one IP into overflow until it is throttled.
         for idx in range(10):
             auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
         ip = ("198.51.100.7", "admin")
@@ -461,7 +449,6 @@ class TestBucketKeyAndBlocking:
         assert auth_routes._login_blocked(ip) == 0
 
 
-# ---------- /login 429 body ----------
 
 
 class TestLogin429Body:
@@ -490,7 +477,6 @@ class TestLogin429Body:
     def test_429_detail_does_not_leak_ip(self, env_no_proxy, login_client):
         from routes.auth import _LOGIN_MAX_FAILS
 
-        # Drive 6 failures from the same client IP / username
         for _ in range(_LOGIN_MAX_FAILS):
             r = login_client.post(
                 "/api/auth/login",
@@ -506,5 +492,4 @@ class TestLogin429Body:
         # The 429 body must not interpolate the source IP
         assert "127.0.0.1" not in detail
         assert "Too many" in detail
-        # Retry-After header is still set for clients
         assert "Retry-After" in r.headers

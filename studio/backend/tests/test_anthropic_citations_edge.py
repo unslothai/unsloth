@@ -20,7 +20,6 @@ from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
 
 
-# ── shared SSE harness ───────────────────────────────────────
 
 
 def _drive(coro):
@@ -162,7 +161,6 @@ def _citation_payload(body: str) -> dict:
     raise AssertionError("document_citations event not parsed out of SSE body")
 
 
-# ── edge cases ───────────────────────────────────────────────
 
 
 def test_citation_with_no_preceding_text_still_emits_marker(monkeypatch):
@@ -360,7 +358,6 @@ def test_unknown_citation_type_falls_back_to_stringified_key(monkeypatch):
         ],
     )
     body = _joined(lines)
-    # cit_a dedupes onto [1], cit_b gets [2].
     assert body.count("[1]") == 2, body
     assert body.count("[2]") == 1, body
     payload = _citation_payload(body)
@@ -626,7 +623,6 @@ def test_input_document_translation_enables_citations(monkeypatch):
     assert doc_block.get("citations") == {"enabled": True}, doc_block
 
 
-# ── cited_text truncation + safe-url citation conversion ────────
 
 
 def test_cited_text_truncated_in_synthetic_event(monkeypatch):

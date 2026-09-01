@@ -22,7 +22,7 @@ class _FakeProc:
 
     def __init__(self, dies_on = None):
         self._alive = True
-        self._dies_on = dies_on  # None | "join" | "terminate" | "kill"
+        self._dies_on = dies_on
         self.pid = 424242
 
     def is_alive(self):
@@ -56,7 +56,6 @@ def _bare_inference():
     o._resp_queue = _Q()
     o._cancel_event = None
     o._drain_event = None
-    # Worker-scoped bookkeeping the teardown clears (see _reset_worker_scoped_state).
     o._active_cancel_lock = threading.Lock()
     o._active_cancel_events = []
     o._executing_cancel_events = []
@@ -97,7 +96,7 @@ class TestInferenceShutdownReturn:
 
     def test_survivor_returns_false_and_keeps_handle(self):
         o = _bare_inference()
-        o._proc = _FakeProc(dies_on = None)  # outlives terminate AND kill
+        o._proc = _FakeProc(dies_on = None)
         assert o._shutdown_subprocess(timeout = 0.01) is False
         assert o._proc is not None
         # is_worker_alive stays truthful, so the pre-swap guard can refuse the swap.
@@ -148,7 +147,7 @@ class TestInferenceShutdownReturn:
         def shutdown():
             try:
                 o._shutdown_subprocess(timeout = 0.01)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append(exc)
 
         first = threading.Thread(target = shutdown)
@@ -193,7 +192,7 @@ class TestSpawnPathsHonorFailedShutdown:
 
         o = ExportOrchestrator.__new__(ExportOrchestrator)
         o._lock = threading.RLock()
-        o._proc = _FakeProc(dies_on = None)  # survivor
+        o._proc = _FakeProc(dies_on = None)
         o.clear_logs = lambda: None
         o._cancel_requested = False
         o._active_op_kind = None
@@ -208,5 +207,4 @@ class TestSpawnPathsHonorFailedShutdown:
 
         assert ok is False
         assert "did not exit" in msg
-        # The finally cleared the op flags even though we returned early.
         assert o._export_active is False

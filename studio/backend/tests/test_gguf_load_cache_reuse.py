@@ -26,14 +26,13 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub optional dependencies before importing the modules under test.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
-# routes/inference.py binds structlog.get_logger at import time, and setdefault
-# keeps a bare stub an earlier test left behind: repair it rather than rely on order.
+# routes/inference.py binds structlog.get_logger at import time, and setdefault keeps a bare stub an
+# earlier test left behind: repair it rather than rely on order.
 _structlog_stub.get_logger = lambda *_args, **_kwargs: logging.getLogger("structlog_stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
@@ -172,7 +171,6 @@ async def _inline_to_thread(func, /, *args, **kwargs):
 
 
 async def _no_gguf_gpu_ids(*_args, **_kwargs):
-    # Mirrors the resolver's no-gpu_ids early return: no ids, not Vulkan ordinals.
     return None, False
 
 
@@ -865,8 +863,8 @@ class TestLoadHubDownloadExclusion:
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
             "chat_template_override_reason",
-            # Read from requested_extra_args, which is what the load was invoked
-            # with rather than the rewritten launch list.
+            # Read from requested_extra_args, which is what the load was invoked with rather than
+            # the rewritten launch list.
             "requested_llama_extra_args",
         }
         unresolved = sorted(
@@ -894,7 +892,8 @@ class TestLoadHubDownloadExclusion:
             assert not hf_gguf_load_in_flight("")
 
     def test_chat_load_marker_is_repo_agnostic_and_nests(self):
-        # The GPU arbiter needs to know a chat load exists before llama-server is spawned, for local paths and safetensors too, so this marker carries no repo key.
+        # The GPU arbiter needs to know a chat load exists before llama-server is spawned, for local
+        # paths and safetensors too, so this marker carries no repo key.
         from core.inference.llama_cpp import chat_load_active, chat_load_in_flight
 
         assert not chat_load_active()
@@ -1102,17 +1101,15 @@ class TestLoadHubDownloadExclusion:
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
             encoding = "utf-8"
         )
-        # Anchor on the enclosing function, not a nearby `if config.is_gguf:`: the old anchor took the last such line before the load marker, which held
-        # only while _resolve_inherited_extra_args sat above every one of them. The ordering is a property of _load_model_impl.
+        # Anchor on the enclosing function, not a nearby `if config.is_gguf:`: the old anchor took
+        # the last such line before the load marker, which held only while
+        # _resolve_inherited_extra_args sat above every one of them.
         marker = source.index("enter_context(gguf_load_in_flight")
         gguf_branch_start = source.rindex("async def _load_model_impl", 0, marker)
         gguf_branch = source[gguf_branch_start:]
 
-        # One chain, in this order:
-        # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried --no-mmproj) shapes the guard's require_mmproj.
-        # - the gguf_load_in_flight marker before the hub-download guard: that handshake keeps a load and the download manager off the same files.
-        # - both before the CHAT handoff: the guard's 409 loads nothing, so checking it later destroyed a resident pipeline for a load that could never start.
-        # - the resident unload last. Anchored on call forms so each assertion pins a call site, not a definition.
+        # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried --no-mmproj)
+        # shapes the guard's require_mmproj.
         assert (
             gguf_branch.index("= _resolve_inherited_extra_args(")
             < gguf_branch.index("enter_context(gguf_load_in_flight")
@@ -1226,9 +1223,9 @@ class TestLoadHubDownloadExclusion:
         return captured["require_mmproj"]
 
     def test_inherited_extra_args_shape_hub_guard_require_mmproj(self):
-        # Inheritance must resolve before the hub-download guard: an inherited
-        # --no-mmproj decides require_mmproj, so resolving later rejects a load
-        # over a download the effective arguments disable (#7251).
+        # Inheritance must resolve before the hub-download guard: an inherited --no-mmproj decides
+        # require_mmproj, so resolving later rejects a load over a download the arguments disable
+        # (#7251).
         assert self._capture_hub_guard_require_mmproj(["--no-mmproj"]) is False
         # Control: nothing to inherit, so a vision GGUF still needs its mmproj.
         assert self._capture_hub_guard_require_mmproj([]) is True

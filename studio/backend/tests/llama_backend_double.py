@@ -30,6 +30,6 @@ class FakeLlamaCppBackend:
     _is_audio = False
     is_vision = False
     supports_tools = False
-    # Read unguarded on the chat-completions path for the monitor's context-usage readout. None is
-    # what the real property answers before a model is loaded; context-usage tests set a number.
+    # Read unguarded on the chat-completions path for the monitor's context-usage readout; None is
+    # what the real property answers before a model is loaded.
     context_length: Optional[int] = None

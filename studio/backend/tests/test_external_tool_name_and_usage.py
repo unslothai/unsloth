@@ -179,7 +179,6 @@ def _run(transport, **policy_kwargs):
     return asyncio.new_event_loop().run_until_complete(_collect())
 
 
-# ── 1. the two streamed-name dialects ────────────────────────────────
 
 
 def test_a_cumulative_name_is_not_doubled(executed):
@@ -249,7 +248,6 @@ def test_a_name_arriving_one_character_at_a_time_is_joined(executed):
     assert [call["name"] for call in executed] == ["web_search"]
 
 
-# ── 2. usage is counted once ─────────────────────────────────────────
 
 
 def _usage_chunks(lines: list[str]) -> list[dict]:
@@ -284,7 +282,6 @@ def test_usage_riding_on_a_content_chunk_is_counted_once(executed):
     transport = FakeTransport([[content_with_usage, _finish("stop")], [_DONE]])
     out = _run(transport)
 
-    # The content survived.
     assert any('"hello"' in line for line in out)
     # Exactly one usage report, and it is the loop's own summed chunk.
     reports = _usage_chunks(out)

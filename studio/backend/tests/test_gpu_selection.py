@@ -133,8 +133,9 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(resolve_requested_gpu_ids([]), [1, 3])
 
     def test_vulkan_ordinals_bypass_cuda_parent_visible_validation(self):
-        # Vulkan build on a CPU-only torch host: no CUDA parent-visible set and a zero physical count,
-        # yet a valid Vulkan ordinal must not be rejected as a CUDA physical id (issue #7239).
+        # Vulkan build on a CPU-only torch host: no CUDA parent-visible set and a zero physical
+        # count, yet a valid Vulkan ordinal must not be rejected as a CUDA physical id (issue
+        # #7239).
         with (
             patch.dict(os.environ, {}, clear = True),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 0),
@@ -142,7 +143,6 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             # As a CUDA physical id, [0] is outside the empty parent-visible set.
             with self.assertRaises(ValueError):
                 resolve_requested_gpu_ids([0])
-            # As Vulkan ordinals, [0] and [0, 1] pass through unchanged.
             self.assertEqual(resolve_requested_gpu_ids([0], is_vulkan = True), [0])
             self.assertEqual(resolve_requested_gpu_ids([0, 1], is_vulkan = True), [0, 1])
             # Malformed ordinals are still rejected.
@@ -358,8 +358,8 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
     def test_uuid_parent_visibility_falls_back_to_torch(self):
         """UUID/MIG masks fall through nvidia to the torch fallback and
         still report visible devices using relative ordinals."""
-        # Inventory shape: this endpoint reads name and total and discards used, so
-        # it asks for the context-free helper.
+        # Inventory shape: this endpoint reads name and total and discards used, so it asks for the
+        # context-free helper.
         fake_torch_devices = [
             {
                 "index": 0,
@@ -608,7 +608,6 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (eight_gb, "config"),
         ):
-            # FP16 inference: 8GB * 1.3 = 10.4GB
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
                 load_in_4bit = False,
@@ -617,14 +616,12 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(metadata["model_size_source"], "config")
 
             # 4bit inference: base_4bit = 8/3.2 = 2.5GB
-            # required = 2.5 + max(2.5*0.3, 2.0) = 2.5 + 2.0 = 4.5GB
             required_gb, _ = estimate_required_model_memory_gb(
                 "unsloth/test",
                 load_in_4bit = True,
             )
             self.assertAlmostEqual(required_gb, 4.5, places = 2)
 
-            # Full FT fallback: model_size * 3.5 + overhead
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test", training_type = "Full Finetuning"
             )
@@ -632,7 +629,6 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
             self.assertGreater(required_gb, 25.0)
             self.assertLess(required_gb, 40.0)
 
-            # LoRA fp16 fallback: model_size + lora_overhead + activations + overhead
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
                 training_type = "LoRA/QLoRA",
@@ -642,7 +638,6 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
             self.assertGreater(required_gb, 8.0)
             self.assertLess(required_gb, 15.0)
 
-            # QLoRA 4-bit fallback: compressed weights + lora overhead + activations + overhead
             required_gb, metadata = estimate_required_model_memory_gb(
                 "unsloth/test",
                 training_type = "LoRA/QLoRA",
@@ -652,7 +647,6 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
             self.assertGreater(required_gb, 3.0)
             self.assertLess(required_gb, 8.0)
 
-        # Larger model: 16GB fp16
         sixteen_gb = 16 * (1024**3)
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
@@ -663,7 +657,6 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
                 training_type = "LoRA/QLoRA",
                 load_in_4bit = True,
             )
-            # QLoRA for 16GB model should be < 12 GB
             self.assertGreater(required_gb, 5.0)
             self.assertLess(required_gb, 12.0)
 
@@ -1371,7 +1364,8 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
     def test_diffusion_gguf_on_vulkan_build_rejects_ordinal_pin(self):
-        # The GGUF picker supplies Vulkan ordinals, not the CUDA physical IDs the diffusion runner uses.
+        # The GGUF picker supplies Vulkan ordinals, not the CUDA physical IDs the diffusion runner
+        # uses.
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1431,8 +1425,8 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("no defined mapping", exc_info.exception.detail)
 
     def test_inference_route_defers_gpu_handoff_until_after_validation(self):
-        # A doomed chat load (GGUF + gpu_ids -> 400) must NOT reclaim the CHAT arbiter owner first: the handoff is deferred past
-        # validation, so a resident Images/Video pipeline is never evicted for a load that then errors.
+        # A doomed chat load (GGUF + gpu_ids -> 400) must NOT reclaim the CHAT arbiter owner first: the
+        # handoff is deferred past validation, so a resident pipeline is never evicted for it.
         import core.inference.gpu_arbiter as arb
 
         inference_route = _load_route_module(
@@ -1456,7 +1450,6 @@ class TestRouteErrors(unittest.TestCase):
             has_audio_input = False,
         )
         acquired = []
-        # Make [0, 1] invalid on any host (a duplicate id is rejected everywhere): the point is the ORDER, validation before the handoff.
         request.gpu_ids = [0, 0]
         with (
             patch.object(
@@ -1486,8 +1479,8 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(acquired, [])  # no CHAT handoff before the doomed load errored
 
     def test_inference_route_checks_hub_download_conflict_before_the_handoff(self):
-        # A GGUF the download manager is fetching 409s and loads nothing, so that check must run BEFORE the CHAT handoff:
-        # afterwards it destroyed the resident Images/Video pipeline for a load that could never start.
+        # A GGUF the download manager is fetching 409s and loads nothing, so that check must run BEFORE
+        # the CHAT handoff: afterwards it destroyed the resident pipeline for a load that never starts.
         import core.inference.gpu_arbiter as arb
         import core.inference.llama_cpp as llama_cpp
 
@@ -1541,8 +1534,8 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(acquired, [])  # nothing evicted for a load that cannot start
 
     def test_inference_route_marks_the_chat_load_under_the_arbiter_lock(self):
-        # A chat load holds no llama-server process until its GGUF downloaded, so the arbiter is told through acquire_for's
-        # `register` hook (which runs under the arbiter lock). Passing no register left a competing acquire with nothing to cancel.
+        # A chat load holds no llama-server process until its GGUF downloaded, so the arbiter is
+        # told through acquire_for's `register` hook, which runs under the arbiter lock.
         import core.inference.gpu_arbiter as arb
         import core.inference.llama_cpp as llama_cpp
 
@@ -2271,7 +2264,8 @@ class TestEstimateFp16ModelSizeBytesPrefersLocalWeights(unittest.TestCase):
         self.assertEqual(src, "weight_bytes")
 
     def test_equal_local_and_config_keeps_config_label(self):
-        # Tie-breaker is "local must be strictly larger", so an exact match keeps the config-derived path.
+        # Tie-breaker is "local must be strictly larger", so an exact match keeps the config-derived
+        # path.
         same = 8 * (1 << 30)
         bytes_, src = self._run(
             "/local/equal",

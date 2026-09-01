@@ -62,7 +62,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(resp.model, "unsloth/Qwen3.6-35B-A3B")
 
     def test_moe_via_config_fallback(self):
-        # MoE sized via the sizer's config path -> source "config".
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (67 * (1024**3), "config"),
@@ -180,8 +179,8 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(resp.source, "local")
 
     def test_local_adapter_base_escaping_roots_is_rejected(self):
-        # A local adapter under a root whose resolved base points outside the
-        # roots (e.g. "/") must not be sized: the resolved base is re-validated.
+        # A local adapter under a root whose resolved base points outside the roots (e.g. "/") must
+        # not be sized: the resolved base is re-validated.
         adapter = "/root/.unsloth/studio/outputs/adapter"
         with (
             patch.object(self.models_route, "is_local_path", return_value = True),
@@ -227,8 +226,8 @@ class TestExportSizeEndpoint(unittest.TestCase):
                 self.assertFalse(is_sizable(str(escape)))
 
     def test_local_weight_size_skips_nested_checkpoints(self):
-        # A run dir's intermediate checkpoint-*/global_step* snapshots must not
-        # be counted; only the model files at the root are summed.
+        # A run dir's intermediate checkpoint-*/global_step* snapshots must not be counted; only the
+        # model files at the root are summed.
         from utils.hardware.hardware import _get_local_weight_size_bytes
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)

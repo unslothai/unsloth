@@ -25,9 +25,7 @@ def test_the_scan_does_not_stall_other_requests(monkeypatch, tmp_path):
     scan_seconds = 0.3
     heartbeat_seconds = 0.01
 
-    # Three positional parameters, matching the real _scan_loras_sync: the audio probe
-    # added an hf_token argument, and a two-argument stand-in would fail on the call
-    # rather than on the assertion, which is not what this test measures.
+    # Three positionals, matching the real _scan_loras_sync: a two-argument stand-in fails on the call.
     def _slow_scan(outputs_dir: str, exports_dir: str, hf_token):
         time.sleep(scan_seconds)
         return []
@@ -49,11 +47,9 @@ def test_the_scan_does_not_stall_other_requests(monkeypatch, tmp_path):
 
         beat = asyncio.create_task(heartbeat())
         await asyncio.sleep(heartbeat_seconds * 5)
-        # Ticks recorded strictly between the call and its return, which is the only
-        # thing that separates the two versions. A gap measured over the whole tick list
-        # cannot: the last tick lands before the blocking call and stop/cancel below
-        # runs before the heartbeat is ever scheduled again, so the stall leaves no gap
-        # in the list at all and the assertion holds on the unfixed route too.
+        # Ticks strictly between the call and its return: over the whole tick list the stall leaves no
+        # gap at all, because the last tick lands before the blocking call and stop/cancel runs before
+        # the heartbeat is rescheduled.
         before = len(ticks)
         await models_routes.scan_loras(
             outputs_dir = str(tmp_path),
@@ -68,10 +64,8 @@ def test_the_scan_does_not_stall_other_requests(monkeypatch, tmp_path):
         except asyncio.CancelledError:
             pass
 
-    # asyncio.run, not pytest.mark.asyncio: pytest-asyncio is not a dependency of this
-    # backend and every other async test here drives its coroutine the same way.
+    # asyncio.run, not pytest.mark.asyncio: pytest-asyncio is not a dependency of this backend.
     asyncio.run(_drive())
 
-    # A loaded runner would land far below the ~30 an idle one records; blocking records
-    # exactly 0, so the floor is deliberately loose and still separates the two.
+    # Blocking records exactly 0 while a loaded runner lands far below an idle one's ~30: the floor separates.
     assert during[0] >= 3, f"heartbeat ran {during[0]} times during a {scan_seconds}s scan"

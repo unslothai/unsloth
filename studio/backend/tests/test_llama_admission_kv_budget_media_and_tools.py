@@ -34,9 +34,7 @@ def _image_b64(kib: int = 200) -> str:
     return base64.b64encode(b"\x89PNG" + b"x" * (kib * 1024)).decode()
 
 
-# Two real, decodable, DIFFERENT PNGs. The builders decode and re-encode, unlike the
-# estimator, so the synthetic fixture above cannot reach them; and the pair has to
-# differ for a distinct-legacy-image case to be distinct at all.
+# Two real, decodable, DIFFERENT PNGs.
 _TINY_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC"
 )
@@ -69,14 +67,12 @@ class TestMediaIsCharged:
             ],
             max_tokens = 128,
         )
-        # Clear of the clamp: at 4096 `max(1, min(budget, ...))` pinned both sides to the
-        # budget, so they agreed whatever the estimator did and this proved nothing.
+        # Clear of the clamp: at 4096 `max(1, min(budget, ...))` pinned both sides to the budget, so
+        # they agreed whatever the estimator did and this proved nothing.
         legacy_cost = _openai_llama_admission_tokens(legacy, budget = 1_000_000, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
-        # The wire spelling must not change the commitment. Not to the token: inline
-        # really does send a content-part wrapper legacy does not, and the marker is
-        # itself a little JSON. What must not survive is the 30x gap between pricing an
-        # image at its base64 length and at its text.
+        # The wire spelling must not change the commitment. What must not survive is the 30x gap
+        # between pricing an image at its base64 length and at its text.
         assert abs(legacy_cost - inline_cost) <= 64, (legacy_cost, inline_cost)
         assert max(legacy_cost, inline_cost) < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
 
@@ -101,8 +97,8 @@ class TestMediaIsCharged:
         )
         inline = _Payload(messages = inline_messages, max_tokens = 128)
 
-        # Clear of the clamp: at 65536 a 1 MiB image priced as prompt text pinned both
-        # sides to the budget, so `dual == inline` held on the unfixed estimator too.
+        # Clear of the clamp: at 65536 a 1 MiB image priced as prompt text pinned both sides to the
+        # budget, so `dual == inline` held on the unfixed estimator too.
         dual_cost = _openai_llama_admission_tokens(dual, budget = 1_000_000, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
 
@@ -167,8 +163,8 @@ class TestMediaIsCharged:
                 messages = [{"role": "user", "content": "what is this?"}],
                 image_base64 = image,
             ),
-            # An older image in history plus a genuinely different one attached to this
-            # turn through the legacy field: two images, and both must be charged.
+            # An older image in history plus a genuinely different one attached to this turn through
+            # the legacy field: two images, and both must be charged.
             "history image plus a distinct legacy attachment": ChatCompletionRequest(
                 model = "m",
                 max_tokens = 128,
@@ -257,20 +253,19 @@ class TestMediaIsCharged:
                 _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
             )
 
-        # Every family llama.cpp gives its own ceiling must be bounded, including the
-        # ones far above the default: youtuvl is 62500 and hunyuanvl 16384, so a flat
-        # default would have reserved a fraction of what one image really costs.
+        # Every family llama.cpp gives its own ceiling must be bounded, including ones far above the
+        # default: youtuvl is 62500 and hunyuanvl 16384, so a flat default reserved a fraction of what
+        # one image costs.
         for projector, ceiling in _MMPROJ_IMAGE_TOKEN_MAX.items():
             assert _openai_llama_admission_image_tokens(_Backend(projector = projector)) >= ceiling
         assert _openai_llama_admission_image_tokens(_Backend(projector = "youtuvl")) >= 62500
-        # A projector with a small ceiling reserves near it rather than the default.
         assert _openai_llama_admission_image_tokens(_Backend(projector = "lfm2")) < 1024
         # An unknown family keeps the default rather than inventing a number.
         assert _openai_llama_admission_image_tokens(_Backend(projector = "nope")) == (
             _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
-        # The flag is only honoured by dynamic-resolution projectors, so a LOW cap must
-        # not talk the reservation below what a fixed-resolution one really costs.
+        # The flag is only honoured by dynamic-resolution projectors, so a LOW cap must not talk the
+        # reservation below what a fixed-resolution one really costs.
         assert (
             _openai_llama_admission_image_tokens(
                 _Backend(["--image-max-tokens", "16"], projector = "qwen3vl_merger")
@@ -349,8 +344,8 @@ class TestMediaIsCharged:
 
         first, second = asyncio.run(scenario())
         assert first is not None, "the first image chat owns the cache"
-        # The conservative per-image allowance alone is larger than this tiny cache,
-        # so the second request must still queue rather than overcommit it.
+        # The conservative per-image allowance alone is larger than this tiny cache, so the second
+        # request must still queue rather than overcommit it.
         assert second is None
 
     def test_audio_and_video_are_charged_too(self):
@@ -540,8 +535,8 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
             max_tokens = 128,
         )
         opened, committed, _ = self._round_zero(payload, output_tokens = 128)
-        # One image alone is 4224 against this 4096 budget, so the reservation clamps to
-        # the whole cache: four times the 1024 share the re-cost used to drop it to.
+        # One image alone is 4224 against this 4096 budget, so the reservation clamps to the whole
+        # cache: four times the 1024 share the re-cost used to drop it to.
         assert _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS > 4096 and opened == 4096, opened
         assert committed == opened, (
             f"round zero shrank a correct lease from {opened} to {committed}, "

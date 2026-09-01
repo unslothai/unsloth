@@ -50,8 +50,8 @@ def test_sentence_transformers_backend_points_at_the_model_repo(client, monkeypa
     import utils.utils as utils
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
-    # Cached now also means "holds a checkpoint ST can open", not just "loadable",
-    # and names the repo it was filed under: for an exact id, that id.
+    # Cached now also means "holds a checkpoint ST can open", not just "loadable", and names the
+    # repo it was filed under: for an exact id, that id.
     monkeypatch.setattr(
         settings, "_cached_st_source", lambda m: ("unsloth/bge-small-en-v1.5", Path("/snap"))
     )
@@ -146,8 +146,7 @@ def test_sentence_transformers_local_path_is_already_present(client, monkeypatch
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     local = tmp_path / "embedder"
     local.mkdir()
-    # "Present" means a checkpoint is there. An empty directory used to pass on
-    # existence alone; see test_a_local_dir_without_weights_is_not_already_present.
+    # "Present" means a checkpoint is there; an empty directory used to pass on existence alone.
     (local / "modules.json").write_text("[]")
     (local / "model.safetensors").write_bytes(b"ST")
 
@@ -431,15 +430,15 @@ def test_sentence_transformers_size_matches_the_full_snapshot_download(monkeypat
         lambda repo, files_metadata, token: _types.SimpleNamespace(siblings = siblings),
     )
 
-    # The full-snapshot worker keeps configs/tokenizers and both transformer
-    # weight formats, while applying its normal GGUF/consolidated exclusions.
+    # The full-snapshot worker keeps configs/tokenizers and both transformer weight formats, while
+    # applying its normal GGUF/consolidated exclusions.
     assert settings._hf_snapshot_size("acme/embedder", None) == 270
 
 
 def test_explicit_llama_policy_does_not_offer_safetensors(client, monkeypatch):
     _no_gguf_anywhere(monkeypatch)
-    # The policy is what makes this llama-only; the install still has the binary,
-    # or the plan is refused for that reason before the GGUF search runs.
+    # The policy is what makes this llama-only; the install still has the binary, or the plan is
+    # refused for that reason before the GGUF search runs.
     monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
     monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda model: False)
     monkeypatch.setattr(
@@ -487,7 +486,6 @@ def test_nothing_anywhere_still_reports_the_save_reason(client, monkeypatch):
 
 def test_a_local_gguf_is_already_the_artifact(client, monkeypatch):
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
-    # An install that embeds with llama-server has the binary; the test host does not.
     monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: True)
 
@@ -615,12 +613,10 @@ def test_the_chosen_backend_is_read_back_by_the_loader(monkeypatch):
         "backend": "llama-server",
     }
     ems._invalidate_cache()
-    # A model this process never resolved gets nothing, which is the property that
-    # matters: the record belongs to bge-m3 and is not lent to anyone else.
+    # A model this process never resolved gets nothing, which is the property that matters: the
+    # record belongs to bge-m3 and is not lent to anyone else.
     assert ems.get_stored_backend("unsloth/never-resolved") is None
-    # Qwen keeps ITS OWN earlier resolution, not bge-m3's. Forgetting it dropped a
-    # still-running job for Qwen back onto the hardware default; the memo is keyed
-    # per model, so this is Qwen's record, not a stale pair.
+    # Qwen keeps ITS OWN earlier resolution, not bge-m3's.
     assert ems.get_stored_backend("unsloth/Qwen3-Embedding-8B") == "sentence-transformers"
     ems._resolved_gguf_memo.clear()
     assert ems.get_stored_backend("unsloth/Qwen3-Embedding-8B") is None
@@ -665,7 +661,6 @@ def test_a_local_gguf_is_not_reported_as_a_ready_sentence_transformers_model(
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
 
     assert settings._local_sentence_transformer_is_present(str(gguf)) is False
-    # A real ST folder on the same filesystem is still recognised.
     folder = tmp_path / "st-model"
     folder.mkdir()
     (folder / "model.safetensors").write_bytes(b"ST")
@@ -697,7 +692,6 @@ def test_a_cached_gguf_only_repo_is_not_reported_as_a_ready_st_model(client, mon
     assert body["cached"] is False
     assert "no checkpoint this backend can load" in body["error"]
 
-    # A real cached ST snapshot on the same path still reports ready.
     (snapshot / "model.safetensors").write_bytes(b"ST")
     assert settings._cached_snapshot_has_st_weights("org/gguf-only") is True
     body = _resolve(client, "org/real-st").json()
@@ -715,7 +709,6 @@ def test_a_cached_safetensors_model_is_selectable_offline(client, monkeypatch, t
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
     monkeypatch.setattr(settings, "_st_backend_available", lambda: True)
     monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda m: True)
-    # Offline: every remote probe fails.
     monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
     monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda c, t: None)
     monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, t: None)
@@ -757,9 +750,8 @@ def test_a_local_dir_without_weights_is_not_already_present(client, monkeypatch,
     assert body["cached"] is False
     assert "no checkpoint this backend can load" in body["error"]
 
-    # A complete module subtree is enough; the weights need not sit at the root.
-    # modules.json has to declare it, as a real one does: the directory is judged
-    # by the layout it announces, the same way a Hub snapshot is.
+    # A complete module subtree is enough; the weights need not sit at the root. modules.json has to
+    # declare it: the directory is judged by the layout it announces, like a Hub snapshot.
     module = empty / "0_Transformer"
     module.mkdir()
     (module / "model.safetensors").write_bytes(b"ST")
@@ -786,8 +778,8 @@ def test_a_slashless_alias_resolves_under_the_sentence_transformers_namespace(cl
 
     body = _resolve(client, "all-MiniLM-L6-v2").json()
     assert body["error"] is None
-    # The setting keeps the alias the user typed; the download names the repo that
-    # actually publishes the weights.
+    # The setting keeps the alias the user typed; the download names the repo that actually
+    # publishes the weights.
     assert body["embedding_model"] == "all-MiniLM-L6-v2"
     assert body["download_repo"] == "sentence-transformers/all-MiniLM-L6-v2"
     assert listed == ["all-MiniLM-L6-v2", "sentence-transformers/all-MiniLM-L6-v2"]
@@ -1020,12 +1012,11 @@ def test_a_validated_backend_outranks_the_gguf_name_heuristic(monkeypatch):
     ems._invalidate_cache()
     monkeypatch.setattr(rag_embeddings, "_resolve_auto", lambda: "llama-server")
     monkeypatch.setattr(ems, "get_stored_backend", lambda model: "sentence-transformers")
-    # The name is a guess; a local .gguf is not, and keeps its precedence (see
-    # test_a_local_gguf_beats_a_stored_sentence_transformers_record).
+    # The name is a guess; a local .gguf is not, and keeps its precedence.
 
     assert rag_embeddings._resolve_auto_for_model("org/torn-GGUF") == "sentence-transformers"
-    # With nothing validated, the name still decides, which is what stops a forced
-    # save over a failed plan from stranding the model on the wrong backend.
+    # With nothing validated, the name still decides, which is what stops a forced save over a
+    # failed plan from stranding the model on the wrong backend.
     monkeypatch.setattr(ems, "get_stored_backend", lambda model: None)
     assert rag_embeddings._resolve_auto_for_model("org/torn-GGUF") == "llama-server"
 
@@ -1038,8 +1029,7 @@ def test_a_torn_local_checkpoint_is_not_reported_as_present(client, monkeypatch,
     torn = tmp_path / "half-copied"
     torn.mkdir()
     (torn / "config.json").write_text("{}")
-    # The index is what says how many shards the family has, as a real sharded
-    # checkpoint ships it.
+    # The index is what says how many shards the family has, as a real sharded checkpoint ships it.
     (torn / "model.safetensors.index.json").write_text(
         '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
         ' "b": "model-00002-of-00002.safetensors"}}'
@@ -1048,7 +1038,6 @@ def test_a_torn_local_checkpoint_is_not_reported_as_present(client, monkeypatch,
 
     assert settings._local_sentence_transformer_is_present(str(torn)) is False
 
-    # The missing shard completes it.
     (torn / "model-00002-of-00002.safetensors").write_bytes(b"ST")
     assert settings._local_sentence_transformer_is_present(str(torn)) is True
 

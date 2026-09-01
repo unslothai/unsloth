@@ -87,8 +87,7 @@ def test_bearer_token_middleware_closes_unauthorized_websocket():
 
 
 def test_bearer_token_middleware_rejects_non_ascii_authorization():
-    # A non-ASCII bearer value must produce a clean 401, not a 500. Comparing on
-    # bytes avoids the str hmac.compare_digest TypeError on non-ASCII input.
+    # Non-ASCII bearer must 401, not 500: str hmac.compare_digest raises TypeError.
     events = []
 
     async def app(scope, receive, send):
@@ -144,8 +143,7 @@ def test_bearer_token_middleware_rejects_non_ascii_token():
     async def app(scope, receive, send):
         pass
 
-    # non-ASCII tokens cannot be transmitted in an HTTP header by a standard
-    # client, so they are rejected at construction instead of locking out.
+    # Non-ASCII tokens cannot go in an HTTP header, so reject at construction, not at auth.
     for bad in ("töken", "\U0001f600"):
         with pytest.raises(ValueError):
             BearerTokenMiddleware(app, bad)
@@ -190,7 +188,7 @@ def _stub_module(monkeypatch, name, **attrs):
     for key, value in attrs.items():
         setattr(module, key, value)
     if "." in name:
-        module.__path__ = []  # mark package-like so submodule imports resolve
+        module.__path__ = []
     monkeypatch.setitem(sys.modules, name, module)
     return module
 
@@ -347,7 +345,7 @@ def test_get_recipe_job_dataset_clamps_pagination(monkeypatch):
     _stub_module(monkeypatch, "routes.data_recipe")
     _stub_module(monkeypatch, "routes.data_recipe.jobs", job_dataset = fake_job_dataset)
 
-    tool = _get_tool("get_recipe_job_dataset")  # this tool is synchronous
+    tool = _get_tool("get_recipe_job_dataset")
     tool.fn(job_id = "job-1", limit = -1, offset = -9)
 
     assert captured["limit"] == 1

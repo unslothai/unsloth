@@ -31,13 +31,11 @@ def test_append_deferred_nudges_merges_deduped_into_one_message():
     conversation = [{"role": "assistant", "tool_calls": [1]}, {"role": "tool", "content": "r"}]
     nudges = [
         {"role": "user", "content": "duplicate"},
-        {"role": "user", "content": "duplicate"},  # dropped: same content
+        {"role": "user", "content": "duplicate"},
         {"role": "user", "content": "disabled foo"},
     ]
     append_deferred_nudges(conversation, nudges)
-    # One user message, after the results, with distinct contents joined.
     assert conversation[2:] == [{"role": "user", "content": "duplicate\n\ndisabled foo"}]
-    # Empty is a no-op.
     before = list(conversation)
     append_deferred_nudges(conversation, [])
     assert conversation == before
@@ -101,16 +99,14 @@ def test_status_and_provenance_match_local_event_conventions():
 @pytest.mark.parametrize(
     "url, expected",
     [
-        # bare hosts are fetched, so the badge must name them
         ("google.com", "Reading: google.com"),
         ("www.google.com/x", "Reading: google.com"),
         ("//google.com", "Reading: google.com"),
         ("example.com:8443/path", "Reading: example.com"),
         ("github.com/unslothai/unsloth", "Reading: github.com"),
-        # still generic for what the fetch layer refuses
         ("/login", "Reading page..."),
         ("javascript:alert(1)", "Reading page..."),
-        # urlparse raises on these, outside the fetch's handler: degrade, not raise
+        # urlparse raises on these, outside the fetch's handler: degrade, not raise.
         ("https://[::1", "Reading page..."),
         ("https://::1]", "Reading page..."),
         ("//exam／ple.com", "Reading page..."),
@@ -283,7 +279,6 @@ def test_strip_result_for_model_removes_frontend_image_sentinel():
     assert strip_result_for_model("plain text") == "plain text"
 
 
-# --- schema-aware argument typing -------------------------------------------------------
 
 _MCP_SERVER = {"id": "notes", "display_name": "Notes"}
 _MCP_TOOL = {
@@ -316,10 +311,10 @@ def _coerce_one(key, value, props):
     [
         ("fuzzy", " False ", False),
         ("limit", "25", 25),
-        ("limit", "9007199254740993", 9007199254740993),  # float() would round this
+        ("limit", "9007199254740993", 9007199254740993),
         ("tags", "('a', 'b')", ["a", "b"]),
         ("depth", "null", None),
-        ("fuzzy", "null", _UNCHANGED),  # null is not a boolean; None would mean False
+        ("fuzzy", "null", _UNCHANGED),
     ],
 )
 def test_a_value_reads_as_the_type_its_schema_declares(key, text, expected):
@@ -357,8 +352,8 @@ def test_a_schema_this_walk_cannot_read_is_left_alone(spec):
 @pytest.mark.parametrize(
     "text, repaired",
     [
-        ('["a","b"}', ["a", "b"]),  # a closer not matching the innermost opener
-        ('["a","b\\"', ["a", 'b"']),  # an open string ending on an ESCAPED quote
+        ('["a","b"}', ["a", "b"]),
+        ('["a","b\\"', ["a", 'b"']),
     ],
 )
 def test_a_malformed_container_is_repaired_only_when_healing(text, repaired):
@@ -395,7 +390,6 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
         "tags": ["a", "b"],
         "depth": None,
     }
-    # The turn replayed to the model carries the typed values too, not the strings.
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
         '{"depth":null,"fuzzy":false,"limit":25,"query":"ship dates","tags":["a","b"]}'
     )
@@ -416,6 +410,5 @@ def test_a_declared_type_nested_in_a_container_is_read_too():
     ]
     call = {"path": "app.py", "edits": edits}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
-    # An already-typed container is descended into too: its elements can still be text.
     call = {"path": "app.py", "edits": json.loads(edits)}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}

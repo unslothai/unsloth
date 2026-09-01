@@ -29,14 +29,13 @@ def _percents(cap):
 
 
 def test_new_load_first_step_logs_after_reset(cap):
-    # Load A reaches 100%.
     ri._log_load_progress_step(1.0, "ready")
     assert _percents(cap) == [100]
     # Same value keeps deduping (steady poll on a finished load stays quiet).
     ri._log_load_progress_step(1.0, "ready")
     assert _percents(cap) == [100]
-    # A new load arms the throttle, so a cached load B that reports 100% on its
-    # first poll still emits its progress line instead of hitting step == prev.
+    # A new load arms the throttle, so a cached load B that reports 100% on its first poll still
+    # emits its progress line instead of hitting step == prev.
     ri._reset_load_progress_step()
     ri._log_load_progress_step(1.0, "ready")
     assert _percents(cap) == [100, 100]

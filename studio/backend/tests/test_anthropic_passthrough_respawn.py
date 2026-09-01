@@ -150,7 +150,6 @@ async def _run_non_streaming(backend):
     )
 
 
-# ── Helper ────────────────────────────────────────────────────
 
 
 def test_retry_url_rebuilds_from_the_respawned_base_url():
@@ -188,7 +187,6 @@ def test_retry_url_tolerates_a_backend_without_respawn_hooks():
     assert url is None
 
 
-# ── Non-streaming ─────────────────────────────────────────────
 
 
 def test_non_streaming_retries_against_the_new_port(monkeypatch):
@@ -225,7 +223,6 @@ def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
     assert backend.respawn_calls == 0
 
 
-# ── Streaming ─────────────────────────────────────────────────
 
 
 def test_streaming_retries_against_the_new_port(monkeypatch):
@@ -237,7 +234,6 @@ def test_streaming_retries_against_the_new_port(monkeypatch):
 
     assert backend.respawn_calls == 1
     assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
-    # The retried stream really produced the turn, not just a clean-looking stop.
     assert "event: message_start" in blob
     assert "event: message_stop" in blob
     assert "hi" in blob

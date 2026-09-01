@@ -38,11 +38,8 @@ def _spec_of(pkg_spec: str):
 @pytest.mark.parametrize(
     "index, allowed, rejected",
     [
-        # torch: 2.11.x allowed (matches base image); 2.12.x excluded.
         (0, ["2.11.0", "2.11.2", "2.10.0", "2.4.0"], ["2.12.0", "2.3.0", "1.13.1"]),
-        # torchvision: 0.26.x (torch 2.11 companion) allowed; 0.27.x (torch 2.12) out.
         (1, ["0.26.0", "0.26.1", "0.19.0"], ["0.27.0", "0.18.0"]),
-        # torchaudio: same 2.11.x window as torch.
         (2, ["2.11.0", "2.10.0", "2.4.0"], ["2.12.0", "2.3.0"]),
     ],
 )

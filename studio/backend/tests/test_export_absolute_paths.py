@@ -319,7 +319,6 @@ def test_gguf_export_keeps_a_gguf_it_could_not_relocate(tmp_path, monkeypatch):
     assert success is False
     assert "move failed" in message
     assert output_path is None
-    # Preserve a completed GGUF when relocation fails.
     roots = list(save_dir.glob("_tmp_model_*"))
     assert len(roots) == 1
     assert (roots[0] / "model_gguf" / "converted.gguf").read_bytes() == b"gguf"
@@ -409,7 +408,6 @@ def test_gguf_export_survives_real_owned_temp_cleanup_failure(tmp_path, monkeypa
     assert success is True, message
     assert output_path == str(save_dir.resolve())
     assert (save_dir / "converted.gguf").read_bytes() == b"gguf"
-    # The removable output is gone, but the locked model directory remains.
     assert len(locked_dirs) == 1
     model_tmp_root = locked_dirs[0].parent
     assert not (model_tmp_root / "model_gguf").exists()
@@ -557,7 +555,6 @@ def test_gguf_export_rejects_symlink_inside_its_owned_temp_tree(tmp_path, monkey
 def test_gguf_export_relocates_only_reported_files_from_outside_the_owned_root(
     tmp_path, monkeypatch
 ):
-    # Relocate reported files without scanning their unowned directory.
     _install_export_backend_stubs(monkeypatch)
     export_mod = _load_module(
         "test_core_export_backend_unowned_report", "core/export/export.py", monkeypatch

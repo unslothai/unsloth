@@ -23,9 +23,6 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Stub heavy/unavailable deps before importing the module under test.
-# ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -65,11 +62,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Only when the real library is absent: sys.modules holds what has been IMPORTED, not what is
+# installed, so setdefault does not defer to an untouched real httpx.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -85,9 +79,6 @@ from core.inference.llama_cpp import (
 from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 GIB = 1024**3
 FIT_MIN_CTX = 4096
@@ -153,7 +144,6 @@ def _drive(
     inst._can_estimate_kv = lambda: can_estimate_kv
 
     context_length = inst._context_length
-    # Use the production helper, not a reimplementation, to avoid testing our own logic.
     ctx_override = parse_ctx_override(extra_args)
     requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
 
@@ -238,9 +228,6 @@ def _drive(
                 min(_AUTO_OFFLOAD_CTX, effective_ctx) if effective_ctx > 0 else _AUTO_OFFLOAD_CTX
             )
     elif apple_budget_mib > 0 and effective_ctx > 0:
-        # Mirrors the Apple unified-memory branch in load_model: flat MTP reserve
-        # off the budget up front (no-op at 0), sparse-KV floors to FIT_MIN_CTX,
-        # only auto context shrinks.
         native_ctx_for_cap = context_length or effective_ctx
         apple_fit_budget_mib = int(apple_budget_mib * max(0.0, 1.0 - flat_mtp_reserve))
         if inst._can_estimate_kv():
@@ -274,9 +261,7 @@ def _drive(
     }
 
 
-# ---------------------------------------------------------------------------
 # Auto mode, model weights exceed VRAM  (Bug A guard)
-# ---------------------------------------------------------------------------
 
 
 class TestAutoModeWeightsExceedVRAM:
@@ -292,8 +277,8 @@ class TestAutoModeWeightsExceedVRAM:
         assert plan["c_arg"] == _AUTO_OFFLOAD_CTX
         assert plan["use_fit"] is True
         assert plan["gpu_indices"] is None
-        # UI slider ceiling stays at native: user can drag higher and get
-        # the "might be slower" path.
+        # UI slider ceiling stays at native: the user can drag higher and get the "might be slower"
+        # path.
         assert plan["max_available_ctx"] == 196608
 
     def test_multi_gpu_all_subsets_fail(self):
@@ -320,17 +305,14 @@ class TestAutoModeWeightsExceedVRAM:
         assert plan["use_fit"] is True
 
 
-# ---------------------------------------------------------------------------
 # Explicit ctx, KV overflows fittable weights  (Bug B guard)
-# ---------------------------------------------------------------------------
 
 
 class TestExplicitCtxRespectsUser:
     """``n_ctx > 0`` must never be silently shrunk."""
 
     def test_fittable_weights_oversized_kv(self):
-        # 8 GB weights + 131k ctx KV on 24 GB VRAM. Budget = 21.6 GB, KV
-        # at 131k >> 13.6 GB remaining, so _select_gpus flips use_fit=True.
+        # 8 GB weights + 131k ctx KV on 24 GB VRAM.
         plan = _drive(
             n_ctx = 131072,
             model_gib = 8,
@@ -353,7 +335,6 @@ class TestExplicitCtxRespectsUser:
         assert plan["gpu_indices"] == [0]
 
     def test_explicit_on_weights_exceed_vram(self):
-        # User drags the slider to 32k on a too-big model: honored.
         plan = _drive(
             n_ctx = 32768,
             model_gib = 131,
@@ -383,9 +364,7 @@ class TestExplicitCtxRespectsUser:
         assert plan["c_arg"] == 2048
 
 
-# ---------------------------------------------------------------------------
 # Pass-through --ctx-size participates in context fit (#5676).
-# ---------------------------------------------------------------------------
 
 
 class TestExtraArgsCtxOverride:
@@ -425,9 +404,7 @@ class TestExtraArgsCtxOverride:
         assert plan["c_arg"] == 128000
 
 
-# ---------------------------------------------------------------------------
 # Non-regression: fittable + auto still auto-picks largest fitting ctx
-# ---------------------------------------------------------------------------
 
 
 class TestFittableAutoPickRegressions:
@@ -466,17 +443,14 @@ class TestFittableAutoPickRegressions:
         assert plan["gpu_indices"] == [0]
 
 
-# ---------------------------------------------------------------------------
 # #5106 regression: 91-95% utilization must still pin GPU.
-# ---------------------------------------------------------------------------
 
 
 class TestTightFitPinsToGPU:
     """Models that fit at 91-95% of free VRAM must use the GPU."""
 
     def test_rtx_4090_qwen_24gb_class(self):
-        # noahterbest's #5106 log: 20.8 GB model on 22805 MiB free GPU,
-        # ctx=4096 -> ~94% utilization, ~1.4 GiB headroom.
+        # noahterbest's #5106 log: 20.8 GB model on 22805 MiB free GPU, ctx=4096 -> ~94% utilization, ~1.4 GiB headroom.
         plan = _drive(
             n_ctx = 0,
             model_gib = 20.8,
@@ -512,9 +486,7 @@ class TestTightFitPinsToGPU:
         assert plan["gpu_indices"] is None
 
 
-# ---------------------------------------------------------------------------
 # Platform-agnostic input shape
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("platform_tag", ["linux", "windows", "mac", "rocm"])
@@ -526,9 +498,7 @@ def test_identical_decision_across_platforms(platform_tag):
     assert plan_a == plan_b, platform_tag
 
 
-# ---------------------------------------------------------------------------
 # _classify_gpu_offload: detect silent CPU fallback (#5106).
-# ---------------------------------------------------------------------------
 
 
 class TestClassifyGpuOffload:
@@ -548,8 +518,8 @@ class TestClassifyGpuOffload:
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
 
     def test_cpu_only_buffer_returns_false(self):
-        # Buffer lines printed but only CPU buffers -- the silent CPU
-        # fallback symptom we want to catch.
+        # Buffer lines printed but only CPU buffers -- the silent CPU fallback symptom we want to
+        # catch.
         inst = self._backend(
             [
                 "load_tensors:   CPU_Mapped model buffer size = 21000.0 MiB",
@@ -623,8 +593,7 @@ class TestClassifyGpuOffload:
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
 
     def test_main_on_cpu_with_draft_on_gpu_returns_false(self):
-        # MTP: the small drafter fits on GPU (1/1) but the main model is on CPU
-        # (0/33). Decide on the largest model, so the warning still fires.
+        # MTP: the small drafter fits on GPU (1/1) but the main model is on CPU (0/33).
         inst = self._backend(
             [
                 "load_tensors: offloaded 0/33 layers to GPU",
@@ -654,8 +623,8 @@ class TestClassifyGpuOffload:
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
 
     def test_device_info_gpu_row_alone_is_inconclusive(self):
-        # device_info lists available devices, not where the model loaded, so a
-        # GPU row alone is not proof of offload.
+        # device_info lists available devices, not where the model loaded, so a GPU row alone is not
+        # proof of offload.
         inst = self._backend(
             [
                 "print_info: device_info:",
@@ -685,8 +654,8 @@ class TestClassifyGpuOffload:
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
 
     def test_system_info_cuda_before_device_info_does_not_count(self):
-        # A compiled-in backend named in system_info is not proof of offload;
-        # only the device_info table (here CPU only) decides.
+        # A compiled-in backend named in system_info is not proof of offload; only the device_info
+        # table (here CPU only) decides.
         inst = self._backend(
             [
                 "system_info: CUDA : ARCHS = 890 | n_threads = 8",
@@ -711,9 +680,7 @@ class TestClassifyGpuOffload:
 
 
 def test_select_gpus_ranks_by_usable_not_raw_free():
-    # 80 GB card (30 GB free -> 25.9 GB usable) vs 32 GB card (29 GB free -> 27.4
-    # GB usable). A 27 GB model fits the 32 GB card alone; raw-free ranking would
-    # try the 80 GB card first and split across both. Usable ranking picks [1].
+    # 80 GB card (30 GB free -> 25.9 GB usable) vs 32 GB card (29 GB free -> 27.4 GB usable).
     gpus = [(0, 30000), (1, 29000)]
     totals = {0: 81920, 1: 32607}
     model = int(27000 * 1024 * 1024)
@@ -722,11 +689,7 @@ def test_select_gpus_ranks_by_usable_not_raw_free():
 
 
 def test_select_gpus_reserves_per_device_overhead():
-    # Two 16 GB cards, ~15181 MiB usable each at 0.95 -> 30362 MiB pooled. A 30000
-    # MiB model fits the pool with no per-device overhead, but a layer split also
-    # pays ~1 GiB/extra-GPU; that pushes the 2-GPU need to 31024 MiB > pool, so a
-    # pin would OOM -> must fall back to --fit. Single-GPU fits add no overhead
-    # (Finding F1, the explicit/file-size multi-GPU pin gap).
+    # Two 16 GB cards, ~15181 MiB usable each at 0.95 -> 30362 MiB pooled.
     gpus = [(0, 16000), (1, 16000)]
     totals = {0: 16384, 1: 16384}
     gib = 1024 * 1024 * 1024
@@ -746,11 +709,8 @@ def test_select_gpus_reserves_per_device_overhead():
     assert a == [0] and b == [0]
 
 
-# ---------------------------------------------------------------------------
-# Apple Silicon unified-memory context cap (#5118, #6529): no discrete GPU on
-# Metal, so the auto context defaulted to native and over-committed unified
-# memory. The fix budgets and caps the auto context (explicit stays verbatim).
-# ---------------------------------------------------------------------------
+# Apple Silicon unified-memory context cap (#5118, #6529): no discrete GPU on Metal, so the auto
+# context defaulted to native and over-committed unified memory.
 
 
 def _force_apple(monkeypatch):
@@ -864,8 +824,8 @@ class TestAppleContextCap:
     """The real ``_fit_context_to_vram`` against the reporter's M3 Pro case."""
 
     def test_caps_native_context_into_unified_budget(self):
-        # ~15.7 GB weights at native 262144 (~16 GB KV) -> ~32 GB on a 36 GB M3
-        # Pro (~23 GB budget); the fit must reduce the context to fit.
+        # ~15.7 GB weights at native 262144 (~16 GB KV) -> ~32 GB on a 36 GB M3 Pro (~23 GB budget);
+        # the fit must reduce the context to fit.
         inst = _make_backend(native_ctx = 262144)
         inst._can_estimate_kv = lambda: True
         inst._estimate_kv_cache_bytes = (
@@ -956,9 +916,7 @@ class TestAppleMtpFlatReserve:
         def footprint_mib(ctx):
             return (15.7 * GIB + ctx * 64_000) / (1024 * 1024)
 
-        # No reserve: main footprint + 5% draft exceeds the budget.
         assert footprint_mib(no_reserve["c_arg"]) + 0.05 * 23_000 > 23_000
-        # With reserve: the cap is smaller and the full footprint fits.
         assert with_reserve["c_arg"] < no_reserve["c_arg"]
         assert footprint_mib(with_reserve["c_arg"]) + 0.05 * 23_000 <= 23_000
 

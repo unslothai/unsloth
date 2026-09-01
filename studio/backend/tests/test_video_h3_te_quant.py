@@ -52,8 +52,7 @@ def _fam(
     return types.SimpleNamespace(name = name, modular_workflow = modular_workflow, base_repo = base_repo)
 
 
-# Device targets are passed EXPLICITLY below: the auto default reads the real device when none is
-# given, and a test whose answer depends on the runner's GPU is not a test.
+# Device targets are passed EXPLICITLY below: the auto default reads the real device, which is not a test.
 def _cuda_target():
     return types.SimpleNamespace(
         device = "cuda", dtype = torch.bfloat16, supports_default_torch_compile = True
@@ -72,21 +71,18 @@ def _mps_target():
     )
 
 
-# ── the resolver ─────────────────────────────────────────────────────────────────
 def test_only_int8_has_a_hosted_conditioner():
     assert h3_te_quant_scheme("int8") == "int8"
     assert h3_te_quant_scheme("INT8") == "int8"
-    # Valid text_encoder_quant modes with no hosted H3 artifact resolve to nothing rather than
-    # raising: the request is well formed, this family just cannot serve it.
+    # Valid text_encoder_quant modes with no hosted H3 artifact resolve to nothing rather than raising.
     for mode in ("fp8", "fp8_dynamic", "nvfp4", "fp8-dynamic", "", None):
         assert h3_te_quant_scheme(mode) is None
 
 
 def test_the_hosted_filename_comes_from_an_unsloth_repo():
-    # It used to have to equal H3_COMPONENT_REPO, back when both were the same community repack.
-    # The VAEs have since moved to the GGUF mirror and the conditioner to the FP8 one, so the two
-    # are deliberately different repos now; what still matters is that neither is a repack, and
-    # that the conditioner sits with the other prequantized checkpoints rather than alone.
+    # The VAEs have since moved to the GGUF mirror and the conditioner to the FP8 one, so the two repos
+    # are deliberately different; what matters is that neither is a repack and the conditioner sits
+    # with the other prequantized checkpoints.
     from core.inference.video_families import _FAMILIES
 
     assert H3_TE_QUANT_REPO.startswith("unsloth/")
@@ -107,9 +103,7 @@ def test_every_hosted_scheme_is_a_valid_text_encoder_quant_request():
         assert normalize_te_quant(scheme) == scheme
 
 
-# ── the name mapping ─────────────────────────────────────────────────────────────
 def test_remap_puts_comfy_names_into_the_transformers_tree():
-    # ComfyUI flattens the Qwen3-VL tree; transformers nests both halves under model.
     assert (
         h3_te_remap_key("model.layers.0.self_attn.q_proj.weight")
         == "model.language_model.layers.0.self_attn.q_proj.weight"
@@ -118,15 +112,12 @@ def test_remap_puts_comfy_names_into_the_transformers_tree():
         h3_te_remap_key("model.embed_tokens.weight") == "model.language_model.embed_tokens.weight"
     )
     assert h3_te_remap_key("visual.blocks.3.attn.qkv.bias") == "model.visual.blocks.3.attn.qkv.bias"
-    # NOT idempotent, on purpose: re-mapping an already-transformers name produces a key no module
-    # owns, so an artifact re-uploaded in transformers naming fails the strict load loudly instead
-    # of half-matching.
+    # NOT idempotent: re-mapping a transformers name yields a key no module owns, so a re-upload fails.
     assert h3_te_remap_key("model.language_model.layers.0.mlp.up_proj.weight") == (
         "model.language_model.language_model.layers.0.mlp.up_proj.weight"
     )
 
 
-# ── the ConvRot arithmetic ───────────────────────────────────────────────────────
 def test_the_convrot_hadamard_is_symmetric_and_its_own_inverse():
     from core.inference.video_minimax_h3_te import build_convrot_hadamard
 
@@ -135,7 +126,7 @@ def test_the_convrot_hadamard_is_symmetric_and_its_own_inverse():
     # Exactly, not approximately: the entries are +-1/16 and the products are sums of 256 of them.
     assert torch.equal(h, h.T)
     assert (h @ h - torch.eye(H3_TE_CONVROT_GROUP)).abs().max().item() == 0.0
-    # Regular Hadamard: a power of 4 only. 128 is a power of 2 and must still be refused.
+    # Regular Hadamard: a power of 4 only, so 128 is a power of 2 and must still be refused.
     for bad in (128, 100, 2):
         with pytest.raises(ValueError):
             build_convrot_hadamard(bad)
@@ -159,10 +150,8 @@ def test_rotating_the_activation_undoes_the_rotation_baked_into_the_weight():
     x = torch.randn(5, in_features)
 
     h = build_convrot_hadamard(group)
-    # The offline half, exactly as the artifact was baked: W_rot = W @ H.T blockwise.
     grouped = weight.reshape(out_features, in_features // group, group)
     weight_rot = grouped.matmul(h.T).reshape(out_features, in_features)
-    # Round trip through INT8 per output channel, as the hosted checkpoint stores it.
     scale = (weight_rot.abs().amax(dim = -1, keepdim = True) / 127.0).clamp(min = 1e-30)
     qdata = torch.round(weight_rot / scale).clamp(-127, 127).to(torch.int8)
 
@@ -171,14 +160,12 @@ def test_rotating_the_activation_undoes_the_rotation_baked_into_the_weight():
     with torch.no_grad():
         got = module(x)
     reference = torch.nn.functional.linear(x, weight)
-    # Everything but the INT8 rounding is exact, so this is a quantization-error bound, not a
-    # numerical-slop one.
+    # Everything but the INT8 rounding is exact, so this is a quantization-error bound, not a numerical-slop one.
     assert (got - reference).norm() / reference.norm() < 0.02
 
     # Control: skipping the activation rotation is not "slightly worse", it is unrelated.
     unrotated = torch.nn.functional.linear(x, qdata.float() * scale)
     assert (unrotated - reference).norm() / reference.norm() > 0.5
-    # And the rotation itself is an involution.
     assert torch.allclose(
         rotate_convrot_activation(rotate_convrot_activation(x, h, group), h, group), x, atol = 1e-5
     )
@@ -204,7 +191,6 @@ def test_the_int8_module_keeps_its_weight_quantized():
     assert sum(t.numel() * t.element_size() for t in module.buffers()) == 8 * group + 8 * 4
 
 
-# ── the read layer ───────────────────────────────────────────────────────────────
 def test_the_read_layer_matches_the_diffusers_pipeline():
     """MiniMax-H3 conditions on hidden_states[50]. If diffusers ever moves it, the 50-layer
     artifact stops being lossless and this must fail rather than ship a silent approximation."""
@@ -214,7 +200,6 @@ def test_the_read_layer_matches_the_diffusers_pipeline():
     assert MiniMaxH3ModularPipeline.text_encoder_layer.fget(None) == H3_TE_READ_LAYER
 
 
-# ── the memory floor ─────────────────────────────────────────────────────────────
 def test_the_default_floor_is_unchanged():
     """Backwards compatibility: nothing that does not pass a size sees a different number."""
     assert h3_diffusers_vram_base_gb() == pytest.approx(H3_DIFFUSERS_VRAM_BASE_GB, abs = 0.001)
@@ -223,8 +208,7 @@ def test_the_default_floor_is_unchanged():
 
 
 def test_an_unpinned_floor_is_the_largest_component_not_the_sum():
-    # Every component runs under CPU offload, so quantizing ONE of the two 66 GB components buys
-    # nothing while both stay in the rotation.
+    # Every component runs under CPU offload, so quantizing ONE of two 66 GB components buys nothing.
     assert h3_diffusers_vram_base_gb(transformer_gb = 20.3) == pytest.approx(68.5, abs = 0.001)
     assert h3_diffusers_vram_base_gb(text_encoder_gb = 27.2) == pytest.approx(68.1, abs = 0.001)
 
@@ -236,7 +220,6 @@ def test_a_pinned_denoiser_makes_the_floor_additive():
     pinned = h3_diffusers_vram_base_gb(transformer_gb = 20.3, transformer_pinned = True)
     assert pinned == pytest.approx(20.3 + 66.7 + 2.6, abs = 0.001)
     assert pinned > h3_diffusers_vram_base_gb(transformer_gb = 20.3)
-    # A tiny conditioner cannot drag the floor under the VAEs, which still rotate through.
     assert h3_diffusers_vram_base_gb(
         text_encoder_gb = 1.0, transformer_gb = 20.3, transformer_pinned = True
     ) == pytest.approx(20.3 + 11.1 + 2.6, abs = 0.001)
@@ -264,30 +247,25 @@ def test_quantizing_the_conditioner_is_what_finally_moves_the_floor():
     quantized = estimate_h3_diffusers_vram_gb(
         960, 544, 124, text_encoder_gb = 27.2, transformer_gb = 20.3, transformer_pinned = True
     )
-    # The saving is the conditioner delta and nothing else.
     assert dense - quantized == pytest.approx(H3_TEXT_ENCODER_BF16_GB - 27.2, abs = 0.001)
     assert quantized < H3_DIFFUSERS_VRAM_BASE_GB
 
 
 def test_resident_sizes_track_the_engaged_scheme_only():
     assert h3_te_resident_gb("int8", bf16_gb = H3_TEXT_ENCODER_BF16_GB) == 27.2
-    # A scheme with no hosted artifact, and a declined request recorded as None, both keep the
-    # dense budget. Under-stating the floor is the expensive direction.
+    # A scheme with no hosted artifact, and a declined request recorded as None, both keep the dense budget.
     for mode in (None, "fp8", "nvfp4"):
         assert h3_te_resident_gb(mode, bf16_gb = H3_TEXT_ENCODER_BF16_GB) == H3_TEXT_ENCODER_BF16_GB
     assert h3_transformer_resident_gb("int8") == 20.3
     assert h3_transformer_resident_gb(None) == H3_TRANSFORMER_BF16_GB
 
 
-# ── the download plan ────────────────────────────────────────────────────────────
 def test_only_a_modular_family_drops_its_dense_encoder():
     assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", H3_BASE) == "int8"
-    # A conventional family casts its own dense encoder in place and still needs those shards.
     assert VideoBackend._h3_te_quant_scheme(_fam(modular_workflow = None), "int8", H3_BASE) is None
     assert VideoBackend._h3_te_quant_scheme(_fam(), "fp8", H3_BASE) is None
 
 
-# ── the tri-state: unset is the fast default, "none" is the escape hatch ─────────
 def test_an_unset_request_takes_the_hosted_conditioner():
     """Unset is what the video page sends, so this is the whole point: it must resolve to the
     hosted 27.1 GB / 50-layer conditioner, not to the released 66.7 GB / 64-layer one."""
@@ -311,8 +289,7 @@ def test_the_auto_default_is_cuda_only():
     for target in (_cpu_target(), _mps_target()):
         assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE, target) is None
         assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", H3_BASE, target) == "int8"
-    # A CUDA target whose compute dtype is not bf16 (a pre-Ampere card promoted to fp32) is not a
-    # device this was measured on either.
+    # A CUDA target whose compute dtype is not bf16 is not a device this was measured on either.
     fp32_cuda = types.SimpleNamespace(device = "cuda", dtype = torch.float32)
     assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE, fp32_cuda) is None
 
@@ -331,19 +308,15 @@ def test_only_the_base_the_artifact_was_cut_from_gets_the_hosted_conditioner():
     """A derivative can keep the Qwen3-VL architecture and change the conditioner weights. The
     strict load cannot tell -- every name and shape still matches -- so gate on the base instead,
     exactly as the pre-quantized denoiser does through its baked base_model_id."""
-    # A local snapshot of the same base still qualifies (same repo tail).
     assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", "/models/MiniMax-H3") == "int8"
-    # A derivative, however it was selected (detection or family_override), keeps its own encoder.
     for other in ("someone/MiniMax-H3-anime", "someone/MiniMax-H3-v2", "MiniMaxAI/MiniMax-H2"):
         assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", other) is None
-    # And an unknown base is not a licence to substitute one either.
     assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", None) is None
     assert VideoBackend._h3_te_quant_scheme(_fam(base_repo = None), "int8", H3_BASE) is None
 
 
 def test_an_unsupported_request_never_breaks_the_plan():
-    # The plan runs before validate_load_request has had the last word on some paths, and a raise
-    # here would cost the whole download plan rather than one optimisation.
+    # The plan runs before validate_load_request has the last word, so a raise costs the whole plan.
     assert VideoBackend._h3_te_quant_scheme(_fam(), "not-a-scheme", H3_BASE) is None
     assert VideoBackend._h3_te_quant_scheme(object(), "int8", H3_BASE) is None
 
@@ -386,7 +359,6 @@ def test_a_resolvable_artifact_is_staged_in_place_of_the_dense_shards():
 
     repo, files = VideoBackend._h3_te_quant_hub_files("int8", _Api())
     assert repo == H3_TE_QUANT_REPO
-    # Exactly the one artifact, at its real size: the disk preflight is sized off this.
     assert files == [(wanted, 27_141_342_152)]
 
 
@@ -418,9 +390,7 @@ def test_the_conditioner_entry_survives_a_repack_that_is_gone(monkeypatch):
 
     repo, files = VideoBackend._h3_te_quant_hub_files("int8", _Api())
     assert asked == [H3_TE_QUANT_REPO], "the repack must never be asked for metadata"
-    # The id the bytes are read from, so the entry's cache check asks about the right repo...
     assert repo == H3_LEGACY_TE_QUANT_REPO
-    # ...at the mirror's size, which is the same file.
     assert files == [(wanted, 27_141_342_152)]
 
 
@@ -435,8 +405,7 @@ def test_the_conditioner_repo_is_protected_while_the_load_is_in_flight(monkeypat
     backend._loading = video_mod._VideoLoadingState(repo_id = H3_BASE, base_repo = H3_BASE)
 
     seen: dict[str, tuple[str, ...]] = {}
-    # The verified resolver reads the base's modular index; this test is about the delete guard,
-    # not the index, and the suite blocks the network.
+    # The verified resolver reads the base's modular index; this is about the delete guard, and CI is offline.
     monkeypatch.setattr(backend, "_h3_te_base_index_source", lambda *a, **k: H3_BASE)
     monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: 1)
     monkeypatch.setattr(backend, "_fetch_te_prequant", lambda *a, **k: ())
@@ -489,14 +458,11 @@ def test_the_encoder_config_is_read_from_the_pinned_cache_not_the_default_one(mo
         def from_pretrained(name, **kwargs):
             captured["name"] = name
             captured["kwargs"] = kwargs
-            # The load is best-effort by contract, so raising here returns None and exercises
-            # exactly the one call this test is about.
+            # The load is best-effort by contract, so raising returns None and exercises the one call under test.
             raise RuntimeError("only the call shape is under test")
 
-    # Every import the loader makes before the config read is stubbed, so this asserts the call
-    # shape on any host. Without accelerate / safetensors it would otherwise return None from the
-    # import line and never reach AutoConfig, which is a pass for the wrong reason (and a KeyError
-    # on the assertions below) on a CPU runner that has torch but not the rest.
+    # Every import the loader makes before the config read is stubbed, so this asserts the call shape
+    # on any host: without accelerate / safetensors it would return None from the import line.
     monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(AutoConfig = _AutoConfig))
     monkeypatch.setitem(
         sys.modules,
@@ -522,8 +488,7 @@ def test_the_encoder_config_is_read_from_the_pinned_cache_not_the_default_one(mo
     assert captured["kwargs"]["cache_dir"] == "/tmp/studio-hub"
     assert captured["kwargs"]["subfolder"] == "text_encoder"
 
-    # A staged snapshot is preferred over the hub id: its config.json is already on disk, so the
-    # resolution cannot go to the network at all.
+    # A staged snapshot beats the hub id: its config.json is on disk, so resolution never hits the network.
     captured.clear()
     te_mod.load_h3_quantized_text_encoder(
         H3_BASE, "int8", dtype = None, cache_dir = "/tmp/studio-hub", local_base = "/snap/h3"
@@ -540,14 +505,12 @@ def test_the_dense_encoder_is_dropped_from_the_base_pull_but_its_config_is_kept(
     assert is_prequant_covered_weight("text_encoder/model-00001-of-00014.safetensors", covered)
     assert not is_prequant_covered_weight("text_encoder/config.json", covered)
     assert not is_prequant_covered_weight("text_encoder/tokenizer.json", covered)
-    # Other components are untouched.
     assert not is_prequant_covered_weight("vae/diffusion_pytorch_model.safetensors", covered)
     assert not is_prequant_covered_weight(
         "transformer/diffusion_pytorch_model.safetensors", covered
     )
 
 
-# ── the resolved record ──────────────────────────────────────────────────────────
 def test_a_declined_request_reads_as_a_fallback_not_as_never_asked():
     """The record has to keep the REQUEST on the left. Erasing it to None makes a refused fp8
     request indistinguishable from a load nobody asked to quantize."""
@@ -569,7 +532,6 @@ def test_a_declined_request_reads_as_a_fallback_not_as_never_asked():
     assert entry["status"] != "as_requested"
 
 
-# ── the identity gate the base NAME cannot make ──────────────────────────────────
 def test_the_index_names_the_conditioner_a_pipeline_would_have_loaded():
     """A repo-id comparison cannot tell a derivative stored as .../MiniMax-H3 from the real one.
     The pipeline's own modular index can: it records where each component comes from, and a
@@ -581,13 +543,11 @@ def test_the_index_names_the_conditioner_a_pipeline_would_have_loaded():
 
     assert VideoBackend._h3_te_index_source(_pipe(H3_BASE)) == H3_BASE
     assert VideoBackend._h3_te_index_source(_pipe("someone/MiniMax-H3")) == "someone/MiniMax-H3"
-    # Unanswerable is None, and the caller reads None as a refusal.
     assert VideoBackend._h3_te_index_source(_pipe(None)) is None
     assert VideoBackend._h3_te_index_source(_pipe(["a", "b"])) is None
     assert VideoBackend._h3_te_index_source(_pipe("")) is None
     assert VideoBackend._h3_te_index_source(object()) is None
 
-    # The deprecated spelling, for a spec built by hand rather than parsed from the index.
     legacy = types.SimpleNamespace(repo = H3_BASE, pretrained_model_name_or_path = None)
     assert (
         VideoBackend._h3_te_index_source(
@@ -615,8 +575,7 @@ def test_the_real_index_records_where_the_conditioner_comes_from():
 
     source = entry[2]["pretrained_model_name_or_path"]
     assert te_base_equivalent("MiniMaxAI/MiniMax-H3", source)
-    # A derivative that retrained its conditioner names itself here and is refused, even though
-    # its own repo id would pass the tail-segment comparison.
+    # A derivative that retrained its conditioner names itself here and is refused, though its repo id would pass.
     assert not te_base_equivalent("MiniMaxAI/MiniMax-H3", "someone/MiniMax-H3-anime")
 
 
@@ -627,11 +586,9 @@ def test_the_index_compare_has_no_tail_name_tolerance():
     from core.inference.diffusion_te_prequant import te_base_equivalent
     from core.inference.video import _h3_te_canonical
 
-    # What the tolerant helper accepts and this one must not.
     for other in ("someone/MiniMax-H3", "/models/MiniMax-H3", "someone/minimax-h3"):
         assert te_base_equivalent(H3_BASE, other), "precondition: the tolerant helper accepts it"
         assert _h3_te_canonical(other) != _h3_te_canonical(H3_BASE)
-    # The canonical id, in any casing or with stray whitespace, still matches.
     for same in (H3_BASE, H3_BASE.lower(), f"  {H3_BASE} "):
         assert _h3_te_canonical(same) == _h3_te_canonical(H3_BASE)
     assert _h3_te_canonical(None) == ""
@@ -647,7 +604,6 @@ def test_a_known_mirror_is_still_the_same_conditioner():
         assert _h3_te_canonical(mirror) == _h3_te_canonical(upstream)
 
 
-# ── the precision contract ───────────────────────────────────────────────────────
 def test_a_hosted_conditioner_is_not_judged_by_the_generic_precision_gate(monkeypatch):
     """The gate rewrites int8 -> fp8 (H3 has no keep-bf16 schedule) and then asks for fp8 tensor
     cores. This loader uses neither: INT8 storage, a Hadamard rotation, an ordinary F.linear. Left
@@ -661,9 +617,7 @@ def test_a_hosted_conditioner_is_not_judged_by_the_generic_precision_gate(monkey
     monkeypatch.setattr(
         "core.inference.video.te_quant_supported", lambda *_a, **_k: False, raising = False
     )
-    # The hosted scheme is exempt.
     assert_video_precision_available(fam, model_kind = "pipeline", text_encoder_quant = "int8")
-    # A scheme with no hosted artifact is still judged by the generic gate.
     with pytest.raises(RuntimeError):
         assert_video_precision_available(fam, model_kind = "pipeline", text_encoder_quant = "fp8")
 
@@ -705,17 +659,14 @@ def test_an_explicit_encoder_request_that_engages_nothing_is_refused(monkeypatch
             hf_token = None,
             memory_mode = None,
             text_encoder_quant = "int8",
-            # This test is about the ENCODER refusal, so pin the denoiser dense: unset would
-            # resolve to the hosted int8 checkpoint and the fake diffusers module has no
-            # transformer class to build it. CPU target so the answer cannot depend on the
-            # runner's GPU.
+            # Pin the denoiser dense: unset would resolve to the hosted int8 checkpoint and the fake diffusers
+            # module has no transformer class to build it. CPU target so the answer ignores the runner's GPU.
             transformer_quant = "none",
             target = _cpu_target(),
             diffusers = fake_diffusers,
             torch = None,
         )
     assert "text_encoder_quant" in str(exc.value)
-    # Refused BEFORE anything is built, so the refusal costs nothing.
     assert "loaded" not in seen and "seeded" not in seen
 
 
@@ -742,12 +693,10 @@ def test_the_staging_skip_reads_the_same_index_the_seed_will(tmp_path):
 
     canonical = _base_dir(H3_BASE)
     derivative = _base_dir("someone/MiniMax-H3")
-    # Both pass the NAME comparison: the directories are called MiniMaxAI_MiniMax-H3 and
-    # someone_MiniMax-H3, so this is the index doing the work, not the path.
+    # Both pass the NAME comparison, so this is the index doing the work, not the path.
     assert backend._h3_te_base_index_source(canonical, None) == H3_BASE
     assert backend._h3_te_base_index_source(derivative, None) == "someone/MiniMax-H3"
     assert backend._h3_te_quant_scheme_verified(fam, "int8", derivative, None) is None
-    # An unreadable index keeps the dense shards rather than guessing.
     assert backend._h3_te_base_index_source(str(tmp_path / "nope"), None) is None
     assert backend._h3_te_quant_scheme_verified(fam, "int8", str(tmp_path / "nope"), None) is None
 
@@ -774,9 +723,6 @@ def test_a_projection_left_dense_is_refused_not_budgeted():
     def _dense_names(stack):
         return [n for n, m in stack.named_modules() if isinstance(m, nn.Linear)]
 
-    # The check the loader makes, on a stack where every projection was swapped.
     assert _dense_names(nn.ModuleList([_Layer(False), _Layer(False)])) == []
-    # And on one where a single projection came back dense.
     assert _dense_names(nn.ModuleList([_Layer(False), _Layer(True)])) == ["1.self_attn.q_proj"]
-    # The stand-in is not an nn.Linear, so it cannot be mistaken for one.
     assert not isinstance(quantized_cls(8, 8, False, 256), nn.Linear)

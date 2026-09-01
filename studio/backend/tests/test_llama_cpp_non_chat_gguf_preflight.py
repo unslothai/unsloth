@@ -110,8 +110,8 @@ def test_metadata_less_gguf_of_unknown_family_still_refuses(tmp_path):
 
 
 def test_unreadable_header_yields_no_verdict(tmp_path):
-    # A non-GGUF file and a GGUF truncated mid-KV must both fall through to llama-server
-    # rather than being refused as "declares no architecture".
+    # A non-GGUF file and a GGUF truncated mid-KV must both fall through to llama-server rather than
+    # being refused as "declares no architecture".
     not_gguf = tmp_path / "notes.txt"
     not_gguf.write_bytes(b"this is not a gguf file at all")
     backend = LlamaCppBackend()
@@ -131,8 +131,7 @@ def test_unreadable_header_yields_no_verdict(tmp_path):
 
 
 def test_verdict_requires_a_parsed_header_even_if_called_directly(tmp_path):
-    # A caller that skipped _read_gguf_metadata gets no verdict, not a refusal built on a
-    # never-populated architecture.
+    # A caller that skipped _read_gguf_metadata gets no verdict, not a refusal built on a never-populated architecture.
     backend = LlamaCppBackend()
     assert backend._non_chat_gguf_refusal(str(tmp_path / "unread.gguf")) is None
 
@@ -145,8 +144,8 @@ def test_every_media_arch_is_refused_before_launch(tmp_path, arch):
 
 
 def test_the_path_probe_does_not_touch_the_live_backend(tmp_path):
-    # The refusal runs BEFORE Phase 1 kills the resident model, so reading the header into
-    # `self` would overwrite the LIVE model's metadata with the file being rejected.
+    # The refusal runs BEFORE Phase 1 kills the resident model, so reading the header into `self`
+    # would overwrite the LIVE model's metadata with the file being rejected.
     live = LlamaCppBackend()
     live._model_identifier = "unsloth/Qwen3-0.6B-GGUF"
     live._architecture = "qwen3"
@@ -156,15 +155,13 @@ def test_the_path_probe_does_not_touch_the_live_backend(tmp_path):
     video = _write_gguf(tmp_path / "minimax_h3-Q2_K.gguf", arch = None)
     message = LlamaCppBackend._non_chat_gguf_refusal_for_path(str(video), "unsloth/MiniMax-H3-GGUF")
     assert message is not None and "Video page" in message
-    # The resident model's metadata is untouched.
     assert live._architecture == "qwen3"
     assert live._context_length == 40960
     assert live._model_identifier == "unsloth/Qwen3-0.6B-GGUF"
 
 
 def test_the_path_probe_agrees_with_the_instance_check(tmp_path):
-    # One verdict, two entry points: disagreement means a load refused on one path and
-    # launched on the other.
+    # One verdict, two entry points: disagreement means a load refused on one path and launched on the other.
     for arch, name in (("llama", "chat.gguf"), ("flux", "flux.gguf"), ("ltxv", "ltx.gguf")):
         gguf = _write_gguf(tmp_path / name, arch = arch)
         backend = LlamaCppBackend()
@@ -192,12 +189,10 @@ def test_a_resolvable_shared_arch_still_names_the_images_page(tmp_path, identifi
 
 
 def test_an_unresolvable_shared_arch_promises_no_page(tmp_path):
-    # "lumina2" is shared: Z-Image's DiT is a Lumina2 derivative, so the header alone does
-    # not say which family a file is. neta-art/neta-lumina-gguf ships REAL lumina2 GGUFs
-    # (measured on the live repo: general.architecture = "lumina2", 400 tensors) whose repo
-    # id and filename resolve to no family -- "lumina-2" is deliberately not aliased to bare
-    # "lumina" -- so routes.models._arch_to_task tags them image-diffusion-unsupported and
-    # the Images picker never lists them.
+    # "lumina2" is shared: Z-Image's DiT is a Lumina2 derivative, so the header alone does not say
+    # which family a file is. neta-art/neta-lumina-gguf ships REAL lumina2 GGUFs
+    # (general.architecture = "lumina2", 400 tensors) whose repo id and filename resolve to no
+    # family, so routes.models._arch_to_task tags them image-diffusion-unsupported.
     _, message = _refusal(
         tmp_path,
         arch = "lumina2",
@@ -210,9 +205,8 @@ def test_an_unresolvable_shared_arch_promises_no_page(tmp_path):
 
 
 def test_the_shared_arch_verdict_matches_the_pickers(tmp_path):
-    # The invariant: the refusal names the Images page exactly when
-    # routes.models._arch_to_task says the row is selectable there, or the message points at
-    # a list the model is not in.
+    # The invariant: the refusal names the Images page exactly when routes.models._arch_to_task says
+    # the row is selectable there, or the message points at a list the model is not in.
     from routes.models import _AMBIGUOUS_DIFFUSION_GGUF_ARCHS, _arch_to_task
     assert LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES == _AMBIGUOUS_DIFFUSION_GGUF_ARCHS
     for identifier, name in (
@@ -233,9 +227,8 @@ def test_the_shared_arch_verdict_matches_the_pickers(tmp_path):
 
 
 def test_the_unrunnable_set_mirrors_the_canonical_one():
-    # Two places must not drift: routes.models tags these image-diffusion-unsupported, which
-    # hides them from the Images AND Video pickers, so naming either page sends the user to
-    # an empty list.
+    # Two places must not drift: routes.models tags these image-diffusion-unsupported, which hides
+    # them from the Images AND Video pickers, so naming either page sends the user to an empty list.
     from routes.models import _UNSUPPORTED_DIFFUSION_GGUF_ARCHS
 
     assert LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES == _UNSUPPORTED_DIFFUSION_GGUF_ARCHS
@@ -256,16 +249,15 @@ def test_an_unrunnable_media_arch_promises_no_page(tmp_path, arch):
 @pytest.mark.parametrize("repo", ["gguf-org/flux2-dev-gguf", "calcuis/cosmos-predict2-gguf"])
 def test_a_placeholder_architecture_still_refuses(tmp_path, repo):
     # gguf-connector writes a literal "pig" in place of an architecture; measured on
-    # gguf-org/flux2-dev-gguf/flux2-dev-iq4_nl.gguf. Without normalising it the file slips
-    # past every set and dies opaquely in llama-server.
+    # gguf-org/flux2-dev-gguf/flux2-dev-iq4_nl.gguf.
     _, message = _refusal(tmp_path, arch = "pig", name = "flux2-dev-iq4_nl.gguf", identifier = repo)
     assert message is not None
     assert "cannot" in message
 
 
 def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
-    # The placeholder carries no family, so both sides fall back to the repo id and filename
-    # and have to agree, or the Images page is named for a file its picker drops.
+    # The placeholder carries no family, so both sides fall back to the repo id and filename and
+    # have to agree, or the Images page is named for a file its picker drops.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("gguf-org/flux2-dev-gguf", "flux2-dev-iq4_nl.gguf", True),
@@ -281,10 +273,8 @@ def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
 
 
 def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
-    # Wan 2.2 A14B is a two-expert MoE the Video backend cannot assemble, and Wan 2.1's repo
-    # ids resolve to no family, so _arch_to_task tags both image-diffusion-unsupported and
-    # the Video picker never lists them. The header says "wan" for all three, so the refusal
-    # has to consult the same family resolution rather than trusting the arch.
+    # Wan 2.2 A14B is a two-expert MoE the Video backend cannot assemble, and Wan 2.1's repo ids
+    # resolve to no family, so _arch_to_task tags both image-diffusion-unsupported.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
@@ -299,9 +289,8 @@ def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
 
 
 def test_an_arch_that_names_its_own_family_still_gets_the_video_page(tmp_path):
-    # _arch_to_task asks detect_video_family("", override = arch) FIRST, and "ltxv" resolves
-    # LTX-2 with no name to go on, so a generically named LTX GGUF IS listed on the Video
-    # page. Resolving by repo id and filename alone answered the opposite.
+    # _arch_to_task asks detect_video_family("", override = arch) FIRST, and "ltxv" resolves LTX-2
+    # with no name to go on, so a generically named LTX GGUF IS listed on the Video page.
     from routes.models import _arch_to_task
     for identifier, name in (
         ("someone/generic-gguf", "model-Q4_K_M.gguf"),
@@ -327,9 +316,9 @@ def _write_split_shard(path: Path) -> Path:
 
 
 def test_a_trailing_split_shard_gets_no_verdict(tmp_path):
-    # Shard 1 carries the architecture for the whole set, so a later shard declares none.
-    # Refusing it as a media GGUF would misname a chat model; llama.cpp's own "must be
-    # loaded with the first split" is the accurate answer.
+    # Shard 1 carries the architecture for the whole set, so a later shard declares none. Refusing it as
+    # a media GGUF would misname a chat model; llama.cpp's "must be loaded with the first split" is the
+    # accurate answer.
     gguf = _write_split_shard(tmp_path / "DeepSeek-R1.BF16-00002-of-00030.gguf")
     backend = LlamaCppBackend()
     backend._model_identifier = "unsloth/DeepSeek-R1-GGUF"
@@ -340,16 +329,15 @@ def test_a_trailing_split_shard_gets_no_verdict(tmp_path):
 
 
 def test_a_metadata_less_gguf_that_is_not_a_shard_is_still_refused(tmp_path):
-    # The no-architecture verdict still catches MiniMax-H3's zero-KV files: only the split
-    # keys buy an exemption.
+    # The no-architecture verdict still catches MiniMax-H3's zero-KV files: only the split keys buy
+    # an exemption.
     _, message = _refusal(tmp_path, arch = None, name = "video-dit-Q4_K_M.gguf")
     assert message is not None
 
 
 def test_the_first_shard_is_the_one_a_variant_resolves_to():
-    # Why the exemption above only has to cover hand-written variant strings: every producer
-    # strips the shard suffix and the matches are sorted, so shard 1 leads and the rest ride
-    # along as extra shards.
+    # Why the exemption above only has to cover hand-written variant strings: every producer strips
+    # the shard suffix and the matches are sorted, so shard 1 leads and the rest ride along.
     from core.inference.llama_cpp import _gguf_extra_shards, _gguf_files_for_variant
     files = [f"BF16/model-BF16-{i:05d}-of-00010.gguf" for i in range(1, 11)]
     for variant in ("BF16", "BF16/model-BF16"):
@@ -359,10 +347,7 @@ def test_the_first_shard_is_the_one_a_variant_resolves_to():
 
 
 def test_a_split_placeholder_media_gguf_is_still_refused(tmp_path):
-    # The split exemption needs split.no > 0 AND nothing declared. A placeholder arch is
-    # blanked before the name-based branch, so keying on the split keys alone would wave
-    # through the very files the placeholder handling exists to catch -- shard 1 carries
-    # those keys too.
+    # The split exemption needs split.no > 0 AND nothing declared.
     body = b""
     key, val = b"general.architecture", b"pig"
     body += struct.pack("<Q", len(key)) + key + struct.pack("<I", 8)
@@ -381,9 +366,8 @@ def test_a_split_placeholder_media_gguf_is_still_refused(tmp_path):
 
 
 def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
-    # A family that resolves is not enough for the arch branches, nor here: routes.models
-    # drops an MoE the loader cannot assemble, so the Video page would not list Wan 2.2 A14B
-    # however its GGUF is packaged.
+    # A family that resolves is not enough for the arch branches, nor here: routes.models drops an MoE
+    # the loader cannot assemble, so the Video page would not list Wan 2.2 A14B either way.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),

@@ -290,8 +290,8 @@ def test_a_good_tool_round_restores_the_full_allowance(monkeypatch):
 
     _run(backend, max_tool_iterations = 8)
 
-    # 1 stall + 1 continuation that called the tool + 3 more turns once the tool round
-    # reset the allowance. A counter that survived would have stopped an attempt earlier.
+    # 1 stall + 1 continuation that called the tool + 3 more turns once the tool round reset the
+    # allowance.
     assert len(payloads) == 5
 
 
@@ -474,8 +474,8 @@ def test_an_explicit_effort_does_not_survive_the_continuation(monkeypatch):
     _run(backend, reasoning_effort = "high")
 
     assert payloads[0]["chat_template_kwargs"] == {"reasoning_effort": "high"}
-    # "low", not "none": this style covers models that cannot actually disable
-    # reasoning, and that is the convention the non-continuation path already uses.
+    # "low", not "none": this style covers models that cannot actually disable reasoning, and that
+    # is the convention the non-continuation path already uses.
     assert payloads[1]["chat_template_kwargs"] == {"reasoning_effort": "low"}
 
 
@@ -558,7 +558,6 @@ def test_a_request_that_never_stalls_keeps_the_bound_it_always_had(monkeypatch):
 
     _run(backend, max_tool_iterations = 3)
 
-    # Three tool rounds, then the tool-free final pass. Unchanged by the conversion.
     assert len(payloads) == 4
 
 
@@ -573,8 +572,7 @@ def test_a_stall_does_not_eat_the_tool_budget(monkeypatch):
     """
 
     streams = [
-        # Short, with an intent signal and no tool call: each earns a re-prompt. Distinct,
-        # because a nudge that gets the same answer back stops the sequence.
+        # Short, with an intent signal and no tool call: each earns a re-prompt.
         [_sse({"content": "I will search for the prices now."}), _done()],
         [_sse({"content": "I am going to look that up for you."}), _done()],
         [_sse({"content": "Let me check the current listings."}), _done()],
@@ -737,9 +735,8 @@ def test_the_in_loop_give_up_names_the_cap_when_the_last_attempt_spent_it(monkey
         payloads,
     )
 
-    # 300 spent 100 at a time: every continuation is ADMITTED, and the cap runs out on
-    # the last permitted attempt. That is the stale case -- reaching the give-up by way
-    # of a refusal already sets the flag correctly.
+    # 300 spent 100 at a time: every continuation is ADMITTED, and the cap runs out on the last
+    # permitted attempt.
     events = _run(backend, max_tokens = 300)
 
     assert len(payloads) == _MAX_LENGTH_CONTINUATIONS + 1, "a continuation was refused"
@@ -770,8 +767,8 @@ def test_a_continuation_one_eviction_short_is_not_abandoned(monkeypatch):
         payloads,
     )
 
-    # A tokenizer this harness can actually run: llama-server is not here to render a
-    # template, and the real count raises, which every fit reads as "cannot judge".
+    # A tokenizer this harness can actually run: llama-server is not here to render a template, and
+    # the real count raises, which every fit reads as "cannot judge".
     def fake_count(messages, *_args, **_kwargs):
         return 200 + sum(len(str(m.get("content") or "")) // 4 for m in messages)
 

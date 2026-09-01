@@ -14,7 +14,6 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-# --- Conditional framework imports ---
 try:
     import torch
     HAS_TORCH = True
@@ -43,7 +42,6 @@ import utils.hardware.hardware as _hw_module
 from utils.utils import format_error_message, is_hf_authentication_error
 
 
-# ========== Helpers ==========
 
 
 def _actual_device() -> str:
@@ -61,7 +59,6 @@ def _reset_and_detect():
     return detect_hardware()
 
 
-# ========== get_device() ==========
 
 
 class TestGetDevice:
@@ -80,7 +77,6 @@ class TestGetDevice:
     def test_matches_actual_hardware(self):
         assert get_device().value == _actual_device()
 
-    # --- Mocked paths ---
 
     @needs_torch
     def test_returns_cuda_when_cuda_available(self):
@@ -92,8 +88,7 @@ class TestGetDevice:
 
     @needs_torch
     def test_detect_survives_device0_probe_failure(self, capsys):
-        # is_available() True but the device-0 name probe raises: startup must
-        # still resolve CUDA rather than crash.
+        # is_available() True but the device-0 name probe raises: startup must still resolve CUDA rather than crash.
         with (
             patch("utils.hardware.hardware._has_torch", return_value = True),
             patch("torch.cuda.is_available", return_value = True),
@@ -122,7 +117,6 @@ class TestGetDevice:
             assert _reset_and_detect() == DeviceType.CPU
 
 
-# ========== is_apple_silicon() ==========
 
 
 class TestIsAppleSilicon:
@@ -149,7 +143,6 @@ class TestIsAppleSilicon:
             assert is_apple_silicon() is False
 
 
-# ========== clear_gpu_cache() ==========
 
 
 class TestClearGpuCache:
@@ -202,7 +195,6 @@ class TestClearGpuCache:
             mock_empty.assert_not_called()
 
 
-# ========== get_gpu_memory_info() ==========
 
 
 class TestGetGpuMemoryInfo:
@@ -217,13 +209,11 @@ class TestGetGpuMemoryInfo:
         assert "backend" in get_gpu_memory_info()
 
     def test_backend_matches_device(self):
-        # _backend_label swaps "cuda" for "rocm" on AMD hosts; elsewhere it
-        # equals get_device().value.
+        # _backend_label swaps "cuda" for "rocm" on AMD hosts; elsewhere it equals get_device().value.
         from utils.hardware.hardware import _backend_label
         result = get_gpu_memory_info()
         assert result["backend"] == _backend_label(get_device())
 
-    # --- When a GPU IS available ---
 
     @pytest.mark.skipif(_actual_device() == "cpu", reason = "No GPU available on this machine")
     def test_gpu_available_fields(self):
@@ -235,7 +225,6 @@ class TestGetGpuMemoryInfo:
         assert 0 <= result["utilization_pct"] <= 100
         assert "device_name" in result
 
-    # --- CUDA-specific mocked test ---
 
     @needs_torch
     def test_cuda_path_returns_correct_fields(self):
@@ -249,8 +238,7 @@ class TestGetGpuMemoryInfo:
             patch("torch.cuda.get_device_properties", return_value = mock_props),
             patch("torch.cuda.memory_allocated", return_value = 4 * (1024**3)),
             patch("torch.cuda.memory_reserved", return_value = 6 * (1024**3)),
-            # Driver truth from a context-free SMI/sysfs probe: another process
-            # and torch's cache leave only 9 of 16 GiB free.
+            # Driver truth from a context-free probe: another process and torch's cache leave only 9 of 16 GiB free.
             patch(
                 "utils.hardware.hardware._context_free_cuda_memory_info",
                 return_value = 9 * (1024**3),
@@ -290,8 +278,7 @@ class TestGetGpuMemoryInfo:
         ):
             result = get_gpu_memory_info()
 
-        # Reserved includes allocated, so the fallback bound is 16 - 6, not
-        # the old allocated-only 12.
+        # Reserved includes allocated, so the fallback bound is 16 - 6, not the old allocated-only 12.
         assert abs(result["free_gb"] - 10.0) < 0.01
 
     @needs_torch
@@ -322,7 +309,6 @@ class TestGetGpuMemoryInfo:
         assert abs(result["total_gb"] - 100.0) < 0.01
         assert abs(result["free_gb"] - 98.0) < 0.01
 
-    # --- XPU (Intel GPU) ---
 
     def _xpu_torch(self, mem_get_info):
         """A torch stub exposing only what the XPU branch touches."""
@@ -344,8 +330,7 @@ class TestGetGpuMemoryInfo:
         return get_gpu_memory_info()
 
     def test_xpu_free_comes_from_the_driver(self, monkeypatch):
-        # 12 of 16 GiB free system-wide, against 2 GiB allocated by this process:
-        # the old total - allocated would have claimed 14.
+        # 12 of 16 GiB free system-wide against 2 GiB allocated here: the old total - allocated claimed 14.
         result = self._xpu_result(monkeypatch, lambda _o: (12 * (1024**3), 16 * (1024**3)))
         assert abs(result["free_gb"] - 12.0) < 0.01
         assert abs(result["total_gb"] - 16.0) < 0.01
@@ -358,17 +343,15 @@ class TestGetGpuMemoryInfo:
         assert abs(result["free_gb"] - 13.0) < 0.01
 
     def test_xpu_falls_back_on_a_torch_without_mem_get_info(self, monkeypatch):
-        # torch.xpu.mem_get_info is newer than the floor this backend supports,
-        # so its absence must degrade, not raise.
+        # torch.xpu.mem_get_info is newer than the floor this backend supports, so its absence must degrade, not raise.
         result = self._xpu_result(monkeypatch, None)
         assert abs(result["free_gb"] - 13.0) < 0.01
 
-    # --- MLX-specific mocked test ---
 
     @needs_mlx
     def test_mlx_path_returns_correct_fields(self):
         mock_psutil_mem = MagicMock()
-        mock_psutil_mem.total = 32 * (1024**3)  # 32 GB unified
+        mock_psutil_mem.total = 32 * (1024**3)
 
         mock_psutil = MagicMock()
         mock_psutil.virtual_memory.return_value = mock_psutil_mem
@@ -384,7 +367,6 @@ class TestGetGpuMemoryInfo:
         assert "Apple Silicon" in result["device_name"]
         assert abs(result["total_gb"] - 32.0) < 0.01
 
-    # --- CPU-only path ---
 
     def test_cpu_path_returns_unavailable(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
@@ -392,7 +374,6 @@ class TestGetGpuMemoryInfo:
         assert result["available"] is False
         assert result["backend"] == "cpu"
 
-    # --- Error resilience ---
 
     @needs_torch
     def test_cuda_error_returns_unavailable(self):
@@ -408,7 +389,6 @@ class TestGetGpuMemoryInfo:
         assert "error" in result
 
 
-# ========== log_gpu_memory() ==========
 
 
 class TestLogGpuMemory:
@@ -444,7 +424,6 @@ class TestLogGpuMemory:
         assert "No GPU available" in captured.out
 
 
-# ========== CUDA_DEVICE_ORDER pinning ==========
 
 
 class TestCudaDeviceOrder:
@@ -454,14 +433,12 @@ class TestCudaDeviceOrder:
 
     @staticmethod
     def _order_after_fresh_import(preset):
-        # Fresh interpreter so the module-level setdefault runs against a clean env.
         import os, subprocess, sys
         from pathlib import Path
 
         env = os.environ.copy()
         backend = str(Path(__file__).resolve().parents[1])
         existing = env.get("PYTHONPATH", "")
-        # Avoid a trailing os.pathsep (empty entry -> cwd on sys.path) when unset.
         env["PYTHONPATH"] = (backend + os.pathsep + existing) if existing else backend
         if preset is None:
             env.pop("CUDA_DEVICE_ORDER", None)
@@ -487,7 +464,6 @@ class TestCudaDeviceOrder:
         assert self._order_after_fresh_import("FASTEST_FIRST") == "FASTEST_FIRST"
 
 
-# ========== _print_cuda_device_list() ==========
 
 
 class TestPrintCudaDeviceList:
@@ -526,7 +502,6 @@ class TestPrintCudaDeviceList:
 
     @needs_torch
     def test_rocm_label_omits_cuda_device_order(self, capsys):
-        # CUDA_DEVICE_ORDER governs CUDA only, so the ROCm listing must not claim it.
         props = [MagicMock(), MagicMock()]
         props[0].name = "AMD Instinct MI300X"
         props[1].name = "AMD Instinct MI300X"
@@ -541,7 +516,6 @@ class TestPrintCudaDeviceList:
         assert "[0] AMD Instinct MI300X" in out
 
 
-# ========== format_error_message() ==========
 
 
 class TestFormatErrorMessage:
@@ -580,7 +554,6 @@ class TestFormatErrorMessage:
         rate_error.response = response
         assert is_hf_authentication_error(rate_error) is False
 
-    # --- OOM on CUDA ---
 
     @needs_torch
     def test_cuda_oom(self):
@@ -591,7 +564,6 @@ class TestFormatErrorMessage:
         assert "big/model" not in msg
         assert "model" in msg
 
-    # --- OOM on MLX ---
 
     @needs_mlx
     def test_mlx_oom(self):
@@ -600,7 +572,6 @@ class TestFormatErrorMessage:
             msg = format_error_message(err, "unsloth/huge-model")
         assert "Apple Silicon" in msg
 
-    # --- OOM on CPU ---
 
     def test_cpu_oom(self):
         err = Exception("not enough memory to allocate")
@@ -608,7 +579,6 @@ class TestFormatErrorMessage:
             msg = format_error_message(err, "any/model")
         assert "system" in msg.lower()
 
-    # --- Generic fallback ---
 
     def test_generic_error(self):
         err = Exception("Something completely unexpected")

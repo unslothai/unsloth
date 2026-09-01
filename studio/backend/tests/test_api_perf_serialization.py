@@ -37,14 +37,12 @@ class _Resp(BaseModel):
 
 
 def _old_body(model) -> bytes:
-    # What the previous code emitted: dict -> Starlette json.dumps.
     return JSONResponse(content = model.model_dump()).body
 
 
 def test_body_matches_old_jsonresponse():
     model = _Resp()
     resp = inference_route._model_json_response(model)
-    # Same decoded JSON (key order is irrelevant once parsed), nulls preserved.
     assert json.loads(resp.body) == json.loads(_old_body(model))
     assert json.loads(resp.body)["system_fingerprint"] is None  # null kept, not dropped
 
@@ -70,7 +68,7 @@ def test_pooled_client_reused_within_loop_and_recreated_after_close():
     async def _scenario():
         a = llama_http.nonstreaming_client()
         b = llama_http.nonstreaming_client()
-        assert a is b  # reused within one loop
+        assert a is b
         await llama_http.aclose()
         assert a.is_closed
         c = llama_http.nonstreaming_client()  # must not return the closed client

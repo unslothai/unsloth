@@ -30,7 +30,6 @@ from unittest.mock import patch
 
 import pytest
 
-# Stub heavy / unavailable deps before importing the module under test.
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -70,11 +69,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Only when the real library is absent: sys.modules holds what has been IMPORTED, not what is
+# installed, so setdefault does not defer to an untouched real httpx.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -83,9 +79,6 @@ except ImportError:
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_instance():
@@ -110,9 +103,6 @@ def _write_sparse_file(path: Path, size_bytes: int) -> None:
             fh.truncate(size_bytes)
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 class TestLoadProgressEmptyStates:
@@ -241,5 +231,4 @@ class TestLoadProgressDegradation:
         inst._healthy = False
 
         out = inst.load_progress()
-        # FileNotFoundError on /proc path -> load_progress returns None.
         assert out is None

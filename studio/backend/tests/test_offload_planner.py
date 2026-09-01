@@ -53,9 +53,8 @@ needs_gguf = pytest.mark.skipif(
 )
 
 
-# ----------------------------------------------------------------- synthetic layouts
-# Byte totals are the measured ones for Qwen3.8-27B, so the ladder tests run the
-# real arithmetic without needing 27 GB of fixtures on disk.
+# Byte totals are the measured ones for Qwen3.8-27B, so the ladder tests run the real arithmetic
+# without needing 27 GB of fixtures on disk.
 
 
 def _uniform_layout(
@@ -129,7 +128,6 @@ def uneven_layout() -> ModelLayout:
     )
 
 
-# ------------------------------------------------------------------- the ladder
 
 
 def test_a_load_that_fits_spills_nothing():
@@ -177,7 +175,6 @@ def test_a_load_that_cannot_fit_keeps_mmap_and_says_so():
     assert "smaller quant" in plan.reason
 
 
-# ------------------------------------------------------------ what must never happen
 
 
 @pytest.mark.parametrize("vram", [4 * GIB, 8 * GIB, 12 * GIB, 16 * GIB, 24 * GIB])
@@ -225,7 +222,6 @@ def test_unreadable_host_ram_keeps_mmap():
     assert plan.load_mode_none is False
 
 
-# ------------------------------------------------------------------- patterns
 
 
 def test_every_emitted_pattern_is_anchored():
@@ -297,7 +293,6 @@ def test_plan_to_args_shape():
     assert "--load-mode" in args and args[args.index("--load-mode") + 1] == "none"
 
 
-# ---------------------------------------------------------------- spill selection
 
 
 def test_largest_first_minimises_overshoot():
@@ -306,7 +301,7 @@ def test_largest_first_minimises_overshoot():
     layout = uneven_layout()
     # Need ~50 MiB freed: the 50 MiB block alone should do it.
     floor = resident_floor_bytes(layout, 4096)
-    budget = floor + layout.spillable_bytes - 40 * MIB + 1 * GIB  # +overhead
+    budget = floor + layout.spillable_bytes - 40 * MIB + 1 * GIB
     plan = plan_placement(
         layout,
         [budget],
@@ -342,7 +337,6 @@ def test_front_and_back_orders_pick_opposite_ends():
     assert back.spilled_blocks == (3,)
 
 
-# ------------------------------------------------------------------ abstention
 
 
 def test_an_incomplete_layout_abstains():
@@ -359,7 +353,6 @@ def test_a_device_smaller_than_its_own_overhead_abstains():
     assert plan_placement(q4_layout(), [512 * MIB], 64 * GIB, 8192).changed is False
 
 
-# -------------------------------------------------------------------- multi GPU
 
 
 def test_every_device_pays_the_fixed_overhead():
@@ -751,7 +744,6 @@ def test_multi_gpu_credit_sums():
     )
 
 
-# --------------------------------------------------------------- context policy
 
 
 def test_never_reduce_keeps_the_requested_context():
@@ -793,7 +785,6 @@ def test_context_is_clamped_to_what_the_model_was_trained_on():
     assert plan.n_ctx == layout.n_ctx_train
 
 
-# ------------------------------------------------------------------- KV quant
 
 
 def test_kv_quantisation_is_off_by_default():
@@ -836,13 +827,12 @@ def test_f16_is_preferred_when_it_fits_even_with_quant_allowed():
     assert plan.cache_type_k is None
 
 
-# ------------------------------------------------- the budget ladder, end to end
 
 
 @pytest.mark.parametrize(
     "budget_gib,expected_k",
-    # From the independently computed placement table: max context with the FFN
-    # spilled, f16 cache, 1 GiB overhead.
+    # From the independently computed placement table: max context with the FFN spilled, f16 cache,
+    # 1 GiB overhead.
     [(8, 20), (10, 52), (12, 84), (16, 148), (20, 212)],
 )
 def test_q4_ffn_spilled_context_ladder(budget_gib, expected_k):
@@ -852,11 +842,9 @@ def test_q4_ffn_spilled_context_ladder(budget_gib, expected_k):
     assert expected_k * 1024 <= got < (expected_k + 1) * 1024, got
 
 
-# Budgets and expected contexts here are ARITHMETIC against a stated overhead
-# reserve, not measurements, so moving the constant (1 GiB -> 1.5 GiB, to cover
-# the prefill compute buffer that was OOMing at depth) does not silently
-# invalidate them. The constant itself is pinned by
-# test_the_overhead_reserve_covers_the_measured_prefill_buffer.
+# Budgets and expected contexts here are ARITHMETIC against a stated overhead reserve, not
+# measurements, so moving the constant does not silently invalidate them. The constant itself is
+# pinned by test_the_overhead_reserve_covers_the_measured_prefill_buffer.
 FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB)
 
 
@@ -893,7 +881,6 @@ def test_the_ladder_never_regresses_as_vram_grows():
     assert counts == sorted(counts, reverse = True), counts
 
 
-# ------------------------------------------------------ against the real GGUFs
 
 
 @needs_gguf
@@ -996,14 +983,13 @@ def test_a_split_gguf_abstains_instead_of_planning_on_one_shard():
     partial = _StubReader(_shard_fields(**{"split.count": 4}), _shard_tensors(range(16)))
     assert _layout_from_reader(partial).complete is False
 
-    # The undercount it guards against is real: the same shard read as the whole
-    # model reports a quarter of the blocks and a quarter of the spillable bytes.
+    # The undercount it guards against is real: the same shard read as the whole model reports a
+    # quarter of the blocks and a quarter of the spillable bytes.
     whole = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     as_if_whole = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(16))))
     assert as_if_whole.spillable_bytes * 4 == whole.spillable_bytes
 
 
-# ------------------------------------------------- host profile and cost integration
 
 
 def _dense_q4() -> ModelLayout:
@@ -1117,8 +1103,7 @@ def test_the_overhead_reserve_covers_the_measured_prefill_buffer():
     """
     reserve = PlanOptions().overhead_bytes_per_device
     measured_prefill_buffer = int(594.16 * 1024 * 1024)
-    # The context consumed the remainder of the old 1 GiB, since 594 MiB could
-    # not be allocated inside it.
+    # The context consumed the remainder of the old 1 GiB, since 594 MiB could not fit inside it.
     inferred_cuda_context = GIB - measured_prefill_buffer
     assert reserve >= measured_prefill_buffer + inferred_cuda_context
     assert reserve > GIB, "1 GiB is the value that OOMed"
@@ -1126,11 +1111,10 @@ def test_the_overhead_reserve_covers_the_measured_prefill_buffer():
     assert reserve <= 2 * GIB
 
 
-# ------------------------------------------- excluded blocks and the pool budget
 
 
-# Just too little VRAM for the 64-block stub at 4096 ctx, so every block spills
-# and the planner reaches the all-of-them branch that emits the compact pattern.
+# Just too little VRAM for the 64-block stub at 4096 ctx, so every block spills and the planner
+# reaches the all-of-them branch that emits the compact pattern.
 _NO_OVERHEAD = PlanOptions(overhead_bytes_per_device = 0)
 _ALL_SPILL_VRAM = 3 * GIB + 64 * MIB
 
@@ -1178,20 +1162,19 @@ def test_a_tied_embedding_gguf_still_charges_a_vocabulary_matrix_to_vram():
     assert tied.complete and untied.complete
     assert tied.lm_head_bytes == 0, "there is no output.weight to spill"
 
-    # The VRAM floor is the same either way: a vocabulary matrix is resident in
-    # both, it just arrives as a duplicate in the tied case.
+    # The VRAM floor is the same either way: a vocabulary matrix is resident in both, it just
+    # arrives as a duplicate in the tied case.
     assert resident_floor_bytes(tied, 4096) == resident_floor_bytes(untied, 4096)
     assert all_resident_bytes(tied, 4096) == all_resident_bytes(untied, 4096)
 
-    # And it reaches the decision: the same card spills the same blocks.
     opts = PlanOptions(overhead_bytes_per_device = 0)
     tied_plan = plan_placement(tied, [10 * GIB], 256 * GIB, 4096, opts = opts)
     untied_plan = plan_placement(untied, [10 * GIB], 256 * GIB, 4096, opts = opts)
     assert tied_plan.spilled_blocks, "a partial spill, so lm_head is not in play"
     assert len(tied_plan.spilled_blocks) == len(untied_plan.spilled_blocks)
 
-    # Never as lm_head: the duplicate keeps the name token_embd.weight, so
-    # LM_HEAD_PATTERN cannot match it and spilling it would move nothing.
+    # Never as lm_head: the duplicate keeps the name token_embd.weight, so LM_HEAD_PATTERN cannot
+    # match it and spilling it would move nothing.
     assert tied_plan.spilled_lm_head is False
     assert LM_HEAD_PATTERN not in tied_plan.ot_patterns
 
@@ -1279,7 +1262,6 @@ def test_extra_resident_bytes_are_charged_against_the_pooled_budget():
 
     assert without.spills_anything and with_extra.spills_anything
     assert len(with_extra.spilled_blocks) > len(without.spilled_blocks)
-    # And it reaches the context ladder too, not just the deficit.
     assert max_context_for(layout, [16 * GIB], spill_all_ffn = True, opts = charged) < max_context_for(
         layout, [16 * GIB], spill_all_ffn = True, opts = base
     )

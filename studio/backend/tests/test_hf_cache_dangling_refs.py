@@ -77,7 +77,6 @@ def _empty_cache_info(cls):
     return cls(**{f.name: known.get(f.name, frozenset()) for f in dataclasses.fields(cls)})
 
 
-# --- the #7374 symptom -------------------------------------------------------
 
 
 def test_huggingface_hub_really_hides_a_repo_behind_a_dangling_ref(tmp_path):
@@ -108,7 +107,6 @@ def test_dangling_ref_no_longer_hides_an_intact_repo(tmp_path, monkeypatch):
     assert revision.commit_hash == SNAPSHOT
     assert revision.snapshot_path == repo_dir / "snapshots" / SNAPSHOT
     assert {f.file_name for f in revision.files} == {"model.safetensors"}
-    # The dangling ref maps to no revision...
     assert revision.refs == frozenset()
     # ...and is still on disk: the repair never writes to the cache.
     assert _ref_names(repo_dir) == ["main"]
@@ -142,7 +140,6 @@ def test_a_still_resolvable_ref_keeps_its_revision_mapping(tmp_path, monkeypatch
     assert _ref_names(repo_dir) == ["main", "stale"]
 
 
-# --- the repair must not widen past the leftover-refs assertion --------------
 
 
 def test_a_healthy_cache_is_returned_untouched(tmp_path, monkeypatch):
@@ -270,7 +267,6 @@ def test_a_scan_object_without_warnings_still_reaches_the_caller(tmp_path, monke
     assert len(_scan(tmp_path, monkeypatch)) == 1
 
 
-# --- version robustness ------------------------------------------------------
 
 
 def test_recovered_entries_match_the_huggingface_hub_field_surface():
@@ -302,7 +298,6 @@ def test_a_recovered_repo_survives_delete_revisions(tmp_path, monkeypatch):
     assert strategy.expected_freed_size == 11
 
 
-# --- load identity for a recovered snapshot ----------------------------------
 
 
 def _autoload_rows(
@@ -366,7 +361,6 @@ def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
     assert inventory_scan.default_ref_snapshot(detached) is None
 
 
-# --- the load id must name a snapshot that holds the advertised payload ------
 
 OLDER = "d" * 40
 
@@ -521,7 +515,6 @@ def test_load_id_stays_the_repo_id_when_main_resolves_onto_the_payload(tmp_path,
     assert rows[0]["load_id"] == "Org/Model"
 
 
-# --- everything the row advertises must resolve under its load id ------------
 
 
 def _local_gguf_variants_for_autoload(row: dict, cache_root: Path) -> list[str]:
@@ -740,7 +733,6 @@ def test_no_snapshot_holds_the_payload_so_a_dangling_ref_pins_nothing(tmp_path, 
     assert load_id == "Org/Model"
 
 
-# --- the metadata must describe the snapshot the row hands out ---------------
 
 QUANTIZED_CONFIG = b'{"quantization_config": {"quant_method": "bitsandbytes"}}'
 MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n---\n"
@@ -802,7 +794,6 @@ def test_metadata_describes_the_snapshot_the_row_hands_out(
     assert rows[0].get("library_name") == "transformers"
 
 
-# --- the signals paired with the pinned snapshot ------------------------------
 
 
 def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
@@ -980,8 +971,7 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
     [
         # The signal belongs to the newest snapshot while the row advertises an older, complete one.
         pytest.param({"config.json": b"{}"}, NEWER, OLDER, False, id = "pinned-older-snapshot"),
-        # Negative side: the signal does describe the snapshot the row advertises. No refs/main
-        # (a commit-pinned fetch) carries no evidence either way.
+        # Negative side: the signal does describe the snapshot the row advertises.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             None,
@@ -997,7 +987,8 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
             False,
             id = "unmaterialised-attempt",
         ),
-        # refs/main resolves onto the OLDER payload snapshot though the newer one is self-contained too.
+        # refs/main resolves onto the OLDER payload snapshot though the newer one is self-contained
+        # too.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             OLDER,
@@ -1118,7 +1109,8 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
 @pytest.mark.parametrize(
     "older_files, partial",
     [
-        # The safetensors half of the case above: a shard names the total, so half a set is provable.
+        # The safetensors half of the case above: a shard names the total, so half a set is
+        # provable.
         pytest.param(
             {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 32},
             True,
@@ -1251,7 +1243,6 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
             False,
             id = "an-unsharded-payload-and-no-other-trace",
         ),
-        # One whole family beside a torn one still loads, as with an .incomplete blob present.
         pytest.param(
             {
                 "config.json": b"{}",
@@ -1458,7 +1449,6 @@ def test_a_marker_for_another_quant_still_leaves_the_pinned_one_chattable(tmp_pa
     assert rows[0]["capabilities"].get("can_chat") is True
 
 
-# --- one snapshot ordering, so the row and the picker cannot disagree ---------
 
 
 def test_equal_mtime_snapshots_order_the_same_way_whatever_the_iteration_order(tmp_path):
@@ -1545,7 +1535,6 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
     assert rows[0]["capabilities"].get("supports_vision") is False
 
 
-# --- the chokepoints, so a new signal cannot pick its own snapshot ------------
 
 _BACKEND = Path(__file__).resolve().parents[1]
 # helpers passed repo_info; snapshot signals also receive selected.
@@ -1568,10 +1557,9 @@ _MTIME_READERS = {
     "hub/utils/hf_cache_state.py": frozenset({"snapshot_selection_key"}),
     "hub/utils/gguf.py": frozenset(),
     "hub/services/models/cache_inventory.py": frozenset({"_blob_mtime"}),
-    # Mirrors what huggingface_hub records per revision; it selects nothing.
     "hub/utils/inventory_scan.py": frozenset({"_recover_repo_dropped_by_scan"}),
     # The compatibility routes, listed so the two snapshot selectors cannot reintroduce their own
-    # mtime reads. The names left rank directories or repo/blob mtimes, never snapshots.
+    # mtime reads.
     "routes/models.py": frozenset(
         {
             "_blob_mtime",
@@ -1653,7 +1641,6 @@ def test_only_the_shared_key_orders_snapshots_by_mtime(module, allowed):
     ), f"{module} reads a snapshot mtime outside snapshot_selection_key: {sorted(readers)}"
 
 
-# --- review-round regressions -------------------------------------------------
 
 
 def _repo_with(
@@ -2597,7 +2584,7 @@ def test_a_broken_active_copy_does_not_hide_a_complete_legacy_copy(tmp_path, mon
     }
     torn = dict(whole)
     del torn["model-00002-of-00002.safetensors"]
-    # Active: half a set behind a dangling ref. Legacy: the same repo, whole.
+    # Active: half a set behind a dangling ref.
     _repo_with(active, snapshots = {OLDER: torn}, refs = {"main": UPSTREAM_HEAD})
     legacy_repo = _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
 
@@ -3262,8 +3249,8 @@ def test_a_newer_companion_only_snapshot_does_not_make_the_ref_snapshot_partial(
 
     from hub.services.models import cache_inventory
 
-    # No root config.json: real diffusers pipelines ship model_index.json and per-component
-    # configs only, and a fixture that adds one would pin a layout that does not occur.
+    # No root config.json: real diffusers pipelines ship model_index.json and per-component configs
+    # only, and a fixture that adds one would pin a layout that does not occur.
     pipeline = {
         "model_index.json": b'{"_class_name":"FluxPipeline"}',
         "transformer/config.json": b'{"_class_name":"FluxTransformer2DModel"}',
@@ -3969,7 +3956,6 @@ def test_the_two_snapshot_orderings_agree_on_every_permutation(tmp_path):
     )
     stamp = 1_700_000_000
     for index, commit in enumerate(commits):
-        # Two pairs at equal mtimes, so ties decide half the ordering.
         moment = stamp + (index // 2)
         os.utime(repo / "snapshots" / commit, (moment, moment))
 

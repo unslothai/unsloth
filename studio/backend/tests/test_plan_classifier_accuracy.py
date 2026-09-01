@@ -70,7 +70,6 @@ def test_corpus_is_intact():
     corpus = _corpus()
     assert len(corpus) == 300
     assert all(row["text"].strip() for row in corpus)
-    # Every row is a finished answer by construction.
     assert all(row["retry_tool_calls"] == 0 for row in corpus)
 
 

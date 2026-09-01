@@ -26,7 +26,6 @@ from core.inference.external_provider import ExternalProviderClient
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 
 
-# ── the helper ────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -218,7 +217,6 @@ def test_a_mid_stream_error_event_still_reaches_the_client():
     assert sanitize_provider_sse_line(line) is line
 
 
-# ── the plain (tools off) relay ───────────────────────────────────
 
 
 def _drive(coro):
@@ -350,7 +348,6 @@ def test_the_plain_relay_normalizes_ollama_reasoning(monkeypatch):
     assert deltas[-1]["content"] == "answer"
 
 
-# ── The loop must not sanitize a transport that already did ──────────
 
 
 def test_a_retained_hosted_tool_result_survives_the_studio_loop():

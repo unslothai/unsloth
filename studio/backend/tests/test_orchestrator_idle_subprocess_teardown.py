@@ -61,10 +61,9 @@ def test_unload_keeps_the_worker_while_a_load_is_in_flight():
     assert o.shutdowns == []
 
 
-# The stubs above cannot see a teardown that deadlocks or raises: the real
-# _shutdown_subprocess runs while unload_model holds _gen_lock and has set
-# _unload_pending, and it nulls the very _drain_event the unload clears in its
-# finally. These drive it for real against a live worker.
+# The stubs above cannot see a teardown that deadlocks or raises: the real _shutdown_subprocess
+# runs while unload_model holds _gen_lock with _unload_pending set, and it nulls the very
+# _drain_event the unload clears in its finally. These drive it against a live worker.
 
 
 def _sleeper(cmd_queue, resp_queue):

@@ -136,8 +136,8 @@ class TestHealOpenaiMessage:
         assert "tool_calls" not in msg
 
     def test_mixed_declared_and_undeclared_promotes_declared_keeps_undeclared_text(self):
-        # Span-exact removal: only the promoted Bash markup is dropped; the
-        # undeclared Nuke call's text stays in the content byte-intact.
+        # Span-exact removal: only the promoted Bash markup is dropped; the undeclared Nuke call's text
+        # stays byte-intact.
         content = f"pre {XML_BASH} mid {XML_UNDECLARED} post"
         msg = {"role": "assistant", "content": content}
         assert heal_openai_message(msg, {"Bash"}) is True
@@ -162,8 +162,7 @@ class TestHealOpenaiMessage:
         assert msg["content"] == "then"
 
     def test_unparseable_closed_block_not_deleted(self):
-        # A closed <tool_call> block whose body never parses is model output,
-        # not a promotable call; it must survive promotion of its neighbor.
+        # A closed <tool_call> block whose body never parses is model output, not a promotable call.
         garbage = "<tool_call>not json at all</tool_call>"
         content = f"{XML_BASH} {garbage}"
         msg = {"role": "assistant", "content": content}
@@ -222,9 +221,8 @@ class TestStreamHealer:
         assert _events_text(events) == "trailing <tool"
 
     def test_mixed_calls_promote_declared_flush_undeclared_in_order(self):
-        # Declared + undeclared in the same buffer: the declared call is
-        # promoted, the undeclared markup flushes as text, and event order
-        # follows document order (call first here, since it came first).
+        # Declared + undeclared in the same buffer: the declared call is promoted, the undeclared markup
+        # flushes as text, and event order follows document order.
         healer = StreamToolCallHealer({"Bash"})
         text = f"{XML_BASH} then {XML_UNDECLARED} post"
         events = healer.feed(text) + healer.finalize()
@@ -235,8 +233,7 @@ class TestStreamHealer:
         assert "then" in joined and "post" in joined
 
     def test_text_between_two_healed_calls_keeps_document_order(self):
-        # call A, " middle ", call B in ONE buffer must stream as
-        # call A -> text -> call B, never both calls then the text.
+        # call A, " middle ", call B in ONE buffer must stream in that order, never both calls then text.
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed(f"{XML_BASH} middle {XML_BASH}") + healer.finalize()
         kinds = [k for k, _ in events]
@@ -244,8 +241,8 @@ class TestStreamHealer:
         assert events[1][1] == " middle "
 
     def test_undeclared_then_declared_keeps_document_order(self):
-        # The undeclared block precedes the declared call; its raw text must
-        # be emitted BEFORE the promoted call event, never after.
+        # The undeclared block precedes the declared call, so its raw text must be emitted BEFORE the
+        # promoted call event.
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed(f"{XML_UNDECLARED} then {XML_BASH}") + healer.finalize()
         kinds = [k for k, _ in events]
@@ -255,9 +252,8 @@ class TestStreamHealer:
         assert XML_UNDECLARED in _events_text(events)
 
     def test_declared_promoted_then_late_undeclared_flushes_raw(self):
-        # Streaming causality: the declared call completed and was already
-        # emitted before the undeclared one arrived. The undeclared markup
-        # must still reach the client as raw text (no data loss).
+        # Streaming causality: the declared call was already emitted before the undeclared one arrived,
+        # and the undeclared markup must still reach the client as raw text.
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed(f"{XML_BASH} then ")
         assert len(_events_calls(events)) == 1
@@ -281,10 +277,9 @@ class TestStreamHealer:
         assert _events_text(events).strip() == "then"
 
     def test_mistral_array_multiple_calls_all_promoted_in_stream(self):
-        # A canonical Mistral [TOOL_CALLS] array carries several calls under a
-        # SINGLE signal. Draining only the first call would leave the residue
-        # starting at ",{...}]" (no signal), so later calls in the same array
-        # must be promoted in the same pass, not flushed as raw text.
+        # A canonical Mistral [TOOL_CALLS] array carries several calls under a SINGLE signal, so
+        # draining only the first would leave the residue starting at ",{...}]" with no signal: later
+        # calls in the same array must be promoted in the same pass.
         healer = StreamToolCallHealer({"get_weather", "get_time"})
         array = (
             '[TOOL_CALLS][{"name":"get_weather","arguments":{"city":"Paris"}},'
@@ -311,9 +306,8 @@ class TestStreamHealer:
         assert _events_text(events) == ""
 
     def test_mistral_array_undeclared_middle_kept_as_text_others_promoted(self):
-        # A mid-array element for a tool that is not declared must survive as
-        # text while the declared neighbours on either side still promote in
-        # document order.
+        # A mid-array element for an undeclared tool must survive as text while the declared neighbours
+        # still promote in document order.
         healer = StreamToolCallHealer({"a", "c"})
         array = (
             '[TOOL_CALLS][{"name":"a","arguments":{}},'
@@ -397,8 +391,8 @@ class TestNudgeHelpers:
         assert "`Bash` or `Read`" in suffix[1]["content"]
 
     def test_retry_with_undeclared_structured_call_is_not_an_improvement(self):
-        # The retry replaces the original only when it carries a USABLE call:
-        # a structured call naming an undeclared tool must not count.
+        # The retry replaces the original only when it carries a USABLE call: a structured call naming
+        # an undeclared tool must not count.
         undeclared = [
             {"id": "x", "type": "function", "function": {"name": "Nuke", "arguments": "{}"}}
         ]
@@ -409,8 +403,7 @@ class TestNudgeHelpers:
         assert response_has_promotable_calls(self._resp("", declared), {"Bash"}) is True
 
     def test_retry_with_mixed_structured_calls_is_not_an_improvement(self):
-        # ALL structured calls must be declared: the caller forwards the whole
-        # list (and a parallel cap could keep only the FIRST), so a mixed retry
+        # ALL structured calls must be declared: the caller forwards the whole list, so a mixed retry
         # could still hand the client an undeclared tool.
         mixed = [
             {"id": "x", "type": "function", "function": {"name": "Nuke", "arguments": "{}"}},
@@ -436,16 +429,13 @@ class TestNudgeHelpers:
         ],
     )
     def test_malformed_response_shapes_never_raise(self, data):
-        # A malformed upstream body must degrade to "nothing to heal/nudge",
-        # never crash the request with an AttributeError.
+        # A malformed upstream body must degrade to "nothing to heal/nudge", never crash the request.
         assert nudge_should_retry(data, {"Bash"}) is False
         assert response_has_promotable_calls(data, {"Bash"}) is False
         suffix = nudge_messages(data, {"Bash"})
         assert suffix[0] == {"role": "assistant", "content": ""}
 
 
-# ── Route-level wiring (OpenAI passthrough) ─────────────────────────────
-# Mirrors the fake-llama-server patterns in test_openai_tool_passthrough.py.
 
 import asyncio  # noqa: E402
 import threading  # noqa: E402
@@ -658,9 +648,8 @@ class TestOpenaiNonStreamingRoute:
 
     def test_length_finish_reason_preserved(self, monkeypatch):
         async def _run():
-            # Truncated generation: the healed call stays attached but the
-            # client must still see the truncation, so length is never
-            # upgraded to tool_calls.
+            # Truncated generation: the healed call stays attached but length is never upgraded to
+            # tool_calls, so the client still sees the truncation.
             _, data = await _drive_non_streaming(
                 monkeypatch,
                 _payload(),
@@ -716,9 +705,8 @@ class TestOpenaiNonStreamingRoute:
 
     def test_healed_then_native_stream_indexes_disjoint(self, monkeypatch):
         async def _run():
-            # A healed text-form call goes out first (index 0); a native
-            # structured delta follows. Clients merge deltas by index, so the
-            # native call must be shifted off index 0 or the two would merge.
+            # A healed text-form call goes out first (index 0) and a native structured delta follows;
+            # clients merge deltas by index, so the native call must be shifted off index 0.
             native_line = (
                 'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":'
                 '[{"index":0,"id":"call_native","type":"function","function":'
@@ -798,7 +786,6 @@ class TestNudgeRetryOpenai:
             suffix = retry["messages"][len(original["messages"]) :]
             assert [m["role"] for m in suffix] == ["assistant", "user"]
             assert suffix[0]["content"] == GARBAGE_SIGNAL
-            # The healed retry response is returned.
             (call,) = data["choices"][0]["message"]["tool_calls"]
             assert call["function"]["name"] == "lookup"
             assert data["choices"][0]["finish_reason"] == "tool_calls"
@@ -1015,7 +1002,6 @@ class TestAnthropicPassthroughHealingText:
         async def _run():
             content = f"Running now. {LOOKUP_XML} then {XML_UNDECLARED} done."
             data = await self._drive(monkeypatch, _upstream_message(content))
-            # Declared lookup call is promoted into a structured tool_use block.
             (tool_use,) = [b for b in data["content"] if b["type"] == "tool_use"]
             assert tool_use["name"] == "lookup"
             text = " ".join(b["text"] for b in data["content"] if b["type"] == "text")
@@ -1189,9 +1175,8 @@ class TestAnthropicEmitterHealing:
         assert len(starts) == 1
 
     def test_disable_parallel_drops_native_after_healed(self):
-        # A healed call consumed the single allowed slot; a later native
-        # structured call (index 0, so it survives the caller's chunk-level
-        # cap) must not open a second tool_use block.
+        # A healed call consumed the single allowed slot, so a later native structured call (index 0, so
+        # it survives the caller's chunk-level cap) must not open a second tool_use block.
         structured = [
             {
                 "index": 0,
@@ -1288,8 +1273,7 @@ class TestAnthropicNonStreamingRoute:
             _, data = await self._drive(monkeypatch, [_upstream_message(xml)])
             assert data["stop_reason"] == "end_turn"
             assert not any(b["type"] == "tool_use" for b in data["content"])
-            # Healing preserves what it does not promote: the undeclared call
-            # reaches the client as text instead of being silently stripped.
+            # Healing preserves what it does not promote: the undeclared call reaches the client as text.
             (text_block,) = [b for b in data["content"] if b["type"] == "text"]
             assert text_block["text"] == xml
 
@@ -1297,9 +1281,8 @@ class TestAnthropicNonStreamingRoute:
 
     def test_mixed_undeclared_text_preserved_after_heal(self, monkeypatch):
         async def _run():
-            # Declared call promoted to tool_use; the undeclared call's markup
-            # stays in the text block (the legacy strip must not run after a
-            # span-exact heal), matching the OpenAI passthrough.
+            # Declared call promoted to tool_use; the undeclared call's markup stays in the text block, since
+            # the legacy strip must not run after a span-exact heal.
             rogue = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
             _, data = await self._drive(monkeypatch, [_upstream_message(f"{LOOKUP_XML} {rogue}")])
             (tool_block,) = [b for b in data["content"] if b["type"] == "tool_use"]
@@ -1322,9 +1305,8 @@ class TestAnthropicNonStreamingRoute:
 
     def test_tool_choice_none_keeps_legacy_strip(self, monkeypatch):
         async def _run():
-            # Anthropic {"type": "none"} arrives here converted to "none":
-            # the request forbade tool calls, so nothing is promoted and the
-            # legacy XML strip applies as before healing existed.
+            # Anthropic {"type": "none"} arrives converted to "none": the request forbade tool calls, so
+            # nothing is promoted and the legacy XML strip applies as before healing existed.
             _, data = await self._drive(
                 monkeypatch,
                 [_upstream_message(f"plan {LOOKUP_XML}")],
@@ -1369,7 +1351,6 @@ class TestOpenaiStreamingRoute:
                 if c.get("finish_reason")
             ]
             assert finishes == ["tool_calls"]
-            # None of the XML leaked as visible content.
             text = "".join(
                 (c.get("delta") or {}).get("content") or ""
                 for p in payloads
@@ -1382,9 +1363,8 @@ class TestOpenaiStreamingRoute:
 
     def test_parallel_cap_drops_native_after_healed(self, monkeypatch):
         async def _run():
-            # parallel_tool_calls=false: a healed call consumed the single
-            # allowed slot, and the upstream SSE cap keeps native index 0, so
-            # the route must drop the later native call itself.
+            # parallel_tool_calls=false: a healed call consumed the single allowed slot and the upstream SSE
+            # cap keeps native index 0, so the route must drop the later native call itself.
             xml = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
             native = (
                 'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":'
@@ -1438,8 +1418,8 @@ class TestOpenaiStreamingRoute:
 
     def test_incomplete_xml_healed_at_done(self, monkeypatch):
         async def _run():
-            # No close tag and no finish chunk: healed at the [DONE] boundary,
-            # synthetic finish must say tool_calls.
+            # No close tag and no finish chunk: healed at the [DONE] boundary, so the synthetic finish must
+            # say tool_calls.
             lines = [
                 'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"<tool_call>{\\"name\\":\\"lookup\\",\\"arguments\\":{}}"}}]}',
                 "data: [DONE]",
@@ -1521,8 +1501,8 @@ class TestHealerSignalAlignment:
         assert healer.healed
 
 
-# --- client-supplied tool schemas -------------------------------------------------------
-# A coding agent on `unsloth start` declares its own tools, so schemas live in the request.
+# Client-supplied tool schemas: a coding agent on `unsloth start` declares its own tools, so the
+# schemas live in the request.
 
 
 def _client_tool(name, properties):

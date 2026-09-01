@@ -33,9 +33,7 @@ def _backend_block() -> str:
 
 
 def _run(value: str | None, system: str = "Linux") -> tuple[list[str], str]:
-    # Pass the value through env (not the script text) so whitespace survives, and
-    # stub the setup.sh logging helpers the unknown-value branch calls. system sets
-    # _HOST_SYSTEM so the macOS (Darwin) no-op branch can be exercised.
+    # Pass the value through env, not the script text, so whitespace survives; _HOST_SYSTEM drives Darwin.
     env = {
         k: v
         for k, v in os.environ.items()
@@ -61,9 +59,7 @@ def _run(value: str | None, system: str = "Linux") -> tuple[list[str], str]:
 
 
 def test_backend_block_forwards_nothing_to_the_installer():
-    # One owner for the selection. install_llama_prebuilt.py reads the variable
-    # itself and is the only side that can also read the marker's recorded choice,
-    # so a second copy assembled here could only ever contradict it.
+    # One owner for the selection: install_llama_prebuilt.py reads the variable and the marker's choice.
     assert "_PREBUILT_CMD" not in _backend_block()
 
 
@@ -127,8 +123,7 @@ def test_backend_unknown_warns(value):
 
 @_SKIP_NO_BASH
 def test_arm64_recovery_uses_transient_cpu_fallback():
-    # The arm64 Linux GPU-build recovery must stay transient (--cpu-fallback), never
-    # the persisted --force-cpu, so a later update can still heal to a GPU bundle (#6097).
+    # The arm64 Linux GPU recovery stays transient (--cpu-fallback), never persisted --force-cpu (#6097).
     text = _SETUP_SH.read_text(encoding = "utf-8")
     m = re.search(r"_ARM64_CPU_CMD=\((.*?)\)", text, re.DOTALL)
     assert m, "arm64 CPU recovery command not found in setup.sh"
@@ -138,11 +133,9 @@ def test_arm64_recovery_uses_transient_cpu_fallback():
 
 
 def test_ordinary_prebuilt_failure_does_not_re_derive_the_backend():
-    # Exit 2 is reached only when no concrete backend was in play: a request the
-    # installer could not honour -- named in the environment or recorded in the
-    # marker the scripts cannot read -- arrives as exit 5 and fails closed there.
-    # Re-deriving it here from the environment alone would miss the marker case
-    # and disagree with the installer on the rest.
+    # Exit 2 is reached only when no concrete backend was in play; a request the installer could not
+    # honour arrives as exit 5 and fails closed there. Re-deriving it from the environment alone
+    # would miss the marker case.
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     failure = sh.index('step "llama.cpp" "prebuilt install failed"')
     branch = sh[failure : sh.index("_NEED_LLAMA_SOURCE_BUILD=true", failure)]
@@ -196,9 +189,7 @@ def test_explicit_backend_source_build_fails_closed():
 
 
 def test_force_compile_sets_need_source_build_before_backend_guard():
-    # A forced source build combined with any concrete backend must reach the
-    # explicit-backend rejection. The source-build state must therefore be set
-    # before the guard runs.
+    # A forced source build with a concrete backend must reach the explicit-backend rejection.
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     force_compile_set = sh.index(
         'if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then\n    _NEED_LLAMA_SOURCE_BUILD=true'
@@ -313,8 +304,7 @@ def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expecte
             "pwsh",
             "-NoProfile",
             "-Command",
-            # Brace the name: PowerShell reads "$var:" as a scope qualifier and
-            # fails to parse, so the probe never ran on a host that has pwsh.
+            # Brace the name: PowerShell reads "$var:" as a scope qualifier, so the probe never ran where pwsh exists.
             f'{normalize}\n"RESULT:${{sourceLlamaBackend}}:$explicitLlamaSourceBackend"',
         ],
         capture_output = True,
@@ -341,10 +331,7 @@ def _run_ps1(value: str | None) -> str:
     if value is not None:
         env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
     harness = (
-        # The spliced snippet warns through setup.ps1's output sink, which the real
-        # script defines above every call site. Stub it to Write-Host so the warning
-        # lands on stdout, where the assertions below read it: without this the call
-        # errors out and the harness returns a bare "ARGS:".
+        # The snippet warns through setup.ps1's sink; stub it to Write-Host or the call errors into a bare "ARGS:".
         "function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) "
         "Write-Host $Message }\n"
         "$prebuiltArgs = @()\n"

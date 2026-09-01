@@ -281,8 +281,8 @@ def test_get_model_config_rejects_invalid_selected_cache_path(path_kind, tmp_pat
 
 
 def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, monkeypatch):
-    # A case-variant in a legacy/default cache must read as present: case resolution only covers the
-    # active cache, but discard deletes case-insensitively, so detection must too.
+    # Case resolution only covers the active cache, but discard deletes case-insensitively, so
+    # detection must too.
     import utils.paths as paths_pkg
     import hub.utils.paths as hub_paths
 
@@ -291,10 +291,8 @@ def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, mon
     default = tmp_path / "default"
     for d in (active, legacy, default):
         d.mkdir()
-    # Differently-cased entry in the legacy cache only.
     (legacy / "models--Unsloth--Foo").mkdir()
 
-    # No active-cache variant; case resolution is a no-op here.
     monkeypatch.setattr(paths_pkg, "resolve_cached_repo_id_case", lambda name: name)
     monkeypatch.setattr(hub_paths, "legacy_hf_cache_dir", lambda: legacy)
     monkeypatch.setattr(hub_paths, "hf_default_cache_dir", lambda: default)
@@ -304,5 +302,4 @@ def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, mon
     )
 
     assert models_route._repo_in_any_hf_cache("unsloth/foo") is True
-    # Absent from every cache -> reported absent.
     assert models_route._repo_in_any_hf_cache("unsloth/not-cached") is False

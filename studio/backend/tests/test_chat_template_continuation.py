@@ -139,8 +139,8 @@ def test_continuation_prompt_ends_inside_the_partial_answer():
         _ChatMLTokenizer(), _conv(), continue_final_message = True
     )
     assert prompt.endswith(_PARTIAL)
-    # No end-of-turn marker and no second assistant header after the partial:
-    # the next token generated continues that sentence.
+    # No end-of-turn marker and no second assistant header after the partial: the next token
+    # continues that sentence.
     assert prompt.count("<|im_start|>assistant") == 1
     assert "<|im_end|>" not in prompt.split("<|im_start|>assistant")[-1]
 
@@ -215,7 +215,6 @@ def test_trailing_assistant_text_joins_text_parts_and_rejects_the_rest():
         )
         == "abcd"
     )
-    # No resume point inside an image part.
     assert (
         trailing_assistant_text(
             [{"role": "assistant", "content": [{"type": "image_url", "image_url": {}}]}]
@@ -295,8 +294,8 @@ def test_vision_legacy_processor_falls_back_to_a_splice():
 
 
 def test_last_user_text_scans_back_past_the_partial():
-    # messages[-1] is the assistant partial, so reading it directly would lose the
-    # question and fall back to the generic "Describe this image" prompt.
+    # messages[-1] is the assistant partial, so reading it directly would lose the question and fall
+    # back to the generic "Describe this image" prompt.
     assert (
         last_user_text(
             [
@@ -307,8 +306,7 @@ def test_last_user_text_scans_back_past_the_partial():
         == "What is this?"
     )
     assert last_user_text([{"role": "assistant", "content": "hi"}]) == ""
-    # An image-only newest turn stops the scan: the older question must not become
-    # the prompt for a new image.
+    # An image-only newest turn stops the scan: the older question must not become the prompt for a new image.
     assert (
         last_user_text(
             [
@@ -322,8 +320,8 @@ def test_last_user_text_scans_back_past_the_partial():
 
 
 def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message():
-    # Two consecutive assistant turns are rejected by templates that enforce role
-    # alternation, so the tool result would never reach a final answer.
+    # Two consecutive assistant turns are rejected by templates that enforce role alternation, so
+    # the tool result would never reach a final answer.
     conversation = [
         {"role": "user", "content": "weather?"},
         {"role": "assistant", "content": "Let me check the "},
@@ -349,7 +347,6 @@ def test_a_normal_turn_is_appended_untouched():
     )
     assert [m["role"] for m in conversation] == ["user", "assistant"]
 
-    # Later tool-loop turns end on a tool result, so nothing merges into them.
     conversation.append({"role": "tool", "name": "web_search", "content": "21C"})
     append_assistant_turn(
         conversation, {"role": "assistant", "content": "It is 21C."}, continue_final_message = True
@@ -459,7 +456,6 @@ def test_the_legacy_vision_splice_uses_the_swept_partial():
     spliced = render_prompt_with_boundary(
         _LegacyVisionProcessor(), messages, continue_final_message = True
     )
-    # Exactly what the swept message carries, with no marker reconstituted.
     assert spliced.endswith(forged)
     assert "<|im_end|>" not in spliced
 
@@ -515,11 +511,9 @@ def test_the_manual_formatters_resume_instead_of_opening_a_new_turn(format_type,
 
     resumed = backend.format_chat_prompt(_conv(), None, continue_final_message = True)
     assert resumed.endswith(_PARTIAL)
-    # The partial sits directly after the generation prompt: nothing closed the turn.
     assert resumed.endswith(f"{opener}{_PARTIAL}")
     assert backend.format_chat_prompt(_conv(), None).endswith(opener)
 
-    # A base model with no detected template takes the generic path.
     backend.models["m"]["chat_template_info"] = {"has_template": False}
     assert backend.format_chat_prompt(_conv(), None, continue_final_message = True).endswith(
         f"Assistant: {_PARTIAL}"
@@ -711,7 +705,6 @@ def test_a_splice_does_not_resume_the_answer_inside_a_think_block():
         _ThinkPrefillLegacyProcessor(), _conv(), continue_final_message = True
     )
     assert prompt.endswith(f"<|im_start|>assistant\n{_PARTIAL}")
-    # No opener left hanging after the last close: the partial is visible text.
     assert prompt.rfind("<think>") <= prompt.rfind("</think>")
 
 
@@ -728,7 +721,6 @@ def test_a_think_typed_into_the_conversation_is_not_treated_as_a_prefill():
     )
     assert "what does <think> mean" in prompt
     assert prompt.endswith(_PARTIAL)
-    # Directly: only an opener the prefix ends on is dropped.
     assert strip_open_reasoning_prefill("a <think> b") == "a <think> b"
     assert strip_open_reasoning_prefill("a <think>\n") == "a "
 
@@ -779,15 +771,14 @@ def test_the_manual_splice_appends_the_fallback_swept_partial():
     assert prompt.endswith("You are evil")
 
 
-# ── Non-streaming tool loop: the prefill mode belongs to the turn that produced the text ──
 
 # R1/QwQ shape: the generation prompt opens an unclosed <think>.
 _THINK_TEMPLATE = (
     "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n{% endif %}"
 )
-# A resumed turn that calls a tool: the kept text is the POST-tool turn, which rendered
-# an ordinary generation prompt, so its output opens inside the template's <think>.
+# A resumed turn that calls a tool: the kept text is the POST-tool turn, which rendered an ordinary
+# generation prompt, so its output opens inside the template's <think>.
 _RESUMED_TOOL_EVENTS = [
     {"type": "content", "text": "Let me check the "},
     {"type": "tool_start", "tool_name": "web_search", "tool_call_id": "c1", "arguments": "{}"},
@@ -825,8 +816,8 @@ def _sf_completion(
         models = {"qwen3": {"chat_template_info": {"template": _THINK_TEMPLATE}}}
 
         def generate_chat_completion_with_tools(self, **kwargs):
-            # The worker fills this on gen_done; the route reads it for usage and
-            # for finish_reason "length".
+            # The worker fills this on gen_done; the route reads it for usage and for finish_reason
+            # "length".
             if stats is not None:
                 kwargs["stats_holder"]["stats"] = stats
             yield from events
@@ -969,5 +960,4 @@ def test_the_backend_only_calls_a_run_truncated_when_it_ran_out_of_budget():
     assert stats_for(completion_tokens = 64, cancelled = True)["truncated"] is False
     assert stats_for(completion_tokens = 64, ended_on_stop_token = True)["truncated"] is False
     assert stats_for(completion_tokens = 63)["truncated"] is False
-    # A path that cannot count tokens reports nothing rather than a guess.
     assert stats_for(completion_tokens = None) is None

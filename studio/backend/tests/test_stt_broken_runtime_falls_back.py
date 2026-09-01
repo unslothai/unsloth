@@ -44,7 +44,6 @@ def test_the_serving_engine_then_falls_back_to_transformers(monkeypatch):
 
     assert inference_routes._resolve_serving_stt_engine("gguf") == "gguf"
     stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
-    # The fallback exists to avoid 501-ing on every recording; this is that case.
     assert inference_routes._resolve_serving_stt_engine("gguf") == "transformers"
 
 
@@ -54,7 +53,6 @@ def test_a_cancelled_transcription_does_not_disable_the_engine():
     cancel_event = threading.Event()
     cancel_event.set()
 
-    # Mirrors the guard at the call site rather than driving a live server.
     if cancel_event is None or not cancel_event.is_set():
         stt_ggml_sidecar.note_runtime_inference_failure("should not happen")
     assert stt_ggml_sidecar.runtime_inference_failure() is None
@@ -102,7 +100,6 @@ def test_the_fallback_fetches_the_transformers_snapshot_it_needs(monkeypatch):
         lambda model, token = None, revision = None: started.append((model, token)),
     )
 
-    # A healthy runtime serves the GGUF itself, so nothing is fetched.
     inference_routes._prepare_runtime_fallback_checkpoint("gguf", "gguf", "small")
     assert started == []
 
@@ -146,8 +143,7 @@ def test_a_plain_transformers_pick_is_left_alone(monkeypatch):
     inference_routes._prepare_runtime_fallback_checkpoint("mtmd", "mtmd", "small")
     assert started == []
 
-    # And a download that cannot start (another model is in flight) is not fatal: the
-    # caller still reports "not downloaded" rather than a 500.
+    # A download that cannot start because another is in flight is not fatal: report not-downloaded, not 500.
     def refuse(
         model,
         token = None,

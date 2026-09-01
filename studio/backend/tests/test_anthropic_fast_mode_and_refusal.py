@@ -155,11 +155,8 @@ def test_fast_mode_none_does_not_attach_header_or_field(monkeypatch):
 def test_refusal_emits_user_facing_notice_and_content_filter_finish(monkeypatch):
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
-    # User-visible refusal notice.
     assert "stopped by Anthropic's safety classifier" in body, body
-    # OpenAI-spec finish_reason mapping.
     assert '"finish_reason": "content_filter"' in body, body
-    # Original deltas preserved before the refusal supplement.
     assert "Hello." in body, body
 
 
@@ -171,6 +168,6 @@ def test_refusal_emits_tool_event_for_chat_adapter_drop(monkeypatch):
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
     assert '"_toolEvent": {"type": "anthropic_refusal"}' in body, body
-    # Visible refusal text must not embed a sentinel that could spoof a
-    # context reset if echoed by another assistant message.
+    # Visible refusal text must not embed a sentinel that could spoof a context reset if echoed by
+    # another assistant message.
     assert "studio:anthropic-refusal" not in body, body

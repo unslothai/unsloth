@@ -30,18 +30,12 @@ _MAIN_RS = _STUDIO / "src-tauri" / "src" / "main.rs"
 _DIAGNOSTICS_RS = _STUDIO / "src-tauri" / "src" / "diagnostics" / "mod.rs"
 _PROCESS_RS = _STUDIO / "src-tauri" / "src" / "process.rs"
 
-# Families that write one file per operation and prune nothing, so the directory grows for
-# the life of the install. Recorded rather than asserted away, and self-expiring: the test
-# below fails once a family here gains retention, which forces the entry out.
-#
-#   llama-server / diffusion-server: one file per model load ATTEMPT. 319 files going back
-#   two months were found on one machine. Retention arrives with #8763.
-# Empty since #8763 gave the two sidecar families keep-newest-N retention. The staleness
-# check below fails on an entry that no longer describes reality, so this list cannot
-# outlive the problem it records.
+# Families that write one file per operation and prune nothing, so the directory grows for the life
+# of the install. Empty since #8763 gave the two sidecar families keep-newest-N retention (one file
+# per model load ATTEMPT; 319 files over two months on one machine).
 KNOWN_UNBOUNDED_FAMILIES: frozenset[str] = frozenset()
 
-# Families the desktop shell owns. Bounded in Rust (rotation), not by a Python pruner.
+# Families the desktop shell owns.
 _DESKTOP_FAMILIES = frozenset(
     {
         "desktop-backend",

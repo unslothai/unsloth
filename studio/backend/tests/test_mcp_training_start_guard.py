@@ -72,9 +72,6 @@ async def _call(route, config):
     )
 
 
-# --------------------------------------------------------------------------------------
-# The guard itself
-# --------------------------------------------------------------------------------------
 
 
 def test_live_chat_stream_refuses_the_mcp_start(monkeypatch):
@@ -107,8 +104,7 @@ def test_idle_backend_lets_the_mcp_start_through_the_guard(monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(_call(route, _config()))
 
-    # Validation past the guard still rejects the fake model, but never with the
-    # guard's 409/"inference request is in progress".
+    # Rejected for the fake model, but never with the guard's 409.
     assert not (
         excinfo.value.status_code == 409
         and "inference request is in progress" in str(excinfo.value.detail)
@@ -137,9 +133,7 @@ def test_stream_finishing_then_retrying_starts(monkeypatch):
     assert "inference request is in progress" not in str(second.value.detail)
 
 
-# --------------------------------------------------------------------------------------
-# Counting boundary cases (does the guard over-count and block valid MCP training?)
-# --------------------------------------------------------------------------------------
+# Counting boundary cases: does the guard over-count and block valid MCP training?
 
 
 def test_the_mcp_call_does_not_count_itself():
@@ -203,9 +197,7 @@ def test_a_pending_waiter_counts_as_active(monkeypatch):
         keepwarm._note_unpending()
 
 
-# --------------------------------------------------------------------------------------
 # FINDING 1: the 409 poisons a caller-supplied start_request_id
-# --------------------------------------------------------------------------------------
 
 
 def test_a_guard_409_does_not_poison_the_supplied_start_request_id(monkeypatch):
@@ -230,8 +222,7 @@ def test_a_guard_409_does_not_poison_the_supplied_start_request_id(monkeypatch):
     # The guard runs before the reservation, so no permanent record is written.
     assert backend.get_start_request("agent-retry-1") is None
 
-    # Stream is over. The agent retries with the same idempotency key and the
-    # start is admitted (it fails later on the fake model, never on the guard).
+    # A retry with the same idempotency key is admitted (failing later on the fake model).
     counter["n"] = 0
     with pytest.raises(HTTPException) as second:
         asyncio.run(_call(route, config))
@@ -298,8 +289,7 @@ def test_a_cancelled_start_request_id_replays_and_keeps_its_tombstone(monkeypatc
     outcome, cancelled = backend.cancel_start_request("agent-cancelled")
     assert outcome == "cancelled"
 
-    # Wind the tombstone to the brink of its TTL: without a refresh the next retry
-    # would find nothing and start the job.
+    # Wind the tombstone to the brink of its TTL: without a refresh the retry would start the job.
     backend._start_cancel_tombstones["agent-cancelled"] = (time.monotonic() + 0.5, cancelled)
 
     response = asyncio.run(_call(route, _config(start_request_id = "agent-cancelled")))
@@ -325,9 +315,7 @@ def test_an_unknown_start_request_id_is_still_refused_without_a_record(monkeypat
     assert backend.peek_start_request("agent-never-seen") is None
 
 
-# --------------------------------------------------------------------------------------
 # FINDING 2: what the MCP client sees on the 409
-# --------------------------------------------------------------------------------------
 
 
 def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
@@ -349,8 +337,7 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
 
     server = mcp_server.create_studio_mcp()
 
-    # The tool body raises rather than returning the {"status": ...} dict that
-    # stop_training / get_training_status return.
+    # The tool body raises rather than returning the {"status": ...} dict its siblings return.
     async def run_tool_body():
         tool = await server._get_tool("start_training")
         return await tool.fn(config = _config())
@@ -364,16 +351,12 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
     with pytest.raises(ToolError) as tool_error:
         asyncio.run(server._call_tool_mcp("start_training", {"config": _config()}))
 
-    # mask_error_details defaults False, so the 409 detail survives to the client
-    # (as the text of an isError CallToolResult, not a JSON-RPC protocol error).
+    # mask_error_details defaults False, so the 409 detail survives as isError result text.
     assert server._mask_error_details is False
     assert "inference request is in progress" in str(tool_error.value)
     assert "Error calling tool 'start_training'" in str(tool_error.value)
 
 
-# --------------------------------------------------------------------------------------
-# Concurrency
-# --------------------------------------------------------------------------------------
 
 
 def test_two_concurrent_mcp_starts_during_a_stream_both_refuse(monkeypatch):

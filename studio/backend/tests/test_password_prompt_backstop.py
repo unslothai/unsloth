@@ -31,14 +31,12 @@ _GATE_KWARGS = dict(
 )
 
 
-# ── pure decision matrix ─────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
     "tunnel_will_start,requires_change,stdin_isatty,stderr_isatty,expected",
     [
         (True, True, True, True, True),
-        # Any missing precondition suppresses the prompt.
         (False, True, True, True, False),
         (True, False, True, True, False),
         (True, True, False, True, False),
@@ -60,7 +58,6 @@ def test_should_prompt_matrix(
     )
 
 
-# ── _terminal_password_gate unit tests ───────────────────────────────
 
 
 class _Stream(io.StringIO):
@@ -87,14 +84,12 @@ def _patch_streams(monkeypatch, *, tty: bool) -> _Stream:
 
 
 def _patch_seeded_admin(monkeypatch, *, requires_change: bool) -> None:
-    # The gate seeds the admin row itself (it can run before lifespan startup);
-    # tests fake both the seeding no-op and the flag.
+    # The gate seeds the admin row itself (it can run before lifespan startup).
     monkeypatch.setattr(auth_storage, "ensure_default_admin", lambda: False)
     monkeypatch.setattr(auth_storage, "requires_password_change", lambda u: requires_change)
 
 
 def test_gate_skips_when_tunnel_off(monkeypatch):
-    # Short-circuits before touching auth storage at all.
     def _boom(*a, **k):
         raise AssertionError("storage must not be consulted when the tunnel is off")
 
@@ -128,16 +123,15 @@ def test_gate_warns_and_proceeds_without_tty_when_deadline_arms(monkeypatch):
     out = stderr.getvalue()
     assert "default admin password is still active" in out
     assert "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT" in out
-    # The seeded file may already be gone (the CLI parent deletes it before
-    # re-exec), so the warning must point at the reset-password recovery path
-    # instead of promising a file to read.
+    # The seeded file may already be gone (the CLI parent deletes it before re-exec), so the warning
+    # must point at the reset-password recovery path.
     assert "reset-password" in out
     assert ".bootstrap_password" not in out
 
 
 def test_gate_fails_closed_without_tty_when_deadline_cannot_arm(monkeypatch):
-    # api-only launches never arm the bootstrap deadline, so a headless public
-    # launch with the default password has NO safeguard: refuse to start.
+    # api-only launches never arm the bootstrap deadline, so a headless public launch with the
+    # default password has NO safeguard: refuse to start.
     stderr = _patch_streams(monkeypatch, tty = False)
     _patch_seeded_admin(monkeypatch, requires_change = True)
     monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
@@ -189,9 +183,7 @@ def test_gate_success_applies_route_equivalent_change(monkeypatch):
     )
 
     def _fake_prompt(*, min_length, is_current_password, apply_change, out):
-        # The gate wires the policy constant and route-equivalent apply hook.
         assert min_length == auth_storage.MIN_PASSWORD_LENGTH
-        # Wired to the real hash comparison: a wrong guess is rejected.
         assert is_current_password("wrong-guess") is False
         apply_change("brand-new-password")
         return True
@@ -199,13 +191,11 @@ def test_gate_success_applies_route_equivalent_change(monkeypatch):
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", _fake_prompt)
     assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
     admin = auth_storage.DEFAULT_ADMIN_USERNAME
-    # One atomic call: refresh tokens revoked in the same transaction as the
-    # password commit (a separable follow-up delete can fail and leave a
-    # pre-change refresh token able to mint access tokens).
+    # One atomic call: a separable follow-up delete can fail and leave a pre-change refresh token
+    # able to mint access tokens.
     assert calls == [("update", admin, "brand-new-password", {"revoke_refresh_tokens": True})]
 
 
-# ── ordering inside run_server (source-level, repo convention) ───────
 
 
 def test_gate_runs_before_server_bind_in_source():
@@ -213,9 +203,8 @@ def test_gate_runs_before_server_bind_in_source():
     run._publish_cloudflare_url(app_state, "https://live.trycloudflare.com")
     assert app_state.cloudflare_url == run._cloudflare_url == "https://live.trycloudflare.com"
     run._publish_cloudflare_url(app_state, None)
-    # The gate must run before the uvicorn socket binds: on a wildcard bind
-    # the served HTML injects the bootstrap credential for first login, so a
-    # pre-gate listener would hand out the default password mid-prompt.
+    # The gate must run before the uvicorn socket binds: on a wildcard bind the served HTML injects
+    # the bootstrap credential, so a pre-gate listener would hand out the default password mid-prompt.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     gate_call = src.index("_pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(")
     thread_start = src.index("thread.start()")
@@ -223,7 +212,6 @@ def test_gate_runs_before_server_bind_in_source():
     tunnel_start = src.index("start_studio_tunnel(", callback_bind)
     assert gate_call < thread_start < callback_bind < tunnel_start
     assert "_cloudflare_url = start_studio_tunnel" not in src
-    # The fail-closed branch exits before any server exists.
     refusal = src[gate_call:thread_start]
     assert "sys.exit(1)" in refusal
 
@@ -237,12 +225,10 @@ def test_min_password_length_single_source():
 
 
 def test_lifespan_honors_bootstrap_suppression_in_source():
-    # The lifespan runs AFTER the gate and re-reads the bootstrap password
-    # into app.state; without the suppress flag it would overwrite the gate's
-    # None and the public HTML would inject the default credential again.
+    # The lifespan runs AFTER the gate and re-reads the bootstrap password into app.state, so
+    # without the suppress flag it would overwrite the gate's None.
     main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert "suppress_bootstrap_injection" in main_src
-    # Every lifespan capture of the bootstrap password must be flag-guarded.
     for line in main_src.splitlines():
         if "storage.get_bootstrap_password()" in line and "=" in line:
             assert "_suppress_bootstrap" in line, line
@@ -251,10 +237,8 @@ def test_lifespan_honors_bootstrap_suppression_in_source():
 
 
 def test_clear_bootstrap_password_truncates_when_unlink_fails(monkeypatch, tmp_path):
-    # If the file cannot be unlinked (Windows AV / read-only auth dir), clear must
-    # truncate it so its stale plaintext cannot be re-seeded by
-    # generate_bootstrap_password() if auth.db is ever recreated, which would
-    # re-validate the revoked bootstrap password.
+    # If the file cannot be unlinked (Windows AV / read-only auth dir), clear must truncate it so
+    # its stale plaintext cannot be re-seeded if auth.db is ever recreated.
     import pathlib
 
     pw_path = tmp_path / ".bootstrap_password"
@@ -276,16 +260,14 @@ def test_clear_bootstrap_password_truncates_when_unlink_fails(monkeypatch, tmp_p
     assert pw_path.exists()  # unlink failed
     assert pw_path.read_text() == ""  # but truncated -> no reusable plaintext
 
-    # The stale value must not load back (empty file -> None), so a later re-seed
-    # generates fresh rather than resurrecting the revoked credential.
+    # The stale value must not load back, so a later re-seed generates fresh.
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
     assert auth_storage._load_bootstrap_password() is None
 
 
 def test_clear_bootstrap_password_warns_truthfully_when_not_cleared(monkeypatch, tmp_path, capsys):
-    # If the file can be neither unlinked NOR truncated, the stale plaintext stays
-    # on disk. The warning must NOT claim it was made unreusable (Codex 3571888584):
-    # it must say it could not be cleared and ask the user to remove it manually.
+    # If the file can be neither unlinked NOR truncated the stale plaintext stays on disk, so the
+    # warning must say it could not be cleared rather than claim it was made unreusable.
     import pathlib
 
     pw_path = tmp_path / ".bootstrap_password"
@@ -311,17 +293,14 @@ def test_clear_bootstrap_password_warns_truthfully_when_not_cleared(monkeypatch,
 
     auth_storage.clear_bootstrap_password()
 
-    # The stale plaintext survives untouched.
     assert pw_path.read_text() == "old-diceware-passphrase"
     warning = capsys.readouterr().err.lower()
     assert "could not delete or clear" in warning
     assert "still on disk" in warning
     assert "remove it manually" in warning
-    # Must not falsely claim the contents were cleared (the bug being fixed).
     assert "cleared its contents" not in warning
 
 
-# ── _apply_supplied_password: non-interactive initial password (direct run.py) ──
 
 
 def _seed_stub_admin(
@@ -392,10 +371,8 @@ def test_apply_supplied_password_must_differ_fails_closed(monkeypatch):
 
 
 def test_apply_supplied_password_strips_env_from_subprocess_environment(monkeypatch):
-    # The plaintext password must not linger in os.environ: run_server later spawns
-    # cloudflared/llama-server/code-exec tools that would otherwise inherit it (also
-    # readable via /proc/PID/environ). The direct-run.py path pops it itself; the CLI
-    # pops it before re-exec. Assert the pop happens on the apply path...
+    # The plaintext password must not linger in os.environ: run_server later spawns subprocesses
+    # that would inherit it (also readable via /proc/PID/environ).
     _seed_stub_admin(monkeypatch, requires_change = True)
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "brand-new-password")
     run._apply_supplied_password(None)
@@ -403,8 +380,8 @@ def test_apply_supplied_password_strips_env_from_subprocess_environment(monkeypa
 
 
 def test_apply_supplied_password_strips_env_even_when_literal_wins(monkeypatch):
-    # A literal --password wins over the env var, but a stale env value would still
-    # leak to subprocesses; the unconditional pop must clear it regardless of source.
+    # A literal --password wins over the env var, but a stale env value would still leak, so the pop
+    # must be unconditional.
     _seed_stub_admin(monkeypatch, requires_change = True)
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "env-should-be-stripped")
     run._apply_supplied_password("literal-new-password")

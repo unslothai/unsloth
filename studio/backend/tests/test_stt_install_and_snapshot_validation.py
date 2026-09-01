@@ -45,7 +45,6 @@ from core.inference.stt_sidecar import validate_remote_model
 _BUILD_SCRIPT = _BACKEND_ROOT.parents[1] / "scripts" / "build_whisper_cpp.sh"
 
 
-# 1. build_whisper_cpp.sh ownership gate ----------------------------------------
 
 
 def _stub_tools(tmp_path: Path) -> dict:
@@ -84,7 +83,6 @@ def test_build_script_refuses_unowned_dir_in_custom_studio_home(tmp_path):
 
     assert result.returncode != 0
     assert "not marked as an Unsloth-owned" in result.stderr
-    # The unowned tree, and the user's file inside it, survived untouched.
     assert user_file.read_text() == "precious"
 
 
@@ -98,7 +96,6 @@ def test_build_script_proceeds_when_marker_present(tmp_path):
     env["UNSLOTH_STUDIO_HOME"] = str(home)
     result = _run_build_script(env)
 
-    # Past the guard: it fails later at the stubbed git clone, not the gate.
     assert "not marked as an Unsloth-owned" not in result.stderr
     assert "stub-git-invoked" in result.stderr
 
@@ -111,7 +108,6 @@ def test_build_script_marks_fresh_custom_install_dir(tmp_path):
     env["UNSLOTH_STUDIO_HOME"] = str(home)
     _run_build_script(env)
 
-    # A directory the script creates is marked so re-runs stay allowed.
     assert (home / "whisper.cpp" / ".unsloth-studio-owned").is_file()
 
 
@@ -126,12 +122,10 @@ def test_build_script_keeps_legacy_home_behavior(tmp_path):
     env["HOME"] = str(fake_home)
     result = _run_build_script(env)
 
-    # The legacy managed dir is always Unsloth-owned; no gate, straight to git.
     assert "not marked as an Unsloth-owned" not in result.stderr
     assert "stub-git-invoked" in result.stderr
 
 
-# 2 + 3. _snapshot_is_complete --------------------------------------------------
 
 
 def _base_snapshot(tmp_path: Path) -> Path:
@@ -144,9 +138,7 @@ def _base_snapshot(tmp_path: Path) -> Path:
 
 
 def test_pickle_checkpoint_snapshot_is_never_complete(tmp_path):
-    # A cached pytorch_model.bin is a pickle RCE load path; the snapshot must
-    # read as incomplete no matter how many shards are present, so update
-    # re-resolves and _select_snapshot_files fails it closed.
+    # A cached pytorch_model.bin is a pickle RCE load path, so the snapshot reads as incomplete regardless.
     snap = _base_snapshot(tmp_path)
     index = {
         "weight_map": {
@@ -159,8 +151,7 @@ def test_pickle_checkpoint_snapshot_is_never_complete(tmp_path):
     (snap / "pytorch_model-00002-of-00002.bin").write_bytes(b"w" * 8)
     assert stt_sidecar_module._snapshot_is_complete(snap) is False
 
-    # A single-file pickle checkpoint is likewise rejected; the safetensors
-    # equivalent in the same dir makes it complete.
+    # A single-file pickle checkpoint is rejected too; the safetensors twin in the same dir completes it.
     (snap / "pytorch_model.bin").write_bytes(b"w" * 8)
     assert stt_sidecar_module._snapshot_is_complete(snap) is False
     (snap / "model.safetensors").write_bytes(b"w" * 8)
@@ -168,9 +159,7 @@ def test_pickle_checkpoint_snapshot_is_never_complete(tmp_path):
 
 
 def test_safe_index_naming_pickle_shards_is_not_complete(tmp_path):
-    # A safetensors index that references .bin shards would still pickle-load
-    # via Transformers' per-shard dispatch; the cached snapshot must read as
-    # incomplete so it re-resolves and fails closed at selection.
+    # A safetensors index naming .bin shards still pickle-loads per shard, so the snapshot reads as incomplete.
     snap = _base_snapshot(tmp_path)
     (snap / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {"a": "pytorch_model-00001-of-00001.bin"}})
@@ -184,18 +173,15 @@ def test_snapshot_without_tokenizer_assets_is_incomplete(tmp_path):
     (snap / "model.safetensors").write_bytes(b"w" * 8)
     assert stt_sidecar_module._snapshot_is_complete(snap) is True
 
-    # Weights + config but no tokenizer decodes to blank text; not complete.
     (snap / "tokenizer.json").unlink()
     assert stt_sidecar_module._snapshot_is_complete(snap) is False
 
-    # The slow vocab.json + merges.txt pair is an accepted alternative.
     (snap / "vocab.json").write_text("{}")
     assert stt_sidecar_module._snapshot_is_complete(snap) is False
     (snap / "merges.txt").write_text("")
     assert stt_sidecar_module._snapshot_is_complete(snap) is True
 
 
-# 4. Revision pinning and allow_patterns ----------------------------------------
 
 
 def test_validate_remote_model_returns_the_validated_revision(monkeypatch):
@@ -240,7 +226,6 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
         *,
         hub_cache = None,
     ):
-        # The transfer moved to a worker process; pinning is now in its argv.
         remaining = iter(args)
         patterns: list[str] = []
         for flag in remaining:
@@ -280,28 +265,24 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
     monkeypatch.setattr("core.inference.stt_download_worker.spawn_download", fake_spawn_download)
 
     state = stt_sidecar_module._SnapshotDownloadState()
-    # The revision resolved at validation time wins over the current head.
     state._run("someone/custom-whisper", None, revision = validated_revision)
     assert captured["revision"] == validated_revision
     patterns = captured["allow_patterns"]
     assert "model.safetensors" in patterns and "tokenizer.json" in patterns
-    # No wildcard that would admit arbitrary repo contents.
     assert "*" not in patterns
 
-    # Without a validated revision (curated repos), pin to the metadata head.
     captured.clear()
     state._run("someone/custom-whisper", None)
     assert captured["revision"] == head_revision
     assert captured["allow_patterns"]
 
 
-# 5. GGML readiness must identify whisper-server --------------------------------
 
 
 class _CannedHandler(http.server.BaseHTTPRequestHandler):
     body = b""
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         payload = type(self).body
         self.send_response(200)
         self.send_header("Content-Length", str(len(payload)))
@@ -364,7 +345,6 @@ def test_port_reservation_is_held_until_released():
             probe.close()
     finally:
         reservation.close()
-    # Released right before spawn: the port becomes bindable for the child.
     child = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     child.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:

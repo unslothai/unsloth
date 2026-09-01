@@ -54,8 +54,7 @@ def test_extract_video_id_accepts_youtube_link_shapes(url):
 @pytest.mark.parametrize(
     "url",
     [
-        # A path segment must never stand in for the host, or the route would fetch
-        # a player response for a video id an arbitrary site chose.
+        # A path segment must never stand in for the host, or the route fetches a video id a site chose.
         f"https://evil.com/youtube.com/watch?v={VIDEO_ID}",
         f"https://youtube.com.evil.com/watch?v={VIDEO_ID}",
         f"https://notyoutube.com/watch?v={VIDEO_ID}",
@@ -84,19 +83,16 @@ def test_select_track_prefers_requested_language_and_human_captions():
     tracks = [_track("ar"), _track("en", "asr"), _track("en"), _track("fr")]
     assert _select_track(tracks, {}, ["en"])["kind"] is None
     assert _select_track(tracks, {}, ["fr"])["languageCode"] == "fr"
-    # A regional tag falls back to its base language rather than missing the track.
     assert _select_track([_track("en-GB")], {}, ["en-US"])["languageCode"] == "en-GB"
     # Only an auto-generated track in that language: take it rather than another language.
     assert _select_track([_track("ar"), _track("de", "asr")], {}, ["de"])["languageCode"] == "de"
 
 
 def test_select_track_prefers_an_exact_locale_over_an_earlier_regional_sibling():
-    # pt-PT is listed first and shares the base language, so a positional scan would
-    # hand a Brazilian viewer the European Portuguese transcript.
+    # pt-PT is listed first and shares the base language, so a positional scan hands over the wrong one.
     tracks = [_track("pt-PT"), _track("pt-BR")]
     assert _select_track(tracks, {}, ["pt-BR"])["languageCode"] == "pt-BR"
     assert _select_track(tracks, {}, ["pt-PT"])["languageCode"] == "pt-PT"
-    # No exact match for the region: the base language still answers.
     assert _select_track(tracks, {}, ["pt-AO"])["languageCode"] == "pt-PT"
     # A human base-language track outranks an auto-generated exact match.
     assert (
@@ -105,8 +101,7 @@ def test_select_track_prefers_an_exact_locale_over_an_earlier_regional_sibling()
 
 
 def test_select_track_falls_back_to_the_default_audio_track_language():
-    # Multi-language videos list captions alphabetically, so index 0 is usually a
-    # translation of a language nobody in the video is speaking.
+    # Multi-language videos list captions alphabetically, so index 0 is usually nobody's language.
     tracks = [_track("ar"), _track("cs"), _track("en")]
     tracklist = {
         "audioTracks": [{"defaultCaptionTrackIndex": 2}],
@@ -133,7 +128,7 @@ def test_flatten_events_drops_rolling_window_padding():
     events = [
         {"tStartMs": 0, "dDurationMs": 1119069, "id": 1},
         {"segs": [{"utf8": "[Music]"}]},
-        # ASR tracks separate cues with an aAppend newline that is not transcript text.
+        # ASR tracks separate cues with an append newline that is not transcript text.
         {"aAppend": 1, "segs": [{"utf8": "\n"}]},
         {"segs": [{"utf8": "This"}, {"utf8": " is"}, {"utf8": " a\nthree."}]},
         {"segs": [{"utf8": "   "}]},
@@ -147,8 +142,7 @@ def test_flatten_events_handles_an_empty_track():
 
 
 def test_caption_url_keeps_blank_valued_parameters():
-    # parse_qs drops blank values by default, which would silently strip any key=
-    # parameter YouTube signs the timedtext URL with.
+    # parse_qs drops blank values by default, which would strip any key= parameter YouTube signs the timedtext URL with.
     url = _caption_url(
         "https://www.youtube.com/api/timedtext"
         f"?v={VIDEO_ID}&opi=&caps=&exp=xbt&signature=XYZ&lang=en"
@@ -197,8 +191,7 @@ def _fetch_captions(handler):
 
 
 def test_fetch_track_text_refuses_a_redirect_off_the_allowlist():
-    # The client follows redirects for the player hop, so the caption hop has to
-    # re-check the host itself or a 302 would stream a loopback body back.
+    # The client follows redirects for the player hop, so the caption hop has to re-check the host itself.
     def handler(request):
         return httpx.Response(302, headers = {"location": "http://169.254.169.254/latest/meta-data"})
 

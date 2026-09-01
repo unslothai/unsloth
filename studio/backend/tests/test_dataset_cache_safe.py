@@ -102,7 +102,6 @@ def test_pre_1_x_hub_retries_by_updating_symlink_capability_cache(monkeypatch):
 
 def test_pre_1_9_hub_stops_re_probing_unknown_cache_dirs(monkeypatch, tmp_path):
     # Before Hub 1.9 an unknown dir is probed again, losing the same race twice.
-    # Assert the mapping itself, since how each Hub reads it varies.
     from huggingface_hub import file_download
 
     monkeypatch.setattr(file_download, "_are_symlinks_supported_in_dir", {})

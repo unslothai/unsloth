@@ -211,9 +211,9 @@ def test_declared_sizes_are_converted_to_their_resident_precision(
     )
 
 
-# stabilityai/stable-diffusion-xl-base-1.0, 12.9 GB: unet, both text encoders and the vae are
-# all stored F32 in the DEFAULT variant (headers read 2026-08-25), and the loader skips the fp16
-# twins, so the download is twice the bf16 residency.
+# stabilityai/stable-diffusion-xl-base-1.0, 12.9 GB: unet, both text encoders and the vae are all
+# stored F32 in the DEFAULT variant (headers read 2026-08-25) and the loader skips the fp16 twins,
+# so the download is twice the bf16 residency.
 SDXL_BASE = [
     ("unet/diffusion_pytorch_model.safetensors", 9794 * MIB),
     ("text_encoder/model.safetensors", 469 * MIB),

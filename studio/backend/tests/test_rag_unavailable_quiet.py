@@ -60,7 +60,6 @@ def _client():
 
 
 def test_unavailable_is_a_runtime_error_subclass():
-    # Callers that already catch RuntimeError keep working.
     assert issubclass(rag_db.RagExtensionUnavailable, RuntimeError)
 
 
@@ -101,7 +100,6 @@ def test_rag_available_is_false_when_the_library_will_not_load(
 def test_rag_available_propagates_real_database_errors(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
-    # "Is RAG switched off here" is not the question a locked database answers.
     def _boom():
         raise sqlite3.OperationalError("database is locked")
 
@@ -180,10 +178,7 @@ def test_list_knowledge_bases_degrades_to_empty(rag_home, reset_unavailable_warn
 def test_every_other_endpoint_answers_503_not_a_traceback(
     rag_home, reset_unavailable_warning, monkeypatch, call
 ):
-    # The regression Codex caught: a user who sees the degraded empty list clicks
-    # Create, and the POST must state the reason instead of raising a 500. The document
-    # listings are here rather than degrading, so that a frontend which has not learned
-    # to read the marker keeps the error surfaces it has today.
+    # Create states the reason instead of a 500, and listings degrade so a marker-blind frontend keeps today's surfaces.
     from routes import rag as rag_routes
 
     _break_extension_load(monkeypatch)
@@ -196,10 +191,7 @@ def test_every_other_endpoint_answers_503_not_a_traceback(
 def test_upload_is_refused_before_the_file_is_written(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
-    # The gate runs before _resolve_document_upload, so an unavailable session does
-    # not leave the uploads root filling up with files nothing will ever index. Driven
-    # over HTTP: called directly, the unsupplied Form default is a truthy FieldInfo and
-    # the request would die on the native-lease branch whatever the gate did.
+    # The gate runs before _resolve_document_upload so no orphan uploads; over HTTP, as the Form default is truthy.
     from utils.paths import rag_uploads_root
 
     _break_extension_load(monkeypatch)
@@ -217,9 +209,7 @@ def test_upload_is_refused_before_the_file_is_written(
 def test_a_saved_upload_is_removed_when_ingestion_cannot_start(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
-    # The window the gate cannot cover: the extension has loaded before, so the request
-    # is admitted and the upload persisted, and start_ingestion's own connection is what
-    # discovers the library has gone. 503 like everywhere else, and no orphan left.
+    # The window the gate cannot cover: the upload is admitted from a remembered verdict, so start_ingestion must 503.
     from utils.paths import rag_uploads_root
 
     _break_extension_load(monkeypatch)
@@ -237,8 +227,7 @@ def test_a_saved_upload_is_removed_when_ingestion_cannot_start(
 def test_a_first_request_that_discovers_the_missing_library_still_gets_503(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
-    # Same window on the connection path: _require_rag() admits the request from the
-    # remembered verdict, so _rag_connection() is what has to report the 503.
+    # Same window on the connection path: _rag_connection() is what reports the 503.
     from routes import rag as rag_routes
 
     _break_extension_load(monkeypatch)
@@ -258,9 +247,7 @@ def test_a_first_request_that_discovers_the_missing_library_still_gets_503(
 def test_a_failed_load_is_not_latched_for_the_session(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
-    # Only the positive verdict is remembered. A one-off load failure must not switch
-    # RAG off until restart, and it must not leave the listings and the mutations
-    # disagreeing about whether RAG works.
+    # Only the positive verdict is remembered: a one-off load failure must not switch RAG off until restart.
     real = rag_db.sqlite_vec
     calls = {"n": 0}
 
@@ -281,8 +268,7 @@ def test_a_failed_load_is_not_latched_for_the_session(
 def test_the_whole_router_stays_quiet_under_repeated_use(
     rag_home, reset_unavailable_warning, monkeypatch, caplog
 ):
-    # A 503 path that logged per request would reinstate the spam this all exists to
-    # remove, so hammer both halves of the contract and count the warnings.
+    # A 503 path that logged per request would reinstate the spam this exists to remove.
     from routes import rag as rag_routes
 
     _break_extension_load(monkeypatch)
@@ -302,8 +288,7 @@ def test_the_whole_router_stays_quiet_under_repeated_use(
 def test_startup_reconcile_is_a_no_op_when_rag_cannot_run(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
-    # It already claims to be a no-op without RAG; raising out of startup so main.py
-    # logs "reconcile failed" reads like a fault when there is nothing to reconcile.
+    # Raising out of startup makes main.py log "reconcile failed" when there is nothing to reconcile.
     _break_extension_load(monkeypatch)
     assert rag_db.reconcile_orphaned_ingestion_jobs() == 0
 
@@ -311,9 +296,7 @@ def test_startup_reconcile_is_a_no_op_when_rag_cannot_run(
 def test_over_http_the_poll_is_200_and_create_is_503(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
-    # What the browser actually sees: the polled list stays a success carrying the
-    # marker, and the Create it offers comes back 503 with the reason in `detail`
-    # (the shape the frontend's parseErrorText already surfaces).
+    # What the browser sees: a success list carrying the marker, and a 503 whose `detail` parseErrorText surfaces.
     _break_extension_load(monkeypatch)
     with _client() as client:
         listed = client.get("/api/rag/knowledge-bases")
@@ -332,8 +315,7 @@ def test_over_http_the_poll_is_200_and_create_is_503(
 def test_list_knowledge_bases_still_raises_real_database_errors(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
-    # Only "the extension is not there" degrades. A locked or corrupt database is a
-    # real failure and must keep surfacing.
+    # Only a missing extension degrades; a locked or corrupt database must keep surfacing.
     from routes import rag as rag_routes
 
     def _boom():
@@ -348,8 +330,6 @@ def test_list_knowledge_bases_still_raises_real_database_errors(
 def test_mutating_endpoints_still_raise_real_database_errors(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
-    # Same rule on the 503 side: a locked database must not be dressed up as
-    # "RAG is switched off on this machine".
     from routes import rag as rag_routes
 
     def _boom():
@@ -368,8 +348,6 @@ def test_mutating_endpoints_still_raise_real_database_errors(
     "healthy path cannot be exercised (python.org macOS builds, some distros)",
 )
 def test_list_knowledge_bases_works_when_the_extension_loads(rag_home, rag_conn):
-    # The healthy path is unchanged: a real connection still lists what is stored,
-    # and says so, which is what makes an empty list readable as genuinely empty.
     from core.rag import store
     from routes import rag as rag_routes
 
@@ -387,7 +365,6 @@ def test_list_knowledge_bases_works_when_the_extension_loads(rag_home, rag_conn)
     "healthy path cannot be exercised (python.org macOS builds, some distros)",
 )
 def test_mutations_still_work_when_the_extension_loads(rag_home, rag_conn):
-    # The 503 gate must not stand in the way of a machine where RAG does run.
     from routes import rag as rag_routes
 
     created = rag_routes.create_knowledge_base(

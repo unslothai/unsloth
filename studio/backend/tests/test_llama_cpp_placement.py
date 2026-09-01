@@ -96,8 +96,8 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend._mmproj_vram_bytes = lambda _path: 0
     backend._resolve_launch_mmproj_path = lambda **kwargs: None
     backend._apu_ram_shortfall_message = lambda *args, **kwargs: None
-    # Off by default: the host-RAM preflight is not what most of these cells are about,
-    # and it now runs on every launch. The tests that ARE about it restore the real one.
+    # Off by default: the host-RAM preflight is not what most of these cells are about, and it now
+    # runs on every launch.
     backend._launch_host_shortfall_message = lambda *args, **kwargs: None
     backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
@@ -248,8 +248,8 @@ def test_dspark_composed_argv_respects_placement_fit_decision(tmp_path, use_fit)
     cmd = result["cmd"]
     assert cmd.count("--fit") == 1
     assert cmd[cmd.index("--fit") + 1] == ("on" if use_fit else "off")
-    # DSpark engages under either placement: --fit on only means llama.cpp skips
-    # the sidecar's memory reserve, it does not refuse to load it.
+    # DSpark engages under either placement: --fit on only means llama.cpp skips the sidecar's
+    # memory reserve, it does not refuse to load it.
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
     assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
     assert backend.spec_fallback_reason is None
@@ -376,7 +376,6 @@ def test_diffusion_does_not_reinterpret_vulkan_ordinals(tmp_path):
         )
 
 
-# ── Auto drops a drafter the VRAM cannot hold ─────────────────────────
 
 
 def _hybrid_mtp_backend(
@@ -511,10 +510,8 @@ def test_auto_keeps_embedded_hybrid_mtp_without_manual_partial_layers(tmp_path, 
 
 
 def test_auto_keeps_embedded_hybrid_mtp_without_a_gpu(tmp_path):
-    # No GPU is probed, so nothing selects a placement and `--fit on` stays --
-    # the same command a CPU-only box and a Metal Mac emit. There is nothing to
-    # partially offload to there, and the rollback copies cost no VRAM, so the
-    # CPU MTP policy stands.
+    # No GPU is probed, so nothing selects a placement and `--fit on` stays -- the same command a
+    # CPU-only box and a Metal Mac emit.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
     result = _launch(
@@ -532,9 +529,8 @@ def test_auto_keeps_embedded_hybrid_mtp_without_a_gpu(tmp_path):
 
 
 def test_auto_keeps_embedded_hybrid_mtp_when_the_device_selection_is_cpu(tmp_path):
-    # A GPU is probed, but the extras take the model off it. llama.cpp then runs
-    # on the CPU whatever the fitter decides, so nothing is partially offloaded
-    # and the rollback copies cost no VRAM.
+    # A GPU is probed, but the extras take the model off it. llama.cpp then runs on the CPU whatever
+    # the fitter decides, so nothing is partially offloaded and the rollback copies cost no VRAM.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch(
@@ -553,10 +549,8 @@ def test_auto_keeps_embedded_hybrid_mtp_when_the_device_selection_is_cpu(tmp_pat
 
 
 def test_a_hand_pinned_device_is_gpu_evidence_when_the_probe_found_none(tmp_path):
-    # A failed probe is not evidence of no GPU: the extras can still point the
-    # child at one and ask for a partial count, which is the placement this
-    # fallback exists for. Same flag _device_selection_is_cpu reads for the CPU
-    # answer, so the two sides agree.
+    # A failed probe is not evidence of no GPU: the extras can still point the child at one and ask
+    # for a partial count, which is the placement this fallback exists for.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
     result = _launch(
@@ -589,17 +583,15 @@ def test_partial_offload_stand_down_records_the_draft_depth_it_decided_at(tmp_pa
     cmd = result["cmd"]
     assert cmd[cmd.index("--spec-type") + 1] == "none"
     assert backend.spec_fallback_reason == "mtp_partial_offload"
-    # Nothing drafts, so the flag is not emitted -- but the depth priced the
-    # rollback copies that made this placement partial, so it is recorded for the
-    # reload comparison (test_llama_cpp_mtp_detection.py owns that half).
+    # Nothing drafts, so the flag is not emitted -- but the depth priced the rollback copies that
+    # made this placement partial, so it is recorded for the reload comparison.
     assert "--spec-draft-n-max" not in cmd
     assert backend.spec_draft_n_max == 3
 
 
 def test_manual_auto_layers_is_not_evidence_of_partial_offload(tmp_path):
-    # Manual mode empties the probed GPU set to hand sizing to llama.cpp, so its
-    # --fit on is the value this path starts at, not a finding. Reading it as
-    # partial offload disabled MTP on a card with room for every layer.
+    # Manual mode empties the probed GPU set to hand sizing to llama.cpp, so its --fit on is the
+    # value this path starts at, not a finding.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch(
@@ -619,9 +611,7 @@ def test_manual_auto_layers_is_not_evidence_of_partial_offload(tmp_path):
 
 
 def test_manual_auto_layers_still_reads_a_pass_through_layer_count(tmp_path):
-    # The evidence Manual mode does carry: a concrete count in the extras. That
-    # still stands the drafter down, so declining to guess costs nothing where the
-    # user actually said where the layers go.
+    # The evidence Manual mode does carry: a concrete count in the extras.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch(
@@ -659,9 +649,9 @@ def test_auto_disables_embedded_hybrid_mtp_for_final_partial_layer_override(tmp_
 
 
 def test_auto_reports_the_binary_not_the_placement_when_the_build_lacks_mtp(tmp_path):
-    # Nothing to stand down: this build cannot run MTP at all, so the placement
-    # story would send the user to force a mode it does not have, and hide the
-    # update affordance the binary fallback carries.
+    # Nothing to stand down: this build cannot run MTP at all, so the placement story would send the
+    # user to force a mode it does not have, and hide the update affordance the binary fallback
+    # carries.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
     backend.probe_server_capabilities = lambda _binary = None: {
         "mtp_token": None,
@@ -685,9 +675,8 @@ def test_auto_reports_the_binary_not_the_placement_when_the_build_lacks_mtp(tmp_
 
 
 def test_auto_classifies_placement_on_the_device_flags_the_child_gets(tmp_path):
-    # An explicit gpu_ids pick owns placement, so the launch drops the stale
-    # --device none from the extras further down. Classifying before that strip
-    # would read CPU-only for a load that partially offloads.
+    # An explicit gpu_ids pick owns placement, so the launch drops the stale --device none from the
+    # extras further down.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch(
@@ -701,8 +690,7 @@ def test_auto_classifies_placement_on_the_device_flags_the_child_gets(tmp_path):
     )
 
     cmd = result["cmd"]
-    # The strip already ran: the child never sees the CPU device the classifier
-    # would otherwise have believed.
+    # The strip already ran: the child never sees the CPU device the classifier would otherwise have believed.
     assert "--device" not in cmd
     assert cmd[cmd.index("--spec-type") + 1] == "none"
     assert backend.spec_fallback_reason == "mtp_partial_offload"
@@ -748,8 +736,8 @@ def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
             "supports_dflash": True,
             "supports_ngram_mod": True,
             "spec_draft_n_max_flag": "--spec-draft-n-max",
-            # Or the launch clamps the four slots to one and the per-slot state,
-            # which is what these tests measure, shrinks with them.
+            # Or the launch clamps the four slots to one and the per-slot state, which is what these
+            # tests measure, shrinks with them.
             "supports_kv_unified": True,
         }
     )
@@ -781,10 +769,8 @@ def _recorded_mtp_reserve_and_callbacks(backend, gguf, **load_kwargs):
 
 
 def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
-    # -ngld 0 moves the drafter's weights and KV to host memory, but the rollback
-    # snapshots live in the TARGET context, so they stay on the GPU. Releasing the
-    # whole reserve here undercounts them and the fit can pick a placement that
-    # spills.
+    # -ngld 0 moves the drafter's weights and KV to host memory, but the rollback snapshots live in
+    # the TARGET context, so they stay on the GPU.
     backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
 
     charged = _recorded_mtp_reserve(
@@ -804,10 +790,8 @@ def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
 
 
 def test_the_cpu_drafter_reserve_still_reprices_per_slot_candidate(tmp_path):
-    # _slots_that_fit_on_gpu re-prices the reserve for each candidate slot count
-    # through the callback's _np / _n_ubatch keywords. A replacement that takes
-    # neither raises TypeError there, and the broad GPU-selection handler swallows
-    # it into --fit on, throwing the whole placement plan away.
+    # _slots_that_fit_on_gpu re-prices the reserve for each candidate slot count through the
+    # callback's _np / _n_ubatch keywords.
     backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
 
     _charged, callbacks = _recorded_mtp_reserve_and_callbacks(
@@ -837,8 +821,8 @@ def test_the_cpu_drafter_reserve_still_reprices_per_slot_candidate(tmp_path):
 def test_a_pass_through_drafter_pays_the_rollback_its_type_calls_for(
     tmp_path, spec_type, pays_rollback
 ):
-    # need_n_rs_seq lists every draft-model type but draft-simple, so the extras
-    # path has to read the type rather than assume either answer.
+    # need_n_rs_seq lists every draft-model type but draft-simple, so the extras path has to read
+    # the type rather than assume either answer.
     backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
 
     charged = _recorded_mtp_reserve(
@@ -866,11 +850,8 @@ def test_a_pass_through_drafter_pays_the_rollback_its_type_calls_for(
 def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(
     tmp_path, requested_depth
 ):
-    # Unsloth emits no --spec-draft-n-max when the extras own the spec block, so
-    # the child runs at the build's own default. Budgeting Unsloth's 2 instead
-    # under-reserves the rollback copies, which scale directly with it -- and a
-    # request field carries no further than the platform default does, since
-    # neither is emitted.
+    # Unsloth emits no --spec-draft-n-max when the extras own the spec block, so the child runs at
+    # the build's own default.
     backend, gguf, _sidecar = _hybrid_reserve_backend(
         tmp_path,
         caps = {
@@ -897,9 +878,7 @@ def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(
 
 
 def test_a_legacy_build_inherits_its_own_draft_depth_variable(tmp_path, monkeypatch):
-    # A legacy build spells the pair --draft-max / LLAMA_ARG_DRAFT_MAX. Reading only
-    # the post-rename name budgets the build default while the child drafts at the
-    # inherited one.
+    # A legacy build spells the pair --draft-max / LLAMA_ARG_DRAFT_MAX.
     backend, gguf, _sidecar = _hybrid_reserve_backend(
         tmp_path,
         caps = {
@@ -927,9 +906,8 @@ def test_a_legacy_build_inherits_its_own_draft_depth_variable(tmp_path, monkeypa
 
 
 def test_a_post_rename_build_ignores_the_legacy_depth_variable(tmp_path, monkeypatch):
-    # LLAMA_ARG_DRAFT_MAX is the twin of the removed --draft-max, so a build that
-    # advertises the modern flag never reads it. Pricing a stale value there would
-    # budget a depth the child does not draft at.
+    # LLAMA_ARG_DRAFT_MAX is the twin of the removed --draft-max, so a build that advertises the
+    # modern flag never reads it.
     backend, gguf, _sidecar = _hybrid_reserve_backend(
         tmp_path,
         caps = {
@@ -958,9 +936,7 @@ def test_a_post_rename_build_ignores_the_legacy_depth_variable(tmp_path, monkeyp
 
 
 def test_an_unreadable_help_budgets_the_deepest_shipped_draft_depth(tmp_path):
-    # The probe timed out, or the help line carries no default. The child is still
-    # drafting at whatever the build defaults to, so Unsloth's own explicit-mode 2
-    # would under-reserve the rollback copies by up to eight times.
+    # The probe timed out, or the help line carries no default.
     backend, gguf, _sidecar = _hybrid_reserve_backend(
         tmp_path,
         caps = {
@@ -986,17 +962,9 @@ def test_an_unreadable_help_budgets_the_deepest_shipped_draft_depth(tmp_path):
 
 
 def test_an_explicit_pin_the_probe_cannot_see_is_not_a_partial_verdict(tmp_path):
-    # The probe answered nothing, but the pick still pins the child to those
-    # devices, so the launch does offload to them: the probe-only view read this
-    # as a CPU-only box, and the GPU-evidence guard is right to accept the pin.
-    #
-    # That is where the pin's authority stops. Every planner branch is gated on a
-    # non-empty `gpus`, so with an empty probe none of them ran and the `--fit on`
-    # below is the default use_fit starts at, not a finding that the model does
-    # not fit -- the same reasoning _partially_offloads_layers already applies to
-    # Manual mode. Standing MTP down here would cost the drafting win on a card
-    # that may well hold every layer, so Auto keeps MTP until something actually
-    # says the placement is partial.
+    # The probe answered nothing, but the pick still pins the child to those devices, so the launch
+    # does offload to them: the probe-only view read this as a CPU-only box, and the GPU-evidence
+    # guard is right to accept the pin.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
     result = _launch(
@@ -1015,8 +983,8 @@ def test_an_explicit_pin_the_probe_cannot_see_is_not_a_partial_verdict(tmp_path)
 
 
 def test_an_unseen_pin_with_a_concrete_layer_count_still_stands_down(tmp_path):
-    # The other half: a fixed 42 of 65 blocks is partial placement on its own
-    # evidence, so the empty probe costs the stand-down nothing here.
+    # The other half: a fixed 42 of 65 blocks is partial placement on its own evidence, so the empty
+    # probe costs the stand-down nothing here.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
     result = _launch(
@@ -1085,8 +1053,8 @@ def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):
     assert "draft-dspark" not in cmd
     assert cmd[cmd.index("-c") + 1] == "8192"
     assert backend.spec_fallback_reason == "drafter_no_vram"
-    # Names the drafter Auto had resolved, so the notice does not read "MTP", and
-    # keeps the resolved path so a repeat Apply dedupes instead of relaunching.
+    # Names the drafter Auto had resolved, so the notice does not read "MTP", and keeps the resolved
+    # path so a repeat Apply dedupes instead of relaunching.
     assert backend.spec_drafter_kind == "dspark"
     assert backend.mtp_draft_path == str(sidecar)
 
@@ -1296,8 +1264,8 @@ def test_tensor_parallel_keeps_its_own_sizing(tmp_path):
     """_plan_tensor_parallel reserves a per-device tensor buffer on geometry this
     layer-split probe does not model, so under tensor mode the probe stands down
     rather than decide the drafter's fate on numbers that are not that load's."""
-    # Two cards that only hold the 16 GB target together, so the layer-split
-    # probe would condemn the drafter if it were allowed to answer here.
+    # Two cards that only hold the 16 GB target together, so the layer-split probe would condemn the
+    # drafter if it were allowed to answer here.
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._get_gpu_memory = lambda _binary = None: [
         (0, 12_288, 12_288),
@@ -1368,15 +1336,12 @@ def test_a_single_gpu_tensor_request_is_probed_as_the_layer_load_it_is(tmp_path)
 @pytest.mark.parametrize(
     "n_gpus, model_gb, aborts, load_kwargs",
     [
-        # One row per strip site in load_model. Placement is the whole point, so
-        # the rows are the sites, not the drop reasons -- two manual-mode drops
-        # share a strip and would be one row's worth of coverage twice.
         (2, 1, True, {}),  # a recorded --split-mode tensor abort
         (1, 1, False, {}),  # fewer than 2 GPUs clear the compute-buffer reserve
         (2, 80, False, {}),  # pooled VRAM cannot hold the weights
         (2, 1, False, {"gpu_memory_mode": "manual"}),  # Auto layers: --fit owns memory
-        # gpu_ids, not n_gpus: this guard counts the selection (or torch's visible
-        # devices), so without a pin it passes only because torch is absent here.
+        # gpu_ids, not n_gpus: this guard counts the selection (or torch's visible devices), so
+        # without a pin it passes only because torch is absent here.
         (2, 1, False, {"gpu_memory_mode": "manual", "gpu_layers": 20, "gpu_ids": [0]}),
     ],
 )
@@ -1404,12 +1369,10 @@ def test_a_dropped_tensor_request_launches_as_a_layer_split(
         **load_kwargs,
     )["cmd"]
 
-    # The load is the layer split the downgrade chose ...
     assert backend.tensor_parallel is False
-    # ... it still carries the user's unrelated extras ...
     assert "--top-k" in cmd
-    # ... and not the split-mode group -- --tensor-split rides with the mode, so a
-    # strip narrowed to --split-mode alone leaves the user's ratio behind.
+    # ... and not the split-mode group -- --tensor-split rides with the mode, so a strip narrowed to
+    # --split-mode alone leaves the user's ratio behind.
     assert "--split-mode" not in cmd
     assert "--tensor-split" not in cmd
 
@@ -1497,8 +1460,8 @@ def test_the_drop_actually_releases_the_reserve_the_fit_charges(tmp_path):
     # 16 GB + a 4 GB KV at 8192 clears the 23.3 GB pin budget; + 6 GB does not.
     assert "--model-draft" not in cmd
     assert backend.spec_fallback_reason == "drafter_no_vram"
-    # The whole point: native context survives, rather than being cut to pay for
-    # a drafter that is not launching.
+    # The whole point: native context survives, rather than being cut to pay for a drafter that is
+    # not launching.
     assert cmd[cmd.index("-c") + 1] == "8192"
     assert cmd[cmd.index("--fit") + 1] == "off"
 
@@ -1633,7 +1596,6 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
     assert "--model-draft" not in cmd
     assert backend.spec_fallback_reason == "drafter_no_vram"
     assert cmd[cmd.index("-c") + 1] == "32768"
-    # One card: the point is that the loop stopped here rather than widening.
     assert result["env"].get("CUDA_VISIBLE_DEVICES") == "0"
 
 
@@ -1861,7 +1823,6 @@ def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, mon
         )
         _restore_host_guard(backend)
         backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
-        # gpu_layers=33 fully offloads this 32-layer model.
         backend._n_layers = 32
         return backend, gguf
 
@@ -2022,8 +1983,7 @@ def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
         LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 8 * 1024)
     )
 
-    # The cgroup ceiling still governs what the message prices, it just no longer
-    # stops the load.
+    # The cgroup ceiling still governs what the message prices, it just no longer stops the load.
     _launch(backend, gguf)
     assert "unified-memory APU" in (backend.last_load_warning or "")
 
@@ -2147,11 +2107,10 @@ def test_a_wildly_oversized_model_still_loads(tmp_path, monkeypatch):
     assert "does not fit in GPU memory" in (backend.last_load_warning or "")
 
 
-# An unmapped load is the one shape the advisory's premise does not cover. The spill
-# is only survivable because the weights are mmap'd; upstream sets use_mmap for
-# mmap/mmap+mlock/auto alone (llama-model-loader.cpp), so `none` and `mlock` read every
-# byte into a buffer llama.cpp allocates and an oversized model fails outright instead
-# of paging. The guard still never refuses: it overrides the mode and says so.
+# An unmapped load is the one shape the advisory's premise does not cover. The spill is only
+# survivable because the weights are mmap'd; upstream sets use_mmap for mmap / mmap+mlock / auto
+# alone (llama-model-loader.cpp), so `none` and `mlock` read every byte into a buffer and an
+# oversized model fails outright instead of paging.
 _UNMAPPED_ARGV = [
     ["--no-mmap"],
     ["--load-mode", "none"],
@@ -2265,7 +2224,6 @@ def test_the_warning_opt_out_never_disables_the_pageable_override(
 
     assert cmd, "the unmapped oversized load never spawned llama-server"
     assert not _unmapped_tokens(cmd), f"the opt-out left the child loading unmapped: {cmd}"
-    # The opt-out did its one job, and only that job.
     assert backend.last_load_warning is None
     assert [line for line in logged if "Overriding the unmapped load mode" in line], logged
 
@@ -2709,7 +2667,6 @@ def test_the_launched_load_mode_is_recorded_in_the_memory_state(tmp_path, monkey
         captured = _launch(backend, gguf, load_mode = "none")
 
     assert captured["cmd"][captured["cmd"].index("--load-mode") + 1] == "none"
-    # (mlock, reserves_ram)
     assert backend._memory_state == (False, True)
 
     # Both consumers now see the child contradicting the setting.
@@ -2763,7 +2720,6 @@ def test_a_fit_derived_load_mode_is_recorded_too(tmp_path, monkeypatch):
     )
 
 
-# ── Tensor parallelism keeps the requested KV cache type ─────────────
 
 
 def _tensor_backend(tmp_path):
@@ -2836,10 +2792,7 @@ def test_tensor_mode_keeps_an_inherited_quantized_kv_env(tmp_path, monkeypatch):
     assert "--cache-type-v" not in cmd
 
 
-# ── UNSLOTH_ALLOW_HOST_OFFLOAD is warning-scoped on the APU path too ────────
-# The variable's whole remaining contract is that it silences a message. The APU
-# preflight priced RAM with a helper that never reads it, so setting the deprecated
-# escape silenced the discrete guard and left the APU advisory in memory_warning.
+# The variable's whole remaining contract is that it silences a message.
 
 
 @pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
@@ -2955,12 +2908,8 @@ def test_the_note_is_appended_once_when_only_the_launch_guard_warned(tmp_path, m
     assert warning.count("memory mapping instead") == 1, warning
 
 
-# ── Repricing after the text-only fallback drops a CPU-pinned projector ────────
-# The APU preflight charges model_size + the projector the launch pinned to CPU,
-# because both land in the same system RAM. When llama-server then fails on the
-# projector and the retry strips --mmproj, the child that serves the session never
-# reads those bytes: the advisory the route hands back described a load that is not
-# running, and could have been the only reason an unmapped launch was remapped.
+# The APU preflight charges model_size plus the projector the launch pinned to CPU, because both
+# land in the same system RAM.
 _PROJECTOR_ABORT_OUT = (
     "srv    load_model: loading model 'model.gguf'\nclip.cpp:4391: Unknown projector type\n"
 )
@@ -3072,8 +3021,8 @@ def test_the_reprice_reads_the_pool_the_preflight_saw_not_the_one_the_model_is_i
     backend, gguf = _apu_pinned_projector_backend(
         tmp_path, monkeypatch, gguf_gb = 40.0, mmproj_gb = 8.0, avail_mib = 46 * 1024
     )
-    # 46 GB free at the preflight; the resident 40 GB of weights leave 6 GB by the time
-    # the text-only retry is healthy. Only the first reading is the one being repriced.
+    # 46 GB free at the preflight; the resident 40 GB of weights leave 6 GB by the time the
+    # text-only retry is healthy.
     readings = iter([46 * 1024])
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -3102,7 +3051,6 @@ def test_a_projector_the_weights_alone_still_outgrow_keeps_its_warning(tmp_path,
     assert "unified-memory APU" in (backend.last_load_warning or "")
 
 
-# ── The resident advisory outlives an attempt that never touched the server ───
 def _load_rejected(backend, intent, **load_kwargs):
     """Run a load that is expected to stand down before the Phase 1 teardown, and
     report nothing about it: what the caller asserts is the server left behind."""
@@ -3149,20 +3097,16 @@ def test_a_rejected_load_leaves_the_resident_advisory_alone(tmp_path, monkeypatc
         backend.last_load_warning == warned
     ), f"the cancelled load retired the resident advisory: {backend.last_load_warning}"
 
-    # 3. ...and the already_loaded fast path still carries it, which is what the route
-    # reads for memory_warning on a repeat /load.
+    # 3. ...and the already_loaded fast path still carries it, which is what the route reads for
+    # memory_warning on a repeat /load.
     assert backend.load_model(GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test"))
     assert (
         backend.last_load_warning == warned
     ), f"already_loaded answered with no memory_warning: {backend.last_load_warning}"
 
 
-# ── Repricing after an auto-selected Vulkan backend is replayed on CPU ─────────
-# The replay launches with --gpu-layers 0 --device none, so the child that serves the
-# session is credited no VRAM at all and pages the whole model from system RAM. The
-# preflight priced a GPU placement that is now dead: its spill figure understates what
-# the running child holds, and a model that FIT in VRAM was never priced against host
-# RAM at all, which is the case the user most needs told about.
+# The replay launches with --gpu-layers 0 --device none, so the child that serves the session is
+# credited no VRAM and pages the whole model from system RAM.
 def _vulkan_cpu_replay_backend(tmp_path, monkeypatch, *, gguf_gb, free_mib, avail_mib):
     """A host whose auto-selected Vulkan build hard-crashes at startup, with a discrete
     card (Vulkan reports total 0 only for an iGPU, so this pool is real VRAM) and a
@@ -3172,8 +3116,8 @@ def _vulkan_cpu_replay_backend(tmp_path, monkeypatch, *, gguf_gb, free_mib, avai
     backend._get_gguf_size_bytes = lambda _path: int(gguf_gb * 1024**3)
     backend._select_gpus = lambda *_a, **_kw: (None, True)
     backend.probe_server_capabilities = lambda _binary: {"found": True}
-    # The real _prepare_cpu_fallback_launch and _cpu_isolated_replay run: what is being
-    # asserted is how the REPLAY argv prices, so it has to be the argv the code builds.
+    # The real _prepare_cpu_fallback_launch and _cpu_isolated_replay run: what is being asserted is
+    # how the REPLAY argv prices, so it has to be the argv the code builds.
     backend._cpu_isolated_binary = lambda _binary: "/fake/llama-server"
     backend._llama_server_env_for_binary = lambda _binary: {_loader_path_var(): ""}
     backend._record_server_pid = lambda _pid: None
@@ -3355,13 +3299,13 @@ def test_a_replay_that_loses_its_vram_is_repaged_before_it_spawns(
     assert not _unmapped_tokens(
         replay
     ), f"the CPU replay holds the whole model in host RAM unmapped: {replay}"
-    # The advisory has to describe the child that is running: the whole model against
-    # host RAM, and the override that is why it can page at all.
+    # The advisory has to describe the child that is running: the whole model against host RAM, and
+    # the override that is why it can page at all.
     warning = backend.last_load_warning or ""
     assert "About 20 GB" in warning, warning
     assert warning.count("memory mapping instead") == 1, warning
-    # And the record the reload comparator reads, or the next Apply judges this child
-    # against a mode it no longer runs.
+    # And the record the reload comparator reads, or the next Apply judges this child against a mode
+    # it no longer runs.
     assert backend._memory_state == (False, False), backend._memory_state
 
 
@@ -3532,10 +3476,9 @@ def test_a_restored_cpu_fallback_is_priced_against_host_ram(tmp_path, monkeypatc
     backend, gguf = _vulkan_cpu_replay_backend(
         tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 4_000, avail_mib = 12_000
     )
-    # The probe comes back EMPTY, which is the shape that makes the preflight abstain:
-    # _child_has_no_gpu credits _cpu_only_zero_offload only when a device was detected,
-    # so with no rows it stays False and the guard cannot tell an unreadable pool from
-    # a host with no GPU. A row reporting zero free is a different, already-warned case.
+    # The probe comes back EMPTY, the shape that makes the preflight abstain: _child_has_no_gpu credits
+    # _cpu_only_zero_offload only when a device was detected, so with no rows it stays False and the
+    # guard cannot tell an unreadable pool from a host with no GPU.
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
 

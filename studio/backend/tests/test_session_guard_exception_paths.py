@@ -24,7 +24,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference import tools  # noqa: E402
+from core.inference import tools
 
 DEADLINE = 30.0
 
@@ -74,7 +74,6 @@ def queue_removal(session_id, *, files = True):
     tools._pending_removals.setdefault(key, {})[session_id] = files
 
 
-# ── The exception path, with and without a queued delete ──────────
 
 
 def test_an_exception_leaves_no_lifecycle_state(removals):
@@ -114,7 +113,6 @@ def test_a_recreated_chat_keeps_its_folder_even_when_the_body_raises(monkeypatch
     assert_idle("after a skipped delete")
 
 
-# ── Nesting and case folding ──────────────────────────────────────
 
 
 def test_a_nested_guard_deletes_only_at_the_outer_exit(removals):
@@ -151,7 +149,6 @@ def test_case_variant_ids_share_one_lifecycle_key(removals):
     assert_idle("after a case-variant failure")
 
 
-# ── Cleanup that itself fails ─────────────────────────────────────
 
 
 def test_a_failing_cleanup_still_releases_the_session(monkeypatch):
@@ -219,7 +216,6 @@ def test_a_failing_cleanup_wakes_a_waiter_for_the_same_chat(monkeypatch):
 
     second = threading.Thread(target = _second, name = "pr9640-waiter")
     second.start()
-    # The waiter must be blocked while the removal is in progress.
     assert not waiter_in.wait(0.5), "a call started inside a folder being deleted"
 
     release.set()
@@ -247,7 +243,6 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
     monkeypatch.setattr(tools, "_remove_session_sandbox_locked", _remove)
     monkeypatch.setattr(tools, "_thread_exists", lambda *a, **k: False)
     key = tools._session_key("a")
-    # Same lifecycle key, three exact ids queued behind it.
     tools._pending_removals[key] = {"a": True, "b": True, "c": True}
     with pytest.raises(OSError):
         with tools._session_in_flight("a"):
@@ -261,7 +256,6 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
     assert_idle("after a partially failed batch")
 
 
-# ── Concurrency ───────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("seed", list(range(100)))
@@ -291,7 +285,7 @@ def test_randomised_schedules_leave_no_lifecycle_state(seed, removals):
                     raise ValueError(f"boom-{i}")
         except (ValueError, KeyboardInterrupt):
             pass
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             errors.append(exc)
 
     faulthandler.dump_traceback_later(DEADLINE, exit = False)

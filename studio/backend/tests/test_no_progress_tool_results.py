@@ -160,8 +160,7 @@ def test_a_tool_repeating_one_answer_is_told_so(monkeypatch):
     results = _tool_results(_run(backend))
 
     assert any("it will not change" in r for r in results)
-    # The notice that caused the repeats is kept: replacing it would leave the model
-    # holding less than it already had.
+    # The notice that caused the repeats is kept: replacing it would leave the model with less.
     assert any(_TRUNCATION_NOTICE in r for r in results)
 
 
@@ -365,9 +364,8 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
 
     def fake_count(messages, *_args, **_kwargs):
         counted.append(list(messages))
-        # Under the prompt budget, so the pre-execution fit leaves the calls alone and
-        # there is still something for the rescue to compact, but close enough to it that
-        # the result prices under _MIN_USEFUL_RESULT_TOKENS, which is what triggers it.
+        # Under the prompt budget so the pre-execution fit leaves the calls alone, but close enough that
+        # the result prices under _MIN_USEFUL_RESULT_TOKENS, which is what triggers the rescue.
         return 3050
 
     payloads: list[dict] = []
@@ -390,8 +388,8 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
 
     monkeypatch.setattr(llama_cpp_module, "compact_completed_tool_arguments", spy_compact)
 
-    # Two finished calls, because the rescue protects the newest one: with a single
-    # completed call there is nothing left for it to compact and it never re-counts.
+    # Two finished calls, because the rescue protects the newest one and never re-counts with only
+    # one completed call.
     _thread = _thread_with_a_big_completed_call()
     _older = copy.deepcopy(_thread[1:3])
     _older[0]["tool_calls"][0]["id"] = "c0"

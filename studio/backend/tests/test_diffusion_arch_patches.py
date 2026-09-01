@@ -28,7 +28,6 @@ def _clean():
     ap.uninstall_arch_patches()
 
 
-# ── qwen-image _modulate (modulation addcmul) ───────────────────────────────────
 
 
 def test_qwen_modulate_matches_stock_global_and_indexed():
@@ -37,13 +36,11 @@ def test_qwen_modulate_matches_stock_global_and_indexed():
     B, L, D = 2, 16, 64
     x = torch.randn(B, L, D)
     mod = torch.randn(B, 3 * D)
-    # _modulate uses no real `self` state, so call it unbound with self=None.
     ref_x, ref_g = Q._modulate(None, x, mod)
     got_x, got_g = ap._qwen_modulate(None, x, mod)
     torch.testing.assert_close(got_x, ref_x, atol = 1e-5, rtol = 1e-4)
     assert torch.equal(got_g, ref_g)
 
-    # per-token `index` branch (mod batch is 2*B).
     idx = torch.randint(0, 2, (B, L))
     mod2 = torch.randn(2 * B, 3 * D)
     ref2_x, ref2_g = Q._modulate(None, x, mod2, idx)
@@ -52,7 +49,6 @@ def test_qwen_modulate_matches_stock_global_and_indexed():
     assert torch.equal(got2_g, ref2_g)
 
 
-# ── z-image block forward (gated-residual addcmul) ──────────────────────────────
 
 
 class _AttnStub(torch.nn.Module):
@@ -137,7 +133,6 @@ def test_zimage_forward_matches_stock_per_token_modulation():
     torch.testing.assert_close(got, ref, atol = 1e-5, rtol = 1e-4)
 
 
-# ── flux.1 / flux.2 block forwards (modulation + gated-residual addcmul) ─────────
 
 
 class _Tuple2AttnStub(torch.nn.Module):
@@ -251,10 +246,8 @@ def test_krea2_forward_matches_stock():
         num_kv_heads = H // 2,
         norm_eps = 1e-6,
     ).eval()
-    # Give the zero-init modulation table real values so all six scale/shift/gate branches contribute to the output.
     with torch.no_grad():
         blk.scale_shift_table.normal_()
-    # A [text + 2x2 image grid] sequence with the real rotary embed (axes sum to head_dim).
     position_ids = Krea2Pipeline.prepare_position_ids(4, 2, 2, torch.device("cpu"))
     rope = Krea2RotaryPosEmbed(theta = 10000, axes_dim = [D // H // 2, D // H // 4, D // H // 4])
     image_rotary_emb = rope(position_ids)
@@ -266,7 +259,6 @@ def test_krea2_forward_matches_stock():
     torch.testing.assert_close(got, ref, atol = 1e-5, rtol = 1e-4)
 
 
-# ── lifecycle ───────────────────────────────────────────────────────────────────
 
 
 def test_install_idempotent_and_reversible():
@@ -297,7 +289,6 @@ def test_kill_switch(monkeypatch):
 
 
 def test_body_drift_guard_skips_changed_block(monkeypatch):
-    # A resolver whose body-check fails (diffusers changed the lines we rewrite) is skipped; force the qwen resolver to see a drifted body.
     monkeypatch.setattr(ap, "_body_has", lambda fn, *needles: False)
     assert ap.install_arch_patches() == 0
     assert not ap.is_installed()

@@ -48,7 +48,6 @@ if str(_backend_root) not in sys.path:
 def route(monkeypatch):
     from routes import inference as route_mod
 
-    # Keep the test fast; the real defaults are guarded by the last test below.
     monkeypatch.setattr(route_mod, "_TUNNEL_KEEPALIVE_AFTER_S", 0.05)
     monkeypatch.setattr(route_mod, "_TUNNEL_KEEPALIVE_EVERY_S", 0.02)
     return route_mod
@@ -71,7 +70,6 @@ def test_a_fast_call_keeps_the_plain_response(route):
         return {"status": "loaded"}
 
     result = asyncio.run(route._tunnel_safe_json(quick(), label = "t"))
-    # Not a Response: FastAPI serialises it through response_model as before.
     assert result == {"status": "loaded"}
 
 
@@ -142,7 +140,7 @@ def test_the_work_survives_a_client_disconnect(route):
     async def run():
         response = await route._tunnel_safe_json(slow(), label = "t")
         it = response.body_iterator
-        assert await it.__anext__() == b" "  # one pad, then the client vanishes
+        assert await it.__anext__() == b" "
         await it.aclose()
         await asyncio.sleep(0.4)
 
@@ -150,7 +148,6 @@ def test_the_work_survives_a_client_disconnect(route):
     assert finished == [True]
 
 
-# ── Direct (in-process) callers must not get the padded response ──────────────
 
 
 @pytest.fixture
@@ -159,12 +156,11 @@ def slow_load(route, monkeypatch):
     finished = []
 
     async def _slow_impl(request, fastapi_request, current_subject, **kwargs):
-        await asyncio.sleep(0.2)  # >> the fixture's 0.05s keepalive threshold
+        await asyncio.sleep(0.2)
         finished.append(request.model_path)
         return {"status": "loaded", "model": request.model_path}
 
     monkeypatch.setattr(route, "_load_model_impl", _slow_impl)
-    # The sidecar-swap guard reads real install state; it has its own tests.
     monkeypatch.setattr(route, "_raise_if_sidecar_swap_in_progress", lambda: None)
     return finished
 
@@ -181,7 +177,6 @@ def test_an_in_process_caller_gets_the_real_result(route, slow_load):
 
     assert not isinstance(result, StreamingResponse)
     assert result == {"status": "loaded", "model": "unsloth/Kimi-K3-GGUF"}
-    # Returned only after the load finished, not at the 15s mark.
     assert slow_load == ["unsloth/Kimi-K3-GGUF"]
 
 
@@ -220,7 +215,6 @@ def test_only_the_route_pads(route):
 
     assert "_tunnel_safe_json" in inspect.getsource(route.load_model)
     assert "_tunnel_safe_json" not in inspect.getsource(route.load_model_gated)
-    # /unload has no in-process caller today; _unload_model_impl is its equivalent.
     assert "_tunnel_safe_json" in inspect.getsource(route.unload_model)
     assert "_tunnel_safe_json" not in inspect.getsource(route._unload_model_impl)
 
@@ -228,7 +222,6 @@ def test_only_the_route_pads(route):
 def test_preview_awaits_the_gated_load(route):
     """preview.py is the one in-process caller; it must bypass the padding."""
     src = (_backend_root / "routes" / "preview.py").read_text(encoding = "utf-8")
-    # Preview has its own gated coroutine (slot-ownership guards + the same lifecycle gate).
     assert "load_model_for_preview(" in src
     assert re.search(r"\bawait load_model\(", src) is None, (
         "preview must not await the padded /load route: its StreamingResponse "
@@ -267,11 +260,7 @@ def test_preview_chat_waits_for_a_slow_checkpoint_load(route, slow_load, monkeyp
     assert not preview._preview_lock.locked()
 
 
-# ── The slow teardown must not sit on the event loop ──────────────────────────
-#
-# ``LlamaCppBackend.unload_model`` is a plain ``def`` and a 600 GB teardown measures
-# ~160s. Called bare it blocks _tunnel_safe_json's own timer and pad generator, so
-# zero bytes leave and the proxy 524s anyway: padding dead on the two slowest paths.
+# unload_model is a plain ``def`` and a 600 GB teardown takes ~160s, so calling it bare blocks the pad generator.
 
 
 class _SlowSyncTeardown:
@@ -339,7 +328,6 @@ def _stub_unsloth_load_over_a_resident_gguf(route, monkeypatch, *, teardown):
         "resolve_effective_chat_template_override",
         lambda model_identifier = None, user_override = None: None,
     )
-    # Both guards: the load path resolves its config under the per-model one.
     monkeypatch.setattr(route, "_hf_offline_if_unreachable", contextlib.nullcontext)
     monkeypatch.setattr(route, "_hf_offline_if_unreachable_for", contextlib.nullcontext)
     monkeypatch.setattr(route, "_mlx_distributed_launch_detected", lambda: False)
@@ -387,7 +375,7 @@ def _stub_unsloth_load_over_a_resident_gguf(route, monkeypatch, *, teardown):
         route,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,  # a GGUF is resident and must come down first
+            is_loaded = True,
             is_active = True,
             hf_variant = None,
             model_identifier = "org/OLD-GGUF",
@@ -498,7 +486,6 @@ def test_every_gguf_teardown_on_a_padded_route_is_off_loop():
         ):
             continue
         for call in ast.walk(node):
-            # A bare call: attribute .unload_model(...) rather than a to_thread arg.
             if (
                 isinstance(call, ast.Call)
                 and isinstance(call.func, ast.Attribute)
@@ -511,7 +498,6 @@ def test_every_gguf_teardown_on_a_padded_route_is_off_loop():
     )
 
 
-# ── Non-browser clients ───────────────────────────────────────────────────────
 
 
 def test_a_python_client_can_recognise_the_late_failure(route):
@@ -528,12 +514,10 @@ def test_a_python_client_can_recognise_the_late_failure(route):
     payload = json.loads(asyncio.run(run()))[route._DEFERRED_ERROR_KEY]
     assert payload == {"status_code": 507, "detail": "CUDA out of memory"}
 
-    # Read as text, not imported: the backend test env need not import the CLI.
     cli = (_repo_root / "unsloth_cli" / "_inference.py").read_text(encoding = "utf-8")
     assert f'_DEFERRED_ERROR_KEY = "{route._DEFERRED_ERROR_KEY}"' in cli
     assert 'deferred.get("status_code")' in cli
     assert 'deferred.get("detail")' in cli
-    # unsloth_cli/tests/test_inference_chat.py asserts it actually raises.
     assert "def raise_for_deferred_error(" in cli
 
 
@@ -559,8 +543,7 @@ def test_both_clients_reject_a_truncated_padded_body():
         / "padded-response.ts"
     ).read_text(encoding = "utf-8")
     assert "export function assertCompletedPaddedBody(" in web
-    # Scoped to /load and /unload: shared parseJsonOrThrow serves ~30 endpoints,
-    # some legitimately with no body.
+    # Scoped to /load and /unload: the shared parseJsonOrThrow serves ~30 endpoints, some legitimately with no body.
     chat_api = (
         _repo_root / "studio" / "frontend" / "src" / "features" / "chat" / "api" / "chat-api.ts"
     ).read_text(encoding = "utf-8")

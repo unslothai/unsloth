@@ -177,7 +177,6 @@ def _visible_text(lines) -> str:
     return "".join(text)
 
 
-# ── Structured tool calls (a well-behaved provider) ───────────────
 
 
 def test_structured_call_executes_and_continues(executed):
@@ -212,7 +211,6 @@ def test_structured_call_executes_and_continues(executed):
     assert _events(lines, "tool_end")[0]["result"] == "RESULT<web_search>"
     assert "Here is what I found." in _visible_text(lines)
 
-    # The follow-up turn replays assistant tool_calls then the tool result.
     follow_up = transport.requests[1]["messages"]
     assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
     assert follow_up[-1]["content"] == "RESULT<web_search>"
@@ -257,9 +255,9 @@ def test_a_conversation_search_here_gets_the_active_branch(executed):
 
     assert [call["name"] for call in executed] == ["search_conversation"]
     assert executed[0]["conversation_branch"] == branch
-    # And a budget, or the tool's clamp is skipped and a model-chosen top_k of 8 appends
-    # roughly 4K tokens to a prompt this loop replays. Unsloth cannot measure an external
-    # model's window, so the cap is one ordinary recall's worth.
+    # Without a budget the tool's clamp is skipped and a model-chosen top_k of 8 appends roughly 4K
+    # tokens to a prompt this loop replays; Unsloth cannot measure an external model's window, so the
+    # cap is one ordinary recall's worth.
     from core.rag import config as rag_config
 
     assert (
@@ -289,7 +287,6 @@ def test_streamed_tool_name_fragments_are_not_concatenated(executed):
     assert executed[0]["arguments"] == {"query": "x"}
 
 
-# ── Text-form calls (what small self-hosted models actually emit) ──
 
 
 def test_text_form_tool_call_is_healed_and_executed(executed):
@@ -312,7 +309,6 @@ def test_text_form_tool_call_is_healed_and_executed(executed):
 
     assert [call["name"] for call in executed] == ["web_search"]
     assert executed[0]["arguments"] == {"query": "unsloth"}
-    # The markup is consumed, the prose around it survives.
     visible = _visible_text(lines)
     assert "Let me look." in visible
     assert "<tool_call>" not in visible
@@ -360,7 +356,6 @@ def test_unterminated_envelope_is_released_as_prose_and_terminates(executed):
     assert executed == []
     visible = _visible_text(lines)
     assert "thinking..." in visible
-    # The unparseable residue is flushed verbatim, not held forever.
     assert "web_sea" in visible
 
 
@@ -450,11 +445,9 @@ def test_structured_call_makes_the_healer_dormant(executed):
     lines = _run(transport)
 
     assert [call["name"] for call in executed] == ["web_search"]
-    # Held text is flushed when the healer goes dormant, never dropped.
     assert "prefix <tool_c" in _visible_text(lines)
 
 
-# ── Budget ────────────────────────────────────────────────────────
 
 
 def test_zero_budget_withdraws_the_catalog(executed):
@@ -520,12 +513,10 @@ def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
         confirm_calls = True,
     )
 
-    # The denial consumed no budget, so the second call still had one left.
     assert [call["name"] for call in executed] == ["python"]
     assert executed[0]["arguments"] == {"query": "2"}
 
 
-# ── Permissions ───────────────────────────────────────────────────
 
 
 def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
@@ -568,7 +559,6 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
         confirm_calls = True,
     )
 
-    # web_search is not high-risk, so it runs without an approval card.
     assert slots == []
     assert _events(lines, "tool_start")[0]["awaiting_confirmation"] is False
     assert [call["name"] for call in executed] == ["web_search"]
@@ -626,7 +616,6 @@ def test_sandbox_stays_on_by_default(executed):
     assert executed[0]["disable_sandbox"] is False
 
 
-# ── Forced tool choice ────────────────────────────────────────────
 
 
 def test_forced_choice_is_cleared_after_the_first_execution(executed):
@@ -653,11 +642,9 @@ def test_forced_choice_is_cleared_after_the_first_execution(executed):
     _run(transport, tool_choice = "required")
 
     assert transport.requests[0]["tool_choice"] == "required"
-    # The result follow-up must be free to answer in prose.
     assert transport.requests[1]["tool_choice"] == "auto"
 
 
-# ── Behaviours carried over from the local loops (PR #8630) ───────
 
 
 def test_usage_is_summed_into_one_chunk(executed):
@@ -721,7 +708,6 @@ def test_usage_is_summed_into_one_chunk(executed):
         if "usage" in payload:
             usages.append(payload["usage"])
 
-    # One chunk, carrying the sum, including the detail slices pricing reads.
     assert len(usages) == 1
     assert usages[0]["prompt_tokens"] == 30
     assert usages[0]["completion_tokens"] == 12
@@ -774,7 +760,6 @@ def test_a_stalled_model_is_nudged_to_act(executed):
     _run(transport, nudge_tool_calls = True)
 
     assert [c["name"] for c in executed] == ["web_search"]
-    # The nudge is a user turn appended after the stall.
     second = transport.requests[1]["messages"]
     assert second[-1]["role"] == "user"
 
@@ -843,7 +828,6 @@ def test_the_loop_terminates_against_an_endlessly_calling_model(executed):
     transport = Endless()
     _run(transport, max_calls = 3)
 
-    # Budget spent, catalog withdrawn, then one final no-tools pass.
     assert len(executed) == 3
     assert transport.turns <= 5
 
@@ -1027,8 +1011,7 @@ def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     result_ids = {message["tool_call_id"] for message in replayed if message.get("role") == "tool"}
     assert result_ids == {"call_a", "call_b"}
     assert not result_ids - called_ids
-    # The refused call is replayed in OpenAI shape only: the parsed arguments
-    # dict the loop keeps for itself must not reach the provider.
+    # The refused call is replayed in OpenAI shape only: the parsed arguments dict stays with the loop.
     exhausted = [
         call
         for message in replayed
@@ -1094,11 +1077,7 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
     assert len(ends) == 2
     assert [end["tool_call_id"] for end in ends] == ["call_a", "call_a"]
     assert ends[1]["result"].startswith("Unsloth did not run this call")
-    # Opened as well as closed. The client retires a card id when it closes it,
-    # so a second tool_end on the same id resolves to no card and the adapter
-    # drops it -- the skip would be invisible again. Announcing it first draws
-    # the card the second event closes, and keeps the loop's invariant that
-    # every tool_end has a matching tool_start.
+    # Opened as well as closed: the client retires a card id on close, so a second tool_end resolves to none.
     starts = _events(lines, "tool_start")
     assert [start["tool_call_id"] for start in starts] == ["call_a", "call_a"]
 

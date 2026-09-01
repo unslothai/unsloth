@@ -33,8 +33,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Same external-dep stubs as the other llama_cpp unit tests so importing
-# the backend doesn't drag in structlog / httpx / loggers.
+# Same external-dep stubs as the other llama_cpp unit tests so importing the backend does not drag
+# in structlog / httpx / loggers.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -43,10 +43,7 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx is a real, installed backend dependency: import it so the genuine module
-# is in sys.modules. A hand-rolled stub here is inevitably incomplete and, since
-# setdefault installs it before real httpx loads, would poison a combined pytest
-# run -- routes/inference references httpx.Response (and other attrs) at def time.
+# httpx is a real, installed backend dependency: import it so the genuine module is in sys.modules.
 import httpx  # noqa: F401
 
 from core.inference import llama_cpp as llama_cpp_module
@@ -58,7 +55,6 @@ from models.inference import (
 )
 
 
-# ── Pydantic contract (snake_case key, default "auto") ───────────────
 
 
 def test_load_request_defaults_gpu_memory_mode_auto():
@@ -99,7 +95,6 @@ def test_response_models_emit_gpu_memory_mode(model_cls):
     assert manual.model_dump()["gpu_memory_mode"] == "manual"
 
 
-# ── Backend property + reset ─────────────────────────────────────────
 
 
 class _FakeProcess:
@@ -136,7 +131,6 @@ def test_unload_resets_gpu_memory_mode():
     assert backend.gpu_memory_mode == "auto"
 
 
-# ── _already_in_target_state reload-detection branch ─────────────────
 
 
 def _loaded_backend(gpu_memory_mode: str) -> LlamaCppBackend:
@@ -180,21 +174,20 @@ def test_already_in_target_state_matches_same_mode(mode):
 
 @pytest.mark.parametrize("loaded,requested", [("auto", "manual"), ("manual", "auto")])
 def test_already_in_target_state_reloads_on_mode_change(loaded, requested):
-    # Flipping the dropdown either direction must force a reload so the command
-    # is rebuilt with/without the Unsloth GPU masking.
+    # Flipping the dropdown either direction must force a reload so the command is rebuilt
+    # with/without the Unsloth GPU masking.
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
 def test_already_in_target_state_ignores_mode_for_diffusion(monkeypatch):
-    # The diffusion runner is mode-agnostic (always "auto"), so a standing manual
-    # preference must not force a needless reload.
+    # The diffusion runner is mode-agnostic (always "auto"), so a standing manual preference must
+    # not force a needless reload.
     backend = _loaded_backend("auto")
     backend._is_diffusion = True
     monkeypatch.setenv("LLAMA_ARG_SWA_FULL", "1")
     assert _target_state(backend, "manual") is True
 
 
-# ── load_model: manual + Auto layers bypasses Unsloth GPU management ──
 
 
 def _load_model_source() -> str:
@@ -202,8 +195,8 @@ def _load_model_source() -> str:
 
 
 def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
-    # Emptying the probed set makes the selection / TP planning below no-op, so
-    # gpu_indices stays None and use_fit True (--fit on).
+    # Emptying the probed set makes the selection / TP planning below no-op, so gpu_indices stays
+    # None and use_fit True (--fit on).
     src = _load_model_source()
     gate = src.find('if gpu_memory_mode == "manual" and gpu_layers < 0:')
     assert gate != -1, "load_model must branch on manual + Auto layers (gpu_layers < 0)"
@@ -221,11 +214,8 @@ def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
 
 
 def test_auto_layers_never_sends_ctx_size_zero():
-    # Sending "-c 0" sets fit_params_min_ctx = UINT32_MAX in llama.cpp, pinning
-    # the full native context and disabling --fit's reduction. So the base cmd
-    # must never carry -c, "-c 0" is emitted only outside the Auto-layers (--fit)
-    # case, and a positive context is passed through (which --fit optimizes
-    # layers around).
+    # Sending "-c 0" sets fit_params_min_ctx = UINT32_MAX in llama.cpp, pinning the full native
+    # context and disabling --fit's reduction.
     src = _load_model_source()
     base_start = src.find("cmd = [")
     base_end = src.find("\n                ]", base_start)
@@ -260,7 +250,6 @@ def test_load_model_sanitizes_manual_env_after_building_child_env():
     assert env_build < env_clear < launch
 
 
-# ── Manual offload (--gpu-layers + --fit off + --n-cpu-moe) ───────────
 
 
 def test_load_request_accepts_manual():
@@ -286,8 +275,8 @@ def test_load_request_manual_defaults():
 
 @pytest.mark.parametrize("bad", [[0, 0], [-1, 2], [float("inf"), 1], [float("nan"), 1]])
 def test_load_request_rejects_degenerate_tensor_split(bad):
-    # A negative/non-finite/all-zero split is dropped at launch but compared raw
-    # in the reload dedupe, so it would reload forever -- reject it up front.
+    # A negative/non-finite/all-zero split is dropped at launch but compared raw in the reload
+    # dedupe, so it would reload forever -- reject it up front.
     with pytest.raises(ValueError):
         LoadRequest(model_path = "owner/repo", tensor_split = bad)
 
@@ -361,8 +350,8 @@ def test_manual_properties_default_and_reflect_and_reset():
 
 
 def test_n_moe_layers_property():
-    # 0 for a dense model (hides the slider); block_count for all-MoE;
-    # block_count - leading_dense otherwise (GLM-4.7-Flash: 47 - 1 -> 46).
+    # 0 for a dense model (hides the slider); block_count for all-MoE; block_count - leading_dense
+    # otherwise (GLM-4.7-Flash: 47 - 1 -> 46).
     b = LlamaCppBackend()
     b._n_layers = 36
     b._n_experts = None
@@ -406,29 +395,22 @@ def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_or_split_change():
     backend._gpu_layers = 20
     backend._n_cpu_moe = 0
     backend._tensor_split = None
-    # Same knobs -> no reload.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0) is True
-    # Changed layer count -> reload.
     assert _target_state_manual(backend, gpu_layers = 16, n_cpu_moe = 0) is False
-    # Changed MoE offload -> reload.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 8) is False
-    # Added a GPU split -> reload.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1]) is False
-    # Same GPU split -> no reload.
     backend._tensor_split = [2, 1]
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1]) is True
 
 
 def test_auto_layers_reload_tracks_only_gpu_layers():
-    # Under Auto (gpu_layers < 0) the MoE/split knobs don't apply, so a leftover
-    # request value must not reload -- only a gpu_layers change (Auto -> pinned) does.
+    # Under Auto (gpu_layers < 0) the MoE/split knobs do not apply, so a leftover request value must
+    # not reload -- only a gpu_layers change (Auto -> pinned) does.
     backend = _loaded_backend("manual")
     backend._gpu_layers = -1
     backend._n_cpu_moe = 0
     backend._tensor_split = None
-    # Same Auto, leftover MoE/split in the request -> still no reload.
     assert _target_state_manual(backend, gpu_layers = -1, n_cpu_moe = 8, tensor_split = [2, 1]) is True
-    # Auto -> explicit offload reloads.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0) is False
 
 
@@ -437,8 +419,8 @@ def test_manual_offload_emits_gpu_layers_fit_off_and_n_cpu_moe():
     gate = src.find('elif gpu_memory_mode == "manual":')
     assert gate != -1, "load_model must have an explicit-offload manual branch"
     block = src[gate : gate + 700]
-    # Empties the probed set (skips the planner) but keeps the user's TP choice
-    # (only the Auto-layers branch above drops TP).
+    # Empties the probed set (skips the planner) but keeps the user's TP choice (only the
+    # Auto-layers branch above drops TP).
     assert "gpus = []" in block
     assert "tensor_parallel = False" not in block
     # The cmd emits the layer count with fit disabled, gated on gpu_layers >= 0.
@@ -447,9 +429,8 @@ def test_manual_offload_emits_gpu_layers_fit_off_and_n_cpu_moe():
     # MoE offload uses --n-cpu-moe via _resolve_cpu_moe_flag (tested behaviorally below).
     assert "_resolve_cpu_moe_flag(" in src
     assert 'cmd.extend(["--n-cpu-moe", str(moe_flag)])' in src
-    # A count requested on a dense model is never emitted, so it must also be
-    # dropped from the recorded state -- else /status and /load report a count
-    # llama-server never received (same rule as the tensor-split drop below).
+    # A count requested on a dense model is never emitted, so it must also be dropped from the
+    # recorded state -- else /status and /load report a count llama-server never received.
     moe_emit = src.find('cmd.extend(["--n-cpu-moe", str(moe_flag)])')
     assert "elif n_cpu_moe:" in src[moe_emit : moe_emit + 300]
     assert "self._n_cpu_moe = 0" in src[moe_emit : moe_emit + 300]
@@ -459,14 +440,14 @@ def test_manual_offload_emits_gpu_layers_fit_off_and_n_cpu_moe():
 
 
 def test_status_reports_requested_context_length():
-    # The hydration path re-seeds a Manual+Auto context pin from the REQUESTED
-    # n_ctx (0 = Auto); context_length only exposes the resolved value.
+    # The hydration path re-seeds a Manual+Auto context pin from the REQUESTED n_ctx (0 = Auto);
+    # context_length only exposes the resolved value.
     assert "requested_context_length" in InferenceStatusResponse.model_fields
     s = InferenceStatusResponse(requested_context_length = 8192)
     assert s.model_dump()["requested_context_length"] == 8192
     assert InferenceStatusResponse().model_dump()["requested_context_length"] is None
-    # The /status route must actually wire it from the backend (a declared-but-
-    # never-populated field would leave hydration silently reverting the pin).
+    # The /status route must actually wire it from the backend (a declared-but-never-populated field
+    # would leave hydration silently reverting the pin).
     from pathlib import Path as _P
 
     route_src = (_P(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
@@ -474,15 +455,12 @@ def test_status_reports_requested_context_length():
 
 
 def test_manual_offload_emits_tensor_split():
-    # The offload path emits --tensor-split from the per-GPU shares, only when
-    # provided, with >1 GPU in use, AND matching that count (a stale ratio on a
-    # narrowed picker or a mismatched direct-API list must not emit -- llama-
-    # server aborts on a split/GPU-count mismatch).
+    # The offload path emits --tensor-split from the per-GPU shares, only when provided, with >1 GPU in
+    # use, AND matching that count: llama-server aborts on a split/GPU-count mismatch.
     src = _load_model_source()
     assert "if tensor_split and _split_gpus > 1:" in src
-    # Emit only on a length match AND a positive sanitized total: a mismatched
-    # or all-zero split aborts llama-server / assigns nothing, so it's dropped.
-    # The emitted list is the sanitized one (clamping tested behaviorally below).
+    # Emit only on a length match AND a positive sanitized total: a mismatched or all-zero split
+    # aborts llama-server / assigns nothing, so it is dropped.
     assert "_sanitized_split = self._sanitize_tensor_split(tensor_split)" in src
     assert "if len(_sanitized_split) == _split_gpus and _split_total > 0:" in src
     assert '"--tensor-split"' in src
@@ -490,19 +468,15 @@ def test_manual_offload_emits_tensor_split():
     gate = src.find('if gpu_memory_mode == "manual" and gpu_layers >= 0:')
     nxt = src.find("elif use_fit:", gate)
     assert '","' in src[gate:nxt] and "tensor_split" in src[gate:nxt]
-    # A split with a single effective GPU is never emitted, so it must also be
-    # dropped from the recorded state -- else /status and /load report a ratio
-    # llama-server never received and the dedupe baseline preserves it.
     assert "elif tensor_split:" in src[gate:nxt]
     drop = src.find("elif tensor_split:", gate, nxt)
     assert "self._tensor_split = None" in src[drop : drop + 250]
 
 
 def test_sanitize_tensor_split_clamps_negative_and_non_finite():
-    # Negative entries would launch a placement different from the ratio the
-    # UI showed; inf passes a plain > 0 total gate and would emit
-    # "--tensor-split inf,..." (llama.cpp normalizes shares by the running
-    # total, so an inf poisons the shares from that entry on). Both clamp to 0.
+    # Negative entries would launch a placement different from the ratio the UI showed; inf passes a
+    # plain > 0 total gate and llama.cpp normalizes shares by the running total, so an inf poisons
+    # the shares from that entry on.
     sanitize = LlamaCppBackend._sanitize_tensor_split
     assert sanitize([2, 1]) == [2.0, 1.0]
     assert sanitize([-1, 2]) == [0.0, 2.0]
@@ -516,10 +490,8 @@ def test_sanitize_tensor_split_clamps_negative_and_non_finite():
 
 
 def test_zero_offload_mask_honors_device_pin_spellings():
-    # A user device pin must keep the GPUs visible: llama-server aborts on a
-    # pin it can't see ('error: invalid device'). The pin can arrive as
-    # --device or its -dev alias, as the draft forms (parsed even with no
-    # drafter loaded), or as an inherited LLAMA_ARG_DEVICE env var.
+    # A user device pin must keep the GPUs visible: llama-server aborts on a pin it cannot see
+    # ('error: invalid device').
     load_src = _load_model_source()
     assert "self._zero_offload_keeps_gpu_visible(cmd, env)" in load_src
     block = inspect.getsource(LlamaCppBackend._cmd_has_gpu_device_pin)
@@ -535,8 +507,8 @@ def test_zero_offload_mask_honors_device_pin_spellings():
 
 
 def test_resolve_cpu_moe_flag():
-    # Clamp the requested MoE-layer count to the model's MoE layers, then offset
-    # past leading dense layers (--n-cpu-moe counts from layer 0).
+    # Clamp the requested MoE-layer count to the model's MoE layers, then offset past leading dense
+    # layers (--n-cpu-moe counts from layer 0).
     R = LlamaCppBackend._resolve_cpu_moe_flag
     assert R(0, 40, 0) is None  # nothing requested
     assert R(8, 0, 0) is None  # dense model (no MoE layers)
@@ -548,11 +520,8 @@ def test_resolve_cpu_moe_flag():
 
 
 def test_manual_allows_tensor_parallel_via_split_mode():
-    # Manual offload keeps the user's TP choice but skips the memory-based planner
-    # (plan_tp excludes manual, so its empty gpu set can't downgrade TP). The
-    # --split-mode tensor emission gates on tensor_parallel alone, so manual
-    # reaches it -- with tp_tensor_split None it's an even split (no
-    # --tensor-split). --fit off means no fit/tensor abort.
+    # Manual offload keeps the user's TP choice but skips the memory-based planner (plan_tp excludes
+    # manual, so its empty gpu set cannot downgrade TP).
     src = _load_model_source()
     assert 'plan_tp = tensor_parallel and gpu_memory_mode != "manual"' in src
     assert "if plan_tp:" in src
@@ -561,8 +530,8 @@ def test_manual_allows_tensor_parallel_via_split_mode():
     assert sm != -1, "TP must emit --split-mode tensor"
     guard = src.rfind("if tensor_parallel:", 0, sm)
     assert guard != -1 and sm - guard < 200, "split-mode gates on tensor_parallel"
-    # The tensor-split is only emitted for a planned (non-even) split, which
-    # manual never produces, so manual stays an even split.
+    # The tensor-split is only emitted for a planned (non-even) split, which manual never produces,
+    # so manual stays an even split.
     assert "if tp_tensor_split and len(tp_tensor_split) > 1:" in src
 
 
@@ -571,18 +540,15 @@ def test_fit_sets_target_margin():
     caps = {"supports_fit_target": True}
     flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 0, caps)
     assert flags[flags.index("--fit-target") + 1] == "512"
-    # Not emitted on the legacy auto path (fit on but not auto_fit): -c 0 pins
-    # native there, so the tighter margin must not ride along.
+    # Not emitted on the legacy auto path (fit on but not auto_fit): -c 0 pins native there, so the
+    # tighter margin must not ride along.
     assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, True, False, 0, 0, caps)
-    # Not emitted when fit is off.
     assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, False, 0, 0, caps)
-    # Not emitted when the binary lacks support.
     assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
         1, True, True, 0, 0, {"supports_fit_target": False}
     )
 
 
-# ── GPU picker (gpu_ids -> CUDA_VISIBLE_DEVICES) ─────────────────────
 
 
 def test_load_request_accepts_gpu_ids():
@@ -625,15 +591,11 @@ def _target_state_gpu_ids(backend, gpu_ids):
 def test_gpu_ids_reload_detection_is_order_insensitive():
     backend = _loaded_backend("auto")
     backend._gpu_ids = [0, 1]
-    # A real non-narrowed load records the raw request too; the non-diffusion
-    # dedupe now compares that raw pin (#7239). Set it to match the effective pin
-    # (no narrowing) so this exercises the order-insensitive comparison.
+    # A real non-narrowed load records the raw request too; the non-diffusion dedupe now compares
+    # that raw pin (#7239).
     backend._requested_gpu_ids = [0, 1]
-    # Same set, different order -> no reload.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
-    # Different set -> reload.
     assert _target_state_gpu_ids(backend, [0]) is False
-    # Dropping the pick (auto) -> reload.
     assert _target_state_gpu_ids(backend, None) is False
 
 
@@ -649,9 +611,7 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     # The original request still matches after the fitter narrows it.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
     assert backend.requested_gpu_ids == [0, 1]
-    # The status response echoes the effective pin, which must also round-trip.
-    # Treat the incoming subset as the latest intent so status and a future
-    # reload do not restore GPU 1 after the user removed it.
+    # The status response echoes the effective pin, which must round-trip.
     assert _target_state_gpu_ids(backend, [0]) is True
     assert backend.requested_gpu_ids == [0]
     assert backend._last_load_intent.gpu_ids == (0,)
@@ -683,19 +643,14 @@ def test_gpu_ids_control_owned_device_extra_args(gpu_ids, expected_ids, matches)
 
 
 def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
-    # The diffusion runner drives only its single lowest device, so the backend
-    # records [lowest]. A later multi-GPU request that still resolves to that
-    # same lowest device must dedupe (no needless reload); a request whose lowest
-    # device moves, or that drops the pick, must reload.
+    # The diffusion runner drives only its single lowest device, so the backend records [lowest].
     backend = _loaded_backend("auto")
     backend._is_diffusion = True
     backend._gpu_ids = [1]  # loaded on the lowest of an earlier [3, 1] pick
     assert _target_state_gpu_ids(backend, [3, 1]) is True
     assert backend.requested_gpu_ids == [1]
     assert _target_state_gpu_ids(backend, [1]) is True
-    # Lowest device changes (2, not 1) -> reload.
     assert _target_state_gpu_ids(backend, [3, 2]) is False
-    # Dropping the pick (auto) -> reload.
     assert _target_state_gpu_ids(backend, None) is False
 
 
@@ -764,8 +719,8 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
 
 
 def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatch, tmp_path):
-    # A resolvable shard-1 file does not prove the variant is complete, so download
-    # failures must surface from the pre-teardown _download_gguf, not after the kill.
+    # A resolvable shard-1 file does not prove the variant is complete, so download failures must
+    # surface from the pre-teardown _download_gguf, not after the kill.
     import hub.utils.gguf as hub_gguf
 
     cached_shard = tmp_path / "model-00001-of-00003.gguf"
@@ -935,18 +890,15 @@ def test_local_vulkan_missing_gguf_is_reported_before_teardown(monkeypatch, tmp_
 
 
 def test_start_diffusion_server_resets_tensor_parallel():
-    # A prior tensor-parallel chat load leaves self._tensor_parallel True (load_model
-    # phase 1 only kills the process, it skips the unload reset). Diffusion is never
-    # TP, so startup must clear it -- else /status misreports TP and an identical
-    # diffusion re-Apply reloads against stale tensor-parallel state.
+    # A prior tensor-parallel chat load leaves self._tensor_parallel True (load_model phase 1 only
+    # kills the process).
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
-    # Still the collapsed single-device pick, but taken from the request rather than the
-    # effective pin, which a forced-CPU launch on virtualised Metal clears.
+    # Still the collapsed single-device pick, but taken from the request rather than the effective
+    # pin, which a forced-CPU launch on virtualised Metal clears.
     assert "self._requested_gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None" in src
 
 
-# ── Manual tensor split: child enumeration pinned to the picker's order ──────
 
 
 @pytest.mark.parametrize(
@@ -980,9 +932,9 @@ def _patch_split_pin_env(monkeypatch, *, inherited, reported):
 
 
 def test_split_pin_reorders_inherited_numeric_mask(monkeypatch):
-    # Parent CUDA_VISIBLE_DEVICES=3,1 makes the child enumerate dev0=phys3, but
-    # nvidia-smi reported the picker's list ascending -- the mask must be
-    # re-emitted in that order or the per-GPU shares land on the wrong cards.
+    # Parent CUDA_VISIBLE_DEVICES=3,1 makes the child enumerate dev0=phys3, but nvidia-smi reported the
+    # picker's list ascending -- the mask must be re-emitted in that order or the per-GPU shares land
+    # on the wrong cards.
     _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
     env = {"CUDA_VISIBLE_DEVICES": "3,1"}
     LlamaCppBackend._pin_visible_gpu_order_for_split(env)
@@ -991,9 +943,9 @@ def test_split_pin_reorders_inherited_numeric_mask(monkeypatch):
 
 
 def test_split_pin_keeps_mask_order_when_picker_reported_it(monkeypatch):
-    # Torch-fallback enumeration (no nvidia-smi) reports devices in inherited
-    # mask order, so the picker's split list follows the mask -- the pin must
-    # keep that order, not re-sort it into a mismatch.
+    # Torch-fallback enumeration (no nvidia-smi) reports devices in inherited mask order, so the
+    # picker's split list follows the mask -- the pin must keep that order, not re-sort it into a
+    # mismatch.
     _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [3, 1])
     env = {"CUDA_VISIBLE_DEVICES": "3,1"}
     LlamaCppBackend._pin_visible_gpu_order_for_split(env)
@@ -1001,8 +953,8 @@ def test_split_pin_keeps_mask_order_when_picker_reported_it(monkeypatch):
 
 
 def test_split_pin_falls_back_to_ascending_without_report(monkeypatch):
-    # Enumeration unavailable: ascending physical is the best guess (it matches
-    # the dominant nvidia-smi report order).
+    # Enumeration unavailable: ascending physical is the best guess (it matches the dominant
+    # nvidia-smi report order).
     _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = None)
     env = {"CUDA_VISIBLE_DEVICES": "3,1"}
     LlamaCppBackend._pin_visible_gpu_order_for_split(env)
@@ -1010,8 +962,8 @@ def test_split_pin_falls_back_to_ascending_without_report(monkeypatch):
 
 
 def test_split_pin_without_mask_only_sets_pci_order(monkeypatch):
-    # No inherited mask (or a UUID/MIG one resolving to None): enumeration order
-    # is fully fixed by CUDA_DEVICE_ORDER, so no mask is written.
+    # No inherited mask (or a UUID/MIG one resolving to None): enumeration order is fully fixed by
+    # CUDA_DEVICE_ORDER, so no mask is written.
     _patch_split_pin_env(monkeypatch, inherited = None, reported = None)
     env = {}
     LlamaCppBackend._pin_visible_gpu_order_for_split(env)
@@ -1019,10 +971,9 @@ def test_split_pin_without_mask_only_sets_pci_order(monkeypatch):
 
 
 def test_split_pin_mirrors_hip_mask_on_rocm(monkeypatch):
-    # ROCm with the mask sourced from HIP: the pin must land in
-    # HIP_VISIBLE_DEVICES too, and an inherited ROCR mask is cleared so the
-    # mask can't apply twice (ROCR re-indexes, then HIP would index into the
-    # already-reduced set).
+    # ROCm with the mask sourced from HIP: the pin must land in HIP_VISIBLE_DEVICES too, and an
+    # inherited ROCR mask is cleared so the mask cannot apply twice (ROCR re-indexes, then HIP would
+    # index into the already-reduced set).
     _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
     _rocm_torch_stub(monkeypatch)
     env = {
@@ -1037,11 +988,9 @@ def test_split_pin_mirrors_hip_mask_on_rocm(monkeypatch):
 
 
 def test_split_pin_preserves_inherited_rocr_mask(monkeypatch):
-    # Mask sourced from ROCR alone (e.g. an AMD SDK parent): the pin must
-    # re-emit at the ROCr layer, not swap to HIP -- clearing ROCR re-exposes
-    # every agent to HSA enumeration, which can segfault at startup on an
-    # unsupported GPU the parent mask was hiding (#7272 review). CUDA carries
-    # the post-ROCR ordinals, mirroring the prefer_rocr emission.
+    # Mask sourced from ROCR alone (e.g. an AMD SDK parent): the pin must re-emit at the ROCr layer, not
+    # swap to HIP -- clearing ROCR re-exposes every agent to HSA enumeration, which can segfault at
+    # startup on an unsupported GPU the parent mask was hiding (#7272 review).
     _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
     _rocm_torch_stub(monkeypatch)
     env = {"ROCR_VISIBLE_DEVICES": "3,1"}
@@ -1052,9 +1001,9 @@ def test_split_pin_preserves_inherited_rocr_mask(monkeypatch):
 
 
 def test_split_pin_keeps_hip_on_windows_despite_stray_rocr(monkeypatch):
-    # On Windows the ROCR var is dead (no ROCr layer) and the resolver never
-    # reads it, so a stray value must not flip the pin to the ROCR emission:
-    # the HIP mask is the only effective selector there.
+    # On Windows the ROCR var is dead (no ROCr layer) and the resolver never reads it, so a stray
+    # value must not flip the pin to the ROCR emission: the HIP mask is the only effective selector
+    # there.
     _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
     torch_stub = _types.ModuleType("torch")
     torch_stub.version = _types.SimpleNamespace(hip = "6.0")
@@ -1071,16 +1020,15 @@ def _rocm_torch_stub(monkeypatch):
     torch_stub = _types.ModuleType("torch")
     torch_stub.version = _types.SimpleNamespace(hip = "6.0")
     monkeypatch.setitem(sys.modules, "torch", torch_stub)
-    # prefer_rocr is Linux-only (ROCR is an ROCr variable); pin the platform so
-    # these Linux-behaviour tests also pass on a Windows dev box.
+    # prefer_rocr is Linux-only (ROCR is an ROCr variable); pin the platform so these
+    # Linux-behaviour tests also pass on a Windows dev box.
     monkeypatch.setattr(sys, "platform", "linux")
 
 
 def test_subset_pin_masks_via_rocr_on_rocm(monkeypatch):
-    # A GPU-subset pin must exclude the rest at the ROCr/HSA layer: HIP masking
-    # still enumerates every agent first, which segfaults the build on an
-    # unsupported deselected GPU (e.g. a gfx1036 iGPU under a gfx103X prebuilt).
-    # ROCR drops it at the driver layer; only one mask is set (HIP cleared).
+    # A GPU-subset pin must exclude the rest at the ROCr/HSA layer: HIP masking still enumerates
+    # every agent first, which segfaults the build on an unsupported deselected GPU (a gfx1036 iGPU
+    # under a gfx103X prebuilt).
     _rocm_torch_stub(monkeypatch)
     env = {"HIP_VISIBLE_DEVICES": "9"}  # stale/inherited HIP mask must not survive
     LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
@@ -1090,10 +1038,9 @@ def test_subset_pin_masks_via_rocr_on_rocm(monkeypatch):
 
 
 def test_prefer_rocr_remaps_cuda_to_post_rocr_ordinals(monkeypatch):
-    # ROCR re-indexes the visible agents from 0, and HIP (cleared here) falls back
-    # to CUDA_VISIBLE_DEVICES -- so on the prefer_rocr path CUDA must carry the
-    # post-ROCR ordinals, not the physical ids, else a non-zero pick indexes out
-    # of range and the child sees no GPU and drops to CPU (#7272 review).
+    # ROCR re-indexes the visible agents from 0, and HIP (cleared here) falls back to
+    # CUDA_VISIBLE_DEVICES -- so on the prefer_rocr path CUDA must carry the post-ROCR ordinals, else
+    # a non-zero pick indexes out of range and the child drops to CPU (#7272 review).
     _rocm_torch_stub(monkeypatch)
     # Single non-zero GPU: ROCR keeps the physical id, CUDA becomes ordinal 0.
     env = {}
@@ -1110,8 +1057,8 @@ def test_prefer_rocr_remaps_cuda_to_post_rocr_ordinals(monkeypatch):
 
 
 def test_subset_pin_default_still_uses_hip_and_clears_rocr(monkeypatch):
-    # Without prefer_rocr the masking is unchanged: HIP narrows, inherited ROCR
-    # is cleared so the two can't double-mask.
+    # Without prefer_rocr the masking is unchanged: HIP narrows, inherited ROCR is cleared so the
+    # two cannot double-mask.
     _rocm_torch_stub(monkeypatch)
     env = {"ROCR_VISIBLE_DEVICES": "0,1"}
     LlamaCppBackend._emit_child_gpu_visibility(env, "1")
@@ -1120,8 +1067,7 @@ def test_subset_pin_default_still_uses_hip_and_clears_rocr(monkeypatch):
 
 
 def test_cpu_only_pin_keeps_hip_even_with_prefer_rocr(monkeypatch):
-    # The CPU-only sentinel never routes through ROCR (no portable "hide all"
-    # spelling); it hides every GPU via HIP.
+    # The CPU-only sentinel never routes through ROCR (no portable "hide all" spelling); it hides every GPU via HIP.
     _rocm_torch_stub(monkeypatch)
     env = {}
     LlamaCppBackend._emit_child_gpu_visibility(env, "-1", prefer_rocr = True)
@@ -1130,11 +1076,9 @@ def test_cpu_only_pin_keeps_hip_even_with_prefer_rocr(monkeypatch):
 
 
 def test_cpu_only_pin_keeps_an_inherited_rocr_mask(monkeypatch):
-    # The anti-stacking clear exists for a POSITIVE pin (ROCR re-indexes from 0,
-    # then a non-zero HIP pin points out of range). "-1" hides every device
-    # whatever ROCR says, so clearing it only re-exposes agents the parent hid to
-    # the HSA enumeration that dies on an uncovered arch (#7624). Same rule the
-    # embedding CPU launch follows.
+    # The anti-stacking clear exists for a POSITIVE pin (ROCR re-indexes from 0, then a non-zero HIP pin
+    # points out of range). "-1" hides every device whatever ROCR says, so clearing it only re-exposes
+    # agents the parent hid to the HSA enumeration that dies on an uncovered arch (#7624).
     _rocm_torch_stub(monkeypatch)
     env = {"ROCR_VISIBLE_DEVICES": "1"}
     LlamaCppBackend._emit_child_gpu_visibility(env, "-1")
@@ -1153,9 +1097,8 @@ def _amd_sdk_torch_stub(monkeypatch):
 
 
 def test_prefer_rocr_falls_back_to_hip_on_windows(monkeypatch):
-    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable (Windows HIP has no ROCr
-    # layer), so on Windows ROCm prefer_rocr must keep the HIP mask or a nonzero
-    # pick loses its only effective selector (#7272 review).
+    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable (Windows HIP has no ROCr layer), so on Windows ROCm
+    # prefer_rocr must keep the HIP mask or a nonzero pick loses its only selector (#7272 review).
     torch_stub = _types.ModuleType("torch")
     torch_stub.version = _types.SimpleNamespace(hip = "6.0")
     monkeypatch.setitem(sys.modules, "torch", torch_stub)
@@ -1169,8 +1112,6 @@ def test_prefer_rocr_falls_back_to_hip_on_windows(monkeypatch):
 
 def test_amd_sdk_wheel_hip_none_still_masks_rocr(monkeypatch):
     # An AMD SDK wheel leaves torch.version.hip unset but has "rocm" in __version__.
-    # It must still get the ROCR mask, else only CUDA_VISIBLE_DEVICES is set and an
-    # unsupported iGPU keeps enumerating and can crash llama-server.
     _amd_sdk_torch_stub(monkeypatch)
     env = {"HIP_VISIBLE_DEVICES": "9"}
     LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
@@ -1179,8 +1120,8 @@ def test_amd_sdk_wheel_hip_none_still_masks_rocr(monkeypatch):
 
 
 def test_cuda_wheel_hip_none_gets_no_rocm_mask(monkeypatch):
-    # A CUDA wheel (hip=None, no "rocm" in __version__) must NOT get a HIP/ROCR mask
-    # -- only CUDA_VISIBLE_DEVICES -- so the version-string check can't false-positive.
+    # A CUDA wheel (hip=None, no "rocm" in __version__) must NOT get a HIP/ROCR mask -- only
+    # CUDA_VISIBLE_DEVICES -- so the version-string check cannot false-positive.
     torch_stub = _types.ModuleType("torch")
     torch_stub.version = _types.SimpleNamespace(hip = None)
     torch_stub.__version__ = "2.9.1+cu124"
@@ -1193,11 +1134,9 @@ def test_cuda_wheel_hip_none_gets_no_rocm_mask(monkeypatch):
 
 
 def test_resolve_physical_ids_reads_rocr_on_amd_sdk_wheel(monkeypatch):
-    # _resolve_visible_physical_ids must use the same ROCm detection as
-    # _emit_child_gpu_visibility: on an AMD SDK wheel (hip=None, rocm in
-    # __version__) an inherited ROCR mask IS the ordinal->physical mapping.
-    # Reading it as "no mask" labels ordinal 0 as physical 0 and the child's
-    # ROCR pin then re-exposes the GPU the mask was hiding (#7272 review).
+    # _resolve_visible_physical_ids must use the same ROCm detection as _emit_child_gpu_visibility: on
+    # an AMD SDK wheel an inherited ROCR mask IS the ordinal->physical mapping. Reading it as "no mask"
+    # labels ordinal 0 as physical 0 and the child's ROCR pin re-exposes the hidden GPU (#7272 review).
     _amd_sdk_torch_stub(monkeypatch)
     for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
@@ -1206,8 +1145,7 @@ def test_resolve_physical_ids_reads_rocr_on_amd_sdk_wheel(monkeypatch):
 
 
 def test_resolve_physical_ids_ignores_rocr_on_cuda_wheel(monkeypatch):
-    # A CUDA wheel (hip=None, no "rocm") keeps CUDA-only semantics: a stray
-    # ROCR var must not be read as the mask.
+    # A CUDA wheel (hip=None, no "rocm") keeps CUDA-only semantics: a stray ROCR var must not be read as the mask.
     torch_stub = _types.ModuleType("torch")
     torch_stub.version = _types.SimpleNamespace(hip = None)
     torch_stub.__version__ = "2.9.1+cu124"
@@ -1219,11 +1157,9 @@ def test_resolve_physical_ids_ignores_rocr_on_cuda_wheel(monkeypatch):
 
 
 def test_resolve_physical_ids_ignores_rocr_on_windows(monkeypatch):
-    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable: Windows HIP has no ROCr
-    # layer, so a stray ROCR var there does not mask the runtime. Reading it as
-    # the ordinal->physical mapping would label ordinal 0 with a stale ROCR id
-    # while the runtime still enumerates every adapter, so auto-selection could
-    # budget one card and pin another (#7272 review). HIP must still be honoured.
+    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable, so a stray ROCR var on Windows does not mask the
+    # runtime. Reading it as the ordinal->physical mapping labels ordinal 0 with a stale ROCR id while
+    # every adapter still enumerates, so auto-selection could budget one card and pin another (#7272).
     torch_stub = _types.ModuleType("torch")
     torch_stub.version = _types.SimpleNamespace(hip = None)
     torch_stub.__version__ = "2.9.1+rocm7.2.1"  # AMD SDK wheel
@@ -1233,12 +1169,10 @@ def test_resolve_physical_ids_ignores_rocr_on_windows(monkeypatch):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
     assert LlamaCppBackend._resolve_visible_physical_ids() is None
-    # HIP precedence is unchanged on Windows.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     assert LlamaCppBackend._resolve_visible_physical_ids() == [1]
 
 
-# ── Diffusion single-device selection ───────────────────────────────────────
 
 
 def test_diffusion_gpu_arg_uses_lowest_explicit_physical_id(monkeypatch):
@@ -1259,12 +1193,10 @@ def test_diffusion_gpu_arg_honors_override_and_cpu_mask(monkeypatch):
     assert LlamaCppBackend._diffusion_gpu_arg(None, cpu_only = True) == ""
 
 
-# ── Deliberate zero-offload (manual gpu_layers=0): training-skip flag ─────────
 
 
 def test_zero_offload_flag_false_without_companions():
-    # CPU-only by construction: False lets training skip unloading a server that
-    # holds no VRAM.
+    # CPU-only by construction: False lets training skip unloading a server that holds no VRAM.
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", "--fit", "off"]
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is False
 
@@ -1274,9 +1206,8 @@ def test_zero_offload_flag_false_without_companions():
     ["--mmproj", "--model-draft", "-md", "--spec-draft-model", "-hfd"],
 )
 def test_zero_offload_flag_true_with_companion(companion):
-    # mmproj / a drafter offload to GPU regardless of --gpu-layers, so the
-    # server still holds VRAM and training must unload it. Drafter detection
-    # reuses the extras parser, so pass-through aliases count too.
+    # mmproj / a drafter offload to GPU regardless of --gpu-layers, so the server still holds VRAM
+    # and training must unload it.
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", companion, "x.gguf"]
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
 
@@ -1347,8 +1278,8 @@ def test_zero_offload_flag_none_without_gpus():
 
 
 def test_cmd_has_gpu_companion_detection():
-    # The env mask for CPU-only zero-offload loads keys off this scan: any
-    # --mmproj form or a drafter (flag aliases / env) keeps the GPUs visible.
+    # The env mask for CPU-only zero-offload loads keys off this scan: any --mmproj form or a
+    # drafter (flag aliases / env) keeps the GPUs visible.
     has = LlamaCppBackend._cmd_has_gpu_companion
     assert has(["llama-server", "-m", "m.gguf"], {}) is False
     assert has(["llama-server", "--mmproj", "p.gguf"], {}) is True
@@ -1358,8 +1289,8 @@ def test_cmd_has_gpu_companion_detection():
 
 
 def test_cmd_companion_ignores_cpu_forced_drafter():
-    # A CPU-pinned drafter holds no VRAM: the zero-offload mask may hide the GPUs
-    # and training may leave the server alone.
+    # A CPU-pinned drafter holds no VRAM: the zero-offload mask may hide the GPUs and training may
+    # leave the server alone.
     has = LlamaCppBackend._cmd_has_gpu_companion
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0"]
     assert has(cmd, {}) is False
@@ -1370,7 +1301,6 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     assert has(cmd, {}) is True
 
 
-# ── Zero-offload loads and the GPU arbiter ───────────────────────────
 
 
 @pytest.fixture
@@ -1380,11 +1310,11 @@ def not_vulkan(monkeypatch):
 
 
 def test_zero_vram_chat_load_only_for_a_deliberate_cpu_only_offload(not_vulkan):
-    # Manual + gpu_layers=0 is the one shape that launches with the GPUs hidden from the child, so it is the one shape allowed
-    # to skip the GPU arbiter. Auto (or any pinned layer count) puts the model on the GPU and must still evict a pipeline.
+    # Manual + gpu_layers=0 is the one shape that launches with the GPUs hidden from the child, so
+    # it is the one shape allowed to skip the GPU arbiter.
     zero = llama_cpp_module.zero_vram_chat_load
-    # Speculation named explicitly off: an ABSENT mode resolves to auto everywhere else
-    # in the module, so it is GPU-bearing and covered by its own test below.
+    # Speculation named explicitly off: an ABSENT mode resolves to auto everywhere else in the
+    # module, so it is GPU-bearing and covered by its own test below.
     assert zero("manual", 0, [], False, "off") is True
     assert zero("auto", 0, [], False, "off") is False
     assert zero("manual", 1, [], False, "off") is False
@@ -1392,8 +1322,8 @@ def test_zero_vram_chat_load_only_for_a_deliberate_cpu_only_offload(not_vulkan):
 
 
 def test_zero_vram_chat_load_refuses_every_gpu_companion(not_vulkan):
-    # The launch-time mask keeps the GPUs visible for a device pin, tensor mode, an mmproj or a drafter, so those loads DO hold
-    # VRAM. --mmproj and --model-draft are added by the backend, so their intent arrives as flags.
+    # The launch-time mask keeps the GPUs visible for a device pin, tensor mode, an mmproj or a
+    # drafter, so those loads DO hold VRAM.
     zero = llama_cpp_module.zero_vram_chat_load
     assert zero("manual", 0, ["--device", "CUDA0"], False, "off") is False
     assert zero("manual", 0, ["-dev", "CUDA0"], False, "off") is False
@@ -1410,13 +1340,13 @@ def test_zero_vram_chat_load_refuses_every_gpu_companion(not_vulkan):
 
 
 def test_zero_vram_chat_load_exempts_disabled_speculation(not_vulkan):
-    # "off" is a canonical mode the UI persists and the resolver emits no drafter for, so a CPU-only load carrying it holds no
-    # VRAM either. Legacy spellings canonicalize the same way, while every mode that MAY resolve to a drafter stays GPU-bearing.
+    # "off" is a canonical mode the UI persists and the resolver emits no drafter for, so a CPU-only
+    # load carrying it holds no VRAM either.
     zero = llama_cpp_module.zero_vram_chat_load
     assert zero("manual", 0, [], False, "off") is True
     assert zero("manual", 0, [], False, " OFF ") is True
-    # Empty is NOT off: it canonicalizes to None like an omitted mode, and every
-    # consumer resolves that to auto, which may launch a drafter on the GPU.
+    # Empty is NOT off: it canonicalizes to None like an omitted mode, and every consumer resolves
+    # that to auto, which may launch a drafter on the GPU.
     assert zero("manual", 0, [], False, "") is False
     assert zero("manual", 0, [], False, "auto") is False
     assert zero("manual", 0, [], False, "mtp") is False
@@ -1430,7 +1360,8 @@ def test_zero_vram_chat_load_is_skipped_on_vulkan(monkeypatch):
 
 
 def test_holds_no_vram_needs_the_launch_to_have_confirmed_it():
-    # The property reports the LAUNCHED server, so it follows _gpu_offload_active: True and None both keep the normal arbiter path.
+    # The property reports the LAUNCHED server, so it follows _gpu_offload_active: True and None
+    # both keep the normal arbiter path.
     backend = LlamaCppBackend()
     backend._gpu_memory_mode = "manual"
     backend._gpu_layers = 0
@@ -1449,15 +1380,15 @@ def test_holds_no_vram_needs_the_launch_to_have_confirmed_it():
 
 
 def test_a_cpu_only_chat_load_does_not_take_the_gpu_arbiter():
-    # A load that needs no VRAM must not evict a resident Images/Video pipeline, nor leave CHAT recorded as owner (the next GPU
-    # workload would unload it for nothing). The in-flight marker still goes up, and the ownership recheck is gated on the same flag.
+    # A load that needs no VRAM must not evict a resident Images/Video pipeline, nor leave CHAT
+    # recorded as owner (the next GPU workload would unload it for nothing).
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     assert "chat_load_needs_gpu = not (" in load_impl
     gate = load_impl.index("chat_load_needs_gpu = not (")
     acquire = load_impl.index("if chat_load_needs_gpu:", gate)
-    # The stale CHAT claim is dropped only AFTER the load: this one may be replacing a GPU-backed chat model, and releasing
-    # earlier would let an image/video load allocate alongside the model not yet unloaded.
+    # The stale CHAT claim is dropped only AFTER the load: this one may be replacing a GPU-backed
+    # chat model, and releasing earlier would let an image/video load allocate alongside it.
     release = load_impl.index("await asyncio.to_thread(release, CHAT)", acquire)
     assert load_impl.index("if not chat_load_needs_gpu:", acquire) < release
     assert load_impl.index("success = await load_with_tensor_fallback(", acquire) < release
@@ -1467,8 +1398,8 @@ def test_a_cpu_only_chat_load_does_not_take_the_gpu_arbiter():
 
 
 def test_cmd_companion_ignores_a_projector_pinned_off_the_gpu():
-    # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole GPU
-    # backend on it, so a CPU-pinned vision server must not look GPU resident.
+    # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole GPU backend on it, so a
+    # CPU-pinned vision server must not look GPU resident.
     has = LlamaCppBackend._cmd_has_gpu_companion
     cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload"]
     assert has(cmd, {}) is False
@@ -1478,17 +1409,11 @@ def test_cmd_companion_ignores_a_projector_pinned_off_the_gpu():
 
 
 def test_zero_vram_chat_load_treats_an_absent_mode_as_auto(not_vulkan):
-    # _canonicalize_spec_mode returns None for None, "" and whitespace alike, and every
-    # consumer resolves that to "auto" (`... or "auto"` in load_model), where a remote or
-    # local sidecar can be discovered and launched with its default GPU offload. Reading
-    # an absent mode as "off" here let an API or defaulted load skip acquire_for(CHAT)
-    # while the launch-time mask, which reads the finished argv and so sees the drafter
-    # that got added, kept the GPUs visible: no arbiter, real VRAM, free to land on a
-    # resident image/video pipeline and OOM both.
+    # _canonicalize_spec_mode returns None for None, "" and whitespace alike, and every consumer
+    # resolves that to "auto", where a sidecar can be launched with its default GPU offload.
     zero = llama_cpp_module.zero_vram_chat_load
     assert zero("manual", 0) is False
     assert zero("manual", 0, [], False, None) is False
     assert zero("manual", 0, [], False, "") is False
     assert zero("manual", 0, [], False, "   ") is False
-    # Only the canonical spelling still exempts it.
     assert zero("manual", 0, [], False, "off") is True

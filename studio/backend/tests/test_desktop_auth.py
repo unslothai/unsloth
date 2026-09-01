@@ -137,7 +137,6 @@ def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch
 
 
 def test_bootstrap_password_file_ends_with_a_newline():
-    # Otherwise `cat` welds the passphrase onto the shell prompt.
     storage.ensure_default_admin()
 
     # Bytes: read_text would decode CRLF back to "\n" and hide a CR.
@@ -156,7 +155,6 @@ def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
 
 
 def test_upgrade_normalises_the_bootstrap_file():
-    # Upgrade path: the admin row exists, so generate_bootstrap_password() never runs.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
@@ -175,7 +173,6 @@ def test_upgrade_normalises_the_bootstrap_file():
     ],
 )
 def test_only_an_exactly_unterminated_bootstrap_file_is_touched(other):
-    # Appending is safe only because it is restricted to the one released shape.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(other)
 
@@ -222,7 +219,6 @@ def test_migration_failure_does_not_break_startup(monkeypatch):
 
 
 def test_normalising_never_recreates_a_cleared_bootstrap_file(monkeypatch):
-    # A rename would resurrect revoked plaintext if the password changed after the read.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
@@ -254,7 +250,6 @@ def test_normalising_does_not_overwrite_a_rotated_bootstrap_file(monkeypatch):
 
     storage._read_persisted_bootstrap_password()
 
-    # The append may add a second newline; the rotated credential must survive.
     raw = storage._BOOTSTRAP_PW_PATH.read_bytes()
     assert raw.strip() == b"brand-new-secret"
     storage._bootstrap_password = None
@@ -262,7 +257,6 @@ def test_normalising_does_not_overwrite_a_rotated_bootstrap_file(monkeypatch):
 
 
 def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
-    # An in-place rewrite is not atomic, so only the exact unterminated shape is touched.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"  legacy-bootstrap-secret  ")
 
@@ -273,7 +267,6 @@ def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
 
 
 def test_normalising_opens_the_file_in_binary_mode(monkeypatch):
-    # Without O_BINARY, Windows text mode turns the written LF back into CRLF.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
     monkeypatch.setattr(storage.os, "O_BINARY", 0x8000, raising = False)
@@ -293,8 +286,8 @@ def test_normalising_opens_the_file_in_binary_mode(monkeypatch):
 
 
 def test_clearing_by_truncation_mid_normalisation_is_not_undone(monkeypatch):
-    # clear_bootstrap_password() truncates through its own descriptor when the unlink
-    # fails (Windows, while ours is open); the append must not restore the plaintext.
+    # clear_bootstrap_password() truncates through its own descriptor when the unlink fails
+    # (Windows, while ours is open); the append must not restore the plaintext.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
@@ -310,14 +303,12 @@ def test_clearing_by_truncation_mid_normalisation_is_not_undone(monkeypatch):
 
     storage._read_persisted_bootstrap_password()
 
-    # A lone newline over a cleared file still reads back as no password.
     assert storage._BOOTSTRAP_PW_PATH.read_bytes().strip() == b""
     storage._bootstrap_password = None
     assert storage._load_bootstrap_password() is None
 
 
 def test_normalising_works_without_fchmod(monkeypatch):
-    # os.fchmod only reached Windows in 3.13; its absence must not raise.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
     monkeypatch.delattr(storage.os, "fchmod", raising = False)
@@ -329,7 +320,6 @@ def test_normalising_works_without_fchmod(monkeypatch):
 
 
 def test_persisting_the_bootstrap_password_is_atomic(monkeypatch, tmp_path):
-    # A partial write would destroy the only plaintext recovery credential.
     storage._persist_bootstrap_password("original-secret")
 
     def boom(src, dst):
@@ -468,7 +458,6 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
         try:
             return storage.consume_refresh_token(raw)
         except sqlite3.OperationalError:
-            # "database is locked" under contention; treat as losing the race.
             return None
 
     with ThreadPoolExecutor(max_workers = workers) as pool:
@@ -532,14 +521,12 @@ def test_desktop_sets_the_remote_password_without_the_seeded_one():
     assert response.json()["must_change_password"] is False
     assert is_desktop_token(response.json()["access_token"])
     assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME) is False
-    # Desktop auto-auth survives the change the desktop itself made.
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
     remote_login = client.post(
         "/api/auth/login",
         json = {"username": storage.DEFAULT_ADMIN_USERNAME, "password": "remote-password-123"},
     )
     assert remote_login.status_code == 200
-    # The seeded credential is gone, so change-password owns every later change.
     repeat = client.post(
         "/api/auth/desktop-initial-password",
         headers = {"Authorization": f"Bearer {response.json()['access_token']}"},
@@ -559,7 +546,6 @@ def test_remote_password_refuses_credentials_that_are_not_the_desktop_app():
             headers = {"Authorization": f"Bearer {bearer}"},
             json = {"new_password": "remote-password-123"},
         )
-        # Distinguishable from the pre-existing "Password change required" refusal.
         assert response.status_code == 403
         assert response.json()["detail"] == "This action requires the Unsloth desktop app."
     assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME) is True
@@ -598,8 +584,8 @@ def test_change_password_revokes_the_desktop_secret_only_for_browsers(desktop):
 
 
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
-    # _inject_local_providers mints an internal sk-unsloth-* API key (not a
-    # forwarded JWT) that validates as admin whether the session was desktop or web.
+    # _inject_local_providers mints an internal sk-unsloth-* API key (not a forwarded JWT) that
+    # validates as admin whether the session was desktop or web.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = True)
@@ -622,7 +608,6 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
 
 
 def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_model):
-    # Mirror of the desktop variant: API-key issuance is identical for web/desktop tokens.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = False)
@@ -642,8 +627,8 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
 
 
 def test_rotated_credential_job_start_is_401_not_500(loaded_local_model):
-    # A reset-password landing mid-request makes the workflow-key mint refuse.
-    # That must reach the client as a revoked credential, not an unhandled error.
+    # A reset-password landing mid-request makes the workflow-key mint refuse, and that must reach
+    # the client as a revoked credential, not an unhandled error.
     from fastapi import HTTPException
 
     seed_user()
@@ -719,7 +704,6 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     result = CliRunner().invoke(studio_cli.studio_app, ["reset-password"])
 
     assert result.exit_code == 0, result.output
-    # The DB survives on purpose: a running server keeps serving from its admin row.
     assert (auth_dir / "auth.db").exists()
     assert not (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).exists()
     assert not (auth_dir / studio_cli.DESKTOP_SECRET_FILE).exists()
@@ -806,7 +790,6 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     llama_module.router = APIRouter()
     llama_compat_module = ModuleType("routes.llama_compat")
     llama_compat_module.router = APIRouter()
-    # main.py imports this name alongside the router and calls it from serve_frontend.
     llama_compat_module.is_engine_probe_path = lambda full_path: False
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
@@ -817,14 +800,12 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     profile_stats_module = ModuleType("routes.profile_stats")
     profile_stats_module.router = APIRouter()
 
-    # Derived from main.py's import block, not hand-listed: the old hardcoded dict went stale
-    # twice (#8511's openai_codex_auth_router, #8648's youtube_router), each time killing every
-    # test in this file with an ImportError.
+    # Derived from main.py's import block, not hand-listed: the old hardcoded dict went stale twice
+    # (#8511, #8648), each time killing every test in this file with an ImportError.
     for name in _routers_main_imports():
         setattr(
             routes_module,
             name,
-            # The health payload reads the real settings router.
             settings_module.router if name == "settings_router" else APIRouter(),
         )
     routes_module.settings = settings_module
@@ -842,17 +823,15 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     import studio.backend.main as backend_main
 
     # DEVICE alongside the two it is set with, since /api/health waits on
-    # ensure_hardware_detected(). CPU + "mlx_unavailable" is an MLX-less Apple Silicon.
+    # ensure_hardware_detected().
     monkeypatch.setattr(backend_main._hw_module, "DEVICE", backend_main._hw_module.DeviceType.CPU)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
-    # _hardware_snapshot() returns None until detection settles, so chat_only never publishes.
     import threading
 
     _settled = threading.Event()
     _settled.set()
     monkeypatch.setattr(backend_main._hw_module, "DETECTION_COMPLETE", _settled)
-    # On a Mac the MLX self-heal overturns "mlx_unavailable" and health_check() drops the snapshot.
     monkeypatch.setattr(backend_main._hw_module, "is_apple_silicon", lambda: False)
 
     seed_user()
@@ -925,7 +904,6 @@ if result.exit_code != 0:
         capture_output = True,
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    # Strip like the src-tauri readers do.
     secret = (auth_dir / ".desktop_secret").read_text().strip()
     assert secret.startswith("desktop-")
 
@@ -1099,7 +1077,6 @@ def test_the_router_stub_covers_every_router_main_imports():
         f"the app itself would fail to start"
     )
 
-    # Same drift for submodule imports, which need a sys.modules entry and are still hand-listed.
     import inspect
 
     main_src = (backend / "main.py").read_text(encoding = "utf-8")

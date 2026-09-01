@@ -48,9 +48,8 @@ def _load_worker_module():
         hf_dataset_options.hf_dataset_split_instruction_names = lambda *_args, **_kwargs: ()
         sys.modules["utils.hf_dataset_options"] = hf_dataset_options
 
-        # worker.py calls this at import time. Without the stub the module only loads when
-        # some other test happened to import the real utils.native_tls first, so this file
-        # passed in a full run and failed on its own.
+        # worker.py calls this at import time; without the stub the module only loads when another test
+        # happened to import the real utils.native_tls first.
         native_tls = types.ModuleType("utils.native_tls")
         native_tls.activate_native_tls = lambda *_args, **_kwargs: None
         sys.modules["utils.native_tls"] = native_tls
@@ -120,8 +119,8 @@ def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
 
 
 def test_mlx_wandb_run_config_excludes_subject_and_secrets():
-    # The MLX W&B run config uploads everything minus a sensitive set. The owner's subject must be
-    # filtered alongside the secrets, or it lands in W&B even though DB history strips it.
+    # The owner's subject must be filtered alongside the secrets, or it lands in W&B even though DB
+    # history strips it.
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
         encoding = "utf-8"
     )
@@ -262,7 +261,7 @@ def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
     assert adapted[0]["messages"][0]["content"][0] == {"type": "image"}
 
 
-# ---- issue #6103: MLX transformers-version activation must not fail silently ----
+# issue #6103: MLX transformers-version activation must not fail silently.
 
 
 def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):

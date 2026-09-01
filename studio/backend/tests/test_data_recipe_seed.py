@@ -221,14 +221,12 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
         _run_upload(seed_route, "b.txt", b"123")
     assert exc.value.status_code == 413
 
-    # Another block starts with its own untouched budget.
     other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
     assert other.status == "ok"
 
 
-# A desktop drop names a local file of any size, so the cap has to be enforced
-# on its stat. Reading first let a multi-gigabyte drop into backend memory
-# before the 413 (#9036).
+# A desktop drop names a local file of any size, so the cap has to be enforced on its stat: reading
+# first let a multi-gigabyte drop into backend memory before the 413 (#9036).
 def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     huge = tmp_path / "corpus.txt"
@@ -266,8 +264,8 @@ def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_
     assert reads == [], "the file was opened before the size check"
 
 
-# The block's remaining budget bounds the read too, so a file that grew between
-# the stat and the read cannot slip past it.
+# The block's remaining budget bounds the read too, so a file that grew between the stat and the
+# read cannot slip past it.
 def test_a_native_drop_over_the_block_budget_is_refused(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     dropped = tmp_path / "notes.txt"
@@ -364,7 +362,6 @@ def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_p
     source = tmp_path / "notes.txt"
     source.write_text("a\n\n\n\nb", encoding = "utf-8")
 
-    # The plugin is what collapses the run of blank lines.
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
 
 

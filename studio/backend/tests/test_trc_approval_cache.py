@@ -14,14 +14,13 @@ import utils.security.consent as consent
 import utils.security.remote_code_approvals as approvals
 from utils.security import evaluate_remote_code_consent_for_targets
 
-# HIGH (approvable) is the interesting case: benign code never prompts and CRITICAL is never
-# approvable, so the cache that skips the prompt only matters for blockable-but-approvable.
+# HIGH (approvable) is the interesting case: benign never prompts and CRITICAL is never approvable.
 _HIGH = {
     "modeling_persist.py": (
         "open('/etc/systemd/system/x.service', 'w').write('[Service]\\nExecStart=sh')\n"
     )
 }
-_HIGH2 = {  # a different HIGH payload -> different fingerprint
+_HIGH2 = {
     "modeling_persist.py": ("open('/etc/cron.d/x', 'w').write('* * * * * root sh -c id')\n")
 }
 _CRITICAL = {
@@ -83,12 +82,11 @@ def _approve(
 ):
     """Drive a genuine approval (scan -> user supplies the matching fingerprint -> record)."""
     st = _patch_scan(monkeypatch, files, sha = sha)
-    fp = _gate(target, subject = subject).fingerprint  # blocked: no approval yet
-    _gate(target, approved = fp, subject = subject)  # explicit approval -> recorded
+    fp = _gate(target, subject = subject).fingerprint
+    _gate(target, approved = fp, subject = subject)
     return st, fp
 
 
-# --- store API ---------------------------------------------------------------
 
 
 def test_store_roundtrip_and_forget():
@@ -102,7 +100,6 @@ def test_store_roundtrip_and_forget():
 
 
 def test_file_lock_acquires_releases_and_reacquires():
-    # Used around every store write; must acquire, release, and be re-acquirable (no leak).
     with approvals._file_lock():
         pass
     with approvals._file_lock():
@@ -110,8 +107,7 @@ def test_file_lock_acquires_releases_and_reacquires():
 
 
 def test_concurrent_records_do_not_lose_entries():
-    # Many writers recording different keys must all survive the read-modify-write; the file
-    # lock + re-read serialize them so none clobbers another (cross-process race fix).
+    # Many writers recording different keys must all survive: the file lock plus re-read serialize them.
     import threading
 
     def rec(i):
@@ -145,25 +141,23 @@ def test_corrupt_store_is_ignored_then_rewritten():
     store = approvals._store_path()
     store.parent.mkdir(parents = True, exist_ok = True)
     store.write_text("{ not valid json")
-    assert approvals.lookup("u", "k") is None  # no raise
+    assert approvals.lookup("u", "k") is None
     approvals.record("u", "k", commit_sha = "s", fingerprint = "f", max_severity = "HIGH")
-    assert approvals.lookup("u", "k") is not None  # valid file rewritten
+    assert approvals.lookup("u", "k") is not None
 
 
 def test_malformed_store_shape_fails_safe():
-    # Valid JSON + version but a non-dict shape (hand-edited) must fail safe (re-prompt),
-    # never crash lookup/record/forget.
+    # Valid JSON and version but a non-dict shape must fail safe (re-prompt), never crash lookup/record/forget.
     store = approvals._store_path()
     store.parent.mkdir(parents = True, exist_ok = True)
     for bad in ('{"version": 1, "subjects": []}', '{"version": 1, "subjects": {"u": []}}'):
         store.write_text(bad)
-        assert approvals.lookup("u", "k") is None  # no raise
-        approvals.forget("u", "k")  # no raise
+        assert approvals.lookup("u", "k") is None
+        approvals.forget("u", "k")
         approvals.record("u", "k", commit_sha = "s", fingerprint = "f", max_severity = "HIGH")
-        assert approvals.lookup("u", "k") is not None  # store healed
+        assert approvals.lookup("u", "k") is not None
 
 
-# --- gate integration: the cache skips the prompt, never the scan ------------
 
 
 def test_cache_miss_prompts(monkeypatch):
@@ -176,29 +170,27 @@ def test_cache_miss_prompts(monkeypatch):
 def test_unchanged_repo_skips_prompt_but_still_scans(monkeypatch):
     st, _ = _approve(monkeypatch)
     before = st["scans"]
-    d = _gate("org/m")  # SHA + fingerprint match -> auto-approve, but the scan still runs
+    d = _gate("org/m")
     assert d.blocked is False and d.reason == "approved by fingerprint"
-    assert st["scans"] == before + 1  # cache never skips the scan
+    assert st["scans"] == before + 1
 
 
 def test_sha_moved_forces_reprompt(monkeypatch):
     _approve(monkeypatch, sha = "sha1")
     monkeypatch.setattr(approvals, "resolve_commit_sha", lambda t, hf = None: "sha2")
-    d = _gate("org/m")  # SHA moved -> seed withheld -> re-prompt even though code is identical
+    d = _gate("org/m")
     assert d.blocked is True
 
 
 def test_local_offline_uses_fingerprint_only(monkeypatch):
-    # SHA unresolvable (local/offline): the fingerprint alone governs, so unchanged code
-    # still auto-approves.
+    # SHA unresolvable (local/offline): the fingerprint alone governs, so unchanged code still auto-approves.
     _approve(monkeypatch, sha = None)
     d = _gate("org/m")
     assert d.blocked is False and d.reason == "approved by fingerprint"
 
 
 def test_changed_code_same_sha_reprompts(monkeypatch):
-    # Even with the primary SHA unchanged, changed executable code (e.g. an external
-    # auto_map repo) changes the fingerprint, so the dialog returns.
+    # Even with the primary SHA unchanged, changed executable code changes the fingerprint, so the dialog returns.
     _approve(monkeypatch, files = _HIGH, sha = "sha1")
     monkeypatch.setattr(consent, "repo_remote_code_files", lambda t, hf_token = None: dict(_HIGH2))
     d = _gate("org/m")
@@ -206,16 +198,16 @@ def test_changed_code_same_sha_reprompts(monkeypatch):
 
 
 def test_scanner_version_change_invalidates(monkeypatch):
-    _approve(monkeypatch)  # recorded under the current SCANNER_VERSION
+    _approve(monkeypatch)
     monkeypatch.setattr(approvals, "SCANNER_VERSION", approvals.SCANNER_VERSION + 1)
-    d = _gate("org/m")  # ruleset changed -> stored approval ignored -> re-prompt
+    d = _gate("org/m")
     assert d.blocked is True
 
 
 def test_critical_is_never_recorded(monkeypatch):
     _patch_scan(monkeypatch, _CRITICAL)
     fp = _gate("org/m").fingerprint
-    d = _gate("org/m", approved = fp)  # CRITICAL is not approvable
+    d = _gate("org/m", approved = fp)
     assert d.blocked is True and d.approvable is False
     assert approvals.lookup("user-a", approvals.approval_target_key(["org/m"])) is None
 
@@ -239,14 +231,12 @@ def test_forged_critical_store_entry_is_refused(monkeypatch):
             },
         }
     )
-    assert approvals.lookup("user-a", key) is None  # read guard refuses CRITICAL
-    assert _gate("org/m").blocked is True  # scan still runs and blocks
+    assert approvals.lookup("user-a", key) is None
+    assert _gate("org/m").blocked is True
 
 
 def test_forged_downgraded_severity_still_blocks_critical(monkeypatch):
-    # The store is editable JSON: forge a non-CRITICAL severity + the real fingerprint/SHA
-    # for code that is actually CRITICAL. The scan still runs every load, so CRITICAL is
-    # hard-blocked regardless of what the store claims.
+    # The store is editable JSON, so forge a non-CRITICAL severity: the scan still runs and hard-blocks CRITICAL.
     st = _patch_scan(monkeypatch, _CRITICAL, sha = "sha1")
     fp = _gate("org/m").fingerprint
     key = approvals.approval_target_key(["org/m"])
@@ -258,7 +248,7 @@ def test_forged_downgraded_severity_still_blocks_critical(monkeypatch):
                     key: {
                         "commit_sha": approvals.resolve_combined_sha(["org/m"]),
                         "fingerprint": fp,
-                        "max_severity": "HIGH",  # forged downgrade
+                        "max_severity": "HIGH",
                         "scanner_version": approvals.SCANNER_VERSION,
                         "approved_at": "t",
                     }
@@ -269,27 +259,27 @@ def test_forged_downgraded_severity_still_blocks_critical(monkeypatch):
     before = st["scans"]
     d = _gate("org/m")
     assert d.blocked is True and d.approvable is False
-    assert st["scans"] == before + 1  # scanned despite the forged approval
+    assert st["scans"] == before + 1
 
 
 def test_disable_flag_bypasses_cache(monkeypatch):
     _approve(monkeypatch)
     monkeypatch.setenv("UNSLOTH_TRC_APPROVAL_CACHE_DISABLE", "1")
-    d = _gate("org/m")  # cache off -> no seed -> re-prompt
+    d = _gate("org/m")
     assert d.blocked is True
 
 
 def test_subject_isolation(monkeypatch):
     _approve(monkeypatch, subject = "user-a")
-    assert _gate("org/m", subject = "user-a").blocked is False  # a: seeded -> auto-approve
-    assert _gate("org/m", subject = "user-b").blocked is True  # b: still prompted
+    assert _gate("org/m", subject = "user-a").blocked is False
+    assert _gate("org/m", subject = "user-b").blocked is True
 
 
 def test_combined_lora_key(monkeypatch):
     targets = ["org/adapter", "org/base"]
     _approve(monkeypatch, target = targets)
-    assert _gate(targets).blocked is False  # combined key seeded
-    assert _gate(["org/adapter"]).blocked is True  # adapter-only key misses
+    assert _gate(targets).blocked is False
+    assert _gate(["org/adapter"]).blocked is True
 
 
 def test_no_subject_disables_cache(monkeypatch):
@@ -301,7 +291,6 @@ def test_no_subject_disables_cache(monkeypatch):
         ["org/m"], None, trust_remote_code = True, approved_fingerprint = fp, subject = None
     )
     assert approvals.lookup("", approvals.approval_target_key(["org/m"])) is None
-    # No subject -> nothing seeded -> still blocked next time.
     d = evaluate_remote_code_consent_for_targets(
         ["org/m"], None, trust_remote_code = True, subject = None
     )

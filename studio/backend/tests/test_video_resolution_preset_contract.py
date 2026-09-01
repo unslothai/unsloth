@@ -49,11 +49,9 @@ def _all_presets() -> set[tuple[int, int]]:
     return {tuple(p) for name in _FAMILY_NAMES for p in _family(name).resolution_presets}
 
 
-# ── the family registry ───────────────────────────────────────────────────────
 
 
 def test_the_registry_is_not_empty():
-    # Guards the parametrised cases below from silently covering nothing.
     assert len(_FAMILY_NAMES) >= 5
 
 
@@ -67,7 +65,6 @@ def test_every_family_declares_at_least_one_resolution_preset(name):
         "unguarded when the request omits width/height, so this is an IndexError, and the "
         "UI's Resolution select would render empty"
     )
-    # The unguarded index itself, exactly as the generate path performs it.
     assert fam.resolution_presets[0][0] > 0 and fam.resolution_presets[0][1] > 0
 
 
@@ -109,9 +106,7 @@ def test_presets_are_unique_and_land_in_the_status_payload(name):
         dtype = "bfloat16",
         kind = "pipeline",
     )
-    # Through VideoStatusResponse, the model GET /video/status actually declares, not just the
-    # inner VideoGenerationDefaults: the outer model dropping or renaming `defaults` leaves the
-    # inner assertion perfectly happy while the browser receives no presets at all.
+    # Through VideoStatusResponse: the outer model dropping `defaults` leaves the inner assertion happy, browser empty.
     wire = VideoStatusResponse(**backend.status()).model_dump()
     defaults_payload = wire.get("defaults")
     assert defaults_payload is not None, "the status response model no longer carries defaults"
@@ -124,7 +119,6 @@ def test_presets_are_unique_and_land_in_the_status_payload(name):
     assert defaults.resolution_multiple == fam.resolution_multiple
 
 
-# ── the frontend fallback ─────────────────────────────────────────────────────
 
 
 def _fallback_presets() -> list[tuple[int, int]]:
@@ -153,7 +147,6 @@ def test_the_frontend_fallback_is_a_usable_default_for_the_family_it_mirrors():
     plans against -- not an arbitrary member of the union."""
     fallback = _fallback_presets()
     assert len(fallback) >= 1
-    # An empty tuple is its own test above; skip it here so that failure is not double-reported.
     firsts = {
         tuple(fam.resolution_presets[0])
         for fam in (_family(name) for name in _FAMILY_NAMES)
@@ -172,8 +165,6 @@ def test_the_resolution_select_renders_the_backend_presets_not_a_hardcoded_list(
     memo = memo[: memo.index("\n  }, [")]
     assert "status?.defaults?.resolution_presets" in memo
     assert "FALLBACK_RESOLUTION_PRESETS" in memo
-    # Only the empty/absent case falls back.
     assert "presets && presets.length > 0" in memo
     assert "{resolutionPresets.map(([w, h], i) => (" in src
-    # And the generate call sends the SELECTED preset, so the offered pair is the one rendered.
     assert "const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];" in src

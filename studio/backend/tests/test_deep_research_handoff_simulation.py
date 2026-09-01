@@ -64,7 +64,6 @@ def research_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-# ── The scripted model ────────────────────────────────────────────
 
 _DONE = "data: [DONE]"
 
@@ -195,7 +194,6 @@ def _visible(lines) -> str:
     return "".join(text)
 
 
-# ── What the loop publishes, which is all the client has to go on ─
 
 
 def test_the_loop_publishes_the_question_and_a_result_that_says_it_ran(research_home, monkeypatch):
@@ -225,8 +223,8 @@ def test_a_denied_call_is_closed_by_the_same_event_and_says_it_did_not_run(
     )
 
     started, ended = _tool_events(lines)
-    # The card carries the approval prompt, so the client has to draw it: the loop is blocked
-    # on a verdict until someone answers.
+    # The card carries the approval prompt, so the client has to draw it: the loop is blocked on a
+    # verdict until someone answers.
     assert started["awaiting_confirmation"] is True
     assert started["approval_id"]
     assert ended["result"] != DEEP_RESEARCH_STARTED
@@ -296,7 +294,6 @@ def test_the_tool_is_only_offered_to_the_model_when_it_is_in_the_catalog(
     assert offered == ["deep_research"]
 
 
-# ── What the change is for ────────────────────────────────────────
 
 
 def test_the_handed_off_question_is_what_actually_gets_researched(research_home, monkeypatch):
@@ -374,7 +371,6 @@ def test_planning_no_longer_stops_to_ask_for_approval(research_home, monkeypatch
     assert research_db.get_run("run-1")["status"] == "queued"
 
 
-# ── What the change must not break ────────────────────────────────
 
 
 def test_a_run_from_an_old_install_researches_its_user_message(research_home, monkeypatch):
@@ -483,7 +479,6 @@ def test_an_unarmed_request_is_byte_identical_to_before():
     unarmed = _names()
     assert "deep_research" not in unarmed
     assert unarmed
-    # Appended, and nothing else moves: same catalog, in the same order, plus the one tool.
     assert _names(deep_research_armed = True) == [*unarmed, "deep_research"]
 
 

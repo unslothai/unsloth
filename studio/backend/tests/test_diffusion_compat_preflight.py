@@ -59,7 +59,6 @@ def _gguf_header(
     writer = GGUFWriter(str(path), "flux")
 
     def _probe():
-        # FLUX.2 sizes this projection as (6 * inner_dim, inner_dim); GGUF stores dims reversed.
         writer.add_tensor_info(
             name,
             [6 * inner_dim, inner_dim],
@@ -70,7 +69,6 @@ def _gguf_header(
 
     if not probe_last:
         _probe()
-    # Siblings so the probe tensor is not the whole table, as in a real checkpoint.
     for i in range(siblings):
         writer.add_tensor_info(
             f"blk.{i}.weight",
@@ -148,24 +146,21 @@ def _stub_range_reads(
 
 @pytest.fixture(autouse = True)
 def _clean_probe_cache():
-    # The memo is process-global by design; a leak between tests would hide a missing probe.
     diffusion_compat._reset_inner_dim_cache()
     yield
     diffusion_compat._reset_inner_dim_cache()
 
 
-# ── the header parser ──────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("inner_dim", [3072, 4096, 6144])
 def test_the_inner_dim_is_read_from_a_header_with_no_tensor_data(inner_dim, tmp_path):
-    # The whole premise: ~400 bytes of tensor table answer a question the 19 GB body would.
     assert gguf_flux2_inner_dim_from_header(_gguf_header(inner_dim, tmp_path)) == inner_dim
 
 
 def test_a_plain_reader_cannot_read_the_same_prefix(tmp_path):
     # Why the header-only reader exists at all: GGUFReader also builds numpy views over every
-    # tensor's DATA, so on a prefix it raises -- feed it one and the guard silently never fires.
+    # tensor's DATA, so on a prefix it raises and the guard silently never fires.
     from gguf import GGUFReader
     from core.inference.diffusion_families import gguf_flux2_inner_dim
 
@@ -188,18 +183,14 @@ def test_an_unreadable_header_yields_no_opinion(header):
 
 
 def test_a_header_without_the_probe_tensor_yields_no_opinion(tmp_path):
-    # A non-FLUX.2 checkpoint parses fine and simply has nothing to say.
     header = _gguf_header(3072, tmp_path, name = "blk.0.attn.weight")
     assert gguf_flux2_inner_dim_from_header(header) is None
 
 
 @pytest.mark.parametrize("probe_last", [False, True], ids = ["probe-first", "probe-last"])
 def test_no_truncation_of_a_valid_header_can_invent_a_dim(probe_last, tmp_path):
-    # The sharp edge. The table is read field by field, so a cut BETWEEN a tensor's name and its
-    # dims used to leave the name matching and the shape zero-filled -- "inner_dim 0", which is a
-    # wrong answer rather than a missing one, and refuses a perfectly valid pick. A 206 body a few
-    # bytes short, or a partially written On Device file, lands exactly there. Every prefix of a
-    # real header must read as the real dim or as nothing at all.
+    # The table is read field by field, so a cut BETWEEN a tensor's name and its dims left the name
+    # matching and the shape zero-filled ("inner_dim 0"), a wrong answer rather than a missing one.
     header = _gguf_header(4096, tmp_path, probe_last = probe_last)
     assert gguf_flux2_inner_dim_from_header(header) == 4096
 
@@ -208,9 +199,8 @@ def test_no_truncation_of_a_valid_header_can_invent_a_dim(probe_last, tmp_path):
 
 
 def test_a_header_declaring_a_huge_checkpoint_is_cheap(tmp_path):
-    # The base reader also builds a numpy view over every tensor's DATA. Satisfying those from a
-    # prefix would allocate the whole DECLARED size -- tens of GiB, which commits pagefile on
-    # Windows and turns the preflight into a permanent no-op there. 1200 tensors declaring ~37 GiB.
+    # The base reader also builds a numpy view over each tensor's DATA; satisfying that from a
+    # prefix allocates the whole DECLARED size, committing pagefile on Windows.
     import time
 
     header = _gguf_header(4096, tmp_path, siblings = 1200)
@@ -219,12 +209,10 @@ def test_a_header_declaring_a_huge_checkpoint_is_cheap(tmp_path):
     assert time.monotonic() - started < 5.0
 
 
-# ── the preflight verdict ──────────────────────────────────────────────────────
 
 
 def test_a_mismatched_pair_is_refused_from_the_header_alone(monkeypatch, tmp_path):
-    # P1-5: a 4B GGUF against the 9B base. Refused off one range request, with no base metadata
-    # call and no download at all -- the 19.17 GB pull never starts.
+    # P1-5: a 4B GGUF against the 9B base.
     requests = _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
 
     with pytest.raises(ValueError) as excinfo:
@@ -238,7 +226,6 @@ def test_a_mismatched_pair_is_refused_from_the_header_alone(monkeypatch, tmp_pat
     assert len(requests) == 1
     url, byte_range = requests[0]
     assert url.endswith(f"{KLEIN_4B_GGUF}/resolve/main/{KLEIN_4B_FILE}")
-    # Bounded: the request must name an end offset, or a mis-set header streams the checkpoint.
     assert byte_range == f"bytes=0-{diffusion_compat._GGUF_HEADER_BYTES - 1}"
 
 
@@ -254,8 +241,8 @@ def test_a_matching_pair_passes(monkeypatch, tmp_path):
 
 
 def test_an_unreadable_header_fails_open(monkeypatch):
-    # The contract: a false positive is worse than the bug it prevents, so a header we cannot
-    # parse leaves the load exactly as it was, with the loader's own guard as the backstop.
+    # The contract: a false positive is worse than the bug it prevents, so a header we cannot parse
+    # leaves the load exactly as it was, with the loader's own guard as the backstop.
     _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: b"not a gguf"})
 
     assert (
@@ -284,16 +271,9 @@ def test_an_offline_host_fails_open(monkeypatch):
 
 
 def test_a_trickling_server_cannot_hold_the_picker_open(monkeypatch):
-    # A pick is blocked on this read in the UI, and the pre-eviction preflight runs it on the
-    # route's thread, so an unbounded read is a load request that never answers.
-    #
-    # Testing the deadline BETWEEN chunks is not enough, which is what this pins. iter_content
-    # blocks inside urllib3 until a whole 64 KiB chunk has arrived, and requests' timeout is per
-    # socket read, so a server dribbling a byte at a time resets it forever: measured against a
-    # real loopback socket, one chunk at a byte a second is 18 hours and the loop never comes
-    # back to look at the clock. Half-closing the socket is what ends it -- response.close() does
-    # not, it drops the file object and leaves the socket readable -- and requests surfaces that
-    # as a broken-connection error, which reads as "no opinion" like any other transport failure.
+    # A pick blocks on this read in the UI, so an unbounded read is a load that never answers.
+    # Between-chunk deadlines are not enough: iter_content blocks in urllib3 for a whole 64 KiB
+    # chunk and requests' timeout is per socket read.
     interrupted = threading.Event()
 
     class _Trickle:
@@ -338,20 +318,14 @@ def test_a_trickling_server_cannot_hold_the_picker_open(monkeypatch):
 
 
 def test_an_old_urllib3_with_no_shutdown_still_cannot_hold_the_picker_open(monkeypatch):
-    # HTTPResponse.shutdown landed in urllib3 2.3.0. requirements/studio.txt floors it there, but
-    # an install that resolved its environment BEFORE that floor keeps whatever it already has,
-    # and nothing re-resolves a transitive pin on upgrade. On that urllib3 the watchdog degrades
-    # to Response.close(), which leaves the socket readable and the read parked -- measured
-    # against a real trickling loopback socket, the reader was still alive after 40 s.
-    #
-    # So the bound cannot be the interrupt working. This pins the other half: the drain runs on a
-    # worker the caller ABANDONS, so the picker answers on time no matter what is underneath.
+    # HTTPResponse.shutdown needs urllib3 2.3.0; an install resolved before that floor degrades to
+    # Response.close() and stays parked.
     still_reading = threading.Event()
 
     class _Unwakeable:
         status_code = 206
         # No `raw`, exactly like a urllib3 predating shutdown: _interrupt_read falls through to
-        # close(), and close() does not end a read already inside iter_content.
+        # close(), which does not end a read already inside iter_content.
         raw = None
 
         def iter_content(self, chunk_size = 1):
@@ -380,15 +354,13 @@ def test_an_old_urllib3_with_no_shutdown_still_cannot_hold_the_picker_open(monke
     elapsed = time.monotonic() - started
 
     assert still_reading.is_set(), "the fixture never got as far as blocking"
-    # Deadline plus the abandon grace, with room for a loaded CI box. The point is that this is
-    # bounded at all: without the worker it is the fixture's 30 s, and in the field it is forever.
+    # Deadline plus the abandon grace, with room for a loaded CI box.
     assert elapsed < 5, f"the picker waited {elapsed:.1f}s on a read it cannot interrupt"
 
 
 def test_a_server_that_ignores_the_range_header_is_abandoned(monkeypatch, tmp_path):
-    # A 200 means the whole multi-GB checkpoint is on the wire. Reading it here would BE the
-    # download this preflight exists to avoid, so the body is dropped unread and the check
-    # fails open.
+    # A 200 means the whole multi-GB checkpoint is on the wire, so the body is dropped unread and
+    # the check fails open.
     body_reads: list[int] = []
 
     class _WholeFile(_FakeResponse):
@@ -424,7 +396,6 @@ def test_a_server_that_ignores_the_range_header_is_abandoned(monkeypatch, tmp_pa
     ids = ["unknown-repo", "local-path"],
 )
 def test_a_base_outside_the_size_table_costs_no_request_at_all(base, monkeypatch, tmp_path):
-    # Nothing to compare the header against, so the check must notice BEFORE a round trip.
     requests = _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
 
     assert (
@@ -435,9 +406,8 @@ def test_a_base_outside_the_size_table_costs_no_request_at_all(base, monkeypatch
 
 
 def test_a_known_ungated_mirror_is_checked_like_its_upstream(monkeypatch, tmp_path):
-    # Not an exception to the rule above: an unsloth mirror is a byte-identical copy, canonical_base
-    # maps it back, and skipping it would leave the mirror picks -- the ones an anonymous user
-    # actually gets -- as the only unguarded path.
+    # An unsloth mirror is a byte-identical copy that canonical_base maps back, so skipping it would
+    # leave the picks an anonymous user actually gets as the only unguarded path.
     _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
     from core.inference.diffusion_families import canonical_base
 
@@ -452,7 +422,6 @@ def test_a_known_ungated_mirror_is_checked_like_its_upstream(monkeypatch, tmp_pa
 
 
 def test_a_non_flux2_family_costs_no_request_at_all(monkeypatch, tmp_path):
-    # The base is a mapped FLUX.2 one, so only the FAMILY gate can stop this.
     requests = _stub_range_reads(monkeypatch, {"z.gguf": _gguf_header(3072, tmp_path)})
 
     assert (
@@ -468,7 +437,6 @@ def test_a_non_flux2_family_costs_no_request_at_all(monkeypatch, tmp_path):
 
 
 def test_a_non_gguf_single_file_costs_no_request_at_all(monkeypatch, tmp_path):
-    # A single_file load names a .safetensors, which has no GGUF header to read.
     requests = _stub_range_reads(monkeypatch, {"model.safetensors": _gguf_header(3072, tmp_path)})
 
     assert (
@@ -482,7 +450,7 @@ def test_a_non_gguf_single_file_costs_no_request_at_all(monkeypatch, tmp_path):
 
 def test_pasting_a_token_re_probes_a_pick_that_missed_anonymously(monkeypatch, tmp_path):
     # The memo keeps a MISS so an unreachable Hub is not asked three times per load, which would
-    # otherwise leave a gated GGUF permanently unguarded for the session once it 401d anonymously.
+    # otherwise leave a gated GGUF permanently unguarded once it 401d anonymously.
     bodies: dict[str, bytes] = {}
     requests = _stub_range_reads(monkeypatch, bodies)
 
@@ -493,7 +461,6 @@ def test_pasting_a_token_re_probes_a_pick_that_missed_anonymously(monkeypatch, t
         is None
     )
     assert len(requests) == 1
-    # Same anonymous pick again: the miss is remembered, so no second round trip.
     diffusion_compat.flux2_pick_mismatch(FLUX2_FAMILY, KLEIN_4B_GGUF, KLEIN_4B_FILE, KLEIN_9B_BASE)
     assert len(requests) == 1
 
@@ -507,7 +474,6 @@ def test_pasting_a_token_re_probes_a_pick_that_missed_anonymously(monkeypatch, t
 
 
 def test_the_header_probe_is_memoised_across_the_three_checks(monkeypatch, tmp_path):
-    # The plan, the pre-eviction preflight and the loader all ask about the same pick; one probe.
     requests = _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
 
     for _ in range(3):
@@ -520,33 +486,25 @@ def test_the_header_probe_is_memoised_across_the_three_checks(monkeypatch, tmp_p
 
 
 def test_a_remembered_hub_failure_does_not_outlive_the_download(monkeypatch, tmp_path):
-    # The memo exists so three checks cost one probe, and a "no opinion" has to be remembered too
-    # or a genuinely unreadable pick re-probes the Hub forever. But the ordinary sequence is:
-    # plan probes while the file is NOT yet on disk (a blip, or simply an unfinished download) ->
-    # download completes -> the pre-eviction preflight asks again. If the negative shadows the
-    # local read, the guard is silent for the rest of the process on a file sitting right there,
-    # which is exactly the mismatch-after-a-19-GB-pull this preflight exists to prevent.
+    # The memo makes three checks cost one probe, and a "no opinion" must be remembered too or an
+    # unreadable pick re-probes forever.
     requests = _stub_range_reads(monkeypatch, {})  # the Hub has nothing to say: negative memoised
 
     assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE) is None
     assert len(requests) == 1
 
-    # The download lands the blob in the cache, which is what try_to_load_from_cache reports.
     staged = tmp_path / "blobs" / KLEIN_4B_FILE
     staged.parent.mkdir(parents = True, exist_ok = True)
     staged.write_bytes(_gguf_header(4096, tmp_path))
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: str(staged))
 
     assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE) == 4096
-    # ...and the retry is free: the negative still suppresses a second range request.
     assert len(requests) == 1
 
 
 def test_a_remembered_hub_failure_still_suppresses_a_re_probe_while_nothing_is_on_disk(
     monkeypatch, tmp_path
 ):
-    # The other half of the memo's job, which the fix above must not cost: with no local file to
-    # re-read, a remembered negative answers without touching the network again.
     requests = _stub_range_reads(monkeypatch, {})
 
     for _ in range(3):
@@ -567,9 +525,8 @@ def test_a_checkpoint_swapped_in_place_is_read_again(monkeypatch, tmp_path):
 
     assert diffusion_compat.flux2_inner_dim_for_pick(str(local), KLEIN_4B_FILE) == 3072
 
-    # Rewritten in place. os.stat resolution is coarse enough that a same-size overwrite inside
-    # one tick could tie, so the two headers differ in length as well -- which is also what a real
-    # 4B-for-9B swap looks like.
+    # Rewritten in place. os.stat resolution is coarse enough for a same-size overwrite to tie, so
+    # the headers differ in length too -- which is also what a real 4B-for-9B swap looks like.
     target.write_bytes(_gguf_header(4096, tmp_path, siblings = 9))
 
     assert (
@@ -607,7 +564,6 @@ def test_a_bad_token_does_not_poison_the_good_one_that_replaces_it(monkeypatch, 
         diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE, "expired") is None
     )
     assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE, "good") == 4096
-    # ...and each token still memoises on its own: the second good probe costs nothing.
     before = len(requests)
     assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE, "good") == 4096
     assert len(requests) == before
@@ -623,7 +579,6 @@ def test_the_memo_never_holds_the_token_itself():
 
 
 def test_a_gguf_already_on_disk_is_read_instead_of_fetched(monkeypatch, tmp_path):
-    # A cached or On Device checkpoint answers for free, and it is the same file the loader opens.
     local = tmp_path / "local-repo"
     local.mkdir()
     (local / KLEIN_4B_FILE).write_bytes(_gguf_header(4096, tmp_path))
@@ -639,7 +594,7 @@ def test_a_gguf_already_on_disk_is_read_instead_of_fetched(monkeypatch, tmp_path
 
 def test_a_local_header_past_the_prefix_cap_falls_back_to_the_full_reader(monkeypatch, tmp_path):
     # The prefix parse is an optimisation, not a limit: a table longer than the 256 KiB cap must
-    # still be answered off the complete file on disk, not silently give up.
+    # still be answered off the complete file on disk.
     import numpy as np
     from gguf import GGUFWriter
     from core.inference.diffusion_families import gguf_flux2_inner_dim_from_header
@@ -648,7 +603,6 @@ def test_a_local_header_past_the_prefix_cap_falls_back_to_the_full_reader(monkey
     local.mkdir()
     path = local / "wide.gguf"
     writer = GGUFWriter(str(path), "flux")
-    # Tiny weights, enormous NAMES: the table has to exceed the cap while the file stays small.
     writer.add_tensor(
         "double_stream_modulation_img.lin.weight", np.zeros((48, 8), dtype = np.float16)
     )
@@ -666,12 +620,11 @@ def test_a_local_header_past_the_prefix_cap_falls_back_to_the_full_reader(monkey
     assert diffusion_compat.flux2_inner_dim_for_pick(str(local), "wide.gguf") == 8
 
 
-# ── wiring: the plan reports, the load refuses, nothing is torn down ───────────
 
 
 def test_the_download_plan_reports_the_mismatch_instead_of_raising(monkeypatch, tmp_path):
-    # Reported, not raised: the images page falls back to /images/load on ANY plan failure, so a
-    # 400 here would start the download the verdict is meant to prevent.
+    # Reported, not raised: the images page falls back to /images/load on ANY plan failure, so a 400
+    # here would start the download the verdict is meant to prevent.
     _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
     monkeypatch.setattr(
         "core.inference.diffusion._resolve_base_repo", lambda *a, **k: KLEIN_9B_BASE
@@ -689,7 +642,6 @@ def test_the_download_plan_reports_the_mismatch_instead_of_raising(monkeypatch, 
     plan = DiffusionBackend().download_plan(KLEIN_4B_GGUF, gguf_filename = KLEIN_4B_FILE)
 
     assert KLEIN_9B_BASE in (plan["incompatible_reason"] or "")
-    # And it survives the envelope the route returns, or the picker never sees it.
     from models.inference import DiffusionDownloadPlanResponse
 
     assert KLEIN_9B_BASE in (DiffusionDownloadPlanResponse(**plan).incompatible_reason or "")
@@ -723,7 +675,6 @@ def test_a_compatible_plan_reports_nothing(monkeypatch, tmp_path):
 
 
 def test_the_pre_eviction_preflight_refuses_the_mismatch(monkeypatch, tmp_path):
-    # The route's last refusal before it takes the GPU from chat.
     _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
     monkeypatch.setattr(
         "core.inference.diffusion._resolve_base_repo", lambda *a, **k: KLEIN_9B_BASE
@@ -743,7 +694,7 @@ def test_the_pre_eviction_preflight_refuses_the_mismatch(monkeypatch, tmp_path):
 
 def test_the_load_refuses_before_prefetching_or_unloading_anything(monkeypatch, tmp_path):
     # The regression this whole change is about: the old order downloaded the base AND freed the
-    # resident pipeline, then raised. Nothing below may run.
+    # resident pipeline, then raised.
     _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
     monkeypatch.setattr(
         "core.inference.diffusion._resolve_base_repo", lambda *a, **k: KLEIN_9B_BASE
@@ -773,7 +724,6 @@ def test_the_load_refuses_before_prefetching_or_unloading_anything(monkeypatch, 
         "_unload_locked",
         lambda: pytest.fail("a rejected pick must not free the resident pipeline"),
     )
-    # The model the user is already working with, and the marker begin_load would have set.
     resident = object()
     backend._state = resident
     backend._load_token = 7
@@ -786,19 +736,17 @@ def test_the_load_refuses_before_prefetching_or_unloading_anything(monkeypatch, 
         _load_token = 7,
     )
 
-    # _run_load swallows into load_progress rather than raising; the refusal lands there.
     progress = backend.load_progress()
     assert progress["phase"] == "error"
     assert KLEIN_9B_BASE in progress["error"]
     assert backend._state is resident
 
 
-# ── the sibling hole: the native text-encoder pick ─────────────────────────────
 
 
 def test_the_native_encoder_follows_the_header_over_the_filename():
     # A renamed or hand-picked 9B checkpoint says nothing in its id, and the 4B encoder fails deep
-    # inside sd-cli. The header knows.
+    # inside sd-cli.
     fam = detect_family("unsloth/FLUX.2-klein-4B-GGUF")
     assert fam is not None and fam.name == "flux.2-klein"
 
@@ -896,7 +844,6 @@ def test_the_offline_caller_still_gets_a_memoised_remote_answer(monkeypatch, tmp
     online = diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, "renamed-4b.gguf")
     assert online == 4096
 
-    # Same pick, same token, no network allowed: the memo answers.
     monkeypatch.setattr(
         diffusion_compat,
         "_read_gguf_header",
@@ -910,7 +857,6 @@ def test_the_offline_caller_still_gets_a_memoised_remote_answer(monkeypatch, tmp
     )
 
 
-# ── a cached copy the Hub has moved past ──────────────────────────────────────
 
 
 def _cached_snapshot(
@@ -952,8 +898,8 @@ def test_a_republished_checkpoint_is_not_refused_from_the_stale_cache(monkeypatc
 
 
 def test_a_cached_checkpoint_at_the_current_revision_is_still_refused(monkeypatch, tmp_path):
-    # The refusal this preflight exists for: the cache is current, so its header is the verdict
-    # and nothing has to be fetched to say so.
+    # The refusal this preflight exists for: the cache is current, so its header is the verdict and
+    # nothing has to be fetched to say so.
     requests = _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(4096, tmp_path)})
     cached = _cached_snapshot(tmp_path, "oldcommit", _gguf_header(3072, tmp_path))
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: str(cached))
@@ -984,8 +930,8 @@ def test_a_revision_check_that_cannot_run_keeps_the_cached_refusal(monkeypatch, 
 
 
 def test_an_on_device_checkpoint_is_never_revalidated(monkeypatch, tmp_path):
-    # An On Device file IS the file the loader opens, so there is no Hub revision to be behind
-    # and a mismatch must be refused without a single network call.
+    # An On Device file IS the file the loader opens, so there is no Hub revision to be behind and a
+    # mismatch must be refused without a single network call.
     local = tmp_path / "on-device"
     local.mkdir()
     (local / KLEIN_4B_FILE).write_bytes(_gguf_header(3072, tmp_path))
@@ -1004,10 +950,9 @@ def test_an_on_device_checkpoint_is_never_revalidated(monkeypatch, tmp_path):
     assert requests == []
 
 
-# ── Speech picks ───────────────────────────────────────────────────────────────
-# The variant listing drops the speech quants whose bytes are on disk, but an UNDOWNLOADED one
-# has none to read and stays offered -- and detect_family_for_pick answers from the folder name,
-# so a csm file beside a FLUX denoiser resolves to flux.1 and reaches this loader as its own.
+# The variant listing drops speech quants whose bytes are on disk, but an UNDOWNLOADED one stays
+# offered -- and detect_family_for_pick answers from the folder name, so a csm file beside a FLUX
+# denoiser resolves to flux.1 and reaches this loader as its own.
 
 CSM_REPO = "someone/mixed-media-GGUF"
 CSM_FILE = "csm-1b-Q4_0.gguf"
@@ -1047,7 +992,6 @@ def test_an_undownloaded_speech_pick_is_refused_before_any_download(monkeypatch)
     assert len(requests) == 1
     url, byte_range = requests[0]
     assert url.endswith(f"{CSM_REPO}/resolve/main/{CSM_FILE}")
-    # Bounded: the request must name an end offset, or a mis-set header streams the checkpoint.
     assert byte_range == f"bytes=0-{diffusion_compat._GGUF_HEADER_BYTES - 1}"
 
 
@@ -1102,7 +1046,6 @@ def test_a_failed_probe_is_not_reused_for_a_retry_with_a_working_token(monkeypat
         ):
             header_map = headers or {}
             requests.append(header_map.get("authorization") or header_map.get("Authorization"))
-            # The expired credential is refused; the working one is served.
             if not any("good" in str(v) for v in header_map.values()):
                 return _FakeResponse(401)
             body = next((b for name, b in bodies.items() if url.endswith(name)), None)
@@ -1113,7 +1056,6 @@ def test_a_failed_probe_is_not_reused_for_a_retry_with_a_working_token(monkeypat
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, "expired") is None
-    # Same pick, different credential: it must probe again rather than answer from that miss.
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, "good-token") is not None
     assert len(requests) == 2
 
@@ -1126,7 +1068,6 @@ def test_a_checkpoint_that_lands_after_a_miss_is_probed_again(monkeypatch, tmp_p
     seen: dict = {"path": None}
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: seen["path"])
 
-    # Nothing on disk and nothing served: no opinion, and that miss is memoised.
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
 
     landed.write_bytes(_arch_header("llama-csm"))
@@ -1151,7 +1092,6 @@ def test_a_republished_gguf_is_not_refused_from_the_stale_cached_copy(monkeypatc
     cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
     monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
-    # The Hub now serves a denoiser at the same name.
     _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("flux")})
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
@@ -1211,28 +1151,22 @@ def test_a_pick_that_names_the_checkpoint_outright_is_probed_like_the_loader_ope
     direct.parent.mkdir(parents = True)
     direct.write_bytes(_arch_header("llama-csm"))
 
-    # Offline, so a probe that found no local path has nothing left to fall back on and must let
-    # the pick through: this asserts the file was actually read, not that the network saved us.
+    # Offline, so a probe that found no local path has nothing to fall back on and must let the pick
+    # through: this asserts the file was actually read, not that the network saved us.
     reason = diffusion_compat.speech_pick_refusal(str(direct), CSM_FILE, None, False)
     assert reason is not None and "llama-csm" in reason
 
-    # And it resolves to the very file the loader would open, rather than merely to something.
     assert diffusion_compat._local_gguf_path(str(direct), CSM_FILE) == str(direct)
 
-    # The runnable sibling named the same way still loads: this must not refuse every direct file.
     denoiser = direct.parent / DENOISER_FILE
     denoiser.write_bytes(_arch_header("flux"))
     assert diffusion_compat.speech_pick_refusal(str(denoiser), DENOISER_FILE, None, False) is None
 
-    # The folder-valued pick keeps resolving through the containment check, unchanged.
     assert diffusion_compat._local_gguf_path(str(direct.parent), CSM_FILE) == str(direct)
 
 
-# ── Every engine and both stages ───────────────────────────────────────────────
-# The Images and Video pages stage and download BEFORE they call load, so a load-only gate
-# arrives after the bytes. And on all three engines: a mixed VIDEO repo goes through
-# VideoBackend and a CPU/MPS or sd.cpp-forced image pick through SdCppDiffusionBackend, neither
-# of which shares DiffusionBackend's preflight.
+# The Images and Video pages stage and download BEFORE calling load, so a load-only gate arrives
+# after the bytes.
 
 
 def test_the_shared_refusal_is_wired_into_every_plan_and_load_path():
@@ -1242,15 +1176,12 @@ def test_the_shared_refusal_is_wired_into_every_plan_and_load_path():
 
     from core.inference import diffusion, sd_cpp_backend, video
 
-    # Images: folded into incompatible_reason, which the page renders instead of staging entries.
     plan = inspect.getsource(diffusion.DiffusionBackend.download_plan)
     assert "speech_pick_refusal" in plan
 
-    # Video: plan and worker both, since a direct begin_load reaches no plan.
     assert "_assert_pick_is_not_speech" in inspect.getsource(video.VideoBackend.download_plan)
     assert "_assert_pick_is_not_speech" in inspect.getsource(video.VideoBackend._run_load)
 
-    # sd.cpp: plan and worker. NOT begin_load, which is offline-only and cannot afford the bound.
     sd_plan = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.download_plan)
     assert "_assert_pick_is_not_speech" in sd_plan
     assert "_assert_pick_is_not_speech" not in inspect.getsource(
@@ -1272,7 +1203,6 @@ def test_the_video_and_sd_cpp_helpers_delegate_to_the_one_verdict(monkeypatch):
     video._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network = False)
     sd_cpp_backend._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network = False)
 
-    # The cache-only flag rides through: an offline promise must not drop at the delegation edge.
     assert seen == [(CSM_REPO, CSM_FILE, "tok", False), (CSM_REPO, CSM_FILE, "tok", False)]
 
 
@@ -1283,12 +1213,10 @@ def test_a_media_gguf_republished_as_speech_is_refused(monkeypatch, tmp_path):
     snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "oldsha"
     snapshot.mkdir(parents = True)
     cached = snapshot / CSM_FILE
-    # On disk this is still the runnable denoiser the row was offering.
     cached.write_bytes(_arch_header("flux"))
 
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(cached))
     monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
-    # The Hub has since replaced it with a speech checkpoint at the same filename.
     _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
@@ -1317,7 +1245,6 @@ def test_a_cache_only_load_never_range_reads_an_uncached_pick(monkeypatch):
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is None
     assert requests == []
 
-    # And nothing was memoised, so the next caller that CAN wait still gets a real answer.
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
     assert len(requests) == 1
 
@@ -1348,11 +1275,9 @@ def test_a_cache_only_probe_does_not_memoise_a_skipped_revision_check(monkeypatc
     )
     _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
 
-    # Offline: reads the stale local bytes, asks no revision, allows the pick.
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is None
     assert heads == []
 
-    # The next caller that can reach the Hub must still catch the republish.
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
     assert len(heads) == 1
 
@@ -1364,15 +1289,12 @@ def test_an_uncached_remote_verdict_is_not_memoised_forever(monkeypatch):
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
     bodies = {CSM_FILE: _arch_header("llama-csm")}
     _stub_range_reads(monkeypatch, bodies)
-    # Driven, not real: the entry expires relative to whatever monotonic said when it was written.
     clock = [1000.0]
     monkeypatch.setattr(diffusion_compat.time, "monotonic", lambda: clock[0])
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
-    # Inside the window: the memo answers and the Hub is not asked again.
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
 
-    # The repo republishes it as a runnable denoiser and the window lapses.
     bodies[CSM_FILE] = _arch_header("flux")
     clock[0] += diffusion_compat._SPEECH_REMOTE_TTL_SECONDS + 1.0
 
@@ -1409,7 +1331,6 @@ def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
     from routes import inference as inference_route
     from routes import video as video_route
 
-    # The CALL, not the import line at the top of each route, which names acquire_for far earlier.
     for source, acquire, label in (
         (inspect.getsource(video_route.load_video_model_gated), "acquire_for(VIDEO", "video"),
         (
@@ -1436,21 +1357,18 @@ def test_an_automatic_image_load_keeps_the_pre_eviction_preflight_offline():
     preflight = inspect.getsource(diffusion.DiffusionBackend.preflight_base_access)
     assert "assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)" in preflight
 
-    # The route hands its own locality flag down rather than letting the default win.
     route = inspect.getsource(inference_route.load_diffusion_model_gated)
     assert "allow_network = user_initiated" in route
 
-    # Both engines keep one signature, since the route preflights whichever one it picked.
     for backend in (diffusion.DiffusionBackend, sd_cpp_backend.SdCppDiffusionBackend):
         assert "allow_network" in inspect.signature(backend.preflight_base_access).parameters
 
 
 # The Mimi vocoder in ggml-org/sesame-csm-1b-GGUF writes a SENTENCE where the architecture
-# identifier belongs. Read off the live repo, not invented.
+# identifier belongs.
 _VOCODER_ARCH = "this model cannot be used as LLM, use it via --model-vocoder in TTS examples"
 
 
-# ── the HTTP client huggingface_hub actually hands us ──────────────────────────
 
 
 class _HttpxLikeClient:
@@ -1521,7 +1439,6 @@ def test_the_ranged_read_works_on_the_httpx_client_hub_1_x_returns(monkeypatch):
     diffusion_compat._reset_inner_dim_cache()
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
-    # Still one bounded ranged request, exactly as on the requests client.
     assert client.calls == [("GET", f"bytes=0-{diffusion_compat._GGUF_HEADER_BYTES - 1}")]
 
 
@@ -1543,7 +1460,6 @@ def test_a_requests_session_is_not_mistaken_for_an_httpx_client(monkeypatch):
     assert not callable(getattr(requests.Session(), "stream", None))
 
 
-# ── verdict freshness ──────────────────────────────────────────────────────────
 
 
 def test_a_cached_snapshot_verdict_does_not_outlive_its_revision_check(monkeypatch, tmp_path):
@@ -1563,10 +1479,8 @@ def test_a_cached_snapshot_verdict_does_not_outlive_its_revision_check(monkeypat
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
     assert len(heads) == 1
-    # Inside the window the memo answers, as before.
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
     assert len(heads) == 1
-    # Past it, the Hub is asked again.
     monkeypatch.setattr(
         diffusion_compat.time,
         "monotonic",
@@ -1596,12 +1510,10 @@ def test_a_failed_refresh_keeps_the_verdict_it_already_had(monkeypatch, tmp_path
     cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
     monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
-    # The re-read of the new revision returns nothing at all.
     _stub_range_reads(monkeypatch, {})
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
 
-    # A re-read that SUCCEEDS still replaces it, in both directions.
     diffusion_compat._reset_inner_dim_cache()
     _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("flux")})
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
@@ -1615,7 +1527,6 @@ def test_every_published_csm_spelling_is_refused_by_the_media_preflight(monkeypa
     for arch in ("llama-csm", "csm", "csm-tts", "mimi"):
         _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header(arch)})
         assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None, arch
-    # The vocoder's sentence is quoted back to nobody, but it still refuses.
     _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header(_VOCODER_ARCH)})
     reason = diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE)
     assert reason is not None and "--model-vocoder" not in reason
@@ -1685,20 +1596,17 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
         f"sys.path.insert(0, {str(backend)!r})\n"
         "import core.inference.llama_cpp as m\n"
         "from utils.gguf_archs import SPEECH_GGUF_ARCHS\n"
-        # Identity, not equality: one definition, re-exported, never copied.
         "assert m.LlamaCppBackend._SPEECH_ARCHES is SPEECH_GGUF_ARCHS\n"
         "print('ok')\n"
     )
-    # A subprocess because this pytest session has already imported yaml, and a meta_path
-    # blocker cannot un-import it.
+    # A subprocess because this pytest session has already imported yaml, and a meta_path blocker cannot un-import it.
     result = subprocess.run(
         [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 300
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
 
-    # And nothing re-exports them from inside the heavy package: that would let an importer
-    # reach them by the very path this test exists to keep out of the chain, and
-    # scripts/verify_import_hoist.py blocks one outside a package __init__ anyway.
+    # And nothing re-exports them from inside the heavy package: that would let an importer reach
+    # them by the very path this test exists to keep out of the chain.
     gguf_metadata = importlib.import_module("utils.models.gguf_metadata")
     for name in ("SPEECH_GGUF_ARCHS", "is_speech_gguf_architecture"):
         assert not hasattr(

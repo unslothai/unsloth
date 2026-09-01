@@ -44,7 +44,7 @@ def test_encode_input_is_cast_to_the_vae_dtype():
     DiffusionBackend._make_vae_encode_dtype_safe(pipe)
     out = vae.encode(torch.zeros(1, 3, 64, 64, dtype = torch.float32))
     assert vae.seen_dtype == torch.bfloat16
-    assert out == "latents"  # the wrapper is transparent
+    assert out == "latents"
 
 
 def test_encode_input_is_cast_the_other_direction_too():
@@ -114,6 +114,5 @@ def test_missing_vae_and_broken_probe_are_no_ops():
 
     vae = _BrokenVae(dtype = torch.bfloat16)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
-    # The probe fails inside the call, so the tensor is forwarded as it arrived.
     vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float32))
     assert vae.seen_dtype == torch.float32

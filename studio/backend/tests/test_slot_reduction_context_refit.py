@@ -24,23 +24,17 @@ from test_llama_cpp_placement import _backend, _launch  # noqa: E402
 
 MIB = 1024 * 1024
 NATIVE_CTX = 262144
-CARD_MIB = 12 * 1024  # usable 11,919 MiB at the 0.97 pin fraction
+CARD_MIB = 12 * 1024
 
-# The weights these cases are built on, named for the slot count the reduction
-# leaves them at on CARD_MIB when four are asked for. The reduction only has
-# something to do inside a band, and the band moves with _FIT_MIN_CTX, since the
-# search prices every candidate slot count at the floor: raising it 4096 -> 8192
-# moved the band down about 1,400 MiB and left the old weights either fitting
-# whole at the floor under `--fit on` or collapsing to one slot for every ask.
-# These were re-measured against the floor rather than nudged until green -- each
-# keeps the role its test needs (a three-slot survivor, a two-slot survivor, and
-# an ask that still discriminates), which is what the assertions below are about.
+# Weights named for the slot count the reduction leaves them at on CARD_MIB. The band moves with
+# _FIT_MIN_CTX because the search prices every candidate at the floor: raising it 4096 -> 8192
+# moved the band down about 1,400 MiB, so these were re-measured against the floor rather than
+# nudged until green.
 _KEEPS_THREE_MIB = 9_200
 _KEEPS_TWO_MIB = 9_800
 _ASK_STILL_MATTERS_MIB = 9_400
-MIXED_CARDS = (CARD_MIB, 1_280)  # a primary plus a card too small to plan onto
+MIXED_CARDS = (CARD_MIB, 1_280)
 
-# Qwen3.8-27B-GGUF metadata.
 HYBRID = {
     "_architecture": "qwen35",
     "_vocab_size": 248320,
@@ -95,12 +89,11 @@ def _plan(
 
     backend._read_gguf_metadata = read
     backend._get_gguf_size_bytes = lambda _path: weights_mib * MIB
-    del backend._can_estimate_kv  # the real one, now that the dims are set
+    del backend._can_estimate_kv
     backend.probe_server_capabilities = lambda _binary = None: {
         "mtp_token": "draft-mtp",
         "supports_ngram_mod": True,
         "spec_draft_n_max_flag": "--spec-draft-n-max",
-        # Keep the requested slot count available to the planner.
         "supports_kv_unified": True,
         "supports_fit_ctx": True,
     }
@@ -128,7 +121,7 @@ class TestTheLaunchedCountOwnsTheContext:
         [
             (_KEEPS_THREE_MIB, 4, 3, 12_288),
             (_KEEPS_TWO_MIB, 4, 2, 13_824),
-            (_KEEPS_TWO_MIB, 8, 2, 13_824),  # the same answer from a larger ask
+            (_KEEPS_TWO_MIB, 8, 2, 13_824),
         ],
     )
     def test_auto_context_follows_the_reduction(self, tmp_path, weights_mib, asked, slots, ctx):
@@ -213,7 +206,6 @@ class TestAutoSpeculationStillDecidesBeforeTheReduction:
     def test_a_reduced_request_still_carries_the_drafter_it_admitted(self, tmp_path, asked):
         got = _plan(tmp_path, weights_mib = 10_200, n_parallel = asked, spec = "auto")
         assert (got["slots"], got["spec"]) == (1, "draft-mtp")
-        # The retained MTP reserve keeps this below the direct one-slot context.
         assert got["ctx"] == 9_984
 
     def test_the_gap_narrows_and_never_widens(self, tmp_path):
@@ -229,17 +221,14 @@ class TestWhatMustNotMove:
         """An explicit context remains unchanged after slot reduction."""
         got = _plan(tmp_path, weights_mib = 8_400, n_parallel = 4, spec = "off", n_ctx = 32768)
         assert (got["ctx"], got["slots"], got["fit"]) == (32768, 2, "off")
-        # The measured ceiling still follows the final slot count.
         assert got["ceiling"] == 35_840
 
     def test_an_explicit_context_that_forces_offload_is_unchanged(self, tmp_path):
         """An explicit context that requires offload is unchanged."""
         got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", n_ctx = 32768)
-        # The launched context stays a literal: honouring the request verbatim IS the
-        # contract, so a derived value here would assert nothing.
+        # The launched context stays a literal: honouring the request verbatim IS the contract.
         assert (got["ctx"], got["slots"], got["fit"]) == (32768, 4, "on")
-        # The ceiling is the published safe zone, which no reduction reached, so it is
-        # the offload fallback. Tracks the constant; #9492 moved it 4096 -> 8192.
+        # The ceiling is the published safe zone no reduction reached, so it is the fallback. #9492 moved it to 8192.
         assert got["ceiling"] == min(llama_cpp._AUTO_OFFLOAD_CTX, NATIVE_CTX)
         assert got["ceiling"] < got["ctx"], "the sheet must still warn above the safe zone"
 
@@ -259,8 +248,7 @@ class TestWhatMustNotMove:
         got = _plan(tmp_path, weights_mib = 11_400, n_parallel = 4, spec = "off")
         offload_ctx = min(llama_cpp._AUTO_OFFLOAD_CTX, NATIVE_CTX)
         assert (got["fit"], got["ctx"], got["ceiling"]) == ("on", offload_ctx, offload_ctx)
-        # The case is still the one this name claims: nothing was rescued, and the
-        # native length really was cut down to the fallback.
+        # Nothing was rescued, and the native length really was cut down to the fallback.
         assert got["slots"] == 4, "the reduction fired; this is no longer the offload case"
         assert got["ctx"] < NATIVE_CTX
 
@@ -277,11 +265,9 @@ class TestWhatMustNotMove:
         assert (got["slots"], got["ctx"]) == (slots, ctx)
 
 
-# Multiples of the fit floor rather than literals. _AUTO_OFFLOAD_CTX is documented
-# to sit at or above _FIT_MIN_CTX, so sweeping it below the floor would drive the
-# planner through a state the product never reaches and call whatever came back a
-# regression. Identical to [4096, 8192, 16384, 32768] while the floor is 4096, and
-# still the intended sweep after it moves.
+# Multiples of the fit floor rather than literals: _AUTO_OFFLOAD_CTX is documented to sit at or
+# above _FIT_MIN_CTX, so sweeping below the floor would drive the planner through a state the
+# product never reaches.
 _OFFLOAD_SWEEP = [llama_cpp._FIT_MIN_CTX * step for step in (1, 2, 4, 8)]
 
 
@@ -305,9 +291,7 @@ class TestTheReductionIsPricedAtTheFitFloor:
     the margins being this thin is the reason the sweep below exists.
     """
 
-    # A band that a reduction rescues from offload. Every one of these launched
-    # `--fit off` before #9492 and `--fit on` after it, which is the ~3x decode
-    # collapse (#6718) the reduction was written to avoid.
+    # Every one of these launched `--fit off` before #9492 and on after, the ~3x decode collapse (#6718).
     RESCUED = [
         (10_200, HYBRID),
         (10_400, HYBRID),
@@ -338,8 +322,7 @@ class TestTheReductionIsPricedAtTheFitFloor:
         monkeypatch.setattr(llama_cpp, "_AUTO_OFFLOAD_CTX", offload_ctx)
         got = _plan(tmp_path, weights_mib = weights_mib, n_parallel = 4, spec = "off", metadata = metadata)
         assert got["fit"] == "off", "a placeable load was handed to --fit offload"
-        # It was rescued BY the reduction rather than fitting outright, or the row
-        # would prove nothing about this block.
+        # It was rescued BY the reduction rather than fitting outright, or the row would prove nothing.
         assert got["slots"] < 4
 
     def test_weights_past_the_band_still_offload(self, tmp_path):
@@ -358,7 +341,6 @@ class TestTheReductionIsPricedAtTheFitFloor:
             for n in (1, 2, 3, 4, 6, 8)
         ]
         assert finals == sorted(finals), finals
-        # Not a row of identical numbers, which would sort trivially.
         assert len(set(finals)) > 1, finals
 
 
@@ -408,13 +390,9 @@ class TestTheLoggedReserveFollowsTheLaunch:
                 return emit
 
         monkeypatch.setattr("core.inference.llama_cpp.logger", _Recorder())
-        assert planner_logger is not None  # the real one is restored on teardown
+        assert planner_logger is not None
 
-        # Asks that converge on one plan at this floor. 2 is not among them any
-        # more: at _FIT_MIN_CTX 8192 two slots fit on this card outright, so the
-        # ask survives untouched and Auto settles on ngram-mod with no MTP reserve
-        # to log. That is a different launch, not a differing reserve, so pinning
-        # it here would test the fixture rather than the claim.
+        # 2 is gone: at _FIT_MIN_CTX 8192 two slots fit outright, so Auto settles on ngram-mod with no MTP reserve.
         seen = []
         for asked in (4, 6, 8):
             lines.clear()
@@ -429,7 +407,6 @@ class TestTheLoggedReserveFollowsTheLaunch:
         assert seen[0][3] == {"0.34"}
 
 
-# KV-estimable metadata without a native context length.
 NO_NATIVE_CTX = {**DENSE, "_context_length": None}
 
 

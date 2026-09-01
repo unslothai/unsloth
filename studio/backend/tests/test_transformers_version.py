@@ -11,18 +11,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-# ---------------------------------------------------------------------------
-# The studio backend uses relative-style imports (``from utils.…``), so
-# add the backend directory to *sys.path* if not already present.
-# ---------------------------------------------------------------------------
 import sys
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub the custom logger before import so ``from loggers import
-# get_logger`` doesn't fail.
+# Stub the custom logger before import so ``from loggers import get_logger`` does not fail.
 import types as _types
 
 _loggers_stub = _types.ModuleType("loggers")
@@ -108,9 +103,6 @@ def _capturable_logger(monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
-# _resolve_base_model — config.json fallback
-# ---------------------------------------------------------------------------
 
 
 class TestResolveBaseModel:
@@ -147,7 +139,6 @@ class TestResolveBaseModel:
         config_cfg = {"model_name": ["x"], "_name_or_path": "Qwen/Qwen3.5-9B"}
         (tmp_path / "config.json").write_text(json.dumps(config_cfg))
 
-        # Skips the non-string model_name and falls through to _name_or_path.
         assert _resolve_base_model(str(tmp_path)) == "Qwen/Qwen3.5-9B"
 
     def test_model_name_takes_priority_over_name_or_path(self, tmp_path: Path):
@@ -167,7 +158,6 @@ class TestResolveBaseModel:
         (tmp_path / "config.json").write_text(json.dumps(config_cfg))
 
         result = _resolve_base_model(str(tmp_path))
-        # Falls through; does not return the self-referencing path.
         assert result == str(tmp_path)
 
     def test_no_config_files(self, tmp_path: Path):
@@ -186,9 +176,7 @@ class TestRemoteLoraBase:
 
     @pytest.fixture(autouse = True)
     def _selected_cache_follows_env(self, monkeypatch):
-        # The cache helpers now read the selected cache (get_hf_cache_paths),
-        # which snapshots env at import; make it follow the HF_HUB_CACHE these
-        # tests set so they keep driving the lookup via env.
+        # The cache helpers read the selected cache, snapshotted at import, so make it follow HF_HUB_CACHE.
         monkeypatch.setattr(
             "utils.transformers_version.get_hf_cache_paths",
             lambda: _types.SimpleNamespace(
@@ -230,7 +218,6 @@ class TestRemoteLoraBase:
         assert _remote_lora_base("plainname") is None
 
     def test_respects_hf_endpoint(self, monkeypatch):
-        # Enterprise mirror: the fetch must target HF_ENDPOINT, not hardcoded huggingface.co.
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal")
         seen = {}
@@ -263,7 +250,7 @@ class TestRemoteLoraBase:
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         with patch("urllib.request.urlopen") as mock_url:
             assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
-            mock_url.assert_not_called()  # offline: cache only, no network
+            mock_url.assert_not_called()
 
     def test_fetch_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
         self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
@@ -286,8 +273,7 @@ class TestRemoteLoraBase:
             assert _remote_lora_base("org/not-an-adapter") is None
 
     def test_existing_relative_path_not_treated_as_repo(self, monkeypatch):
-        # An existing one-slash relative path (e.g. outputs/run1) is a local checkpoint, not
-        # a Hub repo: no request, no risk of matching an unrelated remote/cached adapter.
+        # An existing one-slash relative path is a local checkpoint: no request, so no stale-adapter match.
         import utils.paths as paths
         monkeypatch.setattr(paths, "is_local_path", lambda p: True)
         with patch("urllib.request.urlopen") as mock_url:
@@ -297,8 +283,7 @@ class TestRemoteLoraBase:
     def test_404_returns_none_not_stale_cache(self, tmp_path: Path, monkeypatch):
         import urllib.error
 
-        # The repo is now a full model (adapter_config.json 404s) but a stale LoRA snapshot is
-        # cached: a definitive 404 must return None, not the stale base.
+        # The repo is now a full model but a stale LoRA snapshot is cached, so a 404 returns None, not it.
         self._seed_adapter_cache(tmp_path, "user/was-a-lora", "old/base")
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -317,9 +302,6 @@ class TestRemoteLoraBase:
             assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
 
 
-# ---------------------------------------------------------------------------
-# _check_tokenizer_config_needs_v5 — local file check
-# ---------------------------------------------------------------------------
 
 
 class TestCheckTokenizerConfigNeedsV5:
@@ -365,8 +347,7 @@ class TestCheckTokenizerConfigNeedsV5:
         assert _tokenizer_class_cache[key] is True
 
     def test_token_cache_isolation_and_auth_fetch(self, monkeypatch):
-        # A gated repo: the unauthenticated miss (cached under (model, None)) must not block a
-        # later authed fetch (separate key), and the token rides in the Authorization header.
+        # A gated repo: the unauthenticated miss must not block a later authed fetch, which uses a separate key.
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "_env_offline", lambda: False)
@@ -393,10 +374,10 @@ class TestCheckTokenizerConfigNeedsV5:
             raise OSError("HTTP 401")
 
         monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-        assert _check_tokenizer_config_needs_v5("org/gated") is False  # unauth miss
-        assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True  # authed hit
+        assert _check_tokenizer_config_needs_v5("org/gated") is False
+        assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True
         assert seen_auth == [None, "Bearer tok"]
-        assert _tokenizer_class_cache[("org/gated", None)] is False  # miss not poisoning
+        assert _tokenizer_class_cache[("org/gated", None)] is False
 
     def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
         import utils.transformers_version as tv
@@ -426,9 +407,6 @@ class TestCheckTokenizerConfigNeedsV5:
         )
 
 
-# ---------------------------------------------------------------------------
-# needs_transformers_5 — integration-level
-# ---------------------------------------------------------------------------
 
 
 class TestNeedsTransformers5:
@@ -448,7 +426,6 @@ class TestNeedsTransformers5:
 
     def test_llama_does_not_need_v5(self):
         """Standard models should not trigger v5."""
-        # Patch network call to avoid a real fetch.
         with patch(
             "utils.transformers_version._check_tokenizer_config_needs_v5",
             return_value = False,
@@ -460,15 +437,11 @@ class TestNeedsTransformers5:
         config_cfg = {"model_name": "Qwen/Qwen3.5-9B"}
         (tmp_path / "config.json").write_text(json.dumps(config_cfg))
 
-        # needs_transformers_5 only does substring matching, so test the
-        # full resolution chain via _resolve_base_model here.
+        # needs_transformers_5 only does substring matching, so test the full resolution chain via _resolve_base_model.
         resolved = _resolve_base_model(str(tmp_path))
         assert needs_transformers_5(resolved) is True
 
 
-# ---------------------------------------------------------------------------
-# _check_config_needs_550 — config.json architecture/model_type check
-# ---------------------------------------------------------------------------
 
 
 class TestCheckConfigNeeds550:
@@ -549,7 +522,6 @@ class TestCheckConfigNeeds550:
 
     def test_no_config_json(self, tmp_path: Path):
         """Missing config.json should return False (fail-open)."""
-        # Patch network call to avoid a real fetch.
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = Exception("no network")
             assert _check_config_needs_550(str(tmp_path)) is False
@@ -574,9 +546,6 @@ class TestCheckConfigNeeds550:
             mock_urlopen.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# _check_config_needs_510 — config.json architecture/model_type check
-# ---------------------------------------------------------------------------
 
 
 class TestCheckConfigNeeds510:
@@ -649,7 +618,6 @@ class TestCheckConfigNeeds510:
 
     def test_no_config_json(self, tmp_path: Path):
         """Missing config.json should return False (fail-open)."""
-        # Patch network call to avoid real fetch
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = Exception("no network")
             assert _check_config_needs_510(str(tmp_path)) is False
@@ -674,9 +642,6 @@ class TestCheckConfigNeeds510:
             mock_urlopen.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# NemotronH dense (MLP) models need the 5.10 tier
-# ---------------------------------------------------------------------------
 
 
 class TestNemotronHNeedsMlpSupport:
@@ -717,7 +682,6 @@ class TestNemotronHNeedsMlpSupport:
         assert _config_needs_510(cfg) is True
 
     def test_nested_llm_config_with_dash(self):
-        # VL wrapper (e.g. NemotronH_Nano_VL_V2): dense LM is under llm_config.
         cfg = {
             "model_type": "NemotronH_Nano_VL_V2",
             "llm_config": {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"},
@@ -762,8 +726,7 @@ class TestConfigJsonHfCacheFallback:
 
     @pytest.fixture(autouse = True)
     def _selected_cache_follows_env(self, monkeypatch):
-        # As above: route the selected-cache lookup through the HF_HUB_CACHE env
-        # these tests set, since get_hf_cache_paths snapshots env at import.
+        # Route the selected-cache lookup through HF_HUB_CACHE, since get_hf_cache_paths snapshots at import.
         monkeypatch.setattr(
             "utils.transformers_version.get_hf_cache_paths",
             lambda: _types.SimpleNamespace(
@@ -812,7 +775,7 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
         with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
-            assert _load_config_json("org/model") == fresh  # network wins, not stale cache
+            assert _load_config_json("org/model") == fresh
 
     def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -844,13 +807,11 @@ class TestConfigJsonHfCacheFallback:
             mock_url.assert_not_called()
 
     def test_helper_ignores_local_paths(self, tmp_path: Path):
-        # A filesystem path is not a repo id; never treat it as one.
         assert _config_json_from_hf_cache(str(tmp_path)) is None
         assert _config_json_from_hf_cache("plainname") is None
 
     def test_no_refs_main_picks_newest_snapshot(self, tmp_path: Path, monkeypatch):
-        # No refs/main (commit-pinned downloads): lexicographic order would pick the older
-        # SHA; selection must follow mtime so the newest snapshot wins.
+        # No refs/main means lexicographic order would pick the older SHA, so selection must follow mtime.
         repo = tmp_path / "models--org--model"
         old = repo / "snapshots" / "0000old"
         new = repo / "snapshots" / "ffffnew"
@@ -869,18 +830,15 @@ class TestConfigJsonHfCacheFallback:
         self._seed_cache(tmp_path, "org/model", stale)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        # Network fails -> serve the cached snapshot, but it must not be memoized.
         with patch("urllib.request.urlopen", side_effect = OSError("boom")):
             assert _load_config_json("org/model") == stale
-        # Connectivity returns: the next call must hit the network for the fresh config.
         with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
             assert _load_config_json("org/model") == fresh
 
     def test_auth_failure_does_not_serve_cache(self, tmp_path: Path, monkeypatch):
         import urllib.error
 
-        # config.json cached from an earlier authorized session; an unauthenticated 4xx
-        # must not be handed that private metadata.
+        # config.json cached from an earlier authorized session: an unauthenticated 4xx must not be served it.
         cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
         self._seed_cache(tmp_path, "private/model", cfg)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
@@ -898,7 +856,6 @@ class TestConfigJsonHfCacheFallback:
         self._seed_cache(tmp_path, "org/model", cfg)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        # A 5xx is transient, not an access decision: keep serving the cache.
         err = urllib.error.HTTPError("url", 503, "busy", {}, None)
         with patch("urllib.request.urlopen", side_effect = err):
             assert _load_config_json("org/model") == cfg
@@ -927,28 +884,26 @@ class TestTierCheckTransientRetry:
         (repo / "refs" / "main").write_text(commit)
 
     def test_transient_fallback_not_memoized_then_retries(self, tmp_path: Path, monkeypatch):
-        stale = {"model_type": "llama"}  # does not need 510
-        fresh = {"architectures": ["Gemma4UnifiedForConditionalGeneration"]}  # needs 510
+        stale = {"model_type": "llama"}
+        fresh = {"architectures": ["Gemma4UnifiedForConditionalGeneration"]}
         self._seed_cache(tmp_path, "org/model", stale)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        # Network blip -> serve the cache, but do NOT pin the tier result.
         with patch("urllib.request.urlopen", side_effect = OSError("boom")):
             assert _check_config_needs_510("org/model") is False
         assert ("org/model", None) not in _config_needs_510_cache
-        # Connectivity returns: the next call re-fetches and sees the higher tier.
         with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
             assert _check_config_needs_510("org/model") is True
-        assert _config_needs_510_cache[("org/model", None)] is True  # definitive read memoized
+        assert _config_needs_510_cache[("org/model", None)] is True
 
     def test_definitive_network_read_is_memoized(self, tmp_path: Path, monkeypatch):
-        fresh = {"architectures": ["Gemma4ForConditionalGeneration"]}  # needs 550
+        fresh = {"architectures": ["Gemma4ForConditionalGeneration"]}
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         with patch("urllib.request.urlopen", return_value = _hf_response(fresh)) as mock_url:
             assert _check_config_needs_550("org/model") is True
             assert _check_config_needs_550("org/model") is True
-            assert mock_url.call_count == 1  # second call served from the tier cache
+            assert mock_url.call_count == 1
 
 
 class TestHigherTier:
@@ -959,9 +914,6 @@ class TestHigherTier:
         assert _higher_tier("default", "default") == "default"
 
 
-# ---------------------------------------------------------------------------
-# get_transformers_tier — tier detection
-# ---------------------------------------------------------------------------
 
 
 class TestGetTransformersTier:
@@ -1036,7 +988,6 @@ class TestGetTransformersTier:
             "hybrid_override_pattern": "M-M-M*-M-",
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
-        # A v5 tokenizer would otherwise route this to 530; 510 must win.
         (tmp_path / "tokenizer_config.json").write_text(
             json.dumps({"tokenizer_class": "TokenizersBackend"})
         )
@@ -1156,7 +1107,6 @@ class TestGetTransformersTier:
         """5.5.0 is checked before 5.3.0 - a model matching both gets 550."""
         assert get_transformers_tier("gemma-4-model") == "550"
 
-    # ---- issue #6103: the tier decision must be traceable in the logs ----
 
     def test_tier_550_selection_is_logged(self, caplog):
         caplog.set_level(logging.INFO)
@@ -1266,12 +1216,12 @@ class TestProbeTier:
         results = iter([_proc(1, "KeyError: '-'"), _proc(1, "KeyError: '-'"), _proc(0)])
 
         def fake_run(cmd, **k):
-            seen.append(cmd[3])  # target_dir
+            seen.append(cmd[3])
             return next(results)
 
         monkeypatch.setattr("utils.transformers_version.subprocess.run", fake_run)
         assert _probe_tier("org/dense-nemotron", None, "x") == "510"
-        assert seen == self._venv_dirs()  # escalated 530 -> 550 -> 510
+        assert seen == self._venv_dirs()
 
     def test_first_success_stops_escalation(self, monkeypatch):
         self._patch_common(monkeypatch)
@@ -1292,8 +1242,7 @@ class TestProbeTier:
         assert _probe_tier("org/m", None, "x") == "550"
 
     def test_nothing_parses_stays_530_and_caches(self, monkeypatch):
-        # All tiers probed, none parse -> a remote-code model that loads via its own code;
-        # keep 530 (never jump to 510). Conclusive, so cached by model_name.
+        # All tiers probed and none parse means a remote-code model, so keep 530 and cache it by model_name.
         self._patch_common(monkeypatch)
         monkeypatch.setattr(
             "utils.transformers_version.subprocess.run",
@@ -1303,8 +1252,7 @@ class TestProbeTier:
         assert _probe_tier_cache["org/m"] == "530"
 
     def test_partial_sidecars_no_parse_is_530_uncached(self, monkeypatch):
-        # 510 sidecar missing and 530/550 fail to parse -> environment is incomplete, so we
-        # cannot conclude; return 530 uncached so it is retried once 510 is available.
+        # 510 missing and 530/550 unparseable means an incomplete environment: return 530 uncached and retry.
         monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
         for fn in ("_ensure_venv_t5_530_exists", "_ensure_venv_t5_550_exists"):
             monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
@@ -1317,15 +1265,14 @@ class TestProbeTier:
         assert "org/m" not in _probe_tier_cache
 
     def test_success_not_cached_when_lower_tier_skipped(self, monkeypatch):
-        # 530 sidecar unavailable but 550 parses: return 550 (best effort now) but do NOT
-        # cache it, since once 530 is installed it may be the lowest valid tier.
+        # 530 unavailable but 550 parses: return 550 best effort but do NOT cache, since 530 may be lowest.
         monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
         monkeypatch.setattr("utils.transformers_version._ensure_venv_t5_530_exists", lambda: False)
         for fn in ("_ensure_venv_t5_550_exists", "_ensure_venv_t5_510_exists"):
             monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
         monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
         assert _probe_tier("org/m", None, "x") == "550"
-        assert "org/m" not in _probe_tier_cache  # skipped a lower tier -> not pinned
+        assert "org/m" not in _probe_tier_cache
 
     def test_cache_hit_skips_subprocess(self, monkeypatch):
         self._patch_common(monkeypatch)
@@ -1345,7 +1292,7 @@ class TestProbeTier:
             lambda cmd, **k: _proc(1, "ConnectionError: Max retries exceeded"),
         )
         assert _probe_tier("org/m", None, "x") == "530"
-        assert "org/m" not in _probe_tier_cache  # retried next load
+        assert "org/m" not in _probe_tier_cache
 
     def test_timeout_is_530_and_uncached(self, monkeypatch):
         import subprocess as _sp
@@ -1372,11 +1319,10 @@ class TestProbeTier:
 
         monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
         assert _probe_tier("org/m", None, "x") == "530"
-        assert "org/m" not in _probe_tier_cache  # nothing probed -> uncached
+        assert "org/m" not in _probe_tier_cache
 
     def test_probe_does_not_import_hub(self, monkeypatch):
-        # The probe must not import huggingface_hub: that would land before the sidecar is on
-        # sys.path (activation never purges), pinning the default-env hub. So no in-process sha.
+        # The probe must not import huggingface_hub: that lands before the sidecar and pins the default hub.
         self._patch_common(monkeypatch)
         monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
         sys.modules.pop("huggingface_hub", None)
@@ -1393,7 +1339,6 @@ class TestProbeTier:
         assert _probe_tier("org/m", None, "x") == "530"
 
     def test_get_tier_uses_probe_for_remote_tokenizer_signal(self, monkeypatch):
-        # tokenizer says 5.x but no architecture/substring match -> probe (not a 530 guess).
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
         )
@@ -1413,8 +1358,7 @@ class TestProbeTier:
         assert _stderr_is_transient("ValueError: bad pattern") is False
 
     def test_get_tier_threads_token_to_checks(self, monkeypatch):
-        # A gated/private model: the token must reach the config/tokenizer checks (and the
-        # probe), otherwise the authed-only signal is missed and it falls to default 4.x.
+        # For a gated model the token must reach the config/tokenizer checks and the probe, or it falls to 4.x.
         seen = {}
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_510",
@@ -1436,8 +1380,7 @@ class TestProbeTier:
         assert seen == {"510": "hf_abc", "550": "hf_abc", "tok": "hf_abc", "probe": "hf_abc"}
 
     def test_activate_threads_token_to_tier(self, monkeypatch):
-        # activate_transformers_for_subprocess must forward hf_token to tier detection, or
-        # the gated-model checks above run unauthenticated and the fix is unreachable.
+        # activate_transformers_for_subprocess must forward hf_token, or gated-model checks run unauthenticated.
         seen = {}
         monkeypatch.setattr("utils.transformers_version._resolve_base_model", lambda m: m)
         monkeypatch.setattr(
@@ -1448,8 +1391,7 @@ class TestProbeTier:
         assert seen == {"model": "org/gated", "token": "hf_xyz"}
 
     def test_local_checkpoint_reprobes_after_config_change(self, monkeypatch, tmp_path):
-        # A local checkpoint overwritten in place must re-probe: the cache key folds in the
-        # config.json signature, so a different config does not serve the stale tier.
+        # A local checkpoint overwritten in place must re-probe: the cache key folds in the config.json signature.
         self._patch_common(monkeypatch)
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({"model_type": "a"}))
@@ -1460,15 +1402,14 @@ class TestProbeTier:
             lambda cmd, **k: calls.append(1) or _proc(0),
         )
         assert _probe_tier(local, None, "x") == "530"
-        assert _probe_tier(local, None, "x") == "530"  # cache hit, no re-spawn
+        assert _probe_tier(local, None, "x") == "530"
         assert len(calls) == 1
         cfg.write_text(json.dumps({"model_type": "a_longer_value_changing_the_size"}))
         assert _probe_tier(local, None, "x") == "530"
-        assert len(calls) == 2  # signature changed -> re-probed
+        assert len(calls) == 2
 
     def test_probe_child_enables_implicit_token(self, monkeypatch):
-        # With a token, the probe child must clear an inherited HF_HUB_DISABLE_IMPLICIT_TOKEN=1
-        # so HF_TOKEN authenticates the gated config fetch instead of 401ing to 530.
+        # The probe child must clear an inherited HF_HUB_DISABLE_IMPLICIT_TOKEN=1 or the gated fetch 401s to 530.
         self._patch_common(monkeypatch)
         monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
         captured = {}
@@ -1494,9 +1435,7 @@ class TestProbeGating:
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
         _tokenizer_class_cache.clear()
-        # Sixth cache, and the one this class used to miss. get_transformers_tier consults
-        # CONFIG_MAPPING_NAMES per tier and upgrades a model_type the ambient default does
-        # not ship, so a mapping parsed by an earlier test decides the answer here.
+        # The sixth cache: get_transformers_tier reads CONFIG_MAPPING_NAMES per tier, so an earlier test decides this.
         _config_mapping_cache.clear()
 
     def _patch_venvs(self, monkeypatch):
@@ -1519,7 +1458,6 @@ class TestProbeGating:
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: True
         )
 
-    # ---- needs_transformers_5 / probe=False must not spawn probes --------------
 
     def test_needs_transformers_5_does_not_spawn_probe(self, monkeypatch):
         self._patch_checks_to_tokenizer(monkeypatch)
@@ -1528,7 +1466,6 @@ class TestProbeGating:
             raise AssertionError("needs_transformers_5 must not spawn a probe")
 
         monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
-        # Still correctly reports 5.x from the tokenizer signal, just without probing.
         assert needs_transformers_5("org/unknown-5x") is True
 
     def test_probe_false_returns_530_for_tokenizer_signal(self, monkeypatch):
@@ -1540,18 +1477,15 @@ class TestProbeGating:
         monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
         assert get_transformers_tier("org/unknown-5x", probe = False) == "530"
 
-    # ---- version-field probe is default-first (no mis-routing of 4.x models) ----
 
     def test_version_field_probe_stays_default_when_default_parses(self, monkeypatch):
         self._patch_venvs(monkeypatch)
         monkeypatch.setattr(
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
         )
-        # A model_type the ambient default DOES ship. "brandnew" is in none of the
-        # mappings, so the static config-mapping tier upgraded it to 530 before the
-        # version-field probe under test ever ran, and the assert below only passed
-        # when an earlier test had left _config_mapping_cache in a state that skipped
-        # that path. The probe, not the mapping upgrade, is the subject here.
+        # A model_type the ambient default DOES ship: "brandnew" is in no mapping, so the static
+        # config-mapping tier upgraded it to 530 before the version-field probe ever ran, and the assert
+        # only passed when an earlier test had left the mapping cache in a state that skipped that path.
         _config_json_cache[("org/new", None)] = {
             "model_type": "llama",
             "transformers_version": "5.0.0",
@@ -1562,7 +1496,7 @@ class TestProbeGating:
             lambda cmd, **k: seen.append(cmd[3]) or _proc(0),
         )
         assert get_transformers_tier("org/new") == "default"
-        assert seen == [""]  # probed the ambient default tier first, it parsed -> stayed default
+        assert seen == [""]
 
     def test_version_field_probe_escalates_when_default_fails(self, monkeypatch):
         import utils.transformers_version as tv
@@ -1571,7 +1505,6 @@ class TestProbeGating:
         monkeypatch.setattr(
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
         )
-        # Shipped by the ambient default, for the same reason as the test above.
         _config_json_cache[("org/new", None)] = {
             "model_type": "llama",
             "transformers_version": "5.6.0",
@@ -1610,7 +1543,6 @@ class TestProbeGating:
             "_config_model_types",
             lambda tier: frozenset({"llama"} if tier == "default" else {"llama", "brandnew"}),
         )
-        # Declares 5.x too, so the version-field probe below WOULD fire if it were reached.
         _config_json_cache[("org/brandnew", None)] = {
             "model_type": "brandnew",
             "transformers_version": "5.0.0",
@@ -1642,8 +1574,7 @@ class TestProbeGating:
         assert get_transformers_tier("org/llama") == "default"
 
     def test_needs_transformers_5_true_for_version_field_only(self, monkeypatch):
-        # A 5.x-saved standard-tokenizer model must report as 5.x (for vision routing)
-        # without spawning a probe.
+        # A 5.x-saved standard-tokenizer model must report as 5.x, for vision routing, without spawning a probe.
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
         )
@@ -1665,8 +1596,7 @@ class TestProbeGating:
         assert needs_transformers_5("org/new") is True
 
     def test_default_first_result_not_reused_for_tokenizer_path(self, monkeypatch, tmp_path):
-        # A default-first probe can cache "default"; a later tokenizer/known-5.x call
-        # (floor=530) must re-probe, not reuse that "default".
+        # A default-first probe can cache "default", so a later known-5.x call must re-probe rather than reuse.
         self._patch_venvs(monkeypatch)
         (tmp_path / "config.json").write_text(
             json.dumps({"model_type": "brandnew", "transformers_version": "5.0.0"})
@@ -1681,7 +1611,6 @@ class TestProbeGating:
             "utils.transformers_version.subprocess.run",
             lambda cmd, **k: seen.append(cmd[3]) or _proc(0),
         )
-        # Tokenizer/known-5.x mode (floor=530): must re-probe and never reuse "default".
         assert _probe_tier(local, None, "tokenizer needs 5.x") == "530"
         assert seen, "tokenizer path reused the cached default result instead of re-probing"
 
@@ -1702,9 +1631,7 @@ class TestLocalCheckpointFilesAppear:
             raise AssertionError("a local checkpoint must not be fetched from the Hub")
 
         monkeypatch.setattr("urllib.request.urlopen", boom)
-        # Before the file exists: not 5.x, no network, and the miss must not be pinned.
         assert _check_tokenizer_config_needs_v5(local) is False
-        # The file appears with a 5.x-only tokenizer -> the next call must read it.
         (tmp_path / "tokenizer_config.json").write_text(
             json.dumps({"tokenizer_class": "TokenizersBackend"})
         )
@@ -1722,11 +1649,6 @@ class TestLocalCheckpointFilesAppear:
         assert _load_config_json(local) == {"model_type": "gemma4"}
 
 
-# ---------------------------------------------------------------------------
-# activate_transformers_for_subprocess — issue #6103
-# The early log must make clear it only prepends to sys.path; the real
-# confirmation comes later from "Subprocess loaded transformers X.X.X".
-# ---------------------------------------------------------------------------
 
 
 class TestActivateLoggingClarity:
@@ -1767,7 +1689,6 @@ class TestActivateLoggingClarity:
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
         assert "5.5.0" in text, f"version not logged: {text!r}"
-        # Must signal this is only a sys.path manipulation, not a confirmed import.
         assert (
             "sys.path" in text or "path only" in text
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
@@ -1801,7 +1722,6 @@ class TestActivateLoggingClarity:
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
 
     def test_activate_prefers_local_checkpoint_tier_over_resolved_base(self, caplog, tmp_path):
-        # Base resolves to an offline/private id (default tier); the local config.json wins.
         (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))
         local = str(tmp_path)
         caplog.set_level(logging.INFO)
@@ -1830,8 +1750,7 @@ class TestActivateLoggingClarity:
         assert "5.10.2" in text, f"local checkpoint tier did not win: {text!r}"
 
     def test_activate_adapter_without_config_skips_path_name_recheck(self, caplog, tmp_path):
-        # LoRA adapter in a dir named 'gemma-4' (base resolves elsewhere): the resolved
-        # base drives the tier; the path name must not re-check or upgrade it.
+        # The resolved base drives the tier: a directory named 'gemma-4' must not re-check or upgrade it.
         adapter = tmp_path / "gemma-4-experiment" / "llama-lora"
         adapter.mkdir(parents = True)
         (adapter / "adapter_config.json").write_text(
@@ -1866,11 +1785,6 @@ class TestActivateLoggingClarity:
         assert "default transformers" in text, f"adapter wrongly upgraded: {text!r}"
 
 
-# ---------------------------------------------------------------------------
-# _venv_dir_is_valid — issue #6103
-# A version mismatch triggers a full wipe + reinstall, so it must be logged
-# at WARNING (not INFO) so the reinstall is visible.
-# ---------------------------------------------------------------------------
 
 
 class TestVenvDirIsValidLogging:
@@ -1883,7 +1797,7 @@ class TestVenvDirIsValidLogging:
 
     def test_version_mismatch_logged_at_warning(self, tmp_path: Path, caplog):
         venv_dir = tmp_path / "venv"
-        self._make_venv(venv_dir, "transformers", "5.0.0")  # wrong version
+        self._make_venv(venv_dir, "transformers", "5.0.0")
 
         caplog.set_level(logging.INFO)
         result = _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",))
@@ -1901,7 +1815,7 @@ class TestVenvDirIsValidLogging:
 
     def test_correct_version_does_not_warn(self, tmp_path: Path, caplog):
         venv_dir = tmp_path / "venv"
-        self._make_venv(venv_dir, "transformers", "5.3.0")  # correct version
+        self._make_venv(venv_dir, "transformers", "5.3.0")
 
         caplog.set_level(logging.INFO)
         result = _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",))
@@ -1912,12 +1826,6 @@ class TestVenvDirIsValidLogging:
         ], "no warning expected when the installed version matches"
 
 
-# ---------------------------------------------------------------------------
-# _venv_dir_is_valid_and_undamaged — issue #7715
-# A sidecar whose METADATA survived a disk-full or an interrupted pip passes
-# every package-level check, so the wipe-and-reinstall in _ensure_venv_dir
-# never fires and the worker dies importing transformers instead.
-# ---------------------------------------------------------------------------
 
 
 class TestVenvDirFileIntegrity:
@@ -1941,7 +1849,6 @@ class TestVenvDirFileIntegrity:
             path.write_text(body)
             rows.append(f"{rel},sha256=deadbeef,{len(body)}")
         rows.extend(record_extra or [])
-        # pip records its own metadata with a blank size, as real wheels do.
         rows.append(f"{pkg}-{version}.dist-info/METADATA,sha256=cafe,")
         rows.append(f"{pkg}-{version}.dist-info/RECORD,,")
         (di / "RECORD").write_text("\n".join(rows) + "\n")
@@ -1953,7 +1860,7 @@ class TestVenvDirFileIntegrity:
 
     def test_truncated_file_is_detected(self, tmp_path: Path, caplog):
         venv_dir = self._make_venv(tmp_path / "venv")
-        (venv_dir / "transformers" / "__init__.py").write_text("x")  # disk-full shape
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
 
         caplog.set_level(logging.INFO)
         result = _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
@@ -1978,9 +1885,7 @@ class TestVenvDirFileIntegrity:
     def test_extension_built_for_another_interpreter_is_detected(
         self, tmp_path: Path, ext_name: str
     ):
-        # Pick a stale tag by VERSION, not by whole tag: one template appends "t", so
-        # deriving it from _CURRENT_EXT_TAG directly builds "313t" -- the current tag --
-        # when the suite runs on a free-threaded 3.13, and the case asserts damage.
+        # Pick a stale tag by VERSION: one template appends "t", so deriving it builds the current free-threaded tag.
         stale = "313" if _CURRENT_EXT_TAG.rstrip("t") != "313" else "312"
         venv_dir = self._make_venv(
             tmp_path / "venv",
@@ -1998,8 +1903,7 @@ class TestVenvDirFileIntegrity:
                 "transformers/__init__.py": "x" * 40,
                 f"regex/_regex.cpython-{_CURRENT_EXT_TAG}-darwin.so": "y" * 40,
                 "yaml/_yaml.so": "w" * 40,
-                # Spellings the tag regex deliberately does not recognise. Each has to fail
-                # OPEN: guessing wrong here costs a several-hundred-MB re-download.
+                # Spellings the tag regex misses. Each must fail OPEN: guessing costs a several-hundred-MB refetch.
                 "regex/_regex.pypy311-pp73-x86_64-linux-gnu.so": "p" * 40,
                 "regex/_regex.graalpy311-310-native-x86_64-linux.so": "g" * 40,
                 "regex/_regex.cpython-313d-x86_64-linux-gnu.so": "d" * 40,
@@ -2010,7 +1914,6 @@ class TestVenvDirFileIntegrity:
     @pytest.mark.parametrize(
         "rel",
         [
-            # The tag sits in a DIRECTORY component; the binary itself is untagged and fine.
             "vendor/build.cp312/libhelper.so",
             "pkg.cp312.libs/libfoo.so",
             "data/v.cp39/native.pyd",
@@ -2050,8 +1953,7 @@ class TestVenvDirFileIntegrity:
     @pytest.mark.parametrize(
         ("current_tag", "ext_tag"),
         [
-            # Both directions of the GIL/free-threaded swap, on a fixed pair of versions so
-            # the case cannot collapse into "current tag" on whichever build runs the suite.
+            # Both directions of the GIL/free-threaded swap, on fixed versions so it cannot collapse to the current tag.
             ("313t", "313"),
             ("313", "313t"),
             ("314t", "314"),
@@ -2141,10 +2043,10 @@ class TestVenvDirFileIntegrity:
         )
         lock = venv_dir / rel
         lock.parent.mkdir(parents = True, exist_ok = True)
-        lock.write_text("x" * 27225)  # shrunk by npm, not damage
+        lock.write_text("x" * 27225)
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
-        lock.unlink()  # gone entirely, which npm never does
+        lock.unlink()
         assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_in_target_script_rows_are_ignored(self, tmp_path: Path):
@@ -2187,8 +2089,7 @@ class TestVenvDirFileIntegrity:
             files = {"other/__init__.py": "o" * 10},
             record_extra = ["shared/mod.py,sha256=beef,999999"],
         )
-        # Two RECORDs disagree on the size; whichever copy landed says nothing
-        # about either, so this is not damage.
+        # Two RECORDs disagree on the size, so whichever copy landed says nothing about either: not damage.
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
         # Ambiguous sizes cannot explain the file being gone.
         (venv_dir / "shared" / "mod.py").unlink()
@@ -2198,7 +2099,7 @@ class TestVenvDirFileIntegrity:
         venv_dir = self._make_venv(tmp_path / "venv")
         target = venv_dir / "transformers" / "__init__.py"
         target.unlink()
-        target.mkdir()  # st_size 4096 on POSIX would sail past a shrinkage test
+        target.mkdir()
         assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_blank_size_row_still_reports_a_deletion(self, tmp_path: Path):
@@ -2280,11 +2181,6 @@ class TestVenvDirFileIntegrity:
         assert (venv_dir / ".unsloth-studio-owned").is_file()
 
 
-# ---------------------------------------------------------------------------
-# _ensure_venv_dir — issue #6103
-# A slow runtime install must log each package as it starts, otherwise it
-# looks like a hang.
-# ---------------------------------------------------------------------------
 
 
 class TestEnsureVenvDirProgressLogging:
@@ -2313,7 +2209,6 @@ class TestEnsureVenvDirProgressLogging:
         msgs = " ".join(r.getMessage() for r in caplog.records)
         assert "transformers==5.3.0" in msgs, f"first package not logged: {msgs!r}"
         assert "tokenizers==0.21.0" in msgs, f"second package not logged: {msgs!r}"
-        # progress counter present so a slow install is not mistaken for a hang
         assert "1/2" in msgs and "2/2" in msgs, f"progress count missing: {msgs!r}"
 
     def test_no_install_logging_when_venv_already_valid(self, tmp_path: Path, caplog):
@@ -2338,9 +2233,6 @@ class TestEnsureVenvDirProgressLogging:
         assert "Installing" not in " ".join(r.getMessage() for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
-# _tier_from_name — shared name-based detection helper
-# ---------------------------------------------------------------------------
 
 
 class TestTierFromName:
@@ -2369,7 +2261,6 @@ class TestTierFromName:
         assert "qwen3.5" in match
 
     def test_ministral3_returns_530(self):
-        # The existing substring "ministral-3-" matches the 2512 naming style.
         tier, _ = _tier_from_name("mistralai/Ministral-3-8B-Instruct-2512")
         assert tier == "530"
 
@@ -2388,15 +2279,6 @@ class TestTierFromName:
         assert tier == "550"
 
 
-# ---------------------------------------------------------------------------
-# Local-folder tier detection via config.json
-#
-# When a local checkpoint's config.json architecture/model_type matches a known
-# sidecar set, that's the authoritative answer.  When it doesn't match (unknown
-# or future family), the HF model ID from _name_or_path / model_name in the
-# config is run through the same name-based rules so renamed folders are still
-# routed correctly without introducing path false-positives.
-# ---------------------------------------------------------------------------
 
 
 class TestLocalConfig530Tier:
@@ -2405,7 +2287,6 @@ class TestLocalConfig530Tier:
         _tokenizer_class_cache.clear()
         _config_needs_530_cache.clear()
 
-    # --- config-set matches -------------------------------------------------
 
     def test_config_needs_530_qwen3_5_model_type(self):
         assert _config_needs_530({"model_type": "qwen3_5"}) is True
@@ -2501,7 +2382,6 @@ class TestLocalConfig530Tier:
         )
         assert get_transformers_tier(str(d)) == "530"
 
-    # --- Qwen3.6 reuses Qwen3.5 config ids but routes to 550 by name ---------
 
     def test_local_qwen36_config_keeps_550_name_tier(self, tmp_path: Path):
         """Qwen3.6 config carries qwen3_5 ids; a higher-tier name match wins."""
@@ -2541,14 +2421,12 @@ class TestLocalConfig530Tier:
         ):
             assert get_transformers_tier(str(d)) == "default"
 
-    # --- _name_or_path fallback ---------------------------------------------
 
     def test_renamed_folder_falls_back_to_hf_id_in_config(self, tmp_path: Path):
         """A renamed local folder with an unrecognised model_type but a known
         HF ID in _name_or_path still routes to the correct tier."""
         d = tmp_path / "my-custom-name"
         d.mkdir()
-        # Simulate a future/unknown model_type; the HF ID carries the tier signal.
         (d / "config.json").write_text(
             json.dumps(
                 {
@@ -2578,7 +2456,6 @@ class TestLocalConfig530Tier:
         avoid false positives from self-referencing configs."""
         d = tmp_path / "qwen3.5-experiment"
         d.mkdir()
-        # _name_or_path is the local path itself (e.g. saved via save_pretrained)
         (d / "config.json").write_text(
             json.dumps(
                 {
@@ -2590,8 +2467,7 @@ class TestLocalConfig530Tier:
         with patch(
             "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
         ):
-            # "qwen3.5" is in the path but config says llama and _name_or_path
-            # is self-referencing — must not be promoted to 530.
+            # "qwen3.5" is in the path but config says llama and _name_or_path self-references: no promotion to 530.
             assert get_transformers_tier(str(d)) == "default"
 
     def test_hf_id_fallback_not_triggered_when_name_or_path_is_absolute_self(self, tmp_path: Path):
@@ -2604,7 +2480,6 @@ class TestLocalConfig530Tier:
             json.dumps(
                 {
                     "model_type": "llama",
-                    # absolute path — textually different from a relative model_name
                     "_name_or_path": str(d),
                 }
             )
@@ -2612,11 +2487,9 @@ class TestLocalConfig530Tier:
         with patch(
             "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
         ):
-            # Even though str(d) contains "qwen3.5", the local-dir branch recurses
-            # into config checks on the resolved path, which returns default.
+            # Even with "qwen3.5" in the path, the local-dir branch recurses into config checks on the resolved path.
             assert get_transformers_tier(str(d)) == "default"
 
-    # --- false-positive guard -----------------------------------------------
 
     def test_tier_local_plain_model_still_default(self, tmp_path: Path):
         """A local non-5.x checkpoint returns default; the directory-name
@@ -2633,9 +2506,6 @@ class TestLocalConfig530Tier:
             assert get_transformers_tier(str(d)) == "default"
 
 
-# ---------------------------------------------------------------------------
-# _check_config_needs_530 — slow HF-ID path (network stub)
-# ---------------------------------------------------------------------------
 
 
 class TestCheckConfigNeeds530:
@@ -2682,9 +2552,6 @@ class TestCheckConfigNeeds530:
         assert _config_needs_530_cache[key] is True
 
 
-# ---------------------------------------------------------------------------
-# _norm_separators
-# ---------------------------------------------------------------------------
 
 
 class TestNormSeparators:
@@ -2707,9 +2574,6 @@ class TestNormSeparators:
         assert _norm_separators("") == ""
 
 
-# ---------------------------------------------------------------------------
-# _tier_from_name — separator-insensitive matching
-# ---------------------------------------------------------------------------
 
 
 class TestTierFromNameSeparatorNorm:
@@ -2747,9 +2611,6 @@ class TestTierFromNameSeparatorNorm:
         assert _tier_from_name("Qwen/Qwen3-5B") is None
 
 
-# ---------------------------------------------------------------------------
-# _resolve_base_model — model_name-then-_name_or_path fallback
-# ---------------------------------------------------------------------------
 
 
 class TestResolveBaseModelNameOrPathFallback:
@@ -2780,7 +2641,6 @@ class TestResolveBaseModelNameOrPathFallback:
                 }
             )
         )
-        # model_name is not the local path, so it wins
         assert _resolve_base_model(str(d)) == "unsloth/Qwen3.5-7B-bnb-4bit"
 
     def test_tier_resolved_via_name_or_path_when_model_name_self_refs(self, tmp_path: Path):
@@ -2818,14 +2678,10 @@ class TestResolveBaseModelNameOrPathFallback:
                 }
             )
         )
-        # get_transformers_tier reads config.json directly and returns 530
-        # without needing to probe the private HF ID.
+        # get_transformers_tier reads config.json directly and returns 530 without probing the private HF ID.
         assert get_transformers_tier(str(d)) == "530"
 
 
-# ---------------------------------------------------------------------------
-# adapter_model-only LoRA resolution (no adapter_config.json)
-# ---------------------------------------------------------------------------
 
 
 class TestAdapterModelOnlyLoRA:
@@ -2845,22 +2701,18 @@ class TestAdapterModelOnlyLoRA:
         assert _has_adapter_weights(d2) is True
 
     def test_is_lora_adapter_dir_for_config_and_weights_only(self, tmp_path: Path):
-        # adapter_config.json present
         a = tmp_path / "cfg"
         a.mkdir()
         (a / "adapter_config.json").write_text("{}")
         assert _is_lora_adapter_dir(a) is True
-        # adapter_model weights only, no config
         b = tmp_path / "weights_only"
         b.mkdir()
         (b / "adapter_model.safetensors").write_text("")
         assert _is_lora_adapter_dir(b) is True
-        # plain checkpoint dir (neither)
         c = tmp_path / "plain"
         c.mkdir()
         (c / "config.json").write_text("{}")
         assert _is_lora_adapter_dir(c) is False
-        # not a directory
         assert _is_lora_adapter_dir(tmp_path / "missing") is False
 
     def test_resolve_adapter_only_lora_via_unsloth_dir_name(self, tmp_path: Path):
@@ -2901,9 +2753,6 @@ class TestAdapterModelOnlyLoRA:
         mock_resolve.assert_called_once_with(str(d))
 
 
-# ---------------------------------------------------------------------------
-# 530-config override must not be flipped by stale local path hints
-# ---------------------------------------------------------------------------
 
 
 class TestConfig530OverrideGuard:
@@ -2921,13 +2770,11 @@ class TestConfig530OverrideGuard:
                 }
             )
         )
-        # Stale path is not a Hub id, so the 530 config wins over its qwen3.6 substring.
         assert get_transformers_tier(str(d)) == "530"
 
     def test_current_basename_can_still_override_to_550(self, tmp_path: Path):
         d = tmp_path / "Qwen3.6-27B"
         d.mkdir()
-        # Qwen3.6 reuses the qwen3_5 config id but is a 5.5 model by name.
         (d / "config.json").write_text(
             json.dumps({"model_type": "qwen3_5", "_name_or_path": str(d)})
         )
@@ -2972,7 +2819,6 @@ class TestLooksLikeHfId:
         cwd = _os.getcwd()
         try:
             _os.chdir(tmp_path)
-            # "Qwen3.5-7B" exists relative to cwd, so it is a path, not a Hub id.
             assert _looks_like_hf_id("Qwen3.5-7B") is False
         finally:
             _os.chdir(cwd)
@@ -3003,16 +2849,12 @@ class TestMalformedInputRobustness:
             assert get_transformers_tier(str(d)) == "default"
 
     def test_pathological_long_name_does_not_crash(self):
-        # An over-long name makes is_file() raise OSError; must fail open.
         assert get_transformers_tier("x" * 5000) == "default"
 
     def test_empty_name_returns_default(self):
         assert get_transformers_tier("") == "default"
 
 
-# ---------------------------------------------------------------------------
-# Offline negatives must not poison the version caches (persistent worker)
-# ---------------------------------------------------------------------------
 
 
 class TestOfflineCacheNotPoisoned:
@@ -3026,19 +2868,16 @@ class TestOfflineCacheNotPoisoned:
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "_env_offline", lambda: True)
-        # No local file, not a local dir -> offline branch returns False without caching.
         assert _check_tokenizer_config_needs_v5("org/uncached") is False
         assert ("org/uncached", None) not in _tokenizer_class_cache
 
     def test_offline_then_online_refetches(self, monkeypatch):
         import utils.transformers_version as tv
 
-        # 1) Offline: returns False, nothing cached.
         monkeypatch.setattr(tv, "_env_offline", lambda: True)
         assert _check_tokenizer_config_needs_v5("org/needs5") is False
         assert ("org/needs5", None) not in _tokenizer_class_cache
 
-        # 2) Back online: the real fetch runs (cache was not poisoned) and is honored.
         monkeypatch.setattr(tv, "_env_offline", lambda: False)
 
         class _Resp:
@@ -3063,13 +2902,9 @@ class TestOfflineCacheNotPoisoned:
         assert ("org/uncached-config", None) not in _config_json_cache
 
 
-# ---------------------------------------------------------------------------
-# hf_endpoint_unreachable — bounded, proxy/egress-aware reachability probe
-# ---------------------------------------------------------------------------
 
 
 class TestHfEndpointUnreachable:
-    # Ambient proxies are cleared module-wide by _no_ambient_proxy.
 
     def test_reachable_returns_false(self, monkeypatch):
         class _Resp:
@@ -3108,7 +2943,6 @@ class TestHfEndpointUnreachable:
             raise urllib.error.URLError(ssl.SSLCertVerificationError("self-signed"))
 
         monkeypatch.setattr("urllib.request.urlopen", _tls)
-        # TLS reached the server: treat as reachable so the load surfaces the cert error.
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_connection_refused_is_reachable(self, monkeypatch):
@@ -3299,14 +3133,12 @@ class TestLatestTierForces16Bit:
         )
 
     def test_validate_route_mirrors_16bit_flip(self):
-        # Without the same flip, /validate sizes 4-bit and /load then 409s.
         src = self._read("routes/inference.py")
         body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
         assert "latest_tier_active_for" in body, (
             "validate_model must apply the latest-sidecar 16-bit flip before "
             "_guard_chat_load_against_training so /validate and /load agree."
         )
-        # First-time loads have no pin yet, so an installable upgrade must also size 16-bit.
         assert body.index("check_upgrade_for_model") < body.index(
             "_guard_chat_load_against_training"
         ), "the upgrade check must run before the training guard"
@@ -3315,10 +3147,8 @@ class TestLatestTierForces16Bit:
         ), "an installable upgrade must force 16-bit sizing for the guard"
 
     def test_validate_offered_upgrade_preserves_custom_code_4bit(self):
-        # A merely-offered (not installed) upgrade must NOT force 16-bit sizing when the
-        # model has a custom-code (auto_map) fallback: /load loads it 4-bit without the
-        # install, and the install route refuses during active training, so 16-bit sizing
-        # here would 409 the only viable 4-bit path.
+        # A merely-offered upgrade must NOT force 16-bit sizing when the model has a custom-code fallback:
+        # /load loads it 4-bit without the install, and the install route refuses during active training.
         src = self._read("routes/inference.py")
         body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
         flip = body.split("Mirror /load's latest-sidecar 16-bit flip", 1)[1].split(
@@ -3328,16 +3158,13 @@ class TestLatestTierForces16Bit:
             "the offered-upgrade 16-bit flip must be gated on the absence of a custom-code "
             "fallback so /validate does not 409 a 4-bit load /load would allow"
         )
-        # requires_trust_remote_code must be resolved before the flip consumes it.
-        # Anchored on the resolving call, not its expression form: the any() now runs
-        # inside _offline_guarded on a worker thread.
+        # requires_trust_remote_code must resolve before the flip consumes it; anchored on the call itself.
         assert body.index("_requires_trust_remote_code_for_model(_t") < body.index(
             "not requires_trust_remote_code"
         )
 
     def test_install_route_guards_active_latest_workers(self):
-        # Stage-and-swap replaces .venv_t5_latest in place, so a live worker on the
-        # old sidecar would lazy-import files from the new version.
+        # Stage-and-swap replaces .venv_t5_latest in place, so a live worker would lazy-import the new files.
         src = self._read("routes/inference.py")
         body = src.split("async def install_latest_transformers_route", 1)[1].split(
             "\nasync def ", 1
@@ -3351,40 +3178,32 @@ class TestLatestTierForces16Bit:
             "runs, and hold the lifecycle gate while unloading the chat model and "
             "swapping the sidecar."
         )
-        # The unload (via before_swap so failed installs keep the model), the export-worker
-        # teardown, and the install must all sit INSIDE the gate so no /load interleaves.
+        # The unload, the export-worker teardown and the install must all sit INSIDE the gate so no /load interleaves.
         assert "unload_model(active)" in body
         assert "cleanup_memory()" in body
-        # Export teardown precedes the chat unload so its failure aborts with the model still loaded.
         assert body.index("cleanup_memory()") < body.index("unload_model(active)")
         assert "install_latest_transformers(" in body and "_unload_before_swap" in body
-        # The gate must be owned by the shielded task, not the request coroutine: a cancelled
-        # POST unwinding an async-with would release the only guard /load honors mid-install.
+        # The gate must be owned by the shielded task: a cancelled POST would release /load's only guard.
         gated_task = body.split("async def _gated_install", 1)[1]
         assert "inference_lifecycle_gate():" in gated_task
         assert "asyncio.to_thread(_run_install)" in gated_task
-        # The reservation must be taken BEFORE the (awaitable) gate wait, or a
-        # training/export start could slip in while this request queues on the gate.
+        # The reservation must be taken BEFORE the gate wait, or a training start slips in while this queues.
         assert body.index("try_begin_sidecar_swap()") < body.index(
             "inference_lifecycle_gate():"
         ), "the swap reservation must be raised before waiting on the lifecycle gate"
-        # A failed teardown must abort the swap (raise), not fall through to it.
         assert body.count("raise RuntimeError") >= 3, (
             "export, chat-unload, and idle-worker teardown failures must raise so "
             "the staged install never swaps under a live worker"
         )
-        # The installer thread owns (and releases) the reservation, shielded from
-        # request cancellation, so a cancelled POST cannot unlock a live swap.
+        # The installer thread owns and releases the reservation, shielded, so a cancelled POST cannot unlock it.
         assert "asyncio.shield" in body and "end_sidecar_swap()" in body
-        # In-flight generation streams predate the gate; the route refuses rather than kill them
-        # via the before_swap unload. The count is rechecked UNDER the gate, since a wait on a
-        # long /load outlasts the pre-gate fast path and streams take this same gate.
+        # In-flight generation streams predate the gate, so the route refuses rather than kill them, and
+        # the count is rechecked UNDER the gate since a wait on a long /load outlasts the fast path.
         assert "other_inference_request_count" in body
         gated_task = body.split("async def _gated_install", 1)[1]
         assert "other_inference_request_count" in gated_task
 
     def test_start_routes_refuse_during_install(self):
-        # A worker spawned mid-swap could activate a half-replaced sidecar.
         training = self._read("routes/training.py")
         start = training.split("async def start_training", 1)[1].split("\nasync def ", 1)[0]
         assert (
@@ -3397,8 +3216,7 @@ class TestLatestTierForces16Bit:
         ), "mutating export routes must refuse while a transformers install is in progress"
 
     def test_spawn_sites_recheck_reservation(self):
-        # The route-level guards are one-shot; validation between them and the
-        # actual spawn can outlast an install's start, so the spawn itself rechecks.
+        # The route-level guards are one-shot and validation can outlast an install's start, so the spawn rechecks.
         training = self._read("core/training/training.py")
         assert (
             training.count("sidecar_swap_in_progress()") >= 2
@@ -3408,23 +3226,18 @@ class TestLatestTierForces16Bit:
         assert (
             "sidecar_swap_kind()" in spawn
         ), "the export subprocess spawn must recheck the sidecar swap reservation"
-        # Training marks the spawn active BEFORE its recheck, so either side sees the other:
-        # is_training_active covers the window between proc.start() and the _proc assignment.
+        # Training marks the spawn active BEFORE its recheck, so is_training_active covers the window before _proc.
         assert training.index("self._spawn_in_progress = True") < training.index(
             "if sidecar_swap_in_progress():"
         )
         active = training.split("def is_training_active", 1)[1].split("\n    def ", 1)[0]
         assert "_spawn_in_progress" in active
-        # Export load-checkpoint refuses BEFORE tearing down the old worker, so a
-        # lost race against an install keeps the loaded checkpoint (no bare 500).
+        # Export load-checkpoint refuses BEFORE tearing down the old worker, so a lost race keeps the checkpoint.
         loadck = export.split("def load_checkpoint", 1)[1].split("\n    def ", 1)[0]
         assert loadck.index("sidecar_swap_in_progress()") < loadck.index("_shutdown_subprocess()")
-        # The training handshake precedes the VRAM-freeing before_spawn hook, so
-        # losing the race never tears down chat/export for a run that won't spawn.
+        # The training handshake precedes the VRAM-freeing before_spawn hook, so losing the race tears nothing down.
         assert training.index("self._spawn_in_progress = True") < training.index("before_spawn()")
-        # The spawn-time export check is op-aware for installs (the install side
-        # aborts on is_export_active) but always refuses for repairs, which have
-        # no such abort and can be rebuilding the sidecar right now.
+        # The spawn-time export check is op-aware: installs abort on is_export_active, repairs always refuse.
         assert (
             '_swap_kind == "repair" or (_swap_kind is not None and not self._export_active)'
             in spawn
@@ -3477,8 +3290,7 @@ class TestSidecarSwapReservation:
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
         lock = tv._swap_lock_path()
         lock.parent.mkdir(parents = True, exist_ok = True)
-        # A live owner (this process): visible and never reclaimed, even once aged past
-        # the cutoff -- a slow but live pip install must keep its lock.
+        # A live owner is visible and never reclaimed past the cutoff: a slow but live pip install keeps its lock.
         lock.write_text('{"pid": %d}' % os.getpid())
         assert tv.sidecar_swap_in_progress() is True
         assert tv.try_begin_sidecar_swap() is False
@@ -3495,7 +3307,6 @@ class TestSidecarSwapReservation:
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
         lock = tv._swap_lock_path()
         lock.parent.mkdir(parents = True, exist_ok = True)
-        # 999999 is not a live PID: a fresh dead-owner lock is immediately stale.
         lock.write_text('{"pid": 999999, "kind": "install"}')
         assert tv._pid_alive(999999) is False
         assert tv.sidecar_swap_in_progress() is False
@@ -3517,7 +3328,7 @@ class TestSidecarSwapReservation:
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
         lock = tv._swap_lock_path()
         lock.parent.mkdir(parents = True, exist_ok = True)
-        lock.write_text("")  # created but metadata not yet written
+        lock.write_text("")
         assert tv.sidecar_swap_in_progress() is True
         old_ts = time.time() - (tv._SWAP_LOCK_STALE_SECS + 60)
         os.utime(lock, (old_ts, old_ts))
@@ -3547,7 +3358,6 @@ class TestRecoverStrandedSidecar:
 
         live = str(tmp_path / "venv_t5_latest")
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", live)
-        # Stranded state: live gone, previous sidecar (with its marker) sits at .old.
         retired = Path(live + ".old")
         retired.mkdir(parents = True)
         (retired / tv._LATEST_PIN_MARKER).write_text(
@@ -3566,13 +3376,11 @@ class TestRecoverStrandedSidecar:
         tv, live, retired = self._setup(monkeypatch, tmp_path)
         assert tv.try_begin_sidecar_swap() is True
         try:
-            # A swap holds the reservation and may be mid-rename; do not race it.
             assert tv._latest_pin_data() is None
             assert not live.exists()
             assert retired.is_dir()
         finally:
             tv.end_sidecar_swap()
-        # Once the swap is done, the next pin read recovers the stranded sidecar.
         assert tv._latest_pin_data() is not None
         assert live.is_dir()
 
@@ -3591,11 +3399,11 @@ class TestCachedLatestMappingRevalidated:
 
         def _fake_overlay(tier):
             seen["n"] += 1
-            return None  # broken/unavailable -> empty, uncached
+            return None
 
         monkeypatch.setattr(tv, "_overlay_transformers_dir", _fake_overlay)
         assert tv._config_model_types("latest") == frozenset()
-        assert seen["n"] == 1  # re-resolved, not served from the stale cache
+        assert seen["n"] == 1
         assert "latest" not in tv._config_mapping_cache
 
     def test_intact_sidecar_serves_cached_latest_mapping(self, monkeypatch):
@@ -3622,15 +3430,12 @@ class TestCachedLatestMappingRevalidated:
         assert tv._config_model_types("530") == frozenset({"gemma3"})
 
     def test_deleted_pin_drops_cached_latest_mapping(self, monkeypatch, tmp_path):
-        # A pin marker deleted after the mapping was cached makes _latest_pin_data None;
-        # the cache must be dropped (not trusted), so routing re-resolves to no latest tier
-        # rather than routing to a latest tier that then fails worker activation.
+        # A pin marker deleted after caching makes _latest_pin_data None, so drop the cache or worker activation fails.
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
         monkeypatch.setattr(tv, "_config_mapping_cache", {"latest": frozenset({"brandnew"})})
-        # No pin marker on disk -> _latest_pin_data() is None -> not intact.
         assert tv._latest_sidecar_intact() is False
         assert tv._config_model_types("latest") == frozenset()
         assert "latest" not in tv._config_mapping_cache
@@ -3647,18 +3452,10 @@ class TestOverlayRepairsIncompleteSidecar:
         live = tmp_path / "venv_t5_latest"
         (live / "transformers").mkdir(parents = True)
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
-        # Every other tier dir too, not just latest.
-        #
-        # _install_to_dir below is patched but the DESTINATIONS were not, and _probe_tier
-        # walks 530, 550 and 510 provisioning each one it finds missing. So this class
-        # wrote a fake transformers 5.99.0 sidecar, whose CONFIG_MAPPING_NAMES is
-        # {"brandnew": "C"}, into the developer's real ~/.unsloth/studio.
-        #
-        # It then poisons the NEXT run rather than this one, which is why it stayed
-        # hidden: tier resolution finds "brandnew" in 530, and the three tests here that
-        # assert an unknown model type routes to "latest" get "530" instead. Reproducible
-        # on plain main, in isolation, on any machine that has run this file before, and
-        # observed on the CI runner too.
+        # Every other tier dir too, not just latest: _install_to_dir is patched but the DESTINATIONS were
+        # not, and _probe_tier provisions 530, 550 and 510, so this class wrote a fake transformers
+        # 5.99.0 sidecar into the developer's real ~/.unsloth/studio. It poisons the NEXT run rather than
+        # this one, which is why it stayed hidden.
         for name in ("_VENV_T5_530_DIR", "_VENV_T5_550_DIR", "_VENV_T5_510_DIR"):
             monkeypatch.setattr(tv, name, str(live.parent / name.lower()))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
@@ -3705,8 +3502,7 @@ class TestOverlayRepairsIncompleteSidecar:
             return False
 
         monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", _fake_repair)
-        # A failed repair must not route through the broken sidecar, neither on
-        # the failing attempt nor while the backoff suppresses the next attempt.
+        # A failed repair must not route through the broken sidecar, on the attempt or under the backoff.
         assert tv._overlay_transformers_dir("latest") is None
         assert tv._overlay_transformers_dir("latest") is None
         assert called["n"] == 1
@@ -3765,17 +3561,13 @@ class TestKillSwitchBeatsMappingCache:
 
         key = tv._probe_cache_key("some/model")
         monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
-        # A cached 'latest' only ever arises while the tier is pinned, since an unpinned
-        # one is not in the probe order at all, and an unpinned cache entry is now
-        # re-probed in its own right. Hold the pin so this stays a test of the switch.
+        # A cached 'latest' only arises while the tier is pinned, so hold the pin and this stays a test of the switch.
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
         monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
-        # With the switch set, the cached latest entry must not short-circuit;
-        # the probe re-resolves against the non-latest order (stub it to 530).
+        # With the switch set, the cached latest entry must not short-circuit.
         monkeypatch.setattr(tv, "_probe_tier_venvs", lambda: {})
         monkeypatch.setattr(tv, "_probe_tier_order", lambda: ())
         assert tv._probe_tier("some/model", None, "test") != "latest"
-        # Cached non-latest entries and the unset switch still short-circuit.
         monkeypatch.delenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS")
         assert tv._probe_tier("some/model", None, "test") == "latest"
 
@@ -3783,8 +3575,7 @@ class TestKillSwitchBeatsMappingCache:
         import utils.transformers_version as tv
 
         monkeypatch.setitem(tv._config_mapping_cache, "latest", frozenset({"brandnew"}))
-        # The cache is trusted only when the sidecar is intact; hold it intact so this
-        # test isolates the kill switch, not the sidecar-revalidation path.
+        # The cache is trusted only when the sidecar is intact, so hold it intact and this isolates the kill switch.
         monkeypatch.setattr(tv, "_latest_sidecar_intact", lambda: True)
         monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
         assert tv._config_model_types("latest") == frozenset()
@@ -3811,7 +3602,6 @@ class TestRaiseTierForNested:
     def test_never_lowers_a_fast_path_tier(self, monkeypatch):
         import utils.transformers_version as tv
 
-        # Mapping alone would say 530, but the fast path (e.g. a name override) said 550.
         self._patch_types(monkeypatch, {"530": {"qwen3_5"}, "550": {"qwen3_5"}})
         assert tv._raise_tier_for_nested({"model_type": "qwen3_5"}, "550") == "550"
 
@@ -3822,7 +3612,6 @@ class TestRaiseTierForNested:
     def test_unknown_nested_type_never_vetoes(self, monkeypatch):
         import utils.transformers_version as tv
 
-        # A nested type unknown everywhere (not even latest) keeps the fast path.
         self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4"}})
         cfg = {"model_type": "gemma4", "text_config": {"model_type": "unreleased"}}
         assert tv._raise_tier_for_nested(cfg, "550") == "550"
@@ -3910,29 +3699,17 @@ class TestDamagedLatestSidecarRepairHandoff:
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
-        # The other three tiers go to tmp_path as well, and this is not tidiness.
-        #
-        # _fake_install below writes a sidecar at whatever target it is handed, and
-        # _probe_tier walks _PROBE_TIER_ORDER provisioning each tier it tries. With only
-        # the latest dir redirected, the 530, 550 and 510 targets were the REAL ones under
-        # ~/.unsloth/studio, so running this file wrote a fake transformers 5.99.0 whose
-        # CONFIG_MAPPING_NAMES is {"brandnew": "C"} into the developer's own Unsloth.
-        #
-        # It then failed the next run of this same class: _lowest_tier_for("brandnew")
-        # found it in tier 530 and returned "530" where the test asserts "latest". Three
-        # tests, on a clean checkout of main, only on a machine that had run the suite
-        # before. That is also what CI reproduced, since a runner accumulates the same
-        # state within one session.
-        # Derived from the module rather than listed, because listing them is what went
-        # wrong: the list would have to be updated by whoever adds a tier, and the
-        # consequence of forgetting is invisible until a later run of an unrelated test.
-        # This also caught _VENV_T5_DIR, a fifth constant aliasing the 550 sidecar that a
-        # hand-written list of the three obvious ones missed.
+        # The other three tiers go to tmp_path as well, and this is not tidiness: _fake_install writes a
+        # sidecar at whatever target it is handed and _probe_tier provisions each tier it tries, so with
+        # only the latest dir redirected this file wrote a fake transformers 5.99.0 into the developer's
+        # own Unsloth and failed the NEXT run of this class. Derived from the module rather than listed,
+        # because a hand-written list would have to be updated by whoever adds a tier, and it also caught
+        # _VENV_T5_DIR, a fifth constant aliasing the 550 sidecar.
         for _tier_dir in [
             name for name in dir(tv) if name.startswith("_VENV_T5_") and name.endswith("_DIR")
         ]:
             if _tier_dir == "_VENV_T5_LATEST_DIR":
-                continue  # already pointed at `live`, which is the sidecar under test
+                continue
             monkeypatch.setattr(tv, _tier_dir, str(live.parent / _tier_dir.lower().strip("_")))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
         monkeypatch.setattr(tv, "_env_offline", lambda: False)
@@ -4029,32 +3806,27 @@ class TestDamagedLatestSidecarRepairHandoff:
         live = self._sidecar(tmp_path / "venv_t5_latest")
         tv, installs = self._patch(monkeypatch, live)
 
-        # Warm the mapping cache from the healthy sidecar, as any earlier request does.
         assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
         assert "latest" in tv._config_mapping_cache
         installs.clear()
 
         self._damage(live)
 
-        # Parent keeps routing to 'latest' off the cached mapping and never scans.
         for _ in range(3):
             assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
         assert installs == [], "the cached hot path must not pay for a scan"
         assert self._is_damaged(tv, live)
 
-        # The worker child sees the damage, refuses, and flags it.
         monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
         assert tv._ensure_venv_t5_latest_exists() is False
         assert installs == []
 
-        # The next parent routing call repairs. Before the fix it never did, and the
-        # worker below failed forever.
+        # The next parent routing call repairs; before the fix it never did and the worker below failed forever.
         monkeypatch.setattr("multiprocessing.parent_process", lambda: None)
         assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
         assert installs == ["transformers==5.99.0"], "the parent never repaired"
         assert not self._is_damaged(tv, live)
 
-        # The worker retry now succeeds, which is the property that was deadlocked.
         monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
         assert tv._ensure_venv_t5_latest_exists() is True
         assert not tv._latest_repair_requested(), "a satisfied request must not persist"
@@ -4096,7 +3868,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
         self._damage(live)
 
-        assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
+        assert tv._overlay_transformers_dir("latest") is None
 
         monkeypatch.setattr(
             tv,
@@ -4116,7 +3888,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
         self._damage(live)
 
-        assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
+        assert tv._overlay_transformers_dir("latest") is None
         assert tv._venv_dir_is_valid(
             str(live), ("transformers==5.99.0",)
         ), "precondition: only the scan can see this damage, not the cheap predicate"
@@ -4196,7 +3968,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
         self._damage(live)
 
-        assert tv._overlay_transformers_dir("latest") is None  # arms marker + backoff
+        assert tv._overlay_transformers_dir("latest") is None
         assert tv._latest_repair_requested(), "precondition: the marker is armed"
 
         monkeypatch.setenv("UNSLOTH_SKIP_SIDECAR_FILE_CHECK", "1")
@@ -4244,8 +4016,7 @@ class TestDamagedLatestSidecarRepairHandoff:
 
         live = self._sidecar(tmp_path / "venv_t5_latest")
         tv, _ = self._patch(monkeypatch, live)
-        # A repair that cannot complete, so what is observed is the decision itself and
-        # not a rebuild papering over it.
+        # A repair that cannot complete, so what is observed is the decision itself and not a rebuild papering over it.
         monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
         self._damage(live)
         tv._request_latest_repair()
@@ -4257,8 +4028,8 @@ class TestDamagedLatestSidecarRepairHandoff:
             return real_stat(self, *a, **k)
 
         monkeypatch.setattr(Path, "stat", _flaky)
-        assert tv._sidecar_damaged_files(str(live)) == []  # the scan sees nothing
-        assert tv._sidecar_scan(str(live)) == ([], True)  # but knows it is blind
+        assert tv._sidecar_damaged_files(str(live)) == []
+        assert tv._sidecar_scan(str(live)) == ([], True)
 
         assert tv._ensure_venv_t5_latest_exists() is False
         assert tv._latest_repair_requested(), "an unreadable scan cannot disprove damage"

@@ -37,7 +37,6 @@ def _fam(
     )
 
 
-# ── resolution ───────────────────────────────────────────────────────────────
 def test_repo_filename_convention():
     assert (
         te_prequant_repo_filename("unsloth/LTX-2-FP8", "text_encoder", "fp8")
@@ -68,27 +67,24 @@ def test_family_repo_by_scheme_and_component():
     assert (
         family_te_prequant_repo(_fam(te_prequant_repos = (("bad",),)), "fp8", "text_encoder") is None
     )
-    # Families without the field resolve to None (both dataclasses default it, but a fake or older family object must not break).
+    # Families without the field resolve to None (both dataclasses default it, but a fake or older
+    # family object must not break).
     assert family_te_prequant_repo(types.SimpleNamespace(name = "x"), "fp8", "text_encoder") is None
 
 
 def test_resolve_priority_and_scheme_gate():
     fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted-fp8"),))
-    # Path override wins.
     src = resolve_te_prequant_source(fam, "text_encoder", "fp8", path_override = "/tmp/te.pt")
     assert src == TePrequantSource(kind = "path", location = "/tmp/te.pt", filename = None)
-    # Hosted repo second.
     src = resolve_te_prequant_source(fam, "text_encoder", "fp8")
     assert src.kind == "repo" and src.location == "org/hosted-fp8"
     assert src.filename == "hosted-text_encoder-FP8.pt"
-    # Nothing configured -> None.
     assert resolve_te_prequant_source(_fam(), "text_encoder", "fp8") is None
     # v1 hosts the layerwise fp8 storage scheme only.
     assert resolve_te_prequant_source(fam, "text_encoder", "int8") is None
     assert resolve_te_prequant_source(fam, "text_encoder", "fp8_dynamic") is None
 
 
-# ── checkpoint validation ────────────────────────────────────────────────────
 def _good_ckpt(
     scheme = "fp8",
     component = "text_encoder",
@@ -131,7 +127,6 @@ def test_validate_accepts_good_checkpoint_and_base_case_folding():
     assert tpq._validate_checkpoint(_good_ckpt(), "fp8", "text_encoder", "lightricks/ltx-2", None)
 
 
-# ── loader fallback behaviour ────────────────────────────────────────────────
 def test_load_refuses_unallowlisted_local_path(monkeypatch, tmp_path):
     from core.inference.diffusion_prequant import ALLOW_LOCAL_PREQUANT_PATH_ENV
 
@@ -196,7 +191,6 @@ def test_hosted_checkpoint_and_config_honor_cache_only_and_the_active_root(monke
     assert seen["config"]["cache_dir"] == str(tmp_path)
 
 
-# ── pipeline-assembly injection gating ───────────────────────────────────────
 def _target():
     return types.SimpleNamespace(device = "cuda", dtype = None)
 
@@ -345,13 +339,10 @@ def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
     assert out == markers
 
 
-# ── base equivalence ─────────────────────────────────────────────────────────
 def test_te_base_equivalent_groups():
     from core.inference.diffusion_te_prequant import te_base_equivalent
 
-    # Same repo (case-folded) always matches.
     assert te_base_equivalent("Qwen/Qwen-Image", "qwen/qwen-image")
-    # Verified byte-identical groups match across repos, both directions.
     assert te_base_equivalent(
         "Qwen/Qwen-Image", "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
     )
@@ -391,14 +382,14 @@ def test_validate_accepts_equivalent_base():
     )
 
 
-# ── family field wiring ──────────────────────────────────────────────────────
 def test_family_dataclasses_declare_te_prequant_field():
     from core.inference.diffusion_families import DiffusionFamily, detect_family
     from core.inference.video_families import VideoFamily
 
     assert DiffusionFamily.__dataclass_fields__["te_prequant_repos"].default_factory is tuple
     assert VideoFamily.__dataclass_fields__["te_prequant_repos"].default_factory is tuple
-    # Families without a hosted TE checkpoint keep the empty default (sdxl's CLIPs stay dense; flux.1 hosts its T5, asserted below).
+    # Families without a hosted TE checkpoint keep the empty default (sdxl's CLIPs stay dense;
+    # flux.1 hosts its T5, asserted below).
     fam = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
     assert fam.te_prequant_repos == ()
 
@@ -430,7 +421,8 @@ def test_hosted_te_prequant_entries():
         te_prequant_repo_filename("unsloth/LTX-2-FP8", "text_encoder", "fp8")
         == "LTX-2-text_encoder-FP8.pt"
     )
-    # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic pass only covers text_encoder.._3.
+    # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic
+    # pass only covers text_encoder.._3.
     assert detect_family("HiDream-ai/HiDream-I1-Full").te_prequant_repos == (
         ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
     )
@@ -438,7 +430,6 @@ def test_hosted_te_prequant_entries():
         te_prequant_repo_filename("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8")
         == "HiDream-I1-Full-text_encoder_4-FP8.pt"
     )
-    # Round 2: T5-XXL for every flux.1 base (byte-identical, one artifact), Gemma2-2B, Qwen3-4B, Qwen3-VL-4B, and hunyuanimage reusing the Qwen-Image artifact.
     assert detect_family("black-forest-labs/FLUX.1-schnell").te_prequant_repos == (
         ("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),
     )
@@ -458,7 +449,8 @@ def test_hosted_te_prequant_entries():
     assert detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers").te_prequant_repos == (
         ("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),
     )
-    # flux.2-klein-4B hosts NO TE entry: its Qwen3-4B retrained layer 35's MLP, so the z-image artifact must not serve it (maxdiff 0.86).
+    # flux.2-klein-4B hosts NO TE entry: its Qwen3-4B retrained layer 35's MLP, so the z-image
+    # artifact must not serve it (maxdiff 0.86).
     assert detect_family("black-forest-labs/FLUX.2-klein-4B").te_prequant_repos == ()
 
 
@@ -541,7 +533,6 @@ def test_hidream_te4_prefers_precast_checkpoint(monkeypatch):
     assert calls["config_subfolder"] == ""
     assert calls["config_overrides"] == {"output_hidden_states": True, "output_attentions": True}
     assert calls["local_files_only"] is True
-    # The dense Llama download never ran.
     assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") not in recorder
 
 
@@ -643,9 +634,11 @@ def test_cast_fp8_is_idempotent_on_precast_encoder():
     enc = torch.nn.Sequential(torch.nn.Linear(64, 64), torch.nn.LayerNorm(64))
     _cast_fp8(enc, target)
     assert enc[0].weight.dtype == torch.float8_e4m3fn
-    # Module.dtype must report the COMPUTE dtype: pipelines derive tensor dtypes from it (Flux2 feeds it to randn_tensor, which has no fp8 kernel).
+    # Module.dtype must report the COMPUTE dtype: pipelines derive tensor dtypes from it (Flux2
+    # feeds it to randn_tensor, which has no fp8 kernel).
     assert enc.dtype == torch.bfloat16
-    # EXACT class identity: a dynamic-subclass swap broke transformers' kwargs-based output recording (Qwen3VLModel returned hidden_states=None).
+    # EXACT class identity: a dynamic-subclass swap broke transformers' kwargs-based output
+    # recording (Qwen3VLModel returned hidden_states=None).
     assert type(enc) is torch.nn.Sequential
     # An uncast sibling of the same (now property-patched) class keeps original behaviour.
     sibling = torch.nn.Sequential(torch.nn.Linear(8, 8))
@@ -695,10 +688,9 @@ def test_builder_metadata_survives_weights_only_load(tmp_path):
             torch.load(bad_path, weights_only = True, map_location = "cpu")
 
 
-# ── memory budgeting ─────────────────────────────────────────────────────────
-# Hosted checkpoint bytes over bf16-equivalent dense bytes, read from Hub file metadata on
-# 2026-08-07. The budget constant is a CEILING over these, so it can never under-state a
-# pre-cast encoder; PR #8213 gates a hard load refusal on the number this feeds.
+# Hosted checkpoint bytes over bf16-equivalent dense bytes, read from Hub file metadata 2026-08-07.
+# The budget constant is a CEILING over these, so it can never under-state a pre-cast encoder; a
+# hard load refusal is gated on the number this feeds.
 _MEASURED_FP8_RATIOS = {
     "flux.2-dev/text_encoder": (24_683_130_873, 48_022_800_560),
     "hidream-i1-full/text_encoder_4": (8_555_963_320, 16_060_556_376),
@@ -728,10 +720,9 @@ def test_budget_scale_applies_only_when_a_pre_cast_checkpoint_resolves(monkeypat
     hosted = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
     assert _budget_scale(hosted) == tpq.TE_PREQUANT_BUDGET_SCALE
     assert _budget_scale(hosted, base = "someone/custom-ltx-2") == 1.0
-    # No hosted checkpoint: the encoder is downloaded dense and cast in place AFTER assembly, so
-    # its peak is bf16 and the budget must stay bf16.
+    # No hosted checkpoint: the encoder is downloaded dense and cast in place AFTER assembly, so its
+    # peak is bf16 and the budget must stay bf16.
     assert _budget_scale(_fam()) == 1.0
-    # Not requested, or a scheme with no hosted artifact.
     for mode in (None, "", "off", "int8", "fp8_dynamic", "nvfp4"):
         assert _budget_scale(hosted, mode) == 1.0
 

@@ -21,8 +21,7 @@ import sys
 import types
 from pathlib import Path
 
-# Keep this test runnable without optional logging deps (mirrors
-# test_cached_gguf_routes.py).
+# Keep this runnable without optional logging deps (mirrors test_cached_gguf_routes.py).
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -55,7 +54,7 @@ def test_resolves_quant_from_parent_directory_layout(tmp_path):
 
 
 def test_skips_mtp_drafter_for_main_weights(tmp_path):
-    # Main Q8_0 weights next to a same-quant MTP drafter that sorts first by name.
+    # A same-quant MTP drafter that sorts first by name must not win.
     root = tmp_path / "repo"
     main = _write(root / "model-Q8_0.gguf", 100)
     _write(root / "MTP" / "model-Q8_0-MTP.gguf", 50)
@@ -82,9 +81,7 @@ def test_skips_dspark_drafter_for_main_weights(tmp_path):
 def test_prefers_the_complete_snapshot(tmp_path, monkeypatch):
     cache = tmp_path / "hub"
     snaps = cache / "models--org--repo" / "snapshots"
-    # Partial older snapshot: one small shard.
     _write(snaps / "aaaa" / "model-Q4_K_M.gguf", 10)
-    # Complete newer snapshot: two larger shards.
     complete_first = _write(snaps / "bbbb" / "model-00001-of-00002-Q4_K_M.gguf", 30)
     _write(snaps / "bbbb" / "model-00002-of-00002-Q4_K_M.gguf", 40)
 
@@ -95,9 +92,8 @@ def test_prefers_the_complete_snapshot(tmp_path, monkeypatch):
 
     path, total = models_route._resolve_quant_gguf("org/repo", "Q4_K_M", is_local = False)
 
-    # The most complete snapshot (70 bytes) wins over the partial one (10).
+    # The most complete snapshot wins over the partial one.
     assert total == 70
-    # Shard 1 (metadata) of the complete snapshot is returned.
     assert path == str(complete_first)
 
 

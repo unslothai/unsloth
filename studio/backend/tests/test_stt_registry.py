@@ -63,7 +63,6 @@ def test_unload_attempts_every_engine_even_after_one_raises(monkeypatch):
 
     assert list(made) == list(stt_registry.STT_ENGINES)
     assert failed == ["transformers"]
-    # The engines after the failure still released.
     assert made["gguf"].unloaded and made["mtmd"].unloaded
 
 
@@ -90,8 +89,7 @@ def test_load_releases_the_other_engines_after_the_target_loads(monkeypatch):
 
     stt_registry.load("qwen3-asr-0.6b", "mtmd")
 
-    # Two engines resident at once doubles VRAM for the whole keep-alive window, but the
-    # release follows the load: a 409 must not cost the user the engine they were using.
+    # Two engines resident doubles VRAM for the keep-alive window, but a 409 must not cost the engine in use.
     assert order == ["load:mtmd", "unload:transformers", "unload:gguf"]
 
 
@@ -144,7 +142,6 @@ def test_an_unimportable_engine_never_takes_the_status_down(monkeypatch):
         return _Sidecar(name, model = "small" if name == "mtmd" else None)
 
     monkeypatch.setattr(stt_registry, "sidecar_for", make)
-    # gguf raising must not hide the model mtmd is holding.
     assert stt_registry.resident()["model"] == "small"
 
 
@@ -175,8 +172,7 @@ def test_a_cold_process_loads_without_building_an_orchestrator(monkeypatch):
 
     monkeypatch.setattr(orch, "peek_inference_backend", lambda: None)
     monkeypatch.setattr(orch, "get_inference_backend", _never)
-    # Same functions the orchestrator's methods forward to, so neither path
-    # can drift from the other.
+    # Same functions the orchestrator's methods forward to, so neither path can drift from the other.
     assert ri._stt_lifecycle() == (stt_registry.load, stt_registry.unload)
 
 
@@ -189,7 +185,6 @@ def test_load_never_blocks_on_an_engine_that_is_serving_a_request(monkeypatch):
 
     assert sidecars["transformers"].unload_waits == [False]
     assert sidecars["gguf"].unload_waits == [False]
-    # A caller releasing every engine on purpose still waits for each one.
     stt_registry.unload()
     assert sidecars["mtmd"].unload_waits == [True]
 
@@ -276,7 +271,6 @@ def test_a_wait_false_unload_rechecks_active_requests_under_the_lock():
     released = []
     sidecar._release_locked = lambda: released.append(True)
 
-    # The racing transcription claims the slot after the unlocked probe has already passed.
     real_lock = sidecar._lock
 
     class _RacingLock:
@@ -388,7 +382,6 @@ def test_a_blocking_unload_drains_a_request_that_started_during_the_acquire():
         ):
             acquires.append(True)
             if len(acquires) == 1:
-                # Claimed after the unlocked drain has already passed.
                 sidecar._active_requests = 1
                 threading.Timer(0.15, lambda: setattr(sidecar, "_active_requests", 0)).start()
             return real_lock.acquire(blocking, *args, **kwargs)
@@ -398,7 +391,6 @@ def test_a_blocking_unload_drains_a_request_that_started_during_the_acquire():
 
     sidecar._lock = _RacingLock()
     MtmdSttSidecar.unload(sidecar, wait = True)
-    # Released, but only once the transcription that raced in had finished.
     assert sidecar.released == [True]
     assert len(acquires) >= 2
     assert sidecar._active_requests == 0
@@ -493,11 +485,9 @@ def test_a_scoped_unload_leaves_another_surfaces_newer_model_alone():
     released = []
     sidecar._release_engine_locked = lambda: released.append(True)
 
-    # The caller owned "small"; "base" belongs to whoever loaded it after.
     WhisperSttSidecar.unload(sidecar, expected_model = "small")
     assert released == []
 
-    # Its own model still goes, and so does an unscoped release.
     WhisperSttSidecar.unload(sidecar, expected_model = "base")
     assert released == [True]
     WhisperSttSidecar.unload(sidecar)

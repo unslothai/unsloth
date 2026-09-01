@@ -148,9 +148,8 @@ def test_the_endpoints_stay_out_of_the_access_log():
     suppression each poll appends a line the next poll reads back."""
     from loggers.handlers import _is_quiet_success
 
-    # Behaviour, not membership: these go through _SELF_READ_PATHS rather than
-    # _QUIET_SUCCESS_PATHS because --verbose must not lift them.
-    # test_debug_log_self_feedback.py proves it over the real middleware.
+    # Behaviour, not membership: these go through _SELF_READ_PATHS rather than _QUIET_SUCCESS_PATHS
+    # because --verbose must not lift them.
     assert _is_quiet_success("GET", "/api/settings/debug/logs", 200, False) is True
     assert _is_quiet_success("GET", "/api/settings/debug/logs/sources", 200, False) is True
 

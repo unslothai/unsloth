@@ -137,7 +137,6 @@ def test_activate_fails_open_without_truststore(monkeypatch):
     monkeypatch.setitem(sys.modules, "truststore", None)
 
     assert native_tls.activate_native_tls() is False
-    # A later call with truststore available recovers.
     calls = _fake_truststore(monkeypatch)
     assert native_tls.activate_native_tls() is True
     assert calls == ["inject"]

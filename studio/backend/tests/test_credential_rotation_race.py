@@ -88,8 +88,8 @@ def test_tokens_from_the_current_credential_still_work(admin):
 
 
 def test_refresh_cannot_outlive_a_rotation_it_raced(admin):
-    # /refresh consumes, then mints. A rotation landing in between must not let
-    # the replacement pair be signed with the credential that just replaced it.
+    # /refresh consumes, then mints: a rotation landing in between must not let the replacement pair
+    # be signed with the credential that just replaced it.
     secret = _verified_secret(admin)
     token = create_refresh_token(subject = admin, secret = secret)
     consumed = storage.consume_refresh_token(token)
@@ -106,8 +106,8 @@ def test_refresh_cannot_outlive_a_rotation_it_raced(admin):
 
 
 def test_desktop_login_cannot_outlive_a_rotation_it_raced(admin):
-    # The reset deletes the desktop secret, so a desktop-login that validated it
-    # just beforehand must not mint a session that survives.
+    # The reset deletes the desktop secret, so a desktop-login that validated it just beforehand
+    # must not mint a session that survives.
     raw = storage.create_desktop_secret()
     verified = storage.validate_desktop_secret_with_credential(raw)
     assert verified is not None
@@ -123,8 +123,7 @@ def test_desktop_login_cannot_outlive_a_rotation_it_raced(admin):
 
 
 def test_change_password_cannot_overwrite_a_rotation_it_raced(admin):
-    # A change-password that verified the old hash must not clobber a reset that
-    # committed while it was in flight.
+    # A change-password that verified the old hash must not clobber a reset that committed while it was in flight.
     _salt, verified_hash, _secret, _must_change = storage.get_user_and_secret(admin)
 
     storage.update_password(admin, "reset-by-the-cli-789", revoke_refresh_tokens = True)
@@ -162,8 +161,8 @@ def test_api_key_creation_under_the_current_credential_still_works(admin):
 
 
 def test_change_password_tokens_are_bound_to_its_own_write(admin):
-    # The tokens returned to a successful change-password must be signed with the
-    # secret that write produced, not whatever a later reset put in the DB.
+    # The tokens returned to a successful change-password must be signed with the secret that write
+    # produced, not whatever a later reset put in the DB.
     _salt, verified_hash, _secret, _must = storage.get_user_and_secret(admin)
     new_secret = storage.update_password(
         admin,
@@ -196,8 +195,8 @@ def test_internal_api_key_minting_honours_the_request_generation(admin):
 
 
 def test_api_key_auth_reports_the_version_the_key_was_valid_under(admin):
-    # The generation must come from the same transaction as the key check, or a
-    # revoked key could hand a route the post-reset generation and mint again.
+    # The generation must come from the same transaction as the key check, or a revoked key could
+    # hand a route the post-reset generation and mint again.
     raw, _row = storage.create_api_key(username = admin, name = "agent")
     verified = storage.validate_api_key_with_credential(raw)
     assert verified is not None
@@ -218,8 +217,8 @@ def test_api_key_auth_reports_the_version_the_key_was_valid_under(admin):
 
 
 def test_consuming_a_legacy_token_reports_the_pre_reset_credential(admin):
-    # An unstamped row has no generation to compare, so consume must read the
-    # credential inside the delete transaction rather than after committing it.
+    # An unstamped row has no generation to compare, so consume must read the credential inside the
+    # delete transaction rather than after committing it.
     token = secrets.token_urlsafe(48)
     expires_at = (datetime.now(timezone.utc) + timedelta(days = 7)).isoformat()
     storage.save_refresh_token(token, admin, expires_at, secret_gen = None)

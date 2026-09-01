@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import pytest
 
-# The harness (module stubs, a fake GGUF, a fake GPU probe, the captured Popen)
-# already exists; importing it keeps one copy of that setup. By path, because the
-# tests directory is not a package and rootdir-relative imports do not resolve.
+# The harness (module stubs, a fake GGUF, a fake GPU probe, the captured Popen) already exists;
+# importing it keeps one copy of that setup.
 import importlib.util as _importlib_util
 from pathlib import Path as _Path
 
@@ -52,8 +51,7 @@ def _stable(cmd: list[str]) -> list[str]:
 
 
 def test_no_extra_args_leaves_the_command_unchanged(tmp_path):
-    # The acceptance bar: someone who never opens the box must see exactly what
-    # they saw before. None (inherit) and [] (explicitly none) both mean that here.
+    # The acceptance bar: someone who never opens the box must see exactly what they saw before.
     baseline = _stable(_cmd(tmp_path))
     assert _stable(_cmd(tmp_path, extra_args = None)) == baseline
     assert _stable(_cmd(tmp_path, extra_args = [])) == baseline
@@ -69,8 +67,8 @@ def test_an_extra_arg_reaches_the_child(tmp_path):
 
 
 def test_extra_args_come_after_unsloths_own(tmp_path):
-    # This is what makes the row's "passed after the settings above" true, and it
-    # is llama.cpp's last-wins parsing that turns position into precedence.
+    # This is what makes the row's "passed after the settings above" true, and it is llama.cpp's
+    # last-wins parsing that turns position into precedence.
     cmd = _cmd(tmp_path, extra_args = ["--top-k", "20"])
     managed = [i for i, token in enumerate(cmd) if token in {"--model", "-m", "--port"}]
 
@@ -79,9 +77,8 @@ def test_extra_args_come_after_unsloths_own(tmp_path):
 
 
 def test_a_shadowing_value_wins_by_arriving_last(tmp_path):
-    # --ctx-size is Context Length's flag. The backend deliberately allows the
-    # shadow and reconciles its own sizing, so the user's value has to be the one
-    # llama.cpp reads: last.
+    # --ctx-size is Context Length's flag. The backend deliberately allows the shadow and reconciles
+    # its own sizing, so the user's value has to be the one llama.cpp reads: last.
     cmd = _cmd(tmp_path, extra_args = ["--ctx-size", "4096"])
     positions = [i for i, token in enumerate(cmd) if token in {"--ctx-size", "-c"}]
 
@@ -90,9 +87,8 @@ def test_a_shadowing_value_wins_by_arriving_last(tmp_path):
 
 
 def test_a_multi_token_value_stays_one_argv_entry(tmp_path):
-    # The tokeniser's whole purpose: a template with spaces must not become two
-    # arguments, which is what would happen if the string were split by the shell
-    # or by the backend.
+    # The tokeniser's whole purpose: a template with spaces must not become two arguments, which is
+    # what would happen if the string were split by the shell or by the backend.
     template = "{% for m in messages %}{{ m.content }}{% endfor %}"
     cmd = _cmd(tmp_path, extra_args = ["--chat-template", template])
 
@@ -110,17 +106,15 @@ def test_a_multi_token_value_stays_one_argv_entry(tmp_path):
     ],
 )
 def test_a_denied_flag_never_reaches_the_child(tmp_path, denied):
-    # The load has to refuse rather than launch and hope: llama-server would
-    # happily honour any of these.
+    # The load has to refuse rather than launch and hope: llama-server would happily honour any of these.
     with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
         from core.inference.llama_server_args import validate_extra_args
         validate_extra_args(denied)
 
 
 def test_the_denied_env_twin_does_not_survive_the_launch(tmp_path, monkeypatch):
-    # Denying the token is only half of it: llama.cpp reads LLAMA_ARG_* before argv,
-    # so an inherited value would reach the child with nothing in the command to
-    # show for it.
+    # Denying the token is only half of it: llama.cpp reads LLAMA_ARG_* before argv, so an inherited
+    # value would reach the child with nothing in the command to show for it.
     monkeypatch.setenv("LLAMA_ARG_AGENT", "1")
     monkeypatch.setenv("LLAMA_ARG_TOOLS", "all")
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 20_000, 24_000)])

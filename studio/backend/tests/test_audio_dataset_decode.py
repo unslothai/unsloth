@@ -13,8 +13,8 @@ from utils.datasets import audio_decode
 
 np = pytest.importorskip("numpy")
 sf = pytest.importorskip("soundfile")
-# The shim needs both: it resamples through librosa, so without it every
-# ensure_audio_decoding() below correctly returns False and the tests fail.
+# The shim needs both: it resamples through librosa, so without it every ensure_audio_decoding()
+# below correctly returns False and the tests fail.
 pytest.importorskip("librosa")
 datasets = pytest.importorskip("datasets")
 
@@ -38,8 +38,8 @@ def broken_torchcodec(monkeypatch):
 
     monkeypatch.setattr(config, "TORCHCODEC_AVAILABLE", False)
     monkeypatch.setattr(Audio, "decode_example", Audio.decode_example)
-    # encode_example is patched too, so it needs restoring as well: leaving the
-    # shim installed made the next test capture it as _ORIGINAL_ENCODE.
+    # encode_example is patched too and needs restoring: leaving the shim installed made the next
+    # test capture it as _ORIGINAL_ENCODE.
     monkeypatch.setattr(Audio, "encode_example", Audio.encode_example)
     monkeypatch.setattr(audio_decode, "_installed", False)
     monkeypatch.setattr(audio_decode, "_ORIGINAL_ENCODE", None)
@@ -63,7 +63,6 @@ def test_the_soundfile_decoder_resamples_to_the_cast_rate(broken_torchcodec):
     decoded = ds[0]["audio"]
 
     assert decoded["sampling_rate"] == 24000
-    # 1600 samples at 16 kHz is 0.1 s, so 24 kHz gives 2400 back.
     assert len(decoded["array"]) == pytest.approx(2400, abs = 4)
     assert decoded["path"] == "a.wav"
 
@@ -101,8 +100,6 @@ def test_a_working_torchcodec_is_left_alone(monkeypatch):
     from datasets import config
     from datasets.features.audio import Audio
 
-    # Stub the decoder the guard probes for, so the assertion holds on hosts
-    # that have no torchcodec installed at all rather than a broken one.
     module = sys.modules.get("datasets.features._torchcodec")
     if module is None:
         module = types.ModuleType("datasets.features._torchcodec")
@@ -155,15 +152,14 @@ def test_the_dataset_format_check_installs_the_decoder():
 
 
 def test_the_audio_trainer_paths_install_the_decoder():
-    # Read the source rather than import it: this asserts a wiring contract, and
-    # importing the trainer drags in the whole torch/unsloth stack for it.
+    # Read the source rather than import it: importing the trainer drags in the whole torch/unsloth
+    # stack.
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
         encoding = "utf-8"
     )
     assert "ensure_audio_decoding()" in source
-    # Guarded so a text-only run never pays for the probe.
     assert "if self._audio_type or self.is_audio_vlm:" in source
 
 
@@ -234,8 +230,8 @@ def test_a_chained_url_is_keyed_on_the_repo_it_actually_fetches():
 def test_an_unknown_host_gets_no_token_when_the_mapping_is_ambiguous():
     tokens = {"org/first": "token-first", "org/second": "token-second"}
     assert audio_decode._token_for_url("https://example.com/clip.wav", tokens) is None
-    # The single-repo mapping every caller in this codebase passes still works, which is
-    # what the previous next(iter(...)) did for all of them.
+    # The single-repo mapping every caller in this codebase passes still works, which is what the
+    # previous next(iter(...)) did.
     assert audio_decode._token_for_url("https://example.com/clip.wav", {"org/x": "t"}) == "t"
     assert audio_decode._token_for_url("https://example.com/clip.wav", {}) is None
     assert audio_decode._token_for_url("https://example.com/clip.wav", None) is None

@@ -201,7 +201,6 @@ def test_titles_split_across_tokens_still_publish(research_home, monkeypatch):
             return None
 
         async def aiter_lines(self):
-            # Three chars per token, so a title's closing quote rarely lands on a boundary.
             for index in range(0, len(body), 3):
                 chunk = json.dumps({"choices": [{"delta": {"content": body[index : index + 3]}}]})
                 yield f"data: {chunk}"
@@ -282,8 +281,7 @@ def test_event_stream_is_reachable_over_post_as_well_as_get():
 
 
 def test_event_stream_verbs_do_not_share_one_operation_id():
-    # A single api_route for both verbs gave them one operationId, which FastAPI warns about and
-    # OpenAPI generators resolve by dropping one of the two operations.
+    # One api_route for both verbs gave them one operationId, which OpenAPI generators resolve by dropping an operation.
     import warnings
 
     from fastapi import FastAPI

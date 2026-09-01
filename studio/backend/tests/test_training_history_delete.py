@@ -740,7 +740,6 @@ def test_delete_artifacts_uses_thread_offload(monkeypatch, tmp_path):
 
     assert response.artifacts_deleted is True
     assert deleted_runs == ["run-1"]
-    # One offload, not two: nothing was staged here, so there is no purge phase.
     assert len(calls) == 1
 
 

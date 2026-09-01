@@ -109,10 +109,8 @@ def test_mistral_native_ids_pass_through_unchanged():
     assert output_id == "AbCdEfGhI"
 
 
-# Anthropic states its charset in the 400 it raises: "tool_use.id: String should match
-# pattern '^[a-zA-Z0-9_-]+$'". A colon is not in it, and the two stored shapes carrying
-# one (the duplicate-base fallback, and "<sandbox>:<thread>:<approval>" confirmation ids)
-# are both under 64 chars, so the length branch never touched them.
+# Anthropic states its charset in the 400 it raises: "tool_use.id: String should match pattern
+# '^[a-zA-Z0-9_-]+$'".
 ANTHROPIC_ID = re.compile(r"[a-zA-Z0-9_-]+")
 
 
@@ -136,16 +134,15 @@ def test_anthropic_colliding_bases_stay_legal_and_distinct():
 
 
 def test_anthropic_legal_ids_pass_through_unchanged():
-    # Only ids Anthropic would already have refused may change, so a chat that works
-    # today keeps byte-identical ids.
+    # Only ids Anthropic would already have refused may change, so a chat that works today keeps byte-identical ids.
     for legal in ("toolu_01A1B2C3D4E5F6G7H8I9J0K1", "call_abc123", "a-b_c"):
         call_id, output_id = _replayed_ids(legal, provider_type = "anthropic")
         assert call_id == output_id == legal
 
 
 def test_anthropic_sanitizing_alone_would_collide():
-    # "pre:fix" and "pre_fix" both sanitize to "pre_fix", a silent mispairing, so the
-    # sha256 tail over the unsanitized value is what keeps the map injective.
+    # "pre:fix" and "pre_fix" both sanitize to "pre_fix", a silent mispairing, so the sha256 tail
+    # over the unsanitized value is what keeps the map injective.
     out = _build_external_messages(
         _history("pre:fix") + _history("pre_fix"),
         supports_vision = True,
@@ -156,8 +153,7 @@ def test_anthropic_sanitizing_alone_would_collide():
 
 
 def test_replay_is_idempotent_for_every_provider():
-    # A normalized id replayed again on turn three must not drift, or the call and its
-    # result stop matching.
+    # A normalized id replayed again on turn three must not drift, or the call and its result stop matching.
     for provider in ("openai", "anthropic", "mistral", "gemini", "deepseek", None):
         once, _ = _replayed_ids(MINTED, provider_type = provider)
         twice, paired = _replayed_ids(once, provider_type = provider)

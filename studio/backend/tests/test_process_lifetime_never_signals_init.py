@@ -64,7 +64,6 @@ def recorded_signals(monkeypatch):
     return sent
 
 
-# --- the guard itself ------------------------------------------------------
 
 
 @pytest.mark.parametrize("pid", [None, 0, 1, -1, -12345, "1", 1.0, True, False])
@@ -87,7 +86,6 @@ def test_real_pids_are_accepted(pid):
     assert pl._signalable(pid) is True
 
 
-# --- the write side: the bad record cannot be created ----------------------
 
 
 def test_adopt_pid_refuses_init(monkeypatch):
@@ -105,7 +103,6 @@ def test_own_process_group_refuses_group_one(monkeypatch):
     assert pl._own_process_group(1) is None
 
 
-# --- the signal side: an existing bad record cannot fire -------------------
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
@@ -135,7 +132,6 @@ def test_terminate_descendants_skips_init(recorded_signals, monkeypatch):
     assert recorded_signals == []
 
 
-# --- the end to end case that actually happened ----------------------------
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
@@ -150,12 +146,9 @@ def test_poisoned_record_is_dropped_not_retried(tmp_path, monkeypatch, recorded_
             {
                 "owner_pid": 4157196,
                 "owner_identity": "243506968",
-                # Verbatim from the record that caused the incident. "963" is
-                # init's start time in jiffies on that machine, so it is not
-                # portable, and nothing here compares against it: the pid floor
-                # short-circuits before identity is ever read. It stays because a
-                # regression test for a specific incident should carry the bytes
-                # that caused it.
+                # Verbatim from the record that caused the incident: "963" is init's start time in jiffies on
+                # that machine, so it is not portable, and nothing compares against it (the pid floor
+                # short-circuits before identity is read).
                 "children": [{"pid": 1, "identity": "963", "pgid": 1}],
             }
         ),
@@ -202,7 +195,7 @@ def test_poisoned_pgid_does_not_make_a_record_immortal(
         encoding = "utf-8",
     )
     monkeypatch.setattr(pl, "_breadcrumb_dir", lambda: tmp_path)
-    monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)  # the child is long gone
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
 
     pl.reap_recorded_children(timeout = 0.01)
@@ -246,7 +239,6 @@ def test_terminate_all_never_signals_a_poisoned_tracked_pid(monkeypatch, recorde
     assert recorded_signals == []
 
 
-# --- the same shape elsewhere: the llama-server group killer ---------------
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
@@ -308,16 +300,13 @@ def test_valid_record_still_reaps(tmp_path, monkeypatch, recorded_signals):
     reaped = pl.reap_recorded_children(timeout = 0.01)
 
     assert 424242 in reaped
-    # The signal number is asserted, not just the pid. Without it a fully
-    # disarmed reaper passes: `_group_has_members` emits `killpg(pid, 0)` as a
-    # liveness probe, and a bare `pid == 424242` match accepts that probe as
-    # proof of a kill that never happened.
+    # The signal number is asserted, not just the pid: without it a fully disarmed reaper passes,
+    # since `_group_has_members` emits `killpg(pid, 0)` as a liveness probe.
     assert any(
         pid == 424242 and sig == signal.SIGTERM for _call, pid, sig in recorded_signals
     ), "a genuine orphan must still be sent a terminating signal"
 
 
-# --- the sibling reapers that read a pid off disk ---------------------------
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
@@ -374,8 +363,7 @@ def test_llama_orphan_sweep_skips_init(tmp_path, monkeypatch):
     for pid in (1, mypid + 1):
         d = root / str(pid)
         d.mkdir()
-        # Same 52-field stat shape the scanner parses; only comm and the start
-        # time field are read.
+        # Same 52-field stat shape the scanner parses; only comm and the start time field are read.
         fields = " ".join(["0"] * 50)
         (d / "stat").write_bytes(f"{pid} (llama-server) S {fields}".encode())
         (d / "exe").symlink_to(binary)

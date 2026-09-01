@@ -29,7 +29,6 @@ def test_a_plain_repo_id_is_unchanged():
 
 
 def test_a_local_path_is_never_rewritten(tmp_path):
-    # A trained checkpoint is a directory, and the registry knows nothing about it.
     assert _audio_probe_target(str(tmp_path)) == str(tmp_path)
 
 
@@ -42,8 +41,8 @@ def test_the_merged_export_load_path_resolves_the_alias_the_same_way():
     "Spark-TTS-0.5B/LLM" -> "unsloth/Spark-TTS-0.5B" mapping; it now shares load_scan_target
     with the capability probe here and with the trainer preflight in routes/training.py, so
     the three cannot drift."""
-    # Read rather than import: core.inference.inference pulls the whole Unsloth stack,
-    # which is what made a second, dependency-light copy of this mapping tempting.
+    # Read rather than import: core.inference.inference pulls the whole Unsloth stack, which is what
+    # made a second, dependency-light copy of this mapping tempting.
     from pathlib import Path
 
     source = (

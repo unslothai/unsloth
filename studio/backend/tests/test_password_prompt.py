@@ -43,7 +43,6 @@ def _read(
     return value, out.getvalue()
 
 
-# ── _read_password ───────────────────────────────────────────────────
 
 
 def test_reader_echoes_one_star_per_char(monkeypatch):
@@ -102,17 +101,15 @@ def test_reader_ctrl_d_mid_input_is_ignored(monkeypatch):
 
 
 def test_reader_windows_key_prefix_is_ignored(monkeypatch):
-    # _getch_windows reports swallowed function-key sequences as "\x00".
+    # _getch_windows reports swallowed function-key sequences as "\\x00".
     value, _ = _read(monkeypatch, ["\x00"] + list("w") + ["\r"])
     assert value == "w"
 
 
 def test_reader_holds_raw_mode_once_for_whole_line(monkeypatch):
-    # Regression: cbreak/no-echo must be held for the ENTIRE line, not toggled
-    # per keystroke. Re-enabling echo between reads opens a window where a
-    # keystroke arriving in the gap echoes the password in cleartext. Assert the
-    # raw-mode context wraps the whole read exactly once and every keystroke is
-    # read while it is active.
+    # Regression: cbreak/no-echo must be held for the ENTIRE line, not toggled per keystroke.
+    # Re-enabling echo between reads opens a window where a keystroke arriving in the gap echoes the
+    # password in cleartext.
     events = []
 
     class _SpyRawMode:
@@ -138,7 +135,6 @@ def test_reader_holds_raw_mode_once_for_whole_line(monkeypatch):
     assert events == ["enter", "exit"]
 
 
-# ── prompt_for_password_change ───────────────────────────────────────
 
 
 def _run_loop(
@@ -247,7 +243,6 @@ def test_loop_min_length_counts_code_points(monkeypatch):
     assert applied == [pw]
 
 
-# ── should_prompt_password_change ────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -274,8 +269,8 @@ def test_should_prompt_matrix(tunnel, requires, stdin_tty, stderr_tty, expected)
 
 
 def test_stream_eof_aborts_instead_of_submitting(monkeypatch):
-    # A dead stream ("" from _getch, e.g. a closed pty) must abort the line,
-    # never silently submit the partial password typed so far.
+    # A dead stream ("" from _getch, e.g. a closed pty) must abort the line, never silently submit
+    # the partial password typed so far.
     import io
 
     err = io.StringIO()
@@ -284,7 +279,6 @@ def test_stream_eof_aborts_instead_of_submitting(monkeypatch):
         tp._read_password("New password: ", out = err)
 
 
-# ── resolve_supplied_password: non-interactive --password / env / stdin ──
 
 
 def test_resolve_supplied_password_literal_value_and_note(monkeypatch):

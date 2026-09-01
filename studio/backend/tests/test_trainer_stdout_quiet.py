@@ -23,11 +23,11 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-import importlib  # noqa: E402
-import types  # noqa: E402
-from unittest.mock import MagicMock  # noqa: E402
+import importlib
+import types
+from unittest.mock import MagicMock
 
-import pytest  # noqa: E402
+import pytest
 
 
 _STUBBED: list[str] = []
@@ -51,7 +51,7 @@ def _stub_if_missing(name, attrs):
     try:
         importlib.import_module(name)
         return
-    except Exception:  # noqa: BLE001 - any import failure means "not usable here", so stub it
+    except Exception:
         pass
     _STUBBED.append(name)
     mod = types.ModuleType(name)
@@ -68,14 +68,12 @@ _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat1
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
-from core.training import trainer as tmod  # noqa: E402
+from core.training import trainer as tmod
 
-# Drop the stubs now that tmod is bound, because they outlive this module otherwise and the rest
-# of the suite then runs against them. utils.hardware.hardware._shared_policy branches on
-# `"unsloth" in sys.modules` and then reaches for unsloth.dataset_num_proc, which a spec-less
-# non-package stub cannot provide, so it returns None and every shared-policy case in
-# test_dataset_map_num_proc.py skips instead of running. A real install stubs nothing, so this is
-# a no-op there.
+# Drop the stubs now that tmod is bound, because they otherwise outlive this module:
+# utils.hardware._shared_policy branches on `"unsloth" in sys.modules` and then reaches for
+# unsloth.dataset_num_proc, which a spec-less stub cannot provide, so every shared-policy case
+# in test_dataset_map_num_proc.py skips instead of running.
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 
@@ -143,7 +141,7 @@ def test_a_trainer_that_rejects_removal_does_not_raise():
         def remove_callback(self, cls):
             raise RuntimeError("no callbacks here")
 
-    tmod._drop_hf_stdout_callbacks(_Hostile())  # must not propagate
+    tmod._drop_hf_stdout_callbacks(_Hostile())
 
 
 def test_a_trainer_without_remove_callback_does_not_raise():

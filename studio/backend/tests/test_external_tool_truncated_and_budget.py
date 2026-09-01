@@ -198,7 +198,6 @@ def _call_turn(
     ]
 
 
-# ── 1. A truncated turn must not swallow a promoted call's own text ──
 
 
 _HEALED_TURN = [
@@ -261,9 +260,8 @@ def test_truncated_structured_call_relays_nothing_extra(executed):
 
     assert executed == []
     assert _visible_text(lines) == "thinking"
-    # The delta was relayed as it arrived, so the client has a card for c1.
-    # Refusing to run it is right; leaving it open for the rest of the response
-    # is not, so it is closed the way every other unrun call is.
+    # Refusing to run it is right; leaving it open for the rest of the response is not, so it is
+    # closed the way every other unrun call is.
     assert _card_ids(lines, "tool_end") == _card_ids(lines, "tool_start") == ["c1"]
     assert "output limit" in _events(lines, "tool_end")[0]["result"]
 
@@ -284,7 +282,6 @@ def test_a_truncated_call_never_streamed_gets_no_card(executed):
     assert _events(lines, "tool_end") == []
 
 
-# ── 2. Cards and replayed messages must stay balanced ──────────────
 
 
 def _card_ids(lines, kind):

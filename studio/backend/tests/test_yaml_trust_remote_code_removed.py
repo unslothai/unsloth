@@ -51,7 +51,6 @@ def test_no_model_default_yaml_has_empty_or_none_section():
 
 
 def test_formerly_flagged_models_load_inference_config_without_crash():
-    # Models whose inference section was emptied by the TRC removal must still load.
     from utils.inference import load_inference_config
     for model in (
         "tiiuae/Falcon-H1-0.5B-Instruct",
@@ -64,7 +63,6 @@ def test_formerly_flagged_models_load_inference_config_without_crash():
 
 
 def test_all_model_yamls_load_for_training_and_inference():
-    # Every YAML must load through both config paths (training + inference) as the routes do.
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
 
@@ -83,7 +81,6 @@ def test_all_model_yamls_load_for_training_and_inference():
             md = load_model_defaults(stem)
             assert isinstance(md, dict), f"load_model_defaults -> {type(md).__name__}"
             assert not [k for k, v in md.items() if v is None], "has a None section"
-            # the dict sections the loaders read via .get('sect', {}).get(...)
             for sect in ("training", "inference", "lora", "logging"):
                 assert isinstance(md.get(sect, {}), dict), f"{sect!r} is not a mapping"
             md.get("training", {}).get("trust_remote_code", False)  # routes/training.py:263
@@ -102,7 +99,6 @@ def test_base_templates_have_no_trust_remote_code():
 
 
 def test_loader_defaults_trust_remote_code_off_for_formerly_flagged_models():
-    # The 4 models that used to ship trust_remote_code: true must now report no default.
     from utils.models.model_config import load_model_defaults
     for model in (
         "unsloth/GLM-4.7-Flash",
@@ -118,8 +114,7 @@ def test_loader_defaults_trust_remote_code_off_for_formerly_flagged_models():
 
 
 def test_formerly_flagged_auto_map_models_still_require_consent_dialog():
-    # Crux: an auto_map model must STILL surface the dialog (driven by auto_map, not the
-    # YAML flag). Real backend path, mocking only the Hub json + .py fetch.
+    # Crux: an auto_map model must STILL surface the dialog, driven by auto_map rather than the YAML flag.
     from unittest.mock import patch
     from utils.security import consent, preflight_remote_code_consent_for_targets
 
@@ -142,7 +137,6 @@ def test_formerly_flagged_auto_map_models_still_require_consent_dialog():
             patch.object(consent, "repo_remote_code_files", return_value = benign_py),
         ):
             decision = preflight_remote_code_consent_for_targets([model], hf_token = None)
-        # routes/models.py opens the dialog from decision.has_remote_code.
         assert decision.has_remote_code is True, (
             f"{model} ships auto_map but the consent scan did not flag it -> dialog would "
             "not fire"

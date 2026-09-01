@@ -21,9 +21,7 @@ from utils import host_policy
 def _reset_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
-    # The discovered-tool cache is process-global and keyed by server id; tests
-    # reuse "stdio1", so clear it (and the failure cool-off) for isolation —
-    # otherwise a prior test's warm cache makes discovery skip its probe.
+    # The discovered-tool cache is process-global and keyed by server id; tests reuse "stdio1".
     mcp_client.invalidate_tool_cache()
 
 
@@ -37,9 +35,7 @@ def _disable(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _isolate_stdio_env():
-    # apply_stdio_mcp_loopback_default() mutates os.environ and a module flag that
-    # monkeypatch can't roll back, and stdio_mcp_enabled() reads the process tool
-    # policy; snapshot/restore all three so nothing leaks between tests or files.
+    # These three mutate process state monkeypatch cannot roll back; snapshot/restore by hand.
     from state import tool_policy
 
     saved = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
@@ -54,7 +50,6 @@ def _isolate_stdio_env():
         os.environ["UNSLOTH_STUDIO_ALLOW_STDIO_MCP"] = saved
 
 
-# ── transport stub + recorder ───────────────────────────────────────
 
 
 class _FakeTool:
@@ -115,7 +110,6 @@ def transport(monkeypatch):
     return recorder
 
 
-# ── 1. is_stdio ─────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -144,7 +138,6 @@ def test_is_stdio_true_for_commands(addr):
     assert mcp_client.is_stdio(addr) is True
 
 
-# ── 2. parse_stdio_command ──────────────────────────────────────────
 
 
 def test_parse_basic_argv():
@@ -154,7 +147,7 @@ def test_parse_basic_argv():
 
 
 def test_parse_keeps_url_argument_as_one_command():
-    # gemini "high": a :// inside an ARGUMENT must not break the command.
+    # A :// inside an ARGUMENT must not break the command.
     assert mcp_client.parse_stdio_command("npx server --endpoint https://example.com/mcp") == [
         "npx",
         "server",
@@ -183,15 +176,13 @@ def test_parse_unclosed_quote_raises_valueerror():
 
 
 def test_parse_windows_strips_wrapping_quotes(monkeypatch):
-    # gemini "medium": posix=False keeps backslash paths but also the
-    # wrapping quotes; the PR strips a matched pair so argv[0] is clean.
+    # posix=False keeps backslash paths but also the wrapping quotes; a matched pair is stripped.
     monkeypatch.setattr(sys, "platform", "win32")
     parts = mcp_client.parse_stdio_command(r'"C:\Program Files\node\node.exe" server.js')
     assert parts[0] == r"C:\Program Files\node\node.exe"
     assert parts[1] == "server.js"
 
 
-# ── 3. stdio_mcp_enabled ────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("val", ["0", "false", "true", "", " 1 ", "yes", "2"])
@@ -235,13 +226,11 @@ def test_disabled_reason_tools_disabled(monkeypatch):
 
 
 def test_disabled_reason_explicit_optin_not_suspended(monkeypatch):
-    # An explicit operator =1 is not the loopback auto-default, so no tunnel suspension.
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     host_policy.set_remote_connector_active(True)
     assert mcp_client.stdio_mcp_enabled() is True
 
 
-# ── 3b. loopback bind defaults the gate on ──────────────────────────
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "LOCALHOST", "::1"])
@@ -249,8 +238,7 @@ def test_is_external_host_false_for_loopback(host):
     assert host_policy.is_external_host(host) is False
 
 
-# 127.0.0.2 is loopback in principle, but the rest of the stack hard-codes
-# 127.0.0.1, so only the exact aliases count as local here.
+# 127.0.0.2 is loopback, but the stack hard-codes 127.0.0.1, so only exact aliases count.
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.10", "example.com"])
 def test_is_external_host_true_for_network(host):
     assert host_policy.is_external_host(host) is True
@@ -278,30 +266,26 @@ def test_colab_loopback_does_not_auto_enable(monkeypatch):
 
 
 def test_explicit_enable_survives_colab(monkeypatch):
-    # An explicit operator opt-in still wins over the Colab exclusion (apply_
-    # early-returns on an explicit value, before the is_colab check).
+    # apply_ early-returns on an explicit value, before the is_colab check.
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1", is_colab = True)
     assert mcp_client.stdio_mcp_enabled() is True
 
 
 def test_explicit_disable_survives_loopback(monkeypatch):
-    # An explicit =0 must not be overridden by the loopback auto-default.
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "0")
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
     assert mcp_client.stdio_mcp_enabled() is False
 
 
 def test_explicit_enable_survives_network_bind(monkeypatch):
-    # A deliberate network opt-in (-H 0.0.0.0 + var=1) must not be clobbered.
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")
     assert mcp_client.stdio_mcp_enabled() is True
 
 
 def test_loopback_default_not_inherited_by_later_public_bind(monkeypatch):
-    # Reusing run_server in one process: a loopback launch auto-enables, a later
-    # 0.0.0.0 launch must take it back down (not inherit it as an opt-in).
+    # A later 0.0.0.0 launch must take the auto-enable back down, not inherit it as an opt-in.
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
     assert mcp_client.stdio_mcp_enabled() is True
@@ -326,9 +310,7 @@ def test_remote_access_suspends_only_automatic_stdio_default(monkeypatch):
 
 @pytest.mark.parametrize("second_host", ["127.0.0.1", "0.0.0.0"])
 def test_force_disable_after_auto_default_in_same_process(monkeypatch, second_host):
-    # Reuse: a loopback launch auto-enables, then the operator sets =0 before a
-    # later launch. The force-disable must win whether the later bind is loopback
-    # (must not rewrite to 1) or public (the relinquish path must not pop the =0).
+    # A force-disable must win whether the later bind is loopback or public.
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
     assert mcp_client.stdio_mcp_enabled() is True
@@ -338,8 +320,7 @@ def test_force_disable_after_auto_default_in_same_process(monkeypatch, second_ho
 
 
 def test_cleared_env_after_auto_default_falls_back_to_host_default(monkeypatch):
-    # Unsetting the var (unlike =0) is "no preference", so a loopback re-apply
-    # re-enables -- the asymmetry the staleness guard documents.
+    # Unsetting the var (unlike =0) is "no preference", so a loopback re-apply re-enables.
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
     monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising = False)
@@ -348,8 +329,7 @@ def test_cleared_env_after_auto_default_falls_back_to_host_default(monkeypatch):
 
 
 def test_disable_tools_overrides_loopback_default(monkeypatch):
-    # When stdio is on only via the loopback auto-default, --disable-tools (the
-    # only way tool policy is False on a loopback bind) turns it back off.
+    # --disable-tools is the only way tool policy is False on a loopback bind.
     from state import tool_policy
 
     _disable(monkeypatch)
@@ -360,32 +340,28 @@ def test_disable_tools_overrides_loopback_default(monkeypatch):
 
 
 def test_explicit_env_opt_in_survives_external_default_policy(monkeypatch):
-    # `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 unsloth studio run -H 0.0.0.0` with no
-    # --enable-tools: tool policy is False by the external-host default, not by
-    # --disable-tools, so the explicit env opt-in must still win.
+    # Tool policy False by the external-host default, not --disable-tools: the env opt-in wins.
     from state import tool_policy
 
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
-    host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")  # no-op: value is explicit
+    host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")
     tool_policy.set_tool_policy(False)
     assert mcp_client.stdio_mcp_enabled() is True
 
 
 def test_explicit_env_opt_in_beats_disable_tools_on_loopback(monkeypatch):
-    # An operator who hand-sets =1 before launch outranks --disable-tools even on
-    # loopback: apply_ leaves the auto-default inactive, so the veto doesn't apply.
+    # A hand-set =1 outranks --disable-tools: apply_ leaves the auto-default inactive.
     from state import tool_policy
 
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
-    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")  # no-op: value is explicit
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
     tool_policy.set_tool_policy(False)
     assert mcp_client.stdio_mcp_enabled() is True
 
 
 @pytest.mark.parametrize("policy", [None, True])
 def test_non_false_tool_policy_defers_to_env(monkeypatch, policy):
-    # Only an explicit --disable-tools (False) gates stdio; None/True fall through
-    # to the env var so the gate keeps its normal meaning.
+    # Only an explicit --disable-tools (False) gates stdio; None/True fall through to the env var.
     from state import tool_policy
 
     tool_policy.set_tool_policy(policy)
@@ -395,7 +371,6 @@ def test_non_false_tool_policy_defers_to_env(monkeypatch, policy):
     assert mcp_client.stdio_mcp_enabled() is True
 
 
-# ── 4. probe_timeout ────────────────────────────────────────────────
 
 
 def test_probe_timeout_matrix():
@@ -406,7 +381,6 @@ def test_probe_timeout_matrix():
     assert mcp_client.probe_timeout("npx server", True) == 305.0
 
 
-# ── 5. _validate_url gate ───────────────────────────────────────────
 
 
 def test_validate_url_gate_off_rejects_stdio(monkeypatch):
@@ -429,8 +403,7 @@ def test_validate_url_gate_off_rejects_stdio(monkeypatch):
 
 
 def test_validate_url_gate_off_message_depends_on_whitespace(monkeypatch):
-    # The message names a command only when the value has whitespace, and
-    # never says "desktop app only" (self-hosted can opt in via the env var).
+    # Never says "desktop app only": self-hosted can opt in via the env var.
     _disable(monkeypatch)
     from routes.mcp_servers import _validate_url
 
@@ -453,22 +426,17 @@ def test_validate_url_gate_on_accepts_stdio(monkeypatch):
     from routes.mcp_servers import _validate_url
 
     assert _validate_url("npx -y server /tmp") == "npx -y server /tmp"
-    # http still works when stdio is on
     assert _validate_url("https://x/mcp") == "https://x/mcp"
-    # url-bearing argument accepted as a command
     assert _validate_url("npx server --url https://x/mcp") == ("npx server --url https://x/mcp")
-    # A lone token is ambiguous; accept it as a command rather than
-    # guessing it's a URL (no regression for single binaries).
+    # A lone token is ambiguous; accept it as a command rather than guessing a URL.
     assert _validate_url("/usr/local/bin/my-mcp-server") == "/usr/local/bin/my-mcp-server"
     assert _validate_url("mcp-server-sqlite") == "mcp-server-sqlite"
-    # empty / unparseable still rejected
     for bad in ["   ", '"unclosed']:
         with pytest.raises(HTTPException) as exc:
             _validate_url(bad)
         assert exc.value.status_code == 400
 
 
-# ── 6. gate enforcement at every spawn path (mocked transport) ──────
 
 
 def test_create_route_gate(tmp_path, monkeypatch, transport):
@@ -522,7 +490,7 @@ def test_test_route_gate(tmp_path, monkeypatch, transport):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(routes_mcp.test_mcp_server(req, current_subject = "u"))
     assert exc.value.status_code == 400
-    assert transport == []  # transport never opened
+    assert transport == []
 
     _enable(monkeypatch)
     res = asyncio.run(routes_mcp.test_mcp_server(req, current_subject = "u"))
@@ -561,7 +529,7 @@ def test_discovery_gate(tmp_path, monkeypatch, transport):
 
     _disable(monkeypatch)
     assert asyncio.run(get_enabled_mcp_tools()) == []
-    assert transport == []  # filtered out before any probe
+    assert transport == []
 
     _enable(monkeypatch)
     specs = asyncio.run(get_enabled_mcp_tools())
@@ -586,7 +554,6 @@ def test_execute_gate(tmp_path, monkeypatch, transport):
     assert len(transport) == 1
 
 
-# ── 7. env vars ride headers_json as the subprocess env ─────────────
 
 
 def test_stdio_env_passed_through(tmp_path, monkeypatch, transport):

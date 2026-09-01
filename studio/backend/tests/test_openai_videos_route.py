@@ -338,8 +338,8 @@ def test_a_failed_job_reports_its_error_and_keeps_it_after_the_next_job(client, 
     assert gallery_module.owned_video_path(job["id"]) is None
     assert [v["status"] for v in client.get("/v1/videos").json()["data"]] == ["failed"]
 
-    # Polling can cross a Studio restart. Replacing the process-local cache must rehydrate
-    # the terminal error instead of turning the ID into a 404.
+    # Polling can cross a Studio restart, so replacing the process-local cache must rehydrate the
+    # terminal error instead of turning the ID into a 404.
     video_routes._jobs = {}
     reloaded = client.get(f"/v1/videos/{job['id']}")
     assert reloaded.status_code == 200
@@ -1166,8 +1166,8 @@ def test_an_undecodable_reference_is_refused_before_the_model_switch(client, bac
     )
     assert resp.status_code == 400, resp.json()
     assert resp.json()["error"]["param"] == "input_reference"
-    # The message matters: without the eager decode this path still 400s, but only via
-    # the keyframe-conditioning check, leaving real decode failures to run post-switch.
+    # The message matters: without the eager decode this path still 400s, but only via the
+    # keyframe-conditioning check, leaving real decode failures to run post-switch.
     assert "not a readable image" in resp.json()["error"]["message"], resp.json()
     assert switched["completed"] is False, "the model was switched before the refusal"
 

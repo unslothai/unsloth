@@ -63,7 +63,6 @@ def _gguf(path: Path, payload: bytes = b"GGUF") -> Path:
     return path
 
 
-# _reported_gguf_files: the "is this build telling us anything?" contract.
 
 
 @pytest.mark.parametrize(
@@ -119,7 +118,6 @@ def test_reported_files_accepts_future_keys(monkeypatch, tmp_path):
     assert out == [str(real)]
 
 
-# Table B: where the fake exporter puts its output.
 
 
 def test_gguf_beside_base_model_is_relocated(monkeypatch, tmp_path):
@@ -619,7 +617,6 @@ def test_imatrix_disabled_explicitly_does_not_forward_the_token(monkeypatch, tmp
     )
 
     assert success is True, message
-    # Neither the credential nor the disabled flag itself is forwarded.
     assert calls["save"] == {"imatrix_file": None, "token": None}
 
 
@@ -677,8 +674,8 @@ def test_disabled_imatrix_does_not_reach_an_older_exporter(monkeypatch, tmp_path
     assert calls["save"] == "q4_k_m"
 
 
-# A probe that says "supported" must be right about the call it authorises, and the
-# materialized imatrix must stay an input under whichever name the filesystem gave it.
+# A probe that says "supported" must be right about the call it authorises, and the materialized
+# imatrix must stay an input under whichever name the filesystem gave it.
 
 
 def test_a_positional_only_imatrix_parameter_is_not_support(monkeypatch, tmp_path):

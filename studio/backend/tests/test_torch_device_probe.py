@@ -16,13 +16,10 @@ import pytest
 from utils import process_lifetime, torch_device_probe
 
 
-# A child that dies of SIGSEGV is still handed to the host's core_pattern handler
-# (apport on Ubuntu), which reads the whole core before the child is reaped: a
-# multi-MB write and roughly 4x the wall time per fault, on every run of this suite.
-# Marking the child non-dumpable first keeps the SIGSEGV the test needs and writes
-# no core. RLIMIT_CORE = 0 does NOT work here, because a piped core_pattern ignores
-# it; PR_SET_DUMPABLE is the only thing that suppresses the dump. prctl is
-# Linux-only, so the call is guarded and simply does nothing elsewhere.
+# A child that dies of SIGSEGV is handed to the host's core_pattern handler, which reads the whole
+# core before the child is reaped: a multi-MB write and roughly 4x the wall time per fault.
+# RLIMIT_CORE = 0 does NOT work, because a piped core_pattern ignores it, so PR_SET_DUMPABLE is
+# the only thing that suppresses the dump (Linux-only, hence the guard).
 _SUPPRESS_CORE = (
     "import ctypes\n"
     "try:\n"
@@ -124,8 +121,7 @@ def test_hung_child_marks_the_device_unusable(monkeypatch):
 
 
 def test_unspawnable_probe_does_not_claim_the_accelerator_works(monkeypatch):
-    # A probe that never ran proves nothing, and the two ways of being wrong are not
-    # symmetric: CPU costs embedding speed, the accelerator costs the backend.
+    # A probe that never ran proves nothing, and the errors differ: CPU costs speed, the accelerator the backend.
     def _no_spawn(*_args, **_kwargs):
         raise OSError("fork failed")
 
@@ -134,9 +130,7 @@ def test_unspawnable_probe_does_not_claim_the_accelerator_works(monkeypatch):
 
 
 def test_an_unrunnable_probe_still_leaves_cpu_available(monkeypatch):
-    # The opposite trade for CPU: it cannot fault a GPU driver, so a probe that never ran
-    # says nothing against it. Condemning it would push the caller past its CPU fallback
-    # to the GGUF backend, changing the embedding space over a passing failure to fork.
+    # CPU cannot fault a GPU driver, so condemning it would push the caller past its CPU fallback to GGUF.
     def _no_spawn(*_args, **_kwargs):
         raise OSError("fork failed")
 
@@ -158,10 +152,8 @@ def test_unreadable_probe_result_cleans_up_and_does_not_claim_the_device_works(m
 
 
 def test_a_read_failure_during_teardown_does_not_escape(monkeypatch):
-    # The post-kill read used to sit inside the timeout branch, where the trailing
-    # except OSError was a sibling and could not catch it. A pipe failure there escaped
-    # device_can_allocate, so a device that really did time out raised instead of
-    # returning False, and the child never reached the reaper.
+    # The post-kill read used to sit inside the timeout branch, where the trailing except OSError was a
+    # sibling and could not catch it, so a pipe failure escaped device_can_allocate.
     process = _FakeProcess(returncode = None, timeouts = 1)
     reaped = threading.Event()
     process.wait = lambda: reaped.set()
@@ -202,8 +194,7 @@ def test_result_is_cached_per_device(monkeypatch):
         "ROCR_VISIBLE_DEVICES",
         "GPU_DEVICE_ORDINAL",
         "HSA_OVERRIDE_GFX_VERSION",
-        # _TORCH_DEVICE maps DeviceType.XPU to "xpu", so the probe runs on Intel too and
-        # its selectors move the silicon underneath a cached verdict just as the rest do.
+        # _TORCH_DEVICE maps XPU to "xpu", so the probe runs on Intel too and its selectors move the silicon.
         "ZE_AFFINITY_MASK",
         "ONEAPI_DEVICE_SELECTOR",
     ],
@@ -262,10 +253,8 @@ def test_child_uses_selected_device_without_preexec(monkeypatch):
 
 
 def test_a_child_that_hit_its_own_deadline_is_a_failed_probe(monkeypatch):
-    # A child that stopped itself hung, and a hang is a device failure. Neither form was
-    # recognised before: SIGALRM is not a hard fault so it fell through _died_by_signal,
-    # and the Windows status is an ordinary non-zero exit. Both read as a healthy device,
-    # which let the parent make the allocation the probe stands in front of.
+    # A child that stopped itself hung, and a hang is a device failure: SIGALRM is not a hard fault so
+    # it fell through _died_by_signal, and the Windows status is an ordinary non-zero exit.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
     _patch_popen(monkeypatch, _FakeProcess(returncode = -torch_device_probe._SIGALRM_NUMBER))
     assert torch_device_probe.device_can_allocate("cuda") is False
@@ -278,8 +267,7 @@ def test_the_windows_watchdog_status_is_a_failed_probe(monkeypatch):
 
 
 def test_a_windows_crt_abort_is_a_failed_probe(monkeypatch):
-    # A native abort() on Windows leaves plain exit status 3, not an NTSTATUS, so nothing
-    # else here recognises it and the crashing device was being reported as usable.
+    # A native abort() on Windows leaves plain exit status 3, not an NTSTATUS, so the crash read as usable.
     monkeypatch.setattr(torch_device_probe.os, "name", "nt")
     _patch_popen(
         monkeypatch,
@@ -289,7 +277,6 @@ def test_a_windows_crt_abort_is_a_failed_probe(monkeypatch):
 
 
 def test_the_abort_status_is_read_as_a_crash_only_on_windows(monkeypatch):
-    # Elsewhere 3 is just an exit status a child chose, and an abort arrives as SIGABRT.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
     assert (
         torch_device_probe._died_by_signal(torch_device_probe._WINDOWS_ABORT_EXIT_STATUS) is False
@@ -297,7 +284,6 @@ def test_the_abort_status_is_read_as_a_crash_only_on_windows(monkeypatch):
 
 
 def test_the_abort_status_matches_the_one_llama_cpp_already_uses():
-    # Same CRT convention, two readers; a divergence here would be silent.
     source = Path(torch_device_probe.__file__).parents[1] / "core" / "inference" / "llama_cpp.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     (function,) = [
@@ -314,27 +300,23 @@ def test_the_abort_status_matches_the_one_llama_cpp_already_uses():
 
 
 def test_the_windows_watchdog_uses_the_status_the_parent_looks_for(monkeypatch):
-    # The child writes the number and the parent matches on the constant; they have to agree.
     assert (
         f"os._exit({torch_device_probe._WATCHDOG_EXIT_STATUS})" in torch_device_probe._PROBE_SCRIPT
     )
 
 
 def test_the_child_deadline_does_not_depend_on_the_gil(monkeypatch):
-    # The deadline exists for a torch that hangs in a native call, and that is exactly when
-    # a threading.Timer cannot fire: its callback needs the GIL, which a long C call never
-    # returns to the interpreter to release. SIGALRM with no handler is enforced by the
-    # kernel, so it runs no Python at all.
+    # The deadline exists for a torch that hangs in a native call, which is exactly when a
+    # threading.Timer cannot fire: its callback needs the GIL a long C call never releases.
+    # SIGALRM with no handler is enforced by the kernel.
     script = torch_device_probe._PROBE_SCRIPT
     assert "signal.alarm" in script
     assert script.index("signal.alarm") < script.index("import torch")
-    # Windows has no alarm, so the timer stays as the fallback there.
     assert "threading.Timer" in script
 
 
 def test_the_kernel_enforces_the_child_deadline():
-    # Proves the mechanism rather than trusting it: no handler is installed, so the default
-    # disposition terminates the process, and the exit is the signal itself.
+    # Proves the mechanism rather than trusting it: no handler, so the default disposition kills and reports it.
     if not hasattr(signal, "alarm"):
         pytest.skip("POSIX only")
     done = subprocess.run(
@@ -346,9 +328,7 @@ def test_the_kernel_enforces_the_child_deadline():
 
 
 def test_an_inherited_sigalrm_disposition_cannot_disarm_the_deadline():
-    # exec keeps an inherited SIG_IGN and an inherited blocked mask, so a supervisor that
-    # ignores or blocks SIGALRM would leave the deadline unenforceable and an orphaned probe
-    # running against a hung driver forever. The child restores the disposition itself.
+    # exec keeps an inherited SIG_IGN and blocked mask, so the child restores the SIGALRM disposition itself.
     if not hasattr(signal, "alarm"):
         pytest.skip("POSIX only")
     prologue = torch_device_probe._PROBE_SCRIPT.split("if sys.platform")[0]
@@ -456,8 +436,7 @@ def test_windows_rocm_directories_use_numeric_version_order(monkeypatch, tmp_pat
     [
         (-11, False, True),
         (-6, False, True),
-        # Something else killed the probe; that says nothing about the device. The repo
-        # makes the same exclusion in LlamaCppBackend._is_signal_crash.
+        # Something else killed the probe, which says nothing about the device; _is_signal_crash agrees.
         (-9, False, False),
         (-15, False, False),
         (-2, False, False),
@@ -476,18 +455,14 @@ def test_died_by_signal(monkeypatch, returncode, on_windows, expected):
 
 @pytest.mark.parametrize("killer", [9, 15, 1])
 def test_a_killed_probe_is_not_a_pass_for_an_accelerator(monkeypatch, killer):
-    # Not a hard fault, so it is no evidence against the device, but it is not the clean
-    # run that earns a pass either. Importing torch and building its device context is
-    # enough to trip a cgroup OOM on its own, and reading that as a pass sends the caller
-    # on to a much larger load in this process.
+    # Not a hard fault, so no evidence against the device, but importing torch alone can trip a cgroup OOM.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
     _patch_popen(monkeypatch, _FakeProcess(returncode = -killer))
     assert torch_device_probe.device_can_allocate("cuda") is False
 
 
 def test_a_killed_probe_still_leaves_cpu_available(monkeypatch):
-    # Same no-verdict trade as a probe that never ran: CPU cannot fault a GPU driver, and
-    # condemning it would push the caller past its CPU fallback to a different backend.
+    # Same no-verdict trade as a probe that never ran: CPU cannot fault a GPU driver.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
     _patch_popen(monkeypatch, _FakeProcess(returncode = -9))
     assert torch_device_probe.device_can_allocate("cpu") is True

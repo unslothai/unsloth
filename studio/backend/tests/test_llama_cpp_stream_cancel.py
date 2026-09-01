@@ -161,9 +161,8 @@ class _StallUpstream:
 
 
 def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall():
-    # Mid-stream stall: the reader is parked in recv() on a long bound read timeout,
-    # so response.close() alone can't wake it; the watcher must shut the socket down.
-    # Assert cancel lands in seconds, not at the far-off deadline (pre-fix: hung ~30s).
+    # Mid-stream stall: the reader is parked in recv() on a long bound read timeout, so
+    # response.close() alone cannot wake it and the watcher must shut the socket down.
     with _StallUpstream() as server:
         cancel_event = threading.Event()
 

@@ -20,7 +20,6 @@ from utils.log_redaction import REDACTED, redact_log_text
 
 _SLACK_SHAPED = "xox" + "b-" + "1234567890" + "-ABCDEFGHIJKLMNOP"
 
-# (line, the substring that must be gone)
 SECRETS = [
     (
         "Downloading with token hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345",
@@ -46,8 +45,8 @@ SECRETS = [
         "ghp_ABCDEFGHIJKLMNOPQRST0123",
     ),
     ("password: hunter2hunter2", "hunter2hunter2"),
-    # "_" is a word character, so a \b before the key name never fires inside an
-    # env-style name; all of these used to survive in the clear.
+    # "_" is a word character, so a \b before the key name never fires inside an env-style name; all
+    # of these used to survive in the clear.
     ("OPENAI_API_KEY=opaquevalue123456", "opaquevalue123456"),
     ("TOGETHER_API_KEY=abc123def456ghi789", "abc123def456ghi789"),
     (
@@ -56,33 +55,28 @@ SECRETS = [
     ),
     ("DATABASE_PASSWORD=hunter2hunter2", "hunter2hunter2"),
     ("training config: wandb_token='local-9f8e7d6c5b4a3210'", "local-9f8e7d6c5b4a3210"),
-    # The key/value rule captures the scheme word as the "value", so the
-    # credential after it was never looked at.
+    # The key/value rule captures the scheme word as the "value", so the credential after it was never looked at.
     ("Authorization: Basic dXNlcm5hbWU6c3VwZXJzZWNyZXQ=", "dXNlcm5hbWU6c3VwZXJzZWNyZXQ="),
     ("headers={'authorization': 'Basic dXNlcjpwdw=='}", "dXNlcjpwdw=="),
-    # Unsloth's UI session cookie gates these very endpoints.
     ("Cookie: unsloth_session=8f3c9d1ab77e4f0a9c2b3d4e", "8f3c9d1ab77e4f0a9c2b3d4e"),
     ("set-cookie: refresh=8f3c9d1ab77e4f0a9c2b; HttpOnly", "8f3c9d1ab77e4f0a9c2b"),
     ("CI token glpat-ABCDEFGHIJKLMNOPQRST", "glpat-ABCDEFGHIJKLMNOPQRST"),
-    # Assembled, not written out: even an invented Slack-shaped literal trips
-    # GitHub push protection.
+    # Assembled, not written out: even an invented Slack-shaped literal trips GitHub push
+    # protection.
     ("posting with " + _SLACK_SHAPED, _SLACK_SHAPED),
     ("refreshed ya29.a0ARrdaM9xQZ1lKjHgFdSaQwErTyUiOp", "ya29.a0ARrdaM9xQZ1lKjHgFdSaQwErTyUiOp"),
-    # A numeric password is still a password, unlike numbers elsewhere.
     ("password=1234567890123", "1234567890123"),
-    # A quoted passphrase with spaces: stopping at the first space left every
-    # word but the first in the clear while still printing <redacted>.
+    # A quoted passphrase with spaces: stopping at the first space left every word but the first in
+    # the clear while still printing <redacted>.
     (
         '{"event":"login_failed","password":"correct horse battery staple"}',
         "horse battery staple",
     ),
     ("password='correct horse battery staple'", "horse battery staple"),
-    # The flag rule's value class rejected a leading quote, so this line
-    # survived untouched.
+    # The flag rule's value class rejected a leading quote, so this line survived untouched.
     ('llama-server --api-key "abcdef ghijklmnop" --port 8080', "abcdef ghijklmnop"),
 ]
 
-# Real log lines. Each one must come back byte for byte.
 KEEP = [
     "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
     "blk.31.attn_q.weight  q4_K  [ 3072,  3072 ]",
@@ -99,8 +93,8 @@ KEEP = [
     '  File "/opt/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1518 in _call_impl',
     "llama-server --port 8080 --n-gpu-layers 99 --ctx-size 32768",
     '{"timestamp":"2026-08-13T09:00:00Z","level":"error","event":"llama_start_failed"}',
-    # Words a credential rule is tempted by, as Unsloth actually writes them.
-    # Blanking any of these hides the failure being diagnosed.
+    # Words a credential rule is tempted by, as Unsloth actually writes them; blanking any of these
+    # hides the failure being diagnosed.
     "provider rejected the request: Bearer credentials expired",
     "Authorization header missing, expected Bearer authentication",
     "manifest digest sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
@@ -111,7 +105,6 @@ KEEP = [
     "hint: password authentication is not configured for this endpoint",
     "downloaded checkpoint-sk-9f8a7b6c5d4e3f2a1b0c9d8e7f.safetensors",
     "i18n: falling back from sk-SK to en",
-    # "key" in an object storage URL names the object, so it stays readable.
     "https://cdn-lfs.hf.co/repos/ab/cd/model.gguf?download=true&key=publicfilename",
     "provider config: api_key = None",
 ]
@@ -136,18 +129,14 @@ def test_redaction_is_idempotent(line):
 
 
 QUOTED = [
-    # (line, what the whole line must come back as)
     ('password="correct horse battery staple"', 'password="<redacted>"'),
     ("password='correct horse battery staple'", "password='<redacted>'"),
     ('llama-server --api-key "abcdef ghijklmnop"', 'llama-server --api-key "<redacted>"'),
-    # The value ends at its own closing quote, so the fields after it survive.
     (
         '{"password": "correct horse battery staple", "model": "gpt-4o"}',
         '{"password": "<redacted>", "model": "gpt-4o"}',
     ),
-    # An escaped quote inside the value does not end it early.
     ('password="corr\\"ect horse staple"', 'password="<redacted>"'),
-    # Quoting puts the scheme inside the value; it stays, the credential goes.
     ('password: "Basic dXNlcjpwdw=="', 'password: "Basic <redacted>"'),
 ]
 
@@ -193,8 +182,8 @@ def test_a_cookie_diagnosis_is_not_mistaken_for_a_cookie(line):
     [
         ("Cookie: unsloth_ui_session=abc123def456xyz", "abc123def456xyz"),
         ("Set-Cookie: session=abc123def456xyz; HttpOnly", "abc123def456xyz"),
-        # Headers are normally logged as a dict, so the value opens with a
-        # quote. Anchoring the pair test on the bare value never matched it.
+        # Headers are normally logged as a dict, so the value opens with a quote, and anchoring the
+        # pair test on the bare value never matched it.
         ('headers={"Cookie": "session=abc123def456xyz"}', "abc123def456xyz"),
         ("Cookie: 'session=abc123def456xyz'", "abc123def456xyz"),
     ],
@@ -203,8 +192,8 @@ def test_a_real_cookie_pair_is_still_masked(line, secret):
     assert secret not in redact_log_text(line)
 
 
-# A credential that ran to the next space swallowed the closing quote and every
-# field behind it, so the pane lost the status and request id it was opened for.
+# A credential that ran to the next space swallowed the closing quote and every field behind it, so
+# the pane lost the status and request id it was opened for.
 @pytest.mark.parametrize(
     "line,expected",
     [
@@ -223,13 +212,10 @@ def test_the_fields_after_a_masked_header_survive(line, expected):
     assert redact_log_text(line) == expected
 
 
-# A colorized writer puts an escape between the key and its value. Every rule is
-# anchored on a word boundary or lookbehind, and the "m" ending "\x1b[36m" is a
-# word character, so the anchor stopped matching and the credential went out in
-# the clear -- and the pane strips escapes, so the reader saw a clean token.
+# A colorized writer puts an escape between the key and its value.
 ANSI_SECRETS = [
-    # structlog's ConsoleRenderer verbatim: colors default on even off-terminal,
-    # so this is what lands in the session log.
+    # structlog's ConsoleRenderer verbatim: colors default on even off-terminal, so this is what
+    # lands in the session log.
     (
         "\x1b[36mapi_key\x1b[0m=\x1b[35msk_live_abcdef123456\x1b[0m",
         "sk_live_abcdef123456",
@@ -242,7 +228,6 @@ ANSI_SECRETS = [
         "\x1b[31mAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefg\x1b[0m",
         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefg",
     ),
-    # An escape INSIDE the token, and the 8-bit CSI form.
     ("hf_\x1b[31mAbCdEfGhIjKlMnOpQrStUvWxYz012345\x1b[0m", "AbCdEfGhIjKlMnOpQrStUvWxYz012345"),
     ("\x9b36mapi_key\x9b0m=abcdef123456", "abcdef123456"),
 ]

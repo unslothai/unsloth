@@ -16,11 +16,9 @@ import pytest
 from core.rag import config, embeddings
 
 
-# A child that dies of SIGSEGV is still handed to the host's core_pattern handler
-# (apport on Ubuntu), which reads the whole core before the child is reaped. Marking
-# the child non-dumpable first keeps the SIGSEGV this test needs and writes no core.
+# A child that dies of SIGSEGV is still handed to the host's core_pattern handler, which reads
+# the whole core before the child is reaped, so the child is marked non-dumpable first.
 # RLIMIT_CORE = 0 does NOT work here, because a piped core_pattern ignores it.
-# prctl is Linux-only, so the call is guarded and does nothing elsewhere.
 _CRASHING_UNLESS_CPU_SCRIPT = (
     "import ctypes, sys\n"
     "if sys.argv[1] != 'cpu':\n"
@@ -54,7 +52,7 @@ class _ConcurrencyProbe:
             self.inside += 1
             if self.inside > 1:
                 self.saw_overlap = True
-        time.sleep(0.005)  # widen the race window
+        time.sleep(0.005)
         with self._g:
             self.inside -= 1
 
@@ -121,7 +119,7 @@ def test_encode_is_serialized(monkeypatch):
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
     errors = _hammer(lambda: embeddings.encode(["alpha beta", "gamma"]))
     assert errors == []
-    assert probe.saw_overlap is False  # compute lock serialized encode()
+    assert probe.saw_overlap is False
 
 
 def test_token_counter_is_serialized(monkeypatch):
@@ -130,7 +128,7 @@ def test_token_counter_is_serialized(monkeypatch):
     count = embeddings.token_counter()
     errors = _hammer(lambda: count("one two three four"))
     assert errors == []
-    assert probe.saw_overlap is False  # counting shares the tokenizer lock
+    assert probe.saw_overlap is False
 
 
 def test_encode_enables_parallelism_only_during_call(monkeypatch):
@@ -146,8 +144,8 @@ def test_encode_enables_parallelism_only_during_call(monkeypatch):
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _M())
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     embeddings.encode(["alpha", "beta"])
-    assert seen["during"] == "true"  # rayon batch tokenization enabled in-call
-    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
+    assert seen["during"] == "true"
+    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"
 
 
 def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
@@ -165,8 +163,8 @@ def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     count = embeddings.token_counter()
     count("alpha beta gamma")
-    assert seen["during"] == "true"  # rayon enabled in-call, like _st_encode
-    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
+    assert seen["during"] == "true"
+    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"
 
 
 def test_token_counter_reacquires_backend_retired_between_chunk_calls(monkeypatch):
@@ -277,9 +275,8 @@ def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
 
     assert observed["name"] == "Org/Embedder"
     assert observed["cache_folder"] == str(tmp_path / "selected-hub")
-    # fp32, because the load lands on CPU. The dtype follows the device we actually
-    # load on rather than how we got there, so the default CPU placement and a
-    # degraded-onto-CPU load agree.
+    # fp32, because the load lands on CPU: the dtype follows the device we load on, so the default
+    # CPU placement and a degraded-onto-CPU load agree.
     assert list(observed["model_kwargs"].values()) == ["float32"]
 
 
@@ -367,8 +364,8 @@ def test_cpu_never_loads_float16(monkeypatch, tmp_path):
         "utils.hf_cache_settings.active_hf_hub_cache",
         lambda: str(tmp_path / "hub"),
     )
-    # Every way of arriving on CPU: the default, an explicit request, a host with no
-    # accelerator, and a degrade from a probe that condemned the accelerator.
+    # Every way of arriving on CPU: the default, an explicit request, a host with no accelerator,
+    # and a degrade from a probe that condemned the accelerator.
     for embed_device, hardware, load_device in (
         ("auto", embeddings.DeviceType.CUDA, None),
         ("cpu", embeddings.DeviceType.CUDA, None),
@@ -470,7 +467,7 @@ def _patch_llama_backend(monkeypatch, *, binary):
 
 
 def test_st_failure_falls_back_to_llama_server(monkeypatch):
-    # ST can't load but llama-server is available -> use it.
+    # ST cannot load but llama-server is available -> use it.
     _force_st_load_failure(monkeypatch)
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     embeddings._reset_backend()
@@ -479,7 +476,7 @@ def test_st_failure_falls_back_to_llama_server(monkeypatch):
 
 
 def test_st_failure_without_llama_binary_reraises(monkeypatch):
-    # No llama-server binary -> surface the failure, don't degrade to nothing.
+    # No llama-server binary -> surface the failure, do not degrade to nothing.
     _force_st_load_failure(monkeypatch)
     _patch_llama_backend(monkeypatch, binary = None)
     embeddings._reset_backend()
@@ -488,7 +485,6 @@ def test_st_failure_without_llama_binary_reraises(monkeypatch):
 
 
 def test_st_success_keeps_sentence_transformers(monkeypatch):
-    # Clean ST probe -> ST backend stays selected, no fallback.
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: object())
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     embeddings._reset_backend()
@@ -507,8 +503,7 @@ def test_loaded_state_belongs_to_the_resident_sentence_transformer(monkeypatch):
 
 
 def test_loaded_state_belongs_to_the_resident_gguf_repo(monkeypatch):
-    # A live process, since residency now means the subprocess is actually there;
-    # see test_a_dead_llama_process_is_not_reported_as_loaded.
+    # A live process, since residency now means the subprocess is actually there.
     backend = SimpleNamespace(_model_repo = "org/resident-GGUF", _process_alive = lambda: True)
     monkeypatch.setattr(embeddings, "_backend", backend)
     monkeypatch.setattr(embeddings, "_is_llama_backend", lambda value: value is backend)
@@ -681,17 +676,17 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     embeddings._reset_backend()
 
     out = embeddings.encode(["alpha", "beta"])
-    assert calls.get("used") is True  # retried on the llama fallback
+    assert calls.get("used") is True
     assert out.shape == (2, 4)
-    # The failed ST weights are no longer reachable, including after the
-    # published backend became llama rather than an ST wrapper.
+    # The failed ST weights are no longer reachable, including after the published backend became
+    # llama rather than an ST wrapper.
     assert embeddings._model is None
     assert embeddings._name is None
     assert embeddings.config.effective_embedding_model() in embeddings._forced_backends
-    # Switch is process-wide: later calls keep using llama, not ST.
+    # The switch is process-wide: later calls keep using llama, not ST.
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
-    # It outranks what the saved model would otherwise resolve to, so a model that
-    # asks for ST cannot walk the process back into the encoder that just failed.
+    # It outranks what the saved model would resolve to, so a model that asks for ST cannot walk the
+    # process back into the encoder that just failed.
     monkeypatch.setattr(embeddings, "_resolve_auto_for_model", lambda: "sentence-transformers")
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
     # An explicit unload is a fresh start, so the pin does not outlive it.
@@ -700,7 +695,6 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
 
 
 def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
-    # No llama-server binary -> surface the encode error.
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
     _patch_llama_backend(monkeypatch, binary = None)
     embeddings._reset_backend()
@@ -708,7 +702,6 @@ def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
         embeddings.encode(["alpha", "beta"])
 
 
-# Device selection after a fatal torch driver failure.
 
 
 def _patch_probe(monkeypatch, usable):
@@ -881,7 +874,6 @@ def test_a_local_gguf_selects_llama_even_on_a_gpu_box(monkeypatch, tmp_path):
 
     assert embeddings._resolve_auto_for_model(str(gguf)) == "llama-server"
     assert embeddings.resolved_backend_for_model(str(gguf)) == "llama-server"
-    # A folder holding one counts the same way.
     assert embeddings._resolve_auto_for_model(str(tmp_path)) == "llama-server"
     # An ordinary repo id is untouched, and costs no filesystem walk.
     assert embeddings._resolve_auto_for_model("unsloth/bge-small-en-v1.5") == (
@@ -942,8 +934,7 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     evaluate_file_security recovers repo and commit from a snapshot path."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
-    # A real ST checkpoint: the pin is ST-specific now, so a GGUF-only snapshot
-    # is deliberately not adopted as the load target.
+    # A real ST checkpoint: the pin is ST-specific, so a GGUF-only snapshot is not adopted.
     (snapshot / "model.safetensors").write_bytes(b"ST")
     scanned = []
     monkeypatch.setattr(
@@ -1097,5 +1088,4 @@ def test_a_model_reloaded_behind_an_unload_is_still_reported_and_freed(monkeypat
     assert embeddings.release_backend() is True
     assert embeddings._model is None
     assert embeddings.backend_is_loaded() is False
-    # And with nothing resident it stays a no-op.
     assert embeddings.release_backend() is False

@@ -311,7 +311,6 @@ def test_explicit_cache_prompt_flag_overrides_env(monkeypatch, tmp_path):
 
 
 def test_user_cache_prompt_overrides_studio_no_cache_flag(monkeypatch, tmp_path):
-    # User extras follow Unsloth's flags, so an explicit --cache-prompt wins.
     backend = _resume_backend(tmp_path)
     backend._prompt_cache_disabled = True
     backend._extra_args = ["--cache-prompt"]
@@ -323,7 +322,6 @@ def test_user_cache_prompt_overrides_studio_no_cache_flag(monkeypatch, tmp_path)
         raising = False,
     )
     assert backend.save_slots_for_resume() is not None
-    # Last flag wins when both appear in extras.
     backend._extra_args = ["--cache-prompt", "--no-cache-prompt"]
     assert backend.save_slots_for_resume() is None
 
@@ -414,8 +412,8 @@ def test_restore_transport_error_stops_early(monkeypatch, tmp_path):
 
 
 def test_save_deletes_orphan_on_malformed_response(monkeypatch, tmp_path):
-    # A 200 that writes a file but returns a non-numeric counter must be cleaned
-    # up like any other save failure, not left orphaned holding chat KV.
+    # A 200 that writes a file but returns a non-numeric counter must be cleaned up like any other
+    # save failure, not left orphaned holding chat KV.
     backend = _resume_backend(tmp_path)
     _fake_disk(monkeypatch)
 
@@ -442,8 +440,8 @@ def test_save_deletes_orphan_on_non_dict_response(monkeypatch, tmp_path):
 
 
 def test_save_cap_uses_actual_file_size_not_reported_bytes(monkeypatch, tmp_path):
-    # A binary under-reporting n_written must not slip past the disk cap: the
-    # cap is enforced against the bytes actually on disk.
+    # A binary under-reporting n_written must not slip past the disk cap: the cap is enforced
+    # against the bytes actually on disk.
     backend = _resume_backend(tmp_path)
     _fake_disk(monkeypatch)
     monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 150)
@@ -528,8 +526,8 @@ def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
 
 
 def test_window_without_kv_dims_still_saves(monkeypatch, tmp_path):
-    # phi3 reports a window but no key/value length, and llama.cpp runs it
-    # non-SWA, so the compact-SWA skip must not catch it.
+    # phi3 reports a window but no key/value length, and llama.cpp runs it non-SWA, so the
+    # compact-SWA skip must not catch it.
     backend = _resume_backend(tmp_path)
     backend._sliding_window = 262144
     backend._kv_key_length = None
@@ -548,8 +546,8 @@ def test_window_without_kv_dims_still_saves(monkeypatch, tmp_path):
 
 
 def test_save_skipped_when_model_file_changed_since_load(monkeypatch, tmp_path):
-    # The GGUF/sidecars were swapped on disk after the server loaded them, so the
-    # live KV belongs to the old weights: refuse to persist it (no POST at all).
+    # The GGUF/sidecars were swapped on disk after the server loaded them, so the live KV belongs to
+    # the old weights: refuse to persist it (no POST at all).
     backend = _resume_backend(tmp_path)
     backend._slot_loaded_identity = ((("stale", 0),), ())  # != current identity
     _fake_disk(monkeypatch)
@@ -563,7 +561,6 @@ def test_save_skipped_when_model_file_changed_since_load(monkeypatch, tmp_path):
 
 
 def test_save_proceeds_when_load_identity_matches(monkeypatch, tmp_path):
-    # Matching load-time snapshot: the save runs normally.
     backend = _resume_backend(tmp_path)
     backend._slot_loaded_identity = (
         backend._gguf_file_identity(backend._gguf_path),
@@ -582,8 +579,8 @@ def test_save_proceeds_when_load_identity_matches(monkeypatch, tmp_path):
 
 
 def test_save_skipped_when_estimate_unavailable_and_low_disk(monkeypatch, tmp_path):
-    # A 0 estimate means metadata was insufficient, not a zero-byte cache: the save
-    # must demand room for the whole cap, not just 1 GiB, on a low-disk host.
+    # A 0 estimate means metadata was insufficient, not a zero-byte cache: the save must demand room
+    # for the whole cap, not just 1 GiB, on a low-disk host.
     backend = _resume_backend(tmp_path)
     backend._estimate_kv_cache_bytes = lambda *a, **k: 0  # metadata unavailable
     monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 8 << 30)  # 8 GiB cap

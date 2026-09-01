@@ -30,9 +30,8 @@ if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
 
-# Faithful slice of the Kimi-K3 template: the reasoning_effort pre-pass that
-# maps 'none' to off and 'low'/'high'/'max' to a level, plus the enable_thinking
-# gate layered over it.
+# Faithful slice of the Kimi-K3 template: the reasoning_effort pre-pass that maps 'none' to off and
+# 'low'/'high'/'max' to a level, plus the enable_thinking gate layered over it.
 KIMI_K3_TEMPLATE = """
 {%- set rens = namespace(off = false, effort = none) -%}
 {%- if reasoning_effort is defined and reasoning_effort is not none -%}
@@ -75,8 +74,8 @@ def test_a_template_offering_only_none_is_not_an_effort_ladder():
 
 
 def test_disabling_still_reaches_the_template():
-    # The off switch is enable_thinking=false, so removing the level costs
-    # nothing: a raw caller sending reasoning_effort="none" still disables.
+    # The off switch is enable_thinking=false, so removing the level costs nothing: a raw caller
+    # sending reasoning_effort="none" still disables.
     from core.inference.llama_cpp import LlamaCppBackend
 
     backend = LlamaCppBackend()
@@ -113,9 +112,8 @@ def test_kimi_k2_keeps_its_own_defaults():
 
 @pytest.mark.parametrize("model_id", ["unsloth/Kimi-K3", "moonshotai/Kimi-K3"])
 def test_training_defaults_still_come_from_default_yaml(model_id):
-    # load_model_defaults replaces default.yaml rather than merging with it, so
-    # an inference-only YAML would leave the previous model's hyperparameters
-    # in the training form.
+    # load_model_defaults replaces default.yaml rather than merging with it, so an inference-only
+    # YAML would leave the previous model's hyperparameters in the training form.
     from utils.models.model_config import load_model_defaults
     assert "training" in load_model_defaults(model_id)
 

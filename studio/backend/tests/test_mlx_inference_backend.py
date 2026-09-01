@@ -204,13 +204,11 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     ]
     assert backend._is_vlm is False
     assert isinstance(backend._tokenizer, _DummyTokenizer)
-    # Non-LoRA text model: no base_model on the record.
     assert backend.models["fake/text"]["base_model"] is None
 
 
 def test_mlx_text_lora_record_keeps_base_model_for_native_template(monkeypatch):
-    # A LoRA adapter's own tokenizer often ships no chat template; the native tool-calling template
-    # lives on the base model.
+    # A LoRA adapter's tokenizer often ships no chat template; the native one is on the base model.
     _install_fake_mlx(monkeypatch)
     calls = []
     _install_fake_fast_mlx(monkeypatch, calls)
@@ -538,10 +536,8 @@ def test_worker_share_object_oversize_notifies_peers(monkeypatch):
     assert responses[0]["type"] == "share_error"
 
 
-# Regression: generate_chat_response must accept the four template kwargs
-# (tools / enable_thinking / reasoning_effort / preserve_thinking) so the route
-# layer can forward UI toggles. The old signature raised
-# "got an unexpected keyword argument 'tools'" on Mac.
+# Regression: generate_chat_response must accept the four template kwargs so the route layer can
+# forward UI toggles; the old signature raised on 'tools' on Mac.
 
 
 def test_mlx_generate_chat_response_accepts_template_kwargs():
@@ -595,7 +591,6 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     mlx_vlm.prompt_utils = prompt_utils
 
     def _vlm_stream(*_a, **_k):
-        # The prefill must have been emitted before any generated token.
         assert order[-1] == "adapter_enter"
         yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
@@ -612,10 +607,8 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
 
     gen = backend._generate_vlm(*args, _adapter_state = False)
-    # First snapshot is the prefill alone, emitted after entering the adapter context.
     assert next(gen) == "<think>\n"
     assert order == ["adapter_enter"]
-    # Subsequent snapshots are cumulative (prefill + generated text).
     assert next(gen) == "<think>\nok"
     gen.close()
     assert order == ["adapter_enter", "adapter_exit"]
@@ -744,13 +737,10 @@ def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
 def test_mlx_vlm_model_config_prefers_config_with_model_type():
     from core.inference.mlx_inference import _mlx_vlm_model_config
 
-    # config present but missing model_type must fall back to _config
     m = SimpleNamespace(config = {}, _config = {"model_type": "deepseek_vl_v2"})
     assert _mlx_vlm_model_config(m) == ({"model_type": "deepseek_vl_v2"}, "deepseek_vl_v2")
-    # an object config whose model_type is None also falls back
     m = SimpleNamespace(config = SimpleNamespace(model_type = None), _config = {"model_type": "qwen2_vl"})
     assert _mlx_vlm_model_config(m)[1] == "qwen2_vl"
-    # a config that already carries a model_type is preferred and returned unchanged
     assert _mlx_vlm_model_config(SimpleNamespace(config = {"model_type": "gemma3"})) == (
         {"model_type": "gemma3"},
         "gemma3",
@@ -766,8 +756,8 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
     real_adapter_state = mlx_inference._temporary_mlx_adapter_state
 
-    # The text path renders once with tools, then the native-template fallback makes a second no-
-    # tools probe call (tools=None) to detect whether the template dropped the schema.
+    # The text path renders with tools, then probes again with tools=None to detect whether the
+    # template dropped the schema.
     captured_calls = []
 
     def _fake_apply(tokenizer, messages, **kwargs):
@@ -780,8 +770,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
         raising = True,
     )
 
-    # mlx_lm.stream_generate yields response objects with .token; use a
-    # one-token generator so _generate_text returns without the real stack.
+    # A one-token generator so _generate_text returns without the real mlx_lm stack.
     import types as _types
 
     mlx_lm_pkg = _types.ModuleType("mlx_lm")
@@ -874,8 +863,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     with pytest.raises(NotImplementedError, match = "named adapter"):
         next(named)
     assert not adapter_active["value"] and not backend._generation_lock.locked()
-    # The toggled kwargs must reach the chat-template helper on the real render
-    # (one of the calls carries the tools; the fallback probe passes tools=None).
+    # The toggled kwargs must reach the chat-template helper on the real render.
     tool_renders = [
         c
         for c in captured_calls
@@ -961,8 +949,7 @@ def test_mlx_text_post_tool_prompt_opens_reasoning_channel(monkeypatch):
     post_tool_prompt = (
         "<|turn>model\n<|tool_response>response:web_search{}<tool_response|><|channel>thought\n"
     )
-    # Give the pre-fallback render a non-opening tail, so state read from the wrong
-    # prompt fails here.
+    # A non-opening tail, so state read from the wrong prompt fails here.
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
         lambda *_args, **_kwargs: "<|turn>model\n",
@@ -1011,8 +998,7 @@ def test_mlx_text_post_tool_prompt_opens_reasoning_channel(monkeypatch):
     assert "<channel|>" not in snapshots[-1]
     assert all(later.startswith(earlier) for earlier, later in zip(snapshots, snapshots[1:]))
 
-    # The flag survives into the next pass, but the tool result is the trailing turn,
-    # so nothing was resumed and the prompt must still be read.
+    # The flag survives, but the tool result is the trailing turn, so nothing was resumed.
     resumed_then_tool = [
         {"role": "user", "content": "weather?"},
         {
@@ -1597,7 +1583,6 @@ def test_mlx_prompt_cache_only_stores_verifiable_prefix_coverage(monkeypatch):
     assert tuple(range(30)) in history._lru.entries["key"]
 
 
-# ── Tests: audio-input capability + generation ───────────────────────
 
 
 def _audio_model(module_paths = ("audio_tower",), model_type = "gemma3n"):
@@ -1617,11 +1602,11 @@ def _audio_processor(sr = 16000, extractor = True):
     ("processor", "renders", "capable", "expected"),
     [
         (_audio_processor(), True, True, "audio_vlm"),
-        (_audio_processor(), False, True, None),  # our renderer places no marker
-        (_audio_processor(), True, False, None),  # zoo refuses the checkpoint
-        (_audio_processor(extractor = False), True, True, None),  # no rate to read
-        (_audio_processor(sr = 24000), True, True, None),  # route decodes 16 kHz
-        (None, True, True, None),  # text-only load
+        (_audio_processor(), False, True, None),
+        (_audio_processor(), True, False, None),
+        (_audio_processor(extractor = False), True, True, None),
+        (_audio_processor(sr = 24000), True, True, None),
+        (None, True, True, None),
     ],
 )
 def test_mlx_audio_classification(monkeypatch, processor, renders, capable, expected):
@@ -1659,9 +1644,8 @@ def test_mlx_audio_classification(monkeypatch, processor, renders, capable, expe
         _audio_model(), processor, processor is not None
     )
     assert audio_type == expected
-    # audio_vlm keeps is_audio (the TTS flag) False → TTS redirect can't fire.
+    # audio_vlm keeps is_audio (the TTS flag) False, so the TTS redirect cannot fire.
     assert (audio_type is not None and audio_type != "audio_vlm") is False
-    # The capability call is probed with OUR rendered prompt.
     if expected == "audio_vlm":
         assert seen["texts"] == "P<audio>"
 
@@ -1671,7 +1655,7 @@ def test_mlx_audio_classification(monkeypatch, processor, renders, capable, expe
     [
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("zoo blew up")),
         lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
-        lambda *a, **k: SimpleNamespace(),  # older/newer API: no .capable
+        lambda *a, **k: SimpleNamespace(),
         lambda *a, **k: None,
     ],
 )
@@ -1730,9 +1714,9 @@ def test_mlx_audio_classification_keeps_a_classification_it_cannot_judge(monkeyp
 @pytest.mark.parametrize(
     "capability",
     [
-        None,  # dependency absent entirely
+        None,
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("zoo blew up")),
-        lambda *a, **k: SimpleNamespace(),  # older/newer API: no .capable
+        lambda *a, **k: SimpleNamespace(),
     ],
 )
 def test_mlx_audio_capability_survives_a_probe_that_could_not_run(monkeypatch, capability):
@@ -1828,8 +1812,7 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
     """The official checkpoint capitalizes its model type while mlx-vlm's
     registry uses lowercase. Unsloth must reach the registered renderer rather
     than rejecting the checkpoint before the loader's normalization can run."""
-    # Real mlx-vlm and Zoo, like the renderer contract test above. Bare
-    # backend CI ships neither, so skip rather than error.
+    # Real mlx-vlm and Zoo; bare backend CI ships neither, so skip rather than error.
     pytest.importorskip("mlx_vlm.prompt_utils")
     loader = pytest.importorskip("unsloth_zoo.mlx.loader")
     from core.inference.mlx_inference import _render_registered_vlm_prompt
@@ -1856,8 +1839,7 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
     )
 
     assert plain and marked and plain != marked
-    # Later capability and export logic must not see a value the config
-    # never carried.
+    # Capability and export logic must not see a value the config never carried.
     assert config["model_type"] == published
     assert model.config is config
 
@@ -1865,9 +1847,9 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
 @pytest.mark.parametrize(
     ("published", "resolves"),
     [
-        ("NemotronH_Nano_Omni_Reasoning_V3", True),  # the real published case
-        ("SMOLVLM", True),  # ordinary ASCII case shift
-        ("smolvlm", True),  # already canonical
+        ("NemotronH_Nano_Omni_Reasoning_V3", True),
+        ("SMOLVLM", True),
+        ("smolvlm", True),
         ("ſmolvlm", False),  # casefold("ſ") == "s"
         ("smolvlẞ", False),  # casefold("ẞ") == "ss"
         ("no_such_renderer_anywhere", False),
@@ -1969,12 +1951,10 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
     turn = [{"role": "user", "content": "what is said?"}]
     args = dict(messages = turn, system_prompt = "", audio_array = audio, max_new_tokens = 64)
 
-    # Deltas (never cumulative "HHeHel"); waveform passthrough; greedy parity.
     assert list(backend.generate_audio_input_response(**args)) == ["H", "e", "l"]
     assert calls["kwargs"]["audio"] == [audio] and calls["kwargs"]["temperature"] == 0.0
     assert calls["audios"] == 1 and backend.last_generation_stats is not None
 
-    # Audio-only current turn → transcribe default, never older-turn text.
     args["messages"] = [
         {"role": "user", "content": "old unrelated question"},
         {"role": "user", "content": [{"type": "audio"}]},
@@ -2106,7 +2086,6 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
         )
     )
     assert seen["use_adapter"] is False
-    # Held for the whole stream, and restored afterwards.
     assert seen["inside"] is True and seen["exited"] is True
 
 
@@ -2129,7 +2108,6 @@ def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypat
     )
     # Unset stays unset: no kwarg, so generation is byte-identical to today.
     assert mlx_inference._kv_quant_status(None, object(), False)["kv_bits"] is None
-    # Out of domain degrades rather than raising.
     assert mlx_inference._normalize_mlx_kv_bits(7) is None
     assert mlx_inference._normalize_mlx_kv_bits("eight") is None
     assert mlx_inference._normalize_mlx_kv_bits(8) == 8
@@ -2150,7 +2128,7 @@ def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypat
     )
     refused = mlx_inference._kv_quant_status(8, object(), False)
     assert refused["kv_bits"] is None and refused["eligibility"] == "refused"
-    assert refused["requested_kv_bits"] == 8  # what the reload decision compares
+    assert refused["requested_kv_bits"] == 8
 
 
 def _tiny_lm(cache_factory, dim = 128):
@@ -2193,7 +2171,7 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
     assert _mlx_runtime_settings_match(be, req(mlx_kv_bits = 8))
     assert not _mlx_runtime_settings_match(be, req(mlx_kv_bits = 4))
     be.models["m"] = {"mlx_kv_bits_requested": None}
-    assert _mlx_runtime_settings_match(be, req(mlx_kv_bits = 7))  # both normalize away
+    assert _mlx_runtime_settings_match(be, req(mlx_kv_bits = 7))
     assert _mlx_runtime_settings_match(
         SimpleNamespace(active_model_name = "m", models = {"m": {}}),
         req(mlx_kv_bits = 8),
@@ -2245,9 +2223,7 @@ def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.KVCache()]) == "full"
     # A width mx.quantize rejects is caught by attempting it, not by naming it.
     assert elig(lambda: [lm_cache.KVCache()], dim = 80) == "refused"
-    # A container the quantizer never descends into is skipped, not fatal.
     assert elig(lambda: [lm_cache.CacheList(lm_cache.KVCache())]) == "none"
-    # Mixed quantizable/non-quantizable is a real success, reported as partial.
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.CacheList(lm_cache.KVCache())]) == "partial"
 
 
@@ -2272,8 +2248,8 @@ def test_chat_template_override_installs_only_where_one_already_exists():
     from core.inference import mlx_inference
 
     tokenizer = SimpleNamespace(chat_template = "native")
-    # A processor with no template of its own must be left alone, or
-    # chat_render_target would start selecting it.
+    # A processor with no template of its own must be left alone, or chat_render_target would
+    # start selecting it.
     processor = SimpleNamespace(chat_template = None, tokenizer = tokenizer)
     status = mlx_inference._install_template_override(
         "custom", tokenizer, processor, lambda: "rendered"
@@ -2282,13 +2258,11 @@ def test_chat_template_override_installs_only_where_one_already_exists():
     assert tokenizer.chat_template == "custom"
     assert processor.chat_template is None
 
-    # A processor that already renders from its own template receives it too.
     own = SimpleNamespace(chat_template = "native")
     owner = SimpleNamespace(chat_template = "native", tokenizer = own)
     mlx_inference._install_template_override("custom", own, owner, lambda: "ok")
     assert own.chat_template == "custom" and owner.chat_template == "custom"
 
-    # Unset must not touch anything.
     untouched = SimpleNamespace(chat_template = "native")
     assert (
         mlx_inference._install_template_override(None, untouched, None, lambda: "")["applied"]
@@ -2316,9 +2290,8 @@ def test_chat_template_override_reports_each_way_it_cannot_apply():
         mlx_inference.MLX_TEMPLATE_NAMED_SET
     )
 
-    # ...but only on the object that RENDERS. Real models (aya-vision) keep a named set
-    # on a nested tokenizer nothing reads. Without apply_chat_template the processor
-    # cannot render, so the nested tokenizer's set does veto.
+    # ...but only on the object that RENDERS: real models (aya-vision) keep a named set on a nested
+    # tokenizer nothing reads, and without apply_chat_template the processor cannot render.
     nested_set = SimpleNamespace(chat_template = {"default": "a"})
     renders_string = SimpleNamespace(
         chat_template = "native", apply_chat_template = lambda *a, **k: "", tokenizer = nested_set
@@ -2333,7 +2306,6 @@ def test_chat_template_override_reports_each_way_it_cannot_apply():
         == mlx_inference.MLX_TEMPLATE_NAMED_SET
     )
 
-    # The same for a callable held by an object that does not render.
     nested_callable = SimpleNamespace(chat_template = "t", _chat_template = lambda: "x")
     renders_own = SimpleNamespace(
         chat_template = "native",
@@ -2345,8 +2317,7 @@ def test_chat_template_override_reports_each_way_it_cannot_apply():
         is None
     )
 
-    # Nothing to replace, processor present: creating one takes the render from
-    # mlx-vlm's fallback, which places the markers.
+    # Creating one takes the render from mlx-vlm's fallback, which places the markers.
     bare = SimpleNamespace(chat_template = None)
     assert reason(bare, SimpleNamespace(chat_template = None, tokenizer = bare)) == (
         mlx_inference.MLX_TEMPLATE_NO_TARGET
@@ -2420,7 +2391,6 @@ def test_template_probe_renders_through_the_path_generation_uses(monkeypatch):
         tpl = getattr(target, "chat_template", None)
         if tpl == "empty":
             return ""
-        # Whitespace only, which the vision path also treats as an empty prompt.
         return "  \n " if tpl == "blank" else "rendered"
 
     monkeypatch.setattr(
@@ -2429,7 +2399,6 @@ def test_template_probe_renders_through_the_path_generation_uses(monkeypatch):
     )
     backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
 
-    # Text: the tokenizer is the render target.
     backend._tokenizer = SimpleNamespace(chat_template = "t")
     backend._processor = None
     assert backend._render_template_probe(False) == "rendered"
@@ -2483,7 +2452,6 @@ def test_the_audio_refusal_puts_the_native_template_back(monkeypatch):
     assert tok.chat_template == "native", "the model must be left as if unset"
     assert status["restore"] == []
 
-    # An override that keeps the marker is left alone.
     marks["audio"] = True
     kept = SimpleNamespace(chat_template = "custom")
     keep = {
@@ -2525,7 +2493,6 @@ def test_a_created_template_is_not_reported_as_the_model_default():
     assert info["template"] is None, "the override is not the model's template"
     assert info["has_template"] is False
 
-    # A model that did ship one still reports its own, not the override.
     shipped = SimpleNamespace(chat_template = "{{ native }}")
     backend.models["n"] = {"tokenizer": shipped, "processor": None}
     native = getattr(shipped, "chat_template", None)
@@ -2577,7 +2544,6 @@ def test_an_override_that_stops_marking_images_is_revoked(monkeypatch):
     )
     assert status["applied"] == "{{ blind }}"
 
-    # The override renders text but never places the image.
     _marker_renderer(monkeypatch, marks_image = False)
     mlx_inference._revoke_override_that_drops_image(status, tokenizer, processor)
     assert status["applied"] is None
@@ -2631,7 +2597,6 @@ def test_the_model_default_comes_from_the_object_that_renders():
     )
     assert mlx_inference._native_template_source(nested, named) is nested
 
-    # Text model: no processor at all.
     assert mlx_inference._native_template_source(nested, None) is nested
 
 
@@ -2657,7 +2622,6 @@ def test_template_targets_follow_the_object_that_can_actually_render():
     assert mlx_inference._template_render_targets(nested, renderable) == [renderable]
     assert mlx_inference._template_render_targets(nested, None) == [nested]
 
-    # A named set on the unusable target still reports the nested string.
     named = SimpleNamespace(
         chat_template = {"default": "{{ a }}"},
         apply_chat_template = lambda *a, **k: "",
@@ -2765,8 +2729,7 @@ def test_kv_quant_probe_rewinds_the_rng_without_assigning_to_the_state(monkeypat
     outcome = mlx_inference._kv_quant_probe(language_model, [entry], 8)
 
     assert outcome == (1, 0, None, True)
-    # A rewind that ran before the forward pass would leave the probe's own
-    # draws in the stream the caller goes on to sample.
+    # A rewind before the forward pass would leave the probe's own draws in the caller's stream.
     assert events == [
         ("forward", None),
         ("convert", None),
@@ -2834,11 +2797,9 @@ def test_an_override_that_renders_the_image_as_prose_is_not_a_marker(monkeypatch
     render_as("<|image_pad|>")
     assert survives() is True
 
-    # Differs from the text-only render, but places no placeholder.
     render_as("Image attached. ")
     assert survives() is False
 
-    # Ignores the image entirely.
     render_as("")
     assert survives() is False
 
@@ -2929,7 +2890,6 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._processor.chat_template == "{{ native }}"
 
 
-# ── Per-request seed ────────────────────────────────────────────────
 
 
 def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
@@ -2958,8 +2918,7 @@ def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
     monkeypatch.setattr(
         mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
     )
-    # Stubbed so the wiring is checked without an mlx wheel: what matters here is
-    # which seed and stages reach the builder, not the array maths inside it.
+    # Stubbed: what matters is which seed and stages reach the builder, not the array maths.
     monkeypatch.setattr(
         mlx_inference,
         "_make_seeded_mlx_sampler",
@@ -3016,7 +2975,7 @@ def test_mlx_processors_penalize_in_range_ids_and_route_strays_away(
     from core.inference import mlx_inference
 
     proc = getattr(mlx_inference, factory_name)(*factory_args)
-    proc(mx.array([10, 11]), mx.zeros((1, vocab)))  # first call latches prompt_len
+    proc(mx.array([10, 11]), mx.zeros((1, vocab)))
     out = proc(mx.array(sequence), mx.zeros((1, vocab)))
     for token, value in expected.items():
         assert float(out[0, token]) == pytest.approx(value), token
@@ -3041,7 +3000,7 @@ def test_eos_ids_are_read_from_every_shape_a_config_arrives_in(model):
     token was reported as truncation."""
     from core.inference.mlx_inference import _mlx_finish_reason, _mlx_stop_token_ids
 
-    tokenizer = SimpleNamespace(eos_token_id = 9)  # disagrees with the config
+    tokenizer = SimpleNamespace(eos_token_id = 9)
     stop_ids = _mlx_stop_token_ids(tokenizer, model)
     assert stop_ids == (1, 2)
     at_cap = SimpleNamespace(finish_reason = None, token = 2)
@@ -3074,7 +3033,6 @@ def test_finish_reason_separates_truncation_from_natural_end():
     assert _mlx_finish_reason(SimpleNamespace(token = 163584), ids, 8, 8) == "stop"
 
 
-# ── Stop sequences ──────────────────────────────────────────────────
 
 
 def test_stop_sequences_cut_the_reply_and_never_show_a_partial_match():
@@ -3089,17 +3047,14 @@ def test_stop_sequences_cut_the_reply_and_never_show_a_partial_match():
         (3, False),
         (1, True),
     ]
-    # A sequence at position 0 ends the turn with nothing shown.
     assert _mlx_stop_cut("abc", ["a"]) == (0, True)
     # The longest partial across all sequences wins; a shorter one cannot release it.
     assert _mlx_stop_cut("aaAB", ["ABC", "BX"]) == (2, False)
-    # The earliest match ends the turn, whether one sequence matches twice or two
-    # sequences match in a different order than they were declared.
+    # The earliest match ends the turn, whatever order the sequences were declared in.
     assert _mlx_stop_cut("a then a", ["a"]) == (0, True)
     assert _mlx_stop_cut("early late", ["late", "early"]) == (0, True)
-    # An unresolved character is not a character yet: it can neither be shown nor
-    # complete a sequence, and dropping it can uncover the start of one. Only the
-    # trailing run is unresolved -- one the reply has already written past is text.
+    # An unresolved character can neither be shown nor complete a sequence, and dropping it can
+    # uncover the start of one. Only the trailing run is unresolved.
     assert _mlx_stop_cut("hi\ufffd", ["END"]) == (2, False)
     assert _mlx_stop_cut("a\ufffd", ["a"]) == (0, True)
     assert _mlx_stop_cut("a\ufffd\ufffd", ["\ufffd"]) == (1, False)
@@ -3166,9 +3121,8 @@ def test_rng_capture_declines_words_that_are_not_32_bit(monkeypatch, words):
     assert mlx_inference._mlx_rng_key_words() is None
     assert any("32-bit word" in w for w in warnings), warnings
 
-    # The rewind must stay a no-op on the value capture actually returns, and
-    # total besides: handed these words directly it declines rather than raising
-    # into the probe's finally, and never seeds a wrong key.
+    # The rewind must stay a no-op on the value capture returns: handed these words directly it
+    # declines rather than raising into the probe's finally, and never seeds a wrong key.
     mlx_inference._restore_mlx_rng_key(None)
     mlx_inference._restore_mlx_rng_key(words)
     assert seeded == []

@@ -76,11 +76,9 @@ def test_a_user_site_install_is_not_told_to_isolate_itself(auth, monkeypatch, wi
 
     assert " -I " not in command
     assert "-m unsloth_cli" not in command
-    # The bootstrap unsloth_cli/__main__.py documents for exactly this case.
     assert auth._CLI_BOOTSTRAP in command
     assert command.endswith(" studio reset-password")
-    # One pair of double quotes wraps it for cmd and PowerShell alike, which
-    # only holds while the bootstrap itself carries no double quote.
+    # One pair of double quotes wraps it for cmd and PowerShell alike, while the bootstrap carries none itself.
     assert '"' not in auth._CLI_BOOTSTRAP
     assert command.count('"') == 2
     assert "unsloth.exe" not in command
@@ -130,8 +128,7 @@ def test_the_prefix_check_locates_rather_than_imports(auth, tmp_path, monkeypatc
     assert auth._cli_is_inside(str(tmp_path / "venv"))
     assert not auth._cli_is_inside(str(tmp_path / "elsewhere"))
 
-    # A namespace package has no origin, and nothing found returns None. Neither
-    # is evidence that isolation would work.
+    # A namespace package has no origin and nothing found returns None; neither is evidence that isolation would work.
     monkeypatch.setattr(auth.importlib.util, "find_spec", lambda _name: _Spec(None))
     assert not auth._cli_is_inside(str(tmp_path / "venv"))
     monkeypatch.setattr(auth.importlib.util, "find_spec", lambda _name: None)

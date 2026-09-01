@@ -110,8 +110,7 @@ def test_resolver_falls_back_via_editable_pth(tmp_path, monkeypatch):
     repo_dist = repo_studio / "frontend" / "dist"
     repo_dist.mkdir(parents = True)
     (repo_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
-    # Minimal `__editable___pkg_finder.py` with the MAPPING dict that
-    # setuptools' editable install generator writes.
+    # Minimal `__editable___pkg_finder.py` with the MAPPING dict that setuptools' editable install generator writes.
     finder = sp / "__editable___unsloth_0_0_0_finder.py"
     finder.write_text(
         "MAPPING: dict[str, str] = "
@@ -159,13 +158,11 @@ def test_resolver_does_not_crash_on_non_dict_mapping_literal(tmp_path, monkeypat
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
     sp.mkdir(parents = True)
-    # Bad finder: set literal, not a dict. literal_eval parses it as a set,
-    # so any .get() call on it would raise AttributeError.
+    # Bad finder: a set literal, not a dict, so any .get() call on it would raise AttributeError.
     (sp / "__editable___bad_0_0_0_finder.py").write_text(
         "MAPPING: dict[str, str] = {'studio', 'unsloth', 'unsloth_cli'}\n",
         encoding = "utf-8",
     )
-    # Good finder, still discovered after the bad one is skipped.
     repo_root = tmp_path / "clone"
     repo_dist = repo_root / "studio" / "frontend" / "dist"
     repo_dist.mkdir(parents = True)

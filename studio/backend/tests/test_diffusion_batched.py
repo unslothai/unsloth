@@ -25,7 +25,6 @@ def _draw():
     raise AssertionError("draw_seed must not be called when seed material was supplied")
 
 
-# --------------------------------------------------------------------------- job resolution
 def test_legacy_batch_derives_sequential_seeds():
     jobs, base = resolve_batch_jobs(
         prompt = "p", prompts = None, seed = 7, seeds = None, batch_size = 3, draw_seed = _draw
@@ -113,7 +112,6 @@ def test_invalid_lists_rejected(kwargs, match):
         resolve_batch_jobs(draw_seed = lambda: 0, **base)
 
 
-# --------------------------------------------------------------------------------- chunking
 def test_default_batch_size_runs_everything_in_one_forward():
     jobs = [("p", i) for i in range(8)]
     assert chunk_jobs(jobs, 1) == [jobs]
@@ -144,7 +142,6 @@ def test_uniform_prompt():
     assert uniform_prompt([("a", 1), ("b", 2)]) is None
 
 
-# ---------------------------------------------------------------------------- OOM classifier
 def test_is_oom_error_matches_class_name_and_message():
     oom_cls = type("OutOfMemoryError", (RuntimeError,), {})
     assert is_oom_error(oom_cls("boom"))

@@ -34,7 +34,6 @@ from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E4
 _REAL_POPEN = subprocess.Popen
 
 
-# ── Vulkan inertness ────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -86,7 +85,6 @@ class TestGateIsInertOnVulkanBuilds:
         gated = LlamaCppBackend._get_gpu_memory("/fake/llama-server", for_llama_server = True)
         plain = LlamaCppBackend._get_gpu_memory("/fake/llama-server")
         assert gated == plain
-        # Real rows, not two empty lists agreeing with each other.
         assert [row[0] for row in plain] == [0, 1]
 
     def test_free_memory_wrapper_is_inert_too(self, vulkan_probe):
@@ -95,12 +93,11 @@ class TestGateIsInertOnVulkanBuilds:
         ) == LlamaCppBackend._get_gpu_free_memory("/fake/llama-server")
 
     def test_vulkan_ordinal_preflight_sees_every_ordinal(self, vulkan_probe):
-        # The preflight's issubset check (#7239) must keep enumerating the iGPU
-        # ordinal, or a legitimate explicit pin on it would 400.
+        # The preflight's issubset check (#7239) must keep enumerating the iGPU ordinal, or a
+        # legitimate explicit pin on it would 400.
         assert {g[0] for g in LlamaCppBackend._get_gpu_memory("/fake/llama-server")} == {0, 1}
 
 
-# ── Placement: automatic only ───────────────────────────────────────
 
 
 def _write_gguf(path: Path, architecture: str = "llama") -> Path:
@@ -196,10 +193,7 @@ class TestPlacementOptsInForAutoOnly:
         assert not any(backend._probe_calls), "an explicit pin was silently arch-gated"
 
     def test_explicit_pin_on_an_uncovered_gpu_still_reaches_that_gpu(self, tmp_path):
-        # GPU 1 is the device the prebuilt has no kernels for, and the user pinned
-        # it anyway. The child must still get it, so llama-server produces its own
-        # "device kernel image is invalid" and the user learns which card is wrong,
-        # rather than being relocated onto GPU 0 or dropped to CPU behind their back.
+        # GPU 1 is the device the prebuilt has no kernels for, and the user pinned it anyway.
         backend, gguf = _backend(
             tmp_path, [(0, 12049, 16384), (1, 40000, 65536)], gated_out = frozenset({1})
         )
@@ -211,8 +205,8 @@ class TestPlacementOptsInForAutoOnly:
         )
 
     def test_automatic_placement_avoids_the_uncovered_gpu(self, tmp_path):
-        # The #7624 shape: the uncovered device reports the larger free pool and
-        # would win the free-VRAM rank. Automatic placement must land on GPU 0.
+        # The #7624 shape: the uncovered device reports the larger free pool and would win the
+        # free-VRAM rank.
         backend, gguf = _backend(
             tmp_path, [(0, 12049, 16384), (1, 40000, 65536)], gated_out = frozenset({1})
         )
@@ -224,7 +218,6 @@ class TestPlacementOptsInForAutoOnly:
         ), f"automatic placement selected the uncovered GPU: {pinned!r}"
 
 
-# ── Unfiltered by design ────────────────────────────────────────────
 
 
 class TestWaitForVramSettleStaysUnfiltered:
@@ -296,7 +289,6 @@ class TestEmbedLlamaServerOptsIn:
         ), f"the embedding llama-server probe was not gated: {seen}"
 
 
-# ── Crash recovery edge cases ───────────────────────────────────────
 
 
 def _unified(monkeypatch, ids):
@@ -316,8 +308,8 @@ class TestArchCrashRetryEdgeCases:
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0], None) == []
 
     def test_empty_enumeration_with_a_multi_gpu_selection(self, monkeypatch):
-        # Nothing enumerated (the probe failed after the crash) but two devices
-        # were selected: narrowing is still the honest answer.
+        # Nothing enumerated (the probe failed after the crash) but two devices were selected:
+        # narrowing is still the honest answer.
         _unified(monkeypatch, {1})
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0, 1], []) == [0]
 
@@ -327,19 +319,17 @@ class TestArchCrashRetryEdgeCases:
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0, 0], [0, 0, 1, 1, 2]) == [1, 2]
 
     def test_selected_ids_absent_from_the_enumeration(self, monkeypatch):
-        # A stale selection naming a device the post-crash probe no longer sees.
-        # The untouched enumerated device is still the right retry.
+        # A stale selection naming a device the post-crash probe no longer sees; the untouched
+        # enumerated device is still the right retry.
         _unified(monkeypatch, set())
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([5], [0, 1]) == [0, 1]
-        # ... and when the enumeration is a strict subset of the selection there
-        # is no untouched device, so it falls through to the narrowing.
+        # ...and when the enumeration is a strict subset of the selection there is no untouched
+        # device, so it falls through to the narrowing.
         _unified(monkeypatch, {7})
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([7, 8], [7]) == [8]
 
     def test_single_gpu_host_never_probes_and_never_retries(self, monkeypatch):
-        # A raising spy would be vacuous here: the narrowing branch swallows
-        # every exception into []. Count the calls instead, so "took the short
-        # circuit" and "took the long way and failed" stay distinguishable.
+        # A raising spy would be vacuous: the narrowing branch swallows every exception into [].
         calls: list[int] = []
 
         def _counting():
@@ -360,7 +350,6 @@ class TestArchCrashRetryEdgeCases:
 
     def test_no_device_unified(self, monkeypatch):
         _unified(monkeypatch, set())
-        # Narrowing changes nothing, so the respawn would crash identically.
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0, 1, 2], [0, 1, 2]) == []
 
     def test_retry_set_never_contains_a_device_that_just_crashed_alone(self, monkeypatch):
@@ -412,8 +401,7 @@ class TestKernelImageInvalidDoesNotFalsePositive:
     @pytest.mark.parametrize(
         "output",
         [
-            # Realistic llama.cpp / ggml output that mentions the words but is
-            # not the arch mismatch.
+            # Realistic llama.cpp / ggml output that mentions the words but is not the arch mismatch.
             "ggml_cuda_compute_forward: RMS_NORM failed\nCUDA error: invalid argument",
             "load_model: error loading model: invalid model file magic",
             "llama_model_load: error loading model: check_tensor_dims: tensor "
@@ -439,26 +427,21 @@ class TestKernelImageInvalidDoesNotFalsePositive:
             "ROCm error: device kernel image is invalid",
             "ggml-cuda.cu:76: ROCm error\n  device kernel image is invalid\n  current device: 1",
             "DEVICE KERNEL IMAGE IS INVALID".lower(),
-            # hipErrorNoBinaryForGpu: HIP's other code for the same mismatch, and
-            # the one documented as code compiled for a different arch. Neither field
-            # log showed it, but another ROCm or ggml build raises it for this pick.
+            # hipErrorNoBinaryForGpu: HIP's other code for the same mismatch, and the one documented
+            # as code compiled for a different arch.
             "ROCm error: no kernel image is available for execution on the device",
             "ggml-cuda.cu:76: ROCm error\n"
             "  no kernel image is available for execution on the device\n"
             "  current device: 1",
-            # The same code raised during backend init rather than at a kernel
-            # launch: ggml prints it through a different format string, so the
-            # match has to be on the message and not on the "ROCm error:" prefix.
+            # The same code raised during backend init rather than at a kernel launch: ggml prints
+            # it through a different format string, so the match is on the message, not the prefix.
             "ggml_cuda_init: failed to initialize ROCm: "
             "no kernel image is available for execution on the device",
-            # cudaErrorNoKernelImageForDevice. Same string, same defect, and the
-            # retry is not ROCm-gated, so an NVIDIA host with a build that has
-            # no kernels for one of its cards recovers the same way.
+            # cudaErrorNoKernelImageForDevice.
             "CUDA error: no kernel image is available for execution on the device",
-            # hipErrorInvalidKernelFile / hipErrorInvalidDeviceFunction: clr raises
-            # them from the same fat-binary load as the two above and propagates
-            # them out of the launch path, so a build that surfaces either would
-            # otherwise be left on the misleading GGUF error.
+            # hipErrorInvalidKernelFile / hipErrorInvalidDeviceFunction: clr raises them from the
+            # same fat-binary load and propagates them out of the launch path, so a build surfacing
+            # either would otherwise be left on the misleading GGUF error.
             "ROCm error: invalid kernel file",
             "hipErrorInvalidDeviceFunction: invalid device function",
             "ggml-cuda.cu:76: ROCm error\n  invalid device function\n  current device: 1",
@@ -481,9 +464,8 @@ class TestKernelImageInvalidDoesNotFalsePositive:
         ],
     )
     def test_matching_is_case_insensitive(self, output):
-        # hipGetErrorString is lowercase but the layers reprinting it are not
-        # consistent, and a missed match costs the whole recovery. Safe because the
-        # markers are specific enough that folding case pulls nothing unrelated in.
+        # hipGetErrorString is lowercase but the layers reprinting it are not consistent, and a
+        # missed match costs the whole recovery.
         assert LlamaCppBackend._kernel_image_invalid(output)
 
     def test_non_string_input_is_not_a_match(self):
@@ -504,8 +486,8 @@ class TestArchCrashRetryFiresAtMostOnce:
         assert text.count("_arch_crash_retry_gpu_ids(") == 2  # definition + the one call site
 
     def test_a_second_pass_over_the_same_state_yields_nothing(self, monkeypatch):
-        # After the retry narrows [0, 1] to [1], re-running the decision on the
-        # narrowed set is a single-GPU selection and answers [].
+        # After the retry narrows [0, 1] to [1], re-running the decision on the narrowed set is a
+        # single-GPU selection and answers [].
         _unified(monkeypatch, {0})
         first = LlamaCppBackend._arch_crash_retry_gpu_ids([0, 1], [0, 1])
         assert first == [1]
@@ -534,8 +516,8 @@ class TestArchRetryDropsTensorSplit:
             "-ngl",
             "-1",
         ]
-        # An "=" form carries its value in the token, so nothing may be skipped
-        # after it -- dropping the next token would eat --ngl's flag.
+        # An "=" form carries its value in the token, so nothing may be skipped after it -- dropping
+        # the next token would eat --ngl's flag.
         assert LlamaCppBackend._without_tensor_split(["s", "--tensor-split=1,2", "-ngl"]) == [
             "s",
             "-ngl",
@@ -546,13 +528,9 @@ class TestArchRetryDropsTensorSplit:
     def test_a_command_without_a_split_reports_nothing_to_do(self):
         cmd = ["llama-server", "-m", "x.gguf", "--split-mode", "tensor", "-ngl", "-1"]
         assert LlamaCppBackend._without_tensor_split(cmd) is None
-        # Known limitation, pinned not fixed: the scan is positional, so a VALUE
-        # spelled exactly like the flag is removed as if it were one and the
-        # two-token form then swallows the argument after it. No Unsloth-built argv
-        # can reach this -- the only free-text values are the model path and the
-        # HF-derived --alias, llama.cpp's own value tokens being numbers or enum
-        # words -- so teaching the scanner every flag's arity is not worth it. If a
-        # caller-supplied value can ever be "-ts" or "--split-mode", it breaks here.
+        # Known limitation, pinned not fixed: the scan is positional, so a VALUE spelled exactly
+        # like the flag is removed as if it were one and the two-token form swallows the argument
+        # after it.
         assert LlamaCppBackend._without_tensor_split(["s", "--alias", "-ts"]) == ["s", "--alias"]
 
     def test_only_the_split_is_removed(self):
@@ -584,13 +562,12 @@ class TestArchRetryDropsTensorSplit:
         ]
 
     def test_the_retry_call_site_drops_it_before_respawning(self):
-        # Source-level, like test_source_has_a_single_archfallback_spawn: the
-        # respawn is one straight-line block with no test seam, so pin that the
-        # drop happens between narrowing the device set and the respawn.
+        # Source-level, like test_source_has_a_single_archfallback_spawn: the respawn is one
+        # straight-line block with no test seam, so pin that the drop happens between narrowing the
+        # device set and the respawn.
         path = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         text = path.read_text(encoding = "utf-8")
-        # Two call sites: the arch-crash retry, and the manual-split launch the
-        # gate narrows. Both mask devices out from under a positional ratio.
+        # Two call sites: the arch-crash retry, and the manual-split launch the gate narrows.
         assert text.count("self._without_tensor_split(") == 2
         block = text.split("_arch_crash_retry_gpu_ids(\n")[-1].split('label = "-archfallback"')[0]
         assert "_without_tensor_split(cmd)" in block
@@ -609,9 +586,9 @@ class TestArchRetryRestoresTheMemoryPolicy:
 
     def test_the_launch_snapshots_what_cmd_means(self):
         text = self._source()
-        # Snapshotted at the launch, not re-derived at the retry: re-probing
-        # residency for the SURVIVORS would mark an APU survivor mlock-applicable
-        # against a lock-free argv, turning every later duplicate load into a reload.
+        # Snapshotted at the launch, not re-derived at the retry: re-probing residency for the
+        # SURVIVORS would mark an APU survivor mlock-applicable against a lock-free argv, turning
+        # every later duplicate load into a reload.
         assert "_mem_policy_for_cmd = (" in text
         _snap = [
             _line.strip().rstrip(",")
@@ -634,10 +611,8 @@ class TestArchRetryRestoresTheMemoryPolicy:
             for _line in block.split(") = _mem_policy_for_cmd")[0].split("(")[-1].splitlines()
             if _line.strip()
         ]
-        # Exact names, in the snapshot's order: a tuple unpack cannot report a
-        # mismatch, so a renamed or reordered target restores the wrong field.
-        # _mem_host_resident is included, or the respawn's own --fit retry reads the
-        # crashed launch's re-armed lock as held and skips re-arming.
+        # Exact names, in the snapshot's order: a tuple unpack cannot report a mismatch, so a
+        # renamed or reordered target restores the wrong field.
         assert _restored == [
             "_mem_host_resident",
             "self._memory_state",
@@ -689,8 +664,8 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
 
     def test_unknown_coverage_fails_open_without_probing(self, monkeypatch):
-        # NVIDIA, CPU-only, Vulkan and macOS have no mapped_targets marker. The
-        # marker check comes first, so neither probe may run at all.
+        # NVIDIA, CPU-only, Vulkan and macOS have no mapped_targets marker, and the marker check
+        # comes first, so neither probe may run at all.
         seen = self._probes(
             monkeypatch, gated = [(1, 24000)], everything = [(0, 1), (1, 24000)], archs = None
         )
@@ -734,8 +709,8 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         from core.rag.embed_llama_server import LlamaServerBackend
 
         env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = True)
-        # prefer_rocr: a HIP-only mask still lets HSA enumerate the unsupported
-        # agent, which is the segfault the pin exists to avoid.
+        # prefer_rocr: a HIP-only mask still lets HSA enumerate the unsupported agent, which is the
+        # segfault the pin exists to avoid.
         assert calls == [("1", {"prefer_rocr": True})], calls
         assert env.get("CUDA_VISIBLE_DEVICES") != ""  # the CPU sentinel, not this path
 
@@ -757,11 +732,9 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         hid -- the dropped one included."""
         self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
         calls = self._spy_visibility(monkeypatch)
-        # torch must be importable, not just _torch_is_rocm patched:
-        # _active_gpu_visibility_mask reads the ROCr mask only inside its `import
-        # torch` try, so without torch it answers from CUDA_VISIBLE_DEVICES and an
-        # unmappable ROCr mask reads back as "no mask" -- the wrong branch, failing
-        # on any runner whose dependency set omits torch.
+        # torch must be importable, not just _torch_is_rocm patched: _active_gpu_visibility_mask
+        # reads the ROCr mask only inside its `import torch` try, so without torch it answers from
+        # CUDA_VISIBLE_DEVICES and an unmappable ROCr mask reads back as "no mask".
         monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace())
         monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: True))
         monkeypatch.setattr(sys, "platform", "linux")
@@ -789,8 +762,8 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         assert calls == []  # no pin: the gate has nothing to narrow on a CPU load
         assert env["CUDA_VISIBLE_DEVICES"] == ""
         assert env["HIP_VISIBLE_DEVICES"] == "-1"
-        # ROCR hides agents BELOW HIP, so clearing it would expose more of them
-        # to the enumeration that dies on an uncovered arch. Left as inherited.
+        # ROCR hides agents BELOW HIP, so clearing it would expose more of them to the enumeration
+        # that dies on an uncovered arch.
         assert env["ROCR_VISIBLE_DEVICES"] == "0"
 
 
@@ -827,8 +800,8 @@ class TestTheGateNeverRewritesAnUnmappableMask:
         assert seen == [], f"the host paid for the probes it cannot use: {seen}"
 
     def test_an_index_mask_still_narrows(self, monkeypatch):
-        # The fail-open must key on "set but unparseable", not on "unset": an
-        # ordinary numeric mask still maps back, so the gate keeps working.
+        # The fail-open must key on "set but unparseable", not on "unset": an ordinary numeric mask
+        # still maps back, so the gate keeps working.
         self._rocm_host(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
 
@@ -943,7 +916,6 @@ class TestArchForcedCpuHoldsNoVram:
         assert backend.holds_no_vram is False
 
 
-# ── The gated split still dedupes an identical repeat load ─────────────────
 
 
 class _StubProcess:

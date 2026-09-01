@@ -42,8 +42,8 @@ def blobs(monkeypatch, tmp_path):
     blobs_dir.mkdir(parents = True)
     monkeypatch.setenv("HF_HUB_CACHE", str(blobs_root))
 
-    # Honours an explicit root, which is what a row pinned to another cache passes. A stub that
-    # ignored the argument would hide exactly the bug the pinned tests are about.
+    # Honours an explicit root, which is what a row pinned to another cache passes; a stub ignoring
+    # the argument would hide the bug the pinned tests are about.
     def _root(*, root: Optional[Path] = None, **_kw):
         return Path(root) if root is not None else blobs_root
 
@@ -112,10 +112,8 @@ def test_a_complete_variant_has_nothing_left_to_fetch(blobs):
     assert variant_remaining_bytes("Org/Model", _split_plan()) == 0
 
 
-# --------------------------------------------------------------------------------------------
-# Offline and local-cache listings, which have no hub plan to price from. The on-device card
-# asks for those (preferLocalCache), so leaving them unpriced showed the full total there.
-# --------------------------------------------------------------------------------------------
+# Offline and local-cache listings have no hub plan to price from, and the on-device card asks
+# for those (preferLocalCache), so leaving them unpriced showed the full total there.
 
 
 @pytest.fixture
@@ -145,8 +143,8 @@ def test_a_row_with_no_manifest_stays_unpriced(blobs, state):
 
 
 def test_a_companion_the_row_does_not_count_is_still_priced(blobs, state):
-    # The mmproj comes down with the quant, so it belongs in the transfer even though the
-    # row's own size does not include it.
+    # The mmproj comes down with the quant, so it belongs in the transfer even though the row's own
+    # size does not include it.
     _write_manifest(
         [
             ExpectedFile(path = "model-Q4_K_M.gguf", size = 4 * GB, sha256 = SHARD_A),
@@ -178,11 +176,8 @@ def test_a_local_row_is_not_capped_by_the_shards_it_already_has(blobs, state):
     assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None) == 4 * GB
 
 
-# --------------------------------------------------------------------------------------------
-# A partial is measured by the bytes really on disk, and one shard is credited once however
-# many repo directories the cache holds for the same repo. Both were observed against real
-# caches.
-# --------------------------------------------------------------------------------------------
+# A partial is measured by the bytes really on disk, and one shard is credited once however many
+# repo directories the cache holds for the same repo. Both were observed against real caches.
 
 
 MB = 1024**2
@@ -211,8 +206,8 @@ def test_a_sparse_partial_is_priced_by_the_bytes_it_actually_holds(blobs):
     assert partial.stat().st_size == 64 * MB
     assert partial.stat().st_blocks * 512 < 8 * MB
 
-    # Held lock: the one state in which a partial no later attempt could reopen still counts,
-    # because a live writer is finishing it. That is exactly when it is sparsest.
+    # Held lock: the one state in which a partial no later attempt could reopen still counts, because
+    # a live writer is finishing it.
     lock_path = blobs.parent.parent / ".locks" / blobs.parent.name / f"{SHARD_A}.lock"
     lock_path.parent.mkdir(parents = True, exist_ok = True)
     with FileLock(str(lock_path), timeout = 5):
@@ -235,10 +230,8 @@ def test_one_shard_in_two_case_variant_repo_dirs_is_credited_once(blobs, monkeyp
     assert variant_remaining_bytes("Org/Model", _split_plan()) == 2 * GB
 
 
-# --------------------------------------------------------------------------------------------
-# A row pinned to another cache root. A resume writes into the root the row names, so blobs in
+# A row pinned to another cache root: a resume writes into the root the row names, so blobs in
 # the active root are not bytes it can reuse. Both directions used to be wrong.
-# --------------------------------------------------------------------------------------------
 
 
 def test_a_pinned_root_gets_credit_for_the_shards_it_holds(blobs, tmp_path):
@@ -252,8 +245,8 @@ def test_a_pinned_root_gets_credit_for_the_shards_it_holds(blobs, tmp_path):
 
 
 def test_the_active_roots_copy_does_not_pay_for_a_pinned_row(blobs, tmp_path):
-    # The whole variant sits in the active root and none of it in the pinned one, so counting
-    # it reported nothing left to fetch for a transfer that has everything still to do.
+    # The whole variant sits in the active root and none in the pinned one, so counting it reported
+    # nothing left to fetch for a transfer that has everything still to do.
     _write(blobs / SHARD_A, 2 * GB)
     _write(blobs / SHARD_B, 2 * GB)
     other_root = tmp_path / "previous-hub"

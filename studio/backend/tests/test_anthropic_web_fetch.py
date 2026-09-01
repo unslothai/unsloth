@@ -68,7 +68,6 @@ def _tool_events(lines: list[str]) -> list[dict]:
     return out
 
 
-# ── request body ────────────────────────────────────────────────────
 
 
 def test_web_fetch_tool_appended_to_request_body(monkeypatch):
@@ -102,7 +101,6 @@ def test_web_fetch_tool_appended_to_request_body(monkeypatch):
 
     body = captured["body"]
     tools = body.get("tools") or []
-    # claude-opus-4-7 routes web_fetch to _20260209.
     assert {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5} in tools
     # web_fetch is GA; no beta header is required.
     assert "web-fetch" not in captured["headers"].get("anthropic-beta", "")
@@ -139,13 +137,12 @@ def test_web_fetch_combined_with_web_search_and_code_execution(monkeypatch):
 
     tools = captured["body"].get("tools") or []
     tool_types = [t.get("type") for t in tools]
-    # claude-opus-4-7 routes web_search/web_fetch to _20260209 and
-    # code_execution to _20260120 (per PR 5679 dispatch).
+    # claude-opus-4-7 routes web_search/web_fetch to _20260209 and code_execution to _20260120 (per
+    # PR 5679 dispatch).
     assert "web_search_20260209" in tool_types, tool_types
     assert "web_fetch_20260209" in tool_types, tool_types
     assert "code_execution_20260120" in tool_types, tool_types
-    # Code-execution still adds its beta flag; web_fetch must not have
-    # stripped it.
+    # Code-execution still adds its beta flag; web_fetch must not have stripped it.
     assert "code-execution-2025-08-25" in captured["headers"].get("anthropic-beta", "")
 
 
@@ -181,13 +178,11 @@ def test_no_web_fetch_tool_when_pill_off(monkeypatch):
     assert all(t.get("type") not in ("web_fetch_20250910", "web_fetch_20260209") for t in tools)
 
 
-# ── SSE translation ─────────────────────────────────────────────────
 
 
 def test_web_fetch_success_emits_tool_start_and_end(monkeypatch):
     sse_events = [
         {"type": "message_start", "message": {"usage": {}}},
-        # The model decides to fetch.
         {
             "type": "content_block_start",
             "index": 0,
@@ -206,7 +201,6 @@ def test_web_fetch_success_emits_tool_start_and_end(monkeypatch):
             },
         },
         {"type": "content_block_stop", "index": 0},
-        # Anthropic returns the fetched document inline.
         {
             "type": "content_block_start",
             "index": 1,
@@ -262,8 +256,8 @@ def test_web_fetch_success_emits_tool_start_and_end(monkeypatch):
     assert start["type"] == "tool_start"
     assert start["tool_name"] == "web_fetch"
     assert start["tool_call_id"] == "srvtoolu_wf1"
-    # `_server_tool: True` marks this a provider-side synthetic tool card
-    # for the frontend's history serializer.
+    # `_server_tool: True` marks this a provider-side synthetic tool card for the frontend's history
+    # serializer.
     assert start["arguments"] == {"url": "https://example.com/article", "_server_tool": True}
     assert end["type"] == "tool_end"
     assert end["tool_call_id"] == "srvtoolu_wf1"
@@ -340,7 +334,6 @@ def test_web_fetch_error_renders_error_code(monkeypatch):
     assert end["result"] == "Error: url_not_accessible"
 
 
-# ── pause_turn must not emit a truncating finish_reason ─────────────
 
 
 def _finish_reasons(lines: list[str]) -> list:
@@ -369,10 +362,8 @@ def _finish_reasons(lines: list[str]) -> list:
 
 
 def test_pause_turn_does_not_emit_finish_reason_chunk(monkeypatch):
-    # Anthropic emits `pause_turn` when a long server-tool turn pauses and
-    # resumes next request. Mapping it to finish_reason="stop" truncates the
-    # OpenAI client's message, so the adapter must skip the chunk and end
-    # cleanly with [DONE] and no terminal finish_reason.
+    # Anthropic emits `pause_turn` when a long server-tool turn pauses and resumes next request;
+    # mapping it to finish_reason="stop" truncates the OpenAI client's message.
     sse_events = [
         {"type": "message_start", "message": {"usage": {}}},
         {
@@ -406,14 +397,12 @@ def test_pause_turn_does_not_emit_finish_reason_chunk(monkeypatch):
         )
 
     lines = _drive(run())
-    # No finish_reason chunk for pause_turn -- only [DONE] signals
-    # completion.
+    # No finish_reason chunk for pause_turn -- only [DONE] signals completion.
     assert _finish_reasons(lines) == [], lines
     assert any(line.strip() == "data: [DONE]" for line in lines), lines
 
 
 def test_end_turn_still_emits_stop_finish_reason(monkeypatch):
-    # Sanity: pause_turn -> None mapping must not regress end_turn.
     sse_events = [
         {"type": "message_start", "message": {"usage": {}}},
         {
@@ -486,9 +475,8 @@ def test_refusal_maps_to_content_filter(monkeypatch):
 
 
 def test_web_fetch_titleless_document_falls_back_to_url(monkeypatch):
-    # Anthropic may omit `document.title`. Without a fallback the formatter
-    # emits no `Title:` line, and the frontend's parseSourcesFromResult drops
-    # those entries (source pill disappears). Verify it falls back to the URL.
+    # Anthropic may omit `document.title`, and with no `Title:` line the frontend's
+    # parseSourcesFromResult drops the entry; verify it falls back to the URL.
     sse_events = [
         {"type": "message_start", "message": {"usage": {}}},
         {
@@ -526,7 +514,6 @@ def test_web_fetch_titleless_document_falls_back_to_url(monkeypatch):
                             "media_type": "text/plain",
                             "data": "Raw body without an HTML title tag.",
                         },
-                        # No `title` field on the document.
                     },
                 },
             },
@@ -562,7 +549,6 @@ def test_web_fetch_titleless_document_falls_back_to_url(monkeypatch):
     assert len(events) == 2
     end = events[1]
     assert end["type"] == "tool_end"
-    # Title must be present so parseSourcesFromResult emits a pill.
     assert "Title: https://example.com/raw" in end["result"]
     assert "URL: https://example.com/raw" in end["result"]
     assert "Snippet: Raw body without an HTML title tag." in end["result"]

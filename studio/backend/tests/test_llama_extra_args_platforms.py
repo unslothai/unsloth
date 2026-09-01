@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-# The placement harness (module stubs, a fake GGUF, a fake GPU probe, the captured
-# Popen) already exists; by path, because the tests dir is not a package.
+# The placement harness (module stubs, a fake GGUF, a fake GPU probe, the captured Popen) already
+# exists; by path, because the tests dir is not a package.
 _PLACEMENT_PATH = Path(__file__).resolve().parent / "test_llama_cpp_placement.py"
 _spec = importlib.util.spec_from_file_location("_placement_harness_platforms", _PLACEMENT_PATH)
 _placement = importlib.util.module_from_spec(_spec)
@@ -40,8 +40,8 @@ PLATFORMS = [
     ("macos", "darwin", "posix", None),
 ]
 
-# (label, vulkan, memory) -- memory [] is the CPU-only / no-device answer the probe
-# gives when there is nothing to place on.
+# (label, vulkan, memory) -- memory [] is the CPU-only / no-device answer the probe gives when there
+# is nothing to place on.
 ACCELERATORS = [
     ("nvidia-single", False, [(0, 20_000, 24_000)]),
     ("nvidia-multi", False, [(0, 20_000, 24_000), (1, 20_000, 24_000)]),
@@ -103,10 +103,9 @@ def _without_flag_value(cmd: list[str], flag: str) -> list[str]:
 def test_windows_unicode_slot_path_only_drops_optional_persistence(tmp_path, monkeypatch):
     """A/B: all launch arguments survive; only the broken optional pair is absent."""
     windows = PLATFORMS[2]
-    # Relative to tmp_path, because the predicate reads the WHOLE path: pytest's
-    # tmp_path lives under the profile, so on the very hosts this regression is about
-    # (C:\Users\Егор\AppData\Local\Temp) a tmp_path-rooted control arm is not ASCII
-    # either, both launches drop the flag, and the A/B stops comparing anything.
+    # Relative to tmp_path, because the predicate reads the WHOLE path: pytest's tmp_path lives under the
+    # profile, so on the very hosts this regression is about (C:\\Users\\<non-ASCII>\\AppData\\Local\\Temp)
+    # a tmp_path-rooted control arm is not ASCII either and the A/B stops comparing anything.
     monkeypatch.chdir(tmp_path)
     ascii_dir = Path("Egor") / "llama-slots"
     unicode_dir = Path("Егор") / "llama-slots"
@@ -133,8 +132,7 @@ def test_unicode_slot_path_is_unchanged_off_native_windows(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
 def test_an_empty_box_changes_nothing_anywhere(tmp_path, monkeypatch, platform, accelerator):
-    # The acceptance bar, on every combination. None (inherit) and [] (explicitly
-    # none) are both "the user did not put anything in the box".
+    # The acceptance bar, on every combination.
     _apply_platform(monkeypatch, platform)
     _label, vulkan, memory = accelerator
 
@@ -152,8 +150,8 @@ def test_an_empty_box_changes_nothing_anywhere(tmp_path, monkeypatch, platform, 
 def test_an_extra_arg_lands_last_and_changes_nothing_before_it(
     tmp_path, monkeypatch, platform, accelerator
 ):
-    # Appended, never interleaved: llama.cpp's last-wins parsing is the whole
-    # mechanism, and a flag that landed early would lose to Unsloth's own.
+    # Appended, never interleaved: llama.cpp's last-wins parsing is the whole mechanism, and a flag
+    # that landed early would lose to Unsloth's own.
     _apply_platform(monkeypatch, platform)
     _label, vulkan, memory = accelerator
 
@@ -170,9 +168,8 @@ def test_an_extra_arg_lands_last_and_changes_nothing_before_it(
 def test_placement_is_not_moved_by_an_unrelated_extra_arg(
     tmp_path, monkeypatch, platform, accelerator
 ):
-    # A flag Unsloth's estimator knows nothing about must not disturb the flags it
-    # computed: the offload decision belongs to the placement code on every one of
-    # these accelerators, and --seed has no business changing it.
+    # A flag Unsloth's estimator knows nothing about must not disturb the flags it computed: the offload
+    # decision belongs to the placement code on every one of these accelerators.
     _apply_platform(monkeypatch, platform)
     _label, vulkan, memory = accelerator
     placement_flags = {
@@ -207,8 +204,8 @@ def test_placement_is_not_moved_by_an_unrelated_extra_arg(
 def test_a_denied_flag_is_refused_identically_everywhere(
     tmp_path, monkeypatch, platform, accelerator
 ):
-    # The denylist is a property of Unsloth, not of the host: a flag refused on
-    # Linux must not be reachable by running the same build on Windows.
+    # The denylist is a property of Unsloth, not of the host: a flag refused on Linux must not be
+    # reachable by running the same build on Windows.
     from core.inference.llama_server_args import validate_extra_args
     _apply_platform(monkeypatch, platform)
     for denied in (["--agent"], ["--mcp-servers-json", "{}"], ["--log-file", "x"]):
@@ -218,8 +215,8 @@ def test_a_denied_flag_is_refused_identically_everywhere(
 
 @pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
 def test_a_windows_shaped_value_survives_as_one_token(tmp_path, monkeypatch, platform):
-    # Backslashes and a drive letter are ordinary characters to the backend: the
-    # split happens in the browser, and the API takes one argv token per entry.
+    # Backslashes and a drive letter are ordinary characters to the backend: the split happens in
+    # the browser, and the API takes one argv token per entry.
     _apply_platform(monkeypatch, platform)
     windows_path = r"C:\\Users\\me\\models\\template.jinja"
 
@@ -231,21 +228,21 @@ def test_a_windows_shaped_value_survives_as_one_token(tmp_path, monkeypatch, pla
 
 @pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
 def test_the_denied_env_twins_are_scrubbed_on_every_platform(tmp_path, monkeypatch, platform):
-    # llama.cpp reads LLAMA_ARG_* before argv on all of them, so denying the token
-    # without the variable would leave the capability reachable wherever Unsloth runs.
+    # llama.cpp reads LLAMA_ARG_* before argv on all of them, so denying the token without the
+    # variable would leave the capability reachable wherever Unsloth runs.
     _apply_platform(monkeypatch, platform)
     monkeypatch.setenv("LLAMA_ARG_AGENT", "1")
     monkeypatch.setenv("LLAMA_ARG_TOOLS", "all")
-    # The logging twin matters most of all: Unsloth classifies a failed start by
-    # reading llama-server's output, and nothing it emits later overrides this.
+    # The logging twin matters most of all: Unsloth classifies a failed start by reading
+    # llama-server's output, and nothing it emits later overrides this.
     monkeypatch.setenv("LLAMA_ARG_LOG_FILE", "/tmp/llama.log")
-    # --api-prefix moves /health, which every load waits on, and an inherited API key
-    # makes the healthy child refuse requests Unsloth sends without one.
+    # --api-prefix moves /health, which every load waits on, and an inherited API key makes the
+    # healthy child refuse requests Unsloth sends without one.
     monkeypatch.setenv("LLAMA_ARG_API_PREFIX", "/llama")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-someone-elses")
     monkeypatch.setenv("LLAMA_ARG_API_KEY_FILE", "/etc/llama.keys")
-    # Given both TLS twins llama-server listens on https, while Unsloth probes /health
-    # and proxies over http: the child is healthy and every load times out.
+    # Given both TLS twins llama-server listens on https, while Unsloth probes /health and proxies
+    # over http: the child is healthy and every load times out.
     monkeypatch.setenv("LLAMA_ARG_SSL_KEY_FILE", "/etc/llama/key.pem")
     monkeypatch.setenv("LLAMA_ARG_SSL_CERT_FILE", "/etc/llama/cert.pem")
     monkeypatch.setenv("LLAMA_ARG_NO_WARMUP", "1")
@@ -261,17 +258,15 @@ def test_the_denied_env_twins_are_scrubbed_on_every_platform(tmp_path, monkeypat
     assert "LLAMA_ARG_API_KEY_FILE" not in env
     assert "LLAMA_ARG_SSL_KEY_FILE" not in env
     assert "LLAMA_ARG_SSL_CERT_FILE" not in env
-    # Not a general purge: a variable that is not a denied flag's twin, and that
-    # no other reconciliation claims, is the user's own configuration and stays.
+    # Not a general purge: a variable that is not a denied flag's twin, and that no other
+    # reconciliation claims, is the user's own configuration and stays.
     assert env.get("LLAMA_ARG_NO_WARMUP") == "1"
 
 
 @pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
 def test_the_size_cap_leaves_room_for_the_rest_of_a_windows_command(monkeypatch, platform):
-    # CreateProcess takes ONE string for the whole command line, capped at 32767
-    # characters, and the model path, Unsloth's own flags and subprocess's quoting
-    # come out of the same budget. A grammar that passed here and then failed inside
-    # Popen would do so after the load had begun switching models.
+    # CreateProcess takes ONE string for the whole command line, capped at 32767 characters, and the
+    # model path, Unsloth's own flags and subprocess's quoting share that budget.
     import sys as _sys
 
     from core.inference import llama_server_args as lsa
@@ -287,8 +282,6 @@ def test_the_size_cap_leaves_room_for_the_rest_of_a_windows_command(monkeypatch,
     else:
         assert limit == lsa.MAX_EXTRA_ARGS_BYTES
 
-    # And the validator refuses at that cap, naming it.
     with pytest.raises(ValueError, match = str(limit)):
         lsa.validate_extra_args(["--grammar", "x" * (limit + 1)])
-    # Just under it is accepted on every platform.
     assert lsa.validate_extra_args(["--grammar", "x" * (limit - 32)])

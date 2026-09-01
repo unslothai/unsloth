@@ -44,8 +44,8 @@ def _thinking_default_off(model_identifier: str) -> bool:
     ],
 )
 def test_moe_total_params_win_over_active_params(model_id):
-    # extract_model_size_b() prefers A3B and reads 35B-A3B as 3B, which turned thinking off
-    # on a medium-tier model.
+    # extract_model_size_b() prefers A3B and reads 35B-A3B as 3B, which turned thinking off on a
+    # medium-tier model.
     assert _thinking_default_off(model_id) is False
 
 
@@ -73,8 +73,7 @@ def test_sub_9b_turns_thinking_off(model_id):
     [
         "/models/8bit/qwen3.6-27b.gguf",
         "/models/8b/qwen3.6-27b.gguf",
-        # Directory identifier, so there is no file name to prefer: the segment nearest
-        # the leaf has to win instead.
+        # A directory identifier has no file name to prefer, so the segment nearest the leaf wins.
         "/models/8b/Qwen3.5-35B-A3B/UD-Q4_K_XL",
         "/models/4b/Qwen3.6-27B-GGUF/snapshots/bfc15c3",
     ],
@@ -95,9 +94,8 @@ def test_other_models_are_never_gated(model_id):
     "model_id", ["Qwen3.5-4 B-GGUF", "unsloth/Qwen3.5-800M-GGUF", "unsloth/Qwen3.5-4 B"]
 )
 def test_spacing_and_millions_match_extract_model_size_b(model_id):
-    # extract_model_size_b allows \s* before the unit and converts an M suffix to billions.
-    # The inline matcher replaces it only for the MoE total-vs-active fix, so it has to keep
-    # reading the same spellings.
+    # extract_model_size_b allows \\s* before the unit and converts an M suffix to billions, and the
+    # inline matcher replaces it only for the MoE fix, so it must read the same spellings.
     assert _thinking_default_off(model_id) is True
 
 
@@ -106,6 +104,6 @@ def test_spacing_and_millions_match_extract_model_size_b(model_id):
     ["Q4_K_M", "Q3_K_M", "IQ3_M", "UD-Q4_K_XL", "Q8_0", "BF16", "MXFP4"],
 )
 def test_quant_subdirs_never_read_as_a_size(quant):
-    # The M suffix is the risk here: a quant name is the leaf segment, so it is scanned first.
+    # The M suffix is the risk: a quant name is the leaf segment, so it is scanned first.
     assert _thinking_default_off(f"unsloth/Qwen3.5-35B-A3B-GGUF/{quant}") is False
     assert _thinking_default_off(f"unsloth/Qwen3.5-4B-GGUF/{quant}") is True

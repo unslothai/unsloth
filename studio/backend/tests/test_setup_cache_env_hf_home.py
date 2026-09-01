@@ -30,8 +30,7 @@ def _isolate_studio_home(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse = True)
 def _restore_hf_cache_settings_module():
-    # _load_storage_roots pops utils.hf_cache_settings so each test gets a fresh resolver. Left popped, the next import builds a SECOND module object
-    # and rebinds it on the utils package, so a later test writes its setting into one object while the code under test reads the other. Restore both.
+    # Left popped, the next import builds a SECOND hf_cache_settings, so writer and reader hold different objects.
     import utils
 
     name = "utils.hf_cache_settings"
@@ -52,8 +51,7 @@ def _restore_hf_cache_settings_module():
 
 
 def _load_storage_roots():
-    # Each test models a fresh backend process. The cache resolver intentionally
-    # snapshots explicit environment variables once per process.
+    # Each test models a fresh backend process: the cache resolver snapshots env vars once per process.
     sys.modules.pop("utils.hf_cache_settings", None)
     spec = importlib.util.spec_from_file_location("storage_roots_under_test", _STORAGE_ROOTS_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -137,8 +135,7 @@ def test_whitespace_hf_home_falls_back_to_default(monkeypatch, tmp_path):
 
 
 def test_unwritable_hf_home_does_not_crash(monkeypatch, tmp_path):
-    # HF_HOME under a regular file -> mkdir fails; startup must not crash and the
-    # env var is still set (HF surfaces a clear error later, at download time).
+    # HF_HOME under a regular file makes mkdir fail; startup must not crash, and HF still errors at download.
     blocker = tmp_path / "blocker"
     blocker.write_text("not a dir")
     unwritable = blocker / "hf"
@@ -146,7 +143,7 @@ def test_unwritable_hf_home_does_not_crash(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(unwritable))
     sr = _load_storage_roots()
 
-    sr._setup_cache_env()  # must not raise
+    sr._setup_cache_env()
 
     import os
 

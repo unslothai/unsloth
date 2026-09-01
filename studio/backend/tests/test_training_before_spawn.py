@@ -58,7 +58,7 @@ class TestBeforeSpawnHook(unittest.TestCase):
         hook = MagicMock()
         ok = _start(backend, hook)
         self.assertFalse(ok)
-        hook.assert_not_called()  # never free chat VRAM for a refused start
+        hook.assert_not_called()
 
     def test_hook_skipped_when_pump_thread_will_not_die(self):
         backend = TrainingBackend()
@@ -75,12 +75,11 @@ class TestBeforeSpawnHook(unittest.TestCase):
         backend = TrainingBackend()
         hook = MagicMock(side_effect = RuntimeError("boom"))
         ok = _start(backend, hook)
-        self.assertTrue(ok)  # training still starts despite a hook error
+        self.assertTrue(ok)
         hook.assert_called_once()
 
     def test_hook_skipped_when_gpu_selection_rejects(self):
-        # Invalid gpu_ids raise in prepare_gpu_selection (before the spawn), so the
-        # hook must NOT run -- a refused start frees no chat/export VRAM.
+        # Invalid gpu_ids raise before the spawn, so the hook must NOT run: a refused start frees no VRAM.
         backend = TrainingBackend()
         hook = MagicMock()
         with (
@@ -103,9 +102,7 @@ class TestBeforeSpawnHook(unittest.TestCase):
         process_mock.assert_not_called()
 
     def test_auto_placement_runs_after_hook(self):
-        # Auto-selection ranks GPUs by free VRAM, so it must run AFTER the hook
-        # frees export/chat -- otherwise training could be pinned onto a freed GPU
-        # (or onto a GPU holding a chat model the probe decided to keep).
+        # Auto-selection ranks GPUs by free VRAM, so it runs AFTER the hook frees chat, not onto a freed GPU.
         order = []
         backend = TrainingBackend()
         hook = MagicMock(side_effect = lambda: order.append("hook"))
@@ -126,13 +123,12 @@ class TestBeforeSpawnHook(unittest.TestCase):
                 before_spawn = hook,
                 model_name = "unsloth/test",
                 training_type = "LoRA/QLoRA",
-            )  # gpu_ids omitted -> auto mode
+            )
         self.assertTrue(ok)
         self.assertEqual(order, ["hook", "placement"])
 
     def test_explicit_placement_validated_before_hook(self):
-        # Explicit gpu_ids are validated before the hook (so an invalid set 400s
-        # without teardown); explicit placement is VRAM-independent.
+        # Explicit gpu_ids are validated before the hook, so an invalid set 400s without any teardown.
         order = []
         backend = TrainingBackend()
         hook = MagicMock(side_effect = lambda: order.append("hook"))

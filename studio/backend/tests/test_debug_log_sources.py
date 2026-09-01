@@ -177,10 +177,8 @@ def test_containment_survives_a_windows_extended_length_prefix(monkeypatch):
     directory = "C:\\Users\\dan\\.unsloth\\studio\\logs\\server"
     entry = "\\\\?\\C:\\Users\\dan\\.unsloth\\studio\\logs\\server\\server-1-pid2.log"
     assert debug_log_sources._is_inside(entry, directory) is True
-    # The protection it exists for must still hold under the same spelling.
     assert debug_log_sources._is_inside("\\\\?\\C:\\Users\\dan\\.ssh\\id_rsa", directory) is False
     assert debug_log_sources._is_inside("C:\\Users\\dan\\.ssh\\id_rsa", directory) is False
-    # A sibling directory whose name merely starts with ours is not inside it.
     assert debug_log_sources._is_inside(directory + "-old\\x.log", directory) is False
 
 
@@ -270,8 +268,8 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
     monkeypatch.setattr(Path, "stat", _counting_stat)
     files = debug_log_sources._family_files("llama-server")
     assert len(files) == debug_log_sources.MAX_SOURCES_PER_FAMILY
-    # Cost must track the presort slice (MAX * 3 candidates, an is_file plus a
-    # stat each), not the 400 files present.
+    # Cost must track the presort slice (MAX * 3 candidates, an is_file plus a stat each), not the
+    # 400 files present.
     ceiling = debug_log_sources.MAX_SOURCES_PER_FAMILY * 3 * 2 + 8
     assert (
         calls["n"] <= ceiling
@@ -303,7 +301,6 @@ def test_no_live_session_defaults_to_the_newest_log_not_an_old_server_one(tmp_pa
     llama_dir = tmp_path / "logs" / "llama-server"
     server_dir.mkdir(parents = True)
     llama_dir.mkdir(parents = True)
-    # A retained log from a previous run: a pid that is not ours.
     old = server_dir / "server-20260101-000000-pid1.log"
     old.write_text("previous run\n", encoding = "utf-8")
     newest = llama_dir / "llama-1786000000.log"

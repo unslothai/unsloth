@@ -19,7 +19,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from loggers import config as log_config  # noqa: E402
+from loggers import config as log_config
 
 _HUB = "HF_HUB_DISABLE_PROGRESS_BARS"
 
@@ -40,8 +40,7 @@ def test_the_default_is_installed_and_marked(monkeypatch):
 
 
 def test_verbose_leaves_the_bars_alone(monkeypatch):
-    # --verbose zeroes both access-log windows and promises everything back; the flag
-    # is inherited by the workers, so setting it here would keep them quiet anyway.
+    # --verbose zeroes both access-log windows and promises everything back, and the flag is inherited by the workers.
     monkeypatch.setattr(log_config, "_BARS_RESTORED", False)
     monkeypatch.delenv(_HUB, raising = False)
     monkeypatch.setenv("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", "0")
@@ -68,8 +67,7 @@ def test_hugging_face_false_spellings_are_honored(monkeypatch):
 
 
 def test_the_hub_is_not_imported_just_to_quiet_it():
-    # A worker calls setup_logging BEFORE prepending its transformers sidecar to
-    # sys.path; importing the Hub here would cache the base environment's copy.
+    # A worker calls setup_logging BEFORE prepending its transformers sidecar, so importing the Hub caches the base.
     code = (
         "import sys; sys.path.insert(0, %r)\n"
         "import os\n"
@@ -93,7 +91,6 @@ def test_allow_progress_bars_only_undoes_our_own_default(monkeypatch):
 
     assert _HUB not in os.environ
 
-    # An operator who set it themselves keeps it.
     monkeypatch.setenv(_HUB, "1")
     monkeypatch.delenv(log_config._PROGRESS_BARS_DEFAULTED, raising = False)
     log_config.allow_progress_bars()
@@ -107,10 +104,8 @@ def test_the_export_worker_keeps_its_progress_bars():
 
 
 def test_the_datasets_bar_keeps_counting_but_writes_nothing(capfd):
-    # chat_templates.py polls tqdm._instances for the formatting status, and
-    # datasets' own disable_progress_bar() forces tqdm(disable = True), which never
-    # registers the bar at all.
-    import datasets  # noqa: F401
+    # chat_templates.py polls tqdm._instances, and datasets' disable_progress_bar() forces a bar that never registers.
+    import datasets
     from datasets.utils.tqdm import tqdm as ds_bar
     from tqdm.auto import tqdm as base_tqdm
 
@@ -144,17 +139,14 @@ def test_trainer_summary_metrics_are_republished():
 
 
 def test_setup_time_is_never_reported_as_throughput():
-    # elapsed_seconds covers imports, the model load and the dataset build, and on a
-    # resume the counters predate this process, so the first line reports no rate at
-    # all and the second one measures a real in-training interval.
+    # elapsed_seconds covers imports, load and dataset build, and on a resume the counters predate this process.
     text = (_BACKEND / "core/training/training.py").read_text(encoding = "utf-8")
     assert "The first logged line reports no throughput on purpose" in text
     assert "_progress_run_resumed" not in text
 
 
 def test_the_early_dataset_branches_are_covered():
-    # The raw-text and audio-VLM branches run their own filter/map and return before
-    # the chat-template path, so the suppression has to come before them.
+    # The raw-text and audio-VLM branches return before the chat-template path, so the suppression precedes them.
     text = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8")
     quiet_at = text.index("quiet_third_party_progress_bars()")
     assert quiet_at < text.index("# ========== AUDIO MODELS: custom preprocessing ==========")
@@ -162,22 +154,16 @@ def test_the_early_dataset_branches_are_covered():
 
 
 def test_the_dataset_load_itself_is_covered():
-    # load_dataset() draws "Generating train split" and download/extract bars of its
-    # own, on both the local-file and the Hub branch, so the suppression has to come
-    # before the first load and not just before the map/filter work that follows it.
+    # load_dataset() draws bars on both the local and Hub branch, so suppression precedes the first load.
     text = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8")
     body = text[text.index("    def load_and_format_dataset(") :]
     assert body.index("quiet_third_party_progress_bars()") < body.index("= load_dataset(")
-    # The class-level patch needs datasets in sys.modules, which the module-level
-    # import guarantees for every caller of this method.
+    # The class-level patch needs datasets in sys.modules, which the module-level import guarantees.
     assert "\nfrom datasets import Dataset\n" in text
 
 
 def test_the_diffusion_trainers_quiet_diffusers_once_it_is_imported():
-    # diffusers is imported inside the two training entrypoints, not at module level,
-    # so the child-process call runs while it is still absent from sys.modules and
-    # cannot reach it. The pipeline load that draws "Loading pipeline components..."
-    # happens further down the same function.
+    # diffusers is imported inside the two entrypoints, not at module level, so the child call runs before it exists.
     entrypoints = {
         "diffusion_lora_trainer.py": "def run_diffusion_lora_training(",
         "diffusion_dit_trainer.py": "def _train_dit(",
@@ -212,7 +198,6 @@ def test_our_own_conversion_bars_are_redirected(monkeypatch):
 
 
 def test_the_embedding_trainer_is_quiet_too():
-    # _run_embedding_training bypasses UnslothTrainer entirely.
     text = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
     assert '"disable_tqdm": _hf_stdout_progress_disabled(),' in text
     assert "_drop_hf_stdout_callbacks(trainer)" in text
@@ -231,8 +216,7 @@ def test_embedding_runs_republish_the_trainer_summary():
 
 
 def test_evaluation_progress_survives_the_dropped_bar():
-    # ProgressCallback's per-batch eval bar was the only sign a long evaluation was
-    # moving; the replacement has to publish it as status and a structured line.
+    # ProgressCallback's per-batch eval bar was the only sign an evaluation moved, so publish it as status and a line.
     text = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8")
     assert "def on_prediction_step(" in text
     assert '"evaluating"' in text
@@ -254,9 +238,9 @@ def test_evaluation_progress_is_throttled_and_counts():
     ):
         return not (last_report and (now - last_report) < window)
 
-    assert report(1, 0.0, 100.0) is True  # first batch always reports
-    assert report(2, 100.0, 101.0) is False  # a second later, still quiet
-    assert report(900, 100.0, 116.0) is True  # 16s later, one more line
+    assert report(1, 0.0, 100.0) is True
+    assert report(2, 100.0, 101.0) is False
+    assert report(900, 100.0, 116.0) is True
 
 
 def test_the_embedding_worker_quiets_dataset_bars():
@@ -266,18 +250,15 @@ def test_the_embedding_worker_quiets_dataset_bars():
 
 
 def test_evaluation_hands_the_status_back_to_training():
-    # An empty status is ignored downstream, so the UI would sit on "Evaluating..."
-    # for the rest of the run.
+    # An empty status is ignored downstream, so the UI would sit on "Evaluating..." for the rest of the run.
     text = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8")
     on_evaluate = text[text.index("def on_evaluate(") : text.index("def on_prediction_step(")]
     assert "Training in progress..." in on_evaluate
 
 
 def test_the_training_worker_keeps_its_bars_countable():
-    # It polls tqdm._instances to turn the Hub download and "Loading checkpoint shards"
-    # bars into the UI status, and a disabled bar is never registered there. The call
-    # must also precede setup_logging: huggingface_hub reads the env var once, into a
-    # module constant, and refuses to re-enable afterwards.
+    # It polls tqdm._instances to turn the download bars into UI status, and a disabled bar is never
+    # registered. The call must also precede setup_logging: huggingface_hub reads the env var once.
     text = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
     assert text.index("keep_progress_bars_countable()") < text.index(
         'service_name = "unsloth-studio-training-worker"'
@@ -291,7 +272,6 @@ def test_bars_stay_registered_once_the_worker_takes_them_back(monkeypatch, capfd
     from tqdm.auto import tqdm as base_tqdm
     from tqdm.std import tqdm as std_tqdm
 
-    # The redirect patches the shared tqdm class, so put it back for the other tests.
     monkeypatch.setattr(std_tqdm, "__init__", std_tqdm.__init__)
     monkeypatch.setattr(std_tqdm, "_unsloth_every_output_silenced", False, raising = False)
 
@@ -315,7 +295,6 @@ def test_bars_stay_registered_once_the_worker_takes_them_back(monkeypatch, capfd
 
 
 def test_an_operator_who_turned_bars_off_keeps_them_off(monkeypatch):
-    # Only Unsloth's own default is ever taken back.
     monkeypatch.setattr(log_config, "_BARS_RESTORED", False)
     monkeypatch.setenv(_HUB, "1")
     monkeypatch.delenv(log_config._PROGRESS_BARS_DEFAULTED, raising = False)
@@ -329,8 +308,7 @@ def test_an_operator_who_turned_bars_off_keeps_them_off(monkeypatch):
 
 
 def test_the_shared_dataset_loader_quiets_the_bars_it_just_imported():
-    # The server never imports datasets at boot, so setup_logging cannot patch the bar
-    # class; this shared entry point is the first place it exists.
+    # The server never imports datasets at boot, so this shared entry point is where the bar class first exists.
     text = (_BACKEND / "utils/datasets/cache_safe.py").read_text(encoding = "utf-8")
     body = text[text.index("def load_dataset_cache_safe") :]
     assert body.index("from datasets import load_dataset") < body.index(

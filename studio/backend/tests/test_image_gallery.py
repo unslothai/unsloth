@@ -75,14 +75,12 @@ def test_list_is_newest_first():
 
 
 def test_list_paginates_with_limit_offset():
-    # 5 images, newest (t=4) first.
     for i in range(5):
         _save_with_mtime(f"p{i}", float(i))
     page1 = gallery.list_images(limit = 2, offset = 0)
     page2 = gallery.list_images(limit = 2, offset = 2)
     assert [r["prompt"] for r in page1] == ["p4", "p3"]
     assert [r["prompt"] for r in page2] == ["p2", "p1"]
-    # limit=None still returns everything from the offset.
     assert len(gallery.list_images()) == 5
     assert len(gallery.list_images(offset = 4)) == 1
 
@@ -123,14 +121,14 @@ def test_delete_ignores_foreign_png():
 
 
 def test_image_path_rejects_unsafe_ids():
-    # Traversal / bad chars never resolve to a path.
     assert gallery.image_path("../../etc/passwd") is None
     assert gallery.image_path("a/b") is None
     assert gallery.image_path("missing") is None
 
 
 def test_owned_image_path_serves_only_owned_pngs():
-    # A hand-dropped foreign PNG resolves via image_path (safe stem, on disk) but must NOT be served: owned_image_path applies the same recipe check as delete/clear.
+    # A hand-dropped foreign PNG resolves via image_path (safe stem, on disk) but must NOT be
+    # served: owned_image_path applies the same recipe check as delete/clear.
     foreign = gallery.gallery_dir() / "family-photo.png"
     _img().save(foreign, format = "PNG")
     assert gallery.image_path("family-photo") is not None  # resolvable...
@@ -138,7 +136,6 @@ def test_owned_image_path_serves_only_owned_pngs():
 
     ours = gallery.save(_img(), _meta(prompt = "ours"))
     assert gallery.owned_image_path(ours["id"]) is not None
-    # Unsafe / missing ids resolve to nothing, like image_path.
     assert gallery.owned_image_path("../../etc/passwd") is None
     assert gallery.owned_image_path("missing") is None
 
@@ -153,19 +150,20 @@ def test_list_skips_foreign_pngs(tmp_path):
 
 
 def test_foreign_png_in_window_does_not_drop_valid_images():
-    # A foreign PNG sorting INTO the requested page must not consume a window slot: paging is over readable records, not files.
+    # A foreign PNG sorting INTO the requested page must not consume a window slot: paging is over
+    # readable records, not files.
     _save_with_mtime("p2", 100.0)
     foreign = gallery.gallery_dir() / "zzz_foreign.png"
     _img().save(foreign, format = "PNG")  # newest by mtime (set below), sorts first
     os.utime(foreign, (300.0, 300.0))
     _save_with_mtime("p1", 200.0)
-    # First page of 2 must still return both real images, not [p1].
     page1 = gallery.list_images(limit = 2, offset = 0)
     assert [r["prompt"] for r in page1] == ["p1", "p2"]
 
 
 def test_list_skips_recipe_missing_required_fields(tmp_path):
-    # A PNG carrying our chunk but an incomplete/older-schema recipe must be skipped, not crash the listing when the route builds GalleryImage.
+    # A PNG carrying our chunk but an incomplete/older-schema recipe must be skipped, not crash the
+    # listing when the route builds GalleryImage.
     import json
 
     from PIL.PngImagePlugin import PngInfo
@@ -179,7 +177,8 @@ def test_list_skips_recipe_missing_required_fields(tmp_path):
 
 
 def test_valid_callback_paginates_over_accepted_records():
-    # ``valid`` must filter before pagination, else a leading bad record returns a short page with more remaining and stalls scroll.
+    # ``valid`` must filter before pagination, else a leading bad record returns a short page with
+    # more remaining and stalls scroll.
     _save_with_mtime("BAD", 300.0)  # newest, sorts first
     _save_with_mtime("g1", 200.0)
     _save_with_mtime("g2", 100.0)
@@ -187,7 +186,6 @@ def test_valid_callback_paginates_over_accepted_records():
     def _valid(rec):
         return rec.get("prompt") != "BAD"
 
-    # First page of 2 returns both good records, not [g1] or [].
     page = gallery.list_images(limit = 2, offset = 0, valid = _valid)
     assert [r["prompt"] for r in page] == ["g1", "g2"]
     # The has_more probe (limit + 1) sees no extra VALID record beyond the two returned.
@@ -203,7 +201,6 @@ def test_valid_callback_leading_bad_record_does_not_stall_at_offset_zero():
     def _valid(rec):
         return not str(rec.get("prompt", "")).startswith("BAD")
 
-    # The pager must look past the invalid leaders and return the one good record.
     records = gallery.list_images(limit = 2, offset = 0, valid = _valid)
     assert [r["prompt"] for r in records] == ["good"]
 
@@ -216,12 +213,10 @@ def test_save_is_atomic_no_partial_png_on_publish_failure(monkeypatch):
     monkeypatch.setattr(gallery.os, "replace", _boom)
     with pytest.raises(OSError, match = "simulated rename failure"):
         gallery.save(_img(), _meta())
-    # No final PNG surfaced, and the hidden temp was cleaned up.
     assert list(gallery.gallery_dir().glob("*.png")) == []
     assert list(gallery.gallery_dir().iterdir()) == []
 
 
-# --- pin / archive flags ---------------------------------------------------------------------
 
 
 def test_records_carry_default_flags():
@@ -279,7 +274,6 @@ def test_archived_images_do_not_consume_a_page_slot():
         if i % 2 == 0:
             gallery.set_flags(record["id"], archived = True)
     assert [r["prompt"] for r in gallery.list_images(limit = 2)] == ["a3", "a1"]
-    # Only two active records exist, so a limit+1 probe must not invent a third.
     assert len(gallery.list_images(limit = 3)) == 2
     assert [r["prompt"] for r in gallery.list_images(archived = True)] == ["a2", "a0"]
 
@@ -340,7 +334,6 @@ def test_clear_refuses_when_the_flag_store_cannot_be_read():
     (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
     with pytest.raises(gallery_flags.FlagsUnavailable):
         gallery.clear()
-    # Nothing was unlinked before the refusal.
     assert gallery.image_path(record["id"]) is not None
 
 
@@ -383,8 +376,7 @@ def test_clear_refuses_when_an_archived_flag_is_not_a_boolean():
 
 
 def test_a_repair_never_makes_a_damaged_archive_deletable():
-    # An unrelated pin rewrites the store. If that repair dropped the unreadable archived flag, the
-    # store would come back trusted with the image active, and the next default clear() removes it.
+    # An unrelated pin rewrites the store.
     import json as _json
 
     shelved = _save_with_mtime("shelved", 100.0)
@@ -415,7 +407,6 @@ def test_a_repair_of_an_illegible_store_never_makes_the_archive_deletable():
         gallery.clear()
     assert gallery.image_path(shelved["id"]) is not None
     assert gallery.image_path(other["id"]) is not None
-    # The escape hatch still works, since it spares nothing and so needs no flags.
     assert gallery.clear(include_archived = True) == 2
 
 
@@ -434,8 +425,7 @@ def test_clear_all_replaces_an_unreadable_store_so_the_gallery_recovers():
 
 
 def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archived():
-    # clear() decides from a flag snapshot and then unlinks. Without a shared lock an archive
-    # landing in that window returned success for a file the same clear went on to delete.
+    # clear() decides from a flag snapshot and then unlinks.
     import threading
 
     records = [_save_with_mtime(f"i{i}", float(i)) for i in range(30)]
@@ -453,5 +443,5 @@ def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archi
     said_ok = out.get("result") is not None
     survived = gallery.image_path(target) is not None
     # Either the archive won (reported success, file kept) or the clear won (reported gone, file
-    # deleted). "Reported success but deleted" is the outcome this must never produce.
+    # deleted).
     assert said_ok == survived

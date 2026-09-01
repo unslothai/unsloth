@@ -116,8 +116,8 @@ def test_cache_escape_uses_size_verified_predicate(remote_gguf_repo, monkeypatch
 
 
 def test_variant_matching_uncollapsed_repo_file_accepted(remote_gguf_repo, monkeypatch):
-    # Same quant label across shards collapses to one GgufVariantInfo; the
-    # preflight must still match against every repo file, like the load path.
+    # Same quant label across shards collapses to one GgufVariantInfo; the preflight must still
+    # match against every repo file, like the load path.
     monkeypatch.setattr(
         huggingface_hub,
         "list_repo_files",

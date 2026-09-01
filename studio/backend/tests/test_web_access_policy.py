@@ -92,9 +92,7 @@ def test_policy_normalizes_idna_deduplicates_and_rejects_urls():
 
 
 def test_oversized_raw_domains_normalize_without_entering_the_cache():
-    # Nameprep deletes U+00AD, so 100k soft hyphens still normalise to a valid domain. The
-    # memo key is the caller's raw tuple, so caching one would pin it for the life of the
-    # process; it must normalise on the uncached path instead.
+    # Nameprep deletes U+00AD, so 100k soft hyphens still normalise; caching the raw tuple would pin it forever.
     normalize_website_policy({})  # warm the empty-list key so the counts below are exact
     padded = "a" + "\u00ad" * 100_000 + ".com"
     before = _normalized_domain_tuple.cache_info().currsize
@@ -103,7 +101,6 @@ def test_oversized_raw_domains_normalize_without_entering_the_cache():
         "blockedDomains": [],
     }
     assert _normalized_domain_tuple.cache_info().currsize == before
-    # A domain of a plausible length still takes the cached path.
     assert normalize_website_policy({"allowedDomains": ["cached.example"]}) == {
         "allowedDomains": ["cached.example"],
         "blockedDomains": [],
@@ -143,7 +140,6 @@ def test_web_search_filters_results_before_model_exposure(monkeypatch):
     monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
     result = tools._web_search("latest paper", website_policy = ARXIV_ONLY)
 
-    # A policy filters after the search, so a deeper candidate pool is requested.
     assert queries == [("latest paper (site:arxiv.org)", 5 * tools._POLICY_OVERFETCH)]
     assert "https://arxiv.org/abs/1" in result
     assert "example.com" not in result
@@ -151,8 +147,7 @@ def test_web_search_filters_results_before_model_exposure(monkeypatch):
 
 
 def test_web_search_refills_past_disallowed_results(monkeypatch):
-    # Without over-fetching, a page whose top hits are all blocked returned nothing even though
-    # valid results ranked just below them, wasting a research step.
+    # Without over-fetching, a page whose top hits are all blocked returned nothing despite valid results.
     blocked_then_allowed = [
         {"title": "Bad", "href": f"https://example.com/{i}", "body": "Blocked"} for i in range(5)
     ] + [
@@ -175,7 +170,6 @@ def test_web_search_refills_past_disallowed_results(monkeypatch):
 
     assert "arxiv.org/abs/0" in result
     assert "example.com" not in result
-    # Still capped at max_results allowed entries, not the whole deeper pool.
     assert result.count("Title: ") == 5
 
 
@@ -196,15 +190,13 @@ def test_web_search_without_a_policy_does_not_overfetch(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
     tools._web_search("q", website_policy = None)
-    # A run always stores a normalized policy, so the unrestricted case is an object with empty
-    # lists, not None. Neither may pay the deeper-pool latency.
+    # A run always stores a normalized policy, so unrestricted is empty lists, not None; neither pays the latency.
     tools._web_search("q", website_policy = {"allowedDomains": [], "blockedDomains": []})
     assert queries == [("q", 5), ("q", 5)]
 
 
 def test_scope_search_query_reaches_every_allowed_domain():
-    # The site: filter is capped because engines stop honouring long OR chains, but a fixed
-    # head made domains past the cap permanently undiscoverable.
+    # The site: filter is capped because engines drop long OR chains, but a fixed head hid domains past the cap.
     domains = [f"d{i}.example" for i in range(20)]
     policy = {"allowedDomains": domains}
     covered = set()
@@ -214,9 +206,7 @@ def test_scope_search_query_reaches_every_allowed_domain():
         assert len(hits) == 8
         covered.update(hits)
     assert covered == set(domains)
-    # Deterministic: the same query always scopes the same way.
     assert scope_search_query("stable", policy) == scope_search_query("stable", policy)
-    # At or under the cap every domain is always included.
     small = [f"s{i}.example" for i in range(8)]
     scoped = scope_search_query("q", {"allowedDomains": small})
     assert all(f"site:{d}" in scoped for d in small)
@@ -304,10 +294,8 @@ def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
 
 
 def test_rate_limited_search_says_so_instead_of_leaking_the_exception(monkeypatch):
-    # Every engine refusing used to read as "Search failed: RatelimitException(...)", which told
-    # neither the model nor the user that waiting or reading a page directly would work.
-    # The real class, not a stand-in: ddgs is unpinned and has renamed these before, and the
-    # classifier matches on the class name, so a rename has to fail here rather than in a message.
+    # Every engine refusing used to read as "Search failed: RatelimitException(...)". The real class,
+    # not a stand-in: ddgs is unpinned and has renamed these, and the classifier matches on the name.
     from ddgs.exceptions import RatelimitException
 
     result = _search_with_raising_ddgs(monkeypatch, RatelimitException("all engines"))
@@ -322,8 +310,7 @@ def test_search_timeout_reports_the_budget_it_exceeded(monkeypatch):
 
 
 def test_empty_sweep_is_reported_as_no_results_not_as_a_failure(monkeypatch):
-    # ddgs raises instead of returning [], so a search that simply matched nothing arrived
-    # prefixed "Search failed" and read like a broken tool.
+    # ddgs raises instead of returning [], so a search that simply matched nothing arrived prefixed "Search failed".
     from ddgs.exceptions import DDGSException
 
     result = _search_with_raising_ddgs(monkeypatch, DDGSException("No results found."))

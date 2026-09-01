@@ -66,7 +66,6 @@ def _forbid_probe(monkeypatch):
     monkeypatch.setattr(tq, "_run_smoke_probe", _boom)
 
 
-# ── 1. the arch gate ──────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -115,7 +114,6 @@ def test_refusal_reason_unchanged_off_cuda(monkeypatch):
     assert "CUDA GPU in bf16" in tq.dense_transformer_unsupported_reason(_target(device = "cpu"))
 
 
-# ── 2. the text-encoder gate has the same capability misread ──────────────────
 
 
 @pytest.mark.parametrize("mode", [dp.TE_QUANT_INT8, dp.TE_QUANT_FP8_DYNAMIC, dp.TE_QUANT_NVFP4])
@@ -137,7 +135,6 @@ def test_torchao_text_encoder_modes_still_supported_on_cuda(monkeypatch, mode):
     assert dp.te_quant_supported(_target(), mode) is True
 
 
-# ── 3. a crashed probe child is a verdict, not a reason to retry in-process ───
 
 
 class _Proc:
@@ -202,7 +199,6 @@ def test_crash_verdict_stops_the_in_process_probe(monkeypatch):
 
     monkeypatch.setattr(tq, "_run_smoke_probe", _boom)
     assert tq._scheme_supported(tq.TQ_INT8, "cuda") is False
-    # Cached, so a second load answers from memory instead of spawning another child to die.
     assert tq._SMOKE_CACHE[(tq.TQ_INT8, "cuda:0")] is False
 
 
@@ -244,7 +240,6 @@ def test_a_scheme_missing_from_the_table_is_still_not_an_answer(monkeypatch):
     assert probed == [tq.TQ_INT8]
 
 
-# ── 3a. the child must probe the card the verdict is filed under ─────────────
 
 
 def test_child_is_asked_about_the_pinned_card_not_the_default_one(monkeypatch):
@@ -261,7 +256,6 @@ def test_child_is_asked_about_the_pinned_card_not_the_default_one(monkeypatch):
         current_device = 1,
     )
     asked: list = []
-    # Only the pinned card runs the scheme here, which is the mixed-GPU box this guards.
     monkeypatch.setattr(
         tq,
         "_child_probe_table",
@@ -287,7 +281,6 @@ def test_probe_child_selects_the_card_it_was_given(monkeypatch, device, expected
     assert torch.cuda.selected == expected
 
 
-# ── 4. the training gate has the same misread, at four entry points ───────────
 
 
 def _stub_train_torch(
@@ -316,7 +309,6 @@ def test_info_stops_advertising_the_torchao_train_modes_on_rocm(monkeypatch):
     _stub_train_torch(monkeypatch, hip = "7.1.25424", version_str = "2.10.0+rocm7.1")
     modes, recommended = tc.train_precision_modes()
     assert [m for m in modes if m in _TORCHAO_TRAIN_MODES] == []
-    # bf16 and the auto ladder are untouched: neither goes near torchao.
     assert "bf16" in modes and "nf4" in modes and recommended == "auto"
 
 
@@ -355,7 +347,6 @@ def test_auto_never_resolves_to_int8_on_rocm(monkeypatch):
     """auto is the mode /info recommends, so it is the one users actually land on."""
     import core.training.diffusion_dit_trainer as dit
 
-    # free VRAM inside int8's band (> 1.15x dense, < 1.5x dense): the pick auto would make.
     assert dit._pick_auto_precision(False, "cuda", 13.8, 12.0, (11, 5), True, True) == "int8"
     assert dit._pick_auto_precision(False, "cuda", 13.8, 12.0, (11, 5), True, False) == "nf4"
 

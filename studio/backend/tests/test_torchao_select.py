@@ -16,7 +16,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# install_python_stack.py lives at repo_root/studio/install_python_stack.py
 _INSTALL_SCRIPT = Path(__file__).resolve().parents[2] / "install_python_stack.py"
 _EXTRAS_REQUIREMENTS = Path(__file__).resolve().parent.parent / "requirements" / "extras.txt"
 
@@ -33,34 +32,28 @@ def _load_module(monkeypatch):
 @pytest.mark.parametrize(
     "torch_version, expected",
     [
-        # torch 2.10 on CUDA <= 12 -> 0.16.0 (its cpp is built for torch 2.10.0 and
-        # loads against the CUDA-12 PyPI wheel). Independent of patch level.
+        # torch 2.10 on CUDA <= 12 takes 0.16.0, whose cpp is built for 2.10.0 and loads against the CUDA-12 wheel.
         ("2.10.0+cu128", "torchao==0.16.0"),
         ("2.10.0+cu126", "torchao==0.16.0"),
         ("2.10.0+rocm6.4", "torchao==0.16.0"),
         ("2.10.0+cpu", "torchao==0.16.0"),
         ("2.10.1", "torchao==0.16.0"),
         ("2.10.0", "torchao==0.16.0"),
-        # torch 2.10 on CUDA >= 13 (Blackwell / cu130): 0.16.0's CUDA-12 cpp can't
-        # load against a CUDA-13 torch (libcudart.so.12 error), so use 0.17.0.
+        # On CUDA >= 13 the 0.16.0 CUDA-12 cpp cannot load (libcudart.so.12 error), so use 0.17.0.
         ("2.10.0+cu130", "torchao==0.17.0"),
         ("2.10.0+cu140", "torchao==0.17.0"),
-        # Pre-release / dev / rc builds: the minor is cleaned of non-digits; the
-        # CUDA tag still decides 0.16.0 vs 0.17.0.
+        # Pre-release builds: the minor is cleaned of non-digits and the CUDA tag still decides.
         ("2.10.0rc1", "torchao==0.16.0"),
         ("2.10.0.dev20250804+cu130", "torchao==0.17.0"),
         ("2.10.0.dev20250804+cu128", "torchao==0.16.0"),
         ("2.10rc1", "torchao==0.16.0"),
-        # torch 2.11 (reachable via ROCm rocm7.2) and forward -> 0.17.0.
         ("2.11.0+cu130", "torchao==0.17.0"),
         ("2.11.0", "torchao==0.17.0"),
         ("2.12.0", "torchao==0.17.0"),
-        # torch <=2.9 keeps today's pin (already a correct match for 2.9.0).
         ("2.9.0+cu128", "torchao==0.14.0"),
         ("2.9.1", "torchao==0.14.0"),
         ("2.8.0", "torchao==0.14.0"),
         ("2.4.0", "torchao==0.14.0"),
-        # Unparseable / missing / non-2.x major -> conservative default.
         (None, "torchao==0.14.0"),
         ("", "torchao==0.14.0"),
         ("garbage", "torchao==0.14.0"),
@@ -134,12 +127,9 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(
         mod, "_installed_torch_is_windows_rocm", lambda: installed_torch_is_windows_rocm
     )
-    # #10053 added a require_present gate to install_python_stack: after the core phase
-    # it refuses when a managed distribution is not installed at all, which SKIP_STUDIO_BASE
-    # guarantees here. Unstubbed, this test asks whether unsloth happens to be installed in
-    # whatever environment runs it -- it passes on a developer machine that has it and fails
-    # in CI, which is not what the test is about. Stubbed like every other installer side
-    # effect below.
+    # #10053 added a require_present gate that refuses when a managed distribution is not installed at
+    # all, which SKIP_STUDIO_BASE guarantees here. Unstubbed, this asks whether unsloth happens to
+    # be installed in whatever environment runs it.
     monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *a, **k: True)
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)

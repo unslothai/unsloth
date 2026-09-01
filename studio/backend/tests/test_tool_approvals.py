@@ -90,7 +90,6 @@ def _wait_until(
     return False
 
 
-# ── Basic allow / deny ───────────────────────────────────────────────
 
 
 def test_allow_decision():
@@ -128,7 +127,6 @@ def test_approval_ids_are_unique():
     assert len(ids) == 1000
 
 
-# ── Pre-registration race (begin before wait) ────────────────────────
 
 
 def test_resolve_before_wait_is_not_lost():
@@ -141,12 +139,10 @@ def test_resolve_before_wait_is_not_lost():
     aid = new_approval_id()
     slot = begin_tool_decision("sess", aid)
     assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
-    # wait() is only entered now, after the decision already landed.
     assert wait_tool_decision(slot, aid) == "allow"
     assert not _has_pending(aid)
 
 
-# ── Resolver edge cases ──────────────────────────────────────────────
 
 
 def test_resolve_unknown_approval_returns_false():
@@ -161,10 +157,8 @@ def test_resolve_empty_approval_returns_false():
 def test_resolve_wrong_session_scope_returns_false():
     aid = new_approval_id()
     w = _Waiter("sess-a", aid).start()
-    # Correct approval_id but the wrong session must not resolve it.
     assert resolve_tool_decision(aid, "allow", session_id = "sess-b") is False
     assert _has_pending(aid)
-    # The right session still works.
     assert resolve_tool_decision(aid, "allow", session_id = "sess-a") is True
     assert w.join() == "allow"
 
@@ -190,15 +184,12 @@ def test_first_decision_is_immutable():
     aid = new_approval_id()
     slot = begin_tool_decision("sess", aid)
     assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
-    # Second decision, same id, before any waiter consumes/cleans the slot.
     assert resolve_tool_decision(aid, "deny", session_id = "sess") is False
     assert slot["decision"] == "allow"
-    # The waiter still observes the first (immutable) decision.
     assert wait_tool_decision(slot, aid) == "allow"
     assert not _has_pending(aid)
 
 
-# ── Cancellation and timeout ─────────────────────────────────────────
 
 
 def test_cancel_event_breaks_wait_as_deny():
@@ -219,7 +210,6 @@ def test_timeout_returns_deny():
     assert not _has_pending(aid)
 
 
-# ── Independence across concurrent calls ─────────────────────────────
 
 
 def test_two_pending_calls_same_session_are_independent():
@@ -234,7 +224,6 @@ def test_two_pending_calls_same_session_are_independent():
 
     assert resolve_tool_decision(a1, "deny", session_id = "sess") is True
     assert w1.join() == "deny"
-    # w2 is still waiting on its own id.
     assert _has_pending(a2)
     assert resolve_tool_decision(a2, "allow", session_id = "sess") is True
     assert w2.join() == "allow"
@@ -253,7 +242,6 @@ def test_concurrent_distinct_calls_route_their_own_decisions():
         assert w.join() == expected[aid]
 
 
-# ── Constants ────────────────────────────────────────────────────────
 
 
 def test_rejected_message_is_user_facing_text():

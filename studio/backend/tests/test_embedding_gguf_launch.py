@@ -27,8 +27,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Same external-dep stubs as the other llama_cpp unit tests so importing
-# the backend doesn't drag in structlog / httpx / loggers.
+# Same external-dep stubs as the other llama_cpp unit tests so importing the backend does not drag
+# in structlog / httpx / loggers.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -135,7 +135,6 @@ class TestIsEmbeddingGguf:
         assert backend.is_embedding_gguf is False
 
     def test_false_for_a_reranker(self, tmp_path, backend):
-        # send_embedding would read n_embd_out floats from a RANK head's n_cls_out buffer.
         backend._read_gguf_metadata(_make_gguf(tmp_path, "qwen3", pooling_type = POOLING_RANK))
         assert backend._pooling_type == POOLING_RANK
         assert backend.is_embedding_gguf is False
@@ -246,8 +245,8 @@ class TestLoadModelEmitsTheFlag:
 
 @pytest.mark.parametrize("flag", ["--embedding", "--embeddings", "--pooling"])
 def test_user_extra_args_still_cannot_pass_the_flag(flag):
-    # The denylist keeps a user-supplied --embedding off the chat server; the
-    # header probe is the only thing allowed to turn it on.
+    # The denylist keeps a user-supplied --embedding off the chat server; the header probe is the
+    # only thing allowed to turn it on.
     from core.inference.llama_server_args import is_managed_flag, validate_extra_args
     assert is_managed_flag(flag) is True
     with pytest.raises(ValueError, match = "managed by Unsloth Studio"):

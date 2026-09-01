@@ -69,8 +69,8 @@ def test_nonexistent_local_syntax_path_still_returns_empty(in_tmp_cwd):
 
 
 def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
-    # The load resolves a .gguf in a marked directory to the directory, so the listing keeps
-    # sibling quants and the vision flag.
+    # The load resolves a .gguf in a marked directory to the directory, so the listing keeps sibling
+    # quants and the vision flag.
     (in_tmp_cwd / "config.json").write_text("{}")
     (in_tmp_cwd / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
     (in_tmp_cwd / "model-Q8_0.gguf").write_bytes(b"GGUF" * 2)
@@ -141,8 +141,7 @@ def test_online_only_projector_is_not_opened(in_tmp_cwd, monkeypatch):
     ],
 )
 def test_direct_auxiliary_gguf_file_is_not_a_variant(in_tmp_cwd, relpath):
-    # detect_gguf_model refuses companions and big-endian builds, so a row would offer a
-    # load that cannot happen.
+    # detect_gguf_model refuses companions and big-endian builds, so a row would offer a load that cannot happen.
     from utils.models.model_config import detect_gguf_model
 
     target = in_tmp_cwd / relpath
@@ -170,8 +169,8 @@ def test_direct_gguf_file_quant_round_trips_through_the_load_path(in_tmp_cwd):
 
 
 def test_direct_gguf_file_quant_round_trips_case_insensitively(in_tmp_cwd):
-    # llama.cpp matches quant labels case-insensitively, so a lowercase --gguf-variant must
-    # resolve here too, or the load evicts the resident model before failing.
+    # llama.cpp matches quant labels case-insensitively, so a lowercase --gguf-variant must resolve
+    # here too, or the load evicts the resident model before failing.
     from utils.models.model_config import ModelConfig
 
     gguf = in_tmp_cwd / "foo-Q4_K_M.gguf"
@@ -190,8 +189,8 @@ def test_direct_gguf_file_quant_round_trips_case_insensitively(in_tmp_cwd):
 
 
 def test_direct_gguf_label_is_the_load_resolvers_label(in_tmp_cwd):
-    # The extractors disagree on F16-checkpoint-Q4_K_M; the advertised quant must be the
-    # one the echoed load resolves.
+    # The extractors disagree on F16-checkpoint-Q4_K_M; the advertised quant must be the one the
+    # echoed load resolves.
     from utils.models.model_config import ModelConfig
 
     gguf = in_tmp_cwd / "F16-checkpoint-Q4_K_M.gguf"
@@ -217,8 +216,7 @@ def test_marked_dir_resolves_the_bpw_stripped_label(in_tmp_cwd):
 
 
 def test_direct_big_endian_check_uses_the_load_extractor(in_tmp_cwd):
-    # detect_gguf_model refuses this shape (F16 reads before the be marker), so it must
-    # not be advertised as loadable.
+    # detect_gguf_model refuses this shape (F16 reads before the be marker), so it must not be advertised as loadable.
     from utils.models.model_config import detect_gguf_model
 
     gguf = in_tmp_cwd / "F16-be-checkpoint-Q4_K_M.gguf"
@@ -229,8 +227,8 @@ def test_direct_big_endian_check_uses_the_load_extractor(in_tmp_cwd):
 
 
 def test_variantless_pick_prefers_a_complete_candidate(in_tmp_cwd):
-    # detect_gguf_model sorts by size and a torn split's lone shard can be the largest, so
-    # the load must prefer a candidate it can open.
+    # detect_gguf_model sorts by size and a torn split's lone shard can be the largest, so the load
+    # must prefer a candidate it can open.
     from utils.models.model_config import detect_gguf_model
 
     (in_tmp_cwd / "config.json").write_text("{}")
@@ -283,8 +281,8 @@ def test_dir_resolver_accepts_the_advertised_hub_style_label(in_tmp_cwd):
 
 
 def test_local_listing_filters_what_the_local_detector_refuses(in_tmp_cwd):
-    # The local detector reads F16 before the be marker and refuses the file, so the
-    # listing must not advertise a row for it.
+    # The local detector reads F16 before the be marker and refuses the file, so the listing must
+    # not advertise a row for it.
     from utils.models.model_config import detect_gguf_model
 
     (in_tmp_cwd / "config.json").write_text("{}")
@@ -323,8 +321,8 @@ def test_remote_listing_filters_what_the_remote_detector_refuses(monkeypatch):
 
 
 def test_direct_gguf_bpw_label_round_trips_through_the_load_path(in_tmp_cwd):
-    # The hub extractor drops the bpw modifier, so the shorter advertised label must still
-    # resolve this file.
+    # The hub extractor drops the bpw modifier, so the shorter advertised label must still resolve
+    # this file.
     from utils.models.model_config import ModelConfig
 
     gguf = in_tmp_cwd / "model-IQ4_XS-3.53bpw.gguf"
@@ -337,8 +335,8 @@ def test_direct_gguf_bpw_label_round_trips_through_the_load_path(in_tmp_cwd):
 
 
 def test_torn_direct_split_is_not_offered_as_downloaded(in_tmp_cwd):
-    # llama.cpp resolves siblings from the main shard's directory, so a lone shard fails
-    # after teardown and must not be called ready.
+    # llama.cpp resolves siblings from the main shard's directory, so a lone shard fails after
+    # teardown and must not be called ready.
     shard = in_tmp_cwd / "model-Q4_K_M-00001-of-00002.gguf"
     shard.write_bytes(b"GGUF")
 
@@ -353,8 +351,8 @@ def test_torn_direct_split_is_not_offered_as_downloaded(in_tmp_cwd):
 
 
 def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
-    # The gate's real question: the loader, plus the two ways a resolvable path still
-    # fails llama-server (empty bytes, torn split).
+    # The gate's real question: the loader, plus the two ways a resolvable path still fails
+    # llama-server (empty bytes, torn split).
     def _mk(name, *files):
         d = in_tmp_cwd / name
         d.mkdir()
@@ -391,8 +389,8 @@ def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
 
 
 def test_symlink_outside_the_tree_keeps_its_relative_alias(in_tmp_cwd):
-    # The resolver reads the snapshot-relative spelling, so a link out of the tree still
-    # answers BF16/model; resolving first loses that.
+    # The resolver reads the snapshot-relative spelling, so a link out of the tree still answers
+    # BF16/model; resolving first loses that.
     from utils.models.model_config import _find_local_gguf_by_variant
 
     pool = in_tmp_cwd / "pool"
@@ -410,13 +408,13 @@ def test_symlink_outside_the_tree_keeps_its_relative_alias(in_tmp_cwd):
 
 
 def test_a_missing_direct_path_is_not_loadable(in_tmp_cwd):
-    # The extension is authoritative, so the resolver answers for paths that do not exist
-    # and absence must be caught before the gate trusts it.
+    # The extension is authoritative, so the resolver answers for paths that do not exist, and
+    # absence must be caught before the gate trusts it.
     response = _variants(os.fspath(in_tmp_cwd / "typo-Q4_K_M.gguf"))
     assert response.loadable is False
 
-    # A present file still serves, and a direct file leaves the list unanswered because
-    # the load ignores the quant for one.
+    # A present file still serves, and a direct file leaves the list unanswered because the load
+    # ignores the quant for one.
     real = in_tmp_cwd / "real-Q8_0.gguf"
     real.write_bytes(b"GGUF")
     served = _variants(os.fspath(real))
@@ -424,8 +422,8 @@ def test_a_missing_direct_path_is_not_loadable(in_tmp_cwd):
 
 
 def test_relative_identifiers_keep_their_relative_alias(in_tmp_cwd):
-    # The resolver returns an absolute path, so a relative identifier must be resolved the
-    # same way or its spelling is lost.
+    # The resolver returns an absolute path, so a relative identifier must be resolved the same way
+    # or its spelling is lost.
     from utils.models.model_config import _find_local_gguf_by_variant
 
     (in_tmp_cwd / "models" / "qwen" / "BF16").mkdir(parents = True)
@@ -453,8 +451,8 @@ def test_loadable_variants_include_the_relative_fallback_label(in_tmp_cwd):
 
 
 def test_a_torn_split_keeps_its_quant_partial(in_tmp_cwd):
-    # A short shard-like name is ready alone, but not when the file the resolver binds for
-    # that quant is an earlier torn five-digit split.
+    # A short shard-like name is ready alone, but not when the file the resolver binds for that
+    # quant is an earlier torn five-digit split.
     (in_tmp_cwd / "config.json").write_text("{}")
     (in_tmp_cwd / "a-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
     (in_tmp_cwd / "z-Q4_K_M-001-of-002.gguf").write_bytes(b"GGUF")
@@ -465,8 +463,8 @@ def test_a_torn_split_keeps_its_quant_partial(in_tmp_cwd):
 
 
 def test_short_shard_like_name_in_a_directory_reads_ready(in_tmp_cwd):
-    # The cache scan's looser grammar calls this torn, but the load opens a -001-of-002
-    # name as an ordinary file.
+    # The cache scan's looser grammar calls this torn, but the load opens a -001-of-002 name as an
+    # ordinary file.
     from utils.models.model_config import detect_gguf_model
 
     (in_tmp_cwd / "config.json").write_text("{}")
@@ -486,8 +484,8 @@ def test_short_shard_like_name_in_a_directory_reads_ready(in_tmp_cwd):
 
 
 def test_parent_quant_short_shard_reads_ready(in_tmp_cwd):
-    # The label comes from the snapshot-relative path, so a parent directory's quant is
-    # honored; a zero-byte file stays partial either way.
+    # The label comes from the snapshot-relative path, so a parent directory's quant is honored; a
+    # zero-byte file stays partial either way.
     (in_tmp_cwd / "config.json").write_text("{}")
     (in_tmp_cwd / "Q4_K_M").mkdir()
     (in_tmp_cwd / "Q4_K_M" / "model-001-of-002.gguf").write_bytes(b"GGUF")
@@ -505,8 +503,8 @@ def test_parent_quant_short_shard_reads_ready(in_tmp_cwd):
 
 
 def test_symlinked_split_target_with_a_different_total_is_checked(in_tmp_cwd):
-    # The load launches the set the target declares, so a torn target is torn however the
-    # alias is spelled.
+    # The load launches the set the target declares, so a torn target is torn however the alias is
+    # spelled.
     real = in_tmp_cwd / "real"
     real.mkdir()
     (real / "m-Q4_K_M-00001-of-00003.gguf").write_bytes(b"GGUF")
@@ -578,8 +576,8 @@ def test_aliased_split_symlink_uses_the_target_name(in_tmp_cwd):
 
 
 def test_symlinked_split_follows_its_target_set(in_tmp_cwd):
-    # The load resolves a symlinked shard to its target's set, so a link with no siblings
-    # beside it is ready when that set is whole.
+    # The load resolves a symlinked shard to its target's set, so a link with no siblings beside it
+    # is ready when that set is whole.
     real = in_tmp_cwd / "real"
     real.mkdir()
     (real / "m-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
@@ -628,8 +626,8 @@ def test_zero_byte_direct_gguf_is_partial(in_tmp_cwd):
 
 
 def test_local_dir_answer_ignores_the_hub_cache_of_the_same_name(in_tmp_cwd, monkeypatch):
-    # A repo-shaped id existing as a directory resolves existence-first, so it must not gain
-    # rows from the same-named HF cache: the attach gate reads any row as a GGUF model.
+    # A repo-shaped id existing as a directory resolves existence-first, so it must not gain rows
+    # from the same-named HF cache: the attach gate reads any row as a GGUF model.
     from types import SimpleNamespace
 
     hub_cache = in_tmp_cwd / "hub"
@@ -653,13 +651,10 @@ def test_local_dir_answer_ignores_the_hub_cache_of_the_same_name(in_tmp_cwd, mon
 
 
 def test_wsl_drive_path_is_normalized_like_the_load(in_tmp_cwd, monkeypatch):
-    # from_identifier normalizes first, so under WSL "C:\models\qwen" is served from the
-    # mapped path and probing the raw spelling would call a working model unloadable.
-    #
-    # Which mapping is the live question: hub.utils.paths honours [automount] root while the
-    # loader hardcodes /mnt, so on a custom-root host only the loader's answer predicts the
-    # load. Its real root is unwritable from a test, so it is stood in for in the tmp tree
-    # (the binding is pinned below) while the hub root points at a decoy of another quant.
+    # from_identifier normalizes first, so under WSL a Windows path is served from the mapped path
+    # and probing the raw spelling would call a working model unloadable. hub.utils.paths honours
+    # [automount] root while the loader hardcodes /mnt, so on a custom-root host only the loader's
+    # answer predicts the load; its real root is unwritable, so it is stood in for in the tmp tree.
     from hub.utils import paths as hub_paths
     from hub.services.models import gguf_variants
     from utils.paths import normalize_path as loader_normalize_path
@@ -701,8 +696,8 @@ def test_wsl_drive_path_is_normalized_like_the_load(in_tmp_cwd, monkeypatch):
 def test_will_serve_only_treats_definite_absence_as_unloadable(
     in_tmp_cwd, monkeypatch, error, serves
 ):
-    # Only "no such file" is definite; a read error (Windows sharing violation) must stay
-    # unknown and serve. exists() cannot express that: on 3.14 it swallows every OSError.
+    # Only "no such file" is definite; a read error (Windows sharing violation) must stay unknown
+    # and serve. exists() cannot express that: on 3.14 it swallows every OSError.
     from hub.services.models import gguf_variants
 
     gguf = in_tmp_cwd / "foo-Q4_K_M.gguf"

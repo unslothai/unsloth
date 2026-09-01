@@ -44,19 +44,14 @@ from test_rocm_windows_vram_7072 import (  # noqa: E402, F401  (win_rocm is a fi
     win_rocm,
 )
 
-# The reporter's cards and his idle used figures from #7072's screenshot (0.22 and
-# 0.14 GiB, the 53.0 GiB tile reading 0.36 GiB). One counter instance per visible
-# card and no others, the only shape the aggregate is emitted for.
+# The reporter's cards and idle figures from #7072: one counter instance per visible card, the only aggregated shape.
 REPORTER_DEVICES = [("AMD Radeon PRO W7900", 45.0 * GB), ("AMD Radeon PRO W7500", 7.98 * GB)]
 IDLE_ADAPTERS = [
-    ("luid_0x00000000_0x0000d1e2_phys_0", 0.22 * GB),  # W7900 idle desktop
-    ("luid_0x00000000_0x0000e34a_phys_0", 0.14 * GB),  # W7500 idle desktop
+    ("luid_0x00000000_0x0000d1e2_phys_0", 0.22 * GB),
+    ("luid_0x00000000_0x0000e34a_phys_0", 0.14 * GB),
 ]
 
 
-# ----------------------------------------------------------------------------- #
-# The System tab tile: aggregate usage survives an unattributable pairing
-# ----------------------------------------------------------------------------- #
 def test_system_tab_reports_aggregate_when_pairing_is_ambiguous(win_rocm, monkeypatch):
     """0.22 + 0.14 GiB across a 45/7.98 GiB pair: neither usage is capacity-forced, so
     per device stays Unknown, but the total is 0.36 GiB either way round. Before the
@@ -70,9 +65,8 @@ def test_system_tab_reports_aggregate_when_pairing_is_ambiguous(win_rocm, monkey
     devices = result["devices"]
     assert len(devices) == 2
     assert sorted(d["vram_total_gb"] for d in devices) == [7.98, 45.0]
-    # Per device the ranking cannot tell the two apart, so #7238's invariant holds.
     assert all(d["vram_used_gb"] is None for d in devices)
-    # But the aggregate is pairing-independent, so the tile has a real number.
+    # The aggregate is pairing-independent, so the tile has a real number.
     assert result["vram_used_gb_aggregate"] == pytest.approx(0.36, abs = 0.01)
 
 
@@ -125,9 +119,6 @@ def test_no_aggregate_when_the_counter_is_unavailable(win_rocm, monkeypatch):
     assert result["vram_used_gb_aggregate"] is None
 
 
-# ----------------------------------------------------------------------------- #
-# The aggregate rule itself (pure unit)
-# ----------------------------------------------------------------------------- #
 def test_aggregate_requires_a_counter_per_visible_device():
     agg = hw._rocm_windows_aggregate_used_bytes
     # One counter per visible card: the sum is the visible set's, whatever the pairing.
@@ -149,7 +140,6 @@ def test_aggregate_rejects_a_usage_larger_than_any_visible_card():
     agg = hw._rocm_windows_aggregate_used_bytes
     assert agg([40 * GB, 10 * MiB], [8 * GB]) is None
     assert agg([40 * GB, 6 * GB], [45 * GB, 4 * GB]) is None
-    # Counter order must not matter.
     assert agg([6 * GB, 40 * GB], [45 * GB, 4 * GB]) is None
 
 
@@ -165,17 +155,13 @@ def test_aggregate_never_sums_bytes_that_are_not_on_a_visible_card():
     """
     agg = hw._rocm_windows_aggregate_used_bytes
     pair = [45 * GB, 8 * GB]
-    # A third AMD card hidden by HIP_VISIBLE_DEVICES, busy at 5 GiB, while the
-    # visible 8 GiB card idles below the 64 MiB noise floor. Truth is 30.03 GiB.
+    # A third AMD card hidden by HIP_VISIBLE_DEVICES, busy at 5 GiB, while the visible 8 GiB card idles.
     assert agg([30 * GB, 5 * GB, 30 * MiB], pair) is None
-    # An NVIDIA card in the same box. Truth is 30.02 GiB.
     assert agg([30 * GB, 6 * GB, 20 * MiB], pair) is None
-    # An integrated display GPU holding a 1 GiB carveout. Truth is 30.01 GiB.
     assert agg([30 * GB, 1 * GB, 10 * MiB], pair) is None
     # A Basic Render Driver / Remote Display placeholder ABOVE the cutoff.
     assert agg([30 * GB, 200 * MiB, 20 * MiB], pair) is None
-    # One visible card, idle, beside a busy foreign adapter: the worst case, since
-    # a single card's capacity admits almost any foreign reading. Truth is 30 MiB.
+    # The worst case: a single card's capacity admits almost any foreign reading.
     assert agg([6 * GB, 30 * MiB], [45 * GB]) is None
     assert agg([6 * GB, 30 * MiB, 3 * MiB], [45 * GB]) is None
 
@@ -208,9 +194,7 @@ def test_aggregate_tolerates_a_wddm_spill_over_the_smaller_card(win_rocm, monkey
     assert agg([46 * GB, 2 * GB], [45 * GB, 8 * GB]) is None
 
 
-# ----------------------------------------------------------------------------- #
-# The aggregate and the rows have to describe the same cards
-# ----------------------------------------------------------------------------- #
+# The aggregate and the rows have to describe the same cards.
 
 
 def _merged_gpu_info(monkeypatch, visibility, utilization):
@@ -260,7 +244,7 @@ def test_aggregate_is_dropped_when_the_probes_enumerate_different_cards(monkeypa
     visibility, utilization = _probe_pair([0], [0, 1], 46.0)
     gpu_info = _merged_gpu_info(monkeypatch, visibility, utilization)
     shown_total = sum(d["memory_total_gb"] for d in gpu_info["devices"])
-    assert utilization["vram_used_gb_aggregate"] > shown_total  # the wrong number
+    assert utilization["vram_used_gb_aggregate"] > shown_total
     assert gpu_info["vram_used_gb_aggregate"] is None
 
 

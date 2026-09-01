@@ -290,8 +290,7 @@ def test_dir_model_format_mmproj_beside_weights_is_still_gguf(tmp_path):
 
 
 def test_dir_model_format_recursive_sees_split_quant_subdirs(tmp_path):
-    # HF cache snapshots keep split quants in per-quant subdirs. A flat glob reports
-    # no GGUF there, which would hide every sharded repo from the GGUF pickers.
+    # HF cache snapshots keep split quants in per-quant subdirs.
     d = tmp_path / "snapshot"
     _touch(d / "UD-Q4_K_XL" / "model-00001-of-00002.gguf")
     assert models_route._dir_model_format(d) is None
@@ -314,8 +313,8 @@ def test_scan_models_dir_mmproj_only_folder_is_not_gguf(tmp_path):
 
 
 def test_scan_models_dir_skips_standalone_mmproj_file(tmp_path):
-    # A loose mmproj-*.gguf is a vision adapter with no weights to serve, so it must
-    # not be offered as a model the way a loose primary GGUF is.
+    # A loose mmproj-*.gguf is a vision adapter with no weights to serve, so it must not be offered
+    # as a model the way a loose primary GGUF is.
     _touch(tmp_path / "mmproj-F16.gguf")
     _touch(tmp_path / "model-Q4_K_M.gguf")
     names = {m.display_name for m in models_route._scan_models_dir(tmp_path)}
@@ -346,7 +345,6 @@ def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):
 
 
 def test_dir_model_format_mixed_weights_is_not_gguf(tmp_path):
-    # Real safetensors weights present -> not a GGUF folder.
     d = tmp_path / "model"
     _touch(d / "model.safetensors")
     _touch(d / "model-Q4_K_M.gguf")
@@ -361,8 +359,8 @@ def test_dir_model_format_no_gguf(tmp_path):
 
 
 def test_dir_model_format_ignores_tokenizer_bin(tmp_path):
-    # A companion tokenizer.bin is not a weight file, so a GGUF folder shipping
-    # one is still GGUF (not misread as a plain .bin checkpoint).
+    # A companion tokenizer.bin is not a weight file, so a GGUF folder shipping one is still GGUF,
+    # not misread as a plain .bin checkpoint.
     d = tmp_path / "model"
     _touch(d / "tokenizer.bin")
     _touch(d / "model-Q4_K_M.gguf")
@@ -379,13 +377,10 @@ def test_dir_model_format_weight_bin_is_not_gguf(tmp_path):
 
 def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
     root = tmp_path / "models"
-    # GGUF repo that also ships a config.json (the regression case).
     _touch(root / "gguf_repo" / "config.json")
     _touch(root / "gguf_repo" / "model-Q4_K_M.gguf")
-    # A plain safetensors checkpoint stays non-GGUF.
     _touch(root / "st_repo" / "config.json")
     _touch(root / "st_repo" / "model.safetensors")
-    # A standalone .gguf file is GGUF.
     _touch(root / "loose.gguf")
 
     fmt = {Path(m.path).name: m.model_format for m in models_route._scan_models_dir(root)}
@@ -396,8 +391,8 @@ def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
 
 
 def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
-    # Custom scan folders can point directly at a GGUF repo, not only at a
-    # parent directory that contains model repos.
+    # Custom scan folders can point directly at a GGUF repo, not only at a parent directory that
+    # contains model repos.
     root = tmp_path / "SuffixlessRepo"
     _touch(root / "config.json")
     _touch(root / "model-Q4_K_M.gguf")
@@ -409,8 +404,8 @@ def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
 
 
 def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
-    # A diffusers PIPELINE folder (weights in component subdirs, only model_index.json at the root) is loadable, so the scan
-    # must surface it or it never reaches the On Device picker. Not a GGUF, so model_format stays None.
+    # A diffusers PIPELINE folder (weights in component subdirs, only model_index.json at the root)
+    # is loadable, so the scan must surface it or it never reaches the On Device picker.
     root = tmp_path / "models"
     pipe = root / "my-pipeline"
     _touch(pipe / "model_index.json")
@@ -425,7 +420,8 @@ def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
 
 
 def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
-    # A scan folder can point DIRECTLY at a diffusers pipeline, which _is_model_directory rejects; without admitting it the scan surfaces component subdirs and hides the pipeline.
+    # A scan folder can point DIRECTLY at a diffusers pipeline, which _is_model_directory rejects;
+    # without admitting it the scan surfaces component subdirs and hides the pipeline.
     root = tmp_path / "my-local-pipeline"
     _touch(root / "model_index.json")
     _touch(root / "transformer" / "config.json")
@@ -439,8 +435,8 @@ def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
 
 
 def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
-    # A scan folder can also point DIRECTLY at a bare single-file checkpoint dir (one loose .safetensors). The child loop
-    # admits that shape and the images route reinterprets it via resolve_local_single_file, so the root must be surfaced too.
+    # A scan folder can also point DIRECTLY at a bare single-file checkpoint dir (one loose
+    # .safetensors).
     root = tmp_path / "qwen-image-2509"
     _touch(root / "qwen-image-2509.safetensors")
 
@@ -451,7 +447,8 @@ def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
 
 
 def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
-    # A stray loose .safetensors at a models ROOT must not collapse the scan to one row: the root fallback applies only when nothing else matched.
+    # A stray loose .safetensors at a models ROOT must not collapse the scan to one row: the root
+    # fallback applies only when nothing else matched.
     root = tmp_path / "models"
     _touch(root / "stray.safetensors")
     _touch(root / "llama" / "config.json")
@@ -460,7 +457,6 @@ def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
     assert [Path(r.path).name for r in models_route._scan_models_dir(root)] == ["llama"]
 
 
-# ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
 from models.models import LocalModelInfo  # noqa: E402
 
 
@@ -485,9 +481,8 @@ def _local(
 def test_windows_cloud_recall_attributes_are_not_local():
     from utils.paths.path_utils import file_contents_available_locally
 
-    # Synology Drive exposes an online-only GGUF as 0x400020 through Python's
-    # os.stat(), and as 0x401620 through directory enumeration. Keep the individual
-    # Windows recall flags too so another cloud provider cannot regress unnoticed.
+    # Synology Drive exposes an online-only GGUF as 0x400020 through Python's os.stat(), and as
+    # 0x401620 through directory enumeration.
     for attributes in (
         0x00400020,
         0x00401620,
@@ -499,9 +494,8 @@ def test_windows_cloud_recall_attributes_are_not_local():
             "unused", types.SimpleNamespace(st_file_attributes = attributes)
         )
 
-    # A hydrated Synology file remains a reparse point (0x420), and UNPINNED is
-    # user intent rather than proof that bytes are absent. Both must retain real
-    # architecture, context, and projector reads.
+    # A hydrated Synology file remains a reparse point (0x420), and UNPINNED is user intent rather
+    # than proof that bytes are absent.
     for attributes in (0x00000420, 0x00100000):
         assert file_contents_available_locally(
             "unused", types.SimpleNamespace(st_file_attributes = attributes)
@@ -649,8 +643,8 @@ def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path,
         ("flux1-dev-Q4_K_M.gguf", "text-to-image"),
         ("z-image-turbo-Q4_K_M.gguf", "text-to-image"),
         ("ltx-video-2b-Q4_K_M.gguf", "text-to-video"),
-        # No family in the name: unknown, which keeps the row in Chat where a GGUF with
-        # nothing but a name belongs, rather than guessing it into a media page.
+        # No family in the name: unknown, which keeps the row in Chat where a GGUF with nothing but
+        # a name belongs, rather than guessing it into a media page.
         ("qwen3-4b-instruct-Q4_K_M.gguf", None),
     ):
         gguf = _touch(tmp_path / name)
@@ -681,8 +675,8 @@ def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkey
         model = _local(gguf, model_format = "gguf", display_name = gguf.name, id = str(gguf))
         assert models_route._local_model_task(model) is None, relative
 
-    # The control, and the shape a scanned GGUF folder actually takes: the row IS the
-    # directory, so its own leaf names it and the family survives.
+    # The control, and the shape a scanned GGUF folder actually takes: the row IS the directory, so
+    # its own leaf names it and the family survives.
     folder = tmp_path / "FLUX.1-dev-GGUF"
     _touch(folder / "diffusion_model-Q4_K_M.gguf")
     row = _local(folder, model_format = "gguf", display_name = folder.name, id = str(folder))
@@ -690,7 +684,8 @@ def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkey
 
 
 def test_local_task_tags_family_named_pipeline_dir(tmp_path):
-    # A local diffusers pipeline whose id resolves to a supported image family loads fine, so tag it and the Images picker keeps it.
+    # A local diffusers pipeline whose id resolves to a supported image family loads fine, so tag it
+    # and the Images picker keeps it.
     d = tmp_path / "flux-pipeline"
     _touch(d / "model_index.json")
     _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
@@ -701,7 +696,8 @@ def test_local_task_tags_family_named_pipeline_dir(tmp_path):
 
 
 def test_local_task_none_for_familyless_pipeline_dir(tmp_path):
-    # A generically named on-device pipeline (model_index.json, no family token) is UNLOADABLE: the Images load resolves no family and 400s after eviction, so it stays untagged.
+    # A generically named on-device pipeline (model_index.json, no family token) is UNLOADABLE: the
+    # Images load resolves no family and 400s after eviction, so it stays untagged.
     d = tmp_path / "my-local-pipeline"
     _touch(d / "model_index.json")
     _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
@@ -710,7 +706,8 @@ def test_local_task_none_for_familyless_pipeline_dir(tmp_path):
 
 
 def test_local_task_tags_diffusers_by_family_id(tmp_path):
-    # A single-file / safetensors image checkpoint ships no model_index.json, so fall back to the id resolving to a known family.
+    # A single-file / safetensors image checkpoint ships no model_index.json, so fall back to the id
+    # resolving to a known family.
     d = tmp_path / "flux-checkpoint"
     _touch(d / "flux1-dev.safetensors")
     assert (
@@ -782,7 +779,8 @@ def test_compat_local_inventory_preserves_minimax_music3_audio_type(monkeypatch,
 
 
 def test_local_task_tags_video_pipeline_dir(tmp_path):
-    # A local diffusers pipeline whose id resolves to a VIDEO family must be tagged text-to-video so it surfaces in the Video On-Device picker.
+    # A local diffusers pipeline whose id resolves to a VIDEO family must be tagged text-to-video so
+    # it surfaces in the Video On-Device picker.
     d = tmp_path / "wan-local"
     _touch(d / "model_index.json")
     _touch(d / "transformer" / "diffusion_pytorch_model.safetensors")
@@ -793,7 +791,8 @@ def test_local_task_tags_video_pipeline_dir(tmp_path):
 
 
 def test_local_task_tags_video_single_file_checkpoint(tmp_path):
-    # A video-family dir holding a bare single-file .safetensors is loadable (as a single_file), so it must be tagged text-to-video, not hidden.
+    # A video-family dir holding a bare single-file .safetensors is loadable (as a single_file), so
+    # it must be tagged text-to-video, not hidden.
     d = tmp_path / "ltx-loose"
     _touch(d / "ltx-2.safetensors")  # loose weights, no model_index.json
     assert (
@@ -803,7 +802,8 @@ def test_local_task_tags_video_single_file_checkpoint(tmp_path):
 
 
 def test_local_task_tags_single_file_by_checkpoint_filename(tmp_path):
-    # A folder holding one checkpoint whose FILENAME identifies the family is loadable via resolve_local_single_file, so tag it from the filename or the picker hides it.
+    # A folder holding one checkpoint whose FILENAME identifies the family is loadable via
+    # resolve_local_single_file, so tag it from the filename or the picker hides it.
     d = tmp_path / "downloads"
     _touch(d / "qwen-image-2509.safetensors")  # family only in the filename, no model_index.json
     m = _local(d, id = str(d), display_name = "downloads")
@@ -820,8 +820,9 @@ def test_local_task_tags_video_single_file_by_checkpoint_filename(tmp_path):
 
 
 def test_local_task_ignores_family_token_in_parent_path(tmp_path):
-    # model.id is the full on-disk path for a scanned On-Device model and the family-token matcher treats any path segment as a hint, so a token in
-    # a PARENT dir must NOT tag an unrelated single-file as text-to-image and evict the GPU owner. Detection is scoped to the leaf name.
+    # model.id is the full on-disk path for a scanned On-Device model and the family-token matcher
+    # treats any path segment as a hint, so a token in a PARENT dir must NOT tag an unrelated
+    # single-file as text-to-image and evict the GPU owner.
     d = tmp_path / "misc"
     _touch(d / "unrelated.safetensors")  # one non-family single file, no model_index.json
     m = _local(d, id = "/models/qwen-image/misc", display_name = "misc")

@@ -360,7 +360,6 @@ def test_response_payload_shape():
     assert payload["unsafe_files"] == [{"path": "a.pkl", "level": "malicious"}]
 
 
-# ── Load-path RCE scoping: block only files a load would actually deserialize ──
 
 
 def test_flagged_safetensors_does_not_block():
@@ -454,7 +453,8 @@ def test_inconclusive_index_lookup_blocks_subdir_pickle():
 
 
 def test_partial_index_read_with_transient_failure_blocks_subdir_pickle():
-    # The bin index (which would list the flagged shard) fails transiently; a partial path set is not definitive.
+    # The bin index (which would list the flagged shard) fails transiently; a partial path set is
+    # not definitive.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -510,7 +510,8 @@ def test_eicar_shaped_root_files_block():
 
 
 def test_unknown_future_level_fails_closed():
-    # Hub schema drift: an unrecognized non-"safe" level (e.g. "infected") on a root pickle must block.
+    # Hub schema drift: an unrecognized non-"safe" level (e.g. "infected") on a root pickle must
+    # block.
     status = {"scansDone": True, "filesWithIssues": [{"path": "weights.bin", "level": "infected"}]}
     with _patch_status(status):
         d = evaluate_file_security("evil/repo")
@@ -530,7 +531,6 @@ def test_pending_or_scanning_level_does_not_block():
         assert d.blocked is False, lvl
 
 
-# -- Subdir load roots: Spark-TTS / BiCodec load from_pretrained(<snapshot>/LLM) --
 
 
 def test_flagged_pickle_under_load_subdir_blocks():
@@ -577,7 +577,6 @@ def test_indexed_shard_under_load_subdir_blocks():
     assert d.blocked is True
 
 
-# -- Source files are the consent gate's domain, not a deserialization vector --
 
 
 def test_flagged_root_python_helper_does_not_block():
@@ -609,7 +608,6 @@ def test_root_pickle_still_blocks_with_flagged_python_sibling():
     assert d.blocked is True
 
 
-# -- Alias resolution: scan the repo the loader actually fetches from --
 
 
 def _patch_status_capture(status):
@@ -624,7 +622,8 @@ def _patch_status_capture(status):
 
 
 def test_spark_tts_llm_alias_scans_real_repo():
-    # "Spark-TTS-0.5B/LLM" loads as unsloth/Spark-TTS-0.5B with LLM as load root; the literal alias 404s.
+    # "Spark-TTS-0.5B/LLM" loads as unsloth/Spark-TTS-0.5B with LLM as load root; the literal alias
+    # 404s.
     status = {"filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
     with cap, patch("utils.paths.is_local_path", return_value = False), _patch_no_index():

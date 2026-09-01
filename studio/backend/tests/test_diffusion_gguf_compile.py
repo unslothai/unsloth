@@ -20,7 +20,7 @@ from core.inference import diffusion_gguf_compile as gc  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def _clean():
-    # Always start and end from a clean, unpatched state so tests do not leak the process-wide patch into each other.
+    # Start and end unpatched so tests do not leak the process-wide patch into each other.
     gc.uninstall_all()
     yield
     gc.uninstall_all()
@@ -32,18 +32,14 @@ def test_compiled_dequant_install_uninstall_reversible():
 
     assert gc.install_compiled_dequant() is True
     assert gc.is_compiled_dequant_installed() is True
-    # The module attribute is now a different (compiled) callable...
     assert gguf_utils.dequantize_gguf_tensor is not orig
-    # ...idempotent: a second install is a no-op, attribute unchanged.
     patched = gguf_utils.dequantize_gguf_tensor
     assert gc.install_compiled_dequant() is True
     assert gguf_utils.dequantize_gguf_tensor is patched
 
     gc.uninstall_compiled_dequant()
     assert gc.is_compiled_dequant_installed() is False
-    # Exact original restored.
     assert gguf_utils.dequantize_gguf_tensor is orig
-    # Uninstall is idempotent.
     gc.uninstall_compiled_dequant()
     assert gguf_utils.dequantize_gguf_tensor is orig
 

@@ -33,7 +33,6 @@ def isolated_auth_db(tmp_path, monkeypatch):
 def test_identity_secret_is_persistent_and_cached():
     first = storage.get_or_create_identity_secret()
     assert isinstance(first, bytes) and len(first) == 32
-    # Cached in-process.
     assert storage.get_or_create_identity_secret() == first
     # Persisted: a fresh process (cache cleared) reads the same stored value.
     storage._identity_secret_cache = None
@@ -65,8 +64,7 @@ def test_proof_differs_when_secret_differs(tmp_path, monkeypatch):
 
 
 def _identity_client() -> TestClient:
-    # routes.auth pulls the whole routes package (-> inference -> llama_cpp). Skip
-    # if those heavy deps are missing; the proof crypto is covered above.
+    # routes.auth pulls the whole routes package (-> inference -> llama_cpp).
     try:
         from routes.auth import router
     except Exception as exc:  # pragma: no cover - environment-dependent
@@ -92,5 +90,4 @@ def test_identity_route_validates_nonce():
     # Decodes to < 16 bytes: too little entropy to be meaningful.
     short = base64.urlsafe_b64encode(b"tiny").decode()
     assert client.get(f"/api/auth/identity?nonce={short}").status_code == 400
-    # Missing nonce: FastAPI request validation.
     assert client.get("/api/auth/identity").status_code == 422

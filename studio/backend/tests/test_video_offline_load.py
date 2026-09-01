@@ -23,8 +23,7 @@ from core.inference import video as video_mod
 from core.inference.video import VideoBackend
 from core.inference.video_families import detect_video_family
 
-# A plain (non-modular) family: the H3 conditioner / denoiser substitutions are exercised by their
-# own suites, and this one keeps the load on the shared path every video pick walks.
+# A plain (non-modular) family, so this keeps the load on the shared path every video pick walks.
 WAN_GGUF = "unsloth/Wan2.2-TI2V-5B-GGUF"
 WAN_BASE = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 WAN_FILE = "wan2.2-ti2v-5b-Q4_K_M.gguf"
@@ -73,7 +72,6 @@ def _install_sentinels(monkeypatch, calls, tmp_path, *, offline):
 
     monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _model_info, raising = False)
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
-    # The wrapper's own offline branch calls this directly; a sentinel here catches a bypass.
     monkeypatch.setattr(
         huggingface_hub,
         "hf_hub_download",
@@ -111,15 +109,11 @@ def test_an_api_initiated_load_opens_the_cache_and_downloads_nothing(monkeypatch
         _load_token = 1,
     )
 
-    # _run_load swallows failures onto load_progress rather than raising, so the state IS the
-    # result: cleared means the load ran through, an error string means a sentinel fired.
+    # _run_load swallows failures onto load_progress, so the state IS the result: an error means a sentinel.
     assert backend._loading is None, getattr(backend._loading, "error", None)
     assert seen.get("local_files_only") is True
-    # Not one metadata probe: the byte estimate and the base prefetch both stand down offline.
     assert calls.model_info == []
-    # The checkpoint is still resolved -- as a cache lookup.
     assert calls.downloads == [(WAN_GGUF, WAN_FILE, True)]
-    # And nothing was staged for from_pretrained, which resolves the cached snapshot itself.
     assert seen.get("_base_local_dir") is None
 
 
@@ -138,9 +132,7 @@ def test_a_user_initiated_load_still_calls_every_one_of_them(monkeypatch, tmp_pa
 
     assert backend._loading is None, getattr(backend._loading, "error", None)
     assert seen.get("local_files_only") in (False, None)
-    # The byte estimate probes the checkpoint repo and the base; the base prefetch probes it again.
     assert WAN_GGUF in calls.model_info and WAN_BASE in calls.model_info
-    # And the checkpoint is FETCHED, not looked up.
     assert calls.downloads == [(WAN_GGUF, WAN_FILE, False)]
 
 
@@ -293,8 +285,7 @@ def _keywords_of(module_path: str, function: str, callee: str) -> set[str]:
     import ast
     import pathlib
 
-    # Anchored on the package, not on the process CWD: CI runs pytest from the repo root with the
-    # backend merely on PYTHONPATH, where a relative open raises FileNotFoundError.
+    # Anchored on the package, not the CWD: CI runs pytest from the repo root, where a relative open raises.
     backend_root = pathlib.Path(video_mod.__file__).resolve().parents[2]
     tree = ast.parse((backend_root / module_path).read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
@@ -307,12 +298,10 @@ def _keywords_of(module_path: str, function: str, callee: str) -> set[str]:
 
 
 def test_the_hosted_prequantized_denoiser_is_not_fetched_by_a_load_nobody_asked_for():
-    # `auto` is settled twice: the download plan decides against the card's CAPACITY, and this
-    # branch re-decides against LIVE free memory once the previous pipeline is gone. So a pick the
-    # plan sized as "the released bfloat16 denoiser fits" -- nothing hosted staged, the locality
-    # gate reporting zero missing bytes, the switch starting the load -- can be re-decided here as
-    # "take the hosted int8 checkpoint", and that is a multi-GB pull on a load that promised none.
-    # The image twin has passed the flag here all along; the video path did not.
+    # `auto` is settled twice: the download plan decides against the card's CAPACITY and this branch
+    # re-decides against LIVE free memory, so a pick the plan sized as "the released bfloat16 denoiser
+    # fits" can be re-decided as "take the hosted int8 checkpoint", a multi-GB pull on a load that
+    # promised none.
     assert "local_files_only" in _keywords_of(
         "core/inference/video.py", "_load_h3_modular_pipeline", "load_prequantized_transformer"
     )

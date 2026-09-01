@@ -82,7 +82,6 @@ def test_enabled_intent_blocks_only_selected_launch_path(
     assert status["can_start"] is can_start
     assert status["password_pending"] is False
 
-    # A pending password is reported on its own, even where another block hides it.
     monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: False)
     pending = remote_access.remote_access_status(state)
     assert pending["password_pending"] is True
@@ -131,7 +130,6 @@ def test_only_a_finished_stop_worker_stops_reporting_stopping(monkeypatch):
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_status", lambda: dict(tunnel_status))
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 6))
 
-    # the teardown advanced the generation past (1, 5), so this stop is done
     status = remote_access.remote_access_status(_state())
     assert status["state"] == "off"
     assert status["can_start"] is True
@@ -143,16 +141,13 @@ def test_only_a_finished_stop_worker_stops_reporting_stopping(monkeypatch):
     assert remote_access.remote_access_status(_state())["state"] == "starting"
     monkeypatch.setattr(remote_access, "_start_worker", None)
 
-    # a stop admitted at the current generation still owes its teardown
     monkeypatch.setattr(remote_access, "_stop_worker_admission", (1, 6))
     assert remote_access.remote_access_status(_state())["state"] == "stopping"
     monkeypatch.setattr(remote_access, "_stop_worker_admission", (1, 5))
 
-    # so does a torn-down stop whose termination is unconfirmed
     tunnel_status["stop_pending"] = True
     assert remote_access.remote_access_status(_state())["state"] == "stopping"
 
-    # and the report stays scoped to a tunnel that is actually off
     tunnel_status.update(stop_pending = False, state = "online", managed_by = "settings")
     assert remote_access.remote_access_status(_state())["state"] == "stopping"
     hold.set()
@@ -284,9 +279,7 @@ def test_management_rejects_api_keys():
         routes._require_ui_session(True)
     assert exc.value.status_code == 403
     assert remote_access.remote_access_status(_state())["streaming_supported"] is True
-    # Every /remote-access handler must carry the gate. Scoped to those routes
-    # because a file-wide count breaks whenever an unrelated endpoint adopts
-    # _require_ui_session, as the Settings > Logs log endpoints did.
+    # Scoped to /remote-access routes: a file-wide count breaks when any endpoint adopts _require_ui_session.
     tree = ast.parse(Path(routes.__file__).read_text(encoding = "utf-8"))
     gated = {}
     for node in ast.walk(tree):
@@ -440,8 +433,7 @@ def test_colab_auto_start_setting_is_read_only(monkeypatch):
 
 
 def test_unstoppable_connector_reports_why_start_is_blocked(monkeypatch):
-    # The generic "Cloudflare tunnel failed" hides the one state the user can
-    # act on: a connector whose exit was never confirmed still holds the slot.
+    # The generic "Cloudflare tunnel failed" hides the actionable state: an unconfirmed connector holds the slot.
     monkeypatch.setattr(remote_access, "_start_worker", None)
     monkeypatch.setattr(remote_access, "_stop_worker", None)
     monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
@@ -464,8 +456,7 @@ def test_unstoppable_connector_reports_why_start_is_blocked(monkeypatch):
 
 
 def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monkeypatch):
-    # A start worker that stays alive without taking settings ownership (foreign
-    # owner, or bailed on admission) must not defer Stop for the probe deadline.
+    # A start worker alive without settings ownership must not defer Stop for the probe deadline.
     hold = threading.Event()
     foreign_start = threading.Thread(target = hold.wait, daemon = True)
     foreign_start.start()
@@ -499,9 +490,7 @@ def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monke
 
 
 def test_streaming_is_not_advertised_while_a_quick_tunnel_carries_the_traffic(monkeypatch):
-    # Cloudflare documents that Quick Tunnels do not support Server-Sent Events,
-    # and Unsloth only ever opens Quick Tunnels. Measured against a real tunnel: an
-    # SSE endpoint answers 200 with text/event-stream but delivers zero events.
+    # Cloudflare documents that Quick Tunnels, the only kind Unsloth opens, do not support SSE: 200, then zero events.
     monkeypatch.setattr(remote_access, "_start_worker", None)
     monkeypatch.setattr(remote_access, "_stop_worker", None)
     monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)

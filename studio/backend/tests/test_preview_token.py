@@ -17,7 +17,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Mirror the other preview tests: avoid the heavy real `loggers` handlers.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -46,7 +45,6 @@ def test_missing_or_tampered_token_rejected(monkeypatch):
     assert not preview_token.verify_preview_ref("demorun", "")
     flipped = token[:-1] + ("A" if token[-1] != "A" else "B")
     assert not preview_token.verify_preview_ref("demorun", flipped)
-    # A token minted for one ref does not unlock another.
     assert not preview_token.verify_preview_ref("otherrun", token)
     # A non-ASCII token is invalid, not a crash (the route would 500 otherwise).
     assert not preview_token.verify_preview_ref("demorun", "tøken-é")
@@ -60,7 +58,6 @@ def test_secret_change_invalidates_token(monkeypatch):
 
 
 def test_rotation_revokes_links(tmp_path, monkeypatch):
-    # Exercise the real storage helpers against a throwaway auth.db.
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_preview_link_secret_cache", None)
 
@@ -70,6 +67,5 @@ def test_rotation_revokes_links(tmp_path, monkeypatch):
     assert preview_token.verify_preview_ref("demorun", token)
 
     storage.rotate_preview_link_secret()
-    # Old shared link is revoked; a freshly minted one works.
     assert not preview_token.verify_preview_ref("demorun", token)
     assert preview_token.verify_preview_ref("demorun", preview_token.sign_preview_ref("demorun"))

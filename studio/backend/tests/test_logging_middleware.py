@@ -140,7 +140,6 @@ def test_duplicate_get_within_window_deduped(logs, monkeypatch):
     for _ in range(3):
         _run(mw(_http_scope("/api/models/browse-folders"), _noop_receive, send))
 
-    # Only the first of the identical GET/200 burst is logged.
     assert len(logs.events) == 1
     assert logs.events[0][1] == "request_completed"
 
@@ -194,8 +193,7 @@ def test_quiet_poll_paths_use_longer_heartbeat_window(logs, monkeypatch):
 
 
 def test_liveness_probe_heartbeats(logs, monkeypatch):
-    # The desktop watchdog's own probe. Its sibling /api/health was already quiet, so a
-    # steady poll of this one was a line per request.
+    # The desktop watchdog's own probe.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 1000)
@@ -239,8 +237,8 @@ def test_watchdog_window_outlasts_the_probe_interval():
     interval_s = _secs("HEALTH_WATCHDOG_INTERVAL")
     probe_s = _secs("HEALTH_PROBE_TIMEOUT")
 
-    # The default, not whatever this shell exports: reading the module global would fail
-    # the test for anyone with the override set.
+    # The default, not whatever this shell exports: reading the module global would fail the test
+    # for anyone with the override set.
     window_ms = hmod._env_int("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS", 60000)
     if os.environ.get("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS"):
         window_ms = 60000
@@ -315,7 +313,6 @@ def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
     _run(mw(scope(b"path=/tmp/b"), _noop_receive, send))  # distinct query -> logs
     _run(mw(scope(b"path=/tmp/a"), _noop_receive, send))  # repeat of first -> deduped
 
-    # Two distinct query strings log; the immediate repeat of the first does not.
     assert len(logs.events) == 2
 
 
@@ -370,8 +367,8 @@ def test_quiet_success_get_2xx_suppressed(logs):
 
 
 def test_chat_detail_and_message_reads_still_log(logs):
-    # Only the exact list polls are suppressed; detail/message reads carry latency
-    # signal and keep their access line.
+    # Only the exact list polls are suppressed; detail/message reads carry latency signal and keep
+    # their access line.
     for path in (
         "/api/chat/threads/abc123",
         "/api/chat/threads/abc123/messages",
@@ -399,8 +396,8 @@ def test_quiet_success_is_get_only(logs):
 
 
 def test_chat_pre_auth_401_suppressed_other_errors_logged(logs):
-    # The transient bootstrap 401 on a chat list GET is dropped, but a 500 (or any
-    # other status) still logs so real failures stay visible.
+    # The transient bootstrap 401 on a chat list GET is dropped, but a 500 (or any other status)
+    # still logs so real failures stay visible.
     _run(
         LoggingMiddleware(_status_app(401))(_http_scope("/api/chat/projects"), _noop_receive, _drop)
     )
@@ -412,9 +409,9 @@ def test_chat_pre_auth_401_suppressed_other_errors_logged(logs):
 
 
 def test_chat_401_logged_after_first_auth_refresh(logs):
-    # A chat 401 before any successful token refresh is the bootstrap race and is
-    # dropped, but once /api/auth/refresh has succeeded on this instance later chat
-    # 401s are real failures and stay visible.
+    # A chat 401 before any successful token refresh is the bootstrap race and is dropped, but once
+    # /api/auth/refresh has succeeded on this instance later chat 401s are real failures and stay
+    # visible.
     responses: dict[tuple[str, str], int] = {}
 
     async def app(scope, receive, send):
@@ -433,7 +430,6 @@ def test_chat_401_logged_after_first_auth_refresh(logs):
     _run(mw(_http_scope("/api/auth/refresh", method = "POST"), _noop_receive, _drop))
     assert _paths_logged(logs) == ["/api/auth/refresh"]
 
-    # Now the same chat 401 is a real failure and logs.
     _run(mw(_http_scope("/api/chat/threads"), _noop_receive, _drop))
     assert _paths_logged(logs) == ["/api/auth/refresh", "/api/chat/threads"]
 
@@ -451,8 +447,8 @@ def test_export_status_error_still_logs(logs):
 
 
 def test_legacy_download_progress_heartbeats_not_suppressed(logs, monkeypatch):
-    # Legacy /api/models download polls emit no progress events, so they heartbeat
-    # (first hit logs, the burst collapses) rather than vanish entirely.
+    # Legacy /api/models download polls emit no progress events, so they heartbeat (first hit logs,
+    # the burst collapses) rather than vanish entirely.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     mw = LoggingMiddleware(_status_app(200))
@@ -504,8 +500,8 @@ def test_image_video_load_progress_heartbeats(logs, monkeypatch):
 
 
 def test_unrelated_image_routes_still_log(logs, monkeypatch):
-    # Quieting only collapses repeats: the first hit on any path always logs,
-    # including the status reads the loaded-models indicator now polls.
+    # Quieting only collapses repeats: the first hit on any path always logs, including the status
+    # reads the loaded-models indicator now polls.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     for path in (
         "/api/inference/images/status",
@@ -521,12 +517,8 @@ def test_unrelated_image_routes_still_log(logs, monkeypatch):
 
 
 def test_indicator_status_polls_collapse_to_one_shared_heartbeat(logs, monkeypatch):
-    # The loaded-models indicator reads all four runtimes every 5s for as long as the
-    # app is open, and on the desktop every line is mirrored into tauri.log. The three
-    # cheap ones answer the same question, so they share one heartbeat bucket: one line
-    # per window in total, not one per path. Previously each path heartbeated
-    # separately, which still meant a line per path per window. /api/inference/status
-    # is excluded on purpose (its handler can be slow), and is covered by its own test.
+    # The loaded-models indicator reads all four runtimes every 5s for as long as the app is open,
+    # and on the desktop every line is mirrored into tauri.log.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
@@ -546,8 +538,8 @@ def test_indicator_status_polls_collapse_to_one_shared_heartbeat(logs, monkeypat
 
 
 def test_the_runtime_status_polls_share_the_liveness_bucket(logs, monkeypatch):
-    # /api/auth/status and the inference status polls are the same "still up" signal,
-    # so they must not each add a line of their own.
+    # /api/auth/status and the inference status polls are the same "still up" signal, so they must
+    # not each add a line of their own.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
@@ -559,9 +551,8 @@ def test_the_runtime_status_polls_share_the_liveness_bucket(logs, monkeypatch):
 
 
 def test_health_keeps_its_own_heartbeat(logs, monkeypatch):
-    # main.py waits up to a second for hardware detection and the desktop preflight
-    # has a two-second deadline, so a slow-but-successful /api/health is exactly the
-    # line worth keeping; it must not be suppressed by a cheap status poll.
+    # main.py waits up to a second for hardware detection and the desktop preflight has a two-second
+    # deadline, so a slow-but-successful /api/health is exactly the line worth keeping.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
@@ -573,8 +564,8 @@ def test_health_keeps_its_own_heartbeat(logs, monkeypatch):
 
 
 def test_the_slow_inference_probe_keeps_its_own_heartbeat(logs, monkeypatch):
-    # get_status reads llama.cpp capabilities and checks release freshness in an
-    # executor, so a slow but successful probe is worth its own process_time_ms.
+    # get_status reads llama.cpp capabilities and checks release freshness in an executor, so a slow
+    # but successful probe is worth its own process_time_ms.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
@@ -586,8 +577,8 @@ def test_the_slow_inference_probe_keeps_its_own_heartbeat(logs, monkeypatch):
 
 
 def test_a_parameterized_stt_status_keeps_its_own_line(logs, monkeypatch):
-    # fetchSttStatus(refreshKey, model) asks whether a custom repo is downloaded,
-    # which is not the background "still up" poll and must not be swallowed by it.
+    # fetchSttStatus(refreshKey, model) asks whether a custom repo is downloaded, which is not the
+    # background "still up" poll and must not be swallowed by it.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
@@ -614,8 +605,7 @@ def test_two_different_stt_models_do_not_collapse(logs, monkeypatch):
 
 
 def test_non_liveness_quiet_polls_keep_their_own_heartbeat(logs, monkeypatch):
-    # Only the liveness group is shared. These report on different subsystems, so
-    # collapsing them together would genuinely lose information.
+    # Only the liveness group is shared.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
@@ -636,8 +626,8 @@ def test_non_liveness_quiet_polls_keep_their_own_heartbeat(logs, monkeypatch):
 
 
 def test_a_failing_liveness_poll_always_logs(logs, monkeypatch):
-    # Sharing a bucket must not hide a health check that starts failing: non-2xx
-    # never dedups, so every failure logs even mid-burst.
+    # Sharing a bucket must not hide a health check that starts failing: non-2xx never dedups, so
+    # every failure logs even mid-burst.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
@@ -684,8 +674,8 @@ def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):
 
 
 def test_boot_burst_catalog_reads_suppressed(logs):
-    # The catalog reads the SPA fans out on every auth change / rehydration: their 2xx
-    # only restates the list the UI is already showing.
+    # The catalog reads the SPA fans out on every auth change / rehydration: their 2xx only restates
+    # the list the UI is already showing.
     for path in (
         "/api/providers/registry",
         "/api/providers/",
@@ -743,7 +733,6 @@ def test_verbose_off_by_default_keeps_the_polls_quiet(logs):
     assert logs.events == []
 
 
-# ── templated chat detail polls ──
 def test_chat_thread_detail_polls_heartbeat_instead_of_one_line_each(logs, monkeypatch):
     """Streaming drives these on a loop: 25 thread and 21 fork reads in 20s over one
     four-tab session, 34% of the access log."""
@@ -770,7 +759,6 @@ def test_four_tabs_share_one_bucket_per_template(logs, monkeypatch):
         for _ in range(5):
             _run(mw(_http_scope(f"/api/chat/threads/{tab}"), _noop_receive, _drop))
 
-    # One line, and it names a real thread rather than the template.
     assert _paths_logged(logs) == ["/api/chat/threads/t1"], _paths_logged(logs)
 
 

@@ -22,7 +22,6 @@ from core.inference.external_provider import (
 )
 
 
-# ── _build_usage_chunk unit tests ───────────────────────────────────
 
 
 def test_build_usage_chunk_anthropic_shape():
@@ -43,9 +42,8 @@ def test_build_usage_chunk_anthropic_shape():
     assert payload["object"] == "chat.completion.chunk"
     assert payload["choices"] == []
     usage = payload["usage"]
-    # Anthropic's input_tokens excludes cache buckets; prompt_tokens must
-    # sum all three input components so downstream context/cost displays
-    # see the real prompt size.
+    # Anthropic's input_tokens excludes cache buckets; prompt_tokens must sum all three input
+    # components so downstream context/cost displays see the real prompt size.
     assert usage["prompt_tokens"] == 8 + 1367 + 18901
     assert usage["completion_tokens"] == 862
     assert usage["total_tokens"] == 8 + 1367 + 18901 + 862
@@ -78,8 +76,8 @@ def test_build_usage_chunk_openai_shape():
 
 
 def test_build_usage_chunk_missing_fields_default_to_zero():
-    # OpenAI Responses can omit input_tokens_details when prompt caching is
-    # unused; the helper should still emit a chunk with cached_tokens=0.
+    # OpenAI Responses can omit input_tokens_details when prompt caching is unused; the helper
+    # should still emit a chunk with cached_tokens=0.
     line = _build_usage_chunk(
         "chatcmpl-z",
         "openai",
@@ -91,8 +89,8 @@ def test_build_usage_chunk_missing_fields_default_to_zero():
 
 
 def test_build_usage_chunk_returns_none_when_all_zero():
-    # If upstream errored before any usage event, suppress the chunk to
-    # avoid a misleading "0 tokens" line.
+    # If upstream errored before any usage event, suppress the chunk to avoid a misleading "0
+    # tokens" line.
     assert _build_usage_chunk("id", "anthropic", {}) is None
     assert _build_usage_chunk("id", "anthropic", None) is None
     assert _build_usage_chunk("id", "openai", {}) is None
@@ -110,7 +108,6 @@ def test_build_usage_chunk_returns_none_when_all_zero():
     )
 
 
-# ── streaming integration tests ─────────────────────────────────────
 
 
 def _drive(coro):
@@ -530,7 +527,6 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     assert u["cache_read_input_tokens"] == 5713
     assert u["prompt_tokens_details"]["cached_tokens"] == 5713
 
-    # Usage chunk must come before [DONE].
     data_lines = [ln for ln in lines if ln.startswith("data:")]
     done_idx = next(i for i, ln in enumerate(data_lines) if ln.strip().endswith("[DONE]"))
     usage_idx = next(
@@ -710,9 +706,8 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
     ],
 )
 def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider_type, expected):
-    # An OAI-compatible stream omits usage without stream_options.include_usage, and
-    # these providers report no llama.cpp timings, so the monitor has no token count to
-    # derive a speed from and the row shows a blank Speed for every completed request.
+    # An OAI-compatible stream omits usage without stream_options.include_usage, and these providers
+    # report no llama.cpp timings, so the monitor has no token count and the row shows a blank Speed.
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -751,8 +746,8 @@ def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider
 
 
 def test_kimi_no_search_fallback_requests_usage(monkeypatch):
-    # The web-search path returns before the common body injection, and Kimi reports no
-    # engine timings, so this fallback would leave tokens and speed blank.
+    # The web-search path returns before the common body injection, and Kimi reports no engine
+    # timings, so this fallback would leave tokens and speed blank.
     bodies: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:

@@ -158,7 +158,6 @@ def test_rewind_resets_cached_state():
     stripper = StreamingMarkupStripper(ENABLED)
     long_text = 'hello <tool_call>{"name": "search", "arguments": {}}</tool_call> world'
     assert stripper.strip(long_text) == _reference_strip(long_text)
-    # Unrelated shorter text: not an extension of the previous input.
     assert stripper.strip("different") == _reference_strip("different")
     assert stripper.strip(long_text) == _reference_strip(long_text)
 
@@ -194,8 +193,7 @@ def test_scan_is_amortized_not_quadratic():
         stripper = StreamingMarkupStripper(ENABLED)
         return elapsed(stripper.strip, tokens)
 
-    # 4x the tokens: the reference rescans everything (~16x), the incremental one resumes
-    # (~4x). Ratios rather than absolutes keep this meaningful on a noisy CI box.
+    # Ratios, not absolutes, to survive a noisy CI box: 4x the tokens costs the reference ~16x, this ~4x.
     reference_growth = elapsed(_reference_strip, long) / max(elapsed(_reference_strip, short), 1e-9)
     incremental_growth = incremental(long) / max(incremental(short), 1e-9)
 
@@ -205,23 +203,18 @@ def test_scan_is_amortized_not_quadratic():
     )
 
 
-# Cases the corpus and the alphabet fuzz both missed. Each produced a real divergence from
-# the reference strip before the guard it names was added, so each is pinned as a literal.
+# Cases the corpus and alphabet fuzz both missed, each a real divergence from the reference strip.
 _MISSED_BY_THE_CORPUS = (
-    # ``_GEMMA_BARE_TC_RE`` is ``call\s*:``, so a space or newline before the colon is
-    # still a call. Sentinel completeness needs the literal ``call``, not ``call:``.
+    # ``_GEMMA_BARE_TC_RE`` is ``call\s*:``, so sentinel completeness needs the literal ``call``, not ``call:``.
     "call :get_weather{city:Paris}",
     "call\n:get_weather{city:Paris}",
     "The answer.\ncall : get_weather{city:Paris}",
-    # A JSON answer is data: its ``call:NAME{...}`` examples stay visible. That decision
-    # keys on the whole segment, so trimming the segment must not reach it.
+    # A JSON answer is data, and that decision keys on the whole segment, so trimming the segment must not reach it.
     '{\n  "tool_syntax": "call:get_weather{city:Paris}",\n  "note": "example"\n}',
     '[\n  "call:search{q:1}"\n]',
-    # Earlier arms can leave behind a segment that is whole JSON when the untrimmed one
-    # was not, which is the same hazard arrived at from the other side.
+    # Earlier arms can leave behind a segment that is whole JSON when the untrimmed one was not.
     'answer\n[TOOL_CALLS]search[ARGS]{"q":1}{\n  "k": "call:get_weather{c:P}"\n}',
-    # A reasoning closer with no opener makes offset 0 of the segment meaningful, so
-    # nothing may be trimmed off the front of it.
+    # A reasoning closer with no opener makes offset 0 meaningful, so nothing may be trimmed off its front.
     '\n[TOOL_CALLS]search[ARGS]{"q":1}[/THINK]<function=search>{}</function>',
     '[THINK]r[/THINK]<function name="s">{}</function>[/THINK]tail',
 )
@@ -398,7 +391,6 @@ def test_the_caller_can_still_grow_its_buffer_in_place():
     short = elapsed(8000)
     long = elapsed(32000)
 
-    # 4x the tokens. Linear in place, ~16x if every append copies the answer so far.
     assert long < short * 8 + 0.05, (
         f"4x the tokens cost {long / max(short, 1e-9):.1f}x the time "
         f"({short:.3f}s -> {long:.3f}s); the buffer is being copied per token"
@@ -454,12 +446,9 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces():
     prefix = '`x` <tool_call>{"name": "search", "arguments": {}}</tool_call> '
 
     def elapsed(fn, count):
-        # process_time, not perf_counter: this compares how much work two code paths do,
-        # and wall clock also measures whatever else the machine is running. A 10% margin
-        # does not survive that. On a 4-vCPU CI runner with other test workers in flight
-        # the wall-clock version failed outright (1.451s against 1.316s) while the code
-        # under test had not changed. CPU time of this process is the quantity the
-        # assertion is actually about, and it is unaffected by neighbours.
+        # process_time, not perf_counter: this compares how much work two code paths do, and a 10% margin
+        # does not survive wall clock. On a 4-vCPU CI runner the wall-clock version failed outright
+        # (1.451s against 1.316s) with the code under test unchanged.
         text = prefix
         start = time.process_time()
         for _ in range(count):
@@ -471,10 +460,8 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces():
     reference = min(elapsed(_reference_strip, count) for _ in range(3))
     incremental = min(elapsed(StreamingMarkupStripper(ENABLED).strip, count) for _ in range(3))
 
-    # process_time has coarser granularity than perf_counter, and `0.0 <= 0.0 * 1.10` is
-    # true. Without a floor a clock that stopped reporting, or a `count` someone lowered,
-    # turns this into an assertion that cannot fail. 0.05s is far below the ~1.3s each arm
-    # actually takes and far above the clock's resolution.
+    # process_time is coarser than perf_counter and `0.0 <= 0.0 * 1.10` is true, so without a floor a
+    # stopped clock turns this into an assertion that cannot fail. 0.05s is far below the ~1.3s arms.
     assert (
         reference > 0.05
     ), f"reference arm measured {reference:.4f}s; too small to compare against"
@@ -508,7 +495,6 @@ def test_an_open_reasoning_block_is_scanned_incrementally():
     short = elapsed(2000)
     long = elapsed(8000)
 
-    # 4x the tokens. Linear resumes at ~4x; restarting at the opener is ~16x.
     assert long < short * 8 + 0.05, (
         f"4x the tokens cost {long / max(short, 1e-9):.1f}x the time "
         f"({short:.4f}s -> {long:.4f}s); the reasoning body is being rescanned"
@@ -606,7 +592,6 @@ def test_a_cut_never_crosses_an_open_parameter_block():
         assert got == expected
         assert "TEXT</function>" not in got
 
-    # A closed parameter block still gets cut, so the guard is not blanket.
     closed = "Visible <parameter=x>v</parameter>\n<function=a></function>TEXT</function>"
     stripper = StreamingMarkupStripper(names)
     for i in range(1, len(closed) + 1):

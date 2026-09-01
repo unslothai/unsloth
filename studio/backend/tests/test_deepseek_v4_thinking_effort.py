@@ -24,9 +24,8 @@ if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
 
-# Faithful slice of the DeepSeek-V4-Flash GGUF template: the enable_thinking
-# gate, the sole ``reasoning_effort == 'max'`` escalation, and the plain-think
-# fallback. Any non-'max' effort renders as ordinary thinking.
+# Faithful slice of the DeepSeek-V4-Flash GGUF template: the enable_thinking gate, the sole
+# ``reasoning_effort == 'max'`` escalation, and the plain-think fallback.
 DEEPSEEK_V4_TEMPLATE = """
 {%- if not thinking is defined -%}
   {%- if enable_thinking is defined -%}
@@ -52,8 +51,8 @@ DEEPSEEK_V4_TEMPLATE = """
 """
 
 
-# GLM-5.2-style: branches on two effort literals, so 'high' already exists as
-# the sub-'max' tier and detection must leave the pair untouched.
+# GLM-5.2-style: branches on two effort literals, so 'high' already exists as the sub-'max' tier and
+# detection must leave the pair untouched.
 GLM_STYLE_TEMPLATE = """
 {%- if enable_thinking -%}
   {%- if reasoning_effort == 'high' -%}{{- 'H' -}}
@@ -63,13 +62,13 @@ GLM_STYLE_TEMPLATE = """
 """
 
 
-# A ['max']-only template under a non-deepseek id: the synthetic 'high' is scoped
-# to deepseek-v4, so this must stay ['max'] (no phantom 'high').
+# A ['max']-only template under a non-deepseek id: the synthetic 'high' is scoped to deepseek-v4, so
+# this must stay ['max'].
 NON_DEEPSEEK_MAX_ONLY_TEMPLATE = DEEPSEEK_V4_TEMPLATE
 
 
-# A template whose sole effort literal is a sub-'max' level: the guard targets
-# only the ['max']-alone case, so a lone 'high' stays a singleton.
+# A template whose sole effort literal is a sub-'max' level: the guard targets only the
+# ['max']-alone case, so a lone 'high' stays a singleton.
 HIGH_ONLY_TEMPLATE = """
 {%- if enable_thinking and reasoning_effort == 'high' -%}{{- 'H' -}}{%- endif -%}
 """
@@ -82,7 +81,6 @@ def _render(template: str, **kwargs) -> str:
     return tmpl.render(bos_token = "<BOS>", add_generation_prompt = True, **kwargs)
 
 
-# -- Classifier -------------------------------------------------------
 
 
 def test_deepseek_v4_surfaces_high_as_plain_tier():
@@ -120,7 +118,6 @@ def test_guard_does_not_fire_for_sub_max_singleton():
     assert flags["reasoning_effort_levels"] == ["high"]
 
 
-# -- Request kwargs -> rendered prompt, for each state ----------------
 
 
 def _kwargs_for(flags: dict, enable_thinking, reasoning_effort):

@@ -28,7 +28,6 @@ class _FakeResp:
             self.headers["Content-Type"] = content_type
 
     def read(self, n: int | None = None) -> bytes:
-        # Advance a cursor like a real stream so the chunked reader reaches EOF.
         chunk = self._body[self._pos :] if n is None else self._body[self._pos : self._pos + n]
         self._pos += len(chunk)
         return chunk
@@ -47,7 +46,6 @@ class _FakeOpener:
 
 
 def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
-    # Pass SSRF validation and skip real DNS/network.
     monkeypatch.setattr(
         tools, "_validate_and_resolve_host", lambda host, port: (True, "", "93.184.216.34")
     )
@@ -177,7 +175,6 @@ def test_pdf_extraction_caps_pages_and_intermediate_text(monkeypatch):
 def test_pdf_exactly_at_page_cap_not_marked_capped(monkeypatch):
     from core.rag.parsers import Page
 
-    # Exactly _MAX_WEB_PDF_PAGES pages are fully read, so no "capped" marker.
     monkeypatch.setattr(
         "core.rag.parsers.parse_pdf_bytes",
         lambda data, *, max_pages = None: (
@@ -266,7 +263,6 @@ def test_bom_unicode_text_without_charset_kept(monkeypatch, bom, encoding, conte
 
 
 def test_valid_utf8_binary_caught_by_control_chars(monkeypatch):
-    # These controls are valid UTF-8 and therefore produce no replacement chars.
     body = bytes([0, 1, 2, 3, 4, 5, 6, 7]) * 400
     out = _fetch_with(monkeypatch, body, "text/plain")
     assert "binary content" in out
@@ -322,7 +318,6 @@ def test_office_labeled_binary_caught_by_magic(monkeypatch, content_type, magic)
 
 
 def test_latin1_text_without_charset_kept(monkeypatch):
-    # The cp1252 retry should rescue accent-heavy text with ASCII structure.
     body = (
         "Muller lauft uber die Strasse: schoene, groesse. MARKERWORD ".replace("ue", "ü")
         + "äöüß éèà "
@@ -341,7 +336,6 @@ def test_declared_latin1_cp1252_punctuation_kept(monkeypatch, charset):
 
 
 def test_high_byte_binary_not_rescued_as_cp1252(monkeypatch):
-    # cp1252 maps these bytes to printable characters, but they lack ASCII structure.
     body = bytes(range(0xA0, 0x100)) * 40
     out = _fetch_with(monkeypatch, body, "text/plain")
     assert "binary content" in out
@@ -383,7 +377,6 @@ def test_binary_char_ratio_boundary(monkeypatch, n_bad, n_total, expect_binary):
 
 
 def test_text_with_a_few_stray_replacement_chars_kept(monkeypatch):
-    # Minor encoding glitches below the floor should not drop a real page.
     body = ("Real article text. " * 200).encode() + b"\xff\xfe\xff"
     out = _fetch_with(monkeypatch, body, "text/html")
     assert "Real article text." in out

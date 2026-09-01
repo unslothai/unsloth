@@ -102,7 +102,6 @@ def test_a_huge_file_is_read_in_a_bounded_window(tmp_path, monkeypatch):
     monkeypatch.undo()
 
     assert len(result.lines) == 1000
-    # One block of slack for the block-aligned backward scan.
     assert read_bytes["total"] <= MAX_TAIL_BYTES + 65_536
 
 

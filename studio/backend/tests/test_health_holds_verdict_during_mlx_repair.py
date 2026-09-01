@@ -61,14 +61,14 @@ def apple_silicon(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mlx_repair, "_attempted", False, raising = False)
     monkeypatch.setattr(mlx_repair, "_repair_thread", None, raising = False)
-    # Same reason as the hold below: a stamp left by an earlier test would decide whether
-    # this one's worker still counts as in flight.
+    # Same reason as the hold below: a stamp left by an earlier test would decide whether this one's
+    # worker still counts as in flight.
     monkeypatch.setattr(mlx_repair, "_repair_started_at", None, raising = False)
-    # start_mlx_autorepair_if_needed() gates on this, and the real one imports mlx_vlm,
-    # which is not installed here anyway.
+    # start_mlx_autorepair_if_needed() gates on this, and the real one imports mlx_vlm, which is not
+    # installed here anyway.
     monkeypatch.setattr(mlx_repair, "mlx_stack_available", lambda: False)
-    # The pre-start hold is stamped on first use and keyed by detection generation, so a
-    # stamp left by an earlier test would decide this one's answer.
+    # The pre-start hold is stamped on first use and keyed by detection generation, so a stamp left
+    # by an earlier test would decide this one's answer.
     import main as main_mod
 
     monkeypatch.setattr(main_mod, "_mlx_prestart_hold", None)
@@ -96,7 +96,6 @@ def clock(monkeypatch):
     return fake
 
 
-# ------------------------------------------------------------- the predicate
 
 
 def test_a_running_repair_is_in_flight(apple_silicon, monkeypatch):
@@ -161,7 +160,6 @@ def test_the_worker_is_published_together_with_the_latch(apple_silicon, monkeypa
     assert workers and workers[0].started, "the self-heal worker was never started"
     assert mlx_repair._repair_thread is workers[0]
     assert mlx_repair.mlx_repair_in_flight() is True
-    # Still one attempt per process.
     assert mlx_repair.start_mlx_autorepair_if_needed() is False
     assert len(workers) == 1
 
@@ -178,7 +176,6 @@ def test_started_splits_the_two_halves_of_in_flight(apple_silicon, monkeypatch):
     assert mlx_repair.mlx_repair_started() is True
 
 
-# ---------------------------------------------------------- the hardware gate
 
 
 def test_only_the_mlx_reason_holds_a_verdict_back(apple_silicon):
@@ -203,12 +200,9 @@ def test_an_intel_mac_verdict_is_not_held_back(apple_silicon, monkeypatch):
     assert hw.verdict_pending_mlx_repair(True, "mlx_unavailable") is False
 
 
-# --------------------------------------------------- the pre-start hold window
-#
-# The scheduler runs in main._post_warm_background_work, after join_background_warm(), so
-# on a cold Mac "not started yet" is legitimately minutes and no fixed number can stand in
-# for it. main bounds that half with the warm's own progress plus a handoff grace, under an
-# absolute ceiling for the warm that never ends.
+# The scheduler runs in main._post_warm_background_work, after join_background_warm(), so on a cold
+# Mac "not started yet" is legitimately minutes and no fixed number can stand in for it. main bounds
+# that half with the warm's own progress plus a handoff grace.
 
 
 def _superseded(monkeypatch, *, warming: bool) -> bool:
@@ -281,7 +275,6 @@ def test_a_gap_in_polling_does_not_spend_the_grace_before_the_handoff(
     # Nobody asks for far longer than the grace, because the warm is holding the GIL.
     clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S * 6)
     assert _superseded(monkeypatch, warming = False) is True
-    # And it still expires normally once the handoff has actually had its window.
     clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S + 1)
     assert _superseded(monkeypatch, warming = False) is False
 
@@ -418,7 +411,6 @@ def test_an_unaskable_self_heal_settles_the_verdict(apple_silicon, monkeypatch):
     assert hw.verdict_pending_mlx_repair(True, "mlx_unavailable") is False
 
 
-# ----------------------------------------------------------------- the route
 
 
 def _health(monkeypatch, *, chat_only: bool, reason: str | None) -> dict:
@@ -438,8 +430,8 @@ def _health(monkeypatch, *, chat_only: bool, reason: str | None) -> dict:
     async def _subject(_creds):
         return "tester"
 
-    # health_check imports get_current_subject inside the function, so patching the module
-    # attribute is enough and keeps this off the real JWT/storage path.
+    # health_check imports get_current_subject inside the function, so patching the module attribute
+    # is enough and keeps this off the real JWT/storage path.
     monkeypatch.setattr(_authmod, "get_current_subject", _subject)
     app = FastAPI()
     app.add_api_route("/api/health", main_mod.health_check, methods = ["GET"])

@@ -63,7 +63,7 @@ def _plan(
 
     backend._read_gguf_metadata = read
     backend._get_gguf_size_bytes = lambda _path: weights_mib * MIB
-    del backend._can_estimate_kv  # the real one, now that the dims are set
+    del backend._can_estimate_kv
     backend.probe_server_capabilities = lambda _binary = None: {
         "mtp_token": "draft-mtp",
         "supports_ngram_mod": True,
@@ -102,7 +102,6 @@ def _plan(
         "slots": slots,
         "fit": flag("--fit", "off"),
         "checkpoints": flag("--ctx-checkpoints"),
-        # What the launch reserves beyond the plain cache.
         "reserve_bytes": (
             backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints = _cp, **kv_kwargs)
             - backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints = 0, **kv_kwargs)
@@ -219,7 +218,7 @@ class TestTheRefitDoesNotSpendTheReserve:
             ctx_checkpoints_flag = None,
         )
         none_asked = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
-        assert skipped["checkpoints"] is None  # not emitted
+        assert skipped["checkpoints"] is None
         assert (skipped["ctx"], skipped["slots"]) == (none_asked["ctx"], none_asked["slots"])
         assert skipped["ctx"] > supported["ctx"]
 

@@ -31,7 +31,6 @@ def _func_src(rel, name):
     return ast.get_source_segment(src, node)
 
 
-# -- capability matrix --------------------------------------------------------------------------
 
 
 def _patch(monkeypatch, *, torch: bool, device, apple: bool):
@@ -65,7 +64,6 @@ def test_xpu_with_torch_supports_export(monkeypatch):
 
 
 def test_mlx_without_torch_supports_export(monkeypatch):
-    # Apple Silicon MLX exports without PyTorch.
     _patch(monkeypatch, torch = False, device = hw.DeviceType.MLX, apple = True)
     assert hw.export_capability()["export_supported"] is True
 
@@ -88,7 +86,6 @@ def test_apple_without_mlx_reports_mlx_unavailable(monkeypatch):
         assert "MLX" in cap["export_unsupported_message"]
 
 
-# -- import safety without PyTorch --------------------------------------------------------------
 
 
 def test_export_backend_imports_without_torch(monkeypatch):
@@ -126,12 +123,10 @@ def test_export_backend_imports_without_torch(monkeypatch):
     assert "PyTorch is not installed" in message
 
 
-# -- endpoint / backend wiring (ast) ------------------------------------------------------------
 
 
 def test_main_endpoints_expose_export_capability():
     m = _src("main.py")
-    # Both system endpoints spread export_capability() into their response.
     assert m.count("**export_capability()") >= 2
     assert '"/api/system/hardware"' in m and '"/api/system"' in m
 
@@ -139,7 +134,6 @@ def test_main_endpoints_expose_export_capability():
 def test_routes_guard_mutating_endpoints():
     r = _src("routes/export.py")
     assert "async def _ensure_export_supported()" in r
-    # load + all four export endpoints call the guard.
     assert r.count("await _ensure_export_supported()") >= 5
 
 

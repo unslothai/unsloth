@@ -92,9 +92,8 @@ def test_the_shipped_call_sites_no_longer_fall_back_to_train_loss():
 
 
 def test_the_terminal_summary_still_reports_elapsed_time():
-    # The summary record has no step loss, so the progress filter dropped it; the
-    # elapsed time it carries (final eval, checkpoint save, best-model reload) is the
-    # run's real duration and must still reach the parent.
+    # The summary record has no step loss, so the progress filter dropped it; the elapsed time it
+    # carries (final eval, checkpoint save, best-model reload) is the run's real duration.
     import sys
     from pathlib import Path
 
@@ -164,8 +163,8 @@ def test_a_lossless_mid_run_record_is_still_dropped():
 
 
 def test_an_early_stopped_run_still_reports_its_duration():
-    # Stopping at step 12 of 30 still produces HF's lossless summary; the step
-    # comparison alone would discard it and finalize the run with stale timing.
+    # Stopping at step 12 of 30 still produces HF's lossless summary; the step comparison alone
+    # would discard it and finalize the run with stale timing.
     import sys
     from pathlib import Path
 

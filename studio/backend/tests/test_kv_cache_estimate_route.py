@@ -47,12 +47,10 @@ from test_kv_cache_estimation import _backend_from_gguf, _make_gguf_bytes  # noq
 import routes.models as models_routes  # noqa: E402
 from core.inference.llama_cpp import _pick_mtp  # noqa: E402
 
-# The platform keys the repo already parametrises over elsewhere
-# (test_diffusion_predownload_guard_platforms.py).
+# The platform keys the repo already parametrises over elsewhere (test_diffusion_predownload_guard_platforms.py).
 PLATFORMS = ("linux", "wsl", "win32", "darwin")
 
-# MLA (kv_lora_rank set) with NO MTP head: no nextn_predict_layers. This is the
-# shape that was charged a duplicate KV.
+# MLA (kv_lora_rank set) with NO MTP head: no nextn_predict_layers.
 _MLA_NO_HEAD = {
     "context_length": 131072,
     "block_count": 62,
@@ -66,8 +64,8 @@ _MLA_NO_HEAD = {
 }
 
 
-# An ordinary GQA model with nothing special about it, for asserting that the
-# shared machinery ran at all.
+# An ordinary GQA model with nothing special about it, for asserting that the shared machinery ran
+# at all.
 _PLAIN_GQA = {
     "context_length": 32768,
     "block_count": 32,
@@ -78,8 +76,8 @@ _PLAIN_GQA = {
     "attention.value_length": 128,
 }
 
-# A sliding-window model, which is the only shape where --ctx-checkpoints costs
-# anything: each checkpoint is an SWA snapshot per slot.
+# A sliding-window model, which is the only shape where --ctx-checkpoints costs anything: each
+# checkpoint is an SWA snapshot per slot.
 _SWA_MODEL = {
     "context_length": 131072,
     "block_count": 32,
@@ -412,11 +410,9 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         assert (
             deep["spec_bytes"] > zero["spec_bytes"] * 10
         ), "spec_draft_n_max did not reach the MTP estimator"
-        # A blank field is NOT zero: _build_speculative_flags emits its own
-        # default (2 with a GPU, 3 without) and the rollback state is multiplied
-        # by it, so pricing an unset field as zero dropped the dominant
-        # allocation on this exact model shape. An explicit zero still means
-        # zero, which is what separates the two calls below.
+        # A blank field is NOT zero: _build_speculative_flags emits its own default (2 with a GPU, 3
+        # without) and the rollback state is multiplied by it, so pricing an unset field as zero
+        # dropped the dominant allocation on this model shape.
         assert (
             none["spec_bytes"] > zero["spec_bytes"]
         ), "an unset draft depth was priced as zero, dropping every rollback copy"
@@ -532,12 +528,11 @@ class TestHostMemoryIsNotChargedToTheCard:
         )
         share = with_checkpoints["kv_checkpoint_bytes"]
         assert share, "checkpoints were requested but no host share was reported"
-        # By difference against the same call with none, which is how the load
-        # planner derives it -- asking one function twice cannot drift from it.
+        # By difference against the same call with none, which is how the load planner derives it --
+        # asking one function twice cannot drift from it.
         assert share == with_checkpoints["kv_bytes"] - without["kv_bytes"]
-        # And it is a SHARE of kv_bytes, not a figure beside it: the field
-        # shipped meaning the whole cache and an existing caller still reads it
-        # that way.
+        # And it is a SHARE of kv_bytes, not a figure beside it: the field shipped meaning the whole
+        # cache and an existing caller still reads it that way.
         assert share < with_checkpoints["kv_bytes"]
 
     def test_no_checkpoints_means_no_host_share(self, monkeypatch, tmp_path):
@@ -567,9 +562,9 @@ class TestAutoAbstainsOverASidecar:
         model_dir = tmp_path / "local-model"
         gguf = _write_gguf(model_dir / "model-Q4_K_M.gguf", _MLA_NO_HEAD)
         if sidecar:
-            # A DFlash sidecar is identified by its header, not its name:
-            # detect_dflash_file confirms general.architecture = dflash, which
-            # settles the adversarial case of a real model merely CALLED DFlash.
+            # A DFlash sidecar is identified by its header, not its name: detect_dflash_file
+            # confirms general.architecture = dflash, settling the case of a real model merely
+            # CALLED DFlash.
             _write_gguf(
                 model_dir / sidecar,
                 _MLA_NO_HEAD,
@@ -627,9 +622,8 @@ class TestAutoAbstainsOverASidecar:
         assert out["spec_unpriced"] is False
 
     def test_a_binary_that_cannot_run_one_still_prices_normally(self, monkeypatch, tmp_path):
-        # The planner gates sidecar selection on the binary's own capability, so
-        # abstaining where the launch would never open one blanks the bar for
-        # nothing.
+        # The planner gates sidecar selection on the binary's own capability, so abstaining where
+        # the launch would never open one blanks the bar for nothing.
         out = self._call(monkeypatch, tmp_path, sidecar = "dspark-model-Q8_0.gguf", supports = False)
         assert out["spec_unpriced"] is False
 
@@ -681,8 +675,8 @@ class TestThePlannerFiguresArrive:
         )
         assert out["gpu_bytes"], "no authoritative GPU total"
         assert out["gpu_floor_bytes"], "no irreducible floor"
-        # The floor is what survives shrinking the context, so it cannot exceed
-        # the full plan, and for a context-sensitive model it should be smaller.
+        # The floor is what survives shrinking the context, so it cannot exceed the full plan, and
+        # for a context-sensitive model it should be smaller.
         assert out["gpu_floor_bytes"] <= out["gpu_bytes"]
         assert out["gpu_floor_bytes"] < out["gpu_bytes"], (
             "the floor equals the full plan, so the second pricing did not use a "
@@ -702,15 +696,15 @@ class TestADirectGgufFileResolves:
         assert size == gguf.stat().st_size
 
     def test_a_directory_still_takes_the_quant_scan(self, tmp_path):
-        # The direct-file branch must not swallow the ordinary case: a folder is
-        # still scanned for the quant that was asked for.
+        # The direct-file branch must not swallow the ordinary case: a folder is still scanned for
+        # the quant that was asked for.
         model_dir = tmp_path / "folder"
         _write_gguf(model_dir / "model-Q4_K_M.gguf", _PLAIN_GQA)
         path, size = models_routes._resolve_quant_gguf(str(model_dir), "Q4_K_M", True)
         assert path and path.endswith("model-Q4_K_M.gguf")
         assert size > 0
-        # And a quant it does not hold resolves to nothing rather than to
-        # whatever happened to be there.
+        # And a quant it does not hold resolves to nothing rather than to whatever happened to be
+        # there.
         missing, _ = models_routes._resolve_quant_gguf(str(model_dir), "Q2_K", True)
         assert missing is None
 
@@ -721,9 +715,8 @@ class TestTheInheritedEnvironmentIsPriced:
     not what the request said."""
 
     def test_an_inherited_context_beats_the_native_length(self, monkeypatch, tmp_path):
-        # load_model drops an inherited context only when it is zero, so a
-        # positive one is the legitimate way to set the window. Falling through
-        # to native priced a 4k load at the header's length.
+        # load_model drops an inherited context only when it is zero, so a positive one is the
+        # legitimate way to set the window.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
         out = _call_route(
@@ -754,9 +747,7 @@ class TestTheInheritedEnvironmentIsPriced:
         assert out["n_ctx"] == _PLAIN_GQA["context_length"]
 
     def test_an_inherited_cache_type_sizes_the_cache(self, monkeypatch, tmp_path):
-        # A q8_0 cache is roughly half an f16 one. Pricing f16 while the child
-        # opens q8_0 makes the KV segment and the per-token readout contradict
-        # the planner total drawn beside them.
+        # A q8_0 cache is roughly half an f16 one.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_K", raising = False)
         monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_V", raising = False)
@@ -782,10 +773,8 @@ class TestTheInheritedEnvironmentIsPriced:
         )
 
     def test_an_inherited_context_is_reported_as_pinned(self, monkeypatch, tmp_path):
-        # The loader keeps a positive inherited context rather than fitting it,
-        # so a caller must not soften its verdict for that launch. Saying
-        # "auto-fitted" there suppressed the overage AND drew only the
-        # irreducible floor, which is a comfortable fit for a load that OOMs.
+        # The loader keeps a positive inherited context rather than fitting it, so a caller must not
+        # soften its verdict.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
         assert (
@@ -831,10 +820,8 @@ class TestTheInheritedEnvironmentIsPriced:
         )
 
     def test_an_inherited_device_pin_is_reported(self, monkeypatch, tmp_path):
-        # The child is confined to the cards LLAMA_ARG_DEVICE names and an
-        # automatic launch preserves the pin, so an aggregate VRAM budget
-        # describes a pool the launch will not open. The caller cannot see the
-        # environment, so the route has to say.
+        # The child is confined to the cards LLAMA_ARG_DEVICE names and an automatic launch
+        # preserves the pin, so an aggregate VRAM budget describes a pool the launch will not open.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
         assert (
@@ -850,9 +837,9 @@ class TestTheInheritedEnvironmentIsPriced:
 
     @pytest.mark.parametrize("value", ["", "none", "NONE"])
     def test_no_usable_pin_is_not_reported_as_one(self, monkeypatch, tmp_path, value):
-        # "none" is a CPU-only launch, which the planner already answers with
-        # zero GPU bytes and which draws no bar on its own; reporting it as a pin
-        # would blank the row for a second, unrelated reason.
+        # "none" is a CPU-only launch, which the planner already answers with zero GPU bytes and
+        # which draws no bar; reporting it as a pin would blank the row for a second, unrelated
+        # reason.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", value)
         assert (

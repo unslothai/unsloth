@@ -33,7 +33,6 @@ _BEGIN_KW = dict(
 )
 
 
-# --------------------------------------------------------------------------- fingerprint
 def test_environment_fingerprint_has_hard_dimensions():
     fp = cc.environment_fingerprint()
     for k in ("torch", "torch_cuda", "triton", "diffusers", "gpu_name", "gpu_capability"):
@@ -116,7 +115,6 @@ def test_repeated_blocks_change_key():
     assert k1 != k2
 
 
-# ----------------------------------------------------------------------------- env knobs
 @pytest.mark.parametrize(
     "raw,expected",
     [
@@ -139,7 +137,6 @@ def test_cache_mode_default_auto(monkeypatch):
     assert cc.cache_mode() == "auto"
 
 
-# ------------------------------------------------------------------------------ disabled
 def test_begin_returns_none_when_disabled(monkeypatch):
     monkeypatch.setenv(cc._ENV_MODE, "0")
     assert cc.begin(transformer = _transformer(), **_BEGIN_KW) is None
@@ -153,7 +150,6 @@ def test_begin_returns_none_without_megacache_api(monkeypatch):
     assert cc.begin(transformer = _transformer(), **_BEGIN_KW) is None
 
 
-# ----------------------------------------------------------------- megacache fake + flow
 @pytest.fixture
 def fake_megacache(monkeypatch):
     """Patch torch.compiler save/load with deterministic in-memory behaviour."""
@@ -177,13 +173,11 @@ def test_save_then_load_roundtrip(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "on")  # load + save
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
 
-    # First load: cold (no bundle yet).
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx is not None and ctx.hit is False
     assert cc.save(ctx) is True
     assert ctx.bundle.exists() and ctx.manifest_path.exists()
 
-    # Second load with the SAME fingerprint: warm hit.
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2 is not None and ctx2.hit is True
     assert fake_megacache["loaded_with"] == b"ARTIFACT-BYTES"
@@ -198,10 +192,8 @@ def test_auto_mode_saves_by_default(monkeypatch, tmp_path, fake_megacache):
     assert cc.save(ctx) is True  # first-run warm: auto saves the bundle
     assert ctx.bundle.exists() and ctx.manifest_path.exists()
 
-    # The next load with the same fingerprint hits the just-saved bundle...
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
-    # ...and does NOT rewrite it under auto (the artifacts on disk are the ones loaded).
     before = ctx2.bundle.stat().st_mtime_ns
     assert cc.save(ctx2) is False
     assert ctx2.bundle.stat().st_mtime_ns == before
@@ -223,7 +215,6 @@ def test_on_mode_resaves_after_hit(monkeypatch, tmp_path, fake_megacache):
     assert cc.save(ctx) is True
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
-    # Distributor mode refreshes the bundle even on a hit (new variants get captured).
     assert cc.save(ctx2) is True
 
 
@@ -232,20 +223,17 @@ def test_new_static_shape_redirties_a_hit(monkeypatch, tmp_path, fake_megacache)
     monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
 
-    # Cold session at 1024: the save records the shape coverage in the manifest.
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.register_shape(ctx, (1024, 1024, 1), static = True)
     assert cc.save(ctx) is True
     manifest = json.loads(ctx.manifest_path.read_text())
     assert manifest["shapes"] == [[1024, 1024, 1]]
 
-    # Warm session: the covered shape does not dirty the context...
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True and ctx2.saved is True
     assert ctx2.shapes == {(1024, 1024, 1)}
     cc.register_shape(ctx2, (1024, 1024, 1), static = True)
     assert cc.save(ctx2) is False
-    # ...but a NEW static shape (its compile just produced new artifacts) does, and the rewritten manifest covers both.
     cc.register_shape(ctx2, (768, 768, 1), static = True)
     assert ctx2.saved is False
     assert cc.save(ctx2) is True
@@ -254,7 +242,8 @@ def test_new_static_shape_redirties_a_hit(monkeypatch, tmp_path, fake_megacache)
 
 
 def test_new_batch_size_is_its_own_static_shape(monkeypatch, tmp_path, fake_megacache):
-    # A static compile produces one artifact PER (w, h, batch): an unseen batch size (incl. an OOM-backoff half) must re-dirty it, a covered one must not.
+    # A static compile produces one artifact PER (w, h, batch): an unseen batch size (incl. an
+    # OOM-backoff half) must re-dirty it, a covered one must not.
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
@@ -274,7 +263,8 @@ def test_new_batch_size_is_its_own_static_shape(monkeypatch, tmp_path, fake_mega
 
 
 def test_gguf_quant_keys_apart_from_dense():
-    # A GGUF transformer compiles a different graph (the dequant chain), so the load path fingerprints it quant="gguf" and bundles never cross-hit.
+    # A GGUF transformer compiles a different graph (the dequant chain), so the load path
+    # fingerprints it quant="gguf" and bundles never cross-hit.
     efp = cc.environment_fingerprint()
     base = dict(
         family = "flux.1",
@@ -296,7 +286,6 @@ def test_dynamic_compile_never_dirties(monkeypatch, tmp_path, fake_megacache):
     cc.save(ctx)
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
-    # A dynamic-shape compile reuses one artifact across shapes: no re-save.
     cc.register_shape(ctx2, (768, 768, 1), static = False)
     assert cc.save(ctx2) is False
     cc.register_shape(None, (768, 768, 1), static = True)  # no context: no-op
@@ -308,7 +297,6 @@ def test_fingerprint_mismatch_falls_back(monkeypatch, tmp_path, fake_megacache):
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.save(ctx)
 
-    # Tamper the manifest's env fingerprint: the exact-match guard must reject the bundle.
     manifest = json.loads(ctx.manifest_path.read_text())
     manifest["env"]["torch"] = "0.0.0-other"
     ctx.manifest_path.write_text(json.dumps(manifest))
@@ -328,7 +316,6 @@ def test_corrupt_bundle_rejected(monkeypatch, tmp_path, fake_megacache):
     assert ctx2.hit is False
 
 
-# ------------------------------------------------------------------------------- restore
 def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     import os
 

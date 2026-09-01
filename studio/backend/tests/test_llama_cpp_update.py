@@ -119,16 +119,16 @@ def _clean_state(monkeypatch, tmp_path):
     freshness.reset_caches()
     upd._reset_job_for_tests()
     upd._resolve_memo.clear()
-    # Isolate the freshness disk cache so the suite never writes the real
-    # ~/.unsloth cache (the default when storage_roots can't be imported).
+    # Isolate the freshness disk cache so the suite never writes the real ~/.unsloth cache (the
+    # default when storage_roots cannot be imported).
     monkeypatch.setattr(freshness, "_cache_dir", lambda: tmp_path / ".freshness_cache")
     # Deterministic markerless paths: no host-pinned binary, no custom dir.
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     # Never hit the network in these tests.
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
-    # Keep the whisper piggyback out of the llama-only tests: no host probe, no
-    # whisper phase (test_combined_update.py covers the chained flow).
+    # Keep the whisper piggyback out of the llama-only tests: no host probe, no whisper phase
+    # (test_combined_update.py covers the chained flow).
     monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kwargs: None)
     yield
     freshness.reset_caches()
@@ -176,8 +176,7 @@ def test_status_no_marker_no_prebuilt(monkeypatch, tmp_path):
 
 
 def test_status_source_build_offers_prebuilt(monkeypatch, tmp_path):
-    # Markerless source build with a prebuilt now available for the host: surface
-    # the update. Unknown installed version (source build) is treated as behind.
+    # Markerless source build with a prebuilt now available for the host: surface the update.
     binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
@@ -193,8 +192,8 @@ def test_status_source_build_offers_prebuilt(monkeypatch, tmp_path):
 
 
 def test_status_source_build_compares_llama_tag(monkeypatch, tmp_path):
-    # release_tag may be a fork wrapper (v1.0); compare/display the upstream
-    # llama_tag (b9457) so a source build is not wrongly judged newer.
+    # release_tag may be a fork wrapper (v1.0); compare and display the upstream llama_tag (b9457)
+    # so a source build is not wrongly judged newer.
     binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
@@ -207,8 +206,8 @@ def test_status_source_build_compares_llama_tag(monkeypatch, tmp_path):
 
 
 def test_status_source_build_pinned_binary_not_offered(monkeypatch, tmp_path):
-    # LLAMA_SERVER_PATH pins a custom binary outside any llama.cpp dir; an apply
-    # could not take effect, so the button must not surface.
+    # LLAMA_SERVER_PATH pins a custom binary outside any llama.cpp dir; an apply could not take
+    # effect, so the button must not surface.
     binary = tmp_path / "custom" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
@@ -229,8 +228,8 @@ def test_llama_install_root_pinned_returns_none(monkeypatch, tmp_path):
 
 
 def test_status_source_build_suppressed_when_newer(monkeypatch, tmp_path):
-    # Drive the real --version parser through update status: a semantic-version
-    # source build newer than the latest prebuilt must not be offered a downgrade.
+    # Drive the real --version parser through update status: a semantic-version source build newer
+    # than the latest prebuilt must not be offered a downgrade.
     binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
@@ -250,10 +249,8 @@ def test_status_source_build_suppressed_when_newer(monkeypatch, tmp_path):
 
 
 def test_status_source_build_offers_same_base_mix(monkeypatch, tmp_path):
-    # The reported banner bug: a source build at the same upstream base as a new
-    # Unsloth prebuilt that adds a mix-<sha> suffix. The base build numbers match
-    # (9596 == 9596) but the mix carries extra patches the source build lacks, so
-    # the update must still surface -- mirroring the marker path's is_behind.
+    # The reported banner bug: a source build at the same upstream base as a new Unsloth prebuilt
+    # that adds a mix-<sha> suffix.
     binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
@@ -269,8 +266,8 @@ def test_status_source_build_offers_same_base_mix(monkeypatch, tmp_path):
 
 
 def test_status_source_build_same_base_bare_not_offered(monkeypatch, tmp_path):
-    # Same base, but the prebuilt is a bare rebuild (no mix suffix): nothing extra
-    # to gain, so do not nag.
+    # Same base, but the prebuilt is a bare rebuild (no mix suffix): nothing extra to gain, so do
+    # not nag.
     binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
@@ -283,9 +280,9 @@ def test_status_source_build_same_base_bare_not_offered(monkeypatch, tmp_path):
 
 
 def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
-    # While the updater swaps the tree, status polls must not exec the binary
-    # being replaced (on Windows that exec can fail the installer's os.replace);
-    # the 3s poller only consumes job progress.
+    # While the updater swaps the tree, status polls must not exec the binary being replaced (on
+    # Windows that exec can fail the installer's os.replace); the 3s poller only consumes job
+    # progress.
     binary = tmp_path / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
@@ -310,10 +307,7 @@ def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
 
 
 def test_installed_version_skips_probe_while_job_runs(monkeypatch, tmp_path):
-    # Markerless build: get_installed_llama_version falls back to exec'ing
-    # `llama-server --version`. While the updater swaps the tree that exec can
-    # fail the installer's os.replace on Windows, so the About-panel probe must
-    # be skipped (return None) exactly like get_update_status's source probe.
+    # Markerless build: get_installed_llama_version falls back to exec'ing `llama-server --version`.
     binary = tmp_path / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")  # markerless: no UNSLOTH_PREBUILT_INFO.json
@@ -369,8 +363,8 @@ def test_start_update_no_marker_no_prebuilt_refuses(monkeypatch, tmp_path):
 
 
 def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
-    # Markerless install + available prebuilt: install in place into the resolved
-    # root, with the asset-derived ROCm forwarding and the resolved repo.
+    # Markerless install plus an available prebuilt: install in place into the resolved root, with
+    # the asset-derived ROCm forwarding and the resolved repo.
     install_dir = tmp_path / "llama.cpp"
     binary = install_dir / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
@@ -414,8 +408,8 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     assert "--llama-tag" in cmd and "latest" in cmd
     assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx110x"
     assert "--simple-policy" not in cmd and "--cpu-fallback" not in cmd
-    # No pin: source-build detection and the unpinned apply share the same
-    # "latest" resolver, so they already agree.
+    # No pin: source-build detection and the unpinned apply share the same "latest" resolver, so
+    # they already agree.
     assert "--published-release-tag" not in cmd
 
 
@@ -435,7 +429,6 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
 
     def _on_start(cmd):
         captured["cmd"] = cmd
-        # Simulate the installer writing a new marker with the latest tag.
         _write_install(install_dir, "b9518")
 
     popen_kwargs: dict = {}
@@ -475,11 +468,11 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "marker_fields, expected_choice",
     [
-        # A legacy markerless Vulkan asset was an explicit selection, so the bundle
-        # is kept rather than re-detected.
+        # A legacy markerless Vulkan asset was an explicit selection, so the bundle is kept rather
+        # than re-detected.
         ({"asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz"}, "vulkan"),
-        # New automatic Intel / Windows AMD installs carry llama_backend (None or
-        # "auto") and rerun hardware detection, staying eligible for CPU recovery.
+        # New automatic Intel / Windows AMD installs carry llama_backend (None or "auto") and rerun
+        # hardware detection, staying eligible for CPU recovery.
         (
             {
                 "asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz",
@@ -496,8 +489,8 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
             {"asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz", "llama_backend": "vulkan"},
             "vulkan",
         ),
-        # A deliberate CPU install must not be re-routed onto a GPU bundle (#7213);
-        # a transient fallback (or a legacy marker without the flag) heals (#6097).
+        # A deliberate CPU install must not be re-routed onto a GPU bundle (#7213); a transient
+        # fallback, or a legacy marker without the flag, heals (#6097).
         ({"asset": "llama-b9493-bin-ubuntu-x64.tar.gz", "force_cpu": True}, "cpu"),
         ({"asset": "llama-b9493-bin-ubuntu-x64.tar.gz", "force_cpu": False}, "auto"),
         ({"asset": "llama-b9493-bin-ubuntu-x64.tar.gz"}, "auto"),
@@ -614,8 +607,8 @@ def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
         lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
     )
 
-    # macOS is the reachable case: start_update passes no pin there, so the pinned-tag
-    # mismatch guard that catches this elsewhere does not run.
+    # macOS is the reachable case: start_update passes no pin there, so the pinned-tag mismatch
+    # guard that catches this elsewhere does not run.
     monkeypatch.setattr(upd.sys, "platform", "darwin")
 
     # Exit 0 having changed nothing, which is what the keep path does.
@@ -643,8 +636,8 @@ def _run_start_update_to_completion():
 
 
 def test_start_update_pinned_tag_mismatch_fails(monkeypatch, tmp_path):
-    # Installer stays on the pinned repo but produces a different tag -> it
-    # ignored the pin (the silent mismatch this pin exists to prevent). Fail loud.
+    # Installer stays on the pinned repo but produces a different tag -> it ignored the pin, the
+    # silent mismatch this pin exists to prevent.
     monkeypatch.setattr(sys, "platform", "linux")
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9595")
@@ -663,8 +656,8 @@ def test_start_update_pinned_tag_mismatch_fails(monkeypatch, tmp_path):
 
 
 def test_start_update_pinned_reroute_to_other_repo_ok(monkeypatch, tmp_path):
-    # A Vulkan/Intel host reroutes fork->upstream and drops the pin, installing a
-    # different-repo tag. Legitimate: the pin check must not flag the repo switch.
+    # A Vulkan/Intel host reroutes fork->upstream and drops the pin, installing a different-repo
+    # tag.
     monkeypatch.setattr(sys, "platform", "linux")
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9595", repo = "unslothai/llama.cpp")
@@ -702,7 +695,6 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
     assert "boom" in (job["error"] or "")
 
 
-# --- installer-argument construction (mirrors the post-#5963 setup scripts) ---
 
 
 def test_rocm_install_args_gfx_family():
@@ -798,10 +790,9 @@ def test_install_cmd_fork_rocm_marker_forwards_has_rocm(monkeypatch, tmp_path):
 
 
 def test_install_cmd_ggml_cpu_marker_has_no_cpu_fallback(monkeypatch, tmp_path):
-    # Legacy CPU installs recorded a ggml-org marker (new installs use the fork) with
-    # no force_cpu field. Re-running into the same install-dir/repo reproduces the same
-    # CPU bundle; --force-cpu (the persisted-CPU re-assert) must not appear for a marker
-    # that never recorded a deliberate CPU choice, so it can still heal to GPU (#6097).
+    # Legacy CPU installs recorded a ggml-org marker with no force_cpu field. Re-running into the same
+    # install-dir/repo reproduces the same CPU bundle; --force-cpu must not appear for a marker that
+    # never recorded a deliberate CPU choice, so it can still heal to GPU (#6097).
     cmd = _capture_install_cmd(
         monkeypatch,
         tmp_path,
@@ -816,8 +807,8 @@ def test_install_cmd_ggml_cpu_marker_has_no_cpu_fallback(monkeypatch, tmp_path):
 
 
 def test_install_cmd_cuda_marker_minimal_and_backward_compatible(monkeypatch, tmp_path):
-    # Marker without an asset field (older install): no ROCm flags, no crash, and
-    # never the obsolete --simple-policy that #5963 removed from setup.
+    # Marker without an asset field (older install): no ROCm flags, no crash, and never the obsolete
+    # --simple-policy that #5963 removed from setup.
     cmd = _capture_install_cmd(monkeypatch, tmp_path, asset = None)
     assert "--simple-policy" not in cmd
     assert "--rocm-gfx" not in cmd
@@ -826,10 +817,7 @@ def test_install_cmd_cuda_marker_minimal_and_backward_compatible(monkeypatch, tm
 
 
 def test_install_cmd_pins_offered_release_tag(monkeypatch, tmp_path):
-    # Apply must install exactly the release the banner offered. The installer's
-    # own "latest" comes from commit-date-ordered sources, which can lag the
-    # published_at-newest tag detection picked; unpinned, that lag makes Update
-    # reinstall the current build while the banner never clears.
+    # Apply must install exactly the release the banner offered.
     monkeypatch.setattr(sys, "platform", "linux")
     cmd = _capture_install_cmd(monkeypatch, tmp_path, latest = "b9601-mix-a0e2906")
     # The full release identity is pinned, not the bare upstream base.
@@ -844,15 +832,14 @@ def test_install_cmd_pins_on_windows(monkeypatch, tmp_path):
 
 
 def test_install_cmd_does_not_pin_on_macos(monkeypatch, tmp_path):
-    # A pinned tag disables the installer's older-release walk-back, which macOS
-    # needs to skip prebuilts built for a newer macOS than the host.
+    # A pinned tag disables the installer's older-release walk-back, which macOS needs to skip
+    # prebuilts built for a newer macOS than the host.
     monkeypatch.setattr(sys, "platform", "darwin")
     cmd = _capture_install_cmd(monkeypatch, tmp_path)
     assert "--published-release-tag" not in cmd
     assert "--llama-tag" in cmd and "latest" in cmd
 
 
-# --- refusal + maintenance-state coordination ---
 
 
 def test_start_update_already_running_refuses(monkeypatch, tmp_path):
@@ -986,7 +973,6 @@ def test_update_fails_open_when_backend_unavailable(monkeypatch, tmp_path):
     assert job["state"] == "success", job
 
 
-# --- markerless helper units ---
 
 
 def test_resolve_prebuilt_parses_and_caches(monkeypatch, tmp_path):
@@ -1009,7 +995,6 @@ def test_resolve_prebuilt_parses_and_caches(monkeypatch, tmp_path):
     monkeypatch.setattr(upd.subprocess, "run", _fake_run)
     res = upd._resolve_prebuilt_for_host()
     assert res["prebuilt_available"] is True and res["release_tag"] == "b9585"
-    # Second call is memoized (no second subprocess).
     upd._resolve_prebuilt_for_host()
     assert calls["n"] == 1
 
@@ -1064,8 +1049,8 @@ def test_llama_install_root_finds_llama_cpp_ancestor(monkeypatch, tmp_path):
 
 
 def test_llama_install_root_unmanaged_path_returns_none(monkeypatch, tmp_path):
-    # A binary on PATH (no marker, no env pin, no llama.cpp ancestor) is foreign:
-    # installing elsewhere would not replace it, so report no manageable root.
+    # A binary on PATH (no marker, no env pin, no llama.cpp ancestor) is foreign: installing
+    # elsewhere would not replace it, so report no manageable root.
     binary = tmp_path / "usr" / "local" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
@@ -1084,8 +1069,8 @@ def test_llama_install_root_unsloth_env_dir(monkeypatch, tmp_path):
 
 
 def test_llama_install_root_ignores_inactive_env_root(monkeypatch, tmp_path):
-    # UNSLOTH_LLAMA_CPP_PATH set but the active binary is not under it: do not
-    # target the stale env root, resolve from the binary's own llama.cpp tree.
+    # UNSLOTH_LLAMA_CPP_PATH set but the active binary is not under it: do not target the stale env
+    # root, resolve from the binary's own llama.cpp tree.
     inactive = tmp_path / "custom-empty"
     inactive.mkdir()
     active = tmp_path / "llama.cpp"
@@ -1097,8 +1082,8 @@ def test_llama_install_root_ignores_inactive_env_root(monkeypatch, tmp_path):
 
 
 def test_llama_install_root_refuses_pinned_checkout_under_llama_cpp(monkeypatch, tmp_path):
-    # The LLAMA_SERVER_PATH pin guard must run before the ancestor scan, or a
-    # user's own llama.cpp checkout could be handed to the installer.
+    # The LLAMA_SERVER_PATH pin guard must run before the ancestor scan, or a user's own llama.cpp
+    # checkout could be handed to the installer.
     root = tmp_path / "my-project" / "llama.cpp"
     binary = root / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
@@ -1109,8 +1094,8 @@ def test_llama_install_root_refuses_pinned_checkout_under_llama_cpp(monkeypatch,
 
 
 def test_start_update_source_build_refuses_when_newer(monkeypatch, tmp_path):
-    # A direct POST on a source build already newer than the prebuilt must not
-    # downgrade it; start_update mirrors the detection suppression.
+    # A direct POST on a source build already newer than the prebuilt must not downgrade it;
+    # start_update mirrors the detection suppression.
     install_dir = tmp_path / "llama.cpp"
     binary = install_dir / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
@@ -1124,7 +1109,6 @@ def test_start_update_source_build_refuses_when_newer(monkeypatch, tmp_path):
     assert res["reason"] == "up_to_date"
 
 
-# --- mix-tag detection + apply guard (the reported banner bug) ---
 
 
 def test_status_not_offered_on_mix_latest(monkeypatch, tmp_path):
@@ -1163,8 +1147,7 @@ def test_start_update_marked_refuses_when_not_behind(monkeypatch, tmp_path):
 
 
 def test_status_update_available_includes_size(monkeypatch, tmp_path):
-    # Marker (prebuilt) update path attaches the download size of the asset the
-    # banner would fetch.
+    # Marker (prebuilt) update path attaches the download size of the asset the banner would fetch.
     binary = _write_install(tmp_path, "b9493", asset = "app-b9493-linux-x64-cuda13-newer.tar.gz")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")

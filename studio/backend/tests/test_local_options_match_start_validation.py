@@ -105,8 +105,8 @@ def test_the_two_grammars_agree_over_a_generated_alphabet():
     for a in alphabet:
         for b in ("", "x", ".x"):
             value = f"tr{a}{b}"
-            # _valid_option normalizes (it strips), and the normalized string is what the
-            # picker offers, so that is what has to survive the start validator.
+            # _valid_option normalizes (it strips), and the normalized string is what the picker
+            # offers, so that is what has to survive the start validator.
             offered_split = _offered_split(value)
             if offered_split is not None and not _split_accepted(offered_split):
                 mismatches.append(("split offered, start rejects", value, offered_split))

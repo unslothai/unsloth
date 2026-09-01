@@ -228,14 +228,7 @@ def test_liveness_answers_immediately_and_never_starts_detection():
         f"/api/liveness took {result['elapsed']:.2f}s; it must read the settled snapshot "
         f"rather than wait for one"
     )
-    # Still the full port-validation payload the launcher matches on. The key must be
-    # present because the launcher reads it; its value is environment-derived and is
-    # legitimately empty on a bare CI runner, so presence is what this asserts.
-    #
-    # Read it off has_root_id, not off `result`. The subprocess snippet builds `result`
-    # with `body.get("studio_root_id")`, so the key exists in `result` whether or not the
-    # reply carried it -- `"studio_root_id" in result` was true even with the field
-    # deleted from liveness_check(). Its two neighbours already use this indirection.
+    # Still the full port-validation payload the launcher matches on.
     assert result["has_root_id"], (
         "/api/liveness dropped studio_root_id; desktop_backend_owner.rs deserializes it "
         "into DesktopLiveness and rejects a sibling port without it"

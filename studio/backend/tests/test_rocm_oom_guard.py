@@ -33,14 +33,12 @@ from core.training.worker import (
 
 GIB = 1024**3
 
-# Derived so that tuning the reserve retunes the tests with it: below this pool size the
-# percentage arm wins, above it the byte arm does, and the two are equal exactly here.
+# Derived so tuning the reserve retunes the tests: below this pool size the percentage arm wins, above it the byte arm.
 _CROSSOVER_BYTES = int(_UNIFIED_OS_RESERVE_BYTES / _UNIFIED_MAX_RESERVE_FRACTION)
 _HISTORICAL_CAP = 1.0 - _UNIFIED_MAX_RESERVE_FRACTION
 
 
-# Past this the byte reserve is a smaller share than the discrete cap allows, so the
-# clamp takes over and the reserve stops being the flat constant.
+# Past this the byte reserve is a smaller share than the discrete cap allows, so the clamp takes over.
 _CLAMP_BYTES = int(_UNIFIED_OS_RESERVE_BYTES / (1.0 - _DISCRETE_MEM_FRACTION))
 
 
@@ -50,7 +48,6 @@ def _expected_unified_fraction(total_bytes: int) -> float:
     return min(1.0 - reserve, _DISCRETE_MEM_FRACTION)
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
 
 
 def _props(**kwargs) -> SimpleNamespace:
@@ -58,7 +55,6 @@ def _props(**kwargs) -> SimpleNamespace:
     return SimpleNamespace(**kwargs)
 
 
-# ── Path 0: props.is_integrated (driver's own unified-memory answer) ─────────
 
 
 class TestIsIntegratedSignal:
@@ -68,8 +64,7 @@ class TestIsIntegratedSignal:
     Unsloth's two unified-memory consumers on one signal."""
 
     def test_integrated_upgrades_unknown_apu(self) -> None:
-        # gfx1103 Phoenix iGPU: outside the hardcoded arch set, but the
-        # driver says integrated -> unified.
+        # gfx1103 Phoenix iGPU is outside the hardcoded arch set, but the driver says integrated.
         props = _props(gcnArchName = "gfx1103", name = "Radeon 780M", is_integrated = 1)
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1103"
@@ -98,7 +93,6 @@ class TestIsIntegratedSignal:
         assert is_unified is False
 
 
-# ── Path 1: canonical gcnArchName ────────────────────────────────────────────
 
 
 class TestCanonicalGcnArchName:
@@ -107,12 +101,12 @@ class TestCanonicalGcnArchName:
     @pytest.mark.parametrize(
         "arch, expected_unified",
         [
-            ("gfx1150", True),  # Strix Point
-            ("gfx1151", True),  # Strix Halo
-            ("gfx1152", True),  # Krackan Point (Radeon 860M/840M)
-            ("gfx1100", False),  # Navi 31 (RX 7900 XTX) — discrete
-            ("gfx906", False),  # MI50 — discrete server GPU
-            ("gfx1201", False),  # RX 9070 XT — discrete
+            ("gfx1150", True),
+            ("gfx1151", True),
+            ("gfx1152", True),
+            ("gfx1100", False),
+            ("gfx906", False),
+            ("gfx1201", False),
         ],
     )
     def test_canonical_attr(self, arch: str, expected_unified: bool) -> None:
@@ -130,14 +124,13 @@ class TestCanonicalGcnArchName:
 
     def test_canonical_attr_wins_over_name(self) -> None:
         """Arch attr takes priority; device name is ignored."""
-        # Discrete arch, but name looks like a unified SKU — arch must win.
+        # Discrete arch, but the name looks like a unified SKU: arch must win.
         props = _props(gcnArchName = "gfx1100", name = "Radeon 890M")
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1100"
         assert is_unified is False
 
 
-# ── Path 2: alternate-spelling fallback ──────────────────────────────────────
 
 
 class TestAlternateSpellingFallback:
@@ -171,37 +164,31 @@ class TestAlternateSpellingFallback:
         assert is_unified is True
 
 
-# ── Path 3: device-name fallback ─────────────────────────────────────────────
 
 
 class TestDeviceNameFallback:
     """ALL arch attrs absent — classifier must rely solely on device name."""
 
-    # --- unified-memory devices that MUST be detected ---
 
     @pytest.mark.parametrize(
         "device_name",
         [
-            # gfx1150 Strix Point
             "Radeon 890M",
             "AMD Radeon 890M Graphics",
-            "RADEON 890M",  # case-insensitive
+            "RADEON 890M",
             "Radeon 880M",
             "AMD Radeon 880M Graphics",
-            # gfx1151 Strix Halo — the regression case from the review
-            "Radeon 8060S Graphics",  # Ryzen AI MAX+ 395 (as returned by torch)
+            # gfx1151 Strix Halo, the regression case from the review.
+            "Radeon 8060S Graphics",
             "AMD Radeon 8060S",
-            "Radeon 8050S Graphics",  # cut-down Strix Halo SKU
+            "Radeon 8050S Graphics",
             "AMD Radeon 8050S",
-            # gfx1151 Gorgon Halo (Ryzen AI Max 400 refresh)
-            "Radeon 8065S Graphics",  # Ryzen AI Max+ 495
+            "Radeon 8065S Graphics",
             "AMD Radeon 8065S",
-            # gfx1152 Krackan Point (Ryzen AI 7 350 / AI 5 340)
             "Radeon 860M",
             "AMD Radeon 860M Graphics",
             "Radeon 840M",
             "AMD Radeon 840M Graphics",
-            # case variants
             "RADEON 8060S GRAPHICS",
             "radeon 8050s",
             "RADEON 860M",
@@ -213,7 +200,6 @@ class TestDeviceNameFallback:
         assert gcn == "", f"expected empty gcn_arch, got {gcn!r}"
         assert is_unified is True, f"device {device_name!r} should be classified as unified-memory"
 
-    # --- discrete devices that must NOT be mis-classified ---
 
     @pytest.mark.parametrize(
         "device_name",
@@ -223,7 +209,7 @@ class TestDeviceNameFallback:
             "Radeon RX 6900 XT",
             "Radeon Pro W7900",
             "AMD Instinct MI300X",
-            # Superficially similar substrings but discrete
+            # Superficially similar substrings, but discrete.
             "Radeon RX 580",
             "Radeon VII",
         ],
@@ -238,7 +224,7 @@ class TestDeviceNameFallback:
 
     def test_empty_name_returns_false(self) -> None:
         """Absent name must not crash and must default to discrete."""
-        props = _props()  # no 'name' attr at all
+        props = _props()
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == ""
         assert is_unified is False
@@ -250,7 +236,6 @@ class TestDeviceNameFallback:
         assert is_unified is False
 
 
-# ── Fraction selection ───────────────────────────────────────────────────────
 
 
 _WORKER_PY = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
@@ -287,9 +272,7 @@ class TestMemFractionSelection:
         log off the parsed override rather than the raw string."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
         assert "_mem_fraction = _rocm_memory_fraction(" in source
-        # totalGlobalMem is what the allocator multiplies the fraction by from torch
-        # 2.10 on, so the reserve is only the intended size when the guard divides by
-        # the same number. Before 2.10 the allocator divides by the driver's total.
+        # From torch 2.10 the allocator multiplies the fraction by totalGlobalMem, so divide by that, not the driver's.
         assert 'getattr(_props, "total_memory", 0)' in source
         assert "if _env_fraction is not None" in source
 
@@ -316,9 +299,7 @@ class TestUnifiedLinuxReserve:
 
     @pytest.mark.parametrize("share_of_crossover", [0.1, 0.2, 0.4, 0.8, 1.0])
     def test_at_or_below_crossover_is_unchanged(self, share_of_crossover: float) -> None:
-        # Exact, not approx: the helper is solved in fraction space precisely so this
-        # stays bit-identical to the historical cap, and approx(0.80) would accept the
-        # 0.7999999999999999 that the bytes-space arithmetic would have produced.
+        # Exact, not approx: solved in fraction space to stay bit-identical to the historical cap, which approx blurs.
         total = int(_CROSSOVER_BYTES * share_of_crossover)
         assert _rocm_memory_fraction(total, True, "linux") == _HISTORICAL_CAP
 
@@ -326,7 +307,6 @@ class TestUnifiedLinuxReserve:
     def test_large_pool_reserves_the_constant_not_a_percentage(
         self, multiple_of_crossover: float
     ) -> None:
-        # Between the crossover and the clamp the reserve is the flat byte constant.
         total = int(_CROSSOVER_BYTES * multiple_of_crossover)
         assert total <= _CLAMP_BYTES, "sized past the clamp; the flat reserve no longer holds"
         fraction = _rocm_memory_fraction(total, True, "linux")
@@ -335,15 +315,12 @@ class TestUnifiedLinuxReserve:
 
     @pytest.mark.parametrize("pool_gib", [96, 128, 156, 160, 161, 256, 1024])
     def test_never_exceeds_the_090_recorded_as_starving(self, pool_gib: int) -> None:
-        # 0.90 stays a literal on purpose: it is a field measurement of where a 128 GiB
-        # pool starved the OS, not a policy constant. Deriving it from the reserve would
-        # make this pass by construction and stop it catching an over-tuned reserve.
-        # Sizes past 160 GiB are the clamp's job: without it the byte reserve falls under
-        # 10% of the pool and a unified host would outrank a discrete card.
+        # 0.90 stays a literal: it is a field measurement of where a 128 GiB pool starved the OS, and
+        # deriving it from the reserve would make this pass by construction. Past 160 GiB the clamp
+        # keeps the byte reserve above 10% of the pool.
         assert _rocm_memory_fraction(pool_gib * GIB, True, "linux") <= 0.90
 
     def test_huge_pools_clamp_to_the_discrete_cap(self) -> None:
-        # Above the clamp the reserve is no longer the flat constant, by design.
         assert _rocm_memory_fraction(1024 * GIB, True, "linux") == _DISCRETE_MEM_FRACTION
 
     def test_fraction_is_monotonic_and_floored_at_the_historical_cap(self) -> None:
@@ -352,8 +329,7 @@ class TestUnifiedLinuxReserve:
         assert seen == sorted(seen)
 
     def test_missing_total_falls_back_to_historical_cap(self) -> None:
-        # The guard defaults an absent total to 0; must not divide by zero. Exact for the
-        # same reason as the crossover assertions.
+        # The guard defaults an absent total to 0 and must not divide by zero.
         assert _rocm_memory_fraction(0, True, "linux") == _HISTORICAL_CAP
         assert _rocm_memory_fraction(-1, True, "linux") == _HISTORICAL_CAP
 
@@ -393,8 +369,7 @@ class TestAllocatorDenominator:
 
     @pytest.mark.parametrize("driver_gib", [125, 126, 130, 134, 139])
     def test_reserve_is_solved_for_the_driver_total(self, driver_gib: int) -> None:
-        # The same bytes stay free whichever total the allocator scales. Between the
-        # two bounds only; those are the next two tests.
+        # The same bytes stay free whichever total the allocator scales, between the two bounds.
         total = 128 * GIB
         driver = driver_gib * GIB
         fraction = _rocm_memory_fraction(total, True, "linux", None, driver)
@@ -405,8 +380,7 @@ class TestAllocatorDenominator:
     def test_a_larger_driver_total_never_goes_below_the_historical_cap(
         self, driver_gib: int
     ) -> None:
-        # A much larger driver total drives the fraction toward zero. This is a
-        # loosening change: the floor wins over the exact reserve.
+        # A much larger driver total drives the fraction toward zero, so the floor wins over the exact reserve.
         fraction = _rocm_memory_fraction(128 * GIB, True, "linux", None, driver_gib * GIB)
         assert fraction >= _HISTORICAL_CAP
 
@@ -422,8 +396,7 @@ class TestAllocatorDenominator:
     def test_below_the_crossover_the_denominator_is_ignored(
         self, pool_gib: float, driver_gib: int
     ) -> None:
-        # The percentage arm is scale-free, and these small pools are the OOM-prone
-        # ones the guard was added for: bit-identical to the flat 0.80.
+        # The percentage arm is scale-free, and these small pools are the OOM-prone ones the guard was added for.
         total = int(pool_gib * GIB)
         assert _rocm_memory_fraction(total, True, "linux", None, driver_gib * GIB) == (
             _HISTORICAL_CAP
@@ -486,10 +459,7 @@ class TestParseMemFractionEnv:
 
     @pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "Infinity"])
     def test_non_finite_values_are_rejected(self, raw: str) -> None:
-        # float() accepts all of these. They are rejected only because every comparison
-        # against NaN is False and inf falls outside the range -- rewriting the bound as
-        # `if override <= 0.0 or override > 1.0` would let NaN through into
-        # set_per_process_memory_fraction(), so pin it.
+        # float() accepts all of these: `override <= 0.0 or override > 1.0` lets NaN through, NaN comparisons all False.
         assert _parse_mem_fraction_env(raw) is None
 
     @pytest.mark.parametrize("raw", ["abc", "1.5", "0"])

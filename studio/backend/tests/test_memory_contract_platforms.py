@@ -50,16 +50,13 @@ from test_memory_estimate_contract_freeze import _KV_CACHE_ESTIMATE_KEYS  # noqa
 
 PLATFORMS = ("linux", "wsl", "win32", "darwin")
 
-# The vendor decides where bytes LAND, which is the only thing that varies here.
-# Named for the host they model so a failure says which machine it is about.
+# The vendor decides where bytes LAND, the only thing that varies; named for the host modelled.
 PLACEMENTS = {
     "nvidia-single": {"gpu": 8_100_000_000, "total": 8_700_000_000},
     "nvidia-dual": {"gpu": 8_700_000_000, "total": 8_700_000_000},
     "amd-rocm-discrete": {"gpu": 6_000_000_000, "total": 8_700_000_000},
-    # An APU or Apple part: one pool, so everything is "on the GPU" and also all
-    # of it is host memory. The route reports the placement, not the topology.
+    # An APU or Apple part: one pool, so everything is on the GPU and also host memory.
     "unified-apu": {"gpu": 8_700_000_000, "total": 8_700_000_000},
-    # --n-cpu-moe or a layer split: some of it is off the card.
     "partial-offload": {"gpu": 3_000_000_000, "total": 8_700_000_000},
     # LLAMA_ARG_DEVICE=none. Zero is a REAL answer here, not a missing one.
     "cpu-only": {"gpu": 0, "total": 8_700_000_000},
@@ -152,7 +149,6 @@ class TestTheAbsentPlannerIsTheSameEverywhere:
         )
         # The quant size is known independently of the planner, so it survives.
         assert bar["weights_bytes"] == _QUANT_FILE_BYTES
-        # And the shape is still complete, so a caller needs no branch for it.
         assert set(bar) == set(_KV_CACHE_ESTIMATE_KEYS)
 
 
@@ -160,8 +156,7 @@ class TestOldClientsAreUnaffected:
     """Forwards compatibility: what a client written before this PR still sees."""
 
     def test_every_field_an_old_client_read_is_still_present_and_typed(self):
-        # The fields #7880's frontend reads off /kv-cache-estimate, by name, as a
-        # stand-in for any third-party client pinned to that shape.
+        # The fields #7880's frontend reads off /kv-cache-estimate, as a stand-in for any pinned client.
         est = build_memory_estimate(
             _breakdown(8_100_000_000, 8_700_000_000), quant_file_bytes = _QUANT_FILE_BYTES
         )

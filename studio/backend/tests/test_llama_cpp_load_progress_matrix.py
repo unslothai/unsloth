@@ -23,7 +23,6 @@ from unittest.mock import patch
 
 import pytest
 
-# Stub heavy/unavailable deps before importing the module under test.
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -63,11 +62,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Only when the real library is absent: sys.modules holds what has been IMPORTED, not what is
+# installed, so setdefault does not defer to an untouched real httpx.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -76,9 +72,6 @@ except ImportError:
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make():
@@ -111,9 +104,7 @@ def _fake_proc_reader(rss_kb):
     return fake_open
 
 
-# ---------------------------------------------------------------------------
 # A. Platform matrix
-# ---------------------------------------------------------------------------
 
 
 class TestPlatformMatrix:
@@ -132,7 +123,6 @@ class TestPlatformMatrix:
         assert out is not None
         assert out["phase"] == "mmap"
         assert out["bytes_total"] == 1 * 1024**3
-        # Our process has some RSS -- sanity-check it's positive.
         assert out["bytes_loaded"] > 0
 
     def test_macos_no_proc_returns_none(self, tmp_path):
@@ -170,9 +160,7 @@ class TestPlatformMatrix:
         assert out is None
 
 
-# ---------------------------------------------------------------------------
 # B. VmRSS parsing edge cases
-# ---------------------------------------------------------------------------
 
 
 class TestVmRSSParsing:
@@ -238,13 +226,10 @@ class TestVmRSSParsing:
 
         with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
-        # int() ValueError is caught and returns None.
         assert out is None
 
 
-# ---------------------------------------------------------------------------
 # C. Filesystem edge cases
-# ---------------------------------------------------------------------------
 
 
 class TestFilesystemEdges:
@@ -304,9 +289,7 @@ class TestFilesystemEdges:
             os.chdir(cwd)
 
 
-# ---------------------------------------------------------------------------
 # D. Shard aggregation
-# ---------------------------------------------------------------------------
 
 
 class TestShardAggregation:
@@ -347,7 +330,6 @@ class TestShardAggregation:
         inst._gguf_path = str(tmp_path / "m.gguf")
         with patch("builtins.open", side_effect = _fake_proc_reader(0)):
             out = inst.load_progress()
-        # Non-sharded: only the primary is counted.
         assert out["bytes_total"] == 8 * 1024**3
 
     def test_single_file_model(self, tmp_path):
@@ -362,9 +344,7 @@ class TestShardAggregation:
         assert out["bytes_loaded"] == 2 * 1024**3
 
 
-# ---------------------------------------------------------------------------
 # E. Lifecycle races
-# ---------------------------------------------------------------------------
 
 
 class TestLifecycleRaces:
@@ -399,9 +379,7 @@ class TestLifecycleRaces:
         assert out["phase"] == "ready"
 
 
-# ---------------------------------------------------------------------------
 # F. Concurrent sampling  (simulates multiple browser tabs polling)
-# ---------------------------------------------------------------------------
 
 
 class TestConcurrentSampling:
@@ -432,9 +410,7 @@ class TestConcurrentSampling:
         assert not errors, errors
 
 
-# ---------------------------------------------------------------------------
 # G. Fraction bounds
-# ---------------------------------------------------------------------------
 
 
 class TestFractionBounds:
@@ -443,7 +419,6 @@ class TestFractionBounds:
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "m.gguf")
-        # RSS > total (post-paged-in + extra structures)
         with patch("builtins.open", side_effect = _fake_proc_reader(2 * 1024**2)):
             out = inst.load_progress()
         assert 0.0 <= out["fraction"] <= 1.0

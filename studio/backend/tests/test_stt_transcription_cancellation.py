@@ -24,8 +24,7 @@ from core.inference.stt_sidecar import (
 
 
 def test_transformers_load_inherits_disconnect_before_registration(monkeypatch):
-    # The load reaches `import torch` before it registers, so a runner without torch
-    # cannot exercise this at all (the cross-platform jobs have no torch wheel).
+    # The load reaches `import torch` before it registers, so a runner without torch cannot exercise this at all.
     pytest.importorskip("torch")
     owner = threading.Event()
     sidecar = WhisperSttSidecar()
@@ -170,12 +169,8 @@ def test_disconnected_raw_transcription_cancels_its_sidecar(monkeypatch):
     loaded = []
 
     def load(model, _engine, _request_cancel_event):
-        # Stubbed for the same reason the sibling test above stubs it: the real
-        # implicit load goes through the registry, which refuses with
-        # SttModelNotDownloadedError (409) unless a snapshot happens to be on disk.
-        # Without this the disconnect below is never reached and the assert reads
-        # `409 == 499`, which is what this test does on a machine that has never
-        # downloaded an STT model. Cancellation, not download state, is the subject.
+        # The real implicit load goes through the registry, which refuses with SttModelNotDownloadedError
+        # (409) unless a snapshot happens to be on disk, so without this the assert reads `409 == 499`.
         loaded.append(model)
         return None
 
@@ -202,9 +197,7 @@ def test_disconnected_raw_transcription_cancels_its_sidecar(monkeypatch):
 
     assert raised.value.status_code == 499
     assert sidecar.cancelled is True
-    # The stub has to stay load-bearing. If the route stops loading through the
-    # registry, this records nothing and the stub quietly becomes dead code that
-    # keeps the test green for a path it no longer covers.
+    # The stub stays load-bearing: if the route stops loading through the registry this records nothing.
     assert loaded == ["small"], f"the transcribe path did not load through the registry: {loaded}"
 
 

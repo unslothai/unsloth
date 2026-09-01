@@ -51,11 +51,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Only when the real library is absent: sys.modules holds what has been IMPORTED, not what is
+# installed, so setdefault does not defer to an untouched real httpx.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -118,8 +115,8 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
         assert out is not None, "load_progress returned None for live pid"
         assert out["phase"] == "mmap"
         assert out["bytes_total"] == 200 * 1024 * 1024
-        # VmRSS for the Python child includes the interpreter + 100MB buffer,
-        # so a realistic floor is 50 MB and ceiling is 200 MB.
+        # VmRSS for the Python child includes the interpreter plus the 100MB buffer, so a realistic
+        # floor is 50 MB and ceiling is 200 MB.
         assert (
             out["bytes_loaded"] >= 50 * 1024 * 1024
         ), f"bytes_loaded unexpectedly low: {out['bytes_loaded']}"

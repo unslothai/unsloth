@@ -2344,8 +2344,8 @@ def test_periodic_retirement_checks_ownership_under_the_scope_lock(rag_home):
     held = []
 
     def project_exists(project_id):
-        # create_folder and upload admission take this lock, so holding it here is what
-        # stops a project recreated mid-pass from having its new folders retired
+        # create_folder and upload admission take this lock, so holding it stops a project recreated
+        # mid-pass from having its new folders retired
         lock = folder_sync._scope_lock(scope)
         acquired = []
         probe = threading.Thread(target = lambda: acquired.append(lock.acquire(blocking = False)))

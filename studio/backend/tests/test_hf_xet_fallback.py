@@ -20,8 +20,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub heavy/unavailable deps before importing the module under test. Use real structlog when present;
-# a bare stub would break later modules that log at import time.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -100,8 +98,8 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
     _requires_shared()
     for var in ("UNSLOTH_DISABLE_XET", "UNSLOTH_STABLE_DOWNLOADS", "HF_HUB_DISABLE_XET"):
         monkeypatch.delenv(var, raising = False)
-    # This seam checks the Xet -> HTTP transition, not the independently configurable
-    # number of Xet retries (newer Zoo releases default to two).
+    # This seam checks the Xet -> HTTP transition, not the independently configurable number of Xet
+    # retries (newer Zoo releases default to two).
     monkeypatch.setenv("UNSLOTH_XET_ATTEMPTS", "1")
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
 
@@ -200,7 +198,6 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
 
-        # Boots without raising and mirrors the shared API surface.
         assert issubclass(degraded.DownloadStallError, RuntimeError)
         assert degraded.child_should_disable_xet({"disable_xet": True}) is True
         assert degraded.get_hf_download_state(["x"]) is None  # unmeasurable
@@ -225,7 +222,6 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         finally:
             hb_stop.set()
 
-        # Downloads fall back to plain huggingface_hub (no watchdog, no crash).
         called = {}
 
         def _fake_snapshot(repo_id, **kwargs):
@@ -284,7 +280,6 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
     sys.meta_path.insert(0, finder)
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
-        # Boots without raising and exposes the stub API.
         assert issubclass(degraded.DownloadStallError, RuntimeError)
         assert degraded.get_hf_download_state(["x"]) is None
         event = degraded.start_watchdog(repo_ids = ["x"], on_stall = lambda m: None)
@@ -310,7 +305,6 @@ def test_degrades_when_shared_helper_import_raises_importerror():
             target = None,
         ):
             if name == "unsloth_zoo.hf_xet_fallback":
-                # Mirror a torch-less install: a plain ImportError with no .name.
                 raise ImportError("Unsloth: Pytorch is not installed.")
             return None
 
@@ -375,7 +369,6 @@ def test_no_light_gpu_init_retry_on_an_accelerator_host(monkeypatch):
         shim = importlib.import_module("utils.hf_xet_fallback")
         monkeypatch.setattr(shim, "_gpu_present", lambda: True)
         assert shim._load_shared() is False
-        # Exactly ONE attempt, made without the light-init flag.
         assert attempts == [None], attempts
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
     finally:
@@ -424,15 +417,14 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     sys.meta_path.insert(0, finder)
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
-        # The retry only applies to a host with no accelerator (see _gpu_present); pin that on the freshly imported module.
+        # The retry only applies to a host with no accelerator (see _gpu_present); pin that on the
+        # freshly imported module.
         monkeypatch.setattr(degraded, "_gpu_present", lambda: False)
-        # Import is light (lazy backend); unsloth_zoo not loaded yet.
         assert seen_env == [], seen_env
-        # First use of a heavy helper triggers the load (attempt without the light env, then a retry
-        # with it set); accessing DownloadStallError drives it via __getattr__.
+        # First use of a heavy helper triggers the load (a plain attempt, then a retry with the
+        # light env set); accessing DownloadStallError drives it via __getattr__.
         stall_error = degraded.DownloadStallError
         assert seen_env == [None, "1"], seen_env
-        # Both attempts raised -> Unsloth still boots in degraded mode.
         assert issubclass(stall_error, RuntimeError)
         # The env override must not leak past the load.
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
@@ -481,8 +473,8 @@ def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_overrid
     sys.meta_path.insert(0, finder)
     try:
         shim = importlib.import_module("utils.hf_xet_fallback")
-        # There is only a retry to spawn into on a host with no accelerator (see _gpu_present),
-        # so pin that rather than letting the runner's hardware decide the assertion.
+        # There is only a retry to spawn into on a host with no accelerator (see _gpu_present), so
+        # pin that rather than letting the runner's hardware decide the assertion.
         monkeypatch.setattr(shim, "_gpu_present", lambda: False)
         shim.DownloadStallError  # drives the load: plain attempt, then the retry
         assert len(child_envs) == 2, child_envs
@@ -592,10 +584,8 @@ def test_importing_child_should_disable_xet_stays_light(monkeypatch):
         monkeypatch.delitem(sys.modules, name, raising = False)
 
     mod = importlib.import_module("utils.hf_xet_fallback")
-    # The lightweight decision works without the heavy backend.
     assert mod.child_should_disable_xet({"disable_xet": True}) is True
     assert mod.child_should_disable_xet({}) is False
-    # And nothing heavy was imported as a side effect.
     assert "transformers" not in sys.modules, "importing the shim must not import transformers"
     assert "unsloth_zoo" not in sys.modules, "importing the shim must not import unsloth_zoo"
 
@@ -782,9 +772,7 @@ def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
     assert seen["applied"] is True
 
 
-# --- free-RAM clamp (issue #9032) ---------------------------------------------------------------
-# The zoo sizes Xet's buffers from TOTAL RAM, which cannot see a loaded model. Unsloth clamps the
-# result to what is free. The bar: shrink under pressure, change nothing otherwise.
+# The zoo sizes Xet's buffers from TOTAL RAM, which cannot see a loaded model.
 
 _GB = 1_000_000_000
 _LIMIT = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"
@@ -1026,9 +1014,8 @@ def test_free_ram_pressure_reason_applies_the_zoos_own_floor(monkeypatch):
     assert shim.free_ram_pressure_reason() is None
 
 
-# --- concurrent-worker reservations --------------------------------------------------------------
 # A worker allocates in the child, after Popen returns, so free RAM does not move until well after
-# sizing. Without reservations, downloads starting together each read the same untouched number.
+# sizing.
 
 
 @pytest.fixture(autouse = True)
@@ -1060,8 +1047,8 @@ def test_workers_starting_together_do_not_promise_the_same_ram_twice(clean_ledge
         budgets.append(int(written[_LIMIT]))
         promised += budgets[-1]
 
-    # Strictly under, not merely equal: without the ledger these four land on exactly 8GB, a
-    # quarter each of the same snapshot, which is the whole bug.
+    # Strictly under, not merely equal: without the ledger these four land on exactly 8GB, a quarter
+    # each of the same snapshot, which is the whole bug.
     assert promised < 8 * _GB, f"four workers promised {promised / _GB:.2f}GB of 8GB free"
     assert budgets[1] < budgets[0], "the second worker ignored what the first was already promised"
 
@@ -1181,8 +1168,8 @@ def test_a_resident_promise_is_not_charged_against_free_ram_twice(clean_ledger, 
     with shim._budget_lock:
         assert shim._live_reserved_locked() == promise - promise // 2
 
-    # And the gate follows: 8GB free with one fully resident 2GB worker is 6GB, not 4GB, so Auto
-    # for the next download stays on Xet.
+    # And the gate follows: 8GB free with one fully resident 2GB worker is 6GB, not 4GB, so Auto for
+    # the next download stays on Xet.
     monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB - promise, 4 * _GB))
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise)
     assert (

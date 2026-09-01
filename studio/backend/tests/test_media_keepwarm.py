@@ -35,9 +35,7 @@ class _FakeEngine:
         self.loading: tuple[str, ...] = ()
         self.active = False
         self.unloads = 0
-        # The terminal record the video backend holds after a job (None on the image side).
         self.terminal: dict | None = None
-        # The rest of the build identity the real backends publish (H3 task, quants).
         self.build = dict(build)
 
     def status(self):
@@ -98,7 +96,6 @@ def _step(*idle_owners):
     asyncio.run(mk.idle_unload_step())
 
 
-# ── the TTL setting ─────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -114,9 +111,8 @@ def store(monkeypatch):
 
 
 def test_the_chat_ttl_alone_does_not_unload_media(store):
-    # The consent line. "Model auto-switch (OpenAI API)" never mentions Images or Video,
-    # so a user who turned that on gets nothing new here on upgrade: the media TTL is its
-    # own setting and its default is off.
+    # "Model auto-switch (OpenAI API)" never mentions Images or Video, so the media TTL is its
+    # own setting and defaults off: an upgrading user gets nothing new here.
     store[settings.OPENAI_AUTO_SWITCH_SETTING_KEY] = True
     store[settings.AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     assert settings.get_auto_unload_idle_seconds() == 600
@@ -124,24 +120,21 @@ def test_the_chat_ttl_alone_does_not_unload_media(store):
 
 
 def test_the_media_ttl_unloads_media_without_touching_chat(store):
-    # The other direction: a whole setting, not a modifier on the chat one, so it works
-    # with auto-switch and the chat TTL both off.
+    # A whole setting, not a modifier: it works with auto-switch and the chat TTL both off.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     assert settings.get_media_auto_unload_idle_seconds() == 600
     assert settings.get_auto_unload_idle_seconds() == 0
     # Floored like the chat one, for a value persisted before the minimum existed.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 5
     assert settings.get_media_auto_unload_idle_seconds() == settings.MIN_AUTO_UNLOAD_IDLE_SECONDS
-    # And it is not gated on auto-switch: that flag is about serving /v1 requests.
+    # Not gated on auto-switch: that flag is about serving /v1 requests.
     store[settings.OPENAI_AUTO_SWITCH_SETTING_KEY] = False
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     assert settings.get_media_auto_unload_idle_seconds() == 600
 
 
 def test_media_ttl_env_behaves_like_the_chat_env(store, monkeypatch):
-    # UNSLOTH_MEDIA_IDLE_TTL stands in the same relationship to the media setting that
-    # UNSLOTH_MODEL_IDLE_TTL has to the chat one: the startup default while nothing is
-    # stored, floored the same way, and outranked by an explicit value.
+    # UNSLOTH_MEDIA_IDLE_TTL is to the media setting what UNSLOTH_MODEL_IDLE_TTL is to the chat one.
     monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "900")
     assert settings.get_media_auto_unload_idle_seconds() == 900
     assert settings.get_stored_media_auto_unload_idle_seconds() == 900
@@ -152,7 +145,6 @@ def test_media_ttl_env_behaves_like_the_chat_env(store, monkeypatch):
     assert settings.get_media_auto_unload_idle_seconds() == 0
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     assert settings.get_media_auto_unload_idle_seconds() == 600
-    # The chat env var is not the media one.
     del store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY]
     monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR)
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "900")
@@ -160,9 +152,8 @@ def test_media_ttl_env_behaves_like_the_chat_env(store, monkeypatch):
 
 
 def test_api_only_does_not_veto_the_media_ttl(store, monkeypatch):
-    # Media auto-switch gives an API request its own way to load a pipeline, so "only
-    # unload models loaded by the API" is a per-model rule here (see the tick tests
-    # below) rather than something that holds the whole TTL off.
+    # Media auto-switch gives an API request its own way to load, so "only unload models loaded by
+    # the API" is a per-model rule here rather than something that holds the whole TTL off.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
     assert settings.get_media_auto_unload_idle_seconds() == 600
@@ -183,19 +174,17 @@ def test_residency_vetoes_the_media_ttl(store, monkeypatch):
     assert settings.get_media_auto_unload_idle_seconds() == 900
 
 
-# ── the idle decision ───────────────────────────────────────────────
 
 
 def test_idle_load_is_unloaded_after_the_ttl(media, monkeypatch):
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     arb.acquire_for(arb.DIFFUSION)
-    _step()  # the loop has now seen both models, so only the TTL is left
+    _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 1
     assert media[arb.VIDEO].unloads == 1
     # The arbiter claim went with it, so a later chat load has nothing to evict.
     assert arb.current_owner() is None
-    # Freed once, not once per tick.
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 1
 
@@ -208,8 +197,7 @@ def test_an_in_flight_generation_is_not_unloaded(media, monkeypatch):
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
     assert media[arb.VIDEO].unloads == 0
-    # The generation counted as activity, so the TTL restarts from its end rather than
-    # freeing the pipeline the moment the last step lands.
+    # The generation counted as activity, so the TTL restarts from its end.
     for owner in _BOTH:
         media[owner].active = False
     _step()
@@ -221,13 +209,11 @@ def test_an_in_flight_load_is_not_unloaded(media, monkeypatch):
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     engine = media[arb.DIFFUSION]
     _step()
-    # A superseding load in flight over the resident model.
     engine.loading = ("unsloth/FLUX.1-schnell",)
     _step(arb.DIFFUSION)
     assert engine.unloads == 0
-    # Once it lands, the same state IS collectable: the load was what spared it. One tick
-    # later, though -- the tick that finds the load done starts the TTL from there, since a
-    # load that outlives its POST stamps no activity of its own when it finishes.
+    # The load was what spared it; the tick that finds the load done starts the TTL from there,
+    # since a load outliving its POST stamps no activity of its own.
     engine.loading = ()
     _step(arb.DIFFUSION)
     assert engine.unloads == 0
@@ -247,15 +233,13 @@ def test_a_request_in_flight_is_not_unloaded(media, monkeypatch):
         mk.end_request(arb.DIFFUSION)
 
     asyncio.run(_drive())
-    # The completed request stamped activity, so the next tick still spares it.
     _step()
     assert media[arb.DIFFUSION].unloads == 0
 
 
 def test_a_load_that_just_finished_survives_one_ttl(media, monkeypatch):
-    # The server has been idle far longer than the TTL and a model then lands: the
-    # first tick that sees it stamps activity, so it is not freed out from under the
-    # user who just loaded it.
+    # After a long idle the first tick that sees a new model stamps activity, so it is not freed
+    # out from under the user who just loaded it.
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     _step(*_BOTH)
     _step()
@@ -269,8 +253,7 @@ def test_reload_after_an_idle_unload_works(media, monkeypatch):
     _step()
     _step(arb.DIFFUSION)
     assert engine.unloads == 1 and not engine.status()["loaded"]
-    # The user comes back and loads again: the reload sticks, and the tick that finds it
-    # treats the load as activity instead of freeing it straight back off the stale stamp.
+    # The tick that finds a reload treats it as activity instead of freeing it off the stale stamp.
     engine.loaded = True
     _step()
     _step()
@@ -278,16 +261,14 @@ def test_reload_after_an_idle_unload_works(media, monkeypatch):
 
 
 def test_the_ttl_starts_when_the_background_work_ends(media, monkeypatch):
-    # A video generation outlives its POST: the response is sent at once and the job runs on
-    # in a worker, so after that only the busy polls stamp activity. Dating the TTL from the
-    # last of those spends up to a whole poll interval of the keep-warm window the user
-    # configured before the model was even free. The tick that finds the work done starts it.
+    # A video generation outlives its POST, so only busy polls stamp activity; dating the TTL from
+    # the last of those spends up to a poll interval of the user's keep-warm window. The tick that
+    # finds the work done starts it.
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     engine = media[arb.VIDEO]
     engine.active = True
     _step()
-    # The job ends just after that tick, so the newest stamp is already a poll old -- here,
-    # far older than the TTL, which is the same thing with the clock wound on.
+    # The job ends just after a tick, so the newest stamp is already a poll old.
     _idle(arb.VIDEO)
     engine.active = False
     _step()
@@ -300,40 +281,32 @@ def test_the_ttl_starts_when_the_background_work_ends(media, monkeypatch):
 
 
 def test_a_job_that_lives_between_two_polls_still_gets_the_full_ttl(media, monkeypatch):
-    # A video job can start and finish inside one 15s poll interval, so no tick ever samples
-    # it as busy. Its POST returned near the START of the generation, and that response is
-    # the only activity it stamps, so the TTL was spent while the job was still running: a
-    # 74s TTL could free the model after about 60s of real idleness. The terminal record the
-    # backend publishes is the only proof the job ran, so the tick that first sees it starts
-    # the TTL there.
+    # A video job can start and finish inside one 15s poll, so no tick samples it as busy and its
+    # POST stamp (near the START of the job) spent the TTL while it ran. The terminal record the
+    # backend publishes is the only proof it ran, so the tick that first sees it starts the TTL.
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     engine = media[arb.VIDEO]
     _step()
     engine.terminal = {"phase": "completed", "video": {"id": "clip-1"}}
-    _idle(arb.VIDEO)  # the POST's stamp is already older than the TTL
+    _idle(arb.VIDEO)
     _step()
     assert engine.unloads == 0
-    # A restart, not a one-tick reprieve.
     _step()
     assert engine.unloads == 0
-    # The record itself keeps nothing warm: it is still published on that last tick, and
-    # only a record this tracker has not seen before counts as work having finished.
+    # The record keeps nothing warm by itself: only one this tracker has not seen before counts.
     _step(arb.VIDEO)
     assert engine.unloads == 1
 
 
 def test_a_veto_applied_during_the_step_stops_the_next_teardown(media, monkeypatch):
-    # One step tears down both backends and freeing several GB takes seconds. Reading the
-    # effective TTL once for the whole step let a residency veto turned on during the
-    # diffusion unload be ignored by the video one, so Unsloth freed a model its own settings
-    # response already reported as pinned.
+    # One step tears down both backends and takes seconds. Reading the effective TTL once for the
+    # whole step let a residency veto set during the diffusion unload be ignored by the video one.
     ttl = {"value": 60}
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: ttl["value"])
     diffusion, video = media[arb.DIFFUSION], media[arb.VIDEO]
     real_unload = diffusion.unload
 
     def _slow_unload():
-        # Model Memory residency (or API-only, or a TTL of 0) applied mid-teardown.
         ttl["value"] = 0
         return real_unload()
 
@@ -345,15 +318,14 @@ def test_a_veto_applied_during_the_step_stops_the_next_teardown(media, monkeypat
 
 
 def test_a_ttl_raised_during_the_step_spares_the_next_teardown(media, monkeypatch):
-    # The same window, with the setting moved rather than vetoed: a TTL the backend is no
-    # longer past must be honoured by the teardown that has not happened yet.
+    # A TTL the backend is no longer past must be honoured by the teardown that has not happened yet.
     ttl = {"value": 60}
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: ttl["value"])
     diffusion, video = media[arb.DIFFUSION], media[arb.VIDEO]
     real_unload = diffusion.unload
 
     def _slow_unload():
-        ttl["value"] = 7200  # further out than the hour _idle backdates by
+        ttl["value"] = 7200
         return real_unload()
 
     diffusion.unload = _slow_unload
@@ -372,7 +344,7 @@ def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(me
         return False
 
     monkeypatch.setattr(mk, "_user_pinned", _pinned_while_a_request_lands)
-    _step()  # Both models are seen; only the TTL remains.
+    _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
     assert media[arb.VIDEO].unloads == 0
@@ -388,8 +360,7 @@ def test_a_different_model_restarts_the_ttl(media, monkeypatch):
 
 
 def test_api_only_spares_a_model_the_user_loaded(media, store):
-    # Unknown provenance reads as user-loaded, so an install that never recorded one is
-    # spared exactly as it was before media auto-switch existed.
+    # Unknown provenance reads as user-loaded, so an install that never recorded one is spared.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
     mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action = True)
@@ -397,7 +368,6 @@ def test_api_only_spares_a_model_the_user_loaded(media, store):
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
     assert media[arb.VIDEO].unloads == 0
-    # Turned off again, the same idle models are collectable.
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = False
     _step()
     _step(*_BOTH)
@@ -406,8 +376,7 @@ def test_api_only_spares_a_model_the_user_loaded(media, store):
 
 
 def test_api_only_still_frees_a_model_the_api_loaded(media, store):
-    # The other half of the per-model rule: auto-switch marks its own load, and that one
-    # is what the setting exists to collect.
+    # Auto-switch marks its own load, and that one is what the setting exists to collect.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
     mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action = False)
@@ -419,9 +388,8 @@ def test_api_only_still_frees_a_model_the_api_loaded(media, store):
 
 
 def test_a_failed_api_load_does_not_unpin_the_resident_user_model(media, store):
-    # A load is recorded when it is accepted, and it can still fail with the previous model
-    # resident. Reading that failed load's origin off the surviving model would evict a
-    # pipeline the setting promises to keep.
+    # A load is recorded when accepted and can still fail with the previous model resident, so
+    # reading the failed load's origin off the survivor would evict a pipeline the setting keeps.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
     mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action = True)
@@ -432,8 +400,8 @@ def test_a_failed_api_load_does_not_unpin_the_resident_user_model(media, store):
 
 
 def test_a_failed_api_load_of_another_quant_does_not_unpin_the_user_build(media, store):
-    # Same repo, different quant: the path alone is not the build, so a failed API load of Q8
-    # would otherwise mark the user's resident Q4 as API-loaded and free it.
+    # Same repo, different quant: the path alone is not the build, so a failed API load of Q8 would
+    # mark the user's resident Q4 as API-loaded.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
     media[arb.DIFFUSION].build["gguf_variant"] = "Q4_K_M"
@@ -445,10 +413,9 @@ def test_a_failed_api_load_of_another_quant_does_not_unpin_the_user_build(media,
 
 
 def test_a_cached_reload_of_another_h3_partition_is_not_unloaded(media, monkeypatch):
-    # MiniMax-H3 keeps its identity in more than the repo id: fl2va and ref2va are
-    # different denoiser partitions, and the quants are part of the build too. A cached
-    # reload between two ticks lands with the old timestamp already expired, so an
-    # identity that cannot tell the partitions apart frees it the moment it arrives.
+    # MiniMax-H3 identity is more than the repo id: fl2va and ref2va are different partitions and
+    # the quant is part of the build. A cached reload lands with the old timestamp already expired,
+    # so an identity that cannot tell them apart frees it on arrival.
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     engine = media[arb.VIDEO]
     engine.repo_id = "MiniMaxAI/MiniMax-H3"
@@ -457,11 +424,9 @@ def test_a_cached_reload_of_another_h3_partition_is_not_unloaded(media, monkeypa
     engine.build["h3_task"] = "ref2va"
     _step(arb.VIDEO)
     assert engine.unloads == 0
-    # A quant swap is a rebuild as well.
     engine.build["transformer_quant"] = None
     _step(arb.VIDEO)
     assert engine.unloads == 0
-    # Unchanged and idle, it is still collectable.
     _step(arb.VIDEO)
     assert engine.unloads == 1
 
@@ -481,8 +446,7 @@ def test_disabled_ttl_never_touches_the_backends(media, monkeypatch):
 
 
 def test_a_chat_ttl_alone_leaves_the_media_backends_alone(media, store, monkeypatch):
-    # Same consent line as the settings test, one level down: an install that had chat
-    # idle-unload on before this landed must tick exactly as it did before.
+    # An install that had chat idle-unload on before this landed must tick exactly as it did before.
     store[settings.OPENAI_AUTO_SWITCH_SETTING_KEY] = True
     store[settings.AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     resolved = []
@@ -493,17 +457,14 @@ def test_a_chat_ttl_alone_leaves_the_media_backends_alone(media, store, monkeypa
     assert resolved == []
     assert media[arb.DIFFUSION].unloads == 0
     assert media[arb.VIDEO].unloads == 0
-    # Turning the media TTL on is what starts it, and only that.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     _step(*_BOTH)
     assert resolved == list(_BOTH)
 
 
 def test_the_off_tick_does_not_import_the_media_modules(store, monkeypatch):
-    # Off is the default and has to stay free: the tick runs every 15s from startup, so
-    # importing diffusion or video to find out there is nothing loaded would drag torch
-    # into an Unsloth that never opened either page. No engine fakes here on purpose --
-    # this is the real resolution path.
+    # Off is the default and must stay free: the tick runs every 15s from startup, so importing
+    # diffusion or video to find nothing loaded would drag torch in. No engine fakes here on purpose.
     store[settings.OPENAI_AUTO_SWITCH_SETTING_KEY] = True
     store[settings.AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     media_modules = {
@@ -532,8 +493,7 @@ def test_a_failing_unload_does_not_stop_the_other_backend(media, monkeypatch):
 
 
 def test_an_unimported_backend_is_not_imported_to_check_it(monkeypatch):
-    # The tick runs every 15s from startup; resolving the engines would drag torch in
-    # on an Unsloth that has never opened the Image or Video page.
+    # The tick runs every 15s from startup; resolving the engines would drag torch in.
     for module in ("core.inference.diffusion", "core.inference.sd_cpp_backend"):
         monkeypatch.delitem(sys.modules, module, raising = False)
     monkeypatch.delitem(sys.modules, "core.inference.video", raising = False)
@@ -541,7 +501,6 @@ def test_an_unimported_backend_is_not_imported_to_check_it(monkeypatch):
     assert mk._video_engine() is None
 
 
-# ── the request middleware ──────────────────────────────────────────
 
 
 def test_generate_routes_map_to_their_backend():
@@ -555,10 +514,9 @@ def test_generate_routes_map_to_their_backend():
 
 
 def test_a_path_that_is_not_a_mounted_route_is_not_tracked():
-    # A recognised prefix and a recognised tail is not a route. FastAPI answers these with a
-    # 404 without running an endpoint, and _finish() excludes only 401/403 from stamping
-    # activity, so an unauthenticated caller could hold a multi-GB pipeline resident forever
-    # by repeating one below the TTL.
+    # A recognised prefix plus a recognised tail is not a route: FastAPI 404s these without running
+    # an endpoint, and _finish() excludes only 401/403, so an unauthenticated caller could hold a
+    # multi-GB pipeline resident forever.
     assert mk.owner_for_path("/v1/not-a-route/images/generations") is None
     assert mk.owner_for_path("/api/inference/nope/video/generate") is None
     # The Unsloth routes are mounted under /api/inference only; /v1 carries the OpenAI shape.
@@ -569,9 +527,8 @@ def test_a_path_that_is_not_a_mounted_route_is_not_tracked():
 
 
 def test_every_tracked_path_is_a_route_that_is_actually_mounted():
-    # Exact matching costs this: a renamed route would silently stop being tracked, and an
-    # untracked generate is one an idle tick can tear the pipeline down under. So pin the
-    # list to the routers main.py mounts, in both directions.
+    # Exact matching costs this: a renamed route would silently stop being tracked, and an untracked
+    # generate is one an idle tick can tear the pipeline down under. So pin the list, both ways.
     from routes.inference import router as inference_router
     from routes.inference import studio_router
     from routes.video import openai_router as video_openai_router
@@ -602,24 +559,20 @@ def test_every_tracked_path_is_a_route_that_is_actually_mounted():
 
 
 def test_load_routes_map_to_their_backend():
-    # A load registers with the backend only PART WAY through its POST, so the route has
-    # to hold the gate for the whole of it: sampling loading_repo_ids() cannot see a load
-    # the route has been accepted for but not yet started.
+    # A load registers with the backend only PART WAY through its POST, so the route must hold the
+    # gate for the whole of it: loading_repo_ids() cannot see an accepted but unstarted load.
     assert mk.owner_for_path("/api/inference/images/load") == arb.DIFFUSION
     assert mk.owner_for_path("/api/inference/video/load") == arb.VIDEO
-    # Progress polling is not a load, and neither is planning a download.
     assert mk.owner_for_path("/api/inference/images/load-progress") is None
     assert mk.owner_for_path("/api/inference/video/load-progress") is None
     assert mk.owner_for_path("/api/inference/images/download-plan") is None
 
 
 def test_a_load_that_has_not_registered_yet_is_not_unloaded(media, monkeypatch):
-    # The check/start race. The tick reads the backend as idle with no load in flight, the
-    # user's load is accepted a moment later, and the unload that tick issues bumps the load
-    # token and signals the fresh cancel event: the worker exits without publishing an error
-    # and the page silently rolls the pick back. The window has to be closed, not narrowed,
-    # so the tick is pinned to the exact moment the route has started and the backend still
-    # reports nothing loading.
+    # The check/start race: the tick reads idle with no load in flight, the user's load is accepted
+    # a moment later, and the tick's unload bumps the load token and signals the fresh cancel event,
+    # so the worker exits without publishing an error and the page rolls the pick back. The window
+    # has to be closed, not narrowed.
     from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
 
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
@@ -628,7 +581,6 @@ def test_a_load_that_has_not_registered_yet_is_not_unloaded(media, monkeypatch):
     seen = {}
 
     async def _app(scope, receive, send):
-        # Inside the load route, before begin_load has registered anything.
         assert engine.loading == ()
         _idle(arb.VIDEO)
         await mk.idle_unload_step()
@@ -643,7 +595,6 @@ def test_a_load_that_has_not_registered_yet_is_not_unloaded(media, monkeypatch):
     assert seen["unloads"] == 0
     assert engine.unloads == 0
     assert mk._TRACKERS[arb.VIDEO]._inflight == 0
-    # The accepted load kept it: once the load is in flight the existing guard has it.
     _step(arb.VIDEO)
     assert engine.unloads == 0
 
@@ -657,7 +608,6 @@ def test_the_middleware_counts_a_generation_against_its_backend(media, monkeypat
     seen = {}
 
     async def _app(scope, receive, send):
-        # Mid-request: the idle tick must see this backend as busy and spare it.
         await mk.idle_unload_step()
         seen["unloads"] = media[arb.DIFFUSION].unloads
         await send({"type": "http.response.start", "status": 200})
@@ -674,10 +624,9 @@ async def _noop():
 
 
 def test_a_cancelled_wait_on_the_media_gate_leaves_no_chat_request_behind(media, monkeypatch):
-    # The generate routes are counted on BOTH sides, and the media gate is held for the
-    # length of a teardown. A client that disconnects while waiting on it used to leave the
-    # process-wide chat count positive for good: chat idle unload would never fire again and
-    # every training start would go on being told an inference request was running.
+    # The generate routes are counted on BOTH sides and the media gate is held for a teardown, so a
+    # client disconnecting while waiting on it used to leave the process-wide chat count positive
+    # for good: chat idle unload never fired again and training starts were told inference was live.
     import core.inference.llama_keepwarm as lk
     from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
 
@@ -749,7 +698,7 @@ def _stalled_media_request(path, headers):
 
         async def _app(scope, receive, send):
             started.set()
-            await asyncio.sleep(3600)  # the body never arrives
+            await asyncio.sleep(3600)
 
         scope = {"type": "http", "method": "POST", "path": path, "headers": headers}
         task = asyncio.ensure_future(
@@ -766,10 +715,9 @@ def _stalled_media_request(path, headers):
 
 
 def test_an_unauthenticated_stalled_request_cannot_pin_the_pipeline(media, monkeypatch):
-    # An exposed server: a client opens a POST to a tracked media route and withholds its
-    # body. It is counted before FastAPI authenticates or parses anything, and it produces
-    # no status, so the 401/403 exclusion never runs -- one held connection kept a multi-GB
-    # pipeline resident for the life of the process, which is the whole feature denied.
+    # A client that opens a POST to a tracked media route and withholds its body is counted before
+    # FastAPI authenticates or parses anything and produces no status, so the 401/403 exclusion
+    # never runs: one held connection kept a multi-GB pipeline resident for the process lifetime.
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     _step()
     _stalled_media_request("/api/inference/images/generate", [])
@@ -779,8 +727,7 @@ def test_an_unauthenticated_stalled_request_cannot_pin_the_pipeline(media, monke
 
 
 def test_an_authenticated_request_is_still_counted_before_its_body(media, monkeypatch):
-    # The other direction, which matters more: a real client's generation is protected from
-    # the moment its request arrives, body or no body.
+    # The other direction: a real generation is protected from the moment its request arrives.
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     _step()
     _stalled_media_request("/api/inference/images/generate", _BEARER)
@@ -799,9 +746,8 @@ def test_the_openai_videos_route_never_claims_the_llama_slot():
     for path in ("/v1/videos", "/api/inference/videos"):
         assert kw._is_inference_path(path), path
         assert path.endswith(kw._NON_LLM_SLOT_SUFFIXES), path
-    # Matched whole. As an endswith suffix it also caught unrouted paths, and those
-    # 404 before auth -- which this middleware does not exclude -- so each probe would
-    # have refreshed the chat model's idle timer and kept it resident for free.
+    # Matched whole: as an endswith suffix it also caught unrouted paths, which 404 before auth,
+    # so each probe refreshed the chat model's idle timer.
     for path in ("/v1/anything/videos", "/api/inference/nope/videos", "/v1/videosx"):
         assert not kw._is_inference_path(path), path
     for path in ("/v1/videos/", "/api/inference/videos/"):

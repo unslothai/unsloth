@@ -68,8 +68,7 @@ def _emitter():
 
 
 def test_evaluation_status_lines_do_not_replot_the_last_step():
-    # A 4-minute evaluation after step 200 publishes a status roughly every 15s; each
-    # one arrives with step 200's loss still on the shared progress object.
+    # A 4-minute evaluation after step 200 publishes every ~15s, each with step 200's loss still attached.
     on_progress, published = _emitter()
     step_200 = _Progress(step = 200, total_steps = 1000, loss = 0.42, learning_rate = 1e-4)
     on_progress(step_200)
@@ -90,8 +89,7 @@ def test_a_new_step_is_still_published():
 
 
 def test_the_same_step_with_a_new_measurement_is_still_published():
-    # Evaluation ends and reports eval_loss while global_step has not moved yet; that
-    # is a real new number, not a replay.
+    # Evaluation reports eval_loss while global_step has not moved yet, which is a real new number, not a replay.
     on_progress, published = _emitter()
     on_progress(_Progress(step = 200, total_steps = 1000, loss = 0.42))
     on_progress(_Progress(step = 200, total_steps = 1000, loss = 0.42, eval_loss = 0.55))
@@ -99,7 +97,6 @@ def test_the_same_step_with_a_new_measurement_is_still_published():
 
 
 def test_a_warning_mid_run_does_not_replot_either():
-    # _record_warning notifies the same callbacks with the metrics untouched.
     on_progress, published = _emitter()
     progress = _Progress(step = 12, total_steps = 100, loss = 1.5, grad_norm = 0.9)
     on_progress(progress)

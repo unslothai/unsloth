@@ -20,25 +20,19 @@ from unittest.mock import patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Stub heavy / unavailable deps before importing the module under test.
-# Same pattern as test_kv_cache_estimation.py.
-# ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx -- stub only names referenced at import / class-definition time
 _httpx_stub = _types.ModuleType("httpx")
 for _exc_name in (
     "ConnectError",
@@ -66,11 +60,10 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Only when the real library is absent: sys.modules holds what has been IMPORTED, not what is
+# installed, so setdefault does not defer to an untouched real httpx. This stub has no Response,
+# and starlette.testclient reads httpx.Response at import, so every module collected afterwards
+# that reaches fastapi.testclient or routes.inference dies.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -80,7 +73,6 @@ from core.inference.llama_cpp import LlamaCppBackend
 from models.inference import LoadResponse, InferenceStatusResponse
 
 
-# ── Helpers ──────────────────────────────────────────────────────────
 
 
 def _write_kv(buf: io.BytesIO, key: str, value, vtype: int) -> None:
@@ -89,11 +81,11 @@ def _write_kv(buf: io.BytesIO, key: str, value, vtype: int) -> None:
     buf.write(struct.pack("<Q", len(key_bytes)))
     buf.write(key_bytes)
     buf.write(struct.pack("<I", vtype))
-    if vtype == 4:  # UINT32
+    if vtype == 4:
         buf.write(struct.pack("<I", value))
-    elif vtype == 10:  # UINT64
+    elif vtype == 10:
         buf.write(struct.pack("<Q", value))
-    elif vtype == 8:  # STRING
+    elif vtype == 8:
         val_bytes = value.encode("utf-8")
         buf.write(struct.pack("<Q", len(val_bytes)))
         buf.write(val_bytes)
@@ -142,9 +134,6 @@ def backend():
             return LlamaCppBackend()
 
 
-# =====================================================================
-# A. TestNativeContextLengthProperty -- the new property
-# =====================================================================
 
 
 class TestNativeContextLengthProperty:
@@ -209,9 +198,6 @@ class TestNativeContextLengthProperty:
         assert backend.native_context_length is None
 
 
-# =====================================================================
-# B. TestContextValueSeparation -- core invariant
-# =====================================================================
 
 
 class TestContextValueSeparation:
@@ -235,7 +221,7 @@ class TestContextValueSeparation:
     def test_all_equal_when_uncapped(self, backend):
         """All three equal when no VRAM constraint."""
         backend._context_length = 8192
-        # No effective/max set -- properties fall back to _context_length.
+        # No effective/max set: properties fall back to _context_length.
         assert backend.native_context_length == 8192
         assert backend.max_context_length == 8192
         assert backend.context_length == 8192
@@ -249,16 +235,14 @@ class TestContextValueSeparation:
         backend._embedding_length = 4096
         original = backend._context_length
 
-        # Tiny VRAM budget forces capping.
         result = backend._fit_context_to_vram(
             requested_ctx = 131072,
-            available_mib = 512,  # very small
+            available_mib = 512,
             model_size_bytes = 0,
         )
         # Returns the capped value without modifying _context_length.
         assert backend._context_length == original
         assert backend.native_context_length == original
-        # Capped value must be <= requested.
         assert result <= 131072
 
     def test_native_gt_context_when_capped(self, backend):
@@ -268,9 +252,6 @@ class TestContextValueSeparation:
         assert backend.native_context_length > backend.context_length
 
 
-# =====================================================================
-# C. TestPydanticModels -- LoadResponse & InferenceStatusResponse
-# =====================================================================
 
 
 class TestPydanticModels:
@@ -370,9 +351,6 @@ class TestPydanticModels:
         assert roundtripped.context_length == 8192
 
 
-# =====================================================================
-# D. TestRouteCompleteness -- source-level verification
-# =====================================================================
 
 
 class TestRouteCompleteness:
@@ -424,8 +402,7 @@ class TestRouteCompleteness:
         """Non-GGUF LoadResponse blocks do not set native_context_length (defaults to None)."""
         blocks = self._find_construction_blocks("LoadResponse")
         non_gguf = [b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b]
-        # Non-GGUF paths shouldn't reference native_context_length
-        # (Pydantic defaults it to None, so omitting it is correct).
+        # Non-GGUF paths should not reference native_context_length (Pydantic defaults it to None).
         for block in non_gguf:
             assert (
                 "native_context_length" not in block
@@ -481,9 +458,6 @@ class TestRouteCompleteness:
         assert 'model_info.get("context_length")' in self._source
 
 
-# =====================================================================
-# E. TestEdgeCases
-# =====================================================================
 
 
 class TestNativeContextEdgeCases:
@@ -504,7 +478,7 @@ class TestNativeContextEdgeCases:
 
     def test_context_length_uint64(self, tmp_path, backend):
         """UINT64 type context_length parsed correctly."""
-        val = 2**33  # exceeds UINT32 range
+        val = 2**33
         path = make_gguf(tmp_path, "llama", [("context_length", val, 10)])
         backend._read_gguf_metadata(path)
         assert backend.native_context_length == val
@@ -536,15 +510,11 @@ class TestNativeContextEdgeCases:
         backend._read_gguf_metadata(path)
         assert backend.native_context_length == 131072
 
-        # Simulate VRAM capping via effective and max.
         backend._effective_context_length = 16384
         backend._max_context_length = 32768
         assert backend.native_context_length == 131072
 
 
-# =====================================================================
-# F. TestCrossPlatform -- binary I/O and serialization
-# =====================================================================
 
 
 class TestCrossPlatform:
@@ -568,7 +538,6 @@ class TestCrossPlatform:
         buf = io.BytesIO()
         buf.write(struct.pack("<I", 0x46554747))
         raw = buf.getvalue()
-        # 'G' = 0x47, 'G' = 0x47, 'U' = 0x55, 'F' = 0x46
         assert raw == b"GGUF"
 
     def test_json_serialization_deterministic(self):

@@ -61,7 +61,6 @@ def test_schemeless_urls_are_fetched_as_https(resolved, url, hostname, port):
         "file:80",
         "javascript:443/path",
         "mailto:25",
-        # out-of-range ports are not host:port either
         "example.com:99999",
         "example.com:0",
         # ports must match ASCII [0-9]: str.isdigit() is True for digits int() refuses
@@ -70,9 +69,7 @@ def test_schemeless_urls_are_fetched_as_https(resolved, url, hostname, port):
         "example.com:①",
         "example.com:1²",
         "//example.com:²",
-        # non-ASCII decimal digits int() accepts are ports urlparse then refuses
         "example.com:٤٤٣",
-        # root-relative paths have no host to fetch
         "/login",
         "/github.com/owner/repo",
     ],
@@ -88,7 +85,6 @@ def test_absurdly_long_port_does_not_raise():
 
 
 def test_out_of_range_port_returns_error_instead_of_raising():
-    # check_url_access owns the wording; what matters is a string, not a raise.
     err, _, _ = tools._fetch_url_raw("https://example.com:99999")
     assert err and err.startswith("Blocked:")
 
@@ -117,7 +113,6 @@ def test_redirect_to_out_of_range_port_is_blocked(monkeypatch):
 @pytest.mark.parametrize(
     "url",
     [
-        # urlparse raises on these; a model-supplied URL must still return a string
         "//exam／ple.com",  # NFKC-decomposes into "/"
         "//example.com＠",  # NFKC-decomposes into "@"
         "//example.com：",  # NFKC-decomposes into ":"
@@ -131,7 +126,6 @@ def test_malformed_url_is_blocked_instead_of_raising(url):
 
 
 def test_idna_failure_is_reported_instead_of_raising(monkeypatch):
-    # getaddrinfo raises UnicodeError, not OSError, when IDNA encoding fails.
     import socket
 
     def boom(*a, **k):
@@ -151,7 +145,6 @@ def test_idna_failure_is_reported_instead_of_raising(monkeypatch):
     ],
 )
 def test_surrounding_whitespace_is_stripped(resolved, url, hostname):
-    # _web_search strips, but direct callers of the fetch layer do not.
     tools._fetch_url_raw(url)
     assert resolved["hostname"] == hostname
 

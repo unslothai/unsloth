@@ -24,43 +24,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-# What the stubs make detection cost. The regression these tests guard returns after
-# exactly this long, so it is also the number the timing ceiling has to stay clear of.
+# What the stubs make detection cost.
 _SLOW_DETECT_S = 10.0
-# How much wall clock, on top of the budget, the WARM request is allowed to spend.
-#
-# There are two bounds here and they guard different things. The cold call, the first one
-# this process serves, is what probe_ownerless_spawned_backend actually gets, so it is
-# bounded against the launcher's own timeout in
-# test_a_cold_health_call_answers_inside_the_launcher_deadline, setup included, because
-# setup counts against that deadline. This constant is the warm one, which is the
-# endpoint with its setup already paid, and it is tight because what remains does not
-# move. Dropping either leaves a hole: cold-only is what made this flaky, warm-only would
-# let a regression that adds a second of first-call import sail through.
-#
-# The warm ceiling still has to stay under the launcher deadline to mean anything, and is
-# asserted to be.
-#
-# It also has to stop flaking. It failed twice, at 1.63s and 1.69s, on two unrelated
-# branches 54 minutes apart, each time as the only failure in a run of about 30,780
-# tests. Neither was a regression; an unbounded wait measures 10.01s.
-#
-# Those two numbers were not the endpoint being slow. The budget wait is
-# deadline-accurate, polling against loop.time(), and the rest was one-time setup: the
-# lazy imports inside health_check, the anyio threadpool the auth dependency hops onto,
-# and TestClient's portal. Timing the first-ever call charged all of that to the
-# endpoint. The fix is to warm the app first, not to widen the number: measured after a
-# warm call, the request is 1.011-1.012s idle and 1.027-1.038s pinned to two CPUs under
-# six spinners, so it moves by about 27ms across a 6x change in load, against the 630ms
-# it moved before. The variance goes where it belongs, into the warm call.
-#
-# The portal is the one of those three that a warm request does not warm on its own: a
-# TestClient outside its context manager builds a fresh one per request. Measured, that
-# is 3.4ms idle and 3-33ms loaded, so it was never what made this flaky, but it is real
-# and it is now excluded by entering the client rather than by being tolerated.
-#
-# 0.5s of headroom against a post-warm overhead of ~45ms is roughly 11x, and leaves the
-# ceiling at 1.5s, comfortably inside the 2s the launcher allows.
+# How much wall clock, on top of the budget, the WARM request is allowed to spend. Warmed, the
+# request is ~1.01s idle and ~1.03s under six spinners, ~27ms across a 6x load change, so 0.5s of
+# headroom leaves the ceiling at 1.5s, inside the launcher's 2s.
 _POST_WARM_OVERHEAD_ALLOWANCE_S = 0.5
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
@@ -121,9 +89,8 @@ def test_the_budget_stays_under_the_desktop_probe_timeout():
         f"/api/health waits up to {budget}s for detection but the desktop probe "
         f"gives up at {probe_timeout}s"
     )
-    # Connect, routing and JSON share the same 2s, and the budget overruns whenever a
-    # C-extension import holds the GIL past it (0.24s measured at 1.5s). A budget that
-    # only just fits is one slow host away from the dead end.
+    # Connect, routing and JSON share the same 2s, and the budget overruns whenever a C-extension
+    # import holds the GIL past it (0.24s measured at 1.5s).
     assert probe_timeout - budget >= 0.9, (
         f"only {probe_timeout - budget}s of headroom between the health budget "
         f"and the {probe_timeout}s probe timeout"
@@ -253,9 +220,9 @@ def _probe(detect_seconds: float) -> dict:
     return json.loads(line[len("RESULT") :])
 
 
-# A pass that sets CHAT_ONLY False and then degrades, the shape every accelerator
-# branch has: the flag is assigned before the device-name probe that can raise, and
-# detect_hardware() restores the previous verdict on the way out.
+# A pass that sets CHAT_ONLY False and then degrades, the shape every accelerator branch has: the
+# flag is assigned before the device-name probe that can raise, and detect_hardware() restores the
+# previous verdict on the way out.
 _MID_PASS_SNIPPET = r"""
 import json, os, threading, time
 
@@ -330,15 +297,14 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
     budget = _main_constant("_HEALTH_DETECT_BUDGET_S")
     probe_timeout = _desktop_probe_timeout_s()
     ceiling = budget + _POST_WARM_OVERHEAD_ALLOWANCE_S
-    # The ceiling has to stay under the launcher's deadline, or a response this test
-    # accepts is one the desktop probe has already given up on.
+    # The ceiling has to stay under the launcher's deadline, or a response this test accepts is one
+    # the desktop probe has already given up on.
     assert ceiling < probe_timeout, (
         f"a {ceiling}s ceiling is at or past the {probe_timeout}s the desktop probe "
         "allows, so this assertion would pass responses that dead-end the launch"
     )
-    # And it is only worth asserting while it still separates a bounded wait from an
-    # unbounded one, so widening the allowance far enough to stop discriminating fails
-    # here instead of quietly making this test vacuous.
+    # And it is only worth asserting while it still separates a bounded wait from an unbounded one,
+    # so widening the allowance far enough to stop discriminating fails here.
     assert ceiling < _SLOW_DETECT_S / 2, (
         f"a {ceiling}s ceiling no longer separates the budget from a {_SLOW_DETECT_S}s "
         "unbounded wait; this assertion would pass against the regression it guards"
@@ -350,11 +316,8 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
         "the TestClient was not entered, so _portal_factory built a separate blocking "
         "portal for each request and the cold call did not warm the timed one's portal"
     )
-    # The cold call has to have modelled the real case, detection still running, or it
-    # warmed nothing that matters and the request timed below is not warm. Asserted on
-    # STATE rather than on a duration: a duration check here would be the same subsecond
-    # wall-clock ceiling this change exists to remove, on the same contended runners,
-    # and it would say nothing about which path the call took.
+    # The cold call must have modelled the real case, detection still running, or it warmed nothing
+    # and the request timed below is not warm.
     assert result["cold_hardware_detecting"] is True, (
         "the cold call got a settled reply, so it did not exercise the wait and the "
         "timed request below is measuring one-time setup again"
@@ -502,7 +465,6 @@ def test_a_provisional_reply_is_not_cacheable_by_the_frontend():
     assert not result[
         "authed_has_chat_only_reason"
     ], "chat_only_reason is meaningless before detection has run"
-    # The launcher-facing fields are unaffected.
     assert result["authed_has_version"]
 
 

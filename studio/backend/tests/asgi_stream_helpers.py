@@ -32,10 +32,8 @@ async def wait_for_frame(
         done, _ = await asyncio.wait(
             {waiter, task}, timeout = timeout, return_when = asyncio.FIRST_COMPLETED
         )
-        # The task is checked FIRST, even when the frame did go out. A send() that sets the event
-        # and then raises leaves both futures done, and returning on the frame there would drop the
-        # exception into the caller's gather(return_exceptions = True) -- the exact silence this
-        # helper exists to break.
+        # Check the task FIRST even when the frame went out: a send() that sets the event then
+        # raises leaves both futures done, and returning on the frame drops the exception.
         if task in done:
             exc = task.exception()
             if exc is not None:

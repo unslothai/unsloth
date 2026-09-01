@@ -283,10 +283,8 @@ def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
             + "\n".join(ast.unparse(stmt) for stmt in block)
         )
 
-    # and every close must sit under a try whose finally releases, so a stalled close cannot
-    # drop the lease. By ancestry, not direct membership: the nesting that stops a cancel in
-    # _aclose_send_task's wait from skipping the later closes puts the first teardown one
-    # level up, which membership would reject even though it is strictly safer.
+    # and every close must sit under a try whose finally releases, so a stalled close cannot drop
+    # the lease.
     parents = {}
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):

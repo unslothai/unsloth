@@ -340,7 +340,6 @@ def test_chatgpt_subscription_rejects_a_non_null_max_output_override():
             )
         )
     assert error.value.status_code == 400
-    # on the detail, not the status: a Codex create with no models also 400s on auth
     assert error.value.detail == "ChatGPT subscriptions use a fixed Max Tokens limit."
 
 
@@ -648,7 +647,6 @@ def test_hugging_face_routes_are_global_and_idempotent():
     jwt_secret = "current-jwt-secret"
     auth_storage.create_initial_user("alice", "password-123", jwt_secret)
     credential = ("alice", auth_storage.credential_generation(jwt_secret))
-    # Exercise a cold encryption-key cache while the real generation guard is active.
     auth_storage._credential_encryption_key_cache = None
     saved = settings_route.update_hugging_face_token(
         settings_route.HuggingFaceTokenPayload(token = " 'hf_alice' "),
@@ -874,10 +872,8 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
         )
         assert renamed.display_name == "Work account"
         assert renamed.models == [listed]
-        # The slug was already on the row, so nothing had to be proven upstream.
         assert calls == []
 
-        # A slug that was never saved here still needs the catalog.
         with pytest.raises(HTTPException) as refused:
             asyncio.run(
                 providers_route.update_provider_config(
@@ -989,7 +985,6 @@ def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
     monkeypatch.setattr(
         providers_route.openai_codex_client, "ensure_subscription_models", _no_refresh
     )
-    # Cold worker, and the credentials carry no proof for this account.
     monkeypatch.setattr(
         providers_route.openai_codex_auth,
         "load_oauth_bundle",
@@ -1053,7 +1048,6 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
             via_api_key = False,
         )
     )
-    # Creating does not record: there is no connection behind it yet.
     assert recorded == []
 
     codex_client.forget_subscription_models(created.id)
@@ -1068,7 +1062,6 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
         )
         assert recorded == [(created.id, "acct-1")]
 
-        # A metadata-only edit carries no selection, so it proves nothing new.
         recorded.clear()
         asyncio.run(
             providers_route.update_provider_config(
@@ -1148,18 +1141,16 @@ def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
                 )
             )
 
-        # The reported failure and the stored row agree: neither half landed.
         row = providers_db.get_provider(provider_id)
         assert row["models"] == ["gpt-5.4"]
         bundle = codex_auth.load_oauth_bundle(provider_id)
         assert bundle is not None and bundle.get("catalog_account_id") is None
 
-        # Restart: the catalog is per process, the row and the bundle are not.
         codex_client.forget_subscription_models(provider_id)
         assert not codex_client.subscription_catalog_known(provider_id)
 
-        # The row carries no slug the seed cannot vouch for, so an unrelated edit still
-        # saves with upstream unreachable. Left torn, this is a 400.
+        # The row carries no slug the seed cannot vouch for, so an unrelated edit still saves with
+        # upstream unreachable.
         async def _unreachable(_provider_id):
             return set()
 
@@ -1206,8 +1197,8 @@ def test_codex_save_records_only_the_account_it_actually_validated(monkeypatch):
 
     def _bundle(_pid):
         lookups.append(1)
-        # The first read is the one this request judges by; a rebind lands after it, so
-        # every later read of the connection names the new account.
+        # The first read is the one this request judges by; a rebind lands after it, so every later
+        # read of the connection names the new account.
         return {"account_id": "acct-a" if len(lookups) == 1 else "acct-b"}
 
     monkeypatch.setattr(providers_route.openai_codex_auth, "load_oauth_bundle", _bundle)
@@ -1302,9 +1293,7 @@ def test_a_released_connection_leaves_no_ticket_but_still_retires_its_read():
     ticket = codex_client._begin_catalog_request("released-connection")
     codex_client.forget_subscription_models("released-connection")
     assert "released-connection" not in codex_client._catalog_requests
-    # The read that was in flight when the connection went away must still decline.
     assert codex_client._catalog_requests.get("released-connection") != ticket
-    # A later read anywhere draws a number the retired one cannot be holding.
     assert codex_client._begin_catalog_request("another-connection") > ticket
     assert codex_client._begin_catalog_request("released-connection") != ticket
     codex_client.forget_subscription_models("released-connection")
@@ -1370,9 +1359,8 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
     parked = asyncio.Event()
 
     async def _blocked_then_busy(_provider_id, _account_id):
-        # Stands in for provider_oauth_write_guard's flock acquire: a real suspension
-        # point, then the timeout it raises. `parked` is the handshake, so the test
-        # resumes on the suspension itself rather than on a count of loop turns.
+        # Stands in for provider_oauth_write_guard's flock acquire: a real suspension point, then
+        # the timeout it raises.
         parked.set()
         await gate.wait()
         raise codex_auth.CodexAuthError("ChatGPT credential update is busy. Please retry.")
@@ -1391,11 +1379,9 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
             )
         )
         await asyncio.wait_for(parked.wait(), timeout = 10)
-        # Its row is committed and it is now parked in remember_catalog_account.
         assert providers_db.get_provider(provider_id)["models"] == ["gpt-5.4", listed]
 
-        # Another write renames the row while that one hangs. It touches a column the
-        # parked request never wrote, so there is nothing of its own to undo there.
+        # Another write renames the row while that one hangs.
         providers_db.update_provider(
             id = provider_id, display_name = "Renamed while the first save hung"
         )
@@ -1408,10 +1394,9 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
         asyncio.run(_overlapping_saves())
 
         row = providers_db.get_provider(provider_id)
-        # The rename was never in doubt, and nothing it did needs undoing.
         assert row["display_name"] == "Renamed while the first save hung"
-        # The unproven model still goes back: that half of the failed save is this
-        # request's own, and no one else claimed the column.
+        # The unproven model still goes back: that half of the failed save is this request's own,
+        # and no one else claimed the column.
         assert row["models"] == ["gpt-5.4"]
         bundle = codex_auth.load_oauth_bundle(provider_id)
         assert bundle is not None and bundle.get("catalog_account_id") is None

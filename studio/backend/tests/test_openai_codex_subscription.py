@@ -843,8 +843,7 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
             "reasoning_efforts": ["low", "high"],
             "listed": True,
         },
-        # Kept and marked, not dropped: an account can still call a slug it saved while
-        # the slug was listed, and only the picker needs to stop offering it.
+        # Kept and marked, not dropped: an account can still call a slug it saved while it was listed.
         {
             "id": "codex-auto-review",
             "display_name": "codex-auto-review",
@@ -856,11 +855,10 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
     ]
     assert fake.calls[0][0] == f"{OPENAI_CODEX_API_BASE}/codex/models"
     assert fake.calls[0][1] == {"client_version": codex_auth.OPENAI_CODEX_CLIENT_VERSION}
-    # A second call is served from cache rather than re-hitting upstream.
     assert asyncio.run(list_subscription_models("provider-1", "secret-token", "acct-1")) == models
     assert len(fake.calls) == 1
-    # Outlives the cache so a slow save is still accepted by the provider routes.
-    # Cached for its metadata, but a hidden slug is not authorized by the fetch alone.
+    # Outlives the cache so a slow save is still accepted; a hidden slug is not authorized by the
+    # fetch alone.
     assert offered_subscription_model_ids("provider-1") == {"gpt-5.4"}
     assert codex_client.offered_subscription_model("provider-1", "codex-auto-review") is not None
     forget_subscription_models("provider-1")
@@ -954,7 +952,6 @@ def test_a_forced_reload_skips_the_cached_catalog(monkeypatch):
         )
         assert [model["id"] for model in reloaded] == ["gpt-5.8-new"]
         assert len(second.calls) == 1
-        # The refreshed catalog replaces what the picker and the chat gate read.
         assert offered_subscription_model_ids("provider-6") == {"gpt-5.8-new"}
     finally:
         forget_subscription_models("provider-6")
@@ -1479,8 +1476,8 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
         "call_1",
         "call_2",
     ]
-    # The shared loop carries the local loops' closing nudge, so the tool results
-    # are no longer the tail of the conversation.
+    # The shared loop carries the local loops' closing nudge, so the tool results are no longer the
+    # tail of the conversation.
     assert replayed[-1]["role"] == "user"
     assert "provide your final answer now" in replayed[-1]["content"]
 
@@ -1629,15 +1626,14 @@ def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
     listed = "gpt-5.7-nova"
     assert listed not in get_provider_info("openai_codex")["default_models"]
 
-    # A catalog that simply does not list it: the refusal is about the model, not the
-    # connection, so the gate never reaches for a refresh.
+    # A catalog that simply does not list it: the refusal is about the model, not the connection,
+    # so the gate never reaches for a refresh.
     forget_subscription_models("codex-1")
     codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4", "listed": True}}
     refused = _codex_chat_gate(monkeypatch, listed)
     assert refused.status_code == 400
     assert "Choose a curated Codex model." in str(refused.detail)
 
-    # Exactly what a picker fetch records for this connection.
     codex_client._offered_models["codex-1"] = {
         listed: {"id": listed, "display_name": listed, "vision": True, "listed": True}
     }
@@ -1645,7 +1641,6 @@ def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
         accepted = _codex_chat_gate(monkeypatch, listed)
         assert accepted.status_code == 401, accepted.detail
         assert "Choose a curated Codex model." not in str(accepted.detail)
-        # A slug no plan ever listed is still refused.
         never_listed = _codex_chat_gate(monkeypatch, "gpt-5.3-codex-spark")
         assert never_listed.status_code == 400
         assert "Choose a curated Codex model." in str(never_listed.detail)
@@ -1667,8 +1662,7 @@ def test_chat_refetches_the_plan_catalog_after_a_restart(monkeypatch):
 
     async def _resolve(_provider_id):
         calls.append(_provider_id)
-        # The gate's refresh resolves first; the chat path's own call then stops
-        # the request before it can reach upstream.
+        # The gate's refresh resolves first; the chat path's own call then stops the request.
         if len(calls) > 1:
             raise codex_auth.CodexAuthError("stub: past the model gate")
         return "secret-token", "acct-1"
@@ -1794,7 +1788,6 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
         refused = call()
         assert refused.status_code == 400
         assert "does not accept image input" in str(refused.detail)
-        # The same slug listed as image-capable is carried through to the provider.
         codex_client._offered_models["codex-1"] = {
             listed: {"id": listed, "display_name": listed, "vision": True, "listed": True}
         }
@@ -1814,8 +1807,8 @@ def test_chat_keeps_a_saved_slug_the_plan_stopped_listing(monkeypatch):
     """
     hidden = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
-    # The plan still returns it, marked hidden: that is what ageing out of the picker
-    # looks like, as opposed to a slug the account cannot reach at all.
+    # The plan still returns it, marked hidden: ageing out of the picker, as opposed to a slug the
+    # account cannot reach at all.
     codex_client._offered_models["codex-1"] = {
         "gpt-5.4": {"id": "gpt-5.4", "listed": True},
         hidden: {"id": hidden, "listed": False},
@@ -1844,7 +1837,6 @@ def test_chat_retires_a_saved_slug_the_new_account_does_not_carry(monkeypatch):
         cold = _codex_chat_gate(monkeypatch, stale, saved_models = [stale])
         assert cold.status_code == 401, cold.detail
 
-        # The new account's catalog does not carry it at all, hidden or otherwise.
         codex_client._offered_models["codex-1"] = {"gpt-5.5": {"id": "gpt-5.5", "listed": True}}
         refused = _codex_chat_gate(monkeypatch, stale, saved_models = [stale])
         assert refused.status_code == 400
@@ -1936,7 +1928,6 @@ def test_a_hidden_slug_is_not_invocable_just_because_the_catalog_was_fetched(mon
         assert refused.status_code == 400
         assert "Choose a curated Codex model." in str(refused.detail)
 
-        # Still reachable when the connection already carries it.
         accepted = _codex_chat_gate(monkeypatch, hidden, saved_models = [hidden])
         assert accepted.status_code == 401, accepted.detail
     finally:
@@ -1972,12 +1963,10 @@ def test_chat_does_not_trust_the_saved_row_after_a_rebind(monkeypatch):
     stale_slug = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
     try:
-        # A plain cold start still trusts the row.
         cold = _codex_chat_gate(monkeypatch, stale_slug, saved_models = [stale_slug])
         assert cold.status_code == 401, cold.detail
 
-        # Rebound: the row is not evidence, so the gate reads the new account's catalog
-        # rather than trusting it, and that catalog does not carry the slug.
+        # Rebound: the row is not evidence, so the gate reads the new account's catalog instead.
         codex_client.mark_subscription_catalog_stale("codex-1")
 
         async def _resolve(_provider_id):
@@ -2055,7 +2044,6 @@ def test_a_superseded_catalog_read_does_not_commit(monkeypatch):
 
     class Rebinding:
         async def get(self, *_args, **_kwargs):
-            # The rebind lands while this read is out.
             forget_subscription_models("provider-9")
             mark = codex_client.mark_subscription_catalog_stale
             mark("provider-9")
@@ -2086,12 +2074,10 @@ def test_chat_drops_a_catalog_another_worker_rebound(monkeypatch):
     codex_client._offered_models["codex-1"] = {stale_slug: {"id": stale_slug, "listed": True}}
     codex_client._catalog_accounts["codex-1"] = "acct-a"
 
-    # What the shared DB now says this connection is bound to.
     monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"})
     try:
         refused = _codex_chat_gate(monkeypatch, stale_slug, saved_models = [stale_slug])
         assert refused.status_code == 401, refused.detail
-        # The catalog for the previous account is gone and the row is unproven again.
         assert codex_client.subscription_catalog_known("codex-1") is False
         assert codex_client.subscription_catalog_stale("codex-1") is True
     finally:
@@ -2115,8 +2101,8 @@ def test_the_model_route_reports_a_dead_connection(monkeypatch):
             "provider-10", _credential = ("user", "session"), via_api_key = False
         )
     )
-    # Not a 401: authFetch would read that as an expired Unsloth session, refresh it and
-    # retry, and the retry would look like a healthy curated list.
+    # Not a 401: authFetch would read that as an expired Unsloth session, refresh it and retry, and
+    # the retry would look like a healthy curated list.
     assert answered["source"] == "reauthorization_required"
     assert [model["id"] for model in answered["models"]] == curated
 
@@ -2306,7 +2292,6 @@ def test_a_catalog_is_not_committed_for_an_account_another_worker_replaced(monke
         assert [model["id"] for model in models] == ["gpt-5.4"]
         assert codex_client.subscription_catalog_known("provider-15") is False
 
-        # The same read for the account the DB actually names does commit.
         forget_subscription_models("provider-15")
         asyncio.run(list_subscription_models("provider-15", "token-b", "acct-b"))
         assert offered_subscription_model_ids("provider-15") == {"gpt-5.4"}
@@ -2433,7 +2418,6 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
         expected_access_token = None,
     ):
         calls.append(_provider_id)
-        # The gate's own refresh resolves; the chat path's later call stops the request.
         if len(calls) > 1:
             raise codex_auth.CodexAuthError("stub: past the model gate")
         return "token", "acct-b"
@@ -2445,8 +2429,7 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
         async def aclose(self):
             return None
 
-    # Cold: the refresh cannot reach upstream, so the catalog stays unknown and the
-    # decision is the cold branch alone.
+    # Cold: the refresh cannot reach upstream, so the decision is the cold branch alone.
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: Unreachable())
     monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"})
     try:
@@ -2454,7 +2437,6 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
         assert refused.status_code == 400
         assert "Choose a curated Codex model." in str(refused.detail)
 
-        # The same cold process, with the row on record as proven for this account.
         monkeypatch.setattr(
             codex_auth,
             "load_oauth_bundle",
@@ -2474,8 +2456,7 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
             monkeypatch, saved, resolve = _always_refuse, saved_models = [saved]
         )
         assert accepted.status_code == 401, accepted.detail
-        # Allowed straight off the row, so the gate never reached for a catalog: the one
-        # call is the chat path's own.
+        # Allowed straight off the row, so the gate never reached for a catalog.
         assert len(proven_calls) == 1
     finally:
         forget_subscription_models("codex-1")
@@ -2660,8 +2641,8 @@ def test_a_cold_worker_rejects_credentials_for_another_account(monkeypatch):
 
     def _bundle(_pid):
         reads.append(1)
-        # The gate reads acct-a and authorizes off the proof; a rebind lands before
-        # resolve_access answers, which then returns acct-b.
+        # The gate reads acct-a and authorizes off the proof; a rebind lands before resolve_access
+        # answers, which then returns acct-b.
         return {"account_id": "acct-a", "catalog_account_id": "acct-a"}
 
     async def _resolve(

@@ -26,10 +26,7 @@ import main  # noqa: E402
 import utils.llama_cpp_freshness as freshness  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-# Deadlock backstops, not pacing. Nothing waits these out on a passing run: the
-# freshness stub blocks until the test releases it, and the test releases it as
-# soon as the non-blocking claim has been checked. They exist so a regression
-# hangs for 30s and fails rather than hanging CI forever.
+# Deadlock backstops, not pacing: nothing waits these out on a pass, so a regression fails in 30s.
 _BACKSTOP_S = 30.0
 
 
@@ -45,8 +42,7 @@ class _FakeApp:
 
 @pytest.fixture(autouse = True)
 def _fast_capability_probe(monkeypatch):
-    # Keep the (local) capability probe instant + offline so the freshness sleep
-    # is the only slow thing under test.
+    # Keep the local capability probe instant and offline so the freshness sleep is the only slow thing under test.
     monkeypatch.setattr(
         LlamaCppBackend,
         "_find_llama_server_binary",
@@ -68,11 +64,8 @@ def test_probe_does_not_block_startup(monkeypatch):
     release = threading.Event()
 
     def _slow_freshness(_bin, **_kw):
-        # Blocks until the test lets it go rather than for a fixed number of
-        # seconds. Strictly stronger than the old `time.sleep(5)`: the check is
-        # stalled for as long as the caller-blocking assertion needs it to be,
-        # so a probe that ran inline would hang here forever instead of merely
-        # being 5s slow, and the suite pays no wall clock for it.
+        # Blocks until the test lets it go rather than for a fixed number of seconds, so a probe that ran
+        # inline would hang here forever instead of merely being 5s slow, at no wall-clock cost.
         entered.set()
         assert release.wait(_BACKSTOP_S), "the test never released the freshness check"
         return {"stale": False, "behind": False}
@@ -86,12 +79,10 @@ def test_probe_does_not_block_startup(monkeypatch):
 
     assert elapsed < 0.5, f"startup probe blocked the caller for {elapsed:.2f}s"
 
-    # The stall has to be real for the timing above to mean anything: the probe
-    # must actually be sitting inside the freshness check while the caller runs on.
+    # The stall has to be real for the timing above to mean anything.
     assert entered.wait(_BACKSTOP_S), "the probe thread never reached the freshness check"
     release.set()
 
-    # The daemon thread eventually populates app.state once the check returns.
     deadline = time.monotonic() + _BACKSTOP_S
     while app.state.llama_cpp_freshness is None and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -113,10 +104,7 @@ def test_disable_env_skips_probe_entirely(monkeypatch):
     before = {t for t in threading.enumerate()}
     main._start_llama_cpp_probes_if_enabled(app)
 
-    # Checked, not slept for. The old `time.sleep(0.5)` only proved the probe had
-    # not called back *within 0.5s*; enumerating the threads proves no probe thread
-    # was ever created, which is what "skips the probe entirely" means, and it is
-    # true the instant the call returns.
+    # Checked, not slept for: the old sleep(0.5) proved only that no callback came, not that no thread exists.
     started = [
         t for t in threading.enumerate() if t not in before and t.name == "llama-cpp-startup-probe"
     ]

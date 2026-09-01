@@ -29,7 +29,6 @@ def corpus():
 
 def test_ast_inventory_matches_the_baseline():
     """A dropped or re-signatured top-level name is an import break for some caller."""
-    # Same helper ``verify`` uses, so CI and the CLI agree.
     problems = refactor_guard._ast_problems()
 
     assert not problems, "\n".join(problems[:40])
@@ -130,8 +129,7 @@ def test_a_deleted_patch_target_is_not_written_off_as_environmental():
 def test_no_guarded_function_is_driven_by_a_sentinel():
     """Every guarded function has to be actually called, or its golden digest pins
     nothing and an arbitrary rewrite of it passes."""
-    # The whole corpus, not a slice: several functions are constant over any small prefix
-    # and only vary once the rarer serializations appear, so a slice reports false gaps.
+    # The whole corpus, not a slice: several functions vary only once the rarer serializations appear.
     corpus = refactor_guard.build_corpus()
     undrivable = sorted(
         name

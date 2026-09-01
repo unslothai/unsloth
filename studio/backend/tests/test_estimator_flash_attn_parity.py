@@ -33,8 +33,8 @@ import sys
 import types as _types
 from pathlib import Path
 
-# Stub heavy / unavailable deps before importing the module under test.
-# Same block, same reasons, as tests/test_memory_estimate.py.
+# Stub heavy / unavailable deps before importing the module under test, for the same reasons as
+# tests/test_memory_estimate.py.
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -59,8 +59,6 @@ import routes.inference as ri  # noqa: E402
 from models.inference import EstimateMemoryRequest  # noqa: E402
 from core.inference.llama_cpp import _kv_bytes_per_elem  # noqa: E402
 
-# Reuse the GGUF blob builder rather than copying it, for the reason its first
-# borrower gives: a second copy of the writer would drift from the parser.
 _kv_spec = _ilu.spec_from_file_location(
     "_kv_cache_estimation_for_flash_attn_parity",
     Path(__file__).resolve().parent / "test_kv_cache_estimation.py",
@@ -92,9 +90,9 @@ def _clear_flash_attn_parity_caches():
 
 @pytest.fixture
 def qwen3_shaped_gguf(tmp_path):
-    # general.architecture goes in FIRST. The reader takes it before it knows which
-    # prefix the rest of the keys carry, so a blob that writes it last parses as a
-    # header with no dimensions and every figure below silently becomes zero.
+    # general.architecture goes in FIRST: the reader takes it before it knows which prefix the rest of
+    # the keys carry, so a blob writing it last parses as a header with no dimensions and every figure
+    # below silently becomes zero.
     fields = {"general.architecture": "qwen3"}
     fields.update({f"qwen3.{k}": v for k, v in _QWEN3_FIELDS.items()})
     path = tmp_path / "qwen3-shaped.gguf"
@@ -199,7 +197,6 @@ def test_a_quantized_v_in_the_extra_arguments_is_read_the_same_way(qwen3_shaped_
 
 
 # The round that followed: four placement inputs the estimate was reading wrong.
-# Each of these fails on the parent commit.
 
 
 def test_a_cpu_only_manual_launch_is_not_charged_for_a_pinned_card(monkeypatch, qwen3_shaped_gguf):
@@ -270,8 +267,7 @@ def test_an_inherited_gpu_layer_count_is_read_in_auto(monkeypatch, qwen3_shaped_
     half = ri._gguf_offloaded_layer_fraction("auto", None, 27, None)
     assert 0.0 < half < 1.0, f"a partial inherited count priced {half}"
 
-    # -1 and auto are llama.cpp's own default, so they leave the fitter free to choose
-    # and are not an override.
+    # -1 and auto are llama.cpp's own default, so they leave the fitter free to choose and are not an override.
     for auto_value in ("-1", "auto", ""):
         monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", auto_value)
         assert ri._gguf_offloaded_layer_fraction("auto", None, 27, None) == 1.0
@@ -304,8 +300,7 @@ def test_pass_through_adapters_are_charged_and_follow_the_base_placement(
     # And no adapters is zero, not None, so the marker stays off for every ordinary load.
     assert _sidecar_adapter_bytes([]) == 0
 
-    # The helper pre-dates this; what is new is that the panel asks it. Driven through
-    # the breakdown so the test fails on a tree where the term is computed and dropped.
+    # The helper pre-dates this; what is new is that the panel asks it.
     config = SimpleNamespace(
         identifier = "local",
         gguf_file = qwen3_shaped_gguf,

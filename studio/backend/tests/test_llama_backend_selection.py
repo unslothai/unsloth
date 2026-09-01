@@ -57,7 +57,6 @@ def _choice(install_kind: str, name: str = "bundle.tar.gz") -> ilp.AssetChoice:
     )
 
 
-# ── The vocabulary ──
 
 
 def test_every_install_kind_the_installer_can_select_names_a_backend():
@@ -113,7 +112,6 @@ def test_windows_rocm_bundle_satisfies_a_rocm_request():
     assert filtered[0].attempts == [choice]
 
 
-# ── Reading a choice back off an install ──
 
 
 @pytest.mark.parametrize(
@@ -121,18 +119,16 @@ def test_windows_rocm_bundle_satisfies_a_rocm_request():
     [
         # Nothing recorded: an ordinary detected install, which must keep detecting.
         ({"asset": "app-b1-linux-x64-cuda12.tar.gz", "force_cpu": False}, "auto"),
-        # The two overrides older installers could record.
         ({"asset": "app-b1-linux-x64-cpu.tar.gz", "force_cpu": True}, "cpu"),
         ({"asset": "vulkan.tar.gz", "llama_backend": "vulkan"}, "vulkan"),
         # Automatic Windows-AMD Vulkan routing: detected, not chosen.
         ({"asset": "win-vulkan.zip", "llama_backend": "auto"}, "auto"),
         # Pre-#7188: no llama_backend key at all, so the asset is the only evidence.
         ({"asset": "llama-b1-bin-ubuntu-vulkan-x64.tar.gz"}, "vulkan"),
-        # Written by this build.
         ({"backend": "rocm", "backend_request": "rocm"}, "rocm"),
         ({"backend": "cuda", "backend_request": "auto"}, "auto"),
-        # A choice from a newer Unsloth is returned verbatim, never as "auto":
-        # "auto" would license this build to re-detect over it.
+        # A choice from a newer Unsloth is returned verbatim, never as "auto": "auto" would license
+        # this build to re-detect over it.
         ({"backend": "sycl", "backend_request": "sycl"}, "sycl"),
         ({"asset": "x.tar.gz", "llama_backend": "sycl"}, "sycl"),
         # A non-string records no readable choice at all, so detection applies.
@@ -150,7 +146,6 @@ def test_persisted_backend_request_without_an_install(tmp_path):
     assert ilp.persisted_backend_request(tmp_path) == "auto"
 
 
-# ── Precedence ──
 
 
 def test_the_flag_outranks_the_environment_and_the_install(monkeypatch, tmp_path):
@@ -198,7 +193,6 @@ def test_an_unknown_environment_value_falls_through_to_the_install(monkeypatch, 
     assert ilp.effective_backend_request(None, install_dir = install) == ("vulkan", False)
 
 
-# ── What gets recorded ──
 
 
 @pytest.mark.parametrize(
@@ -482,13 +476,11 @@ def test_a_detected_install_records_its_backend_but_no_choice(tmp_path):
         prebuilt_fallback_used = False,
     )
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
-    # Describes the install for the picker...
     assert marker["backend"] == "cuda"
     # ...without pinning it, so the next update re-detects as it always has.
     assert marker["backend_request"] == "auto"
 
 
-# ── Applying a request to an install ──
 
 
 def _stub_selection(
@@ -553,8 +545,8 @@ def test_an_update_refuses_to_replace_an_unknown_recorded_choice(monkeypatch, tm
     with pytest.raises(SystemExit) as raised:
         ilp.install_prebuilt(tmp_path, "latest", FORK, "")
 
-    # EXIT_ERROR, not the source fallback: a source build would pick its own
-    # backend, which is the outcome refusing this update exists to prevent.
+    # EXIT_ERROR, not the source fallback: a source build would pick its own backend, which is the
+    # outcome refusing this update exists to prevent.
     assert raised.value.code == ilp.EXIT_ERROR
     assert seen == []
     marker = json.loads((marker_path / "UNSLOTH_PREBUILT_INFO.json").read_text())

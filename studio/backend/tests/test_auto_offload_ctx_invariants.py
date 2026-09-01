@@ -54,9 +54,8 @@ from core.inference.llama_cpp import (  # noqa: E402
     LlamaCppBackend,
 )
 
-# Reuse the two existing mirrors rather than growing a third. Both stub the same
-# way this file does, so importing them costs no extra setup. Sibling imports need
-# the tests dir on the path: pytest inserts rootdir, not this package.
+# Reuse the two existing mirrors rather than growing a third; sibling imports need the tests dir on
+# the path, since pytest inserts rootdir, not this package.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)

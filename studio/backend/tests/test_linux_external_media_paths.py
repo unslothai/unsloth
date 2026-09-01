@@ -56,8 +56,8 @@ def _stub_linux_path_checks(monkeypatch, module):
     monkeypatch.setattr(module.os.path, "exists", lambda _p: True)
     monkeypatch.setattr(module.os.path, "isdir", lambda _p: True)
     monkeypatch.setattr(module.os, "access", lambda _p, _mode: True)
-    # The mount does not exist on the test host, so the readability probe that
-    # opens the directory has to be part of the same pretence.
+    # The mount does not exist on the test host, so the readability probe that opens the directory
+    # has to be part of the same pretence.
     monkeypatch.setattr(module, "is_readable_dir", lambda _p: True)
 
 
@@ -264,9 +264,8 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     fake_studio_db = SimpleNamespace(
         list_scan_folders = lambda: [],
         contains_sensitive_path_component = studio_db.contains_sensitive_path_component,
-        # The media root is a legitimate mount, not denied; the .ssh 403 below
-        # comes from the credential check. A False stub keeps this OS-independent
-        # (on macOS tmp_path lives under the denied /private/var).
+        # The media root is a legitimate mount, not denied; the .ssh 403 below comes from the
+        # credential check.
         is_denied_system_path = lambda _p: False,
     )
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)

@@ -11,9 +11,7 @@ Model/variant for the managed mode resolve from ``--unsloth-model`` /
 ``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
-# --- torch.compile cache isolation -------------------------------------------------
-# Must run before torch is imported anywhere below, so it is here rather than in a
-# fixture. See tests/_shared/compile_cache_isolation.py for what it does and why.
+# Must run before torch is imported anywhere below; see tests/_shared/compile_cache_isolation.py.
 import importlib.util as _ilu  # noqa: E402
 import pathlib as _pathlib  # noqa: E402
 
@@ -23,9 +21,8 @@ for _up in _iso.parents:
     if _candidate.is_file():
         _spec = _ilu.spec_from_file_location("_unsloth_compile_cache_isolation", _candidate)
         _mod = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)  # sets the env vars on import
+        _spec.loader.exec_module(_mod)
         break
-# -----------------------------------------------------------------------------------
 
 import contextlib
 import errno
@@ -37,32 +34,23 @@ from pathlib import Path
 
 import pytest
 
-# Add backend root to sys.path (mirrors app launch)
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
-# Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
-# detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
+# unsloth_zoo runs accelerator detection at import and raises without a GPU unless this is set;
+# setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
-# The other half of the same guard: unsloth_zoo.__init__ refuses to import unless this is present, normally set by `import unsloth`. Without it
-# the patch backend's only route to the helpers is that ~940 MB import, which a CPU-only host cannot complete. run.py and main.py do the same.
+# unsloth_zoo.__init__ refuses to import without this; the only alternative is the ~940 MB `import
+# unsloth`, which a CPU-only host cannot complete.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
-# The on-demand attention-backend installer defaults to "auto", so ANY test that loads a
-# pipeline with attention_backend="xformers"/"sage"/"flash" would shell out to a real pip
-# (up to 600s) and, for xformers, a real torch probe. test_diffusion_attention.py disables
-# it per-test; pin the default off for the whole suite so a new test elsewhere cannot
-# reintroduce that by accident. setdefault, so an explicit override still wins.
+# Default is "auto", so any test loading a pipeline with attention_backend= would shell out to a
+# real pip (up to 600s); pin it off suite-wide.
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
-# Avoid a cold torch subprocess in unrelated RAG tests. The probe tests re-enable it.
+# Avoid a cold torch subprocess in unrelated RAG tests.
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
-# settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
-# transient tenant on a live card has time to clear. Under test the snapshots are stubs
-# whose answers do not change with time, so the wait buys nothing and the max() over the
-# reads -- which is what the retry is actually for -- is unaffected. Measured on the
-# backend suite: 142s of test_diffusion_backend.py's 328s went here, in tests reaching it
-# through _plan_memory, which has no way to pass delay_s. setdefault, so a test that wants
-# the production spacing can still set it.
+# Stub snapshots do not change with time, so the real 1s spacing only costs runtime (142s of
+# test_diffusion_backend.py's 328s).
 os.environ.setdefault("UNSLOTH_SETTLE_DELAY_S", "0")
 
 
@@ -111,7 +99,6 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
             monkeypatch.setattr(module, "_schema_ready", False)
 
 
-# Pytest CLI options
 
 
 def pytest_configure(config):
@@ -150,7 +137,6 @@ def pytest_addoption(parser):
     )
 
 
-# E2E server fixtures
 
 
 @pytest.fixture(scope = "session", autouse = True)
@@ -167,10 +153,8 @@ def _isolate_xet_health_home(tmp_path_factory):
 
     mp = MonkeyPatch()
     mp.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home_session")))
-    # Pin these to what the hub resolved from the REAL environment before moving HF_HOME, which
-    # also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH: moving it alone would send the
-    # E2E server to an empty cache and token store, so a ~1.1GB GGUF redownload inside the 120s
-    # startup deadline and no credentials for a private --unsloth-model.
+    # HF_HOME also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH: moving it alone means a
+    # ~1.1GB GGUF redownload inside the 120s startup deadline and no credentials.
     mp.setenv("HF_HUB_CACHE", hf_constants.HF_HUB_CACHE)
     mp.setenv("HF_TOKEN_PATH", hf_constants.HF_TOKEN_PATH)
     xet_cache = getattr(hf_constants, "HF_XET_CACHE", None)
@@ -190,9 +174,8 @@ def _isolate_xet_health_state():
     That reproduced: `test_shim_injects_studio_prepare_on_http_retry` saw the fallback without the
     Xet attempt it asserts. Clean CI runners hide it, developer machines do not.
     """
-    # Load it the way the shim does: a bare `from unsloth_zoo import ...` raises NotImplementedError
-    # on a CPU-only host (its __init__ runs accelerator detection), so a plain import would skip
-    # this isolation on exactly the hosts the shim's GPU-init retry exists to support.
+    # A bare `from unsloth_zoo import ...` raises NotImplementedError on a CPU-only host, skipping
+    # this isolation on exactly the hosts it exists for.
     from utils.hf_xet_fallback import _load_optional
 
     hf_xet_health = _load_optional("unsloth_zoo.hf_xet_health")
@@ -259,10 +242,6 @@ def _no_background_model_scan(monkeypatch):
     from core.inference import local_model_resolver
 
     monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
-    # Start from a built, empty index: stubbing only the warm left the cold path
-    # walking those caches inside the admission wait, so on a large install the
-    # assertion became a 503 "still indexing". Cold-path tests reset _scan themselves;
-    # _build_index is untouched so tests calling it directly still walk for real.
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
 
 
@@ -304,8 +283,8 @@ def _assume_bare_metal(monkeypatch):
     from core.inference import llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
-    # The route rebinds the detector as a module global (its import sits in a module-level
-    # try), so patching llama_cpp alone leaves it on real hardware.
+    # The route rebinds the detector as a module global, so patching llama_cpp alone leaves it on
+    # real hardware.
     try:
         from routes import inference as routes_inference
     except Exception:  # optional deps absent on some CI legs
@@ -317,8 +296,8 @@ def _assume_bare_metal(monkeypatch):
 
 _LOOPBACK_HOSTS = frozenset({"::1", "localhost", "localhost.localdomain", "0.0.0.0", "::", ""})
 
-# The spellings worth writing into NO_PROXY. Same set as above minus the wildcards and
-# the empty string, which mean "every interface" to bind() and nothing to a proxy rule.
+# Same set as above minus the wildcards and the empty string, which mean "every interface" to bind()
+# and nothing to a proxy rule.
 _LOOPBACK_PROXY_BYPASS = ("localhost", "localhost.localdomain", "127.0.0.1", "::1")
 
 _PROXY_ENV_VARS = (
@@ -346,9 +325,8 @@ def no_proxy_with_test_servers(*existing) -> str:
     return ",".join(dict.fromkeys(parts + bypass))
 
 
-# Server URLs the suite is explicitly configured to talk to. Both documented external-server
-# modes may name a remote host, and neither suite carries the allow_network marker, so
-# blocking them would make a deliberately configured integration run unusable.
+# Both documented external-server modes may name a remote host and neither suite carries
+# allow_network, so blocking them breaks a deliberate integration run.
 _EXTERNAL_SERVER_ENV_VARS = ("UNSLOTH_E2E_BASE_URL", "STUDIO_TEST_URL")
 
 
@@ -370,16 +348,12 @@ def _configured_server_hosts() -> frozenset:
     return frozenset(hosts)
 
 
-# What those hostnames resolved to during this test. socket.create_connection looks the
-# name up and then dials the numeric result, so allowing the name alone still refuses the
-# connect that follows: by then the destination is an address that matches no name rule.
-# Filled in at resolution time, and only for names the rules already allowed, so the
-# address-literal exemption below cannot widen anything through it.
+# create_connection dials the numeric result, so allowing the name alone still refuses the connect;
+# filled only for names the rules already allowed.
 _RESOLVED_SERVER_ADDRESSES: set = set()
 
-# Lifted only by allow_outbound(), below. A module global rather than something a
-# fixture holds, because the callers that need it run before any per-test fixture
-# exists to hold it for them.
+# A module global rather than fixture state: the callers that need it run before any per-test
+# fixture exists.
 _outbound_permitted = False
 
 
@@ -530,19 +504,14 @@ def _outbound_network_guard():
     def blocked_connect_ex(self, address, *args, **kwargs):
         if _outbound_permitted or _is_local_endpoint(self, address):
             return real.connect_ex(self, address, *args, **kwargs)
-        # Returned, not raised: connect_ex reports failure with an errno and callers
-        # branch on it (run.py probes a port that way). Raising here would send code
-        # that only handles a non-zero result down a path a real failure never takes.
+        # Returned, not raised: connect_ex reports failure with an errno and callers branch on it
+        # (run.py probes a port that way).
         return errno.ENETUNREACH
 
-    # Resolution runs before either of those: socket.create_connection, which is what the
-    # Hub's HTTP stack ends up in, calls getaddrinfo first. Left live, an uncached request
-    # still hits the host resolver and can stall there, so the dependency is not actually
-    # gone. Refuse the lookup too, which is also where a real resolver would fail.
+    # create_connection calls getaddrinfo first; left live, an uncached request still hits the host
+    # resolver and can stall there.
     def guarded_getaddrinfo(host, port, *args, **kwargs):
-        # An address literal consults no resolver, so it cannot stall and is left alone;
-        # the SSRF guards resolve private literals on purpose to prove they reject them,
-        # and connect() still refuses anything non-loopback afterwards.
+        # An address literal consults no resolver so it cannot stall, and connect() still refuses anything non-loopback.
         allowed_by_name = _outbound_permitted or _host_is_allowed(host)
         if not (allowed_by_name or _is_ip_literal(host)):
             raise socket.gaierror(
@@ -552,9 +521,8 @@ def _outbound_network_guard():
             )
         infos = real.getaddrinfo(host, port, *args, **kwargs)
         if allowed_by_name and not _outbound_permitted:
-            # Carry the permission across the lookup, so the numeric address this hands
-            # back is still dialable. Deliberately not done on the literal branch: that
-            # one exists so a private literal can be resolved and then refused.
+            # Carry the permission across the lookup so the address handed back is dialable; not
+            # done on the literal branch, which must resolve then refuse.
             for info in infos:
                 try:
                     _RESOLVED_SERVER_ADDRESSES.add(str(info[4][0]).lower())
@@ -566,10 +534,8 @@ def _outbound_network_guard():
     patch.setattr(socket.socket, "connect_ex", blocked_connect_ex)
     patch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
 
-    # A refused connection still looks retryable to huggingface_hub, which backs off
-    # 1+2+4+8+8s over five attempts before giving up -- so blocking the socket without
-    # this turns a fast failure back into a ~23s one per call. Swap the clock only
-    # inside that module, since `time` is shared and real sleeps elsewhere matter.
+    # huggingface_hub backs off 1+2+4+8+8s over a refused connection, so blocking the socket alone
+    # turns a fast failure into ~23s; swap the clock only in that module.
     try:
         from huggingface_hub.utils import _http as hf_http
     except Exception:
@@ -586,20 +552,11 @@ def _outbound_network_guard():
 
         patch.setattr(hf_http, "time", _NoBackoffClock())
 
-    # A proxy, where one is configured, is dialled instead of the server the request
-    # names -- so the guard sees the proxy, which is not what the run was pointed at,
-    # refuses it, and the server is unreachable after all. That applies to the managed
-    # loopback server as much as to a configured remote one: a proxy with no loopback
-    # entry in NO_PROXY swallows localhost requests too.
-    #
-    # Bypassed rather than allowed, since allowing the proxy host would let that same
-    # proxy carry Hub traffic straight through, which is the thing being stopped here.
-    # Done at session scope with everything else: the fixtures that dial these servers
-    # (test_providers_api's auth_headers and public_key_pem) are session-scoped, so a
-    # per-test version would be set up long after they had already tried and failed.
+    # A configured proxy is dialled instead of the named server, so the guard refuses it and the
+    # server is unreachable -- including the managed loopback one.
     if any(os.environ.get(name) for name in _PROXY_ENV_VARS):
-        # Both spellings merged once and written back identically, so neither variable
-        # loses what the other one carried.
+        # Both spellings merged once and written back identically, so neither loses what the other
+        # carried.
         combined = no_proxy_with_test_servers(
             os.environ.get("NO_PROXY"), os.environ.get("no_proxy")
         )
@@ -637,8 +594,8 @@ def _no_outbound_network(request, monkeypatch, _outbound_network_guard):
     Also lifts the guard for the whole of an ``allow_network`` test, which is where a
     marker can still do the job: the test body has not started yet.
     """
-    # Per test, so a name a test pointed the env vars at itself does not stay dialable
-    # for the rest of the run.
+    # Per test, so a name a test pointed the env vars at itself does not stay dialable for the rest
+    # of the run.
     _RESOLVED_SERVER_ADDRESSES.clear()
 
     if request.node.get_closest_marker("allow_network") is not None:
@@ -678,10 +635,8 @@ def _hub_reachable_without_probing(monkeypatch):
 
     from utils import utils as utils_utils
 
-    # Dated far ahead rather than by overriding _reachability_fresh: the freshness rule is
-    # itself under test (test_verdict_expires_so_a_disconnect_is_noticed shortens the TTL and
-    # asserts the verdict lapses), so it has to keep working. A future stamp keeps this seed
-    # fresh under the real rule, and a test that writes its own verdict replaces it.
+    # Dated far ahead rather than overriding _reachability_fresh, since the freshness rule is itself
+    # under test (test_verdict_expires_so_a_disconnect_is_noticed).
     monkeypatch.setattr(
         utils_utils, "_hf_reachability", (time.monotonic() + 10**6, False), raising = False
     )
@@ -707,7 +662,6 @@ def studio_server(request):
         yield external_url, api_key
         return
 
-    # Lazy import; pytest has already loaded test_studio_api, so this is a cache hit.
     import test_studio_api as _e2e
 
     model = (
@@ -740,7 +694,6 @@ def api_key(studio_server):
     return studio_server[1]
 
 
-# ── RAG fixtures ─────────────────────────────────────────────────────
 
 
 @pytest.fixture(scope = "session")
@@ -893,10 +846,9 @@ def healthy_diffusers(monkeypatch):
                     return getattr(_real, name)
                 except Exception:  # noqa: BLE001 -- the lazy submodule is what may be broken
                     pass
-            # "Model" as well as "Pipeline": the gate probes whatever class a family names,
-            # and the video families name a transformer (MiniMaxH3Transformer3DModel), not a
-            # pipeline. Answering only pipelines let that probe miss and turned routing tests
-            # into the 400 about diffusers this proxy exists to prevent.
+            # "Model" as well as "Pipeline": video families name a transformer
+            # (MiniMaxH3Transformer3DModel), and missing it turns routing tests into the 400 this
+            # proxy prevents.
             if name.endswith("Pipeline") or name.endswith("Model"):
                 return object
             raise AttributeError(name)
@@ -938,7 +890,7 @@ def real_prequant_safe_globals(monkeypatch):
     ]
     monkeypatch.setattr(pq, "_prequant_safe_globals", lambda: pairs)
     # Per test rather than per process: the memo is a module global, so one test's registration
-    # would otherwise decide the answer for every test that ran after it.
+    # would decide the answer for every later test.
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
     return resolver

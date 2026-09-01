@@ -160,13 +160,8 @@ def test_out_of_contract_values_are_rejected(payload):
         ChatSettingsPayload.model_validate(payload)
 
 
-# ---------------------------------------------------------------------------
-# Non-finite numbers
-# ---------------------------------------------------------------------------
-#
-# json.loads accepts bare NaN and Infinity, so both reach the payload from any
-# client that is not a browser (JSON.stringify emits null for them). Two things
-# then went wrong, and each needs its own guard.
+# json.loads accepts bare NaN and Infinity, so both reach the payload from any non-browser client
+# (JSON.stringify emits null).
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
@@ -252,7 +247,6 @@ def test_clearing_the_seed_reaches_the_merge_as_null():
 @pytest.mark.parametrize(
     "seed",
     [
-        # bool subclasses int, so lax mode would store either as a pin the user never set.
         True,
         False,
         -1,

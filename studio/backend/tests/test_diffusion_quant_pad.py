@@ -83,7 +83,6 @@ def _fake_quantized_linear(
     return lin
 
 
-# ── shape and value preservation ──────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("m", [1, 5, 10, 16, 17, 19, 64])
@@ -182,7 +181,6 @@ def test_forward_holds_no_mutable_integer_state():
     assert before == int_attrs(wrapped) == {"min_m": 17, "pad_to": 32}
 
 
-# ── drop-in transparency ──────────────────────────────────────────────────────
 
 
 def test_attributes_pass_through_to_the_inner_linear():
@@ -222,7 +220,6 @@ def test_state_dict_hides_the_wrapper_in_both_directions():
     assert torch.equal(wrapped_model.context_embedder.weight, plain.context_embedder.weight)
 
 
-# ── the granularity gate ──────────────────────────────────────────────────────
 
 
 def test_activation_granularity_probe_reads_both_torchao_layouts():
@@ -306,7 +303,6 @@ def test_is_quantized_linear_only_accepts_a_torchao_weight():
     assert is_quantized_linear(nn.LayerNorm(8)) is False
 
 
-# ── the real thing ────────────────────────────────────────────────────────────
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "int8 dynamic quant needs CUDA")

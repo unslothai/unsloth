@@ -37,9 +37,6 @@ from hub.services import download_lifecycle as dl
 from hub.utils import download_registry
 
 
-# --------------------------------------------------------------------------------------------
-# Transport selection
-# --------------------------------------------------------------------------------------------
 
 
 def test_explicit_modes_are_honoured(monkeypatch):
@@ -102,9 +99,6 @@ def test_auto_is_not_a_real_transport():
     assert download_registry.TRANSPORT_AUTO in download_registry.VALID_TRANSPORT_MODES
 
 
-# --------------------------------------------------------------------------------------------
-# RAM caps reach the worker environment
-# --------------------------------------------------------------------------------------------
 
 
 class _FakePopen:
@@ -239,9 +233,6 @@ def test_http_worker_gets_no_xet_caps(monkeypatch):
     assert "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT" not in env
 
 
-# --------------------------------------------------------------------------------------------
-# Stall -> kill -> HTTP retry
-# --------------------------------------------------------------------------------------------
 
 
 class _KillablePopen:
@@ -358,9 +349,6 @@ def test_recording_a_failure_never_raises(monkeypatch):
     dl._record_xet_failure("Xet stalled", dl.logger)  # must not propagate
 
 
-# --------------------------------------------------------------------------------------------
-# Capabilities endpoint
-# --------------------------------------------------------------------------------------------
 
 
 def test_capabilities_report_what_auto_resolves_to(monkeypatch):
@@ -396,9 +384,6 @@ def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
     assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
 
 
-# --------------------------------------------------------------------------------------------
-# CPU-only hosts
-# --------------------------------------------------------------------------------------------
 
 
 def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
@@ -488,7 +473,6 @@ def test_download_start_probe_loads_health_after_cached_browse(monkeypatch):
         seen.append(("loading", probe))
         return _Health()
 
-    # Patch sys.modules because the endpoint imports both helpers locally.
     import sys
     import types
 
@@ -566,7 +550,6 @@ def test_the_worker_never_gets_the_flag_and_our_caps_together(monkeypatch):
     assert not (flag_on and sized), f"worst of both: flag on with our sizing still applied ({env})"
 
 
-# --- free-RAM transport gate (issue #9032) -------------------------------------------------------
 
 
 def test_auto_picks_http_when_free_ram_is_below_the_xet_floor(monkeypatch):
@@ -807,14 +790,12 @@ def test_the_force_xet_escape_hatch_still_wins_over_the_free_ram_gate(monkeypatc
 
     assert dl.resolve_auto_use_xet() == (True, "Xet forced by environment")
 
-    # The OFF switch keeps winning, and keeps its own reason.
     off = _types.SimpleNamespace(
         use_xet = False, reason = "Xet disabled by environment", source = "forced"
     )
     fake.xet_health = lambda **kw: off
     assert dl.resolve_auto_use_xet() == (False, "Xet disabled by environment")
 
-    # An ordinary measured verdict is still gated by free RAM.
     measured = _types.SimpleNamespace(use_xet = True, reason = "Xet", source = "probe")
     fake.xet_health = lambda **kw: measured
     used, reason = dl.resolve_auto_use_xet()
@@ -839,8 +820,8 @@ def test_the_capabilities_probe_agrees_about_a_forced_verdict(monkeypatch):
     assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
     assert caps.auto_reason == "Xet forced by environment"
 
-    # A shim too old to answer "is this forced" must not cost the health verdict, and must leave
-    # the RAM gate in force rather than silently forcing Xet.
+    # A shim too old to answer "is this forced" must not cost the health verdict, and must leave the
+    # RAM gate in force rather than silently forcing Xet.
     del fake.xet_health_is_forced
     caps = download_registry.get_download_transport_capabilities(probe = True)
     assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP

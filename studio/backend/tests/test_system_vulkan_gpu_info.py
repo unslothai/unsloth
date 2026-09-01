@@ -56,10 +56,8 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     assert gpu["available"] is False
     assert gpu["backend"] == "cpu"
     assert gpu["index_kind"] == "relative"
-    # The training inventory must not advertise physical pins for a Vulkan
-    # llama.cpp build. Its ordinals live in inference_gpu below.
+    # The training inventory must not advertise physical pins for a Vulkan build; its ordinals are elsewhere.
     assert gpu["gguf_gpu_ids_supported"] is False
-    # Torch's view stays empty; the ggml ordinals stay in inference_gpu.
     assert gpu["devices"] == []
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"] == [vulkan_device]
@@ -155,7 +153,6 @@ def test_system_gpu_info_keeps_forced_vulkan_separate_from_training_metrics(monk
     assert gpu["devices"][0]["vram_used_gb"] == 6.0
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"][0]["vram_used_gb"] == 1.0
-    # Probed devices exist, so the ordinals are known and picks are offered.
     assert inference_gpu["gguf_gpu_ids_supported"] is True
 
 

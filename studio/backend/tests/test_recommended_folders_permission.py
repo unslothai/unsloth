@@ -50,8 +50,7 @@ def _load_safe_is_dir():
 
 safe_is_dir = _load_safe_is_dir()
 
-# The superuser bypasses permission bits, so the chmod-000 setup below
-# would not deny access when running as root.
+# The superuser bypasses permission bits, so chmod-000 would not deny access as root.
 _skip_as_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason = "root bypasses filesystem permission bits",
@@ -87,7 +86,7 @@ def test_mode000_dir_itself_is_still_a_dir(tmp_path):
     locked.mkdir()
     os.chmod(locked, 0o000)
     try:
-        assert safe_is_dir(locked) is True  # must not raise
+        assert safe_is_dir(locked) is True
     finally:
         os.chmod(locked, 0o755)
 
@@ -118,6 +117,6 @@ def test_demonstrates_the_underlying_stdlib_regression(tmp_path):
     os.chmod(parent, 0o000)
     try:
         with pytest.raises(PermissionError):
-            Path(parent / ".ollama" / "models").is_dir()  # pre-fix expr
+            Path(parent / ".ollama" / "models").is_dir()
     finally:
         os.chmod(parent, 0o755)

@@ -21,9 +21,9 @@ from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.offload_layout import LM_HEAD_PATTERN, BlockLayout, ModelLayout
 from core.inference.offload_planner import Plan, plan_placement, smart_offload_enabled
 
-# The planner's decision table is covered in test_offload_planner.py. HERE is the
-# seam: whether the launch path declines when it should, emits the tokens
-# llama-server actually parses, and takes the plan back out on every retry.
+# The planner's decision table is covered in test_offload_planner.py. HERE is the seam: whether
+# the launch path declines when it should, emits the tokens llama-server parses, and takes the
+# plan back out on every retry.
 FFN_SPILL_PATTERN = r"blk\.\d+\.ffn_"
 LM_HEAD_SPILL_PATTERN = LM_HEAD_PATTERN
 
@@ -71,14 +71,11 @@ class _Stub:
     """
 
     _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 1024
-    # Discrete by default, so every existing case here is a discrete host. The
-    # unified answer is the APU's, and it is exercised deliberately below.
+    # Discrete by default; the unified answer is the APU's, exercised deliberately below.
     _unified = False
-    # Bytes of trailing nextn/MTP blocks the layout dropped. 0 = an ordinary
-    # model, which is every existing case here.
+    # Bytes of trailing nextn/MTP blocks the layout dropped; 0 = an ordinary model.
     _excluded_bytes = 0
-    # Discrete CUDA by default. An integrated SoC (Jetson, DGX Spark) is the
-    # unified-memory answer on the CUDA side, exercised deliberately below.
+    # Discrete CUDA by default; an integrated SoC is the unified-memory answer on the CUDA side.
     _integrated_cuda = False
 
     def _amd_apu_wants_unified_memory(self, gpu_indices = None):
@@ -194,7 +191,6 @@ def _plan(
     )
 
 
-# ------------------------------------------------------------------ the gate
 
 
 def test_the_seam_reads_no_attribute_the_real_backend_lacks():
@@ -227,8 +223,7 @@ def test_the_planner_is_off_by_default():
     assert _Stub()._planned_tensor_spill(_inputs(), env = {}) is None
     assert _Stub()._planned_tensor_spill(_inputs(free_mib = 14 * 1024), env = {}) is None
 
-    # The same tight load still plans when asked explicitly, so the revert moved
-    # the default and nothing else.
+    # The same tight load still plans when asked explicitly, so the revert moved the default only.
     tight = _Stub()._planned_tensor_spill(
         _inputs(free_mib = 14 * 1024), env = {"UNSLOTH_SMART_OFFLOAD": "1"}
     )
@@ -254,7 +249,6 @@ def test_an_unrecognised_value_disables_rather_than_enables(value):
     assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is False
 
 
-# ------------------------------------------------- abstain = today's behaviour
 
 
 def test_an_unpriced_placement_abstains():
@@ -266,17 +260,17 @@ def test_an_unpriced_placement_abstains():
 @pytest.mark.parametrize(
     "extra_args",
     [
-        ["-ot", ".ffn_.*=CPU"],  # user already moves tensors
+        ["-ot", ".ffn_.*=CPU"],
         ["--override-tensor", "x=CPU"],
         ["--cpu-moe"],
         ["--n-cpu-moe", "24"],
-        ["-ngl", "12"],  # user owns the layer count
+        ["-ngl", "12"],
         ["--gpu-layers", "0"],
-        ["--device", "CUDA0"],  # user owns the device set
+        ["--device", "CUDA0"],
         ["-dev", "none"],
-        ["--fit", "on"],  # user asked for the fitter
-        # --fit OFF too: a retry revokes the plan by appending "--fit on", and
-        # extras land before that, so planning here would overturn the user.
+        ["--fit", "on"],
+        # --fit OFF too: a retry revokes the plan by appending "--fit on" and extras land before that,
+        # so planning here would overturn the user.
         ["--fit", "off"],
         ["--fit=off"],
         ["-fit", "off"],
@@ -328,7 +322,6 @@ def test_unreadable_host_ram_abstains():
     assert _plan(_Stub(avail_mib = None)) is None
 
 
-# ------------------------------------------------------------ the plan itself
 
 
 def test_a_load_that_needs_ffn_spilled_gets_the_ffn_pattern():
@@ -346,9 +339,8 @@ def test_a_moe_load_spills_expert_tensors_not_dense_ffn():
 def test_lm_head_is_only_spilled_after_ffn():
     """43% of generation on its own, 16% on top of an already host-bound step, so
     it is never the first rung."""
-    # 4608, not 5632: the planner no longer withholds a pipeline GiB from a
-    # SINGLE card, so the old figure left a deficit the FFN alone covered and
-    # lm_head was never reached.
+    # 4608, not 5632: the planner no longer withholds a pipeline GiB from a SINGLE card, so the old
+    # figure left a deficit the FFN alone covered and lm_head was never reached.
     tight = _plan(_Stub(), model_size = 60 * GIB, kv = 2 * GIB, free_mib = 4608)
     assert tight is not None
     assert tight.spilled_lm_head is True
@@ -382,8 +374,7 @@ def test_a_floor_that_does_not_fit_emits_no_flags():
     just said does not fit. Checking `insufficient` on the returned plan passes
     either way and proves nothing.
     """
-    # A GiB tighter than before, for the single-card pipeline reserve this no
-    # longer charges; the case is still "no rung fits".
+    # A GiB tighter than before, for the single-card pipeline reserve this no longer charges.
     got = _plan(_Stub(), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 3 * 1024)
     assert got is not None
     assert got.insufficient
@@ -436,7 +427,6 @@ def test_the_seam_hands_the_planner_studios_cache_size():
     assert len(large.spilled_blocks) > len(small.spilled_blocks)
 
 
-# --------------------------------------------------------------- the revocation
 
 
 def test_a_retry_takes_the_plan_back_out_and_restores_the_fitter():
@@ -472,7 +462,6 @@ def test_the_revocation_is_a_no_op_when_the_argv_never_carried_it():
     assert stub._drop_tensor_spill(replay, "cpu") == replay
 
 
-# ------------------------------------------------------------------- emission
 
 
 def test_repeated_ot_flags_rather_than_a_joined_value():
@@ -485,7 +474,6 @@ def test_repeated_ot_flags_rather_than_a_joined_value():
     assert ";" not in " ".join(tokens)
 
 
-# ---------------------------------------------------- the argv, structurally
 
 
 def _load_model_source() -> str:
@@ -516,7 +504,6 @@ def test_the_abstain_branch_still_emits_exactly_fit_on():
         assert plan, "Plan is truthy, which is the trap this test exists for"
         assert LlamaCppBackend._spill_plan_flags_for(plan) == [], reason
 
-    # Same for a plan that cannot place the load, and for one that needs nothing.
     assert (
         LlamaCppBackend._spill_plan_flags_for(Plan(reason = "does not fit", insufficient = True)) == []
     )
@@ -572,7 +559,6 @@ def test_the_revocation_runs_only_on_retries():
     assert "_drop_tensor_spill" in head
 
 
-# ------------------------------------------------- unified memory APUs (ROCm)
 
 
 def test_a_unified_memory_apu_is_declared_to_the_planner():
@@ -612,7 +598,6 @@ def test_a_unified_memory_apu_is_declared_to_the_planner():
     assert "unified_memory=self._amd_apu_wants_unified_memory(" in compact
 
 
-# ------------------------------------------- the budget the fit actually tested
 
 
 @pytest.mark.parametrize("extra_args", [["--split-mode", "row"], ["-sm", "row"]])
@@ -635,8 +620,8 @@ def test_split_mode_none_plans_against_one_card(extra_args):
     got = _plan(_Stub(), gpus = two_cards, extra_args = extra_args)
     assert got is not None
 
-    # Proof it used ONE card: the same plan as a genuine single card, where
-    # crediting both would spill less.
+    # Proof it used ONE card: the same plan as a genuine single card, where crediting both would
+    # spill less.
     one_card = _plan(_Stub(), gpus = [(0, 14 * 1024)])
     assert len(got.spilled_blocks) == len(one_card.spilled_blocks)
 
@@ -677,7 +662,6 @@ def test_split_mode_none_with_an_explicit_main_gpu_still_declines():
         )
         is None
     )
-    # Not vacuous, and not a blanket refusal of the env var's absence.
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-sm", "none"]) is not None
     assert (
         _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_MAIN_GPU": "0"}) is None
@@ -736,7 +720,6 @@ def test_a_malformed_or_short_tensor_split_declines():
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "abc"]) is None
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3;1"]) is None
     assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_TENSOR_SPLIT": "abc"}) is None
-    # Not vacuous: the same load plans with no -ts and with a readable one.
     assert _plan(_Stub(), gpus = two_cards) is not None
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3,1"]) is not None
 
@@ -809,7 +792,6 @@ def test_the_layout_cache_notices_a_gguf_replaced_in_place(tmp_path, monkeypatch
     assert second.n_layers != first.n_layers
 
 
-# ------------------------------------------------- KV placement is placement too
 
 
 @pytest.mark.parametrize("extra_args", [["-nkvo"], ["--no-kv-offload"]])
@@ -827,13 +809,11 @@ def test_a_forced_cpu_kv_cache_is_priced_not_declined(extra_args):
     forced = _plan(_Stub(), free_mib = 14 * 1024, extra_args = extra_args)
     assert forced is not None, "a host-resident cache is not a reason to abstain"
 
-    # Out of VRAM: the 2 GiB cache left the footprint, so the deficit it was
-    # spilling to cover is gone.
+    # Out of VRAM: the 2 GiB cache left the footprint, so the deficit is gone.
     assert len(forced.spilled_blocks) < len(baseline.spilled_blocks)
 
-    # Into host RAM: with nothing spilled host_bytes would be token_embd alone
-    # (512 MiB), so it must carry the cache too or the mmap decision is made
-    # against a footprint short by the whole cache.
+    # Into host RAM: with nothing spilled host_bytes would be token_embd alone, so it must carry the
+    # cache too or the mmap decision is made against a footprint short by the whole cache.
     assert forced.host_bytes >= 512 * MIB + 2 * GIB
 
 
@@ -857,7 +837,6 @@ def test_the_positive_kv_offload_form_still_plans():
     assert _plan(_Stub(), env = {"LLAMA_ARG_KV_OFFLOAD": "1"}) is not None
 
 
-# --------------------------------------------- embedded MTP blocks when drafting
 
 
 def test_an_engaged_draft_charges_the_excluded_mtp_blocks():
@@ -894,7 +873,6 @@ def test_an_ordinary_model_is_unaffected_by_the_draft_flag():
     assert idle.spilled_blocks == drafting.spilled_blocks
 
 
-# ------------------------------------------- devices the child can still use
 
 
 def test_a_shared_device_the_child_keeps_declines_the_plan():
@@ -913,7 +891,6 @@ def test_a_shared_device_the_child_keeps_declines_the_plan():
     # Pinned away from the shared device: the plan may proceed.
     kept = _plan(stub, gpus = gpus, shared = {1}, indices = [0])
     assert kept is not None
-    # No shared device at all is the ordinary path.
     assert _plan(stub, gpus = gpus) is not None
 
 
@@ -958,8 +935,8 @@ def test_the_seam_hands_the_planner_raw_free_vram_for_the_split():
     finally:
         mod.plan_placement = real
 
-    # Index 0 carries a usable_mib override, index 1 falls back to raw free. The
-    # split weights must be raw on BOTH, and in the same device order.
+    # Index 0 carries a usable_mib override, index 1 falls back to raw free: the split weights must
+    # be raw on BOTH, and in the same device order.
     assert seen["split_weights_per_device"] == [8 * 1024 * MIB, 16 * 1024 * MIB]
     assert seen["vram"] == [6 * 1024 * MIB, 16 * 1024 * MIB]
 
@@ -996,7 +973,6 @@ def test_a_pass_through_parallel_that_grows_the_cache_declines_the_plan():
     assert _plan(stub, n_parallel = 1) is not None
 
 
-# --------------------------------------- newly reachable now the gate is default-on
 
 
 @pytest.mark.parametrize(
@@ -1043,8 +1019,8 @@ def test_a_pass_through_adapter_is_charged_as_resident_vram(sparse_adapter, monk
     unpriced adapter is a plan claiming a fit that is not there."""
     adapter = sparse_adapter
 
-    # Sized so the base load fits with room to spare and the adapter is what
-    # tips it over: the term has to be load-bearing, not merely present.
+    # Sized so the base load fits and the adapter is what tips it over: the term has to be
+    # load-bearing, not merely present.
     stub = _Stub()
     free = 17 * 1024
     bare = _plan(stub, free_mib = free)
@@ -1056,12 +1032,9 @@ def test_a_pass_through_adapter_is_charged_as_resident_vram(sparse_adapter, monk
     ctrl = _plan(stub, free_mib = free, extra_args = ["--control-vector", str(adapter)])
     assert ctrl.spilled_blocks == with_lora.spilled_blocks
 
-    # The colon-scaled form, from a directory the path can be spelled relative to.
-    # An ABSOLUTE path is not usable here: on Windows it carries a drive letter,
-    # and `C:\...\adapter.gguf:0.5` is three parts to string_split, which upstream
-    # rejects outright (`parts.size() != 2` -> throw, common/arg.cpp:2944-2946).
-    # Pricing a token that never starts a child would be the wrong answer, so the
-    # test asks for the reading that exists on every platform.
+    # The colon-scaled form, from a directory the path can be spelled relative to. An ABSOLUTE path
+    # is not usable here: on Windows it carries a drive letter, and `C:\\...\\adapter.gguf:0.5` is
+    # three parts to string_split, which upstream rejects outright (common/arg.cpp:2944-2946).
     monkeypatch.chdir(adapter.parent)
     scaled = _plan(stub, free_mib = free, extra_args = ["--lora-scaled", "adapter.gguf:0.5"])
     assert scaled.spilled_blocks == with_lora.spilled_blocks
@@ -1164,22 +1137,18 @@ def test_a_multi_gpu_adapter_declines_rather_than_booking_it_all_on_device_0(spa
     adapter = sparse_adapter
 
     stub = _FlatAttentionStub()
-    # 10 + 3 GiB free with a 3 GiB adapter: the deficit needs EVERY block spilled,
-    # which is the only multi-GPU shape that reaches the per-device check at all
-    # (a partial spill already abstains above it). Before this abstain the same
-    # inputs produced a real plan -- all 8 blocks spilled, -ngl -1 --fit off
-    # emitted -- with the whole 3 GiB booked on device 0 and nothing on device 1,
-    # which is where the adapter rows for that card's layers actually go.
+    # 10 + 3 GiB free with a 3 GiB adapter: the deficit needs EVERY block spilled, which is the only
+    # multi-GPU shape that reaches the per-device check (a partial spill abstains above it). Before
+    # this abstain the same inputs produced a real plan with the whole 3 GiB booked on device 0 and
+    # nothing on device 1, which is where that card's adapter rows actually go.
     two_cards = dict(model_size = 21 * GIB, kv = 2 * GIB, gpus = [(0, 10 * 1024), (1, 3 * 1024)])
     for flag in ("--lora", "--control-vector"):
         assert _plan(stub, extra_args = [flag, str(adapter)], **two_cards) is None
 
-    # Only the adapter is refused: the same two-card load still reaches the
-    # planner, so the abstain above is not the whole configuration being dropped.
+    # Only the adapter is refused: the same two-card load still reaches the planner.
     assert _plan(stub, **two_cards) is not None
 
-    # Single card is unchanged: there the flat charge IS the right one, and the
-    # adapter is still priced rather than ignored.
+    # Single card is unchanged: there the flat charge IS the right one.
     one_card = _plan(_Stub(), free_mib = 17 * 1024, extra_args = ["--lora", str(adapter)])
     assert one_card is not None and one_card.spills_anything
 
@@ -1234,28 +1203,21 @@ def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_
     `_extra_args_draft_device_pin`.
     """
     stub = _FlatAttentionStub()
-    # The all-blocks-spilled shape, the only multi-GPU one that reaches the
-    # per-device check at all (a partial spill abstains above it). extra_gpu is
-    # the drafter's own reserve, which is how the seam really carries it: the
-    # snapshot folds _mtp_reserve_bytes into extra_gpu_bytes.
+    # The all-blocks-spilled shape, the only multi-GPU one that reaches the per-device check.
+    # extra_gpu is the drafter's own reserve: the snapshot folds _mtp_reserve_bytes into it.
     two_cards = dict(
         model_size = 21 * GIB,
         kv = 2 * GIB,
         extra_gpu = 3 * GIB,
-        # 9 GiB, not 10: the split reserve is charged once for the SECOND card
-        # now rather than to both, so the old pair left a deficit a PARTIAL spill
-        # covered, and a partial multi-GPU spill abstains before it ever reaches
-        # the per-device check this test is about.
+        # 9 GiB, not 10: the split reserve is charged once for the SECOND card now, so the old pair left
+        # a deficit a PARTIAL spill covered, which abstains before reaching the per-device check.
         gpus = [(0, 9 * 1024), (1, 3 * 1024)],
     )
-    # Before this abstain the same inputs produced a real plan -- every block
-    # spilled, -ngl -1 --fit off emitted -- with the whole 3 GiB booked on
-    # device 0 and nothing on device 1, which is where the drafter's rows for
-    # that card's layers actually go.
+    # Before this abstain the same inputs produced a real plan with the whole 3 GiB booked on
+    # device 0 and nothing on device 1, where that card's drafter rows actually go.
     assert _plan(stub, separate_draft = True, **two_cards) is None
 
-    # Only the drafter is refused: the same two cards without one still plan, and
-    # really spill, so the abstain is not the whole configuration being dropped.
+    # Only the drafter is refused: the same two cards without one still plan, and really spill.
     without = _plan(stub, **two_cards)
     assert without is not None and without.spills_anything
 
@@ -1279,8 +1241,7 @@ def test_the_flat_mtp_reserve_reaches_the_spill_budget():
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert '"gpu_usable_mib":{_idx:max(0.0,_gpu_usable((_idx,_free),_pin_fraction))' in compact
 
-    # And the budget really is what the planner spends: the same load plans a
-    # bigger spill on the smaller budget.
+    # The budget really is what the planner spends: the same load plans a bigger spill on a smaller one.
     stub = _Stub()
     generous = _plan(stub, free_mib = 24 * 1024, usable_mib = 15 * 1024)
     reserved = _plan(stub, free_mib = 24 * 1024, usable_mib = 14 * 1024)
@@ -1312,8 +1273,8 @@ def test_the_seam_computes_a_per_layer_kv_vector():
     weights = b._kv_layer_weights(131072)
     assert len(weights) == 6
     assert weights[0] == max(weights), "the full-attention layer is the big one"
-    # The compact SWA allowance is window + one micro-batch, padded to 256 cells,
-    # exactly as _estimate_kv_cache_bytes sizes the total it is scaled to.
+    # The compact SWA allowance is window + one micro-batch, padded to 256 cells, exactly as
+    # _estimate_kv_cache_bytes sizes the total it is scaled to.
     assert weights[0] // weights[1] == 131072 // (1024 + 512)
 
     # No pattern, no window, or no dimensions: say nothing rather than guess.
@@ -1405,7 +1366,6 @@ def test_an_inherited_split_mode_none_declines():
     one device. argv is the only spelling that provably survives."""
     two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
     assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_SPLIT_MODE": "none"}) is None
-    # argv still plans, and still against one card.
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-sm", "none"]) is not None
     # An argv override of the env is argv, so it plans.
     assert (
@@ -1467,8 +1427,8 @@ def test_an_inherited_tensor_split_scrubbed_with_its_mode_is_not_planned_against
         mod.plan_placement = real
 
     assert scrubbed == [8 * 1024 * MIB, 16 * 1024 * MIB], "the child never sees that -ts"
-    # Not vacuous: with no inherited mode to drag it out, the float shares reach
-    # the row model exactly as llama.cpp parsed them.
+    # Not vacuous: with no inherited mode to drag it out, the float shares reach the row model
+    # exactly as llama.cpp parsed them.
     assert survives == [9.0, 1.0]
 
 
@@ -1486,7 +1446,6 @@ def test_a_non_finite_tensor_split_declines_instead_of_raising(value):
     # Declines (unparseable -ts is not "no -ts"), and above all does not raise.
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", value]) is None
     assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_TENSOR_SPLIT": value}) is None
-    # Not vacuous: finite shares still parse and still plan.
     assert _extra_args_tensor_split(["-ts", "3,1"], {}) == [3.0, 1.0]
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3,1"]) is not None
 
@@ -1572,8 +1531,8 @@ def test_flash_disabled_v_padding_reaches_the_layer_weights():
     False unconditionally (llama_cpp.py:16690), so the padded branch is the one
     every spill plan's total is built from."""
     b = _swa_backend()
-    # SWA layers wider than global ones, so the model-wide max is the SWA width
-    # and the padding actually moves: n_embd_v_gqa_max = 8 * 256.
+    # SWA layers wider than global ones, so the model-wide max is the SWA width and the padding
+    # actually moves: n_embd_v_gqa_max = 8 * 256.
     b._kv_key_length_swa = 256
     b._kv_value_length_swa = 256
 
@@ -1587,12 +1546,12 @@ def test_flash_disabled_v_padding_reaches_the_layer_weights():
     # Exactly the estimator's own per-layer arithmetic, f16 both axes.
     full_cells, swa_cells = 131072, 1024 + 512
     pad = 8 * 256
-    glob = (8 * 128 * 2 + pad * 2) * full_cells  # layer 0: global
-    swa = (8 * 256 * 2 + pad * 2) * swa_cells  # layer 1: sliding window
+    glob = (8 * 128 * 2 + pad * 2) * full_cells
+    swa = (8 * 256 * 2 + pad * 2) * swa_cells
     assert off[0] == glob and off[1] == swa
 
-    # A quantised K cache floors bpe_v at f16 on the same branch, and with V
-    # constant across layers that asymmetry moves the ratio too.
+    # A quantised K cache floors bpe_v at f16 on the same branch, and with V constant across layers
+    # that asymmetry moves the ratio too.
     from core.inference.llama_cpp import _kv_bytes_per_elem
 
     bpe_k = _kv_bytes_per_elem("q8_0")
@@ -1630,7 +1589,6 @@ def test_the_seam_passes_the_flash_state_and_cache_type_to_the_kv_vector():
         assert getattr(passed.get("cache_type_kv"), "id", None) == "cache_type_kv"
 
 
-# ------------------------------- the two inputs the planner was getting wrong
 
 
 def test_a_single_card_pays_no_split_reserve():
@@ -1664,10 +1622,9 @@ def test_a_single_card_pays_no_split_reserve():
         f"was spilled anyway: {one.reason}"
     )
 
-    # The term is not simply deleted: it is charged once per device AFTER the
-    # first. Asserted on the budget arithmetic directly, because the plan-level
-    # answer for two cards is dominated by the partial-spill abstain and would
-    # read the same whether the reserve was charged or not.
+    # The term is charged once per device AFTER the first, not deleted. Asserted on the budget
+    # arithmetic directly, because the two-card plan-level answer is dominated by the partial-spill
+    # abstain and would read the same either way.
     from core.inference.offload_planner import _usable_vram
 
     card = 8 * GIB

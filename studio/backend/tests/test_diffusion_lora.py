@@ -15,7 +15,6 @@ import pytest
 from core.inference import diffusion_lora as dl
 
 
-# ── Pure helpers ────────────────────────────────────────────────────────────
 
 
 def test_sanitize_alias_strips_path_ext_and_unsafe_chars():
@@ -23,7 +22,8 @@ def test_sanitize_alias_strips_path_ext_and_unsafe_chars():
     assert dl.sanitize_alias("owner/repo-name") == "repo-name"
     assert dl.sanitize_alias("weird:<>chars.gguf") == "weird_chars"
     assert dl.sanitize_alias("") == "lora"
-    # Internal dots (version tags like "V1.0") must be replaced: the alias becomes a PEFT adapter name and PEFT rejects ".".
+    # Internal dots (version tags like "V1.0") must be replaced: the alias becomes a PEFT adapter
+    # name and PEFT rejects ".".
     assert (
         dl.sanitize_alias("Qwen-Image-2512-Lightning-8steps-V1.0-bf16")
         == "Qwen-Image-2512-Lightning-8steps-V1_0-bf16"
@@ -34,20 +34,21 @@ def test_sanitize_alias_strips_path_ext_and_unsafe_chars():
 def test_inject_prompt_tags_appends_with_spacing():
     r = dl.ResolvedLora("id", "style", "/p.safetensors", "safetensors", 0.8)
     assert dl.inject_prompt_tags("a cat", [r]) == "a cat <lora:style:0.8>"
-    # weight formatting: 1.0 -> "1", trailing zeros trimmed
     r1 = dl.ResolvedLora("id", "s", "/p", "safetensors", 1.0)
     assert dl.inject_prompt_tags("x", [r1]) == "x <lora:s:1>"
 
 
 def test_inject_prompt_tags_validated_weight_overrides_user_typed():
     r = dl.ResolvedLora("id", "style", "/p", "safetensors", 0.8)
-    # A user-typed tag for a SELECTED adapter is replaced by the backend-validated weight, not duplicated.
+    # A user-typed tag for a SELECTED adapter is replaced by the backend-validated weight, not
+    # duplicated.
     assert dl.inject_prompt_tags("a cat <lora:style:1>", [r]) == "a cat <lora:style:0.8>"
 
 
 def test_inject_prompt_tags_strips_unselected_user_tags():
     r = dl.ResolvedLora("id", "style", "/p", "safetensors", 0.8)
-    # A tag for an unselected alias is stripped: only selected adapters are materialized, so sd-cli would drop it anyway.
+    # A tag for an unselected alias is stripped: only selected adapters are materialized, so sd-cli
+    # would drop it anyway.
     out = dl.inject_prompt_tags("a cat <lora:other:0.5>", [r])
     assert "<lora:other:0.5>" not in out
     assert out == "a cat <lora:style:0.8>"
@@ -58,7 +59,6 @@ def test_inject_prompt_tags_empty_returns_prompt():
 
 
 def test_supports_lora_matrix():
-    # native: flux/z-image yes, qwen no
     assert dl.supports_lora(
         engine = "sd_cpp", family = "flux.1", model_kind = "gguf", transformer_quant = None
     )
@@ -68,7 +68,6 @@ def test_supports_lora_matrix():
     assert not dl.supports_lora(
         engine = "sd_cpp", family = "qwen-image", model_kind = "gguf", transformer_quant = None
     )
-    # diffusers: bf16 yes, torchao int8/fp8 yes (load-time bake), nvfp4/mxfp8 no, gguf-diffusers no.
     assert dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = None
     )
@@ -81,8 +80,8 @@ def test_supports_lora_matrix():
     assert dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "int8"
     )
-    # The quant fast path keeps the PICKER kind ("gguf") while the effective transformer is a dense torchao build, so the quant
-    # check must run BEFORE the gguf-kind check; the bake precedes compilation, so compiled does not gate quant builds.
+    # The quant fast path keeps the PICKER kind ("gguf") while the effective transformer is a dense
+    # torchao build, so the quant check must run BEFORE the gguf-kind check.
     assert dl.supports_lora(
         engine = "diffusers",
         family = "z-image",
@@ -99,7 +98,8 @@ def test_supports_lora_matrix():
     assert not dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "gguf", transformer_quant = None
     )
-    # A torch.compile'd diffusers transformer cannot take a non-hotswap adapter: diffusers needs it loaded before compilation.
+    # A torch.compile'd diffusers transformer cannot take a non-hotswap adapter: diffusers needs it
+    # loaded before compilation.
     assert not dl.supports_lora(
         engine = "diffusers",
         family = "flux.1",
@@ -118,7 +118,8 @@ def test_supports_lora_matrix():
 
 
 def test_resolve_specs_maps_cancelled_to_diffusion_sentinel(tmp_path, monkeypatch):
-    # A Hub download cancelled mid-flight raises RuntimeError("Cancelled"); resolve_specs converts it to the cancellation sentinel so the route returns 409.
+    # A Hub download cancelled mid-flight raises RuntimeError("Cancelled"); resolve_specs converts
+    # it to the cancellation sentinel so the route returns 409.
     def _boom(spec_id, weight, **kw):
         raise RuntimeError("Cancelled")
 
@@ -127,7 +128,6 @@ def test_resolve_specs_maps_cancelled_to_diffusion_sentinel(tmp_path, monkeypatc
         dl.resolve_specs([("a", 1.0)])
     assert str(ei.value) == dl.DIFFUSION_CANCELLED_MSG
 
-    # A non-cancellation RuntimeError is left untouched.
     def _other(spec_id, weight, **kw):
         raise RuntimeError("disk full")
 
@@ -151,7 +151,7 @@ def test_materialize_native_dir_symlinks_and_breaks_collisions(tmp_path):
     dest = tmp_path / "managed"
     out = dl.materialize_native_dir(resolved, dest)
     aliases = [r.alias for r in out]
-    assert aliases == ["a", "a_2"]  # collision broken
+    assert aliases == ["a", "a_2"]
     for r in out:
         assert os.path.exists(r.path)
         assert Path(r.path).parent == dest
@@ -164,7 +164,6 @@ def test_list_loras_scans_local(tmp_path, monkeypatch):
     (d / "other.gguf").write_bytes(b"y")
     (d / "ignore.txt").write_bytes(b"z")
     monkeypatch.setattr(dl, "loras_dir", lambda: d)
-    # The merged catalog also carries the curated hub entries; the local scan is exactly the weight files in the directory.
     local = {e.id: e for e in dl.list_loras() if e.source == "local"}
     assert set(local) == {"mystyle", "other"}
     assert local["other"].fmt == "gguf" and local["mystyle"].fmt == "safetensors"
@@ -182,16 +181,15 @@ def test_resolve_one_local_and_unknown(tmp_path, monkeypatch):
 
 
 def test_resolve_one_rejects_cross_family_catalog_entry(tmp_path, monkeypatch):
-    # A family-tagged adapter must be rejected in the resolver, not just the UI picker, so a direct API client cannot apply a mismatched LoRA.
+    # A family-tagged adapter must be rejected in the resolver, not just the UI picker, so a direct
+    # API client cannot apply a mismatched LoRA.
     d = tmp_path / "loras"
     d.mkdir()
     (d / "krea-style.safetensors").write_bytes(b"x")
     (d / "krea-style.json").write_text('{"families": ["krea-2"]}', encoding = "utf-8")
     monkeypatch.setattr(dl, "loras_dir", lambda: d)
-    # Same family: resolves.
     r = dl.resolve_one("krea-style", 0.7, family = "krea-2")
     assert r.path.endswith("krea-style.safetensors")
-    # Wrong family: rejected before any download / apply.
     with pytest.raises(ValueError):
         dl.resolve_one("krea-style", 0.7, family = "flux.1")
     # No family context (e.g. legacy caller): unrestricted.
@@ -208,7 +206,8 @@ def test_resolve_specs_drops_zero_weight(tmp_path, monkeypatch):
 
 
 def test_resolve_specs_maps_unknown_id_to_valueerror(tmp_path, monkeypatch):
-    # An unknown / stale id raises FileNotFoundError in resolve_one; resolve_specs surfaces it as ValueError so the route returns 400.
+    # An unknown / stale id raises FileNotFoundError in resolve_one; resolve_specs surfaces it as
+    # ValueError so the route returns 400.
     d = tmp_path / "loras"
     d.mkdir()
     monkeypatch.setattr(dl, "loras_dir", lambda: d)
@@ -217,12 +216,13 @@ def test_resolve_specs_maps_unknown_id_to_valueerror(tmp_path, monkeypatch):
 
 
 def test_resolve_specs_maps_hub_error_to_valueerror(tmp_path, monkeypatch):
-    # A mistyped Hub repo id raises HfHubHTTPError; resolve_specs surfaces it as ValueError so the route returns 400, and the
-    # Hub message embeds the request URL, which must be scrubbed from the client-facing 400.
+    # A mistyped Hub repo id raises HfHubHTTPError; resolve_specs surfaces it as ValueError so the
+    # route returns 400, and the Hub message embeds the request URL, which must be scrubbed.
     from huggingface_hub.errors import RepositoryNotFoundError
 
     def _boom(spec_id, weight, **kw):
-        # response is optional in huggingface_hub 0.x but required in 1.x; both only read .headers / .request, so a stub works on either.
+        # response is optional in huggingface_hub 0.x but required in 1.x; both only read .headers /
+        # .request, so a stub works on either.
         raise RepositoryNotFoundError(
             "404 Client Error. Repository Not Found for url: "
             "https://huggingface.co/api/models/nope/nope (Request ID: abc)",
@@ -232,7 +232,7 @@ def test_resolve_specs_maps_hub_error_to_valueerror(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "resolve_one", _boom)
     with pytest.raises(ValueError) as ei:
         dl.resolve_specs([("nope/nope", 1.0)])
-    assert "http" not in str(ei.value)  # request URL scrubbed
+    assert "http" not in str(ei.value)
     assert "Repository Not Found" in str(ei.value)
 
 
@@ -248,44 +248,41 @@ def test_scan_local_disambiguates_identical_stems(tmp_path, monkeypatch):
     assert "foo.safetensors" in by_id and "foo.gguf" in by_id
     assert by_id["foo.safetensors"].fmt == "safetensors"
     assert by_id["foo.gguf"].fmt == "gguf"
-    assert "solo" in by_id  # unique stem is untouched
+    assert "solo" in by_id
 
 
 def test_resolve_one_rejects_traversal_weight_name(tmp_path, monkeypatch):
-    # A client-supplied weight file with traversal / an absolute path is rejected before it reaches the downloader.
+    # A client-supplied weight file with traversal / an absolute path is rejected before it reaches
+    # the downloader.
     monkeypatch.setattr(dl, "loras_dir", lambda: tmp_path)
     for bad in ("owner/name:../secret.safetensors", "owner/name:/etc/x.safetensors"):
         with pytest.raises(ValueError):
             dl.resolve_one(bad, 1.0)
 
 
-# ── Request-model validation ────────────────────────────────────────────────
 
 
 def test_lora_spec_and_request_validation():
     from models.inference import DiffusionGenerateRequest, LoraSpec
 
-    # empty / missing loras -> unchanged behaviour
     assert DiffusionGenerateRequest(prompt = "x").loras is None
     req = DiffusionGenerateRequest(
         prompt = "x", loras = [{"id": "a", "weight": 0.5}, {"id": "b", "weight": 1.0}]
     )
     assert [l.id for l in req.loras] == ["a", "b"]
-    # weight bounds enforced
     with pytest.raises(Exception):
         LoraSpec(id = "a", weight = 3.0)
     with pytest.raises(Exception):
         LoraSpec(id = "a", weight = -0.1)
-    # default weight
     assert LoraSpec(id = "a").weight == 1.0
-    # Duplicate ids are rejected: repeating one would load the same adapter as several suffixed adapters and stack its effect past the weight bound.
+    # Duplicate ids are rejected: repeating one would load the same adapter as several suffixed
+    # adapters and stack its effect past the weight bound.
     with pytest.raises(Exception):
         DiffusionGenerateRequest(
             prompt = "x", loras = [{"id": "a", "weight": 0.5}, {"id": "a", "weight": 1.0}]
         )
 
 
-# ── Diffusers apply manager ─────────────────────────────────────────────────
 
 
 class _FakePipe:
@@ -348,7 +345,7 @@ def test_diffusers_apply_loads_and_sets_adapters(monkeypatch):
     )
     assert [n for _p, n in pipe.loaded] == ["styleA", "styleB"]
     assert pipe.active == (["styleA", "styleB"], [0.8, 1.0])
-    assert getattr(pipe, "_unsloth_loras")  # marker recorded
+    assert getattr(pipe, "_unsloth_loras")
 
 
 def test_diffusers_apply_noop_when_unchanged(monkeypatch):
@@ -367,7 +364,7 @@ def test_diffusers_apply_noop_when_unchanged(monkeypatch):
     b._apply_loras(_fake_state(pipe), [("styleA", 0.8)], threading.Event())
     first_loaded = list(pipe.loaded)
     b._apply_loras(_fake_state(pipe), [("styleA", 0.8)], threading.Event())
-    assert pipe.loaded == first_loaded  # not reloaded
+    assert pipe.loaded == first_loaded
     assert pipe.unloaded == 0
 
 
@@ -391,8 +388,8 @@ def test_diffusers_apply_clears_when_empty(monkeypatch):
 
 
 def test_diffusers_apply_rejects_unsupported_quant():
-    # int8/fp8 pipes bake adapters at load time, so a bake-less quant pipe (frozen topology) cannot take one at generation time
-    # and must direct the client to reload. nvfp4/mxfp8 are never baked, but the backend path is shared.
+    # int8/fp8 pipes bake adapters at load time, so a bake-less quant pipe (frozen topology) cannot
+    # take one at generation time and must direct the client to reload.
     import threading
 
     pipe = _FakePipe()
@@ -402,11 +399,12 @@ def test_diffusers_apply_rejects_unsupported_quant():
             [("styleA", 1.0)],
             threading.Event(),
         )
-    assert pipe.loaded == []  # rejected before touching the pipe
+    assert pipe.loaded == []
 
 
 def test_diffusers_apply_rejects_gguf_adapter(monkeypatch):
-    # A .gguf adapter (discoverable in the shared catalog) cannot load on the diffusers engine, so it is a clean 400 before touching the pipe.
+    # A .gguf adapter (discoverable in the shared catalog) cannot load on the diffusers engine, so
+    # it is a clean 400 before touching the pipe.
     import threading
 
     monkeypatch.setattr(
@@ -419,7 +417,7 @@ def test_diffusers_apply_rejects_gguf_adapter(monkeypatch):
     pipe = _FakePipe()
     with pytest.raises(ValueError, match = "GGUF LoRA"):
         _backend()._apply_loras(_fake_state(pipe), [("styleA", 1.0)], threading.Event())
-    assert pipe.loaded == []  # never touched the pipe
+    assert pipe.loaded == []
 
 
 def test_scan_local_reads_family_sidecar(tmp_path, monkeypatch):
@@ -440,7 +438,8 @@ def test_scan_local_reads_family_sidecar(tmp_path, monkeypatch):
     assert by_id["plain"].families == ()
     assert by_id["plain"].weight_default == 1.0
 
-    # Family filter: the sdxl-tagged adapter is kept for sdxl and hidden for flux.1; the untagged one is always shown.
+    # Family filter: the sdxl-tagged adapter is kept for sdxl and hidden for flux.1; the untagged
+    # one is always shown.
     sdxl_ids = {e.id for e in dl.list_loras(family = "sdxl")}
     flux_ids = {e.id for e in dl.list_loras(family = "flux.1")}
     assert "trained" in sdxl_ids and "plain" in sdxl_ids

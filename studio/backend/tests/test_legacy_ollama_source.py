@@ -69,8 +69,8 @@ def test_legacy_scanner_tags_rows_ollama(tmp_path):
 @pytest.mark.parametrize("source", ["hf_cache", "ollama"])
 def test_custom_folder_merge_keeps_real_sources(source):
     # The merge step mirrors _promote_to_custom_source() in
-    # hub/services/models/local_inventory.py: only unattributed rows become
-    # "custom"; a registered ~/.ollama/models or HF-cache shadow keeps its label.
+    # hub/services/models/local_inventory.py: only unattributed rows become "custom"; a registered
+    # ~/.ollama/models or HF-cache shadow keeps its label.
     src = (Path(__file__).resolve().parent.parent / "routes" / "models.py").read_text(
         encoding = "utf-8"
     )

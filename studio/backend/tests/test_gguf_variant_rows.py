@@ -64,16 +64,13 @@ class _Sibling:
         self.lfs = {"sha256": f"hash-of-{rfilename}"}
 
 
-# --------------------------------------------------------------------------------------
-# The key itself
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "path,expected",
     [
-        # The shape almost every repo uses keeps the historical key, so every stored
-        # pin, manifest and marker keeps resolving.
+        # The shape almost every repo uses keeps the historical key, so every stored pin, manifest
+        # and marker keeps resolving.
         ("Wan2.2-TI2V-5B-Q8_0.gguf", "Q8_0"),
         ("gemma-3-4b-it-UD-Q4_K_XL.gguf", "UD-Q4_K_XL"),
         ("BF16/DeepSeek-R1-BF16-00001-of-00003.gguf", "BF16"),
@@ -91,8 +88,8 @@ class _Sibling:
             "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K.gguf",
             "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K",
         ),
-        # A quant-named directory never overrides the basename, and a suffix after the
-        # quant does not qualify it: both are established spellings.
+        # A quant-named directory never overrides the basename, and a suffix after the quant does
+        # not qualify it: both are established spellings.
         ("Q8_0/model-Q4_K_M.gguf", "Q4_K_M"),
         ("BF16/gemma-4-12b-it-Q8_0-MTP-001-of-002.gguf", "Q8_0"),
         # No quant anywhere: unchanged fallback.
@@ -142,9 +139,6 @@ def test_loader_mirror_agrees_with_the_hub_key():
     assert [_gguf_variant_key(p) for p in corpus] == [gguf_variant_key(p) for p in corpus]
 
 
-# --------------------------------------------------------------------------------------
-# Rows
-# --------------------------------------------------------------------------------------
 
 
 def test_each_checkpoint_gets_its_own_row_at_its_own_size():
@@ -239,9 +233,6 @@ def test_qualified_rows_carry_a_readable_label():
     assert labels["distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K"] == "Q6_K · distilled-1.1"
 
 
-# --------------------------------------------------------------------------------------
-# The row must be downloadable, loadable and complete-able under its own key
-# --------------------------------------------------------------------------------------
 
 
 def test_every_row_key_matches_exactly_its_own_file():
@@ -414,9 +405,6 @@ def test_an_unqualified_row_still_reports_no_display_label():
     assert row.model_dump()["display_label"] is None
 
 
-# --------------------------------------------------------------------------------------
-# A row must not reach outside its own checkpoint
-# --------------------------------------------------------------------------------------
 
 
 def test_a_discarded_shard_family_leaves_the_download_targets_too():
@@ -472,7 +460,6 @@ def test_a_qualified_key_is_an_explicit_checkpoint_request():
 
     assert looks_like_quant("distilled/ltx-2.3-22b-distilled-Q6_K") is True
     assert looks_like_quant("distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K") is True
-    # Unchanged for the spellings it already judged.
     assert looks_like_quant("Q6_K") is True
     assert looks_like_quant("IQ4_XS-3.53bpw") is True
     assert looks_like_quant("latest") is False
@@ -490,7 +477,6 @@ def test_the_exact_key_wins_over_the_bare_quant_label():
     assert _main_variant_rank("ltx-2.3-22b-dev-Q6_K.gguf", "Q6_K") == 0
     assert _main_variant_rank("distilled/ltx-2.3-22b-distilled-Q6_K.gguf", "Q6_K") == 1
     assert _main_variant_rank("ltx-2.3-22b-dev-Q4_K_M.gguf", "Q6_K") is None
-    # And the qualified row is exact under its own key, while the root file is not a match.
     qualified = "distilled/ltx-2.3-22b-distilled-Q6_K"
     assert _main_variant_rank("distilled/ltx-2.3-22b-distilled-Q6_K.gguf", qualified) == 0
     assert _main_variant_rank("ltx-2.3-22b-dev-Q6_K.gguf", qualified) is None
@@ -664,7 +650,6 @@ def test_a_shared_container_directory_still_answers_its_bare_quant():
         for q in ("Q4_K_M", "Q6_K")
     ]
     plans = build_gguf_variant_plans(siblings)
-    # The rows are still one per checkpoint, keyed on the path.
     assert set(plans) == {"weights/model-q4_k_m", "weights/model-q6_k"}
     # ... and the bare pin still resolves, because it names exactly one of them.
     assert plan_for_variant(plans, "Q4_K_M") is plans["weights/model-q4_k_m"]
@@ -791,7 +776,6 @@ def test_a_local_load_keeps_the_qualified_identity_it_was_asked_for(tmp_path):
     assert cfg is not None and cfg.is_gguf and cfg.is_local
     assert cfg.gguf_variant == wanted
     assert "distilled/" in Path(cfg.gguf_file).as_posix()
-    # A bare request still records the bare identity it asked for.
     bare = ModelConfig.from_identifier(str(snapshot), gguf_variant = "Q6_K")
     assert bare is not None and bare.gguf_variant == "Q6_K"
 
@@ -885,7 +869,6 @@ def test_an_ambiguous_bare_quant_deletes_nothing(tmp_path):
     assert (snap / "distilled" / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "distilled-1.1" / "model-Q4_K_M.gguf").is_symlink()
 
-    # The qualified key still deletes exactly its own checkpoint.
     _delete_gguf_variant_from_repos(
         "org/Model-GGUF", "distilled/model-Q4_K_M", [repo], None, root = tmp_path
     )
@@ -944,7 +927,6 @@ def test_a_bpw_build_keeps_its_own_identity_everywhere():
     assert gguf_variant_key(a) != gguf_variant_key(b)
     # Shards of ONE bpw build still share a key.
     assert gguf_variant_key("model-IQ4_XS-3.53bpw-00001-of-00002.gguf") == gguf_variant_key(a)
-    # Two rows, each sized on its own family rather than the sum of both.
     grouped = group_gguf_variant_files([(a, 10), (b, 20)])
     assert grouped == {"IQ4_XS-3.53bpw": (a, 10), "IQ4_XS-3.97bpw": (b, 20)}
     # A plain quant is untouched, so every stored pin still resolves.
@@ -977,7 +959,6 @@ def test_a_bare_auto_download_stays_on_the_root_checkpoint():
     both = {"distilled/model-Q6_K": 1, "Q6_K": 2}
     assert _match_variant(None, both) == "Q6_K"
     assert _match_variant(None, {"Q6_K": 2, "distilled/model-Q6_K": 1}) == "Q6_K"
-    # An explicit qualified ask still resolves to the sibling.
     assert _match_variant("distilled/model-Q6_K", both) == "distilled/model-Q6_K"
     # A repo with nothing at the root falls back to the whole set rather than refusing.
     assert _match_variant(None, {"distilled/model-Q6_K": 1}) == "distilled/model-Q6_K"
@@ -1054,8 +1035,8 @@ def test_a_bpw_modifier_in_the_quant_directory_still_makes_two_keys():
     }
     # A plain quant directory is untouched, so every stored pin still resolves.
     assert gguf_variant_key("Q4_K_M/model.gguf") == "Q4_K_M"
-    # The walk stops at the segment that named the quant: a modifier on the FILE under a plain
-    # quant directory is still this build's own.
+    # The walk stops at the segment that named the quant: a modifier on the FILE under a plain quant
+    # directory is still this build's own.
     assert gguf_variant_key("Q6_K/model-3.5bpw.gguf") == "Q6_K-3.5bpw"
 
 
@@ -1085,7 +1066,6 @@ def test_the_load_guard_sees_the_alias_the_delete_accepts():
     assert same("Q4_K_M", "Q4_K_M")
     assert same("Q6_K", "minimax_h3_fl2va_pruned-Q6_K")
     assert not same("minimax_h3_fl2va_pruned-Q6_K", "minimax_h3_ref2va_pruned-Q6_K")
-    # Two different checkpoints are never the same, in either direction.
     assert not same("Q4_K_M", "Q6_K")
     assert not same("distilled/model-Q6_K", "other/model-Q6_K")
     # An unknown side never matches: the caller falls back to its own not-loaded branch.

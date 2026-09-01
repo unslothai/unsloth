@@ -94,7 +94,8 @@ def test_patched_matches_original(cls, device, dtype):
     with torch.inference_mode():
         got = _first(_call(cls, m, args))
 
-    # The fused ops are FMA-based (addcmul) / fused (F.rms_norm): within ~1 ULP of the stock mul+add and more accurate, but not bit-identical in fp32.
+    # The fused ops are FMA-based (addcmul) / fused (F.rms_norm): within ~1 ULP of stock mul+add and
+    # more accurate, but not bit-identical in fp32.
     atol, rtol = (1e-5, 1e-4) if dtype == torch.float32 else (8e-3, 8e-3)
     torch.testing.assert_close(got, ref, atol = atol, rtol = rtol)
 
@@ -109,7 +110,7 @@ def test_rmsnorm_mixed_dtype_falls_back():
     ep.install_compile_safe_patches()
     with torch.inference_mode():
         got = m(x)
-    torch.testing.assert_close(got, ref, atol = 0.0, rtol = 0.0)  # exact fallback
+    torch.testing.assert_close(got, ref, atol = 0.0, rtol = 0.0)
 
 
 def test_rmsnorm_tuple_dim_falls_back():
@@ -122,30 +123,30 @@ def test_rmsnorm_tuple_dim_falls_back():
     ep.install_compile_safe_patches()
     with torch.inference_mode():
         got = m(x)
-    torch.testing.assert_close(got, ref, atol = 0.0, rtol = 0.0)  # exact fallback
+    torch.testing.assert_close(got, ref, atol = 0.0, rtol = 0.0)
 
 
 def test_install_idempotent_and_reversible():
     rms = RMSNorm(D, eps = 1e-6)
     orig = RMSNorm.forward
     n1 = ep.install_compile_safe_patches()
-    n2 = ep.install_compile_safe_patches()  # second call is a no-op
+    n2 = ep.install_compile_safe_patches()
     assert n1 >= 1 and n2 == n1
     assert RMSNorm.forward is not orig
     assert ep.is_installed()
     ep.uninstall_patches()
-    assert RMSNorm.forward is orig  # exact restore
+    assert RMSNorm.forward is orig
     assert not ep.is_installed()
-    ep.uninstall_patches()  # idempotent uninstall
+    ep.uninstall_patches()
     del rms
 
 
 def test_kill_switch_disables_patches(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_EAGER_PATCHES", "0")
     orig = RMSNorm.forward
-    assert ep.install_compile_safe_patches() == 0  # no-op
+    assert ep.install_compile_safe_patches() == 0
     assert not ep.is_installed()
-    assert RMSNorm.forward is orig  # untouched
+    assert RMSNorm.forward is orig
 
 
 def test_signature_guard_skips_changed_class(monkeypatch):
@@ -161,8 +162,8 @@ def test_signature_guard_skips_changed_class(monkeypatch):
     monkeypatch.setattr(ep, "_AdaLayerNormZero", None)
     monkeypatch.setattr(ep, "_AdaLayerNormZeroSingle", None)
     applied = ep.install_compile_safe_patches()
-    assert applied == 0  # nothing matched -> nothing patched
-    assert WeirdRMS.forward is orig  # left untouched
+    assert applied == 0
+    assert WeirdRMS.forward is orig
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "compile graph-break check needs CUDA")

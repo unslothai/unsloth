@@ -73,10 +73,9 @@ def _managed_runtime(monkeypatch, tmp_path):
         "_is_unsloth_managed_binary",
         staticmethod(lambda _binary: True),
     )
-    # _cpu_isolated_binary asks whether this is an install tree, which is not
-    # the same question as whether the updater can replace the file: a
-    # --with-llama-cpp-dir checkout is the active install while being the
-    # user's to maintain. Staging a CPU copy only reads, so it uses this one.
+    # _cpu_isolated_binary asks whether this is an install tree, not whether the updater can replace
+    # the file: a --with-llama-cpp-dir checkout is the active install while being the user's to
+    # maintain.
     monkeypatch.setattr(
         LlamaCppBackend,
         "_is_llama_install_tree",
@@ -424,10 +423,8 @@ class TestAutoVulkanCpuFallbackGate:
         )
 
     def test_auto_suppresses_a_stale_legacy_vulkan_flag(self, monkeypatch, tmp_path):
-        # UNSLOTH_LLAMA_CPP_BACKEND=auto outranks UNSLOTH_FORCE_VULKAN everywhere
-        # else, so setup detected this bundle rather than being told to install it.
-        # Reading the legacy flag as a choice here would leave a crashing Vulkan
-        # install with no automatic CPU replay.
+        # UNSLOTH_LLAMA_CPP_BACKEND=auto outranks UNSLOTH_FORCE_VULKAN everywhere else, so setup
+        # detected this bundle rather than being told to install it.
         self._managed_marker(monkeypatch, tmp_path, llama_backend = "auto")
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
@@ -1574,8 +1571,8 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
 
     backend._llama_server_env_for_binary = _env_for_binary
     backend._prepare_cpu_fallback_launch = lambda *_a, **_kw: None
-    # Class-level and set by a successful bundle-only retry, so give every run a
-    # fresh one rather than leaking a correction into the next test.
+    # Class-level and set by a successful bundle-only retry, so give every run a fresh one rather
+    # than leaking a correction into the next test.
     monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
 
     launches = []
@@ -1602,9 +1599,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
     _real_popen = subprocess.Popen
 
     def _popen(cmd, **kwargs):
-        # Only the server is a launch. A host with the rocm_sdk wheel installed
-        # shells out to offload-arch from inside load_model, which would land at
-        # index 0 and shift every assertion below onto the wrong process.
+        # Only the server is a launch.
         if not cmd or str(cmd[0]) != "/fake/llama-server":
             return _real_popen(cmd, **kwargs)
         idx = len(launches)
@@ -1676,10 +1671,7 @@ class TestHipRocrRetryKeepsFitBudget:
     def test_a_later_launch_in_the_same_load_still_records_the_correction(
         self, monkeypatch, tmp_path
     ):
-        # The correction edits the shared env, so it survives into the outer
-        # recovery spawns (no-flash here). Those call _spawn_and_wait afresh, so
-        # a per-call flag left the launch that actually came up healthy
-        # unrecorded and the sidecar kept the prepend.
+        # The correction edits the shared env, so it survives into the outer recovery spawns.
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
             tmp_path,
@@ -1693,8 +1685,7 @@ class TestHipRocrRetryKeepsFitBudget:
         assert LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
 
     def test_a_mix_the_retry_did_not_fix_does_not_spend_the_fit_slot(self, monkeypatch, tmp_path):
-        # Bundle-only did not help, so the symbol is still missing. --fit cannot
-        # load a missing symbol: stop at two launches and report the mix.
+        # Bundle-only did not help, so the symbol is still missing.
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
             tmp_path,

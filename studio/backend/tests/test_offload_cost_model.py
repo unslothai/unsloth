@@ -31,7 +31,6 @@ def ms(t_per_s: float) -> float:
     return 1000.0 / t_per_s
 
 
-# ---------------------------------------------------------------- the anchors
 
 # Qwen3.8-27B UD-Q4_K_XL, dense, 128K.
 DENSE_BASE = ms(75.37)
@@ -62,11 +61,9 @@ def rel_err(predicted: float, measured: float) -> float:
     return abs(predicted - measured) / measured
 
 
-# One free constant plus three per-access ratios. It under-predicts every 128K
-# anchor by a near-identical ~7%: the base rate is calibrated on the cleaner
-# depth-0 partial-spill sweep while these anchors sit at 128K where attention
-# contends. A uniform offset cannot change an ordering, which is all the planner
-# asks of it.
+# One free constant plus three per-access ratios. It under-predicts every 128K anchor by a
+# near-identical ~7% (the base rate is calibrated on the depth-0 sweep while these sit at 128K
+# where attention contends); a uniform offset cannot change an ordering.
 ANCHOR_TOL = 0.10
 
 
@@ -106,7 +103,6 @@ def test_the_kv_ratio_transfers_across_two_unrelated_models():
     assert rel_err(moe_rate, dense_rate) < 0.03
 
 
-# ------------------------------------------------- the orderings that matter
 
 
 def test_the_cache_is_the_worst_byte_to_move_by_an_order_of_magnitude():
@@ -152,7 +148,6 @@ def test_the_measured_marginal_cost_of_lm_head_really_does_rise():
     assert 1.3 < marginal_on_top_of_ffn / alone < 1.5
 
 
-# ---------------------------------------------------------- partial spilling
 
 
 @pytest.mark.parametrize(
@@ -184,7 +179,6 @@ def test_spilling_less_always_costs_less():
     assert costs == sorted(costs)
 
 
-# ------------------------------------------------------ prefill vs generation
 
 
 def test_moe_wins_at_generation_and_loses_at_prefill():
@@ -202,12 +196,11 @@ def test_the_measured_penalties_show_that_same_crossover():
     """Against the raw anchors: MoE is hurt less on generation, more on prefill."""
     moe_gen = MOE_EXPERTS / MOE_BASE
     dense_gen = DENSE_FFN / DENSE_BASE
-    assert moe_gen < dense_gen  # 2.54x vs 5.39x
+    assert moe_gen < dense_gen
     moe_pp, dense_pp = 5522.0 / 1397.0, 2095.0 / 1141.0
-    assert moe_pp > dense_pp  # 3.95x vs 1.84x
+    assert moe_pp > dense_pp
 
 
-# ----------------------------------------------------------------- the hosts
 
 
 def test_a_smaller_host_makes_every_spill_worse():
@@ -230,7 +223,7 @@ def test_a_smaller_host_makes_every_spill_worse():
     small = generation_penalty_ms(Placement([DENSE_FFN_G]), HostProfile(threads = 16))
     assert small > 2 * big
     measured_ratio = (ms(5.83) - ms(87.30)) / (ms(14.94) - ms(87.30))
-    assert small / big >= measured_ratio  # no longer under-warns
+    assert small / big >= measured_ratio
     assert small / big < measured_ratio * 1.1
 
 
@@ -264,7 +257,6 @@ def test_prefill_amortises_over_the_ubatch():
     assert prefill_penalty_ms_per_token(p, n_ubatch = 512) == pytest.approx(
         prefill_penalty_ms_per_token(p, n_ubatch = 256) / 2.0
     )
-    # And the measured per-token prefill penalty is far below the generation one.
     assert prefill_penalty_ms_per_token(p) < generation_penalty_ms(p) / 100.0
 
 
@@ -277,7 +269,6 @@ def test_unified_memory_hosts_gain_nothing_from_spilling():
     assert generation_penalty_ms(Placement([], kv_host_bytes = DENSE_KV_BYTES), unified) == 0.0
 
 
-# ------------------------------------------------------------------ ranking
 
 
 def test_ranking_puts_the_measured_best_placement_first():

@@ -24,7 +24,6 @@ from core.inference.external_provider import (
 )
 
 
-# ── helper-level dispatch matrix ────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -82,7 +81,6 @@ def test_code_execution_version_dispatch(model, expected):
     assert _anthropic_code_execution_version(model) == expected
 
 
-# ── streaming integration: outbound body carries the right versions ──
 
 
 def _drive(coro):
@@ -143,14 +141,12 @@ def test_outbound_body_uses_new_versions_on_opus_4_7(monkeypatch):
     assert "code_execution_20260120" in tool_types
     assert "web_search_20250305" not in tool_types
     assert "code_execution_20250825" not in tool_types
-    # One beta header gates both _20250825 and _20260120.
     assert "code-execution-2025-08-25" in captured["headers"].get("anthropic-beta", "")
 
 
 def test_outbound_body_falls_back_on_haiku_4_5(monkeypatch):
     captured = _capture_outbound(monkeypatch, "claude-haiku-4-5-20251001")
     tool_types = {t.get("type") for t in (captured["body"].get("tools") or [])}
-    # Haiku 4.5 only accepts the legacy versions.
     assert "web_search_20250305" in tool_types
     assert "code_execution_20250825" in tool_types
     assert "web_search_20260209" not in tool_types
@@ -158,7 +154,6 @@ def test_outbound_body_falls_back_on_haiku_4_5(monkeypatch):
 
 
 def test_outbound_body_mixes_versions_on_sonnet_4_5(monkeypatch):
-    # Sonnet 4.5 gets the new code_execution but the old web_search.
     captured = _capture_outbound(monkeypatch, "claude-sonnet-4-5-20250929")
     tool_types = {t.get("type") for t in (captured["body"].get("tools") or [])}
     assert "web_search_20250305" in tool_types

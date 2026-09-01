@@ -26,7 +26,8 @@ QWEN_SHIFT_TERMINAL = 0.02
 
 
 def _qwen_scheduler():
-    # The Qwen/Qwen-Image scheduler config: shift=1.0 is SKIPPED at init (use_dynamic_shifting), base_shift = max_shift = log 3, exponential time shift, terminal stretch to 0.02.
+    # The Qwen/Qwen-Image scheduler config: shift=1.0 is SKIPPED at init (use_dynamic_shifting),
+    # base_shift = max_shift = log 3, exponential time shift, terminal stretch to 0.02.
     diffusers = pytest.importorskip("diffusers")
     FlowMatchEulerDiscreteScheduler = diffusers.FlowMatchEulerDiscreteScheduler
     return FlowMatchEulerDiscreteScheduler(
@@ -46,7 +47,6 @@ def _flux_static_scheduler():
     return FlowMatchEulerDiscreteScheduler(num_train_timesteps = 1000, shift = 3.0)
 
 
-# ── config resolution ─────────────────────────────────────────────────────────
 def test_flow_shift_defaults_per_family():
     qwen = DiffusionLoraConfig(
         base_model = "Qwen/Qwen-Image", data_dir = "d", output_dir = "o"
@@ -89,7 +89,8 @@ def test_flow_shift_explicit_values_and_validation():
         DiffusionLoraConfig(
             base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "bogus"
         ).normalized()
-    # Non-finite must be rejected too: JSON accepts 1e309, which floats to inf, and a positivity-only guard passed it to the sigma table as NaN.
+    # Non-finite must be rejected too: JSON accepts 1e309, which floats to inf, and a
+    # positivity-only guard passed it to the sigma table as NaN.
     for bad in (float("inf"), float("-inf"), float("nan"), 1e309):
         with pytest.raises(ValueError, match = "flow_shift"):
             DiffusionLoraConfig(
@@ -138,23 +139,21 @@ def test_config_from_dict_plumbs_the_new_fields():
     assert cfg.weighting_scheme == "bell"
 
 
-# ── sigma table transforms ────────────────────────────────────────────────────
 def test_auto_table_matches_the_exact_qwen_transform():
     import torch
 
     sched = _qwen_scheduler()
     table = _training_sigma_table(sched, "auto")
     base = sched.sigmas
-    # Exponential shift at mu = log 3 with sigma exponent 1 is exp(mu)/(exp(mu) + 1/u - 1) = 3u/(1 + 2u), then the terminal stretch maps the last sigma to 0.02.
+    # Exponential shift at mu = log 3 with sigma exponent 1 is exp(mu)/(exp(mu) + 1/u - 1) = 3u/(1 +
+    # 2u), then the terminal stretch maps the last sigma to 0.02.
     shifted = 3.0 * base / (1.0 + 2.0 * base)
     scale = (1.0 - shifted[-1]) / (1.0 - QWEN_SHIFT_TERMINAL)
     expected = 1.0 - (1.0 - shifted) / scale
     assert torch.allclose(table, expected, atol = 1e-6)
-    # Fixed-point spot checks: sigma 1.0 stays 1.0, the terminal sigma lands on 0.02, and u = 0.5 rises to ~0.754.
     assert abs(float(table[0]) - 1.0) < 1e-6
     assert abs(float(table[-1]) - QWEN_SHIFT_TERMINAL) < 1e-6
     assert abs(float(table[499]) - 0.75427) < 1e-3
-    # The table stays a valid descending schedule in (0, 1].
     assert bool((table[:-1] > table[1:]).all())
 
 
@@ -165,13 +164,12 @@ def test_numeric_table_applies_the_linear_shift():
     table = _training_sigma_table(sched, 2.2)
     base = sched.sigmas
     assert torch.allclose(table, 2.2 * base / (1.0 + 1.2 * base), atol = 1e-6)
-    # u = 0.5 under shift s maps to s/(s+1).
     assert abs(float(table[499]) - 2.2 / 3.2) < 1e-3
 
 
 def test_identity_and_static_families_are_untouched():
-    # flow_shift 1.0 must return the scheduler's own table object (no numeric drift for FLUX / Z-Image / Krea 2), and "auto"
-    # on a static-shift scheduler is a no-op: its init already baked the shift into sigmas.
+    # flow_shift 1.0 must return the scheduler's own table object (no numeric drift), and "auto" on
+    # a static-shift scheduler is a no-op: its init already baked the shift into sigmas.
     sched = _qwen_scheduler()
     assert _training_sigma_table(sched, 1.0) is sched.sigmas
     static = _flux_static_scheduler()
@@ -188,7 +186,8 @@ def test_sampled_sigma_distribution_shifts_under_auto():
     _, idx = _sample_timesteps(sched, 4096, "cpu")
     base = _gather_sigmas(sched.sigmas, idx, "cpu", torch.float32, 1)
     shifted = _gather_sigmas(auto_table, idx, "cpu", torch.float32, 1)
-    # Unshifted logit-normal draws center at 0.5; the mu = log 3 shift + terminal stretch push the mass to high noise (mean ~0.72) and raise EVERY sample.
+    # Unshifted logit-normal draws center at 0.5; the mu = log 3 shift + terminal stretch push the
+    # mass to high noise (mean ~0.72) and raise EVERY sample.
     assert abs(float(base.mean()) - 0.5) < 0.03
     assert float(shifted.mean()) > 0.68
     assert bool((shifted >= base - 1e-6).all())
@@ -203,12 +202,10 @@ def test_gather_sigmas_broadcasts_to_ndim():
     assert abs(float(sig[0].flatten()) - 1.0) < 1e-6
 
 
-# ── bell weighting ────────────────────────────────────────────────────────────
 def test_bell_weights_shape_peak_and_normalization():
     w = _bell_loss_weights(1000)
     assert w.shape == (1000,)
     assert float(w.min()) >= 0.0
-    # Peak at mid-schedule, mean 1 so the expected loss scale is unchanged.
     assert int(w.argmax()) == 500
     assert abs(float(w.mean()) - 1.0) < 1e-5
     assert float(w[500]) > float(w[0])

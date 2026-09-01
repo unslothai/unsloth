@@ -22,7 +22,6 @@ _BACKEND = Path(__file__).resolve().parent.parent
 _VENDOR = _BACKEND / "vendor"
 _MANIFEST = json.loads((_VENDOR / "truststore_manifest.json").read_text(encoding = "utf-8"))
 
-# Everything the vendor directory is allowed to hold, beyond the package itself.
 _SIDECARS = {"LICENSE", "README.md", "truststore_manifest.json"}
 # Ours, not upstream's: prose we may reword, and the manifest cannot hash itself.
 _UNPINNED = {"README.md", "truststore_manifest.json"}

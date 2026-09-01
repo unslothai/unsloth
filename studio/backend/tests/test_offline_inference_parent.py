@@ -153,8 +153,7 @@ class TestLoraDetectOffline:
 
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
-        # Unsloth catches Exception broadly; pin that the call still happens
-        # (so cached LoRAs aren't missed) and returns fast via the mock.
+        # Unsloth catches Exception broadly; pin that the call still happens so cached LoRAs are not missed.
         class _OfflineModeIsEnabled(Exception):
             pass
 
@@ -167,7 +166,7 @@ class TestLoraDetectOffline:
                     gguf_variant = None,
                 )
             except Exception:
-                pass  # registry miss OK; pinning the LoRA-detect call
+                pass
 
         assert mock.call_count >= 1, (
             "LoRA-detect must still consult hf_model_info offline; "
@@ -205,8 +204,7 @@ class TestLoraDetectOffline:
             except Exception:
                 cfg = None
 
-        # cfg may be None (base not resolvable offline); pin the fixture
-        # so the cache-side detect block had a file to find.
+        # cfg may be None (base not resolvable offline); pin the fixture so the detect block had a file.
         assert (snap / "adapter_config.json").is_file()
 
 
@@ -232,8 +230,8 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
             "training worker still calls socket.setdefaulttimeout; "
             "concurrent sockets would inherit the probe timeout"
         )
-        # The probe now lives in the shared helper (endpoint- and proxy-aware), so the
-        # worker must delegate to it rather than resolve a hardcoded host itself.
+        # The probe lives in the shared helper (endpoint- and proxy-aware), so the worker must delegate
+        # rather than resolve a hardcoded host itself.
         assert (
             "hf_env_offline" in block
         ), "training worker must honor TRANSFORMERS_OFFLINE before probing"
@@ -276,8 +274,8 @@ class TestInferenceWorkerProbesForItself:
             encoding = "utf-8",
         )
         start = src.index("# Offline auto-detect")
-        # To the end of the block, not a fixed slice: a gate added ahead of it would
-        # otherwise push the tail out of the window and pass vacuously.
+        # To the end of the block, not a fixed slice: a gate added ahead of it would push the tail out
+        # of the window and pass vacuously.
         return src[start : src.index("\n    import warnings", start)]
 
     def test_the_probe_exists_and_runs_before_activation(self):
@@ -288,7 +286,6 @@ class TestInferenceWorkerProbesForItself:
             encoding = "utf-8",
         )
         probe = src.index("# Offline auto-detect")
-        # Both HF-reading steps the parent's verdict was meant to cover.
         assert probe < src.index("_remote_lora_base(model_name")
         assert probe < src.index("_activate_transformers_version(_base")
 
@@ -386,7 +383,6 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
         )
         assert "not _hub_targets_are_local(" in inf
         assert "not _training_job_is_local(config)" in trn
-        # The user's own flag still wins in both.
         assert inf.count('if "HF_HUB_OFFLINE" not in os.environ and (') == 1
         assert trn.count('if "HF_HUB_OFFLINE" not in os.environ and not') == 1
 
@@ -557,7 +553,7 @@ class TestFullCheckpointBaseKeepsTheProbe:
             "name_or_path": (None, {"_name_or_path": "org/n"}, False),
             "both": ({"base_model_name_or_path": "org/a"}, {"model_name": "org/c"}, False),
             "bare": (None, None, False),
-            # Adapter-only LoRAs: no JSON at all, so the resolver falls back to the
+            # Adapter-only LoRAs have no JSON, so the resolver falls back to the
             # unsloth_<model>_<timestamp> dir-name convention.
             "unsloth_llama-3_1700000000": (None, None, True),
             "unsloth_a_b_1700000000": (None, None, True),

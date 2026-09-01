@@ -129,8 +129,8 @@ def test_the_budget_charges_token_dense_text_at_its_real_rate():
 
     budget = seen.get("conversation_budget_tokens")
     assert budget is not None
-    # The flat estimate is the one that overstates the room. Charged densely, the budget
-    # has to be at most what is left after the real cost of what is already there.
+    # The flat estimate is the one that overstates the room: charged densely, the budget has to be
+    # at most what is left after the real cost of what is already there.
     assert budget <= prompt_budget(4096, 512) - estimate_messages_tokens_dense(dense_messages)
     assert estimate_messages_tokens_dense(dense_messages) > estimate_messages_tokens(dense_messages)
 
@@ -175,7 +175,6 @@ def test_the_loop_budgets_its_search_against_this_models_context():
 
     budget = seen.get("conversation_budget_tokens")
     assert budget is not None
-    # Everything already in the prompt is charged: the messages and the catalogue.
     assert budget <= prompt_budget(4096, 512) - estimate_messages_tokens(tools)
     assert budget < prompt_budget(4096, 512) - estimate_messages_tokens(MESSAGES)
 

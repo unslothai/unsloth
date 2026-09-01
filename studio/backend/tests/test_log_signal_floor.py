@@ -66,19 +66,11 @@ class TestFailuresAreNeverSuppressed:
     @pytest.mark.parametrize("status", FAILURE_STATUSES)
     def test_repeated_failures_all_log_on_every_classified_path(self, status, monkeypatch):
         # Zero gap: the worst case for any window-based suppressor.
-        #
-        # The `excluded` class is left out because it is the one suppressor that is NOT
-        # gated on a 2xx: `__call__` drops the path before the status is considered, so a
-        # 500 on /api/train/status is invisible here. That is existing behaviour, not
-        # something this guard can assert away; it is pinned instead by
-        # test_the_excluded_set_is_exactly_what_was_reviewed below.
         paths = sorted(
             p
             for p in session.ALL_POLLS
             if policy.classify(hmod, p) != policy.EXCLUDED
-            # Chat-list 401s have one narrow, deliberate exemption during the bootstrap
-            # token race. Its exact boundaries are pinned by
-            # test_the_chat_list_401_exemption_is_only_pre_auth rather than waved through.
+            # Chat-list 401s have one narrow, deliberate exemption during the bootstrap token race.
             and not (status == 401 and p in hmod._CHAT_LIST_PATHS)
         )
         requests = [

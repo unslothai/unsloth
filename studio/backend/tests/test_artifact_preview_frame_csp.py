@@ -19,7 +19,6 @@ def _csp(*args) -> str:
 
 
 def test_omitting_the_flag_serves_the_strict_csp():
-    # The fail-closed direction: a caller that says nothing gets no network.
     csp = _csp()
     assert "default-src 'none';" in csp
     assert "script-src 'unsafe-inline';" in csp
@@ -38,7 +37,6 @@ def test_the_flag_is_what_changes_the_policy():
 
 
 def test_the_sandbox_holds_in_both_variants():
-    # Network access widens what the canvas may fetch, never how it is isolated.
     for csp in (_csp(False), _csp(True)):
         assert "sandbox allow-scripts" in csp
         assert "object-src 'none';" in csp
@@ -50,8 +48,7 @@ def test_the_sandbox_holds_in_both_variants():
 def test_the_shell_reports_blocked_resources():
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     assert '"unsloth:artifact-blocked"' in shell
-    # document.close() drops listeners bound before it, so binding earlier
-    # reports nothing and the banner never appears.
+    # document.close() drops listeners bound before it, so binding earlier reports nothing and the banner never appears.
     write, listen = (
         shell.index("document.close();"),
         shell.index('document.addEventListener("securitypolicyviolation"'),
@@ -60,10 +57,8 @@ def test_the_shell_reports_blocked_resources():
 
 
 def test_blocked_reports_carry_the_load_they_came_from():
-    # event.source survives the swap navigation, so without the stamp a report
-    # from the outgoing canvas reads as the incoming one's and prompts a grant
-    # for a canvas that never hit the CSP. Read once at load, not per report,
-    # so a rewritten document cannot forge a different one.
+    # event.source survives the swap navigation, so without the stamp a report from the outgoing
+    # canvas prompts a grant for one that never hit the CSP.
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     assert 'get("v")' in shell
     assert "v: loadVersion," in shell
@@ -86,16 +81,15 @@ def _directives(csp: str) -> dict:
 
 
 def test_the_shell_reports_which_directive_was_violated():
-    # Without it the banner cannot tell a blocked CDN script from an object-src
-    # violation, and offers a grant that cannot fix the latter.
+    # Without it the banner cannot tell a blocked CDN script from an object-src violation, and
+    # offers a grant that cannot fix the latter.
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     assert "effectiveDirective: event.effectiveDirective" in shell
 
 
 def test_the_grant_widens_everything_but_the_locked_directives():
-    # Pins GRANT_CANNOT_FIX in html-frame.tsx: lock a fourth directive down in
-    # both policies and this fails, rather than the banner silently starting to
-    # prompt for something the grant cannot fix.
+    # Pins GRANT_CANNOT_FIX in html-frame.tsx: locking a fourth directive down in both policies
+    # fails here rather than silently prompting for something the grant cannot fix.
     strict = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_STRICT_CSP)
     network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
     unchanged = {
@@ -108,10 +102,9 @@ def test_the_grant_widens_everything_but_the_locked_directives():
 
 
 def test_the_permissive_policy_widens_every_hostless_scheme_but_one():
-    # Pins GRANT_CANNOT_FIX_SCHEME in html-frame.tsx. A non-HTTP(S) violation
-    # reports a bare scheme, so the banner may only offer the grant where the
-    # permissive policy actually allows that scheme for that directive. Verified
-    # in Chromium: a data: Worker reports worker-src/data under both policies.
+    # Pins GRANT_CANNOT_FIX_SCHEME in html-frame.tsx: a non-HTTP(S) violation reports a bare
+    # scheme, so the grant is offered only where the permissive policy allows that scheme for
+    # that directive (Chromium: a data: Worker reports worker-src/data under both).
     network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
     # Locked or not a resource load, so they never reach the scheme check.
     skip = {"object-src", "base-uri", "form-action", "frame-ancestors", "sandbox"}

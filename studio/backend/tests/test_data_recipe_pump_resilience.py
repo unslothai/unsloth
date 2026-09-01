@@ -98,8 +98,8 @@ def test_pump_survives_handler_exception_and_still_finalizes(monkeypatch):
         pump.join(timeout = 5)
 
     assert not pump.is_alive()
-    # The exited worker is finalized as error (not left wedged "active") and the
-    # workflow key is retired despite the earlier handler exceptions.
+    # The exited worker is finalized as error (not left wedged "active") and the workflow key is
+    # retired despite the earlier handler exceptions.
     assert m._job.status == "error"
     assert retired and retired[0] is m._job
 
@@ -127,8 +127,8 @@ def test_pump_finalizes_when_drain_raises(monkeypatch):
 
 
 def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
-    # A read that keeps raising after the child died must not spin the pump
-    # forever: once the worker is gone it falls through to finalize.
+    # A read that keeps raising after the child died must not spin the pump forever: once the worker
+    # is gone it falls through to finalize.
     m = _manager_with_active_job()
     monkeypatch.setattr(m, "_emit", lambda e: None)
     retired: list = []

@@ -46,14 +46,13 @@ def _request(**over) -> DownloadModelRequest:
 
 
 def test_scope_keys_apart_from_the_full_snapshot():
-    # Same repo, two jobs: the scoped one must not adopt or overwrite the full snapshot's manifest, or the repo reads as partial against expectations it never had.
+    # The scoped job must not adopt or overwrite the full snapshot's manifest, or the repo reads as partial.
     full = dl._download_job_key("black-forest-labs/FLUX.1-dev", None)
     scoped = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
     assert full != scoped
     assert scoped.endswith("@diffusion")
-    # It rides the variant slot, so it must satisfy the same validator.
     assert is_valid_gguf_variant("@diffusion")
-    # The "@" prefix keeps a scope out of the quant namespace: a job scoped "diffusion" and a quant named "diffusion" stay distinct.
+    # The "@" prefix keeps a scope out of the quant namespace, so job "diffusion" and quant "diffusion" differ.
     assert dl._download_job_key("org/m", "diffusion") != dl._download_job_key(
         "org/m", dl._scope_variant("diffusion")
     )
@@ -104,7 +103,7 @@ def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch):
 
 
 def test_scoped_files_survive_into_the_registry(monkeypatch):
-    # The XET to HTTP retry rebuilds worker args from registry metadata alone, so without the file list there a retried scoped job would become a full snapshot.
+    # The XET-to-HTTP retry rebuilds worker args from registry metadata, so a scoped job would go full.
     captured: dict = {}
     real_claim = dl._registry.claim
 
@@ -136,8 +135,7 @@ def test_files_manifest_round_trips():
 
 
 def test_a_different_file_set_is_not_adopted(monkeypatch):
-    # Two quants of one repo are two downloads sharing the "@diffusion" slot. Adopting the running one made the UI wait on the
-    # wrong file set and load a file that was never fetched, so the second request is refused while the first runs.
+    # Adopting the running job made the UI wait on the wrong file set, so the second request is refused.
     monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
@@ -157,7 +155,7 @@ def test_a_different_file_set_is_not_adopted(monkeypatch):
         assert other_files.value.status_code == 409
         assert "different" in other_files.value.detail
 
-        # The same file set is still the same download: it adopts the live job as before, in any order and with duplicates collapsed.
+        # The same file set is still the same download, in any order and with duplicates collapsed.
         same = asyncio.run(
             dl.download_model_response(_request(files = [FILES[1], FILES[0], FILES[0]]))
         )
@@ -167,9 +165,7 @@ def test_a_different_file_set_is_not_adopted(monkeypatch):
 
 
 def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
-    # A second client starting the same download is accepted and gets the live job's
-    # transport, which reads exactly like a fresh Xet start. Only this flag separates
-    # them, and the Unsloth download notice keys off it.
+    # Adoption reads exactly like a fresh Xet start, so only this flag separates them for the notice.
     monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
@@ -185,13 +181,11 @@ def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
         assert attached["accepted"] is True and attached["attached"] is True
         assert attached["job_key"] == key
 
-        # The route declares response_model, which drops any key the schema does
-        # not name, so the flag has to survive that too or it never ships.
+        # The route declares response_model, which drops any key the schema does not name: the flag must survive.
         assert DownloadStartResponse(**attached).model_dump()["attached"] is True
         assert DownloadStartResponse(**started).model_dump()["attached"] is False
 
-        # A rejection that is not adoptable (cross-variant conflict, delete in
-        # progress) joined nothing, so it must not claim it attached.
+        # A rejection that is not adoptable joined nothing, so it must not claim it attached.
         monkeypatch.setattr(dl._registry, "claim", lambda *a, **k: (False, "repository_owned"))
         monkeypatch.setattr(dl._registry, "adoptable", lambda *a, **k: False)
         refused = asyncio.run(dl.download_model_response(_request(repo_id = repo)))
@@ -201,8 +195,7 @@ def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
 
 
 def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
-    # The retry reclaims the slot with replace_active, which OVERWRITES the stored metadata. Dropping the file list there left
-    # the record claiming an empty scope, so the next identical scoped start compared [] against the real list and 409'd.
+    # The retry reclaims the slot with replace_active, which OVERWRITES metadata: an empty scope then 409'd.
     monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
@@ -237,7 +230,6 @@ def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
 
         metadata = dl._registry.get_job_metadata(key)
         assert metadata is not None and list(metadata.scoped_files) == FILES
-        # And the retried job is still adoptable by the page that asked for those files.
         again = asyncio.run(dl.download_model_response(_request()))
         assert again["accepted"] is True and again["job_key"] == key
     finally:
@@ -245,7 +237,7 @@ def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
 
 
 def test_scope_key_stays_derivable_from_the_scope_alone():
-    # The download manager builds this key client-side (it polls and cancels before any server round-trip), so the scope name alone must produce it.
+    # The download manager builds this key client-side before any round-trip, so the scope name must produce it.
     assert dl._scope_variant("diffusion") == "@diffusion"
     assert dl._scope_variant("video") == "@video"
     assert dl._scope_variant("  ") is None
@@ -257,8 +249,7 @@ def _fake_backend(*loading: str):
 
 
 def test_an_images_load_staging_a_repo_blocks_a_download_of_it(monkeypatch):
-    # The Images and Video backends stage their snapshots through the same HF cache as the download worker, so starting a
-    # download for a repo one of them is fetching puts two writers on the same blobs. Chat was guarded; these were not.
+    # Images and Video stage through the same HF cache as the download worker: two writers on one blob.
     from core.inference import diffusion_engine_router, video as video_backend
 
     monkeypatch.setattr(
@@ -268,7 +259,7 @@ def test_an_images_load_staging_a_repo_blocks_a_download_of_it(monkeypatch):
     )
     monkeypatch.setattr(video_backend, "get_video_backend", lambda: _fake_backend())
 
-    # Both the checkpoint and the companion base it is pulling are covered, case-insensitively (the repo id arrives as the user typed it).
+    # Both the checkpoint and the companion base are covered, case-insensitively as the user typed it.
     assert dl._load_in_flight("Tongyi-MAI/Z-Image-Turbo") is True
     assert dl._load_in_flight("tongyi-mai/z-image-turbo") is True
     assert dl._load_in_flight("unsloth/Z-Image-Turbo-GGUF") is True
@@ -326,7 +317,7 @@ def test_active_downloads_publish_the_scoped_file_list(monkeypatch):
 
 
 def test_a_full_snapshot_download_reports_no_file_list(monkeypatch):
-    # Only a scoped job has a deliberate subset; a full snapshot must not claim one, or the client matches its whole-repo job against a scoped request.
+    # Only a scoped job has a deliberate subset, or the client matches a whole-repo job against a scoped request.
     monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")

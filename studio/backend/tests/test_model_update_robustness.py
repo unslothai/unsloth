@@ -154,7 +154,6 @@ def _call(coro):
         loop.close()
 
 
-# ── GGUF variant update detection ───────────────────────────────
 
 
 def test_variant_update_check_missing_remote_blob_id_is_not_phantom_update(
@@ -452,7 +451,6 @@ def test_cached_model_scan_surfaces_custom_whisper_repo_as_asr(monkeypatch, tmp_
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
-# ── hf_hub_download_with_xet_fallback force_download bypass (X2/F2) ───
 
 
 def test_force_download_is_forwarded_through_the_shim(monkeypatch):
@@ -474,16 +472,13 @@ def test_force_download_is_forwarded_through_the_shim(monkeypatch):
     X.hf_hub_download_with_xet_fallback(
         "unsloth/repo", "model.gguf", token = None, force_download = True
     )
-    assert seen == [False, True]  # the shim forwards force_download to the shared helper unchanged
+    assert seen == [False, True]
 
 
-# ── multi-revision GGUF blob comparison and update reclaim ──
-#
-# Regression for the phantom "Update available" cue that lingered AFTER a model
-# was already updated. A re-download leaves BOTH the old and new revision
-# snapshots in the HF cache, so the same gguf file resolves to several blobs.
-# The local collection must keep ALL of them (a set per file), and stale hashes
-# must be pruned only after the replacement revision verifies.
+# Regression for the phantom "Update available" cue that lingered AFTER an update: a re-download
+# leaves BOTH revision snapshots in the HF cache, so one gguf file resolves to several blobs.
+# The local collection must keep ALL of them, and stale hashes pruned only after the
+# replacement revision verifies.
 
 
 def _rev(*files):
@@ -496,7 +491,7 @@ def test_repo_gguf_blob_map_collects_all_revision_blobs():
     """Every cached revision's blob for a gguf file is kept as a set, not
     collapsed to one arbitrary blob."""
     repo_info = SimpleNamespace(
-        repo_path = "/",  # real blobs live at <repo_path>/blobs/<etag>
+        repo_path = "/",
         revisions = [
             _rev(("lfm2-350m-q4_k_m.gguf", "OLDsha")),
             _rev(("lfm2-350m-q4_k_m.gguf", "NEWsha")),
@@ -505,14 +500,10 @@ def test_repo_gguf_blob_map_collects_all_revision_blobs():
     assert CI._repo_gguf_blob_map(repo_info) == {"lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}}
 
 
-# ── no-symlink (Windows without Developer Mode) GGUF update detection ──
-#
-# Regression for the phantom "Update available" that NEVER clears (#7060). Without
-# the symlink privilege, hf_hub_download MOVES the blob into snapshots/ instead of
-# symlinking it, so blobs/ is empty and scan_cache_dir reports blob_path = the
-# snapshot file. Its name is the FILENAME, not an etag, so a remote-vs-local sha256
-# comparison can never match and every cached GGUF reports an update forever --
-# which re-downloading cannot fix, since the same file is rewritten with no blob.
+# Regression for the phantom "Update available" that NEVER clears (#7060). Without the symlink
+# privilege, hf_hub_download MOVES the blob into snapshots/ instead of symlinking, so blobs/ is
+# empty and scan_cache_dir reports blob_path = the snapshot file. Its name is the FILENAME, not
+# an etag, so a sha256 comparison can never match and re-downloading cannot fix it.
 
 
 def _rev_no_symlink(*files):
@@ -729,7 +720,7 @@ def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch
     snap = repo_path / "snapshots" / ("a" * 40) / "model-Q4_K_M.gguf"
     snap.parent.mkdir(parents = True, exist_ok = True)
     snap.write_bytes(b"current-download")
-    (repo_path / "blobs").mkdir(parents = True, exist_ok = True)  # empty: moved, not linked
+    (repo_path / "blobs").mkdir(parents = True, exist_ok = True)
 
     repo_info = SimpleNamespace(
         repo_id = repo_id,
@@ -741,7 +732,7 @@ def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch
                     SimpleNamespace(
                         file_name = "model-Q4_K_M.gguf",
                         file_path = str(snap),
-                        blob_path = str(snap),  # no-symlink: blob_path == the snapshot file
+                        blob_path = str(snap),
                     )
                 ]
             )
@@ -757,7 +748,7 @@ def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch
         hub_cache = tmp_path,
     )
 
-    assert snap.exists() is True  # the current file must survive
+    assert snap.exists() is True
     assert result["removed_snapshots"] == 0
     assert result["deleted_blobs"] == 0
 
@@ -826,9 +817,8 @@ def _mmproj_repo(*file_names: str):
 
 
 def test_repo_has_mmproj_requires_gguf_projector():
-    # A non-GGUF sidecar whose name merely contains "mmproj" must NOT mark the
-    # repo vision-capable; the runtime's projector detection is GGUF-only.
+    # A non-GGUF sidecar merely containing "mmproj" must NOT mark the repo vision-capable; the
+    # runtime's projector detection is GGUF-only.
     assert CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "mmproj_config.json")) is False
     assert CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "README-mmproj.md")) is False
-    # A real GGUF projector still marks the repo vision-capable.
     assert CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "mmproj-F16.gguf")) is True

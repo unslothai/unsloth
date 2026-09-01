@@ -91,8 +91,8 @@ def test_the_workspace_error_carries_the_folder_it_could_not_make(tmp_path, monk
 
     blocked = tmp_path / "read-only" / "child"
 
-    # The refusal is stubbed rather than staged with chmod: root ignores a
-    # read-only directory, and Windows does not enforce one this way at all.
+    # The refusal is stubbed rather than staged with chmod: root ignores a read-only directory, and
+    # Windows does not enforce one this way at all.
     def refuse(path):
         raise PermissionError(13, "Permission denied", str(path))
 

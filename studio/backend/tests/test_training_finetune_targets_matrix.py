@@ -31,8 +31,7 @@ from models import TrainingStartRequest
 
 TRAINING_TYPES = ("LoRA/QLoRA", "Full Finetuning", "Continued Pretraining")
 
-# The branch pre_detect settles on. Only "vlm" and "audio_vlm" forward the selectors on CUDA;
-# prepare_model_for_training's other arms pass target_modules and never the four.
+# The branch pre_detect settles on: only "vlm" and "audio_vlm" forward selectors on CUDA.
 BRANCHES = ("text", "vlm", "audio_vlm", "codec", "whisper", "snac")
 _CUDA_BRANCHES_READING_SELECTORS = ("vlm", "audio_vlm")
 
@@ -79,8 +78,7 @@ SELECTOR_CASES = {
 
 _DEFAULT_LEAVES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-# target_modules changes which guard applies at all: "all-linear" turns every selector on
-# inside get_peft_model, and MLX's filter only strips names it recognises as attention or MLP.
+# target_modules changes which guard applies: "all-linear" turns every selector on inside get_peft_model.
 TARGET_MODULE_CASES = {
     "unset": None,
     "empty": [],
@@ -151,7 +149,7 @@ def _cuda_guard_fires(config: dict, branch: str) -> bool:
 
 def _mlx_guard_fires(config: dict) -> bool:
     if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA":
-        return False  # the call site at _run_mlx_training sits under `if use_lora`
+        return False
     try:
         _check_mlx_finetune_targets(config)
     except ValueError:
@@ -184,11 +182,10 @@ def _mlx_targets(config: dict) -> str:
     _, language, attention, mlp = _finetune_selectors(config)
     explicit = config.get("target_modules")
     if explicit and not (attention or mlp):
-        # The filter drops only recognised attention and MLP leaves; whatever is left trains.
         return f"whatever survives the filter of {list(explicit)}"
     vision = bool(config.get("finetune_vision_layers", False)) if is_vlm else False
     if (attention or mlp) and not language and not vision:
-        language = True  # the back-fill at the MLX LoRA branch
+        language = True
     families = [name for name, on in (("vision", vision), ("language", language)) if on]
     modules = [name for name, on in (("attention", attention), ("mlp", mlp)) if on]
     return f"{'+'.join(families)} x {'+'.join(modules)}"
@@ -237,9 +234,9 @@ def test_mlx_guard_only_fires_on_an_empty_module_selection(
     vision, language, attention, mlp = _finetune_selectors(config)
     targets = config.get("target_modules")
 
-    # Two rules, because the loader has two. With no explicit list the default seven are
-    # wholly attention and MLP, so an empty module selection leaves nothing. With one, the
-    # text branch also needs a layer family, and only a CPT target trains without one.
+    # Two rules, because the loader has two: with no explicit list the default seven are wholly
+    # attention and MLP, so an empty module selection leaves nothing, while with one the text branch
+    # also needs a layer family.
     if not targets:
         empty = not (attention or mlp)
     else:
@@ -321,7 +318,6 @@ def test_cuda_guard_matches_get_peft_regex_for_the_whole_product(flags):
     assert _cuda_guard_fires(config, "vlm") is get_peft_regex_would_raise
 
 
-# --- defaults for a config that never went through the request model ---
 
 
 def test_selector_defaults_match_the_cuda_consumer():
@@ -342,7 +338,6 @@ def test_vision_only_run_with_missing_keys_is_not_rejected():
     _check_finetune_targets_after_detect(_Trainer("vlm"), config)
 
 
-# --- call sites, so deleting the wiring fails a test ---
 
 
 def _fake_trainer_with_detect(branch: str):
@@ -367,7 +362,6 @@ def test_pre_detect_training_model_runs_the_guard():
     with pytest.raises(ValueError, match = "Nothing to train"):
         _pre_detect_training_model(trainer, config, "model", None, "model", False)
 
-    # Detection still ran first: the guard needs the branch it settles.
     assert len(trainer.pre_detect_calls) == 1
 
 
@@ -418,7 +412,6 @@ def test_mlx_worker_calls_the_guard_in_its_lora_branch():
     assert calls[0].lineno < min(from_pretrained_lines)
 
 
-# --- the guard must never be stricter than the code it guards ---
 
 
 def test_all_linear_vlm_run_with_the_selectors_off_is_not_rejected():
@@ -525,7 +518,6 @@ def test_mlx_reads_the_vision_selector_with_the_mlx_default_not_the_cuda_one():
         "finetune_language_layers": False,
         "finetune_attention_modules": False,
         "finetune_mlp_modules": False,
-        # finetune_vision_layers deliberately absent.
     }
     assert _finetune_selectors(config)[0] is True, "the helper still reports the CUDA default"
 

@@ -23,7 +23,7 @@ if str(_BACKEND_DIR) not in sys.path:
 
 
 def _maybe_stub(name: str, builder):
-    # Stub only if the real module is missing, so we never shadow it for later tests.
+    # Stub only if the real module is missing, so it is never shadowed for later tests.
     try:
         importlib.import_module(name)
     except ImportError:
@@ -49,11 +49,7 @@ import pytest
 
 import utils.hardware.hardware as hw  # noqa: E402
 
-# The DRM/KFD readers below are Linux-only in production: _rocm_linux_amdgpu_cards and
-# _rocm_linux_sysfs_vram_by_pci_gb return early unless platform.system() is "Linux", and
-# _rocm_kfd_gpu_pci_ids only ever globs /sys/class/kfd. Their fake sysfs tree needs PCI
-# addresses like "0000:00:02.0" as directory names and POSIX separators in the paths the
-# readers match; Windows permits neither, so the tree cannot be represented there.
+# The DRM/KFD readers are Linux-only, and their fake sysfs tree needs PCI directory names plus POSIX separators.
 linux_only = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason = "covers Linux-only DRM/KFD sysfs parsing driven by a fake /sys tree",
@@ -82,7 +78,6 @@ def _device(
     }
 
 
-# ── Linux per-card sysfs ──
 
 
 def _fake_drm(tmp_path, monkeypatch, cards):
@@ -119,9 +114,9 @@ def test_linux_vram_keyed_by_pci_excludes_foreign_adapters(monkeypatch, tmp_path
         tmp_path,
         monkeypatch,
         [
-            (0, "0000:00:02.0", "i915", (0.5, 2.0)),  # foreign adapter: excluded
-            (1, "0000:03:00.0", "amdgpu", (40, 48)),  # AMD device 0
-            (2, "0000:41:00.0", "amdgpu", (1, 8)),  # AMD device 1
+            (0, "0000:00:02.0", "i915", (0.5, 2.0)),
+            (1, "0000:03:00.0", "amdgpu", (40, 48)),
+            (2, "0000:41:00.0", "amdgpu", (1, 8)),
         ],
     )
     assert hw._rocm_linux_sysfs_vram_by_pci_gb() == {
@@ -138,7 +133,7 @@ def test_linux_vram_omits_bad_cards_without_shifting(monkeypatch, tmp_path):
         tmp_path,
         monkeypatch,
         [
-            (0, "0000:03:00.0", "amdgpu", (0, 0)),  # zero total -> no entry
+            (0, "0000:03:00.0", "amdgpu", (0, 0)),
             (1, "0000:41:00.0", "amdgpu", (2, 16)),
         ],
     )
@@ -153,18 +148,17 @@ def test_linux_vram_omits_amd_card_without_vram_files(monkeypatch, tmp_path):
         tmp_path,
         monkeypatch,
         [
-            (0, "0000:03:00.0", "amdgpu", None),  # APU: no VRAM sysfs files
+            (0, "0000:03:00.0", "amdgpu", None),
             (1, "0000:41:00.0", "amdgpu", (2, 16)),
         ],
     )
     assert hw._rocm_linux_sysfs_vram_by_pci_gb() == {"0000:41:00.0": (2.0, 16.0)}
 
 
-# ── KFD topology: the authoritative ROCm device order ──
 
 
-_AMD = 4098  # 0x1002
-_NVIDIA = 4318  # 0x10DE -- the open kernel module also registers KFD nodes
+_AMD = 4098
+_NVIDIA = 4318
 
 
 def _fake_kfd(tmp_path, monkeypatch, nodes):
@@ -197,9 +191,9 @@ def test_kfd_lists_gpu_nodes_in_device_order(monkeypatch, tmp_path):
         tmp_path,
         monkeypatch,
         [
-            (0, 0, None, 0, None),  # CPU node
-            (1, 304, (0x03 << 8) | (0x00 << 3) | 0, 0, _AMD),  # 0000:03:00.0 -> dev 0
-            (2, 304, (0x41 << 8) | (0x00 << 3) | 0, 0, _AMD),  # 0000:41:00.0 -> dev 1
+            (0, 0, None, 0, None),
+            (1, 304, (0x03 << 8) | (0x00 << 3) | 0, 0, _AMD),
+            (2, 304, (0x41 << 8) | (0x00 << 3) | 0, 0, _AMD),
         ],
     )
     assert hw._rocm_kfd_gpu_pci_ids() == ["0000:03:00.0", "0000:41:00.0"]
@@ -214,17 +208,16 @@ def test_kfd_decodes_domain_device_and_function(monkeypatch, tmp_path):
 
 @linux_only
 def test_kfd_skips_non_amd_gpu_nodes(monkeypatch, tmp_path):
-    # An NVIDIA KFD node is not a HIP device: it must take no ordinal, else it
-    # shifts every AMD GPU and ROCm device 1 resolves to AMD GPU 0.
+    # An NVIDIA KFD node is not a HIP device: taking an ordinal shifts every AMD GPU by one.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     _fake_kfd(
         tmp_path,
         monkeypatch,
         [
-            (0, 0, None, 0, None),  # CPU
-            (1, 128, (0x01 << 8) | 0, 0, _NVIDIA),  # NVIDIA: no ordinal
-            (2, 304, (0x03 << 8) | 0, 0, _AMD),  # AMD device 0
-            (3, 304, (0x41 << 8) | 0, 0, _AMD),  # AMD device 1
+            (0, 0, None, 0, None),
+            (1, 128, (0x01 << 8) | 0, 0, _NVIDIA),
+            (2, 304, (0x03 << 8) | 0, 0, _AMD),
+            (3, 304, (0x41 << 8) | 0, 0, _AMD),
         ],
     )
     assert hw._rocm_kfd_gpu_pci_ids() == ["0000:03:00.0", "0000:41:00.0"]
@@ -238,7 +231,7 @@ def test_kfd_fails_closed_when_a_gpu_has_no_location(monkeypatch, tmp_path):
         tmp_path,
         monkeypatch,
         [
-            (1, 304, None, 0, _AMD),  # AMD GPU with no location_id
+            (1, 304, None, 0, _AMD),
             (2, 304, (0x41 << 8) | 0, 0, _AMD),
         ],
     )
@@ -263,8 +256,7 @@ def test_kfd_fails_closed_when_a_node_is_unreadable(monkeypatch, tmp_path):
 
 @linux_only
 def test_kfd_fails_closed_when_a_node_does_not_decode(monkeypatch, tmp_path):
-    # UnicodeDecodeError is a ValueError, so it slips past `except OSError` and
-    # would shift every later HIP ordinal.
+    # UnicodeDecodeError is a ValueError, so it slips past `except OSError` and would shift every later HIP ordinal.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     paths = _fake_kfd(
         tmp_path,
@@ -283,7 +275,6 @@ def test_kfd_absent_yields_no_device_order(monkeypatch):
     assert hw._rocm_kfd_gpu_pci_ids() == []
 
 
-# ── overlay ──
 
 
 def _patch_pci_map(monkeypatch, bdfs):
@@ -306,7 +297,7 @@ def _pci(n):
 
 
 def test_overlay_windows_is_noop_keeps_torch(monkeypatch):
-    # Windows is intentionally not overlaid (perf counters can't map to ROCm ordinals): keep torch.
+    # Windows is intentionally not overlaid: perf counters cannot map to ROCm ordinals.
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
         hw,
@@ -316,42 +307,42 @@ def test_overlay_windows_is_noop_keeps_torch(monkeypatch):
     devices = [_device(0, used = 0.02, total = 8.0)]
     _patch_pci_map(monkeypatch, [_pci(0)])
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 0.02  # untouched
+    assert devices[0]["vram_used_gb"] == 0.02
 
 
 def test_overlay_linux_matches_by_device_ordinal(monkeypatch):
-    # Devices arriving as [index 1, index 0] each get their own GPU's figures by ordinal.
+    # Devices arriving out of order each get their own GPU's figures by ordinal.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         hw,
         "_rocm_linux_sysfs_vram_by_pci_gb",
-        lambda: {_pci(0): (30.0, 45.0), _pci(1): (0.5, 8.0)},  # dev 0 big, dev 1 small
+        lambda: {_pci(0): (30.0, 45.0), _pci(1): (0.5, 8.0)},
     )
     devices = [_device(1, used = 0.01, total = 8.0), _device(0, used = 0.02, total = 45.0)]
     _patch_pci_map(monkeypatch, [_pci(0), _pci(1)])
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 0.5  # index 1 -> device 1 (small)
+    assert devices[0]["vram_used_gb"] == 0.5
     assert devices[0]["vram_total_gb"] == 8.0
-    assert devices[1]["vram_used_gb"] == 30.0  # index 0 -> device 0 (big)
+    assert devices[1]["vram_used_gb"] == 30.0
     assert devices[1]["vram_total_gb"] == 45.0
 
 
 def test_overlay_linux_ordinal_hole_does_not_shift(monkeypatch):
-    # Device 0's card dropped: index 0 keeps torch, index 1 still maps to ordinal 1 (no compaction).
+    # Device 0's card dropped: index 1 still maps to ordinal 1, with no compaction.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {_pci(1): (0.5, 8.0)})
     devices = [_device(0, used = 0.02, total = 45.0), _device(1, used = 0.01, total = 8.0)]
     _patch_pci_map(monkeypatch, [_pci(0), _pci(1)])
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 0.02  # no ordinal 0 -> torch kept
-    assert devices[1]["vram_used_gb"] == 0.5  # ordinal 1 -> device 1, not device 0
+    assert devices[0]["vram_used_gb"] == 0.02
+    assert devices[1]["vram_used_gb"] == 0.5
 
 
 def test_overlay_linux_skips_unified_memory_card(monkeypatch):
     # Unified-memory APU: the smaller sysfs total must not shrink torch's GTT-backed pool.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {_pci(0): (0.4, 1.0)})
-    devices = [_device(0, used = 12.0, total = 96.0)]  # torch's unified pool
+    devices = [_device(0, used = 12.0, total = 96.0)]
     _patch_pci_map(monkeypatch, [_pci(0)])
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 12.0
@@ -362,10 +353,10 @@ def test_overlay_linux_skips_partitioned_device(monkeypatch):
     # Partitioned MI300: the whole-card sysfs total dwarfs the partition, so the overlay must not overwrite it.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {_pci(0): (40.0, 192.0)})
-    devices = [_device(0, used = 1.0, total = 24.0)]  # torch partition
+    devices = [_device(0, used = 1.0, total = 24.0)]
     _patch_pci_map(monkeypatch, [_pci(0)])
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 1.0  # partition figures kept
+    assert devices[0]["vram_used_gb"] == 1.0
     assert devices[0]["vram_total_gb"] == 24.0
 
 
@@ -382,19 +373,18 @@ def test_overlay_linux_out_of_range_index_untouched(monkeypatch):
 
 
 def test_overlay_ignores_adapters_rocm_cannot_enumerate(monkeypatch):
-    # A HIP-unenumerable amdgpu adapter has no KFD node, so device 0 resolves to
-    # the supported GPU's own address, never the display card's.
+    # A HIP-unenumerable amdgpu adapter has no KFD node, so device 0 is the supported GPU's own address.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         hw,
         "_rocm_linux_sysfs_vram_by_pci_gb",
-        # Both in DRM sysfs with similar capacity -- what the total-size guard can't separate.
+        # Similar capacity in DRM sysfs is what the total-size guard cannot separate.
         lambda: {_pci(9): (30.0, 45.0), _pci(3): (12.0, 45.0)},
     )
-    _patch_pci_map(monkeypatch, [_pci(3)])  # KFD lists only the supported GPU
-    devices = [_device(0, used = 0.02, total = 45.0)]  # torch sees that one GPU
+    _patch_pci_map(monkeypatch, [_pci(3)])
+    devices = [_device(0, used = 0.02, total = 45.0)]
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 12.0  # the supported GPU's own figures
+    assert devices[0]["vram_used_gb"] == 12.0
 
 
 def test_overlay_skips_masked_subsets(monkeypatch):
@@ -409,23 +399,22 @@ def test_overlay_skips_masked_subsets(monkeypatch):
     )
     devices = [_device(1, used = 0.02, total = 48.0), _device(3, used = 0.01, total = 48.0)]
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 0.02  # torch kept
+    assert devices[0]["vram_used_gb"] == 0.02
     assert devices[1]["vram_used_gb"] == 0.01
 
 
 def test_overlay_skips_device_cgroup_filtered_container(monkeypatch):
-    # A device-cgroup container sets no env var yet compacts torch's indices from
-    # zero while KFD/DRM list every GPU, so the count mismatch must disable the overlay.
+    # A device-cgroup container sets no env var yet compacts torch's indices while KFD/DRM list every GPU: overlay off.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    _patch_pci_map(monkeypatch, [_pci(0), _pci(1), _pci(2), _pci(3)])  # host has 4
+    _patch_pci_map(monkeypatch, [_pci(0), _pci(1), _pci(2), _pci(3)])
     monkeypatch.setattr(
         hw,
         "_rocm_linux_sysfs_vram_by_pci_gb",
         lambda: {_pci(0): (30.0, 48.0), _pci(2): (12.0, 48.0)},
     )
-    devices = [_device(0, used = 0.02, total = 48.0)]  # container sees 1, as index 0
+    devices = [_device(0, used = 0.02, total = 48.0)]
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 0.02  # torch kept, not host GPU 0's 30.0
+    assert devices[0]["vram_used_gb"] == 0.02
 
 
 def test_overlay_skips_without_kfd_topology(monkeypatch):
@@ -444,10 +433,9 @@ def test_overlay_skips_without_kfd_topology(monkeypatch):
 
 def test_overlay_empty_devices_is_noop(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    hw._overlay_system_wide_vram([])  # must not raise
+    hw._overlay_system_wide_vram([])
 
 
-# ── integration: the ROCm torch fallback applies the overlay ──
 
 
 def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
@@ -459,12 +447,10 @@ def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
     ):
         monkeypatch.delenv(_var, raising = False)
     monkeypatch.setattr(hw, "IS_ROCM", True)
-    # No AMD adapter data on this host. On Windows this branch runs ahead of the torch
-    # fallback under test, and probing it imports torch, which the CI runner does not
-    # install. Off Windows the real function is never reached, so this changes nothing.
+    # On Windows this branch runs ahead of the torch fallback under test, and probing it imports torch.
     monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: ([], None))
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)  # amd-smi unavailable
+    monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
     monkeypatch.setattr(
         hw,
         "_get_parent_visible_gpu_spec",
@@ -489,11 +475,9 @@ def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
 
 
 def test_visible_utilization_relative_index_skips_overlay(monkeypatch):
-    # UUID/MIG mask gives relative indices; the overlay matches physical index, so it must not run.
+    # A UUID/MIG mask gives relative indices; the overlay matches physical index, so it must not run.
     monkeypatch.setattr(hw, "IS_ROCM", True)
-    # No AMD adapter data on this host. On Windows this branch runs ahead of the torch
-    # fallback under test, and probing it imports torch, which the CI runner does not
-    # install. Off Windows the real function is never reached, so this changes nothing.
+    # On Windows this branch runs ahead of the torch fallback under test, and probing it imports torch.
     monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: ([], None))
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
@@ -502,7 +486,7 @@ def test_visible_utilization_relative_index_skips_overlay(monkeypatch):
         "_get_parent_visible_gpu_spec",
         lambda: {"raw": "GPU-uuid-a", "numeric_ids": None, "supports_explicit_gpu_ids": False},
     )
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [])  # UUID mask
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [])
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
     monkeypatch.setattr(
         hw,
@@ -556,13 +540,13 @@ def test_any_visibility_mask_is_detected(monkeypatch):
     ):
         monkeypatch.setenv(var, "1")
         assert hw._rocm_visibility_mask_active() is True, var
-        monkeypatch.setenv(var, "  ")  # empty is not an active filter
+        monkeypatch.setenv(var, "  ")
         assert hw._rocm_visibility_mask_active() is False, var
         monkeypatch.delenv(var, raising = False)
 
 
 def test_overlay_skips_under_gpu_device_ordinal(monkeypatch):
-    # GPU_DEVICE_ORDINAL=1 surfaces GPU 1 as torch ordinal 0, so index 0 is not GPU 0; overlay must not run.
+    # GPU_DEVICE_ORDINAL=1 surfaces GPU 1 as torch ordinal 0, so index 0 is not GPU 0.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     _patch_pci_map(monkeypatch, [_pci(0)])
     monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1")
@@ -573,7 +557,7 @@ def test_overlay_skips_under_gpu_device_ordinal(monkeypatch):
 
 
 def test_visible_utilization_delegates_gating_to_the_overlay(monkeypatch):
-    # The call site no longer pre-checks masks; the overlay gates itself, so a physical payload always reaches it.
+    # The call site no longer pre-checks masks; the overlay gates itself.
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     monkeypatch.setattr(hw, "IS_ROCM", True)
@@ -590,10 +574,9 @@ def test_visible_utilization_delegates_gating_to_the_overlay(monkeypatch):
         "_torch_get_per_device_info",
         lambda ids: [{"index": 1, "visible_ordinal": 0, "used_gb": 0.02, "total_gb": 8.0}],
     )
-    # Real overlay + gating: the layered mask must leave torch's figures.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: [_pci(0), _pci(1)])
     monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {_pci(1): (30.0, 8.0)})
     result = hw.get_visible_gpu_utilization()
     assert result["index_kind"] == "physical"
-    assert result["devices"][0]["vram_used_gb"] == 0.02  # untouched
+    assert result["devices"][0]["vram_used_gb"] == 0.02

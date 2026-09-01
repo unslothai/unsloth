@@ -31,9 +31,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# ``chat_template_helpers`` is dependency-light (copy / logging / typing, with the
-# transformers import deferred inside the function). Load it directly so the test
-# runs without importing the heavy ``core.inference`` package (unsloth / torch).
+# Load chat_template_helpers directly so the test runs without importing the heavy
+# core.inference package (unsloth / torch).
 _HELPERS_PATH = Path(_BACKEND_DIR) / "core" / "inference" / "chat_template_helpers.py"
 _spec = importlib.util.spec_from_file_location("_native_tpl_trc_test", _HELPERS_PATH)
 chat_template_helpers = importlib.util.module_from_spec(_spec)
@@ -42,8 +41,8 @@ _spec.loader.exec_module(chat_template_helpers)
 render_native_template = chat_template_helpers.render_native_template
 
 
-# A native template that emits a tools section only when tools are provided, so the
-# with-tools vs no-tools render differs and ``render_native_template`` accepts it.
+# A native template that emits a tools section only when tools are provided, so the two renders
+# differ and render_native_template accepts it.
 _NATIVE_TEMPLATE = (
     "{% for m in messages %}{{ m['role'] }}: {{ m['content'] }}\n{% endfor %}"
     "{% if tools %}[AVAILABLE_TOOLS]{{ tools }}[/AVAILABLE_TOOLS]\n{% endif %}"
@@ -101,8 +100,8 @@ def _install_custom_code_tokenizer(monkeypatch):
         calls["model_id"] = model_id
         calls["token"] = token
         if not trust_remote_code:
-            # Mirrors transformers.dynamic_module_utils.resolve_trust_remote_code:
-            # has_remote_code and not has_local_code and not trust_remote_code -> ValueError.
+            # Mirrors transformers.dynamic_module_utils.resolve_trust_remote_code: has_remote_code and not
+            # has_local_code and not trust_remote_code -> ValueError.
             raise ValueError(
                 f"The repository {model_id} contains custom code which must be executed "
                 "to correctly load the model. Please pass the argument "
@@ -116,10 +115,9 @@ def _install_custom_code_tokenizer(monkeypatch):
 
 def _model_info(trust_remote_code):
     return {
-        "native_chat_template": None,  # force the repo reload path
-        "base_model": None,  # non-LoRA: template_source == active_model_name
+        "native_chat_template": None,
+        "base_model": None,
         "trust_remote_code": trust_remote_code,
-        # Live tokenizer that gets shallow-copied + re-pointed at the native template.
         "tokenizer": _JinjaTokenizer("OVERRIDE-THAT-DROPS-TOOLS"),
     }
 
@@ -141,8 +139,7 @@ def test_native_reload_passes_stored_trust_remote_code(monkeypatch):
     assert out is not None, "native fallback should render the tools prompt with consent"
     assert "[AVAILABLE_TOOLS]" in out
     assert "get_weather" in out
-    assert calls["trust_remote_code"] is True  # the stored consent was threaded through
-    # A successful fetch is cached so the next tool turn skips the reload.
+    assert calls["trust_remote_code"] is True
     assert model_info["native_chat_template"] == _NATIVE_TEMPLATE
 
 

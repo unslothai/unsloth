@@ -50,14 +50,14 @@ def _stub_torch(
     torch.cuda = types.SimpleNamespace(
         is_available = lambda: cuda_available,
         get_device_capability = lambda *a: cc,
-        # A data-center name by default; consumer tests pass a GeForce name (or monkeypatch _is_consumer_gpu).
+        # A data-center name by default; consumer tests pass a GeForce name (or monkeypatch
+        # _is_consumer_gpu).
         get_device_name = lambda *a: device_name,
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
 
 
-# ── normalisation ─────────────────────────────────────────────────────────────
 
 
 def test_normalize_transformer_quant():
@@ -72,7 +72,6 @@ def test_normalize_transformer_quant():
         normalize_transformer_quant("int2")
 
 
-# ── dense-source gate ───────────────────────────────────────────────────────────
 
 
 def test_dense_transformer_supported_requires_cuda_bf16(monkeypatch):
@@ -82,7 +81,6 @@ def test_dense_transformer_supported_requires_cuda_bf16(monkeypatch):
     assert dense_transformer_supported(_target(dtype = "float16")) is False
 
 
-# ── scheme selection ladder ─────────────────────────────────────────────────────
 
 
 def _allow(monkeypatch, allowed):
@@ -92,23 +90,23 @@ def _allow(monkeypatch, allowed):
 
 def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
-    # Even with every scheme available, auto picks fp8 on Blackwell: measured on a B200 it is faster AND more accurate than nvfp4 at DiT shapes.
+    # Even with every scheme available, auto picks fp8 on Blackwell: measured on a B200 it is faster
+    # AND more accurate than nvfp4 at DiT shapes.
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
     # fp8 unavailable: auto skips nvfp4 even though the hardware runs it, because nvfp4 is an
     # explicit opt-in only (slower AND less accurate at DiT shapes), and lands on mxfp8.
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
-    # Only mxfp8 + int8 left -> mxfp8 (still above int8).
     _allow(monkeypatch, {TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
-    # Only int8 usable -> int8.
     _allow(monkeypatch, {TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
 
 
 def test_auto_consumer_blackwell_prefers_int8(monkeypatch):
-    # Consumer Blackwell (RTX 50xx): fp8 FP32-accumulate is throughput-halved while int8 is full-rate, so auto prefers int8.
+    # Consumer Blackwell (RTX 50xx): fp8 FP32-accumulate is throughput-halved while int8 is
+    # full-rate, so auto prefers int8.
     _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA GeForce RTX 5090")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
@@ -132,7 +130,8 @@ def test_auto_workstation_unknown_prefers_int8(monkeypatch):
 
 
 def test_auto_professional_rtx_prefers_fp8(monkeypatch):
-    # Professional parts (RTX PRO 6000 Blackwell, RTX 6000 Ada) count as datacenter elsewhere in the backend, so auto keeps fp8 first, matching llama_cpp.
+    # Professional parts (RTX PRO 6000 Blackwell, RTX 6000 Ada) count as datacenter elsewhere in the
+    # backend, so auto keeps fp8 first, matching llama_cpp.
     for device_name, cc in (
         ("NVIDIA RTX PRO 6000 Blackwell Server Edition", (10, 0)),
         ("NVIDIA RTX 6000 Ada Generation", (8, 9)),
@@ -181,15 +180,12 @@ def test_select_none_when_disabled_or_non_cuda(monkeypatch):
     assert select_transformer_quant_scheme(_target(device = "cpu"), "auto") is None
 
 
-# ── _scheme_supported / _smoke_probe ────────────────────────────────────────────
 
 
 def test_scheme_supported_shortcircuits(monkeypatch):
-    # No CUDA gives False without running the smoke probe.
     _stub_torch(monkeypatch, cuda_available = False)
     monkeypatch.setattr(tq, "_smoke_probe", lambda *a: pytest.fail("probe should not run"))
     assert tq._scheme_supported(TQ_INT8, "cuda") is False
-    # fp8 requested but the fp8 dtype is missing gives False before the probe.
     _stub_torch(monkeypatch, with_fp8 = False)
     monkeypatch.setattr(tq, "_smoke_probe", lambda *a: pytest.fail("probe should not run"))
     assert tq._scheme_supported(TQ_FP8, "cuda") is False
@@ -257,7 +253,6 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     assert tq._smoke_probe(TQ_INT8, "cuda") is True  # cached, no second quantize_
     assert calls["n"] == 1
 
-    # A scheme whose quantize_ raises probes False (and is cached).
     tq._SMOKE_CACHE.clear()
 
     def _quantize_boom(
@@ -270,12 +265,10 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     tqz.quantize_ = _quantize_boom
     assert tq._smoke_probe(TQ_FP8, "cuda") is False
 
-    # A kernel that RUNS but returns non-finite values probes False too. torchao's fp8 scale
-    # chooser has no eps clamp, so a zero activation row gives scale 0 and NaN qdata unless the
-    # config floors it, and the floor is applied only on a torchao exposing activation_value_lb.
-    # Without this the probe passed on such a build and every zero-padded text stream went black.
-    # int8, not fp8: _make_quant_config(fp8) imports PerRow, which this stub module does not
-    # carry, so an fp8 probe here would return False from the ImportError and prove nothing.
+    # A kernel that RUNS but returns non-finite values probes False too: torchao's fp8 scale chooser
+    # has no eps clamp, so a zero activation row gives scale 0 and NaN qdata unless the config
+    # floors it. int8, not fp8: _make_quant_config(fp8) imports PerRow, absent from this stub
+    # module.
     tq._SMOKE_CACHE.clear()
     tqz.quantize_ = _quantize_ok
     finite["ok"] = False
@@ -283,10 +276,8 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
 
 
 def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
-    # A full GPU is not a verdict on the scheme, and this probe now runs on the ROUTE thread --
-    # before the arbiter evicts the resident chat model, which is the point of raising the refusal
-    # early -- so it meets a full GPU by design. Caching that answer would refuse every later
-    # EXPLICIT request for the scheme for the life of the process, on a host that runs it fine.
+    # A full GPU is not a verdict on the scheme, and this probe runs on the ROUTE thread -- before
+    # the arbiter evicts the resident chat model -- so it meets a full GPU by design.
     class _OOM(RuntimeError):
         pass
 
@@ -338,7 +329,6 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     tq._SMOKE_CACHE.clear()
     assert tq._smoke_probe(TQ_INT8, "cuda") is False
     assert tq._SMOKE_CACHE == {}, "an OOM must not be remembered as 'this scheme cannot run'"
-    # The eviction happens, memory frees, and the very next ask gets the real answer.
     fault[0] = None
     assert tq._smoke_probe(TQ_INT8, "cuda") is True
     assert calls["n"] == 1
@@ -349,10 +339,8 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     assert tq._smoke_probe(TQ_INT8, "cuda") is False
     assert tq._SMOKE_CACHE == {(TQ_INT8, "cuda"): False}
 
-    # And the PRE-EVICTION caller gets "could not tell", not "cannot run": the gate it feeds turns
-    # a False into a 409 before the arbiter has freed the VRAM the probe wanted, so answering
-    # "unsupported" there refuses a load the eviction was about to make room for. A non-memory
-    # failure stays False for that caller too -- that one is a real verdict.
+    # The PRE-EVICTION caller gets "could not tell", not "cannot run": the gate it feeds turns a
+    # False into a 409 before the arbiter has freed the VRAM the probe wanted.
     tq._SMOKE_CACHE.clear()
     fault[0] = _OOM("CUDA out of memory. Tried to allocate 2.00 GiB")
     assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok = True) is True
@@ -361,13 +349,8 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok = True) is False
 
 
-# ── out-of-process probe ────────────────────────────────────────────────────────
-#
-# The probe allocates, and a CUDA context is process-wide and never given back: measured on a
-# B200 host, one uncached probe takes the backend from 0 MiB to 806 MiB for the life of the
-# process. /images/download-plan reaches this while the user is only STAGING a download, so the
-# child is what keeps a plan from costing VRAM. Verdict parity with the in-process probe is the
-# contract; everything below pins one half of it.
+# The probe allocates, and a CUDA context is process-wide and never given back: on a B200 host one
+# uncached probe takes the backend from 0 MiB to 806 MiB for the life of the process.
 
 
 @pytest.fixture(autouse = True)
@@ -382,8 +365,6 @@ def _reset_child_probe_state():
 
 
 def test_the_child_answers_for_every_scheme_in_one_go(monkeypatch):
-    # One child, not one per ladder step: spawning costs 3.9 s on a B200 host (nearly all of it
-    # importing torch), so an auto ladder walking three schemes would otherwise pay it three times.
     _stub_torch(monkeypatch)
     spawns = {"n": 0}
 
@@ -406,9 +387,7 @@ def test_the_child_answers_for_every_scheme_in_one_go(monkeypatch):
 
 
 def test_a_child_out_of_memory_is_not_cached_and_is_not_a_verdict(monkeypatch):
-    # Same contract the in-process probe holds: a full GPU says nothing about the scheme. Falling
-    # back in-process here would be worse than useless -- it would meet the same full GPU and pay
-    # the context on the way -- so the OOM is answered without re-probing.
+    # Same contract the in-process probe holds: a full GPU says nothing about the scheme.
     _stub_torch(monkeypatch)
     monkeypatch.setattr(tq, "_child_probe_table", lambda device: {TQ_INT8: None, TQ_FP8: True})
     monkeypatch.setattr(
@@ -422,8 +401,8 @@ def test_a_child_out_of_memory_is_not_cached_and_is_not_a_verdict(monkeypatch):
 
 
 def test_no_child_falls_back_to_the_in_process_probe(monkeypatch):
-    # A frozen desktop build or a sandbox that refuses to spawn must still be able to load a
-    # model: the VRAM this saves is not worth failing a load over.
+    # A frozen desktop build or a sandbox that refuses to spawn must still be able to load a model:
+    # the VRAM this saves is not worth failing a load over.
     _stub_torch(monkeypatch)
     monkeypatch.setattr(tq, "_child_probe_table", lambda device: None)
     monkeypatch.setattr(tq, "_smoke_probe", lambda *a, **k: True)
@@ -437,7 +416,6 @@ def test_a_host_without_cuda_never_spawns_a_child(monkeypatch):
         tq, "_child_probe_table", lambda device: pytest.fail("spawned on a CUDA-less host")
     )
     assert tq._scheme_supported(TQ_INT8, "cuda") is False
-    # Same for an fp8 ask on a torch without the dtype.
     _stub_torch(monkeypatch, with_fp8 = False)
     assert tq._scheme_supported(TQ_FP8, "cuda") is False
 
@@ -450,8 +428,8 @@ def test_a_cached_scheme_does_not_spawn_a_child(monkeypatch):
 
 
 def test_the_child_entry_posts_one_table_covering_every_scheme(monkeypatch):
-    # Child side. Every scheme is attempted even after one fails: the verdicts are independent
-    # and the whole point of the child is to pay the CUDA context once.
+    # Child side. Every scheme is attempted even after one fails: the verdicts are independent and
+    # the whole point of the child is to pay the CUDA context once.
     posted = []
     monkeypatch.setattr(
         tq,
@@ -471,14 +449,12 @@ def test_a_spawn_failure_is_remembered_so_it_is_paid_once(monkeypatch):
     monkeypatch.setattr(multiprocessing, "get_context", _no_spawn)
     assert tq._child_probe_table("cuda") is None
     assert tq._CHILD_PROBE_UNAVAILABLE is True
-    # Second time round it does not even reach multiprocessing.
     monkeypatch.setattr(
         multiprocessing, "get_context", lambda name: pytest.fail("retried a spawn known to fail")
     )
     assert tq._child_probe_table("cuda") is None
 
 
-# ── the child's lifetime ────────────────────────────────────────────────────────
 
 
 class _FakeProbeChild:
@@ -562,10 +538,8 @@ def _probe_lifetime_records(monkeypatch):
 def test_the_probe_child_is_adopted_so_a_shutdown_sweep_can_reach_it(
     monkeypatch, _probe_lifetime_records
 ):
-    # The child-side PDEATHSIG bind is Linux only, and the Windows job object is documented to
-    # fail when Unsloth already runs inside an incompatible host job. In that configuration this
-    # record is the only thing left that can reach a probe still holding a CUDA context, both
-    # from the shutdown sweep and from the next startup.
+    # The child-side PDEATHSIG bind is Linux only, and the Windows job object is documented to fail
+    # inside an incompatible host job.
     import multiprocessing
 
     monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
@@ -583,11 +557,8 @@ def test_the_queue_is_built_with_the_lease_secret_already_scrubbed(
     monkeypatch, _probe_lifetime_records
 ):
     # On POSIX the first spawn-context queue creates the named semaphores that start
-    # multiprocessing's resource tracker, and that tracker is exec'd with this process's
-    # environment and then outlives every child. Built above the scrub it carries the
-    # native-path lease secret for the life of the backend, where the child-side scrub can no
-    # longer reach it. Measured: the secret is in the tracker's /proc/<pid>/environ when the
-    # queue is built first, and absent when it is built here.
+    # multiprocessing's resource tracker, which is exec'd with this process's environment and
+    # outlives every child.
     import multiprocessing
 
     from utils.native_path_leases import LEASE_SECRET_ENV
@@ -611,19 +582,16 @@ def test_the_queue_is_built_with_the_lease_secret_already_scrubbed(
     )
     assert tq._child_probe_table("cuda") == {TQ_INT8: True}
     assert seen["at_queue"] is None
-    # And the parent has it back once the child is started.
     assert os.environ.get(LEASE_SECRET_ENV) == secret
 
 
-# ── a spawn that failed but may not fail next time ──────────────────────────────
 
 
 def test_a_transient_spawn_oserror_is_retried_rather_than_latched(
     monkeypatch, _probe_lifetime_records
 ):
     # Descriptors, process slots and /dev/shm all come back. Latching the OSError would hold the
-    # backend on the in-process probe -- and so on the ~800 MiB the child exists to avoid -- for
-    # every later miss, until Unsloth restarts.
+    # backend on the in-process probe, and so on the ~800 MiB the child exists to avoid, until restart.
     import multiprocessing
 
     calls = {"n": 0}
@@ -638,7 +606,6 @@ def test_a_transient_spawn_oserror_is_retried_rather_than_latched(
     monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
     assert tq._child_probe_table("cuda") is None
     assert tq._CHILD_PROBE_UNAVAILABLE is False
-    # The pressure clears and the next miss gets its child back.
     assert tq._child_probe_table("cuda") == {TQ_INT8: True}
     assert calls["n"] == 2
     assert tq._CHILD_PROBE_SPAWN_ERRORS == 0
@@ -665,8 +632,8 @@ def test_a_host_that_refuses_every_spawn_stops_being_asked(monkeypatch):
 
 
 def test_a_child_that_survives_terminate_is_killed(_probe_lifetime_records):
-    # Five seconds of terminate and then giving up leaves the VRAM this probe exists to hand
-    # back held for the whole 180 s timeout, or forever if the child is wedged.
+    # Five seconds of terminate and then giving up leaves the VRAM this probe exists to hand back
+    # held for the whole 180 s timeout, or forever if the child is wedged.
     child = _FakeProbeChild(dies_on = "kill")
     child.start()
     assert tq._close_probe_child(child, _FakeProbeQueue()) is True
@@ -746,16 +713,17 @@ def test_an_oom_is_recognised_however_it_is_spelled():
 
 
 def test_an_unusable_scheme_names_the_fault_the_user_can_actually_fix(monkeypatch):
-    # select_transformer_quant_scheme folds three different faults into one None, and an EXPLICIT
-    # scheme now fails CLOSED, so that None becomes the whole explanation on a 409. Measured on a
-    # B200 whose torchao could not import (a torch/torchao skew): every explicit scheme was refused
-    # with "not usable ... on this GPU", which is false and sends the owner hunting for hardware.
+    # select_transformer_quant_scheme folds three faults into one None, and an EXPLICIT scheme now fails
+    # CLOSED, so that None becomes the whole explanation on a 409. On a B200 whose torchao could not
+    # import, every scheme was refused with "not usable ... on this GPU", sending the owner hunting
+    # for hardware.
     monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (None,))
     assert tq.explain_unusable_scheme("z-image-turbo", "fp8") == (
         "'fp8' is not usable for family 'z-image-turbo' on this GPU"
     )
-    # The measured deny list wins over both: it holds on every GPU, so naming hardware would be wrong.
-    # mxfp8, not fp8: fp8 on qwen-image is no longer denied, so it would take the GPU branch here.
+    # The measured deny list wins over both: it holds on every GPU, so naming hardware would be
+    # wrong. mxfp8, not fp8: fp8 on qwen-image is no longer denied, so it would take the GPU branch
+    # here.
     denied = tq.explain_unusable_scheme("qwen-image", "mxfp8")
     assert "measured accuracy gate" in denied and "whatever the GPU" in denied
     assert "on this GPU" not in denied.replace("whatever the GPU", "")
@@ -767,7 +735,6 @@ def test_an_unusable_scheme_names_the_fault_the_user_can_actually_fix(monkeypatc
     broken = tq.explain_unusable_scheme("z-image-turbo", "fp8")
     assert "cannot import name 'ScalingType'" in broken
     assert "not a limit of the GPU" in broken
-    # ...but a denied family is still reported as denied, whatever torchao is doing.
     assert "measured accuracy gate" in tq.explain_unusable_scheme("qwen-image", "mxfp8")
 
 
@@ -825,7 +792,6 @@ def test_the_smoke_probe_feeds_zero_rows_not_only_noise(monkeypatch):
     assert all(value == 0 for _, value in seen["x"].zeroed)
 
 
-# ── consumer-vs-datacenter detection (fp8 fast-accumulate gate) ──────────────────
 
 
 def _stub_device_name(monkeypatch, name):
@@ -871,14 +837,14 @@ def test_is_consumer_gpu_false_for_datacenter(monkeypatch, name):
 
 
 def test_is_consumer_gpu_defaults_true_on_probe_failure(monkeypatch):
-    # No torch / no device name available assumes consumer (safe: fast accum is free on data center and a win on consumer).
+    # No torch / no device name available assumes consumer (safe: fast accum is free on data center
+    # and a win on consumer).
     torch = types.ModuleType("torch")
     torch.cuda = types.SimpleNamespace()  # no get_device_name
     monkeypatch.setitem(sys.modules, "torch", torch)
     assert tq._is_consumer_gpu() is True
 
 
-# ── filter ──────────────────────────────────────────────────────────────────────
 
 
 def test_make_filter_fn(monkeypatch):
@@ -899,7 +865,8 @@ def test_make_filter_fn(monkeypatch):
 
 
 def test_require_bf16_schemes_excludes_nvfp4():
-    # fp8 and mxfp8 assert a bf16 weight (torchao 0.17 / B200) so they gate on it; nvfp4 quantises fp32 fine and keeps its large fp32 projections.
+    # fp8 and mxfp8 assert a bf16 weight (torchao 0.17 / B200) so they gate on it; nvfp4 quantises
+    # fp32 fine and keeps its large fp32 projections.
     from core.inference.diffusion_transformer_quant import (
         _REQUIRE_BF16_SCHEMES,
         TQ_FP8,
@@ -915,7 +882,8 @@ def test_require_bf16_schemes_excludes_nvfp4():
 
 
 def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
-    # fp8 / mxfp8 assert a bf16 weight, so require_bf16 must skip an fp32 Linear (Wan / Hunyuan video DiTs keep some) or one such layer raises inside quantize_ and no-ops the whole pass.
+    # fp8 / mxfp8 assert a bf16 weight, so require_bf16 must skip an fp32 Linear (Wan / Hunyuan
+    # video DiTs keep some) or one such layer raises inside quantize_ and no-ops the whole pass.
     torch = types.ModuleType("torch")
     torch.bfloat16, torch.float32 = "bf16", "fp32"
 
@@ -936,7 +904,8 @@ def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
 
 
 def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
-    # The int8 path skips the M=1 AdaLN modulation / conditioning-embedder projections (below torch._int_mm's M floor of 16) while keeping the attention / FFN and sequence embedders. fp8 keeps everything.
+    # The int8 path skips the M=1 AdaLN modulation / conditioning-embedder projections (below
+    # torch._int_mm's M floor of 16) while keeping the attention / FFN and sequence embedders.
     from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
 
     class _Lin:
@@ -973,7 +942,6 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
         "txt_in",
     ):
         assert keep(big(), fqn) is True, fqn
-    # Without the exclusion (fp8 path), the modulation layer is kept.
     assert make_filter_fn(512)(big(), "transformer_blocks.0.norm1.linear") is True
     # A None / empty fqn must not crash the exclusion check; with no name nothing matches, so it is kept.
     assert keep(big(), None) is True
@@ -981,7 +949,8 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
 
 
 def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
-    # The runtime quantiser and the offline prequant builder must apply the SAME int8 exclusion, else an int8 artifact bakes the M=1 linears and reintroduces the crash.
+    # The runtime quantiser and the offline prequant builder must apply the SAME int8 exclusion,
+    # else an int8 artifact bakes the M=1 linears and reintroduces the crash.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -992,7 +961,8 @@ def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
 
 
 def test_exclude_tokens_for_scheme():
-    # The shared scheme-to-exclusion decision for both paths: int8 excludes the M=1 modulation / embedder tokens, every scaled_mm scheme excludes none.
+    # The shared scheme-to-exclusion decision for both paths: int8 excludes the M=1 modulation /
+    # embedder tokens, every scaled_mm scheme excludes none.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -1005,7 +975,8 @@ def test_exclude_tokens_for_scheme():
 
 
 def test_exclude_tokens_for_scheme_family():
-    # Qwen-Image never pads its text stream (unlike FLUX's 512-token T5), so short prompts run those linears at M < 16 and torch._int_mm raises: they stay bf16 while the M ~ 4k image stream keeps int8.
+    # Qwen-Image never pads its text stream (unlike FLUX's 512-token T5), so short prompts run those
+    # linears at M < 16 and torch._int_mm raises: they stay bf16 while the M ~ 4k image stream is int8.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         _QWENIMAGE_INT8_EXCLUDES,
@@ -1023,11 +994,11 @@ def test_exclude_tokens_for_scheme_family():
     assert exclude_tokens_for_scheme(TQ_FP8, "qwen-image") == ()
 
 
-# ── apply ───────────────────────────────────────────────────────────────────────
 
 
 def test_resolve_fast_accum(monkeypatch):
-    # None means fast accumulate on every GPU class; an explicit bool forces it. Deriving it from the GPU class made fp8 2.05x slower than int8 on RTX 6000 Ada, and on B200 the flag is a measured no-op.
+    # None means fast accumulate on every GPU class; an explicit bool forces it. Deriving it from the
+    # GPU class made fp8 2.05x slower than int8 on RTX 6000 Ada, and on B200 the flag is a no-op.
     for consumer in (True, False):
         monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a, _c = consumer: _c)
         assert tq._resolve_fast_accum(None) is True
@@ -1124,13 +1095,12 @@ def test_quantize_transformer_tolerates_failure(monkeypatch):
     assert quantize_transformer(pipe, _target(), mode = "int8") is None
 
 
-# ── family scheme deny (measured model-level breakage) ────────────────────────
 
 
 def test_family_deny_auto_skips_mx_and_nvfp4_for_qwen(monkeypatch):
     # B200 with every scheme available: mxfp8 and nvfp4 still damage the Qwen DiT, so auto skips
-    # them. fp8 is no longer denied (activation_value_lb fixed the black frames), so auto now
-    # takes fp8 first on a data-center part rather than falling all the way to int8.
+    # them. fp8 is no longer denied (activation_value_lb fixed the black frames), so auto takes fp8
+    # first on a data-center part rather than falling to int8.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_FP8
@@ -1141,7 +1111,7 @@ def test_family_deny_auto_skips_mx_and_nvfp4_for_qwen(monkeypatch):
 
 
 def test_family_deny_refuses_explicit_mxfp8_and_nvfp4_for_qwen(monkeypatch):
-    # An explicit denied scheme returns None (same contract as an unsupported scheme). fp8 and int8
+    # An explicit denied scheme returns None (same contract as an unsupported scheme); fp8 and int8
     # are both honored on qwen now, and fp8 outside the deny table is unaffected.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_NVFP4, TQ_INT8})
@@ -1161,8 +1131,8 @@ def test_family_deny_no_family_keeps_ladder(monkeypatch):
 
 
 def test_quantize_transformer_threads_family(monkeypatch):
-    # quantize_transformer passes the family down to the selector, so a denied (family, scheme) pair never reaches torchao.
-    # mxfp8, not fp8: fp8 on qwen-image is no longer denied, so it would reach torchao and prove nothing.
+    # quantize_transformer passes the family down to the selector, so a denied (family, scheme) pair
+    # never reaches torchao. mxfp8, not fp8: fp8 on qwen-image is no longer denied.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
@@ -1212,9 +1182,8 @@ def test_the_attention_trim_families_exclude_their_small_m_text_streams():
     from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
 
     assert exclude_tokens_for_scheme("fp8", "hunyuanvideo-1.5") == ()
-    # flux.1 stands in for the unrelated family here. ltx-2 no longer can: it is audiovisual, and
-    # a video-only run feeds a one-token audio stream that hits the same M floor, so it now carries
-    # its own audio exclusions.
+    # flux.1 stands in for the unrelated family; ltx-2 no longer can, since it is audiovisual and a
+    # video-only run feeds a one-token audio stream that hits the same M floor.
     assert exclude_tokens_for_scheme(TQ_INT8, "flux.1") == _INT8_EXCLUDE_NAME_TOKENS
     assert exclude_tokens_for_scheme(TQ_INT8, None) == _INT8_EXCLUDE_NAME_TOKENS
 
@@ -1236,9 +1205,8 @@ def test_minimax_h3_int8_excludes_its_adaln_projection():
 
     assert "adaln_proj" in exclude_tokens_for_scheme(TQ_INT8, "minimax-h3")
 
-    # The generic list genuinely does not cover adaln_proj, which is why the entry is needed at all.
-    # If a future generic token starts matching it, this assertion fails and the family entry can
-    # be reconsidered rather than left as dead weight.
+    # The generic list does not cover adaln_proj, which is why the entry is needed at all; if a
+    # future generic token starts matching it, this fails and the family entry can be reconsidered.
     from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
 
     assert not any(t in "adaln_proj" for t in _INT8_EXCLUDE_NAME_TOKENS)
@@ -1381,9 +1349,7 @@ def test_apply_small_m_padding_is_inert_without_a_pad_list(monkeypatch):
 
 def test_the_training_deny_is_a_superset_of_the_inference_deny():
     # The two tables are separate because rendering evidence is not training evidence, but the
-    # relationship must only ever go one way: anything inference refuses, training refuses too.
-    # A regression making training MORE permissive than inference would let a scheme that cannot
-    # even render reach a trainer, which is the one direction this split must not allow.
+    # relationship goes one way: anything inference refuses, training refuses too.
     from core.inference.diffusion_transformer_quant import (
         _FAMILY_SCHEME_DENY,
         TQ_SCHEMES,
@@ -1407,15 +1373,14 @@ def test_the_training_deny_is_a_superset_of_the_inference_deny():
 
 
 def test_auto_scheme_candidates_lists_the_whole_ladder_not_just_the_winner(monkeypatch):
-    # select_transformer_quant_scheme returns one winner. When that winner has no hosted prequant
-    # AND cannot fit dense, the loader needs to know what auto would have picked NEXT, or the pick
-    # drops to GGUF even though a lower rung would have loaded. Same ladder, deny list and probe.
+    # select_transformer_quant_scheme returns one winner; when it has no hosted prequant AND cannot fit
+    # dense, the loader needs to know what auto would have picked NEXT, or the pick drops to GGUF
+    # though a lower rung would have loaded.
     from core.inference.diffusion_transformer_quant import auto_scheme_candidates
 
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
     assert auto_scheme_candidates(_target()) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
-    # The deny list still applies: qwen-image keeps mxfp8 out, so fp8 then int8.
     assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_FP8, TQ_INT8)
     # Whatever the probe refuses is absent, so the list can never offer an unusable scheme.
     _allow(monkeypatch, {TQ_INT8})
@@ -1425,9 +1390,8 @@ def test_auto_scheme_candidates_lists_the_whole_ladder_not_just_the_winner(monke
 
 
 def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
-    # The two must never disagree about what auto is allowed to pick, so the selector's answer is
-    # always the head of the candidate list. A drift here would let the retry path propose a scheme
-    # auto itself would refuse.
+    # The two must never disagree about what auto may pick, so the selector's answer is always the head
+    # of the candidate list; a drift would let the retry path propose a scheme auto would refuse.
     from core.inference.diffusion_transformer_quant import auto_scheme_candidates
     for cc, allowed, family in (
         ((10, 0), {TQ_FP8, TQ_MXFP8, TQ_INT8}, None),
@@ -1465,9 +1429,9 @@ def test_the_pre_eviction_gate_does_not_refuse_on_an_indeterminate_probe(monkeyp
 
 
 def test_a_refusal_reason_does_not_carry_server_paths(monkeypatch):
-    # The torchao import error is interpolated into the precision-refusal RuntimeError, which both
-    # load routes return verbatim as the 409 detail. An ImportError routinely names the absolute
-    # file that raised it, so the reason has to be stripped while the log keeps the whole thing.
+    # The torchao import error is interpolated into the precision-refusal RuntimeError, which both load
+    # routes return verbatim as the 409 detail, and an ImportError routinely names the absolute file
+    # that raised it, so the reason is stripped while the log keeps the whole thing.
     monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", None)
     monkeypatch.setattr(tq, "is_stubbed", lambda pkg: False)
     broken = types.ModuleType("torchao.quantization")
@@ -1483,7 +1447,6 @@ def test_a_refusal_reason_does_not_carry_server_paths(monkeypatch):
     reason = tq.torchao_unavailable_reason()
     assert reason is not None
     assert "/srv/unsloth" not in reason and "site-packages" not in reason
-    # The actionable half survives: the caller still learns WHICH import broke.
     assert "ScalingType" in reason and "torch.nn.functional" in reason
 
 

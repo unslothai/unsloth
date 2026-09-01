@@ -44,8 +44,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# model_mappings is dependency-free: load it directly so these tests run
-# without the studio venv / package import side effects.
+# model_mappings is dependency-free: load it directly so these tests run without the studio venv import side effects.
 _MM_PATH = Path(_BACKEND_DIR) / "utils" / "datasets" / "model_mappings.py"
 _mm_spec = importlib.util.spec_from_file_location("_marker_test_mm", _MM_PATH)
 model_mappings = importlib.util.module_from_spec(_mm_spec)
@@ -54,8 +53,6 @@ _mm_spec.loader.exec_module(model_mappings)
 T2R = model_mappings.TEMPLATE_TO_RESPONSES_MAPPER
 
 
-# ── Fixed entries: markers derived from what each representative tokenizer
-#    actually renders (see PR for the token-level derivation). ──
 EXPECTED_FIXED = {
     "mistral": {"instruction": "[INST]", "response": "[/INST]"},
     "llama": {"instruction": "<s>[INST]", "response": "[/INST]"},
@@ -100,8 +97,6 @@ def test_no_marker_is_empty_or_whitespace():
         assert parts["response"].strip(), template
 
 
-# ── Token-level checks: markers must select exactly the assistant turns on a
-#    rendered two-turn fixture, and the final EOS label must never be -100. ──
 
 REPRESENTATIVES = {
     "mistral": ["unsloth/mistral-7b-instruct-v0.3"],
@@ -130,8 +125,7 @@ def _load_tokenizer(repo):
     except OSError as e:
         pytest.skip(f"tokenizer {repo} unavailable (offline?): {e}")
     except Exception:
-        # Tokenizer class newer than this transformers (e.g. GLM-4.7's
-        # TokenizersBackend): build directly from tokenizer.json.
+        # A tokenizer class newer than this transformers (GLM-4.7's TokenizersBackend): build from tokenizer.json.
         try:
             import json as _json
             from huggingface_hub import hf_hub_download
@@ -178,7 +172,7 @@ def test_fixed_markers_token_level(template, repo):
     try:
         ids = tok.apply_chat_template(msgs, tokenize = True, add_generation_prompt = False)
         if hasattr(ids, "keys"):
-            ids = ids["input_ids"]  # transformers 5.x returns a BatchEncoding
+            ids = ids["input_ids"]
     except Exception:
         ids = tok.apply_chat_template(FIXTURE, tokenize = True, add_generation_prompt = False)
         if hasattr(ids, "keys"):
@@ -197,15 +191,12 @@ def test_fixed_markers_token_level(template, repo):
     trained = tok.decode([ids[i] for i in range(n) if labels[i] != -100])
     masked = tok.decode([ids[i] for i in range(n) if labels[i] == -100])
 
-    # User and system content fully masked
     assert "question one" not in trained and "question one" in masked
     assert "question two" not in trained and "question two" in masked
     assert "terse assistant" not in trained
-    # EVERY assistant turn trained, not just the last
     assert "reply number one" in trained
     assert "reply number two" in trained
-    # The final EOS (last non-whitespace token) must never be -100, or the
-    # fine-tuned model never learns to stop generating.
+    # The final EOS must never be -100, or the fine-tuned model never learns to stop generating.
     i = n - 1
     while i > 0 and tok.decode([ids[i]]).strip() == "":
         i -= 1

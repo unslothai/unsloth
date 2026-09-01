@@ -44,8 +44,8 @@ def settings_store(monkeypatch):
         return True
 
     monkeypatch.setattr(studio_db, "compare_and_set_app_setting", _cas)
-    # Process-wide and outliving the patched store, so a resolution recorded here
-    # would answer for the same model in every later test file.
+    # Process-wide and outliving the patched store, so a resolution recorded here would answer for
+    # the same model in every later test file.
     ems._resolved_gguf_memo.clear()
     ems._invalidate_cache()
     yield store
@@ -207,14 +207,12 @@ def test_a_reset_keeps_the_repo_a_running_job_still_needs(settings_store, monkey
     assert ems.get_stored_gguf_repo("org/embedder-a") == "mirror/off-convention-GGUF"
     ems.reset_rag_embedding_model()
 
-    # The stored selection is gone...
     assert ems.get_stored_embedding_model() is None
     # ...but the pinned job keeps embedding through the same mirror.
     assert ems.remembered_gguf_repo("org/embedder-a") == "mirror/off-convention-GGUF"
     assert config.effective_gguf_repo_for_embedding_model("org/embedder-a") == (
         "mirror/off-convention-GGUF"
     )
-    # A model this process never resolved is still derived, not invented.
     assert config.effective_gguf_repo_for_embedding_model("org/never-seen") == (
         config.gguf_repo_for_embedding_model("org/never-seen")
     )
@@ -266,7 +264,6 @@ def test_retiring_the_pending_marker_retires_it_in_the_memo_too(settings_store, 
 
     ems.set_rag_embedding_model("org/other", gguf_repo = None, backend = None)
     assert ems.get_stored_download_pending("org/embedder") is False
-    # The backend it was resolved with is still remembered.
     assert ems.get_stored_backend("org/embedder") == "sentence-transformers"
 
 
@@ -279,18 +276,15 @@ def test_a_reset_makes_the_restored_defaults_resolution_durable(settings_store, 
     ems._resolved_gguf_memo.clear()
     default = ems.default_embedding_model()
 
-    # The default itself was resolved to an off-convention mirror...
     ems.set_rag_embedding_model(
         default, gguf_repo = "mirror/off-convention-GGUF", backend = "llama-server"
     )
     assert ems.get_stored_gguf_repo(default) == "mirror/off-convention-GGUF"
-    # ...then another model is selected, taking the single record with it...
     ems.set_rag_embedding_model("org/other", gguf_repo = None, backend = None)
-    # ...and the selection is reset.
     assert ems.reset_rag_embedding_model() == default
 
-    # The override is gone, but the default's resolution is durable again, not
-    # living only in this process.
+    # The override is gone, but the default's resolution is durable again, not living only in this
+    # process.
     assert ems.get_stored_embedding_model() is None
     ems._resolved_gguf_memo.clear()
     assert ems.get_stored_gguf_repo(default) == "mirror/off-convention-GGUF"
@@ -371,8 +365,8 @@ def test_a_reset_keeps_a_pending_only_resolution_for_the_default(settings_store)
     ems.set_rag_embedding_model("org/other", gguf_repo = "org/other-GGUF", backend = "llama-server")
     assert ems.reset_rag_embedding_model() == default
 
-    # Read the store, not the memo: the memo answers for this process either way,
-    # and what the reset has to preserve is the record a restart will find.
+    # Read the store, not the memo: the memo answers for this process either way, and what the reset
+    # has to preserve is the record a restart will find.
     ems._resolved_gguf_memo.clear()
     ems._invalidate_cache()
     assert ems.get_stored_download_pending(default) is True

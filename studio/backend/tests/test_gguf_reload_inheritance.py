@@ -48,11 +48,9 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not what is
+# installed, so setdefault does not defer to a real httpx nothing has touched yet: the stub wins for
+# the whole session.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -101,7 +99,6 @@ def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
     return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
 
 
-# ── Local-file identity via gguf_path ────────────────────────────────
 
 
 def test_already_in_target_state_uses_gguf_path_when_present(tmp_path):
@@ -172,7 +169,6 @@ def test_already_in_target_state_rejects_different_gguf_path(tmp_path):
     )
 
 
-# ── HF mode falls back to hf_variant comparison ──────────────────────
 
 
 def test_already_in_target_state_falls_back_to_hf_variant_for_hf_loads():
@@ -213,7 +209,6 @@ def test_already_in_target_state_hf_same_variant_matches():
     )
 
 
-# ── extra_args: None inherits, [] forces reload, list enforces ───────
 
 
 def test_already_in_target_state_none_extras_inherits_stored():

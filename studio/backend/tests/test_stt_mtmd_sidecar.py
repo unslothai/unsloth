@@ -141,7 +141,6 @@ def test_an_update_blocks_new_dictation_loads(spawned):
         assert was_active is False
         with pytest.raises(mtmd_mod.SttUnavailableError, match = "being updated"):
             sidecar.load("qwen3-asr-0.6b")
-    # Released again once the install finishes.
     assert sidecar._update_in_progress is False
 
 
@@ -251,13 +250,12 @@ def test_a_model_switch_never_kills_a_running_transcription(spawned, monkeypatch
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
     sidecar.load("qwen3-asr-0.6b")
     with sidecar._lock:
-        sidecar._active_requests = 1  # mid _post_transcribe, outside the lock
+        sidecar._active_requests = 1
 
     with pytest.raises(mtmd_mod.SttModelBusyError):
         sidecar.load("qwen3-asr-1.7b")
     assert made[0].poll() is None, "the in-flight request's server was killed"
 
-    # The same model is a no-op, so a concurrent transcribe is never refused.
     sidecar.load("qwen3-asr-0.6b")
     with sidecar._lock:
         sidecar._active_requests = 0
@@ -269,7 +267,7 @@ def test_a_dead_server_can_still_be_replaced_while_a_request_is_pending(spawned,
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
     sidecar.load("qwen3-asr-0.6b")
-    made[0]._returncode = 1  # crashed under the request
+    made[0]._returncode = 1
     with sidecar._lock:
         sidecar._active_requests = 1
 
@@ -288,7 +286,6 @@ def test_the_output_cap_follows_the_length_of_the_audio():
     assert budget(None) == mtmd_mod._MIN_TRANSCRIPT_TOKENS
     assert budget(0) == mtmd_mod._MIN_TRANSCRIPT_TOKENS
     assert budget(-5) == mtmd_mod._MIN_TRANSCRIPT_TOKENS
-    # Bounded, so it stays inside the context that also holds the audio.
     assert budget(10**6) == mtmd_mod._MAX_TRANSCRIPT_TOKENS
     assert budget(120) > budget(60)
 
@@ -418,7 +415,6 @@ def test_a_server_started_for_training_goes_back_to_the_gpu_after(spawned, monke
     sidecar.load("qwen3-asr-0.6b")
     assert commands[0][commands[0].index("-ngl") + 1] == "0"
 
-    # Still training: the same server is reused, no restart.
     sidecar.load("qwen3-asr-0.6b")
     assert len(commands) == 1
 
@@ -482,7 +478,6 @@ def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monk
         model = None,
         request_cancel_event = None,
     ):
-        # Stands in for another client switching the singleton in the gap.
         with self._lock:
             self._process = _FakeProcess()
             self._port = 65000
@@ -510,8 +505,7 @@ def test_a_busy_transcription_is_a_retry_not_a_server_error(monkeypatch):
         ri, "_stt_sidecar_for", lambda engine: type("S", (), {"transcribe": busy})()
     )
     monkeypatch.setattr(ri, "_resolve_serving_stt_engine", lambda engine: "mtmd")
-    # The route makes the model resident through the registry before transcribing, which
-    # would reach the real llama.cpp sidecar here. This test is about the error mapping.
+    # The route makes the model resident through the registry first, which would reach the real sidecar.
     monkeypatch.setattr(ri, "_stt_lifecycle", lambda: (lambda *a, **k: None, lambda *a: []))
 
     with pytest.raises(HTTPException) as excinfo:
@@ -779,7 +773,6 @@ def test_a_startup_cancelled_for_training_is_retryable_not_unavailable(spawned, 
         loader.join(timeout = 5)
 
     assert raised and isinstance(raised[0], mtmd_mod.SttLoadCancelledError)
-    # Not the 501 class: the route separates them by exception type.
     assert not isinstance(raised[0], mtmd_mod.SttUnavailableError)
 
 
@@ -798,7 +791,6 @@ def test_training_that_starts_while_the_old_server_is_reaped_still_pins_the_cpu(
         return _FakeProcess()
 
     def reap_then_train(process):
-        # The run that was admitted while this load waited on the reap.
         training["active"] = True
         real_reap(process)
 
@@ -853,7 +845,6 @@ class _SlowlyDyingProcess:
         pass
 
     def wait(self, timeout = None):
-        # Blocks until the test lets go, like a server slow to release its port and VRAM.
         if not self._release.wait(timeout = timeout):
             raise subprocess.TimeoutExpired("llama-server", timeout)
         self._returncode = -15
@@ -884,7 +875,6 @@ def test_status_reads_do_not_block_behind_a_reap(monkeypatch):
     unloading = threading.Thread(target = sidecar.unload, daemon = True)
     unloading.start()
     try:
-        # Give unload() time to take _lock and block inside _reap().
         time.sleep(0.2)
         answered = threading.Event()
 
@@ -922,7 +912,7 @@ def test_a_reaping_server_stays_visible_to_training_admission(monkeypatch):
     unloading = threading.Thread(target = unload, daemon = True)
     unloading.start()
     try:
-        time.sleep(0.2)  # inside the reap
+        time.sleep(0.2)
         seen["model"] = sidecar.loaded_model
         seen["device"] = sidecar.device
     finally:
@@ -933,7 +923,6 @@ def test_a_reaping_server_stays_visible_to_training_admission(monkeypatch):
         seen["model"] == "qwen3-asr-0.6b"
     ), "the reaping server read as gone; training admission would miss its VRAM"
     assert seen["device"] == "llama.cpp"
-    # Once the reap is done the fields are cleared, so it reads as gone.
     assert sidecar.loaded_model is None
     assert sidecar._process is None
 
@@ -970,7 +959,6 @@ def test_a_starting_load_is_announced_before_the_probe_and_the_reap():
     finally:
         release.set()
         loading.join(timeout = 10)
-    # The load never started a server, so it must not leave _loading set.
     assert sidecar.is_loading() is False
     assert sidecar._load_cancel_event is None
 
@@ -1008,10 +996,8 @@ def test_ggml_download_drops_its_adopted_pid(monkeypatch, tmp_path):
     """
     forgotten = []
 
-    # Once metadata resolves, _run() prepares the repo's cache for HTTP before it
-    # reaches the stubbed worker, and that writes: it creates the repo directory and
-    # a .transport marker. The session conftest deliberately pins HF_HUB_CACHE to the
-    # developer's real cache, so without a cache of its own this test edits it.
+    # _run() prepares the repo's cache for HTTP before it reaches the stubbed worker, and that writes;
+    # the session conftest pins HF_HUB_CACHE to the developer's real cache, so it needs its own.
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
 
     class _Finished:
@@ -1022,9 +1008,7 @@ def test_ggml_download_drops_its_adopted_pid(monkeypatch, tmp_path):
             return 0
 
     monkeypatch.setattr(ggml_mod, "_cached_model_path", lambda model_id: None)
-    # _run() opens with a HEAD to the Hub for the size and etag. It is best-effort and
-    # swallows its own errors, but leaving it live makes this test depend on a network
-    # round trip it does not care about, so answer it locally.
+    # _run() opens with a best-effort HEAD to the Hub, so answer it locally rather than depend on a network round trip.
     import huggingface_hub
 
     class _Metadata:
@@ -1095,7 +1079,6 @@ def test_download_probe_is_memoised_then_dropped_when_a_download_ends(monkeypatc
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
     assert len(calls) == 1, "the memo did not spare the second probe"
 
-    # A finished download changes the disk, so the answer is dropped, not left to expire.
     mtmd_mod._forget_downloaded_probe("qwen3-asr-0.6b")
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
     assert len(calls) == 2
@@ -1130,7 +1113,6 @@ def test_an_invalidation_mid_probe_discards_the_stale_answer(monkeypatch):
     mtmd_mod._forget_downloaded_probe()
 
     def probe_then_invalidate(model_id):
-        # The download completing while this probe is in flight.
         mtmd_mod._forget_downloaded_probe(model_id)
         return None
 
@@ -1141,7 +1123,6 @@ def test_an_invalidation_mid_probe_discards_the_stale_answer(monkeypatch):
             "qwen3-asr-0.6b" not in mtmd_mod._downloaded_probe
         ), "a stale answer was written back over the invalidation"
 
-    # The next poll sees the finished download rather than waiting out the TTL.
     monkeypatch.setattr(mtmd_mod, "_cached_model_paths", lambda mid: ("m.gguf", "p.gguf"))
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
     mtmd_mod._forget_downloaded_probe()
@@ -1154,7 +1135,7 @@ def test_the_entry_is_timestamped_after_the_probe(monkeypatch):
     monkeypatch.setattr(mtmd_mod.time, "monotonic", lambda: clock["t"])
 
     def slow_probe(model_id):
-        clock["t"] += 1.5  # probe takes most of the TTL
+        clock["t"] += 1.5
         return ("m.gguf", "p.gguf")
 
     monkeypatch.setattr(mtmd_mod, "_cached_model_paths", slow_probe)
@@ -1164,7 +1145,6 @@ def test_the_entry_is_timestamped_after_the_probe(monkeypatch):
         stored_at = mtmd_mod._downloaded_probe["qwen3-asr-0.6b"][0]
     assert stored_at == 1001.5, "the entry was timestamped before the probe ran"
 
-    # The panel's next poll, 750ms later, is still served from the memo.
     clock["t"] += 0.75
     called = []
     monkeypatch.setattr(mtmd_mod, "_cached_model_paths", lambda mid: called.append(mid))
@@ -1186,7 +1166,6 @@ def test_download_status_reports_progress_without_holding_the_lock():
     observed = []
 
     def slow_downloaded_bytes(*_args, **_kwargs):
-        # The lock must be free while this runs.
         observed.append(state._lock.acquire(blocking = False))
         if observed[-1]:
             state._lock.release()

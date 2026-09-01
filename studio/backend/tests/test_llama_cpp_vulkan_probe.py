@@ -139,8 +139,8 @@ def _host_memory(monkeypatch, *, available_mib, total_mib):
 
 def test_integrated_gpu_leaves_host_margin(tmp_path, monkeypatch):
     binary = _make_vulkan_install(tmp_path)
-    # iGPU with 30 GiB free; reserve a flat 1024 MiB (llama.cpp --fit-target).
-    # total stays 0: shared system RAM is not a VRAM budget for the fit.
+    # iGPU with 30 GiB free; reserve a flat 1024 MiB (llama.cpp --fit-target). total stays 0: shared
+    # system RAM is not a VRAM budget for the fit.
     _host_memory(monkeypatch, available_mib = 31 * 1024, total_mib = 32 * 1024)
     rows = [_row(0, 30 * GIB, is_igpu = 1, total_bytes = 32 * GIB)]
     with _mock_probe(rows):
@@ -209,9 +209,8 @@ def test_unreadable_host_memory_leaves_the_integrated_reading_alone(tmp_path, mo
 
 def test_discrete_gpu_free_is_untouched_and_total_passed_through(tmp_path):
     binary = _make_vulkan_install(tmp_path)
-    # 6 GiB free on a partially occupied 24 GiB card: free is untouched and the
-    # real total flows through so the fit reserves absolute headroom (CUDA/ROCm
-    # parity) instead of the looser free*frac budget.
+    # 6 GiB free on a partially occupied 24 GiB card: free is untouched and the real total flows through
+    # so the fit reserves absolute headroom (CUDA/ROCm parity) instead of the looser free*frac budget.
     rows = [_row(0, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
@@ -220,8 +219,8 @@ def test_discrete_gpu_free_is_untouched_and_total_passed_through(tmp_path):
 
 def test_large_discrete_gpu_is_untouched(tmp_path):
     binary = _make_vulkan_install(tmp_path)
-    # A 48 GiB discrete card stays untouched regardless of size; only the
-    # iGPU flag triggers the host margin, never a VRAM/RAM ratio.
+    # A 48 GiB discrete card stays untouched regardless of size; only the iGPU flag triggers the
+    # host margin, never a VRAM/RAM ratio.
     rows = [_row(0, 47 * GIB, is_igpu = 0, total_bytes = 48 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
@@ -229,10 +228,8 @@ def test_large_discrete_gpu_is_untouched(tmp_path):
 
 
 def test_inherited_visible_devices_mask_is_passed_through_to_probe(tmp_path, monkeypatch):
-    # The mask is NOT stripped or filtered in Python: ggml parses it in raw
-    # physical-device space while this probe reports the compact post-filter
-    # ordinal, so mixing spaces would be wrong. It is passed through unchanged
-    # so ggml applies it to the same device list the launch will enumerate.
+    # The mask is NOT stripped or filtered in Python: ggml parses it in raw physical-device space
+    # while this probe reports the compact post-filter ordinal, so mixing spaces would be wrong.
     binary = _make_vulkan_install(tmp_path)
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
     captured: dict = {}
@@ -243,9 +240,8 @@ def test_inherited_visible_devices_mask_is_passed_through_to_probe(tmp_path, mon
 
 
 def test_vulkan_pin_args_uses_device_names_not_env_mask():
-    # Pin by compact device name via --device (the space the probe reports and
-    # the registry names), never by writing a compact ordinal into the raw
-    # GGML_VK_VISIBLE_DEVICES index space.
+    # Pin by compact device name via --device (the space the probe reports and the registry names),
+    # never by writing a compact ordinal into the raw GGML_VK_VISIBLE_DEVICES index space.
     assert LlamaCppBackend._vulkan_pin_args([0]) == ["--device", "Vulkan0"]
     assert LlamaCppBackend._vulkan_pin_args([1, 2]) == ["--device", "Vulkan1,Vulkan2"]
     assert LlamaCppBackend._vulkan_pin_args(None) == []
@@ -258,9 +254,9 @@ def test_vulkan_only_build_is_detected(tmp_path):
 
 
 def test_multi_backend_build_is_not_vulkan_only(tmp_path):
-    # A custom build that ships CUDA (or HIP) alongside Vulkan must NOT be
-    # treated as Vulkan-only, or its CUDA GPU would be probed/pinned as a Vulkan
-    # device; defer to the CUDA/HIP path instead.
+    # A custom build that ships CUDA (or HIP) alongside Vulkan must NOT be treated as Vulkan-only,
+    # or its CUDA GPU would be probed and pinned as a Vulkan device; defer to the CUDA/HIP path
+    # instead.
     binary = _make_vulkan_install(tmp_path)
     cuda = "ggml-cuda.dll" if sys.platform == "win32" else "libggml-cuda.so"
     (_llama_lib_dir(binary) / cuda).write_bytes(b"stub")
@@ -269,11 +265,10 @@ def test_multi_backend_build_is_not_vulkan_only(tmp_path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "shell wrapper fallback is POSIX")
 def test_shell_wrapper_entrypoint_resolves_to_real_lib_dir(tmp_path):
-    # create_exec_entrypoint falls back to a #!/bin/sh wrapper at the install root
-    # when it cannot symlink; _find_llama_server_binary returns that root entrypoint,
-    # so _llama_lib_dir must follow the wrapper's exec target to build/bin -- else
-    # _is_vulkan_backend misses libggml-vulkan.so and the Vulkan probe/pin silently
-    # never engage on a valid Vulkan install.
+    # create_exec_entrypoint falls back to a #!/bin/sh wrapper at the install root when it cannot symlink
+    # and _find_llama_server_binary returns that root entrypoint, so _llama_lib_dir must follow the
+    # wrapper's exec target to build/bin -- else _is_vulkan_backend misses libggml-vulkan.so and the
+    # Vulkan probe/pin silently never engage.
     import os
 
     binary = _make_vulkan_install(tmp_path)  # tmp_path/build/bin/llama-server + vulkan lib
@@ -287,9 +282,8 @@ def test_shell_wrapper_entrypoint_resolves_to_real_lib_dir(tmp_path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "soname versioning is POSIX")
 def test_versioned_only_vulkan_soname_is_probed(tmp_path):
-    # Split-library install: only the versioned soname libggml-vulkan.so.0 exists
-    # (no unversioned dev symlink). The reader must still classify Vulkan and run
-    # the probe instead of returning [] and rejecting gpu_ids before launch (#7188).
+    # Split-library install: only the versioned soname libggml-vulkan.so.0 exists. The reader must still
+    # classify Vulkan and run the probe instead of returning [] and rejecting gpu_ids (#7188).
     bindir = tmp_path / "build" / "bin"
     bindir.mkdir(parents = True)
     binary = bindir / "llama-server"

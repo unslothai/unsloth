@@ -20,12 +20,10 @@ from core.inference.context_window import fit_rolling_context
 
 
 # Measured on the real `studio/backend/assets/chat_templates/gemma-4.jinja` with the real
-# unsloth/gemma-3-270m-it tokenizer, so the fake counter below reproduces numbers that
-# actually occur rather than numbers chosen to fail:
-#   empty prompt                               16 tokens
-#   the system prompt alone                  8009 tokens
-#   a 16,400-character newline tool result     557 tokens rendered, 8207 ESTIMATED (14.8x)
-#   the whole conversation                   8629 tokens
+# unsloth/gemma-3-270m-it tokenizer, so the fake counter below reproduces numbers that actually
+# occur:
+#   empty prompt 16 tokens; system prompt alone 8009; a 16,400-character newline tool result 557
+# rendered but 8207 ESTIMATED (14.8x); the whole conversation 8629.
 _FLOOR = 16
 _SYSTEM = 8009
 _USER = 30
@@ -53,7 +51,6 @@ def _sparse_tool_conversation() -> list[dict]:
         {"role": "system", "content": "s" * 32000},
         {"role": "user", "content": "Read the log and tell me what broke."},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
-        # 16,400 newlines: 32,829 characters of JSON, so 8,207 estimated tokens.
         {"role": "tool", "content": "\n" * 16400},
     ]
 
@@ -76,8 +73,8 @@ def test_an_estimated_turn_never_claims_to_be_most_of_the_prompt():
     )
     assert truncation is not None and truncation["fits"] is False
     assert truncation["irreducible_tokens"] == 8629, "a real count of the rendered prompt"
-    # The four-characters-a-token estimate of this message is 8207, 14.8x the 557 it
-    # really renders to, and weighing that against a real count is what blames it.
+    # The four-characters-a-token estimate of this message is 8207, 14.8x the 557 it really renders
+    # to, and weighing that against a real count is what blames it.
     assert truncation["latest_turn_exact"] is True
     assert truncation["latest_turn_tokens"] - truncation["shared_prompt_tokens"] == 557
 
@@ -90,7 +87,6 @@ def test_an_estimated_turn_never_claims_to_be_most_of_the_prompt():
 
     assert "Most of this prompt is a single tool result" not in message, message
     assert "ask for a smaller slice" not in message, message
-    # The truth here is the branch that names the parts eviction never touches.
     assert "shortening the conversation will not help" in message, message
 
 
@@ -121,8 +117,8 @@ def test_a_dominant_tool_result_still_gets_the_tool_advice():
     finally:
         context_refusal.clear()
 
-    # 557 rendered tokens against a 512-token window, so it earns the flat wording; what
-    # matters is that the tool-specific advice survives an unrenderable lone slice.
+    # 557 rendered tokens against a 512-token window, so it earns the flat wording; what matters is
+    # that the tool-specific advice survives an unrenderable lone slice.
     assert "A tool returned more than this context window can hold" in message, message
     assert "ask for a smaller slice of the file or page" in message, message
 
@@ -149,8 +145,7 @@ def test_a_respawn_refit_that_refuses_is_not_lost_when_the_retry_is_refused():
         attempts["n"] += 1
         if attempts["n"] == 1:
             raise httpx.ReadError("llama-server died mid-request")
-        # The replacement server came back with a smaller n_ctx and refused the prompt
-        # the refit could not shrink.
+        # The replacement server came back with a smaller n_ctx and refused the prompt the refit could not shrink.
         raise RuntimeError(
             'llama-server returned 400: {"error":{"code":400,"message":"the request '
             'exceeds the available context size...","type":"exceed_context_size_error",'
@@ -163,10 +158,7 @@ def test_a_respawn_refit_that_refuses_is_not_lost_when_the_retry_is_refused():
     forwarded = {"value": False}
 
     def _on_respawn() -> None:
-        # Stands in for the real callback, which refits against the smaller replacement
-        # window and is refused. The companion test below pins that the real callbacks
-        # record it; this one pins that recording is the ONLY thing that can carry it,
-        # because the forwarding loop lives inside a stream that is never opened.
+        # Stands in for the real callback, which refits against the smaller window and is refused.
         refit_ran["value"] = True
         context_refusal.record_fit({"fits": False, "context_length": 4096})
 

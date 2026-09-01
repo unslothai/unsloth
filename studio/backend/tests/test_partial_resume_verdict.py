@@ -174,13 +174,10 @@ def test_the_variants_own_partial_still_decides_for_the_variant(cache):
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
 
 
-# --------------------------------------------------------------------------------------------
-# One repo can own several active cache directories at once: a case-sensitive filesystem holds
-# models--Org--Model beside models--org--model, and every one of them matches. The blob scan
-# unions them while a marker read answers from whichever comes first, so a verdict built from
-# the two separately can pair a partial in one directory with a marker from another.
-# prepare_cache_for_transport judges each directory on its own, so the pairing has to as well.
-# --------------------------------------------------------------------------------------------
+# One repo can own several active cache directories at once (a case-sensitive filesystem holds
+# models--Org--Model beside models--org--model, and every one matches). The blob scan unions them
+# while a marker read answers from whichever comes first, so a verdict built from the two
+# separately can pair a partial in one directory with a marker from another.
 
 
 @pytest.fixture
@@ -232,12 +229,9 @@ def test_a_partial_and_its_own_directorys_marker_still_resume(split_cache):
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
 
 
-# --------------------------------------------------------------------------------------------
-# A row is not always displayed from the active cache. local_inventory enumerates remembered
-# ("previous HF cache") and custom roots too, and hands each row's own directory down. That
-# root holds its own partials and its own manifest scope (state_dir keys manifests by a
-# per-cache digest), so the resume verdict has to be asked of it and not of the active root.
-# --------------------------------------------------------------------------------------------
+# A row is not always displayed from the active cache: local_inventory enumerates remembered and
+# custom roots too, and each root holds its own partials and its own manifest scope, so the
+# resume verdict has to be asked of it and not of the active root.
 
 
 @pytest.fixture

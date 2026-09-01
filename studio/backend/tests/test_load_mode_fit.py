@@ -73,8 +73,8 @@ def test_unsized_footprint_abstains(footprint):
 
 
 def test_shared_igpu_vram_is_not_added_to_host_ram():
-    # The iGPU's 32 GiB IS host RAM, so it must not count on both sides: priced
-    # once, 16 GiB of RAM (14 after headroom) cannot hold a 40 GiB load.
+    # The iGPU's 32 GiB IS host RAM, so it must not count on both sides: priced once, 16 GiB of RAM
+    # (14 after headroom) cannot hold a 40 GiB load.
     assert (
         _fits(
             40 * GIB,

@@ -34,8 +34,8 @@ from models.providers import ProviderCreate, ProviderUpdate
 from storage import credential_secrets, providers_db
 
 
-# routes/providers.py imports its siblings as ``routes.*``. Loading it by path under
-# a private name is the pattern test_credential_routes.py already uses.
+# routes/providers.py imports its siblings as ``routes.*``, so it is loaded by path under a
+# private name.
 def _load_route_module(module_name: str, path: Path):
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
@@ -69,8 +69,7 @@ CREDENTIAL = ("alice", None)
 NON_CUSTOM_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "custom")
 OVERRIDABLE_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "openai_codex")
 
-# The schema as it stood before this column, including the two columns earlier
-# releases added by ALTER. A database in this shape is what an upgrading user has.
+# The schema as it stood before this column: what an upgrading user's database looks like.
 _PRE_PR_TABLE_DDL = """
     CREATE TABLE llm_providers (
         id TEXT NOT NULL PRIMARY KEY,
@@ -170,7 +169,6 @@ def _write_pre_pr_database(db_path: Path) -> None:
         conn.close()
 
 
-# ── Upgrade ───────────────────────────────────────────────────────
 
 
 def test_a_pre_column_database_migrates_and_keeps_its_rows(isolated_providers_db: Path):
@@ -184,7 +182,6 @@ def test_a_pre_column_database_migrates_and_keeps_its_rows(isolated_providers_db
     assert row["available_models"] == ["vendor/model", "vendor/other"]
     assert {p["id"] for p in providers_db.list_providers()} == {"old-custom", "old-openai"}
 
-    # And the migrated row now accepts one.
     assert providers_db.update_provider(id = "old-custom", max_output_tokens = 262144)
     assert _raw_override(isolated_providers_db, "old-custom") == 262144
     assert _raw_override(isolated_providers_db, "old-openai") is None
@@ -206,7 +203,6 @@ def test_a_missing_table_is_created_then_migrated(isolated_providers_db: Path):
     assert "max_output_tokens" in _columns(isolated_providers_db)
 
 
-# ── Downgrade ─────────────────────────────────────────────────────
 
 
 def test_the_previous_release_still_reads_and_writes_a_migrated_database(
@@ -255,7 +251,6 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     assert providers_db.get_provider("new-custom")["max_output_tokens"] == 384000
 
 
-# ── Route contract ────────────────────────────────────────────────
 
 
 def _create(payload: ProviderCreate):
@@ -326,8 +321,8 @@ def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
     assert error.value.status_code == 400
     assert _raw_override(provider_routes, "openai_codex-1") is None
 
-    # Create takes the same contract, and reaches it before the auth one, so the caller
-    # is told which rule stopped them.
+    # Create takes the same contract and reaches it before the auth one, so the caller is told which
+    # rule stopped them.
     with pytest.raises(HTTPException) as created:
         _create(
             ProviderCreate(

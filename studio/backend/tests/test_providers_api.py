@@ -32,20 +32,18 @@ import requests
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-# ── Configuration ─────────────────────────────────────────────────
 
 BASE_URL = os.getenv("STUDIO_TEST_URL", "http://localhost:8000")
 USERNAME = os.getenv("STUDIO_TEST_USER", "unsloth")
 PASSWORD = os.getenv("STUDIO_TEST_PASSWORD", "")
 
-# Skip the whole module when no live Unsloth server / bootstrap password is
-# available (e.g. on CI) so pytest discovery does not error out.
+# Skip the whole module when no live Unsloth server / bootstrap password is available.
 pytestmark = pytest.mark.skipif(
     not PASSWORD,
     reason = "Integration test requires a running Unsloth server; set STUDIO_TEST_PASSWORD to enable.",
 )
 
-# provider_type → (env var name, model for inference test)
+# provider_type -> (env var name, model for inference test)
 _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "openai": ("OPENAI_API_KEY", "gpt-4o-mini"),
     "mistral": ("MISTRAL_API_KEY", "mistral-small-2506"),
@@ -64,7 +62,6 @@ PROVIDER_KEYS: dict[str, str] = {
 
 EXPECTED_PROVIDER_TYPES = set(_PROVIDER_CONFIGS.keys())
 
-# ── Helpers ────────────────────────────────────────────────────────
 
 
 def _url(path: str) -> str:
@@ -90,7 +87,6 @@ def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
             break
         try:
             chunk = json.loads(data)
-            # Handle error payloads and normal chunks
             if "error" in chunk:
                 raise RuntimeError(f"Provider error in stream: {chunk['error']}")
             delta = chunk.get("choices", [{}])[0].get("delta", {})
@@ -98,12 +94,11 @@ def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
             if content:
                 reply_parts.append(content)
         except (json.JSONDecodeError, IndexError, KeyError):
-            pass  # skip malformed lines
+            pass
 
     return "".join(reply_parts), saw_done
 
 
-# ── Session-scoped fixtures ────────────────────────────────────────
 
 
 @pytest.fixture(scope = "session")
@@ -131,8 +126,7 @@ def auth_headers() -> dict[str, str]:
     assert token, "access_token is empty"
 
     if body.get("must_change_password"):
-        # Bootstrap token only works with change-password; auto-complete the
-        # forced change so the rest of the tests get a full token.
+        # The bootstrap token only works with change-password, so auto-complete the forced change.
         new_password = os.getenv("STUDIO_TEST_NEW_PASSWORD") or f"{PASSWORD}-test"
         change_resp = requests.post(
             _url("/api/auth/change-password"),
@@ -204,7 +198,6 @@ def encrypt_key(public_key_pem: str):
     return _encrypt
 
 
-# ── TestAuth ────────────────────────────────────────────────────────
 
 
 class TestAuth:
@@ -222,7 +215,6 @@ class TestAuth:
         assert body.get("token_type") == "bearer"
 
 
-# ── TestPublicKey ────────────────────────────────────────────────────
 
 
 class TestPublicKey:
@@ -235,7 +227,6 @@ class TestPublicKey:
         print(f"\n  RSA-{key_size} public key OK")
 
 
-# ── TestRegistry ────────────────────────────────────────────────────
 
 
 class TestRegistry:
@@ -284,7 +275,6 @@ class TestRegistry:
             assert len(entry["default_models"]) > 0
 
 
-# ── TestProviderCRUD ────────────────────────────────────────────────
 
 
 class TestProviderCRUD:
@@ -347,17 +337,14 @@ class TestProviderCRUD:
         )
         assert resp.status_code == 204, f"Delete failed ({resp.status_code}): {resp.text}"
 
-        # Confirm gone
         list_resp = requests.get(_url("/api/providers/"), headers = auth_headers, timeout = 10)
         ids = [p["id"] for p in list_resp.json()]
         assert TestProviderCRUD._created_id not in ids, "Deleted provider still in list"
         print(f"\n  deleted id={TestProviderCRUD._created_id} confirmed gone")
 
 
-# ── TestProviderInference ────────────────────────────────────────────
 
 
-# Parametrize (provider_type, model, api_key) for configured providers
 _INFERENCE_PARAMS = [
     pytest.param(
         ptype,
@@ -464,9 +451,7 @@ class TestProviderInference:
         print(f'\n  [{provider_type}/{model}] reply: "{reply.strip()}"')
 
 
-# ── TestVisionInference ─────────────────────────────────────────────
 
-# Sloth photo for testing vision routing across providers
 _VISION_IMAGE_URL = "https://www.travelexcellence.com/images/where-to-see-sloths-in-costa-rica.jpg"
 
 _VISION_PARAMS = [
@@ -542,7 +527,6 @@ class TestVisionInference:
         print(f"\n  [{provider_type}/{model}] vision reply: {reply.strip()!r}")
 
 
-# ── TestLocalInferenceUnaffected ────────────────────────────────────
 
 
 class TestLocalInferenceUnaffected:

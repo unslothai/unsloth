@@ -143,8 +143,7 @@ class TestCpuFrequencyMhz:
         assert hardware.cpu_frequency_mhz() == 4000.0
 
     def test_fixed_psutil_value_is_left_alone(self, monkeypatch):
-        # Once psutil ships giampaolo/psutil#2824 the value is already plausible,
-        # so no ioreg call and no rescale.
+        # Once psutil ships giampaolo/psutil#2824 the value is already plausible, so no ioreg call and no rescale.
         monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
         _fake_psutil(monkeypatch, 4512.0)
 
@@ -262,21 +261,21 @@ class TestOnRealAppleSilicon:
     def test_reported_frequency_is_plausible(self):
         mhz = hardware.cpu_frequency_mhz()
         if mhz is None:
-            # Virtualised Apple Silicon (GitHub's macos-14/15 runners) has
-            # neither cpu_freq nor pmgr tables; the UI just omits the row.
+            # Virtualised Apple Silicon (GitHub's macos-14/15 runners) has neither cpu_freq nor pmgr
+            # tables; the UI just omits the row.
             pytest.skip("neither psutil nor ioreg exposes a CPU clock on this host")
         assert hardware._MIN_PLAUSIBLE_CPU_MHZ <= mhz <= hardware._MAX_PLAUSIBLE_CPU_MHZ
 
     def test_ioreg_reader_agrees_with_psutil(self):
-        # On M1-M3 psutil is already correct, so the ioreg reader must match it;
-        # on M4+ psutil is the broken side, so compare against its x1000 rescale.
+        # On M1-M3 psutil is already correct so the ioreg reader must match it; on M4+ psutil is the
+        # broken side, so compare against its x1000 rescale.
         import psutil
 
         peak = hardware._read_apple_cpu_peak_mhz()
         if peak is None:
             pytest.skip("no voltage-state tables exposed on this host")
-        # Nothing to compare against where psutil has no reading of its own: an
-        # M5 raises, a virtualised host has no cpu_freq. The tables still work.
+        # Nothing to compare against where psutil has no reading: an M5 raises, a virtualised host
+        # has no cpu_freq.
         reader = getattr(psutil, "cpu_freq", None)
         if reader is None:
             pytest.skip("psutil exposes no cpu_freq on this host")

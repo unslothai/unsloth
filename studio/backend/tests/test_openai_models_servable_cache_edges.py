@@ -95,9 +95,8 @@ def test_a_replaced_catalog_is_never_served_from_the_old_entry(stub):
 
 
 def test_the_zero_stamp_of_a_fresh_process_does_not_pin_the_cache(stub):
-    # _CATALOG_CACHE["at"] starts at 0.0 and only advances inside
-    # _cached_local_catalog. A caller that supplies a catalog from anywhere else
-    # keeps that 0.0, so the stamp alone cannot be trusted.
+    # _CATALOG_CACHE["at"] starts at 0.0 and only advances inside _cached_local_catalog, so a caller
+    # supplying a catalog from anywhere else keeps that 0.0 and the stamp alone cannot be trusted.
     first, second = _catalog(1, "a"), _catalog(1, "b")
     assert inf._servable_catalog_rows(first, 0.0)[0][0].id == "repo/a0"
     assert inf._servable_catalog_rows(second, 0.0)[0][0].id == "repo/b0"
@@ -122,7 +121,7 @@ def test_residency_flips_are_visible_immediately(monkeypatch):
 
     catalog = _catalog(1)
     assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is False
-    flag["resident"] = True  # a /load happened
+    flag["resident"] = True
     assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is True
 
 
@@ -157,8 +156,7 @@ def test_media_and_stt_tasks_stay_excluded(monkeypatch):
 
 
 def test_a_raising_resolver_is_not_cached_as_an_empty_catalog(monkeypatch):
-    # If the scan blows up, the failure must propagate rather than silently
-    # caching "this server can serve nothing" for the life of the catalog.
+    # A scan failure must propagate rather than caching "this server can serve nothing".
     monkeypatch.setattr(
         "core.inference.local_model_resolver.local_servable_model",
         lambda info: (_ for _ in ()).throw(RuntimeError("scan failed")),
@@ -171,9 +169,8 @@ def test_a_raising_resolver_is_not_cached_as_an_empty_catalog(monkeypatch):
 
 
 def test_the_cache_entry_is_published_atomically(stub):
-    # The fast path reads without the lock. Separate fields could be caught
-    # half-replaced: old stamp and old catalog still matching while rows already held
-    # the next catalog's rows, so an in-flight request got another catalog's models.
+    # The fast path reads without the lock, so separate fields could be caught half-replaced: old
+    # stamp and catalog still matching while rows already held the next catalog's rows.
     first, second = _catalog(2, "a"), _catalog(3, "b")
     inf._servable_catalog_rows(first, 111.0)
     entry = inf._SERVABLE_SCAN_CACHE["entry"]
@@ -192,12 +189,12 @@ def test_the_cache_entry_is_published_atomically(stub):
 
 
 def test_residency_resolves_the_current_snapshot_each_call(monkeypatch):
-    # A non-GGUF HF repo path resolves to a snapshot dir. A download can move that
-    # pointer inside the catalog's 30s lifetime, and caching the resolved dir would
-    # report a freshly loaded model as unloaded until the catalog expired.
+    # A non-GGUF HF repo path resolves to a snapshot dir, and a download can move that pointer
+    # inside the catalog's 30s lifetime, so caching the resolved dir would report a freshly loaded
+    # model as unloaded.
     monkeypatch.setattr(
         "core.inference.local_model_resolver.local_servable_model",
-        lambda info: (False, ()),  # non-GGUF, so residency goes through local_load_dir
+        lambda info: (False, ()),
     )
     snapshot = {"dir": "/models/m0/snapshots/old"}
     monkeypatch.setattr(
@@ -213,7 +210,7 @@ def test_residency_resolves_the_current_snapshot_each_call(monkeypatch):
 
     catalog = _catalog(1)
     assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is False
-    snapshot["dir"] = "/models/m0/snapshots/new"  # a download moved the pointer
+    snapshot["dir"] = "/models/m0/snapshots/new"
     assert (
         inf._servable_catalog_rows(catalog, 111.0)[0][3] is True
     ), "the snapshot must be re-resolved per call, not cached with the scan"
@@ -230,7 +227,6 @@ def test_large_catalog_stays_correct(stub):
     assert stub["servable"] == 500, "second call must be free"
 
 
-# ------------------------------------------------------- deletion during the catalog TTL
 
 
 def test_a_deleted_model_leaves_the_listing_within_the_catalog_ttl(monkeypatch):
@@ -328,7 +324,6 @@ def test_the_generation_only_moves_on_invalidation(monkeypatch):
     assert calls["n"] == 15
 
 
-# ----------------------------------------------- every signal servability depends on
 
 
 def test_a_hub_cache_deletion_leaves_the_listing(monkeypatch):
@@ -396,8 +391,8 @@ def test_every_delete_branch_invalidates_the_scan():
     from routes import models as models_route
 
     lines = inspect.getsource(models_route.delete_finetuned_model).split("\n")
-    # The variant branch returns a multi-line dict, so match the status rather than a
-    # one-line prefix; a mid-function `return {` with no status is an error path.
+    # The variant branch returns a multi-line dict, so match the status rather than a one-line
+    # prefix; a mid-function `return {` with no status is an error path.
     successes = [
         n
         for n, line in enumerate(lines)
@@ -539,7 +534,7 @@ def test_an_out_of_band_file_change_is_picked_up_within_the_scan_ttl(monkeypatch
     monkeypatch.setattr(inf.time, "monotonic", lambda: clock["t"])
 
     assert len(inf._servable_catalog_rows(catalog, 999.0)) == 2
-    gone.add("/models/o1")  # rm, outside every instrumented path
+    gone.add("/models/o1")
     assert len(inf._servable_catalog_rows(catalog, 999.0)) == 2, "still inside the TTL"
     clock["t"] += inf._SERVABLE_SCAN_TTL_S + 0.1
     assert [r[0].id for r in inf._servable_catalog_rows(catalog, 999.0)] == ["repo/o0"]

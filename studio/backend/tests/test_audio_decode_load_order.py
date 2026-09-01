@@ -29,15 +29,15 @@ def _calls_the_shim(node: ast.AST) -> bool:
 
 
 def test_the_shim_is_installed_before_the_first_row_is_read():
-    # This worker starts without the shim the API process installs, so an Audio column
-    # decoding inside load_dataset() raised "please install 'torchcodec'".
+    # This worker starts without the shim the API process installs, so an Audio column decoding
+    # inside load_dataset() raised "please install 'torchcodec'".
     body = _load_and_format_dataset_body()
     assert body.index("ensure_audio_decoding()") < body.index("= load_dataset(")
 
 
 def test_the_audio_branches_are_still_covered():
-    # They call it themselves and keep reporting the FFmpeg-naming failure; the early
-    # call only has to precede them.
+    # They call it themselves and keep reporting the FFmpeg-naming failure; the early call only has
+    # to precede them.
     body = _load_and_format_dataset_body()
     assert body.index("ensure_audio_decoding()") < body.index(
         "# ========== AUDIO MODELS: custom preprocessing =========="
@@ -51,9 +51,8 @@ def test_the_import_is_module_level():
 
 
 def test_the_early_call_cannot_stop_a_text_run():
-    # It sits above the method's own try, so anything ensure_audio_decoding() does not
-    # catch (`import librosa` raises more than ImportError) would fail every run, audio
-    # or not. The audio branches below re-run it and report.
+    # It sits above the method's own try, so anything ensure_audio_decoding() does not catch
+    # (`import librosa` raises more than ImportError) would fail every run, audio or not.
     fn = next(
         node
         for node in ast.walk(ast.parse(_TRAINER.read_text(encoding = "utf-8")))
@@ -61,15 +60,13 @@ def test_the_early_call_cannot_stop_a_text_run():
     )
     first = next(stmt for stmt in fn.body if _calls_the_shim(stmt))
     assert isinstance(first, ast.Try), "the early call is not wrapped"
-    # Directly in the try body, not merely somewhere inside a larger block.
     assert any(isinstance(b, ast.Expr) and _calls_the_shim(b) for b in first.body)
     assert any(getattr(h.type, "id", "") == "Exception" for h in first.handlers)
 
 
 def test_a_datasets_without_the_torchcodec_flag_returns_a_bool():
-    # `datasets` < 4 (still allowed by pyproject) has no config.TORCHCODEC_AVAILABLE, and
-    # reading it raised AttributeError at the unguarded audio call site. Those versions
-    # decode through soundfile already, so the answer is True and nothing is patched.
+    # `datasets` < 4 (still allowed by pyproject) has no config.TORCHCODEC_AVAILABLE and raised
+    # AttributeError here; those versions decode through soundfile already.
     import sys
     import types
 

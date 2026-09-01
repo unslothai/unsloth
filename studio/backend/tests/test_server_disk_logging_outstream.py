@@ -67,12 +67,11 @@ class _ColabOutStream(io.TextIOBase):
         return False
 
     def close(self):
-        # Never set because watchfd=False -> AttributeError, exactly as Colab.
+        # Never set because watchfd=False raises AttributeError, exactly as Colab.
         self.watch_fd_thread.join()
 
     def __del__(self):
-        # io.TextIOBase.__del__ would call our buggy close() at GC (the harmless
-        # "Exception ignored" tail seen in Colab); silence it so the test is clean.
+        # TextIOBase.__del__ calls the buggy close() at GC (Colab's "Exception ignored" tail); silence it.
         pass
 
 
@@ -110,11 +109,11 @@ class TestHardenConsoleClose:
     def test_neutralizes_watchfd_false_close(self):
         stream = _ColabOutStream("stdout", io.StringIO())
         with pytest.raises(AttributeError):
-            stream.close()  # baseline: the ipykernel #867 bug is real
+            stream.close()
 
         stream = _ColabOutStream("stdout", io.StringIO())
         run_mod._harden_console_close(stream)
-        assert stream.close() is None  # swallowed, no crash
+        assert stream.close() is None
 
     def test_healthy_close_still_runs_fully(self):
         stream = _WatchingOutStream("stdout", io.StringIO())
@@ -133,8 +132,7 @@ class TestHardenConsoleClose:
             stream.close()
 
     def test_unrelated_attributeerror_still_propagates(self):
-        # Only #867 is neutralized; a genuine missing attribute during teardown
-        # must still surface instead of looking like a clean close.
+        # Only #867 is neutralized: a genuine missing attribute during teardown must still surface.
         class _Console:
             def close(self):
                 return self.not_a_real_attribute
@@ -145,8 +143,7 @@ class TestHardenConsoleClose:
             stream.close()
 
     def test_swallowed_across_attributeerror_message_shapes(self):
-        # Python 3.12 appends a "Did you mean" tail; the match must survive it,
-        # and pre-3.10 AttributeErrors carry no ``name``, only the message.
+        # Python 3.12 appends a "Did you mean" tail and pre-3.10 AttributeErrors carry no ``name``, only the message.
         class _Suggesting:
             def close(self):
                 raise AttributeError(
@@ -159,7 +156,6 @@ class TestHardenConsoleClose:
         assert stream.close() is None
 
     def test_unsettable_close_is_left_alone(self):
-        # A stream whose close cannot be reassigned must not raise from hardening.
         class _Frozen:
             __slots__ = ()
 
@@ -167,7 +163,7 @@ class TestHardenConsoleClose:
                 return "ok"
 
         stream = _Frozen()
-        run_mod._harden_console_close(stream)  # must not raise
+        run_mod._harden_console_close(stream)
         assert stream.close() == "ok"
 
 
@@ -177,7 +173,7 @@ class TestTeeStreamClose:
         log = io.StringIO()
         tee = run_mod._TeeStream(console, log)
         tee.write("before-close")
-        tee.close()  # must not raise despite the wrapped stream's broken close
+        tee.close()
         assert log.getvalue() == "before-close"
 
     def test_tee_close_flushes_log(self):
@@ -214,13 +210,12 @@ class TestColabStartupRegression:
         err_stream = _ColabOutStream("stderr", err_sink)
         monkeypatch.setattr(sys, "stdout", out_stream)
         monkeypatch.setattr(sys, "stderr", err_stream)
-        # absl-like handlers capture the ORIGINAL OutStreams (as in Colab).
+        # absl-like handlers capture the ORIGINAL OutStreams, as in Colab.
         handlers = [_AbslLikeHandler(sys.stdout), _AbslLikeHandler(sys.stderr)]
         return out_sink, err_sink, out_stream, err_stream, handlers
 
     def test_baseline_reproduces_crash_without_fix(self, monkeypatch):
-        # Prove the test exercises the real path: swapping the console identity
-        # (what the tee does) makes the absl-like close hit #867.
+        # Prove the real path is exercised: swapping the console identity makes the absl-like close hit #867.
         _, _, out_stream, err_stream, handlers = self._make_console_and_handlers(monkeypatch)
         try:
             monkeypatch.setattr(sys, "stdout", io.StringIO())
@@ -228,7 +223,6 @@ class TestColabStartupRegression:
             with pytest.raises(AttributeError, match = "watch_fd_thread"):
                 logging.shutdown([weakref.ref(h) for h in handlers])
         finally:
-            # Neutralize so a lingering handler can't crash global teardown.
             run_mod._harden_console_close(out_stream)
             run_mod._harden_console_close(err_stream)
             for h in handlers:
@@ -240,18 +234,15 @@ class TestColabStartupRegression:
     def test_startup_survives_with_harden_and_tee(self, monkeypatch):
         out_sink, _, out_stream, err_stream, handlers = self._make_console_and_handlers(monkeypatch)
 
-        # Exactly what _setup_server_disk_logging does before serving:
         run_mod._harden_console_close(sys.stdout)
         run_mod._harden_console_close(sys.stderr)
         log_fh = io.StringIO()
         monkeypatch.setattr(sys, "stdout", run_mod._TeeStream(sys.stdout, log_fh))
         monkeypatch.setattr(sys, "stderr", run_mod._TeeStream(sys.stderr, log_fh))
 
-        # The close-storm uvicorn triggers via dictConfig -> logging.shutdown,
-        # closing the absl-like handlers over the (now orphaned) OutStreams.
-        logging.shutdown([weakref.ref(h) for h in handlers])  # must NOT raise
+        # The close-storm uvicorn triggers via dictConfig, closing absl-like handlers over orphaned OutStreams.
+        logging.shutdown([weakref.ref(h) for h in handlers])
 
-        # The tee still tees to both console and disk afterwards.
         print("post-startup-line")
         sys.stdout.flush()
         assert "post-startup-line" in out_sink.getvalue()

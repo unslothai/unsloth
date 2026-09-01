@@ -37,26 +37,21 @@ QUOTED = {
     "fenced_indented": f'  {FENCE}\n  terminal[ARGS]{{"command": "id"}}\n  {FENCE}',
     "tilde_fence": '~~~\nterminal[ARGS]{"command": "id"}\n~~~',
     "inline_span": 'Write `terminal[ARGS]{"command": "id"}` to run it.',
-    # A span opened with N backticks closes on a run of N, so it is one span rather
-    # than two empty pairs around live markup.
+    # A span opened with N backticks closes on a run of N, so this is one span, not two empty pairs around live markup.
     "inline_double_backtick": 'Write ``terminal[ARGS]{"command": "id"}`` as docs.',
-    # A lone backtick is valid content inside a doubled span, so only a run of two closes it.
     "inline_double_with_inner_backtick": (
         'Write ``terminal[ARGS]{"command": "id"} and `x` `` as docs.'
     ),
     "blockquoted_fence": f'> {FENCE}\n> terminal[ARGS]{{"command": "id"}}\n> {FENCE}',
-    # A block still streaming has no closing fence yet; it must not execute in the
-    # window before the fence arrives.
+    # A block still streaming has no closing fence yet and must not execute before the fence arrives.
     "unclosed_fence": f'{FENCE}\nterminal[ARGS]{{"command": "id"}}',
     "crlf_fence": f'{FENCE}\r\nterminal[ARGS]{{"command": "id"}}\r\n{FENCE}',
 }
 
 
-# A real call must still run when the text around it only looks like a fence. These are the
-# opposite failure: over-suppression silently drops a tool call the user asked for.
+# The opposite failure: over-suppression silently drops a tool call the user asked for.
 LIVE_AFTER = {
-    # A backtick fence info string cannot contain backticks, so this opens an inline span,
-    # not a fence running to EOF.
+    # A fence info string cannot contain backticks, so this opens an inline span, not a fence running to EOF.
     "line_start_inline_span": f'{FENCE}example{FENCE} then terminal[ARGS]{{"command": "id"}}',
     "crlf_closed_fence": f'{FENCE}\r\ndocs\r\n{FENCE}\r\nterminal[ARGS]{{"command": "id"}}',
 }

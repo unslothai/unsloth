@@ -27,15 +27,10 @@ from core.inference.stt_sidecar import (
 )
 from core.inference.stt_transformers_worker import SttWorkerError, WhisperWorker
 
-# signal.Signals is populated per platform, so Windows reads a -9 exitcode back as its
-# number; it cannot produce one either (multiprocessing maps TerminateProcess to
-# -SIGTERM, and kill() is terminate() there). This only shapes the assertion below.
+# signal.Signals is per platform, so Windows reads -9 back as a number (TerminateProcess maps to -SIGTERM).
 _SIGKILL_TEXT = "SIGKILL" if hasattr(signal, "SIGKILL") else "SIG9"
 
 
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
 
 
 class _FakeTensor:
@@ -181,9 +176,6 @@ def _install_fake_transformers(
     return calls, fake_model, fake_processor
 
 
-# ---------------------------------------------------------------------------
-# Child: loading
-# ---------------------------------------------------------------------------
 
 
 def test_child_loads_from_the_model_hub_cache_without_an_implicit_download(monkeypatch):
@@ -195,7 +187,6 @@ def test_child_loads_from_the_model_hub_cache_without_an_implicit_download(monke
         ("processor", "/cached/model"),
         ("model", "/cached/model"),
     }
-    # Never fetch weights implicitly; the Model Hub owns downloads.
     assert all(kwargs.get("local_files_only") is True for _, _, kwargs in calls)
     # The weight load forces safetensors so a pickle checkpoint cannot execute.
     model_kwargs = next(kwargs for kind, _, kwargs in calls if kind == "model")
@@ -213,7 +204,6 @@ def test_child_load_stops_at_the_first_checkpoint_after_a_cancel(monkeypatch):
     with pytest.raises(SttLoadCancelledError):
         worker_module.load_whisper("/cached/model", "cuda", "float16", cancel_event)
 
-    # Cancelled before the weights could reach the accelerator.
     assert model.moved_to is None
 
 
@@ -226,9 +216,6 @@ def test_child_falls_back_to_float32_for_an_unknown_dtype_name(monkeypatch):
     assert model_kwargs.get("torch_dtype") == "float32"
 
 
-# ---------------------------------------------------------------------------
-# Child: transcription
-# ---------------------------------------------------------------------------
 
 
 def test_child_feeds_decoded_pcm_and_matches_the_model_dtype(monkeypatch):
@@ -242,7 +229,6 @@ def test_child_feeds_decoded_pcm_and_matches_the_model_dtype(monkeypatch):
     assert text == "hello"
     assert processor.seen_rate == 16000
     assert np.array_equal(processor.seen_audio, np.arange(4, dtype = np.float32))
-    # to(device) then to(dtype): features must match the weights they meet.
     assert processor.features.moved_to == ["cuda", "float16"]
     assert model.generate_kwargs == {"task": "transcribe", "num_beams": 5}
 
@@ -263,9 +249,6 @@ def test_child_only_installs_stopping_criteria_for_a_cancellable_request(monkeyp
     assert "stopping_criteria" not in model.generate_kwargs
 
 
-# ---------------------------------------------------------------------------
-# Child: command loop
-# ---------------------------------------------------------------------------
 
 
 def _run_child(
@@ -343,7 +326,6 @@ def test_child_exits_after_a_failed_load_so_a_half_taken_context_goes_with_it(mo
 
     responses, _cancel = _run_child(
         monkeypatch,
-        # The transcribe would be answered if the child stayed in its loop.
         [
             {
                 "type": "load",
@@ -386,7 +368,7 @@ def test_child_reports_a_cancelled_generation_rather_than_partial_text(monkeypat
         _kwargs,
         cancel_event = None,
     ):
-        cancel_event.set()  # what StoppingCriteria does to a running generate
+        cancel_event.set()
         return "half a sen"
 
     responses, _cancel = _run_child(
@@ -413,9 +395,6 @@ def test_child_answers_an_unknown_command_instead_of_dropping_it(monkeypatch):
     assert "explode" in responses[0]["error"]
 
 
-# ---------------------------------------------------------------------------
-# Error transport
-# ---------------------------------------------------------------------------
 
 
 def test_a_local_cache_miss_crosses_as_a_not_downloaded_error():
@@ -439,8 +418,7 @@ def test_cancellation_keeps_its_class_across_the_process_boundary():
 
 
 def test_an_unknown_failure_arrives_as_a_worker_error_carrying_its_message():
-    # The exception object is never sent: a torch error that will not pickle
-    # would cost the caller its whole timeout instead of an error.
+    # The exception object is never sent: a torch error that will not pickle costs the caller its timeout.
     response = worker_module._error_response(TypeError("weird"))
 
     assert response == {"type": "error", "kind": "TypeError", "error": "weird"}
@@ -448,9 +426,6 @@ def test_an_unknown_failure_arrives_as_a_worker_error_carrying_its_message():
         worker_module._raise_worker_error(response)
 
 
-# ---------------------------------------------------------------------------
-# Parent handle
-# ---------------------------------------------------------------------------
 
 
 def test_handle_sends_one_window_and_returns_its_text():
@@ -491,7 +466,6 @@ def test_handle_mirrors_a_request_cancel_into_the_child():
     cancel_event.set()
 
     def answer_once():
-        # The child sees the shared event and reports the cancellation itself.
         time.sleep(0.2)
         handle._resp_queue.put(
             {
@@ -511,7 +485,6 @@ def test_handle_mirrors_a_request_cancel_into_the_child():
 
 
 def test_a_cancelled_load_that_never_answers_is_killed_rather_than_waited_on(monkeypatch):
-    # from_pretrained reaches no checkpoint, and training is waiting for the memory.
     monkeypatch.setattr(worker_module, "_CANCEL_GRACE_SECONDS", 0.0)
     process = _FakeProcess()
     handle = _wired_worker(process)
@@ -525,9 +498,8 @@ def test_a_cancelled_load_that_never_answers_is_killed_rather_than_waited_on(mon
 
 
 def test_the_cancel_grace_is_not_followed_by_a_second_shutdown_wait(monkeypatch):
-    # The grace IS the graceful shutdown: a child too busy inside from_pretrained to
-    # read the cancel event will not read a shutdown command either, and another
-    # _SHUTDOWN_TIMEOUT_SECONDS would block the waiting training run for twice the 10s.
+    # The grace IS the graceful shutdown: a child too busy inside from_pretrained to read the cancel
+    # event will not read a shutdown command either, and another wait doubles the 10s stall.
     monkeypatch.setattr(worker_module, "_CANCEL_GRACE_SECONDS", 0.0)
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
 
@@ -547,7 +519,6 @@ def test_the_cancel_grace_is_not_followed_by_a_second_shutdown_wait(monkeypatch)
     with pytest.raises(SttLoadCancelledError):
         handle._await("loaded", 30.0, cancel_event, "load")
 
-    # No graceful join, no shutdown command queued for a child that cannot read it.
     assert worker_module._SHUTDOWN_TIMEOUT_SECONDS not in process.joins
     assert process.terminated is True
     assert handle.is_alive() is False
@@ -560,9 +531,7 @@ def test_the_cancel_grace_is_not_followed_by_a_second_shutdown_wait(monkeypatch)
 def test_a_cancel_that_lands_near_the_command_timeout_keeps_its_cancellation(
     monkeypatch, phase, expected
 ):
-    # A cancel arriving in the last seconds of the timeout is still a cancellation: the
-    # caller is owed the 409 or the 499, not a 500 for a worker that "stopped
-    # responding", and not another full shutdown wait.
+    # A cancel in the last seconds of the timeout is still a cancellation: the caller is owed 409 or 499.
     monkeypatch.setattr(worker_module, "_CANCEL_GRACE_SECONDS", 30.0)
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
 
@@ -596,7 +565,7 @@ def test_closing_a_handle_normally_still_asks_the_child_to_exit_first(monkeypatc
 
         def join(self, timeout = None):
             self.joins.append(timeout)
-            self._alive = False  # an idle child consumes the shutdown and exits
+            self._alive = False
 
     process = _Recording()
     handle = _wired_worker(process)
@@ -623,14 +592,13 @@ def test_closing_the_handle_ends_the_child_and_drops_its_pid(monkeypatch):
 
 
 def test_a_child_that_survives_terminate_and_kill_keeps_its_pid_and_handle(monkeypatch):
-    # A child wedged in a driver call outlives SIGKILL and still holds its accelerator
-    # memory; forgetting its pid leaves terminate_all and the sweep nothing to find it by.
+    # A child wedged in a driver call outlives SIGKILL and holds its memory, so its pid must be remembered.
     forgotten = []
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda pid: forgotten.append(pid))
 
     class _Unkillable(_FakeProcess):
         def terminate(self):
-            self.terminated = True  # neither signal reaches it
+            self.terminated = True
 
         def kill(self):
             self.killed = True
@@ -648,16 +616,14 @@ def test_a_child_that_survives_terminate_and_kill_keeps_its_pid_and_handle(monke
 
 
 def test_a_child_that_outlived_a_cancelled_command_marks_its_handle_unusable(monkeypatch):
-    # The cancel grace expires and close() terminates and kills a child that answers
-    # neither, so the handle is kept for its memory. It answers no later command either,
-    # and its terminate leaves the queues liable to corruption, so the handle has to say
-    # it is spent: the cancel is raised over close(), so its False reaches nobody.
+    # The handle is kept for its memory but must say it is spent: the child answers no later command,
+    # its terminate leaves the queues liable to corruption, and the cancel is raised over close().
     monkeypatch.setattr(worker_module, "_CANCEL_GRACE_SECONDS", 0.0)
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
 
     class _Unkillable(_FakeProcess):
         def terminate(self):
-            self.terminated = True  # neither signal reaches it
+            self.terminated = True
 
         def kill(self):
             self.killed = True
@@ -675,8 +641,7 @@ def test_a_child_that_outlived_a_cancelled_command_marks_its_handle_unusable(mon
 
 
 def test_a_handle_whose_child_did_exit_is_still_usable(monkeypatch):
-    # The flag is only for a child that outlived both signals; an ordinary
-    # close must not retire a handle that gave its memory back.
+    # The flag is only for a child that outlived both signals; an ordinary close must not retire a handle.
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
 
     handle = _wired_worker()
@@ -690,7 +655,7 @@ def test_closing_a_handle_that_ignores_shutdown_escalates_to_a_kill(monkeypatch)
 
     class _Stubborn(_FakeProcess):
         def terminate(self):
-            self.terminated = True  # ignores it, unlike _FakeProcess
+            self.terminated = True
 
     process = _Stubborn()
     handle = _wired_worker(process)
@@ -701,9 +666,6 @@ def test_closing_a_handle_that_ignores_shutdown_escalates_to_a_kill(monkeypatch)
     assert process.killed is True
 
 
-# ---------------------------------------------------------------------------
-# Hosts that cannot spawn
-# ---------------------------------------------------------------------------
 
 
 class _RefusingProcess:
@@ -739,8 +701,7 @@ class _RefusingContext:
 
 
 def test_dictation_still_loads_and_transcribes_when_no_child_can_be_started(monkeypatch):
-    # This may only move work out of the backend, never remove a working
-    # configuration: a host that forbids spawn had dictation before.
+    # This may only move work out of the backend, never remove a working configuration: dictation survives.
     from core.inference.stt_sidecar import WhisperSttSidecar
 
     monkeypatch.setattr(worker_module, "_CTX", _RefusingContext())
@@ -757,8 +718,7 @@ def test_dictation_still_loads_and_transcribes_when_no_child_can_be_started(monk
 
 
 def test_a_spawn_failure_on_an_accelerator_leaves_the_cpu_retry_to_the_sidecar(monkeypatch):
-    # An in-process load takes the context this module exists to avoid, so the fallback
-    # is CPU only; the accelerator attempt must reach the sidecar's own CPU retry first.
+    # An in-process load takes the context this module avoids, so the fallback is CPU and the sidecar retries first.
     from core.inference.stt_sidecar import WhisperSttSidecar
 
     monkeypatch.setattr(worker_module, "_CTX", _RefusingContext())
@@ -817,8 +777,7 @@ class _StillbornContext:
 
 
 def test_a_child_that_never_bootstraps_reads_as_a_host_that_cannot_spawn(monkeypatch):
-    # start() succeeding says only that the exec worked. A child that dies before
-    # answering took no device, so it must reach the fallback, not a second child.
+    # start() succeeding says only that exec worked, and a child that dies before answering took no device.
     from core.inference.stt_sidecar import WhisperSttSidecar
 
     monkeypatch.setattr(worker_module, "_CTX", _StillbornContext())
@@ -833,8 +792,7 @@ def test_a_child_that_never_bootstraps_reads_as_a_host_that_cannot_spawn(monkeyp
 
 
 def test_a_child_killed_by_a_signal_keeps_its_crash_instead_of_falling_back(monkeypatch):
-    # A child the box killed under memory pressure bootstrapped fine, so spawn
-    # works here; loading the same model in the backend would only repeat it.
+    # A child the box killed under memory pressure bootstrapped fine, so spawn works and the backend would repeat it.
     monkeypatch.setattr(worker_module, "_CTX", _StillbornContext(exitcode = -9))
     monkeypatch.setattr(
         worker_module,
@@ -875,7 +833,7 @@ class _NativeCrashProcess:
 
     def is_alive(self):
         if self._faulted.is_set():
-            self.exitcode = 3221225477  # 0xC0000005, STATUS_ACCESS_VIOLATION
+            self.exitcode = 3221225477
             return False
         return True
 
@@ -905,8 +863,7 @@ class _NativeCrashContext:
         return threading.Event()
 
     def Process(self, **kwargs):
-        # Forward what start() actually passed, ready_event included: rebuilding the
-        # kwargs would drop it, and readiness is the whole signal this test turns on.
+        # Forward what start() passed, ready_event included: rebuilding the kwargs would drop the readiness signal.
         process = _NativeCrashProcess(dict(kwargs.get("kwargs") or {}), self._faulted)
         self._process = process
         return process
@@ -914,7 +871,6 @@ class _NativeCrashContext:
 
 def _fault_in_the_native_load(monkeypatch, faulted: threading.Event, forever: threading.Event):
     def _fault(*_args, **_kwargs):
-        # A fault in native code reports nothing and never comes back.
         faulted.set()
         forever.wait(30)
         raise AssertionError("the crashed child was resumed")
@@ -923,9 +879,8 @@ def _fault_in_the_native_load(monkeypatch, faulted: threading.Event, forever: th
 
 
 def test_a_child_that_crashed_in_the_load_is_not_read_as_a_host_that_cannot_spawn(monkeypatch):
-    # A native crash under the load kills the child with a positive exit code on Windows,
-    # where there are no signals. That child bootstrapped, so spawn works here: reading
-    # it as a host that cannot spawn would repeat the native load inside the backend.
+    # A native crash under the load kills the child with a positive exit code on Windows, and that
+    # child bootstrapped, so reading it as a host that cannot spawn would repeat the native load.
     faulted = threading.Event()
     forever = threading.Event()
     monkeypatch.setattr(worker_module, "_CTX", _NativeCrashContext(faulted))
@@ -943,8 +898,7 @@ def test_a_child_that_crashed_in_the_load_is_not_read_as_a_host_that_cannot_spaw
 
 
 def test_a_crash_in_the_child_load_is_never_repeated_inside_the_backend(monkeypatch):
-    # The fallback exists for a host that cannot bring a child up. A load that crashes
-    # the child crashes the backend too, and the backend is what the user talks to.
+    # The fallback exists for a host that cannot bring a child up: a crashing load crashes the backend too.
     from core.inference.stt_sidecar import WhisperSttSidecar
 
     faulted = threading.Event()
@@ -967,8 +921,7 @@ def test_a_crash_in_the_child_load_is_never_repeated_inside_the_backend(monkeypa
 
 
 def test_the_child_says_it_is_ready_before_it_touches_a_command(monkeypatch):
-    # The handshake is what separates a host that cannot spawn from a child that
-    # failed at something, so it has to precede even a load that fails.
+    # The handshake separates a host that cannot spawn from a child that failed, so it precedes the load.
     cmd_queue: queue.Queue = queue.Queue()
     resp_queue: queue.Queue = queue.Queue()
 
@@ -999,7 +952,6 @@ def test_the_in_process_fallback_reports_the_checkpoint_language_support(monkeyp
     engine = worker_module.InProcessWhisperEngine()
     engine.start("/cached/model", "cpu", "float32")
 
-    # The sidecar reads this to drop the kwargs an English-only model rejects.
     assert engine.generation_config.is_multilingual is False
     engine.close()
     assert engine.is_alive() is False
@@ -1030,9 +982,7 @@ class _LossyNativeCrashContext(_NativeCrashContext):
 
 
 def test_a_crashed_child_whose_ready_word_was_lost_is_still_not_read_as_a_bad_host(monkeypatch):
-    # The child came up and faulted in the native load, but its queued ready
-    # never reached the backend. Classifying that as a host that cannot spawn
-    # sends the same crashing load into the backend, which does not survive it.
+    # The child faulted in the native load with no ready reaching the backend; calling that a spawn failure repeats it.
     faulted = threading.Event()
     forever = threading.Event()
     monkeypatch.setattr(worker_module, "_CTX", _LossyNativeCrashContext(faulted))

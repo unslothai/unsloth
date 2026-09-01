@@ -115,7 +115,6 @@ def test_preview_ref_none_for_unpreviewable_or_too_deep(tmp_path: Path, monkeypa
     outputs = tmp_path / "outputs"
     _point_outputs_root_at(monkeypatch, outputs)
 
-    # Missing / no model artifact -> not previewable.
     assert preview_ref(None) is None
     empty = outputs / "empty"
     empty.mkdir(parents = True)
@@ -127,7 +126,6 @@ def test_preview_ref_none_for_unpreviewable_or_too_deep(tmp_path: Path, monkeypa
     (deep / "adapter_config.json").write_text("{}")
     assert preview_ref(str(deep)) is None
 
-    # Outside outputs_root -> None.
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     (outside / "adapter_config.json").write_text("{}")

@@ -41,7 +41,8 @@ def test_normal_multi_key_arguments_still_split():
 
 
 def test_empty_bare_value_becomes_empty_string_not_dropped():
-    # An empty bare value (``{query:}``) must serialise as ``""`` (``{"query":}`` is invalid JSON and dropped the call).
+    # An empty bare value (``{query:}``) must serialise as ``""`` (``{"query":}`` is invalid JSON
+    # and dropped the call).
     calls = parse_tool_calls_from_text("<|tool_call>call:search{query:,unit:celsius}<tool_call|>")
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"query": "", "unit": "celsius"}
@@ -107,7 +108,7 @@ def test_json_marker_inside_gemma_argument_is_not_a_second_call():
 
 def test_nested_gemma_marker_in_unquoted_arg_does_not_run_inner_call():
     # An UNQUOTED Gemma value containing a literal marker: the marker is nested in the outer
-    # candidate span, so it must not be promoted to a standalone `terminal` call (no tool call).
+    # candidate span, so it must not be promoted to a standalone `terminal` call.
     content = "<|tool_call>call:python{code:<|tool_call>call:terminal{command:ls}<tool_call|>}<tool_call|>"
     calls = parse_tool_calls_from_text(content)
     assert "terminal" not in [c["function"]["name"] for c in calls], calls
@@ -175,7 +176,8 @@ def test_real_think_block_with_rehearsal_inside_still_skips_only_the_rehearsal()
 
 
 def test_wrapperless_nested_object_argument_is_parsed():
-    # skip_special_tokens stream: wrapper and <|"|> markers stripped, so a nested object arrives bare.
+    # skip_special_tokens stream: wrapper and <|"|> markers stripped, so a nested object arrives
+    # bare.
     calls = parse_tool_calls_from_text("call:f{loc:{city:NYC},n:3}")
     assert len(calls) == 1
     assert _args(calls[0]) == {"loc": {"city": "NYC"}, "n": 3}
@@ -188,8 +190,8 @@ def test_wrapperless_array_argument_is_parsed():
 
 
 def test_wrapperless_deeply_nested_object_and_array_are_preserved():
-    # The single-pass parser must keep multi-level nesting (objects inside
-    # objects, arrays inside arrays) intact, not flatten or drop it.
+    # The single-pass parser must keep multi-level nesting (objects inside objects, arrays inside
+    # arrays) intact, not flatten or drop it.
     calls = parse_tool_calls_from_text(
         "call:f{loc:{city:NYC,geo:{lat:1,lng:2}},tags:[a,b,[c,d]],n:3}"
     )
@@ -202,8 +204,8 @@ def test_wrapperless_deeply_nested_object_and_array_are_preserved():
 
 
 def test_gemma_parse_array_advances_on_stray_brace():
-    # Regression: a stray '}' / ']' / ',' where an array element is expected must
-    # not stall _gemma_parse_value at the same index (it looped forever before).
+    # Regression: a stray '}' / ']' / ',' where an array element is expected must not stall
+    # _gemma_parse_value at the same index (it looped forever before).
     from core.inference.tool_call_parser import _gemma_parse_array
 
     items, end, closed = _gemma_parse_array("[a,}]", 0)
@@ -353,8 +355,7 @@ def test_function_sibling_after_close_less_gemma_marker_is_recovered():
 
 
 def test_valid_call_after_close_less_marker_with_quoted_close_token_is_recovered():
-    # A close token quoted in the later call must not extend the earlier
-    # close-less marker's coverage over that call.
+    # A close token quoted in the later call must not extend the earlier close-less marker's coverage over that call.
     gemma = '<|tool_call>call:a{x:1} <|tool_call>call:b{note:<|"|></tool_call><|"|>}<tool_call|>'
     names = [
         c["function"]["name"] for c in parse_tool_calls_from_text(gemma, allow_incomplete = False)
@@ -371,8 +372,8 @@ def test_valid_call_after_close_less_marker_with_quoted_close_token_is_recovered
 
 
 def test_gemma_parse_value_always_advances_on_stray_delimiter():
-    # A stray delimiter (`,`, `}`, `]`) at the primitive position must still advance the
-    # index by at least one, or a caller looping on it spins forever at 100% CPU (DoS).
+    # A stray delimiter (`,`, `}`, `]`) at the primitive position must still advance the index by at
+    # least one, or a caller looping on it spins forever at 100% CPU (DoS).
     for delim in (",", "}", "]"):
         text = delim + "rest"
         value, nxt, _explicit = _gemma_parse_value(text, 0)
@@ -381,8 +382,6 @@ def test_gemma_parse_value_always_advances_on_stray_delimiter():
 
 def test_malformed_gemma_array_does_not_hang():
     # ``[},]`` puts a stray ``}`` at the primitive position inside a list body.
-    # On the buggy parser this hangs the server; guard with a wall-clock timeout
-    # so the regression fails loudly instead of blocking CI forever.
     import threading
 
     result: dict = {}
@@ -411,8 +410,7 @@ def test_malformed_gemma_mapping_value_does_not_hang():
     assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed mapping input"
 
 
-# ── Wrapper-less ``call:NAME{...}``: the display strip removes only a call that OWNS
-# its position. The parser is unchanged, so a promoted call is never erased silently.
+# Wrapper-less ``call:NAME{...}``: the display strip removes only a call that OWNS its position.
 
 
 def _strip(text: str, enabled = None) -> str:
@@ -433,7 +431,6 @@ def test_wrapperless_call_in_mid_sentence_prose_is_kept_by_every_display_strip()
 
 def test_anchored_wrapperless_calls_are_still_stripped():
     en = {"web_search"}
-    # Content start, line start, after a reasoning close, and back-to-back calls.
     assert _strip("call:web_search{query:cats}", en) == ""
     assert _strip("Sure!\ncall:web_search{query:cats}", en) == "Sure!"
     assert "call:web_search" not in _strip("<think>plan</think>call:web_search{query:cats}", en)

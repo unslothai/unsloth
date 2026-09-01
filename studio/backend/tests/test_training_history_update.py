@@ -102,7 +102,6 @@ def test_get_run_detail_includes_preview_fields(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert detail.run.id == "run-1"
-    # Not a previewable dir, so no signed ref - but the field is built without error.
     assert detail.run.preview_sig is None
 
 

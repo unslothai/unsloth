@@ -84,8 +84,7 @@ def test_can_resume_run_rejects_errored_run_without_checkpoint(monkeypatch):
 
 
 def test_can_resume_run_allows_errored_run_at_final_step(monkeypatch):
-    # A save-time crash records final_step == total_steps; resuming re-runs the
-    # final-save path from the checkpoint.
+    # A save-time crash records final_step == total_steps, so resuming re-runs the final-save path from the checkpoint.
     monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
 
     run = _stopped_run(status = "error", final_step = 10, total_steps = 10)
@@ -446,8 +445,7 @@ def test_running_continuation_blocks_older_resume(monkeypatch, tmp_path):
 
 
 def test_stop_save_checkpoint_failure_keeps_error_status(monkeypatch, tmp_path):
-    # A stop-and-save whose checkpoint write failed must finalize as an error so
-    # history explains the missing resume state (keep_error_status flag).
+    # A stop-and-save whose checkpoint write failed finalizes as an error, so history explains the gap.
     from core.training.training import TrainingBackend
     from storage import studio_db
 
@@ -486,8 +484,7 @@ def test_can_resume_run_rejects_resume_blocked_run(monkeypatch):
 
 
 def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(monkeypatch, tmp_path):
-    # A failed stop-and-save must not offer Resume from an older periodic checkpoint;
-    # that would roll back past the recorded final step.
+    # A failed stop-and-save must not offer Resume from an older checkpoint, rolling past the final step.
     from core.training.training import TrainingBackend
     from storage import studio_db
 
@@ -553,8 +550,7 @@ def test_user_stop_error_without_checkpoint_ack_is_blocked(monkeypatch, tmp_path
 
 
 def test_terminal_fallback_keeps_resumable_when_current_checkpoint_landed(monkeypatch, tmp_path):
-    # Worker died before its terminal event, but a valid current-step checkpoint
-    # is on disk: the fallback must keep the run resumable, not block it.
+    # The worker died before its terminal event but a valid checkpoint is on disk: stay resumable.
     from core.training.training import TrainingBackend
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -573,7 +569,7 @@ def test_terminal_fallback_keeps_resumable_when_current_checkpoint_landed(monkey
 
 
 def test_terminal_fallback_blocks_when_no_current_checkpoint(monkeypatch, tmp_path):
-    # Same path, but only a stale (older-step) checkpoint exists: must block.
+    # Same path with only a stale checkpoint: must block.
     from core.training.training import TrainingBackend
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))

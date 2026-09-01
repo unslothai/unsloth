@@ -38,9 +38,7 @@ from core.inference.llama_cpp import (
 
 _HALF_AN_ANSWER = (
     "<!DOCTYPE html>\n<html>\n<body>\n<canvas id='c'></canvas>\n<script>\n"
-    # Varied on purpose. Forty VERBATIM copies of one line is repetition-dominated by the
-    # guard's line rule, which is correct of the guard and wrong of a fixture standing in
-    # for streamed code: the first draft of this file tripped its own echo test.
+    # Varied on purpose: forty copies of one line is repetition the guard's line rule flags, as the first draft did.
     + "".join(
         f"  ctx.lineTo({i * 3}, {i * 7 % 31});\n  ctx.stroke(); // segment {i}\n" for i in range(40)
     )
@@ -379,8 +377,7 @@ def test_the_final_continuation_replays_each_fragment_once(monkeypatch):
     replayed = payloads[2]["messages"][-1]["content"]
     assert replayed == _HALF_AN_ANSWER + _SECOND_HALF
     assert replayed.count("<!DOCTYPE html>") == 1
-    # And the user is shown each fragment once as well. Content events are CUMULATIVE
-    # here, not deltas, so the last one is the whole answer.
+    # Content events are CUMULATIVE here, not deltas, so the last one is the whole answer.
     shown = _texts(events, "content")[-1]
     assert shown.count("<!DOCTYPE html>") == 1
     assert shown.endswith("</html>")
@@ -453,7 +450,6 @@ def test_a_continuation_that_would_be_rejected_is_not_sent(monkeypatch):
     events = _run_no_tools(backend)
 
     assert len(payloads) == 1
-    # And the work already streamed is still the answer.
     assert "<!DOCTYPE html>" in "".join(_texts(events, "content"))
 
 
@@ -693,8 +689,7 @@ def test_a_continuation_that_stalls_in_reasoning_is_not_read_as_more_answer(monk
     events = _run_no_tools(backend)
 
     assert len(payloads) == 3, "the stalled continuation was not recovered"
-    # The recovery ends on a USER turn asking for the answer, which is what tells it
-    # apart from the answer continuation: that one replays the partial and extends it.
+    # The recovery ends on a USER turn asking for the answer, which is what tells it apart from the answer continuation.
     assert payloads[2]["messages"][-1]["role"] == "user"
     assert "continue_final_message" not in payloads[2]
 
@@ -783,7 +778,6 @@ def test_an_attempt_that_reports_no_usage_is_not_charged_the_previous_one(monkey
         monkeypatch,
         [
             [_sse({"content": _HALF_AN_ANSWER}), _usage(700), _finish("length"), _done()],
-            # No usage chunk at all, which llama-server omits on some builds.
             [_sse({"content": _SECOND_HALF}), _done()],
         ],
         payloads,
@@ -814,8 +808,7 @@ def test_a_final_continuation_does_not_reset_the_route_cursor(monkeypatch):
     events = _run_no_tools(backend)
 
     assert len(payloads) == 2, "the answer was not continued"
-    # Only what happens AFTER text is on screen matters: a blank status before the
-    # first content event resets a cursor that is already empty.
+    # Only what happens AFTER text is on screen matters: a blank status first resets an empty cursor.
     kinds = [(e.get("type"), e.get("text")) for e in events]
     first_content = next(i for i, (kind, _) in enumerate(kinds) if kind == "content")
     after = [text for kind, text in kinds[first_content:] if kind == "status"]

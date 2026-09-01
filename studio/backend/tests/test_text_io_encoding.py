@@ -24,11 +24,10 @@ import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
-# Not runtime source. Shipped plugins under plugins/*/src are, so only builds are skipped.
+# Not runtime source; shipped plugins under plugins/*/src are, so only builds are skipped.
 _SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
 
-# Path.open()'s signature is what tells it apart from other libraries' open(),
-# e.g. fitz.open(stream=...) and av.open(..., metadata_errors=...).
+# Path.open()'s signature is what tells it apart from other libraries' open(), e.g. fitz.open(stream=...).
 _FILE_MODE_CHARS = set("rwxabt+")
 _PATH_OPEN_ARGS = ("mode", "buffering", "encoding", "errors", "newline")
 _PATH_OPEN_KWARGS = set(_PATH_OPEN_ARGS)
@@ -36,8 +35,7 @@ _PATH_OPEN_ENCODING_ARG = _PATH_OPEN_ARGS.index("encoding")
 
 _SUBPROCESS_CALLS = {"run", "Popen", "check_output", "check_call", "call"}
 
-# open(file, mode, buffering, encoding, ...), and os.fdopen forwards the same
-# signature with a descriptor in place of the path.
+# open(file, mode, buffering, encoding, ...), and os.fdopen forwards it with a descriptor for the path.
 _OPEN_ENCODING_ARG = 3
 
 
@@ -149,8 +147,7 @@ def _subprocess_aliases(tree: ast.AST, names: set[str]) -> set[str]:
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = node.args
             positional = args.posonlyargs + args.args
-            # Defaults cover the tail of the positional parameters; kw_defaults
-            # is aligned with kwonlyargs already, holding None where absent.
+            # Defaults cover the tail of the positionals; kw_defaults is already aligned with kwonlyargs.
             padded = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
             pairs = list(zip(positional, padded)) + list(zip(args.kwonlyargs, args.kw_defaults))
             aliases.update(arg.arg for arg, default in pairs if _is_bound(default))
@@ -279,8 +276,7 @@ def _offenders(path: Path) -> list[str]:
             found.append(f"{path.name}:{node.lineno}: open() without encoding")
             continue
 
-        # os.fdopen(fd, "w") is open() on a descriptor, so text mode takes the
-        # same locale default. Its mode defaults to "r", i.e. text, like open's.
+        # os.fdopen(fd, "w") is open() on a descriptor, so text mode takes the same locale default.
         if name == "fdopen":
             if _mode_is_binary(node) or _open_has_encoding(node):
                 continue
@@ -298,7 +294,6 @@ def _offenders(path: Path) -> list[str]:
         if name in ("read_text", "write_text") and isinstance(node.func, ast.Attribute):
             if _has_keyword(node, "encoding"):
                 continue
-            # importlib.metadata Distribution.read_text() takes no encoding kwarg.
             if isinstance(node.func.value, ast.Name) and node.func.value.id == "dist":
                 continue
             found.append(f"{path.name}:{node.lineno}: {name}() without encoding")
@@ -354,14 +349,12 @@ def test_resuming_a_legacy_jsonl_keeps_one_encoding(
 
     writer = _load_state_store(codepage).JsonlWriter(path)
     try:
-        # Seen keys survive the resume, so a repeat is refused, not appended.
         assert writer.has("id:1") and writer.has("id:2")
         assert writer.write(records[0]) is False
         assert writer.write({"id": 3, "author": name}) is True
     finally:
         writer.close()
 
-    # Never converted, so it still reads in its own codepage; the append is ASCII.
     blob = path.read_bytes()
     assert blob.startswith(before)
     assert blob[len(before) :].isascii()
@@ -374,7 +367,7 @@ def test_a_coincidentally_utf8_legacy_line_is_left_alone(tmp_path: Path) -> None
     """cp1251 `Р°` is D0 B0, which is also UTF-8 `а`, and nothing can tell them apart."""
     path = tmp_path / "out.jsonl"
     ambiguous = "Р°"
-    assert ambiguous.encode("cp1251").decode("utf-8") == "а"  # the trap
+    assert ambiguous.encode("cp1251").decode("utf-8") == "а"
     authors = ["Привет", "Здравствуйте", "Москва", ambiguous]
     path.write_bytes(
         b"".join(
@@ -386,7 +379,6 @@ def test_a_coincidentally_utf8_legacy_line_is_left_alone(tmp_path: Path) -> None
 
     _load_state_store("cp1251").JsonlWriter(path).close()
 
-    # Untouched, so the ambiguity never had to be resolved.
     assert path.read_bytes() == before
     rows = [json.loads(x) for x in path.read_text(encoding = "cp1251").splitlines() if x.strip()]
     assert [row["author"] for row in rows] == authors
@@ -409,17 +401,16 @@ def test_a_moved_shard_is_not_rewritten_by_guesswork(
     )
     before = path.read_bytes()
 
-    # A UTF-8 host: latin-1 would read cp1251 `Привет` back as `Ïðèâåò`.
     writer = _load_state_store("utf-8").JsonlWriter(path)
     try:
-        assert writer.has("id:1")  # ASCII keys still recover
+        assert writer.has("id:1")
         assert writer.write({"id": 2, "author": "Grüße"}) is True
     finally:
         writer.close()
 
     blob = path.read_bytes()
-    assert blob.startswith(before)  # never rewritten
-    assert blob[len(before) :].isascii()  # appended as \uXXXX, so no second encoding
+    assert blob.startswith(before)
+    assert blob[len(before) :].isascii()
     rows = [json.loads(x) for x in blob.decode(codepage).splitlines() if x.strip()]
     assert [row["author"] for row in rows] == [word, word, "Grüße"]
 
@@ -427,7 +418,7 @@ def test_a_moved_shard_is_not_rewritten_by_guesswork(
 def test_an_all_ambiguous_shard_still_gets_ascii_appends(tmp_path: Path) -> None:
     """Every line valid under both readings still means the append must not pick one."""
     path = tmp_path / "out.jsonl"
-    ambiguous = "Р°"  # cp1251 D0 B0, also valid UTF-8 for "а"
+    ambiguous = "Р°"
     path.write_bytes(
         b"".join(
             json.dumps({"id": i, "a": ambiguous}, ensure_ascii = False).encode("cp1251") + b"\n"
@@ -444,7 +435,6 @@ def test_an_all_ambiguous_shard_still_gets_ascii_appends(tmp_path: Path) -> None
 
     blob = path.read_bytes()
     assert blob.startswith(before)
-    # ASCII, so the appended record survives whichever reading is chosen.
     assert blob[len(before) :].isascii()
     for codec in ("cp1251", "utf-8"):
         rows = [json.loads(x) for x in blob.decode(codec).splitlines() if x.strip()]
@@ -504,7 +494,6 @@ def test_one_damaged_byte_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
 
     _load_state_store("cp1252").JsonlWriter(path).close()
 
-    # Untouched, so the healthy records were never re-read as cp1252.
     assert path.read_bytes() == before
     rows = []
     for line in path.read_bytes().splitlines():
@@ -519,7 +508,7 @@ def test_a_torn_line_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
     """One interrupted append must not get the whole shard read as cp1252."""
     path = tmp_path / "out.jsonl"
     good = [{"id": 1, "author": "Jürgen"}, {"id": 3, "author": "Grüße"}]
-    torn = '{"id": 2, "author": "Jürgen"}'.encode()[:-6]  # cut mid-character
+    torn = '{"id": 2, "author": "Jürgen"}'.encode()[:-6]
     path.write_bytes(
         json.dumps(good[0], ensure_ascii = False).encode()
         + b"\n"
@@ -533,11 +522,10 @@ def test_a_torn_line_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
     writer = _load_state_store("cp1252").JsonlWriter(path)
     try:
         assert writer.has("id:1") and writer.has("id:3")
-        assert not writer.has("id:2")  # torn line yields no key
+        assert not writer.has("id:2")
     finally:
         writer.close()
 
-    # Untouched: no rewrite, so no record was re-encoded into mojibake.
     after = path.read_bytes()
     assert after.startswith(before)
     assert "Jürgen".encode() in after
@@ -560,7 +548,6 @@ def test_an_undecodable_transport_marker_reads_as_unknown(tmp_path: Path) -> Non
     marker = tmp_path / ".transport"
     marker.write_bytes(b"\x80\xffnative\n")
     assert registry._read_marker_value(marker) is None
-    # A readable but unknown value takes the same path (the behaviour restored).
     marker.write_text("something-else\n", encoding = "utf-8")
     assert registry._read_marker_value(marker) is None
 
@@ -587,7 +574,6 @@ def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.setattr(backend_utils, "_hf_cache_roots", lambda: [torn_root])
     assert backend_utils.hf_cache_snapshot_dir("Org/Model") is None
-    # The torn root is skipped, not fatal: a healthy second root still answers.
     monkeypatch.setattr(backend_utils, "_hf_cache_roots", lambda: [torn_root, good_root])
     found = backend_utils.hf_cache_snapshot_dir("Org/Model")
     assert found is not None and found.name == "abc123"
@@ -606,12 +592,9 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
     pid_file = tmp_path / "studio.pid"
     pid_file.write_bytes(b"\x80\xff")
     monkeypatch.setattr(studio_run, "_PID_FILE", pid_file)
-    # _legacy_heir scans the real Unsloth root, so without this the last assertion asks whether
-    # a server happens to be running on the machine: with one, the record is handed over rather
-    # than unlinked. The handoff has its own test below.
+    # _legacy_heir scans the real Unsloth root, so without this the assertion asks about this machine.
     monkeypatch.setattr(studio_run, "_legacy_heir", lambda: None)
     studio_run._remove_pid_file()
-    # Not this process's PID, so the file stays; the point is that it returned.
     assert pid_file.exists()
 
     pid_file.write_text(str(os.getpid()), encoding = "utf-8")
@@ -695,7 +678,7 @@ def test_the_guard_sees_os_fdopen(tmp_path: Path) -> None:
     codepage on the write side while its reader was pinned to UTF-8."""
     cases = {
         "text.py": 'import os\nos.fdopen(fd, "w")\n',
-        "default_mode.py": "import os\nos.fdopen(fd)\n",  # defaults to "r", still text
+        "default_mode.py": "import os\nos.fdopen(fd)\n",
         "binary.py": 'import os\nos.fdopen(fd, "wb")\n',
         "keyword.py": 'import os\nos.fdopen(fd, "w", encoding = "utf-8")\n',
         "positional.py": 'import os\nos.fdopen(fd, "w", 1, "utf-8")\n',
@@ -727,7 +710,6 @@ def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", pw_file)
     assert storage._load_bootstrap_password() is None
 
-    # A readable one still loads, so this is a narrowing of failure, not of function.
     pw_file.write_text("correct horse battery staple\n", encoding = "utf-8")
     assert storage._load_bootstrap_password() == "correct horse battery staple"
 
@@ -746,13 +728,11 @@ def test_a_damaged_checkpoint_resets_instead_of_resuming_on_a_broken_cursor(tmp_
     path.write_text(healthy, encoding = "utf-8")
     assert module.StateStore(path).get("issues_cursor") == cursor
 
-    # Written by a pre-UTF-8 release in the operator's codepage. Nothing is lost
-    # by reading UTF-8 only, because an all-ASCII document is the same bytes.
+    # Written by a pre-UTF-8 release in the operator's codepage; an all-ASCII document is the same bytes anyway.
     path.write_bytes(healthy.encode("cp1252"))
     assert module.StateStore(path).get("issues_cursor") == cursor
 
-    # One damaged byte inside the cursor: still a whole JSON document under a
-    # single-byte codepage, so only refusing that reading resets the checkpoint.
+    # One damaged byte inside the cursor is still whole JSON under a single-byte codepage: only refusing resets it.
     raw = healthy.encode()
     at = raw.index(b"MjAxMi0wMi0xNlQ") + 3
     path.write_bytes(raw[:at] + b"\x96" + raw[at + 1 :])
@@ -781,7 +761,6 @@ def test_a_utf8_record_is_not_parsed_a_second_time(tmp_path: Path) -> None:
         assert reading.as_utf8 == {"id": 1, "author": "Jürgen"}
         assert calls == ["utf-8"], calls
 
-        # A line UTF-8 cannot read still falls through to the codepage, the whole point.
         calls.clear()
         legacy = json.dumps({"id": 2, "author": "Jürgen"}, ensure_ascii = False).encode("cp1252")
         reading = module._read_line(legacy, "cp1252")
@@ -822,7 +801,7 @@ def test_an_unparseably_nested_document_is_discarded_not_raised(tmp_path: Path) 
 
     checkpoint = tmp_path / "octocat__Hello-World.json"
     checkpoint.write_text(nested, encoding = "utf-8")
-    assert module.StateStore(checkpoint).all() == {}  # reset, not raised
+    assert module.StateStore(checkpoint).all() == {}
 
     shard = tmp_path / "out.jsonl"
     shard.write_text(
@@ -831,8 +810,7 @@ def test_an_unparseably_nested_document_is_discarded_not_raised(tmp_path: Path) 
     )
     writer = module.JsonlWriter(shard)
     try:
-        # Skipped like any other unreadable line, so its neighbours still yield the dedup
-        # keys that keep the resume from re-fetching them.
+        # Skipped like any unreadable line, so its neighbours still yield the keys the resume dedups on.
         assert writer.has("id:1") and writer.has("id:2")
     finally:
         writer.close()

@@ -20,8 +20,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Heavy-dep stubbing; prefer the real structlog so a bare stub never leaks to
-# later modules that log at import time.
+# Heavy-dep stubbing; prefer the real structlog so a bare stub never leaks to later modules that log at import time.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)

@@ -75,9 +75,6 @@ def _sidebar_function_body(name: str) -> str:
     raise AssertionError(f"unbalanced braces reading {name} out of app-sidebar.tsx")
 
 
-# ---------------------------------------------------------------------------
-# 1. Sandbox location
-# ---------------------------------------------------------------------------
 def test_sandbox_lives_under_the_studio_home(tmp_path, monkeypatch):
     fake_home = tmp_path / "userprofile"
     studio_home = tmp_path / "custom_studio_home"
@@ -94,8 +91,6 @@ def test_sandbox_lives_under_the_studio_home(tmp_path, monkeypatch):
     wd = Path(tools.get_sandbox_workdir("__LOCALID_aB3xY7q"))
     print(f"\n[{platform.system()}] sandbox workdir = {wd}")
 
-    # It follows UNSLOTH_STUDIO_HOME instead of dropping a third folder in the
-    # user's home next to .unsloth.
     assert str(wd).startswith(str(studio_home)), wd
     assert not str(wd).startswith(str(fake_home / "studio_sandbox")), wd
     assert wd.parent.name == "sandbox"
@@ -132,8 +127,6 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     tools._workdirs.clear()
     tools._legacy_sandbox_migrated = False
     wd = Path(tools.get_sandbox_workdir("__LOCALID_new5678"))
-    # Another chat's folder rides the background pass, so a first call never
-    # waits on the whole tree.
     for thread in threading.enumerate():
         if thread.name == "sandbox-migrate":
             thread.join(30)
@@ -143,9 +136,6 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     assert moved.read_text() == "a,b\n1,2\n"
 
 
-# ---------------------------------------------------------------------------
-# 2. Getting files back out
-# ---------------------------------------------------------------------------
 def test_images_stay_inline_and_everything_else_downloads():
     """Images keep a real media type; the rest are opaque attachments.
 
@@ -175,7 +165,6 @@ def test_sandbox_listing_route_exists():
 
     sandbox_routes = sorted(r.path for r in router.routes if "sandbox" in r.path)
     print(f"\nsandbox routes = {sandbox_routes}")
-    # :path so a file written into a subdirectory is reachable.
     assert sandbox_routes == [
         "/sandbox/{session_id}",
         "/sandbox/{session_id}/reveal",
@@ -189,9 +178,6 @@ def test_sandbox_listing_route_exists():
     assert '"path"' in src, "the listing must answer 'where did my file go'"
 
 
-# ---------------------------------------------------------------------------
-# 3. Reporting what a call created
-# ---------------------------------------------------------------------------
 def test_both_executors_report_created_files(tmp_path, monkeypatch):
     """A file is reported whether it came from python or from bash."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -215,7 +201,6 @@ def test_both_executors_report_created_files(tmp_path, monkeypatch):
         assert name in result
         assert os.path.isfile(os.path.join(workdir, name))
 
-    # The sentinel never reaches the model.
     from core.inference.tool_loop_controller import strip_result_for_model
 
     stripped = strip_result_for_model('done\n__FILES__:[{"name": "x.csv"}]')
@@ -245,9 +230,6 @@ def test_tool_description_says_files_are_kept():
     assert "absolute path" in note
 
 
-# ---------------------------------------------------------------------------
-# 4. Compiled cache
-# ---------------------------------------------------------------------------
 def test_compiled_cache_is_pinned_under_the_studio_home(tmp_path, monkeypatch):
     """Not left CWD-relative, which put it in %USERPROFILE% on Windows."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
@@ -287,9 +269,6 @@ def test_cache_cleanup_finds_the_configured_and_cwd_caches(tmp_path, monkeypatch
     assert str((tmp_path / "unsloth_compiled_cache").resolve()) in found
 
 
-# ---------------------------------------------------------------------------
-# 5. Cleanup on chat delete
-# ---------------------------------------------------------------------------
 def test_deleting_a_chat_cleans_up_its_sandbox(tmp_path, monkeypatch):
     """An empty sandbox always goes; files need an explicit opt-in."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -304,7 +283,6 @@ def test_deleting_a_chat_cleans_up_its_sandbox(tmp_path, monkeypatch):
     tools._workdirs.clear()
     withfile = Path(tools.get_sandbox_workdir("__LOCALID_files22"))
     (withfile / "keep.csv").write_text("a\n")
-    # Not deleted implicitly: those files are the user's.
     assert tools.remove_session_sandbox("__LOCALID_files22") is False
     assert (withfile / "keep.csv").is_file()
     assert tools.remove_session_sandbox("__LOCALID_files22", delete_files = True) is True
@@ -352,7 +330,6 @@ def test_reading_a_sandbox_never_creates_it(tmp_path, monkeypatch):
     assert resolved == root / "__LOCALID_ghost"
     assert not resolved.exists()
     assert not root.exists()
-    # The creating resolver still agrees on the path.
     assert Path(tools.get_sandbox_workdir("__LOCALID_ghost")) == resolved
     assert resolved.is_dir()
 
@@ -497,7 +474,6 @@ def test_the_legacy_migration_is_startup_work(tmp_path, monkeypatch):
 
     tools._workdirs.clear()
     tools._legacy_sandbox_migrated = False
-    # A read does not move anything.
     Path(tools.resolve_sandbox_workdir("__LOCALID_upgrade"))
     assert (legacy / "sales.csv").is_file()
 
@@ -570,7 +546,6 @@ def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
     )
     assert reported, "nothing was reported at all"
     for entry in reported:
-        # Must not raise: whatever the snapshot names, the route must serve.
         try:
             _sandbox_dir, resolved = _contained_sandbox_path("__LOCALID_agree11", entry["name"])
         except HTTPException as refused:
@@ -590,7 +565,7 @@ def test_a_same_timestamp_overwrite_is_still_reported(tmp_path, monkeypatch):
     target.write_text("a")
     before = tools._snapshot_workdir_files(str(workdir))
     target.write_text("a,b,c,d")
-    os.utime(target, ns = (before["report.csv"][0], before["report.csv"][0]))  # same tick
+    os.utime(target, ns = (before["report.csv"][0], before["report.csv"][0]))
     assert "report.csv" in tools._created_file_sentinels(str(workdir), before)
 
 
@@ -735,8 +710,6 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
     tools._legacy_sandbox_migrated = False
     tools._migrate_legacy_sandbox(tools.sandbox_root())
     resolved = tools.resolve_sandbox_workdir("__LOCALID_evil")
-    # The link is left at the legacy root rather than carried across, so the
-    # name inside the sandbox root is a plain path with nothing behind it.
     assert not (Path(tools.sandbox_root()) / "__LOCALID_evil").is_symlink()
     assert (legacy / "__LOCALID_evil").is_symlink(), "moved a link into the root"
     assert not Path(resolved).is_symlink()
@@ -854,7 +827,6 @@ def test_only_the_real_scratch_dir_skips_a_path_segment(tmp_path, monkeypatch):
     assert f"{name}/a/b/c/deep.csv" not in inference._sandbox_listing_names(str(workdir))
     with pytest.raises(HTTPException):
         inference._contained_sandbox_path(session, f"{name}/a/b/c/deep.csv")
-    # Only the extra segment is withdrawn; four still resolve through the link.
     inference._contained_sandbox_path(session, f"{name}/a/b/shallow.csv")
 
 
@@ -893,7 +865,6 @@ def test_a_user_file_named_like_scratch_is_kept(tmp_path, monkeypatch):
     snapshot = tools._snapshot_workdir_files(str(workdir))
     assert "studio_exec_results.csv" in snapshot
     assert "studio_exec_ab12cd.py" in snapshot
-    # Both block removal without the opt-in.
     assert tools.remove_session_sandbox("__LOCALID_prefix1") is False
     assert (workdir / "studio_exec_results.csv").is_file()
     assert (workdir / "studio_exec_ab12cd.py").is_file()
@@ -912,7 +883,6 @@ def test_an_existing_sandbox_override_keeps_its_permissions(tmp_path, monkeypatc
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_shared1"))
     assert (shared.stat().st_mode & 0o777) == before, "the shared root was re-permissioned"
-    # The session directory is ours, so it is still locked down.
     assert (workdir.stat().st_mode & 0o777) == 0o700
 
 
@@ -953,7 +923,6 @@ def test_a_marked_directory_is_cleared(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
     cache_cleanup.clear_unsloth_compiled_cache()
     assert not (cache / "helper.py").exists()
-    # Emptied, not unmade: the marker is what keeps it ours next time.
     assert list(cache.iterdir()) == [cache / cache_cleanup.CACHE_MARKER]
 
 
@@ -962,8 +931,7 @@ def test_generated_modules_identify_a_cache_without_a_marker(tmp_path, monkeypat
     cache = tmp_path / "old_cache"
     cache.mkdir()
     (cache / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n", encoding = "utf-8")
-    # Their own file, and Unsloth*Trainer.py is a name a user's subclass can
-    # carry: without the marker there is nothing to say we wrote it.
+    # Unsloth*Trainer.py is a name a user's subclass can carry: without the marker there is nothing to say we wrote it.
     (cache / "UnslothCustomTrainer.py").write_text("class X: pass\n", encoding = "utf-8")
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
 
@@ -1001,7 +969,6 @@ def test_a_cached_sandbox_path_is_re_checked(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_swapped"))
     assert workdir.is_dir()
 
-    # Swap it, leaving the resolver's cache pointing at the same string.
     shutil.rmtree(workdir)
     workdir.symlink_to(outside)
 
@@ -1047,7 +1014,6 @@ def test_a_shared_compile_location_keeps_preserved_patterns(tmp_path, monkeypatc
     cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns = ["Unsloth*Trainer.py"])
     assert (shared / "UnslothSFTTrainer.py").is_file()
     assert not (shared / "unsloth_compiled_module_llama.py").exists()
-    # Not ours to remove in a directory we do not own.
     assert (shared / "__pycache__").is_dir()
 
 
@@ -1213,7 +1179,6 @@ def test_a_collision_is_not_a_retryable_failure(tmp_path, monkeypatch):
     root = Path(tools.sandbox_root())
     existing = root / "__LOCALID_dupe123"
     existing.mkdir(parents = True)
-    # Claimed, which is what a session directory the new root made looks like.
     (existing / tools._SANDBOX_MARKER).write_text("__LOCALID_dupe123", encoding = "utf-8")
 
     tools._migrate_legacy_sandbox(str(root))
@@ -1258,7 +1223,6 @@ def test_the_marker_survives_a_cache_clear(tmp_path, monkeypatch):
     assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
     assert not (pinned / "unsloth_compiled_module_gemma3.py").exists()
 
-    # Still ours on the next pass, so a __pycache__ left by the compiler goes too.
     (pinned / "__pycache__").mkdir()
     (pinned / "UnslothSFTTrainer.py").write_text("trainer\n", encoding = "utf-8")
     cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns = ["Unsloth*Trainer.py"])
@@ -1314,14 +1278,12 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     assert "studio_exec_results.py" in result, result
 
     workdir = Path(tools.get_sandbox_workdir(session))
-    # The executor left nothing of its own behind.
     assert sorted(
         p.name
         for p in workdir.iterdir()
         if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
-    # And a delete without the opt-in will not quietly take it.
     assert tools.remove_session_sandbox(session) is False
     assert (workdir / "studio_exec_results.py").is_file()
 
@@ -1369,7 +1331,6 @@ def test_studios_own_sandbox_bookkeeping_is_not_a_user_file(tmp_path, monkeypatc
 
     snapshot = tools._snapshot_workdir_files(str(workdir))
     assert ".unsloth_sandbox_remap.json" not in snapshot
-    # Other dotfiles are still the user's.
     assert ".gitignore" in snapshot
     assert inference._sandbox_listing_names(str(workdir)) == [".gitignore"]
 
@@ -1407,7 +1368,6 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     files = result.split("__FILES__:")[1]
     assert "studio_exec_results.py" in files
     workdir = Path(tools.get_sandbox_workdir(session))
-    # Only the user's file is left; the executor cleaned up after itself.
     assert sorted(
         p.name
         for p in workdir.iterdir()
@@ -1501,7 +1461,6 @@ def test_a_chat_deleted_mid_call_keeps_its_sandbox(tmp_path, monkeypatch):
         may_finish.set()
         worker.join(timeout = 10)
 
-    # The refused request was queued, so leaving the call performs it.
     assert not workdir.exists()
 
 
@@ -1526,7 +1485,6 @@ def test_a_pre_existing_compile_directory_is_never_marked_as_ours(tmp_path, monk
     from utils import cache_cleanup
     from utils.paths import storage_roots
 
-    # Where Unsloth would pin it, already there and holding someone else's files.
     pinned = Path(storage_roots.cache_root()).parent / "compiled_cache"
     pinned.mkdir(parents = True)
     (pinned / "someones_notes.txt").write_text("keep me")
@@ -1570,7 +1528,6 @@ def test_removal_and_the_busy_check_are_one_decision(tmp_path, monkeypatch):
     real_rmtree = tools.shutil.rmtree
 
     def slow_rmtree(path, **kwargs):
-        # Stand in for the window between deciding and unlinking.
         entered.set()
         time.sleep(0.3)
         return real_rmtree(path, **kwargs)
@@ -1593,8 +1550,7 @@ def test_removal_and_the_busy_check_are_one_decision(tmp_path, monkeypatch):
     for t in threads:
         t.join(timeout = 10)
 
-    # The tool could only take the lock after the removal finished, so it never
-    # ran inside a directory that was being deleted.
+    # The tool could only take the lock after the removal finished, so it never ran inside a directory being deleted.
     assert started.is_set()
     assert result["removed"] is True
     assert tools._active_sessions == {}
@@ -1628,7 +1584,6 @@ def test_a_delete_during_a_call_happens_once_the_call_ends(tmp_path, monkeypatch
     with tools._session_in_flight(session):
         assert tools.remove_session_sandbox(session, delete_files = True) is False
         assert workdir.is_dir(), "removed under a running tool"
-    # Queued, so leaving the call performs it.
     assert not workdir.exists()
     assert tools._pending_removals == {}
 
@@ -1676,7 +1631,6 @@ def test_the_delete_switch_only_appears_where_it_works():
     assert "function deleteTargetHasFiles" in sidebar
     assert '"training"' not in sidebar.split("function deleteTargetHasFiles")[1][:400]
     assert "{deleteTargetHasFiles(confirmingDelete) ? (" in sidebar
-    # And every opener clears the switch, so it can never arrive preselected.
     assert "function openDeleteDialog" in sidebar
     assert "setConfirmingDelete({ kind:" not in sidebar
 
@@ -1782,7 +1736,6 @@ def test_deleting_a_big_sandbox_does_not_hold_the_tool_lock(tmp_path, monkeypatc
     assert tools.remove_session_sandbox(session, delete_files = True) is True
     assert not workdir.exists(), "the session directory is gone immediately"
 
-    # The lock is free while the tree is still being removed.
     assert slow.wait(timeout = 5)
     started = time.monotonic()
     with tools._session_in_flight("__LOCALID_other12"):
@@ -1824,8 +1777,7 @@ def test_a_real_project_workspace_is_still_left_alone(tmp_path, monkeypatch):
 def test_a_foreign_tool_result_keeps_its_own_fields():
     """Unsloth's wrapper always carries images; anything else with text and
     sessionId is someone else's result and must not be reduced to its text."""
-    # The predicate lives beside the rest of the sandbox contract, and the
-    # adapter and both tool cards share that one copy.
+    # The predicate lives beside the rest of the sandbox contract, and both tool cards share that copy.
     contract = (
         Path(__file__).resolve().parents[2]
         / "frontend"
@@ -1854,7 +1806,6 @@ def test_a_shared_roots_own_folder_is_never_deleted(tmp_path, monkeypatch):
     assert tools.remove_session_sandbox("invoices", delete_files = True) is False
     assert (theirs / "2026.pdf").is_file()
 
-    # Empty ones are not ours to reclaim either.
     (root / "empty").mkdir()
     assert tools.remove_session_sandbox("empty") is False
     assert (root / "empty").is_dir()
@@ -1870,7 +1821,6 @@ def test_a_sandbox_we_created_in_a_shared_root_is_still_removable(tmp_path, monk
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_mine11"))
     assert (workdir / tools._SANDBOX_MARKER).is_file()
-    # Nothing but our marker in it, so it counts as empty.
     assert tools.remove_session_sandbox("__LOCALID_mine11") is True
     assert not workdir.exists()
 
@@ -1894,7 +1844,6 @@ def test_two_ids_differing_only_in_case_share_the_busy_check(tmp_path, monkeypat
     with tools._session_in_flight("chatcase"):
         assert tools.remove_session_sandbox("ChatCase", delete_files = True) is False
         assert workdir.is_dir(), "removed under a running tool"
-    # And the queued delete names the id that was asked for, not the folded key.
     assert not workdir.exists()
     assert tools._pending_removals == {}
 
@@ -1916,7 +1865,6 @@ def test_an_existing_folder_in_a_shared_root_is_never_claimed(tmp_path, monkeypa
     assert workdir != theirs, "ran the tool inside a folder we did not create"
     assert workdir.name.startswith("taxes-")
     assert not (theirs / tools._SANDBOX_MARKER).exists(), "claimed a folder we did not create"
-    # Deleting the chat takes our directory and leaves theirs alone.
     assert tools.remove_session_sandbox("taxes", delete_files = True) is True
     assert (theirs / "2026.pdf").is_file()
 
@@ -2010,7 +1958,6 @@ def test_a_pre_existing_folder_keeps_its_permissions(tmp_path, monkeypatch):
     assert Path(tools.get_sandbox_workdir("team")) != theirs
     assert oct(theirs.stat().st_mode)[-3:] == "755", "an unowned folder was locked down"
 
-    # Ours is still tightened.
     mine = Path(tools.get_sandbox_workdir("__LOCALID_mine33"))
     assert oct(mine.stat().st_mode)[-3:] == "700"
 
@@ -2045,8 +1992,7 @@ def test_a_case_variant_chat_gets_its_own_directory(tmp_path, monkeypatch):
     (first / "report.csv").write_text("a,b\n", encoding = "utf-8")
     assert (first / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == "CaseOwn"
 
-    # What the other id sees on a case-insensitive volume: this directory, made
-    # by someone else. On a case-sensitive one it is a separate name already.
+    # What the other id sees on a case-insensitive volume; on a case-sensitive one it is a separate name already.
     root = first.parent
     collision = root / "caseown"
     if not collision.exists():
@@ -2057,7 +2003,6 @@ def test_a_case_variant_chat_gets_its_own_directory(tmp_path, monkeypatch):
     second = Path(tools._session_dir(str(root), "caseown"))
     assert second.name == "caseown-" + hashlib.sha256(b"caseown").hexdigest()[:8]
 
-    # And that id cannot delete the other chat's files.
     assert tools.remove_session_sandbox("caseown", delete_files = True) is False
     assert (collision / "report.csv").is_file()
     assert tools.remove_session_sandbox("CaseOwn", delete_files = True) is True
@@ -2067,11 +2012,8 @@ def test_the_delete_switch_does_not_promise_project_files():
     """A chat moved back to Recents wrote its earlier files into the project
     workspace, which chat deletion does not touch."""
     # The copy is the contract, not where it lives: #8932 moved these strings into the locale file
-    # unchanged and broke a grep of app-sidebar.tsx.
-    # The promise it must make: looked for where the sidebar's user-visible copy lives, not
-    # across the whole tree, or an occurrence in an unrelated file would satisfy it.
+    # unchanged and broke a grep of app-sidebar.tsx. Scope the search to the sidebar's own copy.
     assert "This chat's own sandbox folder is removed from disk." in _frontend_copy_text()
-    # The promise it must not make: looked for everywhere, where breadth only tightens it.
     assert "Anything this chat's tools wrote is removed from disk." not in _frontend_src_text()
 
 
@@ -2093,7 +2035,6 @@ def test_a_tool_cannot_forge_its_way_into_owning_a_folder(tmp_path, monkeypatch)
     workdir = Path(tools.get_sandbox_workdir("photos"))
     assert workdir != theirs, "ran the tool inside a folder we did not create"
     assert not (theirs / tools._SANDBOX_MARKER).exists()
-    # What the tool writes lands in ours, and deleting the chat takes ours.
     (workdir / "plot.png").write_text("png", encoding = "utf-8")
     assert tools.remove_session_sandbox("photos", delete_files = True) is True
     for _ in range(50):
@@ -2114,8 +2055,7 @@ def test_two_ids_racing_for_one_name_do_not_share_it(tmp_path, monkeypatch):
     root = tools.sandbox_root()
     os.makedirs(root, exist_ok = True)
     first = Path(tools._ensure_session_dir(root, "RaceId"))
-    # The other id, resolving the same plain name (what a case-insensitive
-    # volume produces): the claim is already taken, so it steps aside.
+    # The other id resolving the same plain name: the claim is already taken, so it steps aside.
     plain = Path(root) / "raceid"
     if not plain.exists():
         plain.mkdir()
@@ -2174,12 +2114,10 @@ def test_a_tool_writing_over_the_marker_does_not_lose_its_files(tmp_path, monkey
     (workdir / "results.csv").write_text("a,b\n", encoding = "utf-8")
     (workdir / tools._SANDBOX_MARKER).write_text("Traceback: not an id\n", encoding = "utf-8")
 
-    # What the next launch sees.
     tools._workdirs.clear()
     again = Path(tools.get_sandbox_workdir("__LOCALID_clob11"))
     assert again == workdir, "the chat was sent to a new directory"
     assert (again / "results.csv").is_file()
-    # And the claim is back, so deletion still works.
     assert (again / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == "__LOCALID_clob11"
     assert Path(tools.resolve_sandbox_workdir("__LOCALID_clob11")) == workdir
 
@@ -2243,10 +2181,8 @@ def test_an_id_the_filesystem_cannot_hold_still_gets_its_own_directory(tmp_path,
     assert first.name.startswith("_id-") and second.name.startswith("_id-")
     (first / "mine.csv").write_text("mine", encoding = "utf-8")
 
-    # Stable across a restart, so a download chip still resolves.
     tools._workdirs.clear()
     assert Path(tools.resolve_sandbox_workdir("chat.one")) == first
-    # And nothing traverses: the name is derived, not the id.
     escape = Path(tools.get_sandbox_workdir("../../etc"))
     assert escape.parent == Path(tools.sandbox_root())
 
@@ -2266,7 +2202,6 @@ def test_a_foreign_folder_is_not_taken_for_an_interrupted_move(tmp_path, monkeyp
     root.mkdir()
     theirs = root / "shared_name"
     theirs.mkdir()
-    # A subset of the legacy names, which used to be enough to look partial.
     (theirs / "notes.txt").write_text("theirs", encoding = "utf-8")
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
 
@@ -2330,7 +2265,6 @@ def test_an_unowned_cache_of_trainers_is_not_put_on_sys_path(tmp_path, monkeypat
     theirs.mkdir()
     (theirs / "UnslothCustomTrainer.py").write_text("class X: pass\n", encoding = "utf-8")
     (theirs / "numpy.py").write_text("raise SystemExit('shadowed')\n", encoding = "utf-8")
-    # In the launch directory, which is the case that is not ours.
     monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PYTHONPATH", "")
@@ -2343,7 +2277,6 @@ def test_an_unowned_cache_of_trainers_is_not_put_on_sys_path(tmp_path, monkeypat
     assert str(theirs.resolve()) not in os.environ.get("PYTHONPATH", "")
     _sys.path[:] = before
 
-    # One the compiler has actually written into is still registered.
     (theirs / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n", encoding = "utf-8")
     cache_cleanup.register_compiled_cache_on_path()
     assert str(theirs.resolve()) in _sys.path
@@ -2353,19 +2286,13 @@ def test_an_unowned_cache_of_trainers_is_not_put_on_sys_path(tmp_path, monkeypat
 def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
     """Anything it wrote before the move is in its own folder, and the backend
     never touches the project workspace."""
-    # Read the decision out of deleteTargetHasFiles rather than pinning one spelling: #8932 added
-    # bulk targets and rewrote the body to `target.kind !== "run"`, same answer for chats and
-    # projects. The contract is that a run has no sandbox and project membership is never
-    # consulted, so assert exactly that.
+    # Read the decision out of deleteTargetHasFiles rather than pinning a spelling: a run has no sandbox.
     body = _sidebar_function_body("deleteTargetHasFiles")
     assert "projectId" not in body, (
         "a chat moved into a project still owns the sandbox it wrote before the move, "
         "so the switch must not be gated on project membership"
     )
-    # Negative checks alone did not establish this. `return target.kind === "run";` -- the exact
-    # inversion, hiding the switch for every chat and project -- mentions "run", mentions no
-    # projectId, and contains neither prohibited expression, so it passed all of them. Pin the
-    # DIRECTION: run is the kind that is excluded, never the one that is included.
+    # Pin the DIRECTION: `return target.kind === "run";` is the exact inversion and passed every negative check.
     assert re.search(r'kind\s*!==\s*"run"', body) or all(
         f'"{kind}"' in body for kind in ("chat", "chats", "project", "projects")
     ), (
@@ -2392,7 +2319,6 @@ def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
         encoding = "utf-8"
     )
     assert "export function isSandboxFileList" in contract
-    # Every entry, not just the array: the rows read name off each one.
     assert 'typeof (entry as { name?: unknown }).name === "string"' in contract
     for source in (contract, python_card):
         assert "isSandboxFileList(v.files)" in source
@@ -2414,7 +2340,6 @@ def test_a_sandbox_of_empty_directories_is_still_reclaimed(tmp_path, monkeypatch
     assert tools.remove_session_sandbox(session) is True
     assert not workdir.exists()
 
-    # One with a file in it still needs the opt-in.
     other = Path(tools.get_sandbox_workdir("__LOCALID_dirs222"))
     (other / "outputs").mkdir()
     (other / "outputs" / "report.csv").write_text("a,b\n", encoding = "utf-8")
@@ -2441,7 +2366,6 @@ def test_a_symlinked_builtin_cache_is_left_usable(tmp_path, monkeypatch):
     assert real.is_dir(), "the link was left dangling"
     assert (real / cache_cleanup.CACHE_MARKER).is_file()
     assert not (real / "unsloth_compiled_module_gemma3.py").exists()
-    # Writable through the link, which is what the compiler does next.
     os.makedirs(link, exist_ok = True)
 
 
@@ -2452,7 +2376,6 @@ def test_the_sandbox_listing_runs_in_a_worker():
     from routes import inference as inference_routes
 
     source = inspect.getsource(inference_routes.list_sandbox_files)
-    # Resolution goes with it: that scans the root for a marked directory.
     assert "_sandbox_listing(sandbox_dir)" in source
     assert "run_in_threadpool(_resolve_and_list)" in source
     assert "os.stat" not in source
@@ -2526,7 +2449,6 @@ def test_a_default_folder_that_was_already_there_is_not_run_in(tmp_path, monkeyp
     assert (theirs / "notes.txt").read_text(encoding = "utf-8") == "theirs"
     assert not (theirs / tools._SANDBOX_MARKER).exists()
 
-    # Ours is claimed, so the next run recognises it rather than making another.
     tools._workdirs.clear()
     assert Path(tools.get_sandbox_workdir(None)) == workdir
 
@@ -2556,8 +2478,7 @@ def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     from routes import chat_history
     from storage import studio_db
 
-    # The body lives in the _with_replay_status variant; clear_chat_history drops its
-    # third element for callers that do not need it. Same transaction either way.
+    # clear_chat_history drops the third element of the _with_replay_status variant; same transaction either way.
     source = inspect.getsource(studio_db.clear_chat_history_with_replay_status)
     assert "SELECT id FROM chat_threads" in source
     assert source.index("SELECT id FROM chat_threads") < source.index("DELETE FROM chat_threads")
@@ -2609,8 +2530,7 @@ def test_an_id_with_a_lone_surrogate_still_gets_a_directory(tmp_path, monkeypatc
     odd = "chat-\ud800-one"
     name = tools._sandbox_name(odd)
     assert name.startswith(tools._DERIVED_PREFIX)
-    # Distinct ids stay distinct: surrogatepass keeps the code point, where a
-    # replacing policy would fold every bad id onto one directory.
+    # surrogatepass keeps the code point, where a replacing policy would fold every bad id onto one directory.
     assert name != tools._sandbox_name("chat-\ud801-one")
 
     workdir = Path(tools.get_sandbox_workdir(odd))
@@ -2646,7 +2566,6 @@ def test_a_legacy_entry_that_is_a_symlink_is_left_alone(tmp_path, monkeypatch):
     assert not (outside / tools._SANDBOX_MARKER).exists(), "wrote outside both roots"
     assert (outside / "theirs.txt").is_file()
     assert not (root / "__LOCALID_link111").exists()
-    # The rest of the pass still runs.
     assert (root / "__LOCALID_real111" / "results.csv").is_file()
 
 
@@ -2720,8 +2639,6 @@ def test_a_large_file_is_streamed_rather_than_buffered():
 
     assert "downloadUrlStreaming" in view
     assert "response.blob()" not in view
-    # The route takes the bearer as a query parameter, since the streaming path
-    # sends no headers of its own.
     assert "token=" in view
 
 
@@ -2734,13 +2651,12 @@ def test_a_same_size_overwrite_is_still_reported(tmp_path, monkeypatch):
 
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_same111"))
-    # The premise: where mtime alone separates the writes there is no digest.
     monkeypatch.setattr(tools, "_volume_timestamps_finely", lambda _: False)
     report = workdir / "report.csv"
     report.write_text("a,b\n1,2\n", encoding = "utf-8")
 
     before = tools._snapshot_workdir_files(str(workdir))
-    report.write_text("a,b\n3,4\n", encoding = "utf-8")  # same length
+    report.write_text("a,b\n3,4\n", encoding = "utf-8")
     os.utime(report, ns = (before["report.csv"][0], before["report.csv"][0]))
 
     after = tools._snapshot_workdir_files(str(workdir))
@@ -2797,8 +2713,7 @@ def test_deleting_a_big_sandbox_does_not_hold_up_other_chats(tmp_path, monkeypat
     try:
         deleter.start()
         assert started.wait(5), "the delete never started"
-        # Observed while the tree is still going: this is the lock every tool
-        # start takes, so holding it here stops calls in every other chat.
+        # This is the lock every tool start takes, so holding it here stops calls in every other chat.
         assert tools._active_sessions_lock.acquire(timeout = 2), "held the tool lock"
         tools._active_sessions_lock.release()
         assert not workdir.exists(), "the name is still there"
@@ -2847,8 +2762,6 @@ def test_an_interrupted_move_is_not_read_as_a_collision(tmp_path, monkeypatch):
     tools._migrate_legacy_sandbox(str(root))
     monkeypatch.setattr(tools.shutil, "move", real_move)
 
-    # Nothing at the session's name, so the next launch does not read the half
-    # copy as a session the new root already has.
     assert not (root / "__LOCALID_part111").exists(), "left a partial copy at the real name"
     assert [n for n in os.listdir(root) if tools._STAGING_SUFFIX in n] == []
     assert (legacy / "second.csv").is_file(), "lost the source"
@@ -2885,7 +2798,7 @@ def test_a_delete_without_the_switch_says_what_it_kept(tmp_path, monkeypatch):
         .new_event_loop()
         .run_until_complete(chat_history._remove_sandboxes([kept, empty], False))
     )
-    assert removed == 1, removed  # the empty one
+    assert removed == 1, removed
     assert still_there == [kept], still_there
     assert (workdir / "results.csv").is_file()
 
@@ -2933,7 +2846,6 @@ def test_a_fallback_name_already_in_a_shared_root_is_not_taken(tmp_path, monkeyp
     assert not (fallback / tools._SANDBOX_MARKER).exists()
     assert tools._marker_owner(str(workdir)) == name
 
-    # And a delete takes only what we made.
     tools.remove_session_sandbox(session, delete_files = True)
     assert (theirs / "plain.txt").is_file()
     assert (fallback / "also-mine.txt").is_file()
@@ -2977,13 +2889,11 @@ def test_a_chat_that_owns_nothing_never_reads_from_the_shared_root(tmp_path, mon
     theirs = root / tools._sandbox_name(session)
     theirs.mkdir()
     (theirs / "private.csv").write_text("theirs", encoding = "utf-8")
-    # What the old sentinel pointed at, filled by the user.
     planted = root / "_unowned" / tools._sandbox_name(session)
     planted.mkdir(parents = True)
     (planted / "also-theirs.csv").write_text("theirs", encoding = "utf-8")
 
-    # The fallback name is theirs too, so the resolver has nothing of ours to
-    # answer with and must not point at anything in here.
+    # The fallback name is theirs too, so the resolver must not point at anything in here.
     fallback = root / f"{tools._sandbox_name(session)}-{tools._name_suffix(session)}"
     fallback.mkdir()
     (fallback / "third.csv").write_text("theirs", encoding = "utf-8")
@@ -3084,7 +2994,6 @@ def test_a_fallback_with_a_random_name_is_found_again(tmp_path, monkeypatch):
     (first / "report.csv").write_text("a,b\n", encoding = "utf-8")
     assert tools._marker_owner(str(first)) == name
 
-    # A later launch: nothing cached, and the name is not derivable.
     _forget_sandbox_state(tools)
     assert Path(tools.get_sandbox_workdir(session)) == first
     assert Path(tools.resolve_sandbox_workdir(session)) == first
@@ -3111,7 +3020,6 @@ def test_a_marker_a_tool_deleted_is_written_again(tmp_path, monkeypatch):
     assert tools._marker_owner(str(workdir)) == tools._sandbox_name(session)
     assert (again / "plot.png").is_file()
 
-    # A directory this run never claimed is still left alone.
     theirs = root / "not-ours"
     theirs.mkdir()
     tools._workdirs[("__LOCALID_other11", None)] = str(theirs)
@@ -3134,7 +3042,6 @@ def test_an_interrupted_delete_is_finished_on_the_next_launch(tmp_path, monkeypa
         "__LOCALID_gone111",
         encoding = "utf-8",
     )
-    # The user's own, named similarly and never marked.
     theirs = root / "report.deleting-old"
     theirs.mkdir()
     (theirs / "keep.txt").write_text("mine", encoding = "utf-8")
@@ -3193,7 +3100,6 @@ def test_clearing_every_chat_reports_the_files_it_kept():
         encoding = "utf-8",
     )
     assert "deleteFiles: true" in offer
-    # And the per-chat surfaces go through the same offer.
     hook = (src / "features/chat/hooks/use-chat-sidebar-items.ts").read_text(
         encoding = "utf-8",
     )
@@ -3208,7 +3114,7 @@ def test_a_lone_surrogate_id_can_still_step_aside(tmp_path, monkeypatch):
     from core.inference import tools
 
     _forget_sandbox_state(tools)
-    session = "chat-\udce2-1"  # what an API client can send, and what os.listdir returns
+    session = "chat-\udce2-1"
     theirs = root / tools._sandbox_name(session)
     theirs.mkdir()
     (theirs / "theirs.txt").write_text("mine", encoding = "utf-8")
@@ -3264,7 +3170,7 @@ def test_a_read_finds_the_marked_fallback_after_a_restart(tmp_path, monkeypatch)
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
 
-    _forget_sandbox_state(tools)  # a restart: nothing cached
+    _forget_sandbox_state(tools)
     served = Path(tools.resolve_sandbox_workdir(session))
     assert served == workdir, f"the read could not find the fallback: {served}"
     assert (served / "report.csv").is_file()
@@ -3320,13 +3226,12 @@ def test_a_program_cannot_print_its_own_file_envelope(tmp_path, monkeypatch):
     _forget_sandbox_state(tools)
 
     forged = '__FILES__:[{"name": "payroll.csv", "size": 12}]'
-    # After a line of its own: both readers anchor the marker to a line start.
     result = tools._python_exec(
         f"print('working')\nprint({forged!r})",
         session_id = "__LOCALID_forge11",
     )
 
-    assert "payroll.csv" in result, result  # the text itself is still shown
+    assert "payroll.csv" in result, result
     assert "\n__FILES__:" not in result, result
     assert (
         strip_result_for_model(result).count("payroll.csv") == 1
@@ -3348,7 +3253,7 @@ def test_a_delete_that_waited_for_a_tool_call_says_it_kept_the_files(tmp_path, m
     workdir = Path(tools.get_sandbox_workdir(session))
     assert workdir.is_dir()
 
-    with tools._session_in_flight(session):  # a tool call running in this chat
+    with tools._session_in_flight(session):
         removed, kept = asyncio.new_event_loop().run_until_complete(
             chat_history._remove_sandboxes([session], False)
         )
@@ -3424,13 +3329,10 @@ def test_a_project_delete_uses_the_membership_it_really_deleted():
     assert 'project["memberIds"] = sorted(thread_ids)' in storage
 
     route = inspect.getsource(chat_history.delete_project)
-    # Only the transaction's membership: a chat moved out just before it
-    # survives the delete, and cancelling or deleting from an earlier listing
-    # would stop it and remove the files it wrote.
+    # Only the transaction's membership: cancelling from an earlier listing would stop a chat moved out just before it.
     assert 'member_ids = list(project.get("memberIds") or [])' in route
     assert "list_chat_threads(project_id" not in route
     assert route.index("_cancel_active_generations(member_ids)") < route.index("_remove_sandboxes(")
-    # And what survived is reported, or the folders are reachable from nothing.
     assert "sandboxes_kept = await _remove_sandboxes(member_ids" in route
     assert "ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)" in route
 
@@ -3446,7 +3348,7 @@ def test_closing_an_incognito_chat_cleans_up_its_sandbox():
     body = storage[storage.index("export async function deleteStoredChatThreads") :]
     body = body[: body.index("\nexport ")]
     assert "deleteChatThreads(idsToDelete" in body, "incognito ids never reach the backend"
-    assert "isThreadIncognito" in body  # the Dexie work still skips them
+    assert "isThreadIncognito" in body
 
     projects = (src / "features/chat/hooks/use-chat-projects.ts").read_text(
         encoding = "utf-8",
@@ -3476,7 +3378,7 @@ def test_a_snapshot_stops_hashing_once_it_has_read_enough(tmp_path, monkeypatch)
     monkeypatch.setattr(tools, "_content_key", counting_content_key)
     snapshot = tools._snapshot_workdir_files(str(workdir))
 
-    assert len(snapshot) == 8, snapshot  # every file is still reported
+    assert len(snapshot) == 8, snapshot
     assert sum(read) <= 3 * 1024 * 1024 + 1024 * 1024, sum(read)
     assert any(key[2] is None for key in snapshot.values()), "nothing fell back"
 
@@ -3491,10 +3393,10 @@ def test_a_call_that_shared_its_workdir_claims_nothing(tmp_path):
     workdir = tmp_path / "project-workspace"
     workdir.mkdir()
 
-    theirs = tools._call_started(str(workdir))  # the other chat's call
+    theirs = tools._call_started(str(workdir))
     try:
         before = tools._snapshot_workdir_files(str(workdir))
-        ours = tools._call_started(str(workdir))  # ours starts while theirs runs
+        ours = tools._call_started(str(workdir))
         try:
             (workdir / "theirs.csv").write_text("a,b\n", encoding = "utf-8")
             sentinels = tools._created_file_sentinels(str(workdir), before, None, ours)
@@ -3507,7 +3409,6 @@ def test_a_call_that_shared_its_workdir_claims_nothing(tmp_path):
 
     assert sentinels == "", sentinels
 
-    # Alone in the workdir, the same write is reported as before.
     alone = tools._call_started(str(workdir))
     try:
         before = tools._snapshot_workdir_files(str(workdir))
@@ -3538,7 +3439,6 @@ def test_a_read_serves_the_legacy_files_while_the_move_is_still_running(tmp_path
 
     served = Path(tools.resolve_sandbox_workdir(session))
     assert (served / "plot.png").is_file(), f"the card 404s until a later tool call: {served}"
-    # And nothing was created at the new root by the read.
     assert not (Path(tools.sandbox_root()) / session).exists()
 
 
@@ -3552,11 +3452,10 @@ def test_a_case_variant_id_cannot_delete_a_markerless_sandbox(tmp_path, monkeypa
     _forget_sandbox_state(tools)
     workdir = Path(tools.get_sandbox_workdir("Foo_chat1"))
     (workdir / "notes.txt").write_text("theirs", encoding = "utf-8")
-    (workdir / tools._SANDBOX_MARKER).unlink()  # a tool wrote over it
+    (workdir / tools._SANDBOX_MARKER).unlink()
     _forget_sandbox_state(tools)
 
-    # This host is case-sensitive, so the volume that folds the two names is
-    # modelled where the folding happens: both ids resolve to the one directory.
+    # This host is case-sensitive, so the folding volume is modelled where the folding happens.
     real_session_dir = tools._session_dir
     monkeypatch.setattr(
         tools,
@@ -3570,7 +3469,6 @@ def test_a_case_variant_id_cannot_delete_a_markerless_sandbox(tmp_path, monkeypa
 
     assert tools.remove_session_sandbox("foo_chat1", delete_files = True) is False
     assert (workdir / "notes.txt").is_file(), "deleted another chat's files"
-    # Its own id still reaches it.
     assert tools.remove_session_sandbox("Foo_chat1", delete_files = True) is True
 
 
@@ -3770,7 +3668,6 @@ def test_an_absolute_session_id_cannot_reach_outside_the_sentinel(tmp_path, monk
         assert not (resolved / "passwd").exists(), resolved
         assert str(resolved).startswith(tempfile.gettempdir()), resolved
 
-    # And through the resolver, which is what the download route asks.
     session = "/etc"
     theirs = root / tools._sandbox_name(session)
     theirs.mkdir()
@@ -3797,7 +3694,6 @@ def test_a_legacy_copy_of_a_folder_we_already_moved_is_left_alone(tmp_path, monk
     _forget_sandbox_state(tools)
     tools._legacy_sandbox_migrated = False
     getattr(tools, "_legacy_session_locks", {}).clear()
-    # What an earlier move left: the destination, marked, already in place.
     moved = root / session
     moved.mkdir()
     (moved / "new.csv").write_text("new", encoding = "utf-8")
@@ -3872,7 +3768,6 @@ def test_a_fallback_is_found_in_a_root_full_of_other_folders(tmp_path, monkeypat
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
 
-    # Everything the scan would reach before this chat's own folder.
     monkeypatch.setattr(tools, "_MAX_SNAPSHOT_DIRS", 4)
     for i in range(40):
         (root / f"aaa{i:03d}").mkdir()
@@ -3908,7 +3803,6 @@ def test_a_staged_move_is_marked_before_the_rename(tmp_path, monkeypatch):
     real_rename = os.rename
 
     def killed_rename(src, dst):
-        # Only the staging-to-target step: shutil.move uses rename to get there.
         if tools._STAGING_SUFFIX in str(dst):
             return real_rename(src, dst)
         raise Killed("the process went away here")
@@ -3932,12 +3826,12 @@ def test_a_delete_finds_the_folder_this_run_made(tmp_path, monkeypatch):
 
     _forget_sandbox_state(tools)
     session = "__LOCALID_cache11"
-    (root / tools._sandbox_name(session)).mkdir()  # the user's, so we fall back
+    (root / tools._sandbox_name(session)).mkdir()
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
     (workdir / tools._SANDBOX_MARKER).unlink()
 
-    assert tools.session_sandbox_has_files(session) is True  # this run made it
+    assert tools.session_sandbox_has_files(session) is True
     assert tools.remove_session_sandbox(session, delete_files = True) is True
     assert not workdir.exists(), "the folder was left behind with nobody able to reach it"
 
@@ -3987,7 +3881,7 @@ def test_the_old_shared_bucket_is_read_but_never_moved(tmp_path, monkeypatch):
 
     _forget_sandbox_state(tools)
     tools._legacy_sandbox_migrated = False
-    session = "client.v1"  # what the old regex rejected
+    session = "client.v1"
     assert tools._usable_session_id(session) is False
 
     served = Path(tools.resolve_sandbox_workdir(session))
@@ -3996,7 +3890,6 @@ def test_the_old_shared_bucket_is_read_but_never_moved(tmp_path, monkeypatch):
     tools._migrate_legacy_sandbox(tools.sandbox_root())
     assert (bucket / "old.csv").is_file(), "a shared bucket was moved as one chat's"
     assert not (Path(tools.sandbox_root()) / "_invalid").exists()
-    # And still readable once the pass has run.
     assert (Path(tools.resolve_sandbox_workdir(session)) / "old.csv").is_file()
 
 
@@ -4011,7 +3904,6 @@ def test_a_chat_cannot_claim_another_chats_directory(tmp_path, monkeypatch):
     attacker, victim = "__LOCALID_aaa1111", "__LOCALID_bbb2222"
     theirs = Path(tools.get_sandbox_workdir(attacker))
     (theirs / "private.csv").write_text("the attacker's own", encoding = "utf-8")
-    # What a tool running in there can do.
     (theirs / tools._SANDBOX_MARKER).write_text(
         tools._sandbox_name(victim),
         encoding = "utf-8",
@@ -4167,9 +4059,7 @@ def test_a_reference_is_a_session_id_not_a_piece_of_prose(tmp_path, monkeypatch)
         }
     )
 
-    # The escaped id is found ...
     assert studio_db.sandbox_is_referenced_elsewhere(quoted) is True
-    # ... and a short id that only appears inside prose is not.
     assert studio_db.sandbox_is_referenced_elsewhere("abc") is False
 
 
@@ -4245,7 +4135,6 @@ def test_a_new_call_cannot_start_in_a_sandbox_being_removed(tmp_path, monkeypatc
         with tools._session_in_flight(session):
             queued.set()
             assert proceed.wait(timeout = 5)
-        # The queued removal runs as this call leaves.
 
     def second_call():
         with tools._session_in_flight(session):
@@ -4312,7 +4201,6 @@ def test_a_kept_project_workspace_still_resolves(tmp_path, monkeypatch):
     workspace.mkdir(parents = True)
     (workspace / "report.csv").write_text("a,b\n", encoding = "utf-8")
 
-    # No project row: the delete removed it and kept the files.
     served = Path(tools.resolve_sandbox_workdir(tools.project_session_id(project_id)))
     assert served == workspace.resolve(), served
     assert (served / "report.csv").is_file()
@@ -4360,7 +4248,6 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
     assert route.index(
         "if delete_files and idle and not referenced and not recreated:"
     ) < route.index("run_in_threadpool(delete_project_workspace, project)")
-    # And a wait that ran out queues the finish rather than dropping it.
     assert "finish_workspace_delete_when_idle(project_id)" in route
 
 
@@ -4383,7 +4270,6 @@ def test_a_kept_workspace_the_user_moved_still_resolves(tmp_path, monkeypatch):
     assert served == custom.resolve(), served
     assert (served / "report.csv").is_file()
 
-    # And the record goes when the folder does.
     shutil.rmtree(custom)
     assert tools.list_orphaned_projects() == []
 
@@ -4411,12 +4297,10 @@ def test_the_last_fork_going_takes_the_kept_workspace(tmp_path, monkeypatch):
         str(workspace),
     )
 
-    # While a fork still shows it, the collection leaves it alone.
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: True)
     asyncio.new_event_loop().run_until_complete(chat_history._remove_sandboxes([], True))
     assert (workspace / "report.csv").is_file()
 
-    # Once that fork is deleted too, it goes.
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     asyncio.new_event_loop().run_until_complete(chat_history._remove_sandboxes([], True))
     assert not workspace.exists(), "the workspace was orphaned for good"
@@ -4432,7 +4316,7 @@ def test_a_tool_renaming_the_marker_does_not_move_the_chat(tmp_path, monkeypatch
 
     _forget_sandbox_state(tools)
     session = "__LOCALID_owned11"
-    (root / tools._sandbox_name(session)).mkdir()  # the user's, so we fall back
+    (root / tools._sandbox_name(session)).mkdir()
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "plot.png").write_bytes(b"x")
     (workdir / tools._SANDBOX_MARKER).write_text("notes", encoding = "utf-8")
@@ -4545,7 +4429,6 @@ def test_a_workspace_delete_finishes_once_the_tool_call_ends(tmp_path, monkeypat
     )
 
     with tools._session_in_flight(tools.project_session_id(project_id)):
-        # Still running: the collection must leave it alone ...
         tools.collect_orphaned_project_workspaces()
         assert workspace.is_dir()
         finisher = tools.finish_workspace_delete_when_idle(project_id, timeout = 5.0)
@@ -4581,7 +4464,6 @@ def test_a_pending_workspace_is_collected_by_a_plain_delete(tmp_path, monkeypatc
         str(workspace),
     )
 
-    # The plain path, no switch.
     asyncio.new_event_loop().run_until_complete(chat_history._remove_sandboxes([], False))
 
     assert not workspace.exists(), "the promised delete never happened"
@@ -4603,7 +4485,6 @@ def test_a_nested_file_named_like_the_marker_is_a_file(tmp_path, monkeypatch):
 
     sentinels = tools._created_file_sentinels(str(workdir), before)
     assert "archive/.unsloth_sandbox" in sentinels, sentinels
-    # And the marker at the top is still hidden.
     assert tools._SANDBOX_MARKER not in sentinels.replace("archive/.unsloth_sandbox", "")
 
     listing = tools._snapshot_workdir_files(str(workdir))
@@ -4682,7 +4563,6 @@ def test_an_ordinary_chat_never_reads_the_old_shared_bucket(tmp_path, monkeypatc
     served = Path(tools.resolve_sandbox_workdir(ordinary))
     assert not (served / "someone-elses.csv").exists(), served
 
-    # The chats that really did share it still see it.
     rejected = "client.v1"
     assert tools._usable_session_id(rejected) is False
     served = Path(tools.resolve_sandbox_workdir(rejected))
@@ -4811,8 +4691,7 @@ def test_a_workspace_delete_that_declined_can_still_be_retried(tmp_path, monkeyp
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "sandbox" / "report.csv").write_text("a,b\n", encoding = "utf-8")
 
-    # The storage helper refuses anything it does not recognise, and a locked
-    # file leaves the tree behind the same way.
+    # The storage helper refuses anything it does not recognise, and a locked file leaves the tree behind the same way.
     monkeypatch.setattr(studio_db, "delete_project_workspace", lambda project: None)
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     _deleted_project(tmp_path, monkeypatch, project_id, workspace)
@@ -4828,7 +4707,6 @@ def test_a_workspace_delete_that_declined_can_still_be_retried(tmp_path, monkeyp
         )
     ], records
 
-    # And the next collection finishes the job the user asked for.
     monkeypatch.undo()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
@@ -4854,7 +4732,6 @@ def test_a_half_deleted_workspace_keeps_its_record(tmp_path, monkeypatch):
     (workspace / "datasets").mkdir()
     records = tools.list_orphaned_projects()
     assert [(r[0], r[3]) for r in records] == [(project_id, True)], records
-    # Nothing is served from a sandbox that is not there.
     assert tools._recorded_project_workdir(project_id) is None
 
     shutil.rmtree(workspace)
@@ -4896,7 +4773,6 @@ def test_the_default_sandbox_never_lands_in_a_directory_of_theirs(tmp_path, monk
     assert workdir != theirs, "a tool call would have run in the user's directory"
     assert tools._marker_owner(str(workdir)) == tools._sandbox_name("_default")
     assert not (workdir / "thesis.tex").exists()
-    # And the read path finds the same one.
     assert Path(tools._sandbox_fallback(str(root), "_default")) == workdir
 
 
@@ -4987,7 +4863,6 @@ def test_a_sandbox_deleted_mid_request_does_not_reveal_the_root(tmp_path, monkey
     opened = []
 
     def resolve_then_delete(session_id, create):
-        # Stands in for the chat being deleted between the check and the open.
         shutil.rmtree(sandbox, ignore_errors = True)
         return str(sandbox)
 
@@ -5090,8 +4965,7 @@ def test_revealing_a_sandbox_demands_a_directory(tmp_path, monkeypatch):
     )
     assert seen and seen[0][1] is True, "the sandbox reveal must demand a directory"
 
-    # The cached-model reveal shares the helper and legitimately points at a
-    # file, so it must NOT inherit the flag.
+    # The cached-model reveal shares the helper and legitimately points at a file, so it must NOT inherit the flag.
     from routes import models
 
     assert "expect_dir" not in inspect.getsource(models.reveal_cached_model)
@@ -5282,7 +5156,7 @@ def test_a_read_waits_for_the_move_of_the_tree_it_would_return(tmp_path, monkeyp
     def mover():
         with tools._legacy_lock_for(session):
             started.set()
-            time.sleep(0.3)  # the rename, from the reader's point of view
+            time.sleep(0.3)
             shutil.rmtree(legacy)
 
     thread = threading.Thread(target = mover)
@@ -5320,7 +5194,7 @@ def test_a_detached_tree_that_would_not_delete_is_retried(tmp_path, monkeypatch)
     def flaky(path, **kwargs):
         attempts.append(str(path))
         if len(attempts) == 1:
-            return  # a file held open by a scanner, which ignore_errors swallows
+            return
         real_rmtree(path, **kwargs)
 
     monkeypatch.setattr(tools.shutil, "rmtree", flaky)
@@ -5345,12 +5219,10 @@ def test_a_marker_a_tool_wrote_over_counts_as_the_user_s_file(tmp_path, monkeypa
     workdir = Path(tools.get_sandbox_workdir(session))
     assert tools._holds_no_user_files(str(workdir), tools._sandbox_name(session)) is True
 
-    # A tool call writes its own content over the marker.
     (workdir / tools._SANDBOX_MARKER).write_text("my notes", encoding = "utf-8")
     assert tools._holds_no_user_files(str(workdir), tools._sandbox_name(session)) is False
 
-    # And a delete that was not asked to remove files keeps them. The delete
-    # repairs the marker on the way, so what the tool wrote is beside it.
+    # The delete repairs the marker on the way, so what the tool wrote is beside it.
     assert tools.remove_session_sandbox(session, delete_files = False) is False
     saved = list(workdir.glob(".unsloth_sandbox.saved*"))
     assert saved and saved[0].read_text(encoding = "utf-8") == "my notes"
@@ -5385,7 +5257,6 @@ def test_a_call_that_starts_during_the_snapshot_costs_the_card(tmp_path, monkeyp
     real_snapshot = tools._snapshot_workdir_files
 
     def snapshot_with_a_late_arrival(target):
-        # The other chat in this project starts its call while we walk.
         tools._call_started(target)
         Path(target, "theirs.csv").write_text("a,b\n", encoding = "utf-8")
         return real_snapshot(target)
@@ -5412,7 +5283,6 @@ def test_a_chat_called_default_does_not_take_the_anonymous_sandbox(tmp_path, mon
     assert chat != anonymous, "the chat is running in the session-less sandbox"
     assert not (chat / "scratch.csv").exists()
 
-    # And deleting the chat leaves the session-less files alone.
     tools.remove_session_sandbox("_default", delete_files = True)
     assert (anonymous / "scratch.csv").is_file()
 
@@ -5529,7 +5399,6 @@ def test_the_last_fork_going_takes_the_source_chat_s_files(tmp_path, monkeypatch
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
 
     monkeypatch.setattr(chat_history, "get_chat_thread", lambda tid: None)
-    # The fork still shows the source's cards, so its files are kept.
     monkeypatch.setattr(
         studio_db,
         "sandbox_is_referenced_elsewhere",
@@ -5541,7 +5410,6 @@ def test_the_last_fork_going_takes_the_source_chat_s_files(tmp_path, monkeypatch
     assert kept == [source]
     assert (workdir / "report.csv").is_file()
 
-    # Now the fork is deleted too, and nothing references the source any more.
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     asyncio.new_event_loop().run_until_complete(chat_history._remove_sandboxes([fork], True))
     assert not workdir.exists(), "the source's files were orphaned for good"
@@ -5570,7 +5438,6 @@ def test_a_chat_called_like_a_project_session_keeps_its_own_sandbox(tmp_path, mo
     session = tools.project_session_id("proj7777")
     assert Path(tools.get_sandbox_workdir(session)) == (workspace / "sandbox").resolve()
 
-    # The same id, but a chat of the user's is stored under it.
     _forget_sandbox_state(tools)
     monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: {"id": tid})
     workdir = Path(tools.get_sandbox_workdir(session))
@@ -5659,7 +5526,6 @@ def test_a_download_serves_the_file_it_checked(tmp_path, monkeypatch):
             session = None,
         )
     )
-    # The swap happens after the check, before anything is read.
     (sandbox / "report.csv").unlink()
     (sandbox / "report.csv").symlink_to(secret)
 
@@ -5751,7 +5617,7 @@ def test_a_collection_failure_names_the_record_it_was_on(tmp_path, monkeypatch):
         raise RuntimeError("database is away")
 
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", boom)
-    tools.collect_orphaned_project_workspaces()  # must not raise
+    tools.collect_orphaned_project_workspaces()
     assert workspace.is_dir()
 
 
@@ -5770,7 +5636,6 @@ def test_a_project_created_again_keeps_the_recorded_workspace(tmp_path, monkeypa
     tools.record_orphaned_project(project_id, str(workspace / "sandbox"), True, str(workspace))
 
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
-    # The same id and the same folder: this is the project those files belong to.
     monkeypatch.setattr(
         studio_db,
         "get_chat_project",
@@ -5783,7 +5648,6 @@ def test_a_project_created_again_keeps_the_recorded_workspace(tmp_path, monkeypa
     tools.collect_orphaned_project_workspaces()
     assert (workspace / "fresh.csv").is_file(), "the new project's files went"
 
-    # Gone again, and the collection finishes what was asked for.
     monkeypatch.setattr(studio_db, "get_chat_project", lambda pid: None)
     tools.collect_orphaned_project_workspaces()
     assert not workspace.exists()
@@ -5806,7 +5670,6 @@ def test_a_chat_recreated_while_its_tool_ran_keeps_its_files(tmp_path, monkeypat
     with tools._session_in_flight(session):
         assert tools.remove_session_sandbox(session, delete_files = True) is False
         assert tools.sandbox_removal_deferred(session)
-        # The user starts a new chat and the id comes round again.
         monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: {"id": tid})
 
     assert (workdir / "report.csv").is_file(), "the recreated chat's files went"
@@ -5829,8 +5692,7 @@ def test_a_file_outside_the_hash_budget_is_not_reported_as_written(tmp_path, mon
     before = tools._snapshot_workdir_files(str(workdir))
     assert before["z-report.csv"][2] is not None, "the file was not hashed to begin with"
 
-    # The call writes its own file, and the budget the untouched one had is
-    # taken by whatever the walk reaches first.
+    # The budget the untouched file had is taken by whatever the walk reaches first.
     (workdir / "a-new.bin").write_bytes(b"y" * 64)
     monkeypatch.setattr(tools, "_MAX_SNAPSHOT_HASH_BYTES", 0)
     sentinels = tools._created_file_sentinels(str(workdir), before)
@@ -5933,7 +5795,6 @@ def test_a_chat_and_a_project_with_one_id_keep_their_own_records(tmp_path, monke
     assert [r[4] for r in records] == [False, True], "one record overwrote the other"
     assert records[0][1] == str((workspace / "sandbox").resolve())
     assert records[1][1] == str(chat_dir.resolve())
-    # And the project's own resolve is unaffected by the chat's record.
     assert tools._recorded_project_workdir(shared_id) == str((workspace / "sandbox").resolve())
 
 
@@ -6028,7 +5889,6 @@ def test_a_marker_rewritten_with_another_name_keeps_the_chat_s_files(tmp_path, m
     session = "chat-marker-2"
     workdir = Path(tools.get_sandbox_workdir(session))
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
-    # A tool call writes a perfectly good session name over the marker.
     (workdir / tools._SANDBOX_MARKER).write_text("someone-else", encoding = "utf-8")
 
     assert Path(tools.resolve_sandbox_workdir(session)) == workdir, "the files were stranded"
@@ -6089,7 +5949,6 @@ def test_only_a_sandbox_tool_s_result_is_unwrapped_for_replay():
     assert "): result is { text: string; sessionId: string } {" in adapter
     assert "SANDBOX_FILE_TOOLS.has(toolName)" in adapter
     assert 'isSandboxWrapper(result, tc.toolName ?? "")' in adapter
-    # The export paths pass the name too, so a wrapper is stripped in one place.
     dialog = (src / "features/chat/prompt-storage/prompt-storage-dialog.tsx").read_text(
         encoding = "utf-8"
     )
@@ -6156,7 +6015,6 @@ def test_a_chat_named_like_a_project_session_still_loses_its_files(tmp_path, mon
     (workdir / "mine.csv").write_text("a,b\n", encoding = "utf-8")
     assert workdir != (workspace / "sandbox").resolve()
 
-    # The row goes first, so from here the id reads as the project's session.
     monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: None)
     assert tools.remove_session_sandbox(session, delete_files = True) is True
     assert not workdir.exists(), "the chat's own files were left behind"
@@ -6194,7 +6052,7 @@ def test_a_download_sends_no_more_than_it_promised(tmp_path, monkeypatch):
     )
     declared = int(response.headers["content-length"])
     with open(sandbox / "report.csv", "a", encoding = "utf-8") as fh:
-        fh.write("c,d\ne,f\n")  # the tool call is still writing
+        fh.write("c,d\ne,f\n")
 
     body = b""
 

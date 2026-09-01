@@ -96,9 +96,7 @@ def test_code_execution_tool_appended_to_request_body(monkeypatch):
 
     body = captured["body"]
     tools = body.get("tools") or []
-    # Opus 4.7 gets the newer date-pinned variant with REPL persistence.
     assert {"type": "code_execution_20260120", "name": "code_execution"} in tools
-    # No web_search entry when only code_execution is enabled.
     assert all("web_search" not in (t.get("type") or "") for t in tools)
     # Same beta header unlocks both _20250825 and _20260120.
     beta_header = captured["headers"].get("anthropic-beta", "")
@@ -136,7 +134,6 @@ def test_code_execution_with_web_search_sends_both_tools(monkeypatch):
 
     tools = captured["body"].get("tools") or []
     tool_types = {t.get("type") for t in tools if isinstance(t, dict)}
-    # Opus 4.7 picks the newer pinned versions for both tools.
     assert "web_search_20260209" in tool_types
     assert "code_execution_20260120" in tool_types
     assert "code-execution-2025-08-25" in captured["headers"].get("anthropic-beta", "")
@@ -171,7 +168,6 @@ def test_no_code_execution_tool_when_pill_off(monkeypatch):
     _drive(run())
 
     tools = captured["body"].get("tools") or []
-    # Pill off: no code_execution variant on the wire.
     assert all("code_execution" not in (t.get("type") or "") for t in tools)
     # Beta header must omit code-execution when the tool is off (opt-in only).
     assert "code-execution-2025-08-25" not in captured["headers"].get("anthropic-beta", "")
@@ -246,13 +242,11 @@ def test_bash_code_execution_emits_tool_start_and_end(monkeypatch):
     assert start["type"] == "tool_start"
     assert start["tool_name"] == "code_execution"
     assert start["tool_call_id"] == "srvtoolu_1"
-    # `_server_tool: True` marks a provider-side synthetic tool card.
     assert start["arguments"] == {"kind": "bash", "command": "ls -la", "_server_tool": True}
 
     assert end["type"] == "tool_end"
     assert end["tool_call_id"] == "srvtoolu_1"
     assert "total 24" in end["result"]
-    # Non-zero return_code not present, so no return_code line.
     assert "return_code:" not in end["result"]
 
 

@@ -31,18 +31,16 @@ H3_FILE = "minimax_h3_fl2va-Q4_K_M.gguf"
 _BANNER = "stable-diffusion.cpp version unknown, commit unknown\n"
 _H3_HELP = _BANNER + "  --ref-video   MiniMax-H3 Ref2VA reference video frame directory\n"
 _PRE_H3_HELP = _BANNER + "  -M, --mode    run mode, one of [img_gen, vid_gen, upscale]\n"
-# Debian/Ubuntu's find-and-replace `sd`, and Homebrew ships the same tool on macOS.
+# Debian/Ubuntu's find-and-replace `sd`, which Homebrew also ships on macOS.
 _UNRELATED_HELP = "sd 1.0.0\nFind & replace CLI\n\nUSAGE:\n    sd <find> <replace-with>\n"
 
-# (label, DiffusionDeviceTarget.backend, .device)
 HARDWARE = [
     ("nvidia", "cuda", "cuda"),
     ("amd", "rocm", "cuda"),
     ("apple", "mps", "mps"),
     ("cpu", "cpu", "cpu"),
 ]
-# sys.platform values. WSL is a Linux platform string with a Windows kernel underneath, so it is
-# the linux row -- listed separately because it is where PATH picks up a Windows-side install.
+# WSL is a Linux platform string on a Windows kernel, listed apart because PATH finds a Windows install.
 PLATFORMS = ["linux", "wsl", "darwin", "win32"]
 
 
@@ -182,7 +180,6 @@ def test_h3_preflight_admits_a_capable_build_and_downloads_once(
     backend_obj = host.run()
     assert len(host.downloads) == 4
     assert backend_obj._state is not None
-    # A GPU target keeps its device when the build offers an accelerator; CPU/MPS are unchanged.
     assert backend_obj._state.device == device
 
 
@@ -220,7 +217,7 @@ def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
     original = sd_cpp_backend.ensure_h3_sd_cpp_binary
 
     def _cancel_midway(**kwargs):
-        cancelled.set()  # the user hits cancel while the install is running
+        cancelled.set()
         return original(**kwargs)
 
     monkeypatch.setattr(sd_cpp_backend, "ensure_h3_sd_cpp_binary", _cancel_midway)
@@ -228,8 +225,7 @@ def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
     with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
         host.run(cancel_event = cancelled)
     assert host.downloads == []
-    # The point is not that it eventually raises -- the download loop always would. It is that a
-    # cancelled load stops before paying for the four sequential size-estimate round trips.
+    # The point is not that it raises, but that a cancelled load stops before four sequential size round trips.
     assert host.asset_calls == []
 
 
@@ -269,7 +265,7 @@ def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
 
     with pytest.raises(RuntimeError, match = "changed while this model was loading"):
         host.run()
-    assert len(host.downloads) == 4  # the swap is caught after the fetch, not before it
+    assert len(host.downloads) == 4
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -290,7 +286,7 @@ def test_h3_revet_checks_identity_not_just_the_h3_marker(
     real_probe = sd_cpp_backend._sd_cpp_probe_output
 
     def _probe(binary, *args):
-        # Not sd.cpp, but it does carry the H3 marker -- capability alone would wave it through.
+        # Not sd.cpp, but it carries the H3 marker, so capability alone would wave it through.
         if args == ("--help",) and swapped["done"]:
             return "reference-video-cli 2.1\n  --ref-video PATH   reference clip\n"
         return real_probe(binary, *args)
@@ -330,8 +326,7 @@ def test_h3_revet_catches_a_user_binary_whose_accelerator_changed(
     real_probe = sd_cpp_backend._sd_cpp_probe_output
 
     def _probe(binary, *args):
-        # Still an H3-capable sd.cpp, so identity and capability both pass; only the device list
-        # changed, which is exactly the case the H3 re-vet cannot see.
+        # Identity and capability both pass and only the device list changed, which is what the H3 re-vet cannot see.
         if args == ("--list-devices",) and swapped["done"]:
             return "CPU\tIntel(R) Xeon(R)\n"
         return real_probe(binary, *args)
@@ -370,7 +365,7 @@ def test_h3_revet_tolerates_an_unreadable_accelerator_reprobe(
 
     def _probe(binary, *args):
         if args == ("--list-devices",) and swapped["done"]:
-            return None  # older build that rejects the flag, or an unreadable probe
+            return None
         return real_probe(binary, *args)
 
     import utils.hf_xet_fallback as xet

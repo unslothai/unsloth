@@ -48,8 +48,8 @@ def test_dispatcher_survives_malformed_response_and_routes_next():
     rid = "req-1"
     mbox = queue.Queue()
     o._mailboxes = {rid: mbox}
-    # A non-dict response (resp.get -> AttributeError) must not kill the loop;
-    # the following valid response must still reach its mailbox.
+    # A non-dict response (resp.get -> AttributeError) must not kill the loop; the following valid
+    # response must still reach its mailbox.
     o._resp_queue = _ScriptedQueue([12345, {"request_id": rid, "type": "token", "text": "hi"}])
 
     t = threading.Thread(target = o._dispatcher_loop, daemon = True)
@@ -136,11 +136,8 @@ def _direct_reader_host():
 
 
 def test_rerouting_a_foreign_response_moves_worker_ownership():
-    # A _gen_lock reader already blocked on resp_queue can beat the compare dispatcher to
-    # that request's first response. The compare consumer passes mark_started=False, so if
-    # this path does not promote it nothing does: the direct request stays recorded as the
-    # executor, so the compare chat's Stop is ignored and a late reset from the direct one
-    # cancels the compare generation instead.
+    # A _gen_lock reader already blocked on resp_queue can beat the compare dispatcher to that
+    # request's first response.
     o = _direct_reader_host()
     mine, theirs = threading.Event(), threading.Event()
     o._request_cancel_events = {"mine": mine, "theirs": theirs}
@@ -161,8 +158,8 @@ def test_rerouting_a_foreign_response_moves_worker_ownership():
 
 
 def test_rerouting_a_foreign_gen_done_retires_that_request():
-    # The other half of the dispatcher's move: once its last response is routed, the
-    # request no longer owns the worker, or a Stop for it would end whatever starts next.
+    # The other half of the dispatcher's move: once its last response is routed, the request no
+    # longer owns the worker, or a Stop for it would end whatever starts next.
     o = _direct_reader_host()
     mine, theirs = threading.Event(), threading.Event()
     o._request_cancel_events = {"mine": mine, "theirs": theirs}

@@ -26,7 +26,6 @@ def _clean_registry():
     active_generations.reset_for_tests()
 
 
-# ── registry ──────────────────────────────────────────────────────────
 
 
 def test_registry_starts_empty():
@@ -69,7 +68,6 @@ def test_snapshot_is_json_safe_and_ordered_by_start():
         with active_generations.ActiveGeneration(b, thread_id = "second", model = "m2"):
             snap = active_generations.snapshot()
     assert [e["thread_id"] for e in snap] == ["first", "second"]
-    # The threading.Event must not leak into an HTTP response body.
     assert all("event" not in e for e in snap)
     assert {"handle", "thread_id", "run_id", "model", "kind", "started_at"} == set(snap[0])
 
@@ -84,7 +82,6 @@ def test_thread_ids_are_deduped_and_skip_unnamed_runs():
                 assert active_generations.count() == 3
 
 
-# ── cancellation ──────────────────────────────────────────────────────
 
 
 def test_cancel_all_sets_every_event():
@@ -100,7 +97,6 @@ def test_cancel_all_on_an_empty_registry_is_a_no_op():
 
 
 def test_cancel_thread_leaves_siblings_alone():
-    # Per-thread Stop: the rest keep generating, llama-server is untouched.
     a, b = threading.Event(), threading.Event()
     with active_generations.ActiveGeneration(a, thread_id = "t1"):
         with active_generations.ActiveGeneration(b, thread_id = "t2"):
@@ -153,7 +149,6 @@ def test_cancel_does_not_unregister_entries():
         assert active_generations.count() == 1
 
 
-# ── concurrency ───────────────────────────────────────────────────────
 
 
 def test_registry_survives_concurrent_register_unregister():
@@ -179,7 +174,6 @@ def test_registry_survives_concurrent_register_unregister():
     assert active_generations.count() == 0
 
 
-# ── the model-swap gate ───────────────────────────────────────────────
 
 
 # The gate lives in routes.inference, which pulls the whole inference stack.
@@ -213,7 +207,6 @@ def test_gate_refuses_with_409_and_names_the_chats(gate):
     assert detail["error"] == "active_generations"
     assert detail["running"] == 2
     assert detail["thread_ids"] == ["t1", "t2"]
-    # Refusing must not cancel anything.
     assert not a.is_set() and not b.is_set()
 
 
@@ -240,11 +233,9 @@ def test_gate_force_with_nothing_running_is_a_no_op(gate):
     assert gate(force = True, action = "Loading a model") == 0
 
 
-# ── the route wiring ──────────────────────────────────────────────────
 
 
 def test_tracked_cancel_registers_the_thread_for_its_block():
-    # The single place a generation is recorded, so every streaming path gets it.
     _route_gate()
     from routes.inference import _TrackedCancel
 
@@ -319,7 +310,6 @@ def _stub_load_route(monkeypatch, *, active_model_name):
 
 
 def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
-    # Re-applying the resident model hits already_loaded: no llama-server touch, no 409, no stopped chats.
     _route_gate()
     import asyncio
 
@@ -342,7 +332,6 @@ def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
 
 
 def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
-    # A load that would really replace the model still 409s and names the chats.
     _route_gate()
     import asyncio
 
@@ -362,7 +351,8 @@ def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
 
 
 def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
-    # Preflight can still reject after the user confirms, so cancelling first ends chats for nothing.
+    # Preflight can still reject after the user confirms, so cancelling first ends chats for
+    # nothing.
     _route_gate()
     import asyncio
     import contextlib
@@ -386,7 +376,6 @@ def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
                     "tester",
                 )
             )
-        # The load was rejected, so the chat must still be streaming.
         assert not ev.is_set()
         assert active_generations.count() == 1
     assert exc.value.status_code == 400
@@ -427,7 +416,7 @@ def _stub_standard_load_route(monkeypatch):
 
 def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(monkeypatch):
     # A sidecar install can reserve the swap window during the pre-teardown drain, so the recheck
-    # after it is the last rejection point and must precede the cancel, else chats die for nothing.
+    # after it must precede the cancel, else chats die for nothing.
     _route_gate()
     import asyncio
     import time
@@ -444,15 +433,14 @@ def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(
     reserved = {"v": False}
     monkeypatch.setattr(tv, "sidecar_swap_in_progress", lambda: reserved["v"])
 
-    # Two tracked requests; the install reserves the window mid-drain when the uncancellable one ends.
     monkeypatch.setattr(kw, "_inflight", 2)
 
     def _installer():
         time.sleep(0.10)
-        kw._inflight = 1  # the non-cancellable request finished ...
-        reserved["v"] = True  # ... and an install reserved the swap window
+        kw._inflight = 1
+        reserved["v"] = True
         time.sleep(0.35)
-        kw._inflight = 0  # the chat's own request drains last
+        kw._inflight = 0
 
     thread = threading.Thread(target = _installer, daemon = True)
     ev = threading.Event()
@@ -469,7 +457,6 @@ def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(
                         "tester",
                     )
                 )
-            # Rejected, so the chat traded for a model it never got must still stream.
             assert not ev.is_set()
             assert active_generations.count() == 1
         assert exc.value.status_code == 409
@@ -520,15 +507,14 @@ def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch
     started = active_generations.ActiveGeneration(ev, thread_id = "t1")
 
     async def drive():
-        # A load holds the lifecycle gate, so the unload queues behind it.
         kw._lifecycle_lock.acquire()
         task = asyncio.create_task(
             inf_mod.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester")
         )
         entered = False
         try:
-            await asyncio.sleep(0.1)  # the route is polling the gate
-            started.__enter__()  # a chat starts in the meantime
+            await asyncio.sleep(0.1)
+            started.__enter__()
             entered = True
         finally:
             kw._lifecycle_lock.release()
@@ -541,7 +527,6 @@ def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch
     with pytest.raises(HTTPException) as exc:
         asyncio.run(drive())
 
-    # 409, not the catch-all 500 the route wraps unexpected failures in.
     assert exc.value.status_code == 409
     assert exc.value.detail["error"] == "active_generations"
     assert torn_down == []
@@ -576,7 +561,6 @@ def _run_unload(
             model_identifier = loaded_gguf,
             unload_model = unload_model or (lambda: torn_down.append("gguf")),
         ),
-        # Nothing on the standard backend: the GGUF above is what is resident.
         backend = SimpleNamespace(
             get_loading_model = lambda: None,
             active_model_name = None,
@@ -612,7 +596,6 @@ def test_unload_finds_a_gguf_loaded_from_a_pinned_snapshot(monkeypatch):
     )
     assert torn_down == ["gguf"]
 
-    # Control: another repo's id names a different model and must leave this one up.
     other: list[str] = []
     _run_unload(
         inf_mod,
@@ -657,7 +640,6 @@ def test_stop_loading_cancels_an_in_flight_pinned_load(monkeypatch):
     # Cancelled under the name the load runs as, not the one the client sent.
     assert _cancel(_PINNED_SNAPSHOT, "Org/Quant") == [_PINNED_SNAPSHOT]
     assert _cancel("Org/Quant", "Org/Quant") == ["Org/Quant"]
-    # Control: naming another repo cancels nothing.
     assert _cancel(_PINNED_SNAPSHOT, "Org/Other") == []
 
 
@@ -700,14 +682,13 @@ def test_forced_unload_of_a_stale_model_path_leaves_the_chats_alone(monkeypatch)
         response = _run_unload(
             inf_mod,
             monkeypatch,
-            loaded_gguf = "org/B-GGUF",  # what the other tab actually loaded
-            requested = "org/A-GGUF",  # this tab's stale idea of it
+            loaded_gguf = "org/B-GGUF",
+            requested = "org/A-GGUF",
             force = True,
             torn_down = torn_down,
         )
         assert not ev.is_set()
         assert active_generations.count() == 1
-    # The resident GGUF was never touched, so nothing was worth cancelling.
     assert "gguf" not in torn_down
     assert response.status == "unloaded"
 
@@ -735,7 +716,7 @@ def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
 
 def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypatch):
     # /unload used to tear down right after the cancel, so a stream told to stop but not yet
-    # finished lost its server. Assert the count hits zero BEFORE unload_model runs.
+    # finished lost its server: the count must hit zero BEFORE unload_model.
     _route_gate()
     import core.inference.llama_keepwarm as keepwarm
     import routes.inference as inf_mod
@@ -744,7 +725,6 @@ def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypat
     seen = {}
 
     def _count(current_request_counted = True, *, include_pending = True):
-        # Unwinds one poll after the cancel, like a stream noticing its event.
         if inflight["n"] > 0:
             inflight["n"] -= 1
         return inflight["n"]
@@ -777,8 +757,8 @@ def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypat
 
 
 def test_unload_drains_on_the_middleware_count_not_just_the_registry(monkeypatch):
-    # A request past the middleware but not yet at its _TrackedCancel is counted but unregistered, so
-    # the drain reads the middleware count, not "did we cancel anything": one poll on a quiet server.
+    # A request past the middleware but not yet at its _TrackedCancel is counted but unregistered,
+    # so the drain reads the middleware count, not "did we cancel anything".
     _route_gate()
     import core.inference.llama_keepwarm as keepwarm
     import routes.inference as inf_mod
@@ -801,7 +781,6 @@ def test_unload_drains_on_the_middleware_count_not_just_the_registry(monkeypatch
         torn_down = torn_down,
     )
     assert torn_down == ["gguf"]
-    # Polled, but returned on the first read rather than waiting anything out.
     assert polls["n"] == 1
     assert response.status == "unloaded"
 
@@ -817,14 +796,13 @@ def test_unforced_unload_of_a_stale_model_path_is_still_a_no_op(monkeypatch):
         response = _run_unload(
             inf_mod,
             monkeypatch,
-            loaded_gguf = "org/B-GGUF",  # what the other tab actually loaded
-            requested = "org/A-GGUF",  # this tab's stale idea of it
+            loaded_gguf = "org/B-GGUF",
+            requested = "org/A-GGUF",
             force = False,
             torn_down = torn_down,
         )
         assert not ev.is_set()
         assert active_generations.count() == 1
-    # The resident GGUF was untouched; only the standard backend's stale-path no-op ran.
     assert torn_down == ["unsloth"]
     assert response.status == "unloaded"
 
@@ -855,8 +833,8 @@ def test_unforced_unload_of_the_loaded_model_still_refuses_while_chats_stream(mo
 
 
 def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatch):
-    # A stale tab's Eject naming the PREVIOUS model while a different one loads. The GGUF branch
-    # evicts a live llama-server, so a chat on the previous model must get the 409, not be killed.
+    # A stale tab's Eject naming the PREVIOUS model while a different one loads: the GGUF branch
+    # evicts a live llama-server, so a chat on it must get the 409, not be killed.
     _route_gate()
     import asyncio
     from types import SimpleNamespace
@@ -870,7 +848,7 @@ def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatc
         monkeypatch,
         llama = SimpleNamespace(
             is_active = True,
-            is_loaded = False,  # spawned, health check not passed: mid-load
+            is_loaded = False,
             model_identifier = "org/B-GGUF",
             unload_model = lambda: torn_down.append("gguf"),
         ),
@@ -897,8 +875,8 @@ def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatc
 
 
 def test_cancelling_an_in_flight_standard_load_is_not_refused_by_the_chat_gate(monkeypatch):
-    # The real cancelLoading shape: unforced /unload naming the still-LOADING model. It replaces
-    # nothing, so it cannot interrupt a chat and must not 409 (the frontend would drop the error).
+    # Unforced /unload naming the still-LOADING model replaces nothing, so it cannot interrupt a
+    # chat and must not 409 (the frontend would drop the error).
     _route_gate()
     import asyncio
     from types import SimpleNamespace
@@ -909,7 +887,6 @@ def test_cancelling_an_in_flight_standard_load_is_not_refused_by_the_chat_gate(m
     torn_down: list[str] = []
     inf_mod, _kw = _stub_unload_backends(
         monkeypatch,
-        # Nothing on llama-server: the load in flight is a safetensors one.
         llama = SimpleNamespace(
             is_active = False,
             is_loaded = False,
@@ -932,7 +909,6 @@ def test_cancelling_an_in_flight_standard_load_is_not_refused_by_the_chat_gate(m
                 UnloadRequest(model_path = "org/B", force_cancel_active = False), "tester"
             )
         )
-        # The chat on the previous model is untouched: the load never reached it.
         assert not ev.is_set()
         assert active_generations.count() == 1
     assert response.status == "unloaded"
@@ -953,7 +929,7 @@ def test_cancelling_an_in_flight_gguf_load_is_not_refused_by_the_chat_gate(monke
         monkeypatch,
         llama = SimpleNamespace(
             is_active = True,
-            is_loaded = False,  # spawned, health check not passed: mid-load
+            is_loaded = False,
             model_identifier = "org/B-GGUF",
             unload_model = lambda: torn_down.append("gguf"),
         ),
@@ -1028,7 +1004,8 @@ class _NeverDisconnectedRequest:
 
 
 def test_direct_responses_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # /v1/responses streams straight to llama-server; unregistered, a non-forced /unload tore it down.
+    # /v1/responses streams straight to llama-server; unregistered, a non-forced /unload tore it
+    # down.
     _route_gate()
     import asyncio
 
@@ -1054,12 +1031,12 @@ def test_direct_responses_stream_is_visible_to_the_swap_gate(monkeypatch):
 
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
-    # And it unregisters, or one Codex call would 409 every later reload.
     assert active_generations.count() == 0
 
 
 def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
-    # The registered event must be the one the stream watches, or a forced reload kills a live decode.
+    # The registered event must be the one the stream watches, or a forced reload kills a live
+    # decode.
     _route_gate()
     import asyncio
 
@@ -1086,14 +1063,13 @@ def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
 
     body = asyncio.run(run())
 
-    # Cancelled mid-stream: the run ends without a completed envelope.
     assert "response.completed" not in body
     assert active_generations.count() == 0
 
 
 def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypatch):
     # The run registers before it holds a decode slot, so cancel_all() must reach it while queued in
-    # admission; watching only the client socket lets it open a generation the swap already revoked.
+    # admission; watching only the client socket lets it open a revoked generation.
     _route_gate()
     import asyncio
 
@@ -1118,7 +1094,6 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
     try:
 
         async def run():
-            # Hold the backend's only decode slot so the run below has to queue.
             queue = llama_admission.get_llama_admission_queue("http://llama.test")
             holder = queue.reserve(capacity = 1, config = llama_admission.LlamaAdmissionConfig())
             assert holder.lease_nowait() is not None
@@ -1147,7 +1122,6 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
         llama_admission.reset_llama_admission_queues()
 
     body = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
-    # It gave up its place instead of taking the slot: no upstream call, no envelope.
     assert "response.created" not in body
     assert active_generations.count() == 0
 
@@ -1162,7 +1136,6 @@ def _install_completions_stream_mock(monkeypatch, events):
     import routes.inference as inf_mod
 
     def handler(request):
-        # One network chunk per SSE event: the relay polls its cancel flag between upstream chunks.
         async def _chunks():
             for event in events:
                 yield f"data: {json.dumps(event)}\n\n".encode()
@@ -1215,7 +1188,8 @@ class _CompletionsRequest(_NeverDisconnectedRequest):
 
 
 def test_completions_proxy_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # /v1/completions relays from llama-server with no idle drain; unregistered, /unload tore it down.
+    # /v1/completions relays from llama-server with no idle drain; unregistered, /unload tore it
+    # down.
     _route_gate()
     import asyncio
 
@@ -1238,12 +1212,12 @@ def test_completions_proxy_stream_is_visible_to_the_swap_gate(monkeypatch):
 
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
-    # And it unregisters, or one completion would 409 every later reload.
     assert active_generations.count() == 0
 
 
 def test_forced_reload_stops_a_completions_proxy_stream(monkeypatch):
-    # The registered event must be the one the relay watches, or a forced reload kills a live decode.
+    # The registered event must be the one the relay watches, or a forced reload kills a live
+    # decode.
     _route_gate()
     import asyncio
 
@@ -1266,14 +1240,13 @@ def test_forced_reload_stops_a_completions_proxy_stream(monkeypatch):
 
     body = asyncio.run(run())
 
-    # Stopped after the first event instead of relaying the rest.
     assert body.count(b'"text"') == 1
     assert active_generations.count() == 0
 
 
 def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
     # ``stream`` defaults to false, so the non-streaming branch is the common shape and holds
-    # llama-server throughout: unregistered, /unload counts zero and force_cancel_active has no event.
+    # llama-server throughout: unregistered, /unload counts zero.
     _route_gate()
     import asyncio
     from types import SimpleNamespace
@@ -1288,7 +1261,6 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
         # Sampled mid-flight: exactly the window a concurrent /unload would tear down in.
         seen["count"] = active_generations.count()
         seen["snapshot"] = active_generations.snapshot()
-        # And the gate must reach this run, not just see it.
         seen["cancelled"] = active_generations.cancel_all()
         return httpx.Response(200, json = {"id": "cmpl-x", "choices": [{"text": "33"}]})
 
@@ -1328,7 +1300,6 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
-    # And it unregisters, or one completion would 409 every later reload.
     assert active_generations.count() == 0
 
 
@@ -1349,7 +1320,7 @@ class _EmbeddingsRequest(_NeverDisconnectedRequest):
 
 def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
     # /v1/embeddings holds llama-server for its whole HTTP call: unregistered, a non-forced /unload
-    # counts zero and kills the server mid-request (only /load waits on the middleware count).
+    # counts zero and kills the server mid-request.
     _route_gate()
     import asyncio
     from types import SimpleNamespace
@@ -1401,13 +1372,12 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
-    # And it unregisters, or one embedding would 409 every later reload.
     assert active_generations.count() == 0
 
 
 def test_active_generations_redacts_native_model_paths(monkeypatch):
-    # The legacy stream records active_model_name verbatim (an absolute path locally) and is the only
-    # place that serialises it: redact like the error paths so a remote client cannot learn host paths.
+    # The legacy stream records active_model_name verbatim (an absolute path locally), so redact
+    # like the error paths or a remote client learns host paths.
     _route_gate()
     import asyncio
     import threading
@@ -1431,8 +1401,8 @@ def test_active_generations_redacts_native_model_paths(monkeypatch):
 
 
 def test_legacy_generate_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # The legacy /generate/stream decodes on the standard backend throughout: unregistered it passed
-    # the advertised 409 gate then blocked on the generation lock, and a forced swap had no event.
+    # The legacy /generate/stream decodes on the standard backend throughout: unregistered it
+    # blocked on the generation lock, and a forced swap had no event.
     _route_gate()
     import asyncio
     from types import SimpleNamespace
@@ -1443,7 +1413,6 @@ def test_legacy_generate_stream_is_visible_to_the_swap_gate(monkeypatch):
     seen = {}
 
     def _fake_generate_chat_response(**kwargs):
-        # Sampled mid-generation: exactly the window an /unload would land in.
         seen["count"] = active_generations.count()
         seen["snapshot"] = active_generations.snapshot()
         seen["cancelled"] = active_generations.cancel_all()
@@ -1473,7 +1442,6 @@ def test_legacy_generate_stream_is_visible_to_the_swap_gate(monkeypatch):
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M"
     assert seen["cancelled"] == 1
-    # And it unregisters, or one legacy stream would 409 every later reload.
     assert active_generations.count() == 0
 
 
@@ -1494,7 +1462,8 @@ def _anthropic_stream_args(chunks):
 
 
 def test_local_anthropic_plain_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # Only the client-tool pass-through registered, so the no-tool /v1/messages path died mid-response.
+    # Only the client-tool pass-through registered, so the no-tool /v1/messages path died
+    # mid-response.
     _route_gate()
     import asyncio
 
@@ -1544,7 +1513,6 @@ def test_forced_reload_stops_a_local_anthropic_plain_stream(monkeypatch):
     body = asyncio.run(run())
 
     assert cancel_event.is_set()
-    # Cancelled mid-stream: no clean message_stop envelope.
     assert "message_stop" not in body
     assert active_generations.count() == 0
 
@@ -1609,7 +1577,6 @@ def _parallel_constants(path: str) -> dict:
 
 
 def test_studio_defaults_to_more_than_one_decode_slot():
-    # With one slot the admission queue serialises every chat.
     consts = _parallel_constants(os.path.join(_backend, "run.py"))
 
     assert consts["_PARALLEL_DEFAULT_PLAIN"] > 1
@@ -1617,7 +1584,6 @@ def test_studio_defaults_to_more_than_one_decode_slot():
 
 
 def test_cli_and_backend_parallel_defaults_agree():
-    # argparse and the typer CLI are separate entry points into the same server.
     backend = _parallel_constants(os.path.join(_backend, "run.py"))
     cli_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(_backend))),
@@ -1641,7 +1607,6 @@ def _run_server_parallel_default(path: str, consts: dict):
             continue
         args = node.args.args
         defaults = node.args.defaults
-        # defaults align with the tail of the positional arg list.
         for arg, default in zip(args[len(args) - len(defaults) :], defaults):
             if arg.arg != "llama_parallel_slots":
                 continue
@@ -1688,16 +1653,14 @@ def test_colab_launcher_inherits_the_parallel_default():
             assert (
                 value is None or value > 1
             ), "colab.py pins llama_parallel_slots to 1; Colab chats would serialise"
-    # Whether pinned or inherited, Colab must end up with more than one slot.
     assert consts["_PARALLEL_DEFAULT_PLAIN"] > 1
 
 
-# ── the point of no return ────────────────────────────────────────────
 
 
 def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(monkeypatch):
-    # The destructive cancel is the point of no return: nothing after it may reject the load. A sidecar
-    # install can reserve the window during preflight, so its recheck must run before, not after.
+    # The destructive cancel is the point of no return, so the sidecar-install recheck must run
+    # before it, not after.
     _route_gate()
     import asyncio
     import contextlib
@@ -1727,7 +1690,6 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
     monkeypatch.setattr(inf_mod, "_guard_chat_load_against_training", lambda *a, **k: None)
     monkeypatch.setattr(inf_mod, "_resolve_inherited_extra_args", lambda *a, **k: None)
 
-    # The two route-level checks pass, every check after them 409s.
     seen = {"calls": 0}
 
     def _sidecar_reserved_during_preflight():
@@ -1760,15 +1722,13 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
                     "tester",
                 )
             )
-        # The load was rejected, so the chat must still be streaming.
         assert not ev.is_set()
         assert active_generations.count() == 1
     assert exc.value.status_code == 409
 
 
 def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
-    # A pass-through response whose body never starts must leave both registries clean: a never-started
-    # async generator runs no body code (PEP 342), so an eagerly entered tracker never unregisters.
+    # A never-started async generator runs no body code (PEP 342), so an eagerly entered tracker never unregisters.
     _route_gate()
     import asyncio
     import inspect
@@ -1801,12 +1761,12 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
             cancel_id = "c1",
         )
 
-    # Built and abandoned, as when the request task is cancelled before Starlette calls the response.
+    # Built and abandoned, as when the request task is cancelled before Starlette calls the
+    # response.
     asyncio.run(_build())
     assert active_generations.count() == 0
     assert not inf_mod._CANCEL_REGISTRY
 
-    # The client is gone at header time, so the first send fails and the body generator never runs.
     async def _drive():
         response = await _build()
 
@@ -1823,7 +1783,6 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
     assert active_generations.count() == 0
     assert not inf_mod._CANCEL_REGISTRY
 
-    # Still tracked once the body runs: the enter stays inside the generator, under the finally.
     src = inspect.getsource(inf_mod._anthropic_passthrough_stream)
     assert src.index("async def _stream()") < src.index("_tracker.__enter__()")
     assert src.index("_tracker.__enter__()") < src.index("_tracker.__exit__(None, None, None)")
@@ -1831,7 +1790,7 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
 
 def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
     # /audio/generate is non-streaming and holds the model for the whole request: unregistered, a
-    # non-forced swap counted zero and could tear it down mid-TTS, and a forced one had no entry.
+    # non-forced swap counted zero and a forced one had no entry.
     _route_gate()
     import asyncio
     from types import SimpleNamespace
@@ -1846,7 +1805,6 @@ def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
         models = {"org/TTS": {"is_audio": True, "audio_type": "snac"}}
 
         def generate_audio_response(self, **kwargs):
-            # Sampled mid-generation: the window a concurrent swap would tear down in.
             seen["count"] = active_generations.count()
             seen["snapshot"] = active_generations.snapshot()
             return (b"RIFFfake", 24000)
@@ -1872,9 +1830,7 @@ def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
     asyncio.run(inf_mod.generate_audio(payload, request = None, current_subject = "tester"))
 
     assert seen["count"] == 1
-    # Named, so the swap dialog can say which chat it would interrupt.
     assert seen["snapshot"][0]["thread_id"] == "thread-tts"
-    # And it unregisters, or one TTS call would 409 every later reload.
     assert active_generations.count() == 0
 
 
@@ -1924,8 +1880,8 @@ def _standard_chat_stubs(monkeypatch, backend):
 
 
 def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
-    # ``stream`` defaults to false, so this is the default shape of a standard chat and it holds the
-    # worker throughout. Only the streaming branch registered, so a swap truncated the completion.
+    # ``stream`` defaults to false, so this is the default shape of a standard chat and holds the
+    # worker throughout; only the streaming branch registered.
     _route_gate()
     import asyncio
 
@@ -1945,10 +1901,8 @@ def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
             stats_holder = None,
             **kwargs,
         ):
-            # Sampled mid-generation: exactly the window an /unload lands in.
             seen["count"] = active_generations.count()
             seen["snapshot"] = active_generations.snapshot()
-            # And the gate must reach this run, on the event the decode watches.
             seen["cancelled"] = active_generations.cancel_all()
             seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
             yield "33"
@@ -1969,11 +1923,9 @@ def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
 
     assert response.status_code == 200
     assert seen["count"] == 1
-    # Named, so the swap dialog can say which chat it would interrupt.
     assert seen["snapshot"][0]["thread_id"] == "thread-chat"
     assert seen["cancelled"] == 1
     assert seen["reached_the_decode"]
-    # And it unregisters, or one completion would 409 every later reload.
     assert active_generations.count() == 0
 
 
@@ -2010,8 +1962,8 @@ def test_standard_non_stream_chat_unregisters_when_it_fails(monkeypatch):
 
 
 def test_audio_input_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
-    # An audio-input model with the default stream=false holds the standard worker throughout. Only
-    # the streaming sibling registered, so a non-forced swap could unload it mid-transcription.
+    # An audio-input model with the default stream=false holds the standard worker throughout; only
+    # the streaming sibling registered.
     _route_gate()
     import asyncio
 
@@ -2030,7 +1982,6 @@ def test_audio_input_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
             cancel_event = None,
             **kwargs,
         ):
-            # Sampled mid-transcription: the window a concurrent swap lands in.
             seen["count"] = active_generations.count()
             seen["snapshot"] = active_generations.snapshot()
             seen["cancelled"] = active_generations.cancel_all()
@@ -2058,7 +2009,6 @@ def test_audio_input_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
     assert seen["snapshot"][0]["thread_id"] == "thread-audio-in"
     assert seen["cancelled"] == 1
     assert seen["reached_the_decode"]
-    # And it unregisters, or one transcription would 409 every later reload.
     assert active_generations.count() == 0
 
 
@@ -2099,8 +2049,8 @@ class _MessagesRequest(_NeverDisconnectedRequest):
 
 @pytest.mark.parametrize("with_server_tools", [False, True])
 def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, with_server_tools):
-    # ``stream`` defaults to false on /v1/messages, so the non-streaming plain and server-tool branches
-    # are the common shape and decode throughout. Only their streaming siblings registered.
+    # ``stream`` defaults to false on /v1/messages, so the non-streaming plain and server-tool
+    # branches decode throughout; only their streaming siblings registered.
     _route_gate()
     import asyncio
 
@@ -2109,7 +2059,6 @@ def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, wit
     seen = {}
 
     def _sample():
-        # Sampled mid-generation: exactly the window an /unload lands in.
         seen["count"] = active_generations.count()
         seen["snapshot"] = active_generations.snapshot()
         seen["cancelled"] = active_generations.cancel_all()
@@ -2144,15 +2093,13 @@ def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, wit
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
-    # The event registered is the one the decode watches, so a forced swap lands.
     assert seen["reached_the_decode"]
-    # And it unregisters, or one message would 409 every later reload.
     assert active_generations.count() == 0
 
 
 def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # The client-tool pass-through holds llama-server for one non-streaming POST. Its streaming sibling
-    # registers inside the body generator; this branch had none, so /unload tore the server down.
+    # The client-tool pass-through holds llama-server for one non-streaming POST; its streaming
+    # sibling registers inside the body generator, this branch had none.
     _route_gate()
     import asyncio
 
@@ -2201,13 +2148,12 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
-    # And it unregisters, or one message would 409 every later reload.
     assert active_generations.count() == 0
 
 
 def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeypatch):
-    # Registering is half the job: a pooled client cannot be closed, so the run was cancelled while the
-    # POST carried on. The watcher closes a per-request client; the set event makes that error a cancel.
+    # A pooled client cannot be closed, so the run carried on after the cancel; the watcher closes a
+    # per-request client and the set event makes that error a cancel.
     _route_gate()
     import asyncio
 
@@ -2218,7 +2164,6 @@ def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeyp
     seen = {}
 
     def handler(request):
-        # Stand in for a forced swap mid-decode: cancel, then fail the transport as closing would.
         seen["cancelled"] = active_generations.cancel_all()
         raise httpx.ConnectError("client closed")
 
@@ -2246,7 +2191,6 @@ def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeyp
         )
 
     assert seen["cancelled"] == 1
-    # Cancelled or not, the entry must go, or one message 409s every later reload.
     assert active_generations.count() == 0
 
 
@@ -2290,7 +2234,6 @@ def test_audio_generation_unregisters_when_it_fails(monkeypatch):
     assert active_generations.count() == 0
 
 
-# ── sidecar install: carrying a confirmed swap through ─────────────────
 
 
 def _stub_install_route(monkeypatch, *, in_flight_events):
@@ -2350,7 +2293,7 @@ def _stub_install_route(monkeypatch, *, in_flight_events):
 
 def test_confirmed_install_stops_the_chats_it_was_given_permission_to_stop(monkeypatch):
     # The install sits between the swap's "stop N chats" prompt and the /load carrying the
-    # confirmation, and refuses while those chats run, so a confirmed install cancels them itself.
+    # confirmation, and refuses while those chats run.
     _route_gate()
     import asyncio
 
@@ -2400,8 +2343,8 @@ def test_unconfirmed_install_still_refuses_while_chats_stream(monkeypatch):
 
 
 def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monkeypatch):
-    # A cancelled request that never observes its event keeps the in-flight count up, so the drain is
-    # bounded and cannot wedge the process holding the gate; the recheck behind it still refuses.
+    # A cancelled request that never observes its event keeps the in-flight count up, so the drain
+    # is bounded and cannot wedge the process holding the gate.
     _route_gate()
     import asyncio
 
@@ -2411,7 +2354,7 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
 
     ev = threading.Event()
     stuck = threading.Event()
-    stuck.set()  # already "cancelled", yet still counted: it never unwinds
+    stuck.set()
     inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev, stuck])
     monkeypatch.setattr(inf_mod, "_POST_CANCEL_DRAIN_TIMEOUT_S", 0.05)
 
@@ -2423,7 +2366,6 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
     monkeypatch.setattr(keepwarm, "other_inference_request_count", _never_unwinds)
 
     async def _install():
-        # Deadline here too: a regression that drops the drain's bound must fail, not hang the suite.
         return await asyncio.wait_for(
             inf_mod.install_latest_transformers_route(
                 InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
@@ -2442,7 +2384,7 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
 
 def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_refuse(monkeypatch):
     # An unrelated counted request the cancel cannot stop must be waited out BEFORE the cancel: the
-    # recheck refuses while it is there, so cancelling first stopped chats for a doomed install.
+    # recheck refuses while it is there.
     _route_gate()
     import asyncio
 
@@ -2456,7 +2398,6 @@ def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_ref
     import core.inference.llama_keepwarm as keepwarm
 
     def _never_drains(current_request_counted = True, *, include_pending = True):
-        # Discounting the registered chat still leaves the counted-only stranger: the drain must not clear.
         return 2
 
     monkeypatch.setattr(keepwarm, "other_inference_request_count", _never_drains)
@@ -2474,7 +2415,6 @@ def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_ref
     with active_generations.ActiveGeneration(ev, thread_id = "t1"):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(_install())
-        # The refusal is the same as before; what changed is that the chat lives.
         assert not ev.is_set()
         assert active_generations.count() == 1
 
@@ -2482,7 +2422,6 @@ def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_ref
     assert calls["installed"] == []
 
 
-# ── draining before teardown ──────────────────────────────────────────
 
 
 def _drain_with_counts(monkeypatch, counts, **kwargs):
@@ -2508,7 +2447,6 @@ def _drain_with_counts(monkeypatch, counts, **kwargs):
     monkeypatch.setattr(inf_mod, "_switch_waiter_count", lambda: 0)
 
     async def _run():
-        # Hard test-side deadline: a drain that regresses to waiting forever must fail red, not hang.
         await asyncio.wait_for(
             inf_mod._wait_for_model_switch_idle(current_request_counted = False, **kwargs),
             timeout = 5,
@@ -2519,8 +2457,8 @@ def _drain_with_counts(monkeypatch, counts, **kwargs):
 
 
 def test_forced_swap_does_not_wait_out_the_generations_it_is_about_to_cancel(monkeypatch):
-    # cancel_pending discounts the registered generations, since the caller cancels them right after.
-    # Drop the discount and the drain waits on a count only that pending cancel can lower: forever.
+    # cancel_pending discounts the registered generations; drop the discount and the drain waits on
+    # a count only that pending cancel can lower: forever.
     ev = threading.Event()
     with active_generations.ActiveGeneration(ev, thread_id = "t1"):
         polls = _drain_with_counts(monkeypatch, [1], cancel_pending = True)
@@ -2528,7 +2466,6 @@ def test_forced_swap_does_not_wait_out_the_generations_it_is_about_to_cancel(mon
 
 
 def test_the_same_drain_without_the_discount_would_keep_waiting(monkeypatch):
-    # The other half: that count really does block, so the previous test passes by the discount.
     ev = threading.Event()
     with active_generations.ActiveGeneration(ev, thread_id = "t1"):
         polls = _drain_with_counts(monkeypatch, [1], timeout_s = 0.05)
@@ -2536,19 +2473,19 @@ def test_the_same_drain_without_the_discount_would_keep_waiting(monkeypatch):
 
 
 def test_post_cancel_drain_gives_up_on_a_request_that_never_unwinds(monkeypatch):
-    # TTS on the subprocess backend observes no cancel event, so a forced swap can cancel it and still
-    # see it counted forever. The post-cancel drains hold the gate, so they must expire and proceed.
+    # TTS on the subprocess backend observes no cancel event, so a forced swap can cancel it and
+    # still see it counted forever: the post-cancel drains must expire.
     polls = _drain_with_counts(monkeypatch, [1], timeout_s = 0.05)
     assert polls > 1
 
 
 def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
-    # The bound is a backstop: once the count drops the drain returns without sitting out the timeout.
+    # The bound is a backstop: once the count drops the drain returns without sitting out the
+    # timeout.
     polls = _drain_with_counts(monkeypatch, [2, 1, 0], timeout_s = 30)
     assert polls == 3
 
 
-# ── queued chats must not cancel the running one ──────────────────────
 
 
 def _orchestrator_for_ownership():
@@ -2563,28 +2500,29 @@ def _orchestrator_for_ownership():
     orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
     orch._cancel_event = threading.Event()
-    orch._ensure_subprocess_alive = lambda: False  # stop before _send_cmd
+    orch._ensure_subprocess_alive = lambda: False
     return orch
 
 
 def test_a_queued_chat_cannot_reset_the_chat_that_is_generating():
-    # Safetensors generation serialises on _gen_lock and the worker has ONE cancel event: stopping
-    # queued chat B reset that shared event and killed running chat A. Scope the reset to the holder.
+    # Safetensors generation serialises on _gen_lock and the worker has ONE cancel event, so
+    # stopping queued chat B reset it and killed running chat A.
     orch = _orchestrator_for_ownership()
     a_event = threading.Event()
     b_event = threading.Event()
 
-    orch._claim_worker(a_event)  # A holds the lock ...
-    orch._mark_worker_started(a_event)  # ... and the worker is answering it
-    orch.reset_generation_state(b_event)  # B is queued and gets stopped
+    orch._claim_worker(a_event)
+    orch._mark_worker_started(a_event)
+    orch.reset_generation_state(b_event)
     assert not orch._cancel_event.is_set()
 
-    orch.reset_generation_state(a_event)  # A's own Stop still works
+    orch.reset_generation_state(a_event)
     assert orch._cancel_event.is_set()
 
 
 def test_a_global_reset_still_cancels_whatever_is_running():
-    # Unload and switch pass nothing: they mean stop everything, else a generation survives teardown.
+    # Unload and switch pass nothing: they mean stop everything, else a generation survives
+    # teardown.
     orch = _orchestrator_for_ownership()
     _running = threading.Event()
     orch._claim_worker(_running)
@@ -2602,12 +2540,11 @@ def test_a_reset_with_no_generation_running_is_not_dropped():
 
 def test_unload_waits_for_a_request_that_is_admitted_but_not_yet_registered(monkeypatch):
     # The window between the keep-warm middleware and _TrackedCancel: counted in-flight, absent from
-    # the registry. Cancelling on the registry alone tore the backend down under an admitted request.
+    # the registry, so cancelling on the registry alone tore the backend down.
     _route_gate()
     import core.inference.llama_keepwarm as keepwarm
     import routes.inference as inf_mod
 
-    # Counted for two polls, then the request registers/finishes and clears.
     remaining = [1, 1, 0]
     seen = {}
 
@@ -2623,7 +2560,6 @@ def test_unload_waits_for_a_request_that_is_admitted_but_not_yet_registered(monk
         seen["counted_at_teardown"] = remaining[0]
         torn_down.append("gguf")
 
-    # Registry deliberately empty: this is the unregistered case.
     response = _run_unload(
         inf_mod,
         monkeypatch,
@@ -2642,7 +2578,7 @@ def test_unload_waits_for_a_request_that_is_admitted_but_not_yet_registered(monk
 
 def test_a_dispatched_chat_cannot_reset_its_concurrently_dispatched_sibling():
     # Compare-mode / dispatched runs bypass _gen_lock and run concurrently, so with several claimed
-    # at once a Stop on one must still leave the others alone.
+    # at once a Stop on one must leave the others alone.
     orch = _orchestrator_for_ownership()
     a_event = threading.Event()
     b_event = threading.Event()
@@ -2653,10 +2589,10 @@ def test_a_dispatched_chat_cannot_reset_its_concurrently_dispatched_sibling():
     orch._claim_worker(b_event)
     orch._mark_worker_started(b_event)
 
-    orch.reset_generation_state(c_event)  # a third, unrelated request
+    orch.reset_generation_state(c_event)
     assert not orch._cancel_event.is_set()
 
-    orch.reset_generation_state(b_event)  # one of the running pair
+    orch.reset_generation_state(b_event)
     assert orch._cancel_event.is_set()
 
 
@@ -2670,47 +2606,46 @@ def test_releasing_one_generation_leaves_the_other_claimed():
     orch._mark_worker_started(b_event)
     orch._release_worker(a_event)
 
-    orch.reset_generation_state(a_event)  # now a stranger
+    orch.reset_generation_state(a_event)
     assert not orch._cancel_event.is_set()
 
     orch._release_worker(b_event)
-    orch.reset_generation_state(a_event)  # nothing running: no one to protect
+    orch.reset_generation_state(a_event)
     assert orch._cancel_event.is_set()
 
 
 def test_a_dispatched_request_queued_behind_another_is_not_an_owner():
-    # The subprocess runs generations one at a time, so admission is not execution: B can be claimed
-    # while the worker answers A. Counting B as an owner let its Stop signal the shared event and end A.
+    # The subprocess runs generations one at a time, so admission is not execution: counting queued
+    # B as an owner let its Stop signal the shared event and end A.
     orch = _orchestrator_for_ownership()
     a_event = threading.Event()
     b_event = threading.Event()
 
     orch._claim_worker(a_event)
-    orch._mark_worker_started(a_event)  # the worker answered A
-    orch._claim_worker(b_event)  # B is only queued behind it
+    orch._mark_worker_started(a_event)
+    orch._claim_worker(b_event)
 
     orch.reset_generation_state(b_event)
     assert not orch._cancel_event.is_set(), "a queued request must not reset A"
 
-    orch._mark_worker_started(b_event)  # the worker moves on to B
+    orch._mark_worker_started(b_event)
     orch.reset_generation_state(b_event)
     assert orch._cancel_event.is_set()
 
 
 def test_a_queued_request_cannot_reset_during_the_other_ones_prefill():
     # Between _send_cmd and the first response A is claimed but not executing; treating that as
-    # "nobody to protect" let a queued request's Stop kill A mid-prefill.
+    # "nobody to protect" let a queued Stop kill A mid-prefill.
     orch = _orchestrator_for_ownership()
     a_event = threading.Event()
     b_event = threading.Event()
 
-    orch._claim_worker(a_event)  # A sent its command and is in prefill
-    orch._claim_worker(b_event)  # B is queued behind it
+    orch._claim_worker(a_event)
+    orch._claim_worker(b_event)
 
     orch.reset_generation_state(b_event)
     assert not orch._cancel_event.is_set(), "B must not reset A during prefill"
 
-    # A's own Stop still works before any token has arrived.
     orch.reset_generation_state(a_event)
     assert orch._cancel_event.is_set()
 
@@ -2730,7 +2665,7 @@ def test_the_oldest_claim_is_the_one_the_worker_is_prefilling():
 
 def test_claim_order_matches_send_order_under_concurrent_dispatch():
     # _owns_worker reads claim order to decide who is prefilling, so a claim not atomic with the
-    # enqueue can put A first in the list while B is first in the subprocess queue: stopping A kills B.
+    # enqueue can put A first in the list while B is first in the queue.
     _route_gate()
     orch_mod = pytest.importorskip(
         "core.inference.orchestrator", reason = "inference stack not installed"
@@ -2748,7 +2683,6 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         barrier.wait(timeout = 10)
         with orch._send_order_lock:
             orch._claim_worker(ev)
-            # Stand in for _send_cmd: the enqueue must not be separable from the claim.
             sent.append(ev)
 
     events = [threading.Event() for _ in range(4)]
@@ -2762,8 +2696,8 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
 
 
 def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
-    # This adapter parses SSE itself, so without its own stamp a reasoning-first
-    # turn would time from the visible text instead.
+    # This adapter parses SSE itself, so without its own stamp a reasoning-first turn would time
+    # from the visible text instead.
     import asyncio
 
     from core.inference.api_monitor import api_monitor
@@ -2831,7 +2765,6 @@ def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
     monitor_id = api_monitor.start(
         endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
     )
-    # append_reply would stamp late; assert it happens at the delta instead.
     stamped: list[str] = []
     real_mark = api_monitor.mark_first_token
     monkeypatch.setattr(

@@ -29,8 +29,7 @@ import routes.training as training_routes
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from utils.hardware import hardware as hw
 
-# Clears every streaming precondition but the MLX guard, so only that can reject it.
-# load_in_4bit is off so the latest-sidecar probe stays offline.
+# Clears every streaming precondition but the MLX guard, and load_in_4bit is off so the probe is offline.
 _STREAMING_START = {
     "model_name": "unsloth/Llama-3.2-1B-Instruct",
     "training_type": "LoRA/QLoRA",
@@ -123,7 +122,7 @@ def test_streaming_is_rejected_on_mlx_before_detection_has_run(
 ):
     """The regression: DEVICE is still None when the request lands."""
     _pretend_apple_silicon(monkeypatch)
-    hardware_globals.DEVICE = None  # warm thread has not finished
+    hardware_globals.DEVICE = None
 
     response = client.post("/training/start", json = _STREAMING_START)
 

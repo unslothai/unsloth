@@ -73,7 +73,6 @@ def test_audio_and_image_only_list_is_empty():
 
 def test_part_without_type_treated_as_text():
     mc = _load_message_content()
-    # A ``text`` field with no ``type`` is treated as text.
     assert mc.content_to_text([{"text": "untyped"}]) == "untyped"
 
 
@@ -111,8 +110,7 @@ def test_paste_only_turn_is_not_empty_text():
         "content": [],
         "attachments": [{"content": [{"type": "text", "text": _pasted("Fix.txt", body, 28)}]}],
     }
-    # Deep research rejects a message whose text is empty, and a long paste
-    # carries all of its text in the attachment.
+    # Deep research rejects a message whose text is empty, and a long paste is all in the attachment.
     assert mc.message_text_with_pastes(message) == body
 
 
@@ -142,7 +140,6 @@ def test_other_attachments_are_left_out():
 def test_pasted_body_unwraps_only_the_wrapper():
     mc = _load_message_content()
     assert mc.pasted_text_body(_pasted("a.txt", "body", 4)) == "body"
-    # Without the size, and with a body that itself ends in a tag-like line.
     assert mc.pasted_text_body("<pasted_text name=a.txt>\nbody") == "body"
     assert mc.pasted_text_body("plain text") == ""
     assert mc.pasted_text_body("<attachment name=a.txt>\nbody\n</attachment>") == ""

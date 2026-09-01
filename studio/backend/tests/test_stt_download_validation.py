@@ -62,7 +62,6 @@ def test_custom_non_whisper_repo_is_rejected_before_download(monkeypatch):
 
     assert excinfo.value.status_code == 422
     assert validated == ["owner/chat-model"]
-    # The download never starts for a repo that failed the Whisper check.
     assert started == []
 
 
@@ -100,7 +99,6 @@ def test_gguf_engine_skips_the_transformers_repo_check(monkeypatch):
     def fail_if_called(model, hf_token = None):
         raise AssertionError("GGUF downloads must not run the Transformers repo check")
 
-    # whisper-server present, so the GGUF request stays on the GGUF engine.
     monkeypatch.setattr(ggml_module, "is_available", lambda: True)
     monkeypatch.setattr(stt_module, "validate_remote_model", fail_if_called)
     monkeypatch.setattr(
@@ -121,13 +119,11 @@ def test_gguf_engine_skips_the_transformers_repo_check(monkeypatch):
 
 
 def test_resolve_serving_stt_engine_falls_back_when_whisper_server_absent(monkeypatch):
-    # A curated GGUF request downgrades to Transformers when whisper-server is not
-    # installed (both engines serve curated ids), but stays GGUF when it is.
+    # A curated GGUF request downgrades to Transformers without whisper-server, since both serve curated ids.
     monkeypatch.setattr(ggml_module, "is_available", lambda: False)
     assert ri._resolve_serving_stt_engine("gguf") == "transformers"
     monkeypatch.setattr(ggml_module, "is_available", lambda: True)
     assert ri._resolve_serving_stt_engine("gguf") == "gguf"
-    # Transformers is unaffected by whisper-server availability.
     monkeypatch.setattr(ggml_module, "is_available", lambda: False)
     assert ri._resolve_serving_stt_engine("transformers") == "transformers"
 
@@ -138,7 +134,7 @@ def test_gguf_download_falls_back_to_transformers_when_server_absent(monkeypatch
     gguf_started: list = []
     tf_started: list = []
 
-    monkeypatch.setattr(ggml_module, "is_available", lambda: False)  # no whisper-server
+    monkeypatch.setattr(ggml_module, "is_available", lambda: False)
     # validate_remote_model no-ops curated ids in production; keep it a no-op here.
     monkeypatch.setattr(
         stt_module, "validate_remote_model", lambda model, hf_token = None: {"model": model}
@@ -164,5 +160,5 @@ def test_gguf_download_falls_back_to_transformers_when_server_absent(monkeypatch
     )
 
     assert resp.status_code == 200
-    assert tf_started == ["small"]  # served by Transformers instead of dead-ending on GGUF
+    assert tf_started == ["small"]
     assert gguf_started == []

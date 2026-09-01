@@ -24,7 +24,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Mirror sibling tests' stubbing so the module imports without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -34,8 +33,8 @@ import httpx  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-# Sibling tests install lightweight httpx stubs, so when collected together our `httpx`
-# may be a stub lacking `get`. Fill in the gaps so collection order does not matter.
+# Sibling tests install lightweight httpx stubs, so when collected together our `httpx` may be a
+# stub lacking `get`.
 if not hasattr(httpx, "get"):
     httpx.get = None  # placeholder; every test below monkeypatches it
 for _exc_name in (
@@ -160,7 +159,6 @@ class TestWaitForHealthResilience:
 
         monkeypatch.setattr(httpx, "get", raise_read_error)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
-        # Both loop iterations ran -- the ReadError did not bubble.
         assert b._process.poll.call_count >= 2
 
     def test_remote_protocol_error_also_swallowed(self, monkeypatch):
@@ -462,7 +460,6 @@ def test_a_cancelled_diffusion_start_reaps_the_runner():
             )
             is False
         )
-    # One teardown before the launch, one for the cancelled runner.
     assert len(kills) == 2, f"the cancelled runner was left running (kills={len(kills)})"
 
 

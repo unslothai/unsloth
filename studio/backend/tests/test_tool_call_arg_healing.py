@@ -37,10 +37,8 @@ _TRUNCATED = '{"path":"flappy-bird.html","old_string":"","new_string":"<!DOCTYPE
         ("python", "code"),
         ("terminal", "command"),
         ("render_html", "code"),
-        # No REQUIRED argument at all -- a url-only call fetches without searching -- so
-        # this one cannot be derived and is named explicitly.
+        # A url-only call fetches without searching, so it has no REQUIRED argument to derive and is named explicitly.
         ("web_search", "query"),
-        # Derived from the schema rather than hand-listed.
         ("search_knowledge_base", "query"),
         ("search_conversation", "query"),
     ],
@@ -79,7 +77,6 @@ def test_the_model_is_told_the_arguments_were_cut_off():
     assert "edit_file" in result
     assert "cut off" in result
     assert "nothing ran" in result
-    # The old answer, which blamed the model for keys it never sent.
     assert "must both be strings" not in result
 
 
@@ -126,12 +123,10 @@ def test_broken_json_is_not_healed_even_for_a_single_string_tool():
 @pytest.mark.parametrize(
     "raw",
     [
-        # Fails at char 1, with the rest of the text still to go: not a cut-off call.
+        # Fails at char 1 with the rest of the text still to go: not a cut-off call.
         "{not json at all",
         "{oops",
-        # Complete JSON with something after it -- broken, but nothing was lost. The
-        # generalisation below keys on "the tail is one unfinished token", and `trailing`
-        # is exactly that shape, so "Extra data" has to be excluded by name.
+        # Complete JSON with trailing data lost nothing, and the rule keys on an unfinished tail: exclude it.
         '{"a": 1} trailing',
         '{"a": 1} tail',
         "[1,2] rest",
@@ -154,17 +149,15 @@ def test_text_that_merely_opens_with_a_brace_still_heals(raw):
 @pytest.mark.parametrize(
     "raw",
     [
-        _TRUNCATED,  # stops inside new_string
-        _TRUNCATED_PYTHON,  # stops inside code
-        '{"a": 1,',  # stops after a comma
-        '{"a": ',  # stops before a value
-        '[{"a":1},',  # stops inside an array
-        # Cut inside a bare LITERAL rather than a string. These report at the token's
-        # start, not at the end of input, so an end-of-input test alone misses them and
-        # the fragment gets healed into an argument.
-        '{"flag":tru',  # Expecting value
+        _TRUNCATED,
+        _TRUNCATED_PYTHON,
+        '{"a": 1,',
+        '{"a": ',
+        '[{"a":1},',
+        # Cut inside a bare LITERAL, not a string: these report at the token start, so an end-of-input test misses.
+        '{"flag":tru',
         '{"a":nul',
-        '{"n":1e',  # Expecting ',' delimiter
+        '{"n":1e',
         '{"n":12.',
     ],
 )
@@ -197,7 +190,6 @@ def test_the_sentinel_never_reaches_the_tool_card():
     payload = _decision_for(_TRUNCATED).tool_start_payload()
 
     assert UNPARSED_ARGUMENTS_KEY not in json.dumps(payload)
-    # The model's own text is still shown: the user needs to see what was cut off.
     assert payload["arguments"] == {"raw": _TRUNCATED}
 
 
@@ -243,10 +235,7 @@ def test_the_sentinel_never_reaches_the_model():
     tool_call = _decision_for(_TRUNCATED).as_assistant_tool_call()
 
     assert UNPARSED_ARGUMENTS_KEY not in json.dumps(tool_call)
-    # This asserted the fragment was replayed verbatim, on the reasoning that `arguments`
-    # is a string in this format so the fragment was the honest value. It is a string the
-    # server PARSES, which the assertion did not consider, and the result was a live 500.
-    # The detail the model needs is in the tool result; the replay only has to be readable.
+    # This assumed `arguments` is a string replayed verbatim; it is a string the server PARSES, and it was a live 500.
     assert "cut off" in tool_call["function"]["arguments"]
 
 
@@ -345,7 +334,7 @@ def test_a_truncated_mcp_call_is_still_not_healed():
 
 
 def test_the_controller_hands_its_own_tools_to_the_healer():
-    from core.inference.tool_loop_controller import ToolLoopController  # noqa: PLC0415
+    from core.inference.tool_loop_controller import ToolLoopController
 
     controller = ToolLoopController(tools = [_MCP_TOOL])
 

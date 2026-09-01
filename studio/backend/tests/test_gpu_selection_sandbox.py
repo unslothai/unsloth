@@ -18,7 +18,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# Ensure backend is on sys.path.
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
@@ -64,7 +63,6 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
         size = _estimate_fp16_model_size_bytes_from_config(config)
         self.assertIsNotNone(size)
         size_gb = size / (1024**3)
-        # Llama 3.1 8B should be ~15GB in fp16
         self.assertGreater(size_gb, 12)
         self.assertLess(size_gb, 20)
 
@@ -82,7 +80,6 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
         size = _estimate_fp16_model_size_bytes_from_config(config)
         self.assertIsNotNone(size)
         size_gb = size / (1024**3)
-        # ~1B model should be ~2GB in fp16
         self.assertGreater(size_gb, 1)
         self.assertLess(size_gb, 5)
 
@@ -112,7 +109,6 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
         size = _estimate_fp16_model_size_bytes_from_config(config)
         self.assertIsNotNone(size)
         size_gb = size / (1024**3)
-        # MoE model with 64 experts should be large
         self.assertGreater(size_gb, 50)
 
 
@@ -247,7 +243,6 @@ class TestAutoSelectGpuIds(unittest.TestCase):
             ),
         ):
             selected, meta = auto_select_gpu_ids("test/model")
-            # Should pick GPU 1 (most free memory: 78GB) -- enough for 10GB
             self.assertEqual(len(selected), 1)
             self.assertEqual(selected[0], 1)
 
@@ -469,7 +464,6 @@ class TestMultiGpuOverheadAccounting(unittest.TestCase):
             ),
         ):
             selected, meta = auto_select_gpu_ids("test/model")
-            # Should fit on 1 GPU (80GB >= 79GB)
             self.assertEqual(len(selected), 1)
 
     def test_second_gpu_has_overhead(self):
@@ -478,7 +472,6 @@ class TestMultiGpuOverheadAccounting(unittest.TestCase):
         import utils.hardware.hardware as hw
 
         # Model requires 110GB. First GPU has 80GB, second has 40GB.
-        # With overhead: 80 + 40*0.85 = 114GB -- just enough
         with (
             patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA),
             patch.object(
@@ -516,7 +509,6 @@ class TestMultiGpuOverheadAccounting(unittest.TestCase):
             ),
         ):
             selected, meta = auto_select_gpu_ids("test/model")
-            # Should use both GPUs
             self.assertEqual(len(selected), 2)
 
 

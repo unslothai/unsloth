@@ -318,12 +318,8 @@ async def test_event_batch_flushes_while_upstream_is_idle(durable_run, monkeypat
     monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
     supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
     task = asyncio.create_task(supervisor._produce("run-1"))
-    # Poll rather than sleep a fixed span. The flush costs the batch timer plus a
-    # thread hop and a SQLite write, which measures ~0.11s on an idle machine, so
-    # the old bare sleep(0.2) left under 2x headroom and lost the race on a loaded
-    # runner. The budget is still bounded well below _EVENT_SINGLE_FLUSH_SECONDS,
-    # so a regression that drops these two events onto the single-event timer, or
-    # never flushes them at all, still fails here rather than passing slowly.
+    # Poll rather than sleep a fixed span: the flush costs the batch timer plus a thread hop and a
+    # SQLite write (~0.11s idle), so sleep(0.2) lost the race on a loaded runner.
     deadline = (_EVENT_BATCH_SECONDS + _EVENT_SINGLE_FLUSH_SECONDS) / 2
     stored = await _await_chunk_payloads("run-1", len(chunks), deadline)
     assert stored == chunks
@@ -469,7 +465,6 @@ async def test_a_caught_up_reconnect_to_a_settled_run_does_not_block(durable_run
         timeout = 5,
     )
     assert caught_up == []
-    # A client that is behind still gets the whole ledger.
     assert await _subscriber_sequences() == list(range(1, int(settled["lastEventSeq"]) + 1))
 
 

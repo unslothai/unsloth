@@ -35,8 +35,8 @@ def test_loopback_peers_are_local():
 def test_non_loopback_peers_are_remote():
     from main import _is_local_bootstrap_request
 
-    # ::1%eth0 is a scope-id'd address, which ipaddress treats as loopback on
-    # 3.9+; it must not count as a direct local peer.
+    # ::1%eth0 is a scope-id'd address, which ipaddress treats as loopback on 3.9+; it must not
+    # count as a direct local peer.
     for host in ("192.168.1.10", "::ffff:192.168.1.10", "::1%eth0"):
         assert _is_local_bootstrap_request(_request(host)) is False, host
 

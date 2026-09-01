@@ -103,11 +103,10 @@ def test_adaptive_thinking_body_uses_output_config_effort_shape(monkeypatch):
     _drive(run())
 
     body = captured["body"]
-    # display=summarized is set explicitly so Opus 4.7 (which defaults to
-    # "omitted") still emits thinking_delta events for the reasoning panel.
+    # display=summarized is set explicitly so Opus 4.7 (which defaults to "omitted") still emits
+    # thinking_delta events for the reasoning panel.
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
-    # Documented shape: effort is nested under output_config. A top-level
-    # `effort` field produces a 400: "effort: Extra inputs are not permitted".
+    # Documented shape: effort nests under output_config.
     assert body["output_config"] == {"effort": "medium"}
     assert "effort" not in body
     # Extended-thinking contract: temperature=1, no top_p / top_k.
@@ -302,11 +301,11 @@ def test_manual_thinking_body_uses_budget_tokens_on_4_5(monkeypatch):
 
     body = captured["body"]
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 4096}
-    # max_tokens must be strictly greater than budget_tokens; we shipped 1024
-    # and budget is 4096, so the wrapper must bump max_tokens.
+    # max_tokens must be strictly greater than budget_tokens; we ship 1024 and budget is 4096, so
+    # the wrapper must bump max_tokens.
     assert body["max_tokens"] > body["thinking"]["budget_tokens"]
-    # Manual-thinking path does not use output_config / effort — those are the
-    # adaptive-mode controls (Claude 4.6 / 4.7).
+    # The manual-thinking path does not use output_config / effort, which are the adaptive-mode
+    # controls (Claude 4.6 / 4.7).
     assert "effort" not in body
     assert "output_config" not in body
 
@@ -383,8 +382,8 @@ def test_thinking_delta_wrapped_in_think_tags(monkeypatch):
         if isinstance(p, dict) and p["choices"][0]["delta"]
     )
 
-    # Reasoning text is wrapped in <think>...</think>, then the answer text, and
-    # the stream terminates with [DONE].
+    # Reasoning text is wrapped in <think>...</think>, then the answer text, and the stream
+    # terminates with [DONE].
     assert "<think>First I plan.</think>" in combined
     assert combined.endswith("Answer.")
     # signature_delta is intentionally dropped — no leaked signature text.
@@ -529,22 +528,18 @@ def test_model_capability_tables_cover_claude_5(model, web, code, compaction, fa
 @pytest.mark.parametrize(
     ("model", "sampling_removed"),
     (
-        # Dotted minor versions and legacy version-first ids.
         ("claude-opus-4.8", True),
         ("claude-opus-4.7", True),
         ("claude-sonnet-4.6", False),
         ("claude-3-5-sonnet-20241022", False),
         ("claude-3-7-sonnet-20250219", False),
-        # A snapshot date is not a minor version: claude-opus-4-20250514 is
-        # Opus 4.0, three generations before sampling params were removed, and
-        # reading 20250514 as the minor sorted it above 4.7 and silently
-        # dropped the caller's temperature / top_k.
+        # A snapshot date is not a minor version: reading 20250514 as the minor sorted
+        # claude-opus-4-20250514 above 4.7 and silently dropped the caller's temperature / top_k.
         ("claude-opus-4-20250514", False),
         ("claude-opus-4", False),
         ("claude-opus-4-1-20250805", False),
         ("claude-opus-5-20260724", True),
         ("claude-opus-4-7-20260414", True),
-        # Two-digit minors still parse.
         ("claude-opus-4-10", True),
     ),
 )

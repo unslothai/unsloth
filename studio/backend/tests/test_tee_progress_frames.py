@@ -67,15 +67,13 @@ def test_several_bars_in_one_chunk_collapse_per_line():
 
 
 def test_unterminated_prompt_after_a_bar_is_not_withheld():
-    # "Start Unsloth Studio now? [Y/n]: " never gets a newline; it must still reach the file,
-    # and on its own line rather than glued to the frame that was being held.
+    # The prompt never gets a newline, but it must reach the file on its own line, not glued to the frame.
     log, _console = _tee(["\rbar 40%", "Start Unsloth Studio now? [Y/n]: "])
     assert log == "bar 40%\nStart Unsloth Studio now? [Y/n]: "
 
 
 def test_record_after_a_held_frame_stays_parseable():
-    # The reason the frame is closed off rather than prefixed: a structlog record arriving
-    # while a bar is mid-redraw must still be one JSON object on one line.
+    # Why the frame is closed rather than prefixed: a record arriving mid-redraw must still be one JSON line.
     log, _console = _tee(["\rLoading weights:  47%", '{"event": "model_loaded"}\n'])
     lines = log.splitlines()
     assert lines == ["Loading weights:  47%", '{"event": "model_loaded"}']
@@ -107,15 +105,10 @@ def test_file_failure_never_reaches_the_console():
     assert console.text == "still printed\n"
 
 
-# ---------------------------------------------------------------------------------------
-# A "\r" is only a redraw when something follows it on the same line.
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_crlf_line_keeps_its_payload():
-    # "\r\n" is one terminator. Reading its "\r" as a redraw keeps the empty text after it
-    # and drops the line -- and on Windows every relayed child line arrives in this shape,
-    # so the session log goes blank exactly where the evidence should be.
+    # CRLF is one terminator, and reading its CR as a redraw drops the line: every Windows child line arrives so.
     log, _console = _tee(["Hardware detected: NVIDIA GeForce RTX 4090\r\n"])
     assert log == "Hardware detected: NVIDIA GeForce RTX 4090\n"
 
@@ -144,16 +137,14 @@ def test_a_bar_signing_off_with_a_bare_cr_keeps_its_last_frame():
 
 
 def test_an_all_blank_line_never_writes_a_carriage_return():
-    # The handle appends the platform terminator itself, so a surviving "\r" lands as
-    # "\r\r\n" on Windows.
+    # The handle appends the platform terminator itself, so a surviving CR lands as CR CR LF on Windows.
     for chunk in ("\r\n", "\r\r\r\n", "   \r   \n"):
         log, _console = _tee([chunk])
         assert "\r" not in log, repr(chunk)
 
 
 def test_a_zero_length_write_does_not_glue_a_frame_onto_the_next_record():
-    # print("", end = "") is enough: an empty write used to read as a continuation of the
-    # held frame, which then fell through and was written with no newline.
+    # An empty write read as a continuation of the held frame, which then fell through with no newline.
     log, _console = _tee(["\rLoading weights:  47%", "", '{"event": "model_loaded"}\n'])
     lines = log.splitlines()
     assert lines == ["Loading weights:  47%", '{"event": "model_loaded"}']

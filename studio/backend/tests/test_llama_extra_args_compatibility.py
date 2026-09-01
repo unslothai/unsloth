@@ -26,8 +26,7 @@ _spec = importlib.util.spec_from_file_location("_lsa_compat_test", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 
-# Saved by a build where each of these was still allowed. Not hypothetical: the
-# first three appear verbatim in llama-server command lines people copy.
+# Saved by a build where each of these was still allowed.
 LEGACY_STORED = [
     ["--log-file", "/var/log/llama.log"],
     ["--slot-save-path", "/tmp/slots"],
@@ -40,28 +39,26 @@ LEGACY_STORED = [
 
 @pytest.mark.parametrize("stored", LEGACY_STORED)
 def test_a_stored_flag_denied_after_the_fact_is_dropped_not_kept(stored):
-    # The validator itself still refuses: it is the boundary, and it has no idea
-    # whether its caller is a request or a stored row.
+    # The validator itself still refuses: it is the boundary, and it has no idea whether its caller
+    # is a request or a stored row.
     with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
         _lsa.validate_extra_args(stored)
 
 
 @pytest.mark.parametrize("stored", LEGACY_STORED)
 def test_the_drop_helper_keeps_everything_else(stored):
-    # What the carry-over paths use instead of a refusal. The user's other flags
-    # are not collateral: only the denied names go.
+    # What the carry-over paths use instead of a refusal.
     kept, dropped = _lsa.drop_managed_flags([*stored, "--numa", "distribute"])
 
     assert kept == ["--numa", "distribute"]
     assert dropped == [_lsa._flag_name(stored[0])]
-    # And what survives is loadable, or the drop would have moved the failure
-    # rather than removed it.
+    # And what survives is loadable, or the drop would have moved the failure rather than removed
+    # it.
     assert _lsa.validate_extra_args(kept) == kept
 
 
 def test_dropping_takes_the_flags_value_with_it():
-    # Leaving "/var/log/llama.log" behind would hand llama.cpp a bare positional,
-    # which it reads as the model path.
+    # Leaving "/var/log/llama.log" behind would hand llama.cpp a bare positional, which it reads as the model path.
     kept, dropped = _lsa.drop_managed_flags(
         ["--top-k", "20", "--log-file", "/var/log/llama.log", "--seed", "1"]
     )
@@ -71,9 +68,8 @@ def test_dropping_takes_the_flags_value_with_it():
 
 
 def test_an_attached_value_form_is_dropped_whole():
-    # The denied one for its name, the other because llama-server refuses the
-    # attached spelling itself. Both self-contained, so neither takes a following
-    # token with it.
+    # The denied one for its name, the other because llama-server refuses the attached spelling
+    # itself.
     kept, dropped = _lsa.drop_managed_flags(["--log-file=/x", "--top-k=20", "--numa", "distribute"])
 
     assert kept == ["--numa", "distribute"]
@@ -81,9 +77,8 @@ def test_an_attached_value_form_is_dropped_whole():
 
 
 def test_an_attached_value_in_the_middle_does_not_take_the_rest_with_it():
-    # The trimming loop sheds the TAIL, so a stored "--top-k=20" left for it would
-    # cost every flag written after it. Dropped in the walk instead, beside the
-    # denied names.
+    # The trimming loop sheds the TAIL, so a stored "--top-k=20" left for it would cost every flag
+    # written after it.
     kept, _dropped = _lsa.drop_managed_flags(
         ["--top-k=20", "--numa", "distribute", "--grammar", "root ::= [0-9]"]
     )
@@ -104,8 +99,7 @@ def test_an_empty_or_missing_list_is_handled():
 
 
 def test_a_bound_breaking_stored_list_is_also_dropped_to_something_loadable():
-    # The bounds are new too, so a stored list can be over them. A drop that
-    # returned an unloadable list would leave the load failing anyway.
+    # The bounds are new too, so a stored list can be over them.
     kept, dropped = _lsa.drop_managed_flags(["--verbose"] * (_lsa.MAX_EXTRA_ARG_TOKENS + 10))
 
     assert _lsa.validate_extra_args(kept) == kept
@@ -113,9 +107,7 @@ def test_a_bound_breaking_stored_list_is_also_dropped_to_something_loadable():
 
 
 def test_a_poisoned_value_is_never_echoed_into_the_dropped_list():
-    # Every caller joins this list into a warning log. A stored value carrying ANSI
-    # escapes would then rewrite whatever is reading that log, and the value itself
-    # is not the operator's business either: the flag name is what identifies it.
+    # Every caller joins this list into a warning log.
     kept, dropped = _lsa.drop_managed_flags(["--grammar", "\x1b[2Jroot ::= [0-9]", "--top-k", "20"])
 
     assert kept == ["--top-k", "20"]
@@ -130,9 +122,8 @@ def test_a_control_character_in_a_stored_value_is_dropped_too():
     assert "--top-k" in kept
 
 
-# --- the paths that actually carry a stored value over --------------------------
-# The helper is only half of it: the two call sites reach it through module globals
-# populated by an import list, so a wiring mistake is invisible until a load runs.
+# The helper is only half of it: the two call sites reach it through module globals populated by an
+# import list, so a wiring mistake is invisible until a load runs.
 
 
 def test_the_inherited_load_path_drops_only_the_denied_flag(monkeypatch):
@@ -145,8 +136,8 @@ def test_the_inherited_load_path_drops_only_the_denied_flag(monkeypatch):
 
     class _Backend:
         extra_args = ["--log-file", "/var/log/llama.log", "--numa", "distribute"]
-        # Same model and variant, or the resolver refuses the pickup before it ever
-        # reaches the drop and the test proves nothing.
+        # Same model and variant, or the resolver refuses the pickup before it ever reaches the drop
+        # and the test proves nothing.
         extra_args_source = ("local/x", "")
 
     class _Config:
@@ -162,8 +153,8 @@ def test_the_inherited_load_path_drops_only_the_denied_flag(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
     resolved = inference_route._resolve_inherited_extra_args(_Request(), _Config(), "local/x", None)
 
-    # --numa surviving is the point: the previous behaviour returned [] on any
-    # refusal, so one name added to the denylist took every other flag with it.
+    # --numa surviving is the point: the previous behaviour returned [] on any refusal, so one name
+    # added to the denylist took every other flag with it.
     assert resolved == ["--numa", "distribute"]
 
 
@@ -235,8 +226,8 @@ def test_a_malformed_inherited_ctx_flag_is_stripped_not_raised(monkeypatch):
 
 
 def test_the_override_save_carries_over_without_refusing(monkeypatch):
-    # A user changing Context Length on a model whose stored flags predate the
-    # denylist must not get a 400 about a flag they are not editing.
+    # A user changing Context Length on a model whose stored flags predate the denylist must not get
+    # a 400 about a flag they are not editing.
     import routes.settings as settings_route
 
     saved: dict = {}
@@ -270,10 +261,8 @@ def test_the_override_save_carries_over_without_refusing(monkeypatch):
 
 
 def test_the_auto_switch_path_sanitizes_a_legacy_override(monkeypatch):
-    # The third carry-over path, and the one with no user in front of it: an OpenAI
-    # auto-switch or an idle reload builds a LoadRequest from the stored override.
-    # An explicit list is refused with a 400, so a flag denied after it was saved
-    # would break that model's automatic loads until someone rewrote the entry.
+    # The third carry-over path, and the one with no user in front of it: an OpenAI auto-switch or
+    # an idle reload builds a LoadRequest from the stored override.
     from utils.openai_auto_switch_settings import model_override_load_kwargs
 
     kwargs = model_override_load_kwargs(
@@ -295,8 +284,8 @@ def test_the_auto_switch_path_leaves_a_clean_override_alone():
 
 
 def test_trimming_to_the_bounds_never_leaves_a_flag_without_its_value():
-    # validate_extra_args knows the arity of only a few flags, so a dangling
-    # --grammar passes it and llama-server refuses the launch instead.
+    # validate_extra_args knows the arity of only a few flags, so a dangling --grammar passes it and
+    # llama-server refuses the launch instead.
     kept, dropped = _lsa.drop_managed_flags(["--top-k", "20", "--grammar", "a" * 40_000])
 
     assert kept == ["--top-k", "20"]
@@ -306,9 +295,8 @@ def test_trimming_to_the_bounds_never_leaves_a_flag_without_its_value():
 
 
 def test_a_token_that_cannot_be_spawned_is_refused_at_the_boundary():
-    # An unpaired surrogate survives JSON and the browser, passes every other check
-    # here, and then makes subprocess.Popen raise while it encodes argv, after the
-    # load has already begun switching models. A 400 is the honest answer.
+    # An unpaired surrogate survives JSON and the browser, passes every other check here, and then
+    # makes subprocess.Popen raise while it encodes argv, after the load has begun switching models.
     with pytest.raises(ValueError, match = "surrogate"):
         _lsa.validate_extra_args(["--chat-template", "\ud800"])
 
@@ -322,10 +310,8 @@ def test_a_stored_surrogate_is_dropped_like_any_other_unusable_value():
 
 
 def test_validate_sizes_itself_with_the_arguments_the_caller_sent():
-    # /validate estimates the memory that approves the follow-up /load, and a
-    # --ctx-size in the extras changes that estimate. The resolver hands back its
-    # fourth argument unchanged for an explicit list, so passing None there meant the
-    # preflight approved a different command from the one that runs.
+    # /validate estimates the memory that approves the follow-up /load, and a --ctx-size in the
+    # extras changes that estimate.
     import inspect
 
     import routes.inference as inference_route
@@ -354,9 +340,7 @@ def test_validate_sizes_itself_with_the_arguments_the_caller_sent():
 
 
 def test_a_poisoned_flag_takes_its_value_with_it():
-    # The control characters are in the FLAG here. Dropping only that token leaves
-    # "root ::= ..." as a bare positional, which validate_extra_args accepts and
-    # llama-server reads as the model path.
+    # The control characters are in the FLAG here.
     kept, dropped = _lsa.drop_managed_flags(["--grammar\x1b[2J", "root ::= [0-9]", "--top-k", "20"])
 
     assert kept == ["--top-k", "20"]
@@ -370,23 +354,22 @@ def test_a_poisoned_flag_with_an_attached_value_drops_alone():
     kept, dropped = _lsa.drop_managed_flags(["--grammar\x1b=root", "--top-k", "20"])
 
     assert kept == ["--top-k", "20"]
-    # The control character is judged first: its name is never echoed into a log,
-    # and the attached-value rule would have named it.
+    # The control character is judged first: its name is never echoed into a log, and the
+    # attached-value rule would have named it.
     assert dropped == ["<flag>"]
 
 
 def test_a_bare_value_with_no_flag_is_refused():
-    # llama-server answers "invalid argument" and refuses to start, so this is a
-    # failed load rather than a 400; and a build that DID take a positional would
-    # read it as the model path, which is what denying -m / --model exists to stop.
+    # llama-server answers "invalid argument" and refuses to start, so this is a failed load rather than
+    # a 400; and a build that DID take a positional would read it as the model path.
     for bad in (
         ["/private/models/other.gguf"],
         ["--top-k", "20", "/models/other.gguf"],
     ):
         with pytest.raises(ValueError, match = "bare value"):
             _lsa.validate_extra_args(bad)
-    # The attached spelling is refused before anything can be said about what
-    # follows it, since llama-server never reads it as a flag at all.
+    # The attached spelling is refused before anything can be said about what follows it, since
+    # llama-server never reads it as a flag at all.
     with pytest.raises(ValueError, match = "two separate arguments"):
         _lsa.validate_extra_args(["--top-k=20", "stray"])
 
@@ -399,11 +382,8 @@ def test_a_value_that_belongs_to_a_flag_is_still_fine():
 
 
 def test_the_underscore_spelling_keeps_its_detached_value():
-    # llama.cpp takes both spellings (measured on b10360: `llama-server --ctx_size
-    # 4096 --help` prints its help), and _flag_name folds one onto the other. Deciding
-    # attachment from that fold read "--ctx_size 4096" as a flag carrying its own
-    # value and then refused the 4096 as a bare token, which is a list the CLI has
-    # passed through for as long as the field has existed.
+    # llama.cpp takes both spellings (measured on b10360: `llama-server --ctx_size 4096 --help`
+    # prints its help), and _flag_name folds one onto the other.
     for good in (
         ["--ctx_size", "4096"],
         ["--n_gpu_layers", "5"],
@@ -414,17 +394,14 @@ def test_the_underscore_spelling_keeps_its_detached_value():
     # The value is still consumed exactly once: a second bare token has no owner.
     with pytest.raises(ValueError, match = "bare value"):
         _lsa.validate_extra_args(["--ctx_size", "4096", "stray"])
-    # The underscore spelling folds, the attached one does not exist for llama.cpp
-    # whichever way it is spelled.
+    # The underscore spelling folds; the attached one does not exist for llama.cpp whichever way it is spelled.
     with pytest.raises(ValueError, match = "two separate arguments"):
         _lsa.validate_extra_args(["--ctx_size=4096"])
 
 
 def test_a_batch_below_the_floor_is_refused_before_the_launch():
-    # llama-server aborts on a batch of 1 at any slot count, and on a batch below the
-    # slots it serves (measured, and recorded beside the launcher that raises its own
-    # --batch-size for it). Extras are appended after that flag and win, so this is a
-    # server that dies during startup, by which time the previous model is unloaded.
+    # llama-server aborts on a batch of 1 at any slot count, and on a batch below the slots it
+    # serves.
     for args, slots in (
         (["-b", "1"], 1),
         (["--batch-size", "0"], 1),
@@ -434,8 +411,8 @@ def test_a_batch_below_the_floor_is_refused_before_the_launch():
     ):
         with pytest.raises(ValueError, match = "aborts on --batch-size"):
             _lsa.check_batch_floor(args, slots)
-    # At or above the floor, and anything this side cannot read, is left alone:
-    # llama-server names an unreadable value better than a guess here would.
+    # At or above the floor, and anything this side cannot read, is left alone: llama-server names
+    # an unreadable value better than a guess here would.
     for args, slots in (
         (["-b", "2"], 1),
         (["-b", "4"], 4),
@@ -448,10 +425,8 @@ def test_a_batch_below_the_floor_is_refused_before_the_launch():
 
 
 def test_a_scaled_sidecar_may_take_its_scale_separately():
-    # Today's llama.cpp writes it into the value ("--lora-scaled FNAME:SCALE"), older
-    # builds took it as its own token, and _sidecar_weight_files reads both. Allowed
-    # and never required: demanding the second token would refuse the current syntax,
-    # and refusing it broke a list that loaded before the positional check existed.
+    # Today's llama.cpp writes it into the value ("--lora-scaled FNAME:SCALE"), older builds took it
+    # as its own token, and _sidecar_weight_files reads both.
     for good in (
         ["--lora-scaled", "/a.gguf", "0.5"],
         ["--lora-scaled", "/a.gguf:0.5"],
@@ -468,8 +443,8 @@ def test_a_scaled_sidecar_may_take_its_scale_separately():
 
 def test_a_two_value_flag_is_kept_whole():
     # Half of this option is not a smaller version of it: llama-server refuses
-    # "--control-vector-layer-range 1" on the command line, so a list that carries it
-    # is a load that fails at spawn rather than a request that fails at the boundary.
+    # "--control-vector-layer-range 1" on the command line, so a list carrying it is a load that fails
+    # at spawn rather than a request that fails at the boundary.
     for bad in (
         ["--control-vector-layer-range"],
         ["--control-vector-layer-range", "1"],
@@ -481,9 +456,8 @@ def test_a_two_value_flag_is_kept_whole():
 
 
 def test_the_attached_form_of_a_two_value_flag_is_refused_like_any_other():
-    # It used to be read as START owing an END, which was a guess about a spelling
-    # llama.cpp does not have: the whole token is looked up in its option map, so
-    # "--control-vector-layer-range=1" is an argument it has never heard of.
+    # It used to be read as START owing an END, a guess about a spelling llama.cpp does not have: the
+    # whole token is looked up in its option map, so the "=1" form is an argument it never heard of.
     for bad in (
         ["--control-vector-layer-range=1"],
         ["--control-vector-layer-range=1", "10"],
@@ -498,9 +472,7 @@ def test_the_attached_form_of_a_two_value_flag_is_refused_like_any_other():
 
 
 def test_trimming_sheds_a_two_value_flag_whole():
-    # A list stored by an older build can exceed today's bound, and the trim walks in
-    # from the tail. Shedding END alone leaves START looking like an ordinary value,
-    # which nothing downstream would object to and llama-server would then reject.
+    # A list stored by an older build can exceed today's bound, and the trim walks in from the tail.
     kept, dropped = _lsa.drop_managed_flags(
         ["--top-k", "20", "--control-vector-layer-range", "1", "10", "--grammar", "x" * 40000]
     )
@@ -515,9 +487,9 @@ def test_trimming_sheds_a_two_value_flag_whole():
 
 
 def test_the_windows_check_measures_what_popen_would_write(monkeypatch):
-    # list2cmdline is not a sum of lengths: backslashes before a quote double, so an
-    # escape-heavy grammar can pass a byte cap and still blow CreateProcess's 32767
-    # character limit once quoted, inside Popen, after the switch has begun.
+    # list2cmdline is not a sum of lengths: backslashes before a quote double, so an escape-heavy
+    # grammar can pass a byte cap and still blow CreateProcess's 32767 character limit once quoted,
+    # inside Popen, after the switch has begun.
     monkeypatch.setattr(_lsa.sys, "platform", "win32", raising = False)
     value = ("\\" * 10 + '"') * 2000
     assert len(value) < _lsa.MAX_EXTRA_ARGS_BYTES_WINDOWS
@@ -531,10 +503,8 @@ def test_the_windows_check_measures_what_popen_would_write(monkeypatch):
 
 
 def test_the_loader_and_the_panel_resolve_the_same_row(monkeypatch):
-    # The panel used to mirror these rules in the browser, where casefold is only
-    # approximated by toLowerCase and an ambiguous fold is easy to get wrong. Both
-    # sides now go through this, so what a panel shows and what a load applies cannot
-    # disagree.
+    # The panel used to mirror these rules in the browser, where casefold is only approximated by
+    # toLowerCase.
     import utils.openai_auto_switch_settings as oas
 
     stored = {
@@ -543,16 +513,13 @@ def test_the_loader_and_the_panel_resolve_the_same_row(monkeypatch):
     }
     monkeypatch.setattr(oas, "get_model_overrides", lambda: dict(stored))
 
-    # The load path before the advertised alias, and variant-qualified first. The
-    # path keeps its case (POSIX), while the quant folds, which is the rule a browser
-    # mirroring this kept getting subtly wrong.
+    # The load path before the advertised alias, and variant-qualified first.
     key, override = oas.resolve_override_for_load(
         "/models/Foo.gguf", "unsloth/model-gguf", "q4_k_m"
     )
     assert override["llama_extra_args"] == ["--numa", "distribute"]
     assert key == "/models/Foo.gguf:Q4_K_M"
 
-    # With no such row, the alias answers.
     key, override = oas.resolve_override_for_load("/models/other.gguf", "unsloth/model-gguf", None)
     assert override["llama_extra_args"] == ["--top-k", "20"]
 
@@ -573,15 +540,14 @@ def test_the_candidate_order_is_the_loaders_own():
 
 
 def test_a_flag_padded_with_spaces_is_refused():
-    # _flag_name strips before it looks anything up, so a quoted "--top-k " passed the
-    # denylist and the arity walk as --top-k and then went to the child with the space
-    # still on it. llama.cpp looks the WHOLE token up: measured on b10342, it answers
-    # "error: invalid argument: --top-k", naming a flag that reads as correct.
+    # _flag_name strips before it looks anything up, so a quoted "--top-k " passed the denylist and the
+    # arity walk as --top-k and went to the child with the space still on it. llama.cpp looks the WHOLE
+    # token up: on b10342 it answers "error: invalid argument: --top-k", naming a flag that reads right.
     for bad in (["--top-k ", "20"], [" --top-k", "20"], ["--verbose "]):
         with pytest.raises(ValueError, match = "spaces around"):
             _lsa.validate_extra_args(bad)
-    # A VALUE may legitimately carry whitespace: a grammar or a chat template does,
-    # and quoting one into a single token is what the box is for.
+    # A VALUE may legitimately carry whitespace: a grammar or a chat template does, and quoting one
+    # into a single token is what the box is for.
     assert _lsa.validate_extra_args(["--grammar", "root ::= [0-9] "]) == [
         "--grammar",
         "root ::= [0-9] ",
@@ -589,9 +555,8 @@ def test_a_flag_padded_with_spaces_is_refused():
 
 
 def test_a_padded_flag_is_carried_over_by_dropping_it_with_its_value():
-    # Dropped in the walk, like the denied names and the attached spelling: left to
-    # the trimming loop it would shed the whole tail after it. Its value goes too,
-    # since the flag never arrives and an orphan is a bare positional.
+    # Dropped in the walk, like the denied names and the attached spelling: left to the trimming
+    # loop it would shed the whole tail after it.
     kept, dropped = _lsa.drop_managed_flags(["--top-k ", "20", "--numa", "distribute"])
     assert kept == ["--numa", "distribute"]
     assert dropped == ["--top-k"]
@@ -601,8 +566,8 @@ def test_a_padded_flag_is_carried_over_by_dropping_it_with_its_value():
 
 @pytest.mark.parametrize("flag", ["--parallel", "-np", "--n-parallel"])
 def test_parallel_denials_point_at_the_supported_knob(flag):
-    # Why (#9510): the parallel slot count IS user-settable, just not through extra args --
-    # refusing `--parallel 1` without naming n_parallel sent users to undocumented env hacks.
+    # Why (#9510): the parallel slot count IS user-settable, just not through extra args -- refusing
+    # `--parallel 1` without naming n_parallel sent users to undocumented env hacks.
     with pytest.raises(ValueError, match = "managed by Unsloth Studio.*n_parallel"):
         _lsa.validate_extra_args([flag, "1"])
 

@@ -36,13 +36,10 @@ import sys
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
-# Canonical CUDA spoof at the repo root (studio/backend -> studio -> repo root). Loaded by the
-# subprocess when present (matches the consolidated CI); absent in a standalone studio checkout, where
-# the subprocess falls back to a minimal inline spoof.
+# Canonical CUDA spoof at the repo root, loaded when present; a standalone checkout falls back to an inline one.
 _SPOOF_PATH = _BACKEND_DIR.parent.parent / "tests" / "_zoo_aggressive_cuda_spoof.py"
 
 # Runs in a fresh interpreter with cwd == studio/backend so ``utils.*`` resolves like the worker.
-# STUB_HOME (a pytest tmp dir) holds a throwaway ``.venv_t5_530`` sidecar exporting transformers 5.3.0.
 _SNIPPET = r"""
 import os, sys
 sys.path.insert(0, os.getcwd())
@@ -139,14 +136,12 @@ def test_worker_activates_correct_transformers_version(tmp_path):
     parsed = _parse(result.stdout)
     assert parsed, f"No RESULT line.\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
 
-    # Correct tier chosen for a transformers-5.x model (pure, deterministic; no network/GPU).
     assert parsed["tier"] == "530", (
         f"Wrong transformers tier for Qwen3.5 (expected 530, got {parsed['tier']}). "
         "Tier detection regressed."
     )
 
-    # Activation must actually swap the resident transformers to the sidecar version. If a preflight
-    # import cached 4.57.x first, the sidecar prepend is a no-op and this stays 4.57.x -- the bug.
+    # Activation must swap the resident transformers: a preflight import of 4.57.x makes the sidecar prepend a no-op.
     assert parsed["active"] == "5.3.0", (
         "Sidecar activation did NOT switch the in-process transformers to the model's 5.x version "
         f"(active={parsed['active']}, preloaded-before-activation={parsed['preload']}). A pre-activation "

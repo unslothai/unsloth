@@ -19,7 +19,6 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_route_module(name: str, relative_path: str):
-    # Load routes/inference.py under a standalone name (mirrors test_gpu_selection).
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / relative_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -57,9 +56,8 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
         self.assertNotEqual(err.detail, "Invalid model")
 
     def test_other_runtime_errors_do_not_get_gguf_message(self):
-        # LlamaServerNotFoundError subclasses RuntimeError, so a plain RuntimeError must not be
-        # routed to the GGUF "install the runtime" message. validate_model surfaces a RuntimeError's
-        # own message (#6398), so assert the GGUF install text is absent and the message is intact.
+        # LlamaServerNotFoundError subclasses RuntimeError, so a plain RuntimeError must not be routed to
+        # the GGUF "install the runtime" message; validate_model surfaces its own message (#6398).
         route = _load_route_module("inf_route_runtime_msg_2", "routes/inference.py")
         err = self._validate(route, "not/a-real-model", RuntimeError("totally different failure"))
         self.assertEqual(err.status_code, 400)
@@ -73,7 +71,7 @@ class TestLoadGgufRuntimeMessage(unittest.TestCase):
 
     def _load(self, route, model_path, side_effect):
         request = LoadRequest(model_path = model_path)
-        backend = MagicMock(active_model_name = None)  # no resident model -> reach from_identifier
+        backend = MagicMock(active_model_name = None)
         with (
             patch.object(
                 route,

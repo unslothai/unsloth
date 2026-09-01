@@ -320,14 +320,12 @@ def test_reload_dedup_reloads_for_ordinary_load_when_root_drafter_appears(tmp_pa
     backend._mtp_draft_path = str(companion)
 
     request = LoadRequest(model_path = str(weight))
-    # No root drafter yet: both routes dedupe.
     assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
     assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)
 
     (tmp_path / "mtp-model.gguf").write_bytes(b"root drafter")
     # Native cannot reach the root drafter, so the subdir copy stays current.
     assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
-    # An ordinary load would pick the root drafter, so it must reload.
     assert not _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)
 
 

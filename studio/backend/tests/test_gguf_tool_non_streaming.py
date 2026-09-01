@@ -25,8 +25,7 @@ class _ToolGgufBackend(FakeLlamaCppBackend):
     context_length = 8192
 
     def generate_chat_completion_with_tools(self, **kwargs):
-        # The agentic loop runs one tool, then the model answers. Event shapes
-        # mirror the real GGUF loop (tool_start/tool_end/content/metadata).
+        # The agentic loop runs one tool, then the model answers.
         yield {
             "type": "tool_start",
             "tool_name": "python",
@@ -143,13 +142,12 @@ def test_non_streaming_preserves_length_finish_reason(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["choices"][0]["finish_reason"] == "length"
-    # total_tokens is derived when the server omits it.
     assert body["usage"]["total_tokens"] == 12
 
 
 def test_non_streaming_preserves_cached_tokens(monkeypatch):
-    # KV-cache hit details from the metadata event must survive into the body
-    # (the tool path used to drop them and always report cached_tokens=0).
+    # KV-cache hit details from the metadata event must survive into the body (the tool path used to
+    # drop them and always report cached_tokens=0).
     events = [
         {"type": "content", "text": "hi"},
         {

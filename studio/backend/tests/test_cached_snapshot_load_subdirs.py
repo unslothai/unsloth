@@ -74,7 +74,6 @@ def bicodec_subdirs(monkeypatch):
 
 def test_a_cached_bicodec_snapshot_resolves_from_its_llm_load_root(cache_root, bicodec_subdirs):
     _, snapshot = _snapshot(cache_root, _REPO)
-    # Exactly the real layout: nothing loadable at the root, everything under LLM/.
     (snapshot / "config.yaml").write_text("sample_rate: 16000\n")
     _write_model(snapshot / "LLM")
 

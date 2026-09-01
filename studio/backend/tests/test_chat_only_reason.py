@@ -25,11 +25,9 @@ import utils.hardware.hardware as hw  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def _no_torch(monkeypatch):
-    # Force the non-CUDA/XPU path regardless of the test host's real GPUs.
     monkeypatch.setattr(hw, "_has_torch", lambda: False)
-    # detect_hardware() assigns these module globals directly (not via monkeypatch),
-    # so save and restore them; otherwise a chat-only verdict here leaks into other
-    # backend tests (e.g. test_utils.py) when they share a process on a GPU host.
+    # detect_hardware() assigns these module globals directly, so save and restore them; otherwise a
+    # chat-only verdict here leaks into other backend tests sharing the process.
     saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
     try:
         yield
@@ -54,9 +52,8 @@ def test_apple_silicon_with_mlx_enables_training(monkeypatch):
 
 
 def test_apple_silicon_with_incomplete_mlx_stack_stays_chat_only(monkeypatch):
-    # Bare `import mlx.core` works but the full mlx/mlx-lm/mlx-vlm stack does not
-    # (e.g. a backtracked/old mlx-vlm). The training gate must match the self-heal
-    # validator and stay chat-only so the UI does not enable a broken Train/Export.
+    # Bare `import mlx.core` works but the full mlx/mlx-lm/mlx-vlm stack may not; the training gate
+    # must match the self-heal validator, or the UI enables a broken Train/Export.
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "_has_mlx", lambda: True)
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)

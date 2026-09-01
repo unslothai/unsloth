@@ -84,8 +84,6 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
         saw_done = asyncio.Event()
 
         async def _consume():
-            # Like Starlette's stream_response: it keeps pulling after the last chunk, so the
-            # generator resumes past [DONE] and only then runs into the wedged teardown.
             async for chunk in _admitted(lease):
                 seen.append(chunk)
                 if chunk == inference_route._SSE_DONE_CHUNK:
@@ -94,7 +92,6 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
         task = asyncio.create_task(_consume())
         try:
             await asyncio.wait_for(saw_done.wait(), timeout = 5.0)
-            # Give the generator a turn to resume past the [DONE] yield and reach the wedge.
             for _ in range(50):
                 if _active_slots() == 0:
                     break

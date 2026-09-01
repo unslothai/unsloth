@@ -31,7 +31,7 @@ class TestTeeStream:
         tee = run_mod._TeeStream(console, log)
         n = tee.write("hello")
         assert console.getvalue() == "hello" == log.getvalue()
-        assert n == 5  # delegate's return value, console contract unchanged
+        assert n == 5
 
     def test_log_failure_never_breaks_console(self):
         class Broken:
@@ -44,25 +44,23 @@ class TestTeeStream:
         console = io.StringIO()
         tee = run_mod._TeeStream(console, Broken())
         assert tee.write("still works") == len("still works")
-        tee.flush()  # must not raise
+        tee.flush()
         assert console.getvalue() == "still works"
 
     def test_attribute_proxy(self):
         console, log = io.StringIO(), io.StringIO()
         tee = run_mod._TeeStream(console, log)
-        # isatty / encoding probes must see the original stream's answers.
         assert tee.isatty() == console.isatty()
 
     def test_missing_console_is_a_null_sink(self):
-        # Production never builds this, but _TeeStream(None, ...) must not crash.
         log = io.StringIO()
         tee = run_mod._TeeStream(None, log)
-        assert tee.write("hello") == len("hello")  # text-stream write contract
+        assert tee.write("hello") == len("hello")
         tee.flush()
         tee.close()
         assert log.getvalue() == "hello"
-        assert not log.closed  # the tee does not own the log handle
-        run_mod._harden_console_close(None)  # must not raise
+        assert not log.closed
+        run_mod._harden_console_close(None)
 
 
 class TestNormalizeStandardStreams:
@@ -78,7 +76,6 @@ class TestNormalizeStandardStreams:
                 stream = getattr(sys, name)
                 assert stream is not None
                 assert getattr(sys, f"__{name}__") is not None
-                # uvicorn's default formatter probes isatty(); logging needs write().
                 assert stream.isatty() is False
                 assert stream.encoding
                 assert stream.fileno() >= 0
@@ -96,14 +93,12 @@ class TestNormalizeStandardStreams:
         monkeypatch.setattr(sys, "stdout", console)
         monkeypatch.setattr(sys, "stderr", console)
         run_mod._normalize_standard_streams()
-        # Identity, not truthiness: replacing a live console would break Colab
-        # (ipykernel OutStream), Tauri's stdout protocol and pytest capture.
+        # Identity, not truthiness: replacing a live console breaks Colab, Tauri's stdout protocol and capture.
         assert sys.stdout is console
         assert sys.stderr is console
 
     def test_runs_before_the_logger_import(self):
-        # structlog binds `from sys import stdout` at import time, so normalizing
-        # after the loggers import leaves None captured forever.
+        # structlog binds `from sys import stdout` at import, so normalizing after that leaves None captured.
         src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
         call = "\n_normalize_standard_streams()"
         assert call in src, "run.py never calls _normalize_standard_streams()"
@@ -120,8 +115,7 @@ class TestSetupServerDiskLogging:
 
         monkeypatch.delenv("UNSLOTH_STUDIO_NO_FILE_LOG", raising = False)
         monkeypatch.delenv("PYTHONFAULTHANDLER", raising = False)
-        # Both resolution paths (utils.paths.studio_root and the env
-        # fallback) honor UNSLOTH_STUDIO_HOME, so this redirects the log dir.
+        # Both resolution paths honor UNSLOTH_STUDIO_HOME, so this redirects the log dir.
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
         orig_out, orig_err = sys.stdout, sys.stderr
         was_enabled = faulthandler.is_enabled()
@@ -130,7 +124,6 @@ class TestSetupServerDiskLogging:
             assert log_path is not None
             assert Path(log_path).is_file()
             assert "logs" in str(log_path)
-            # faulthandler armed at the file; children inherit the env switch.
             assert faulthandler.is_enabled()
             import os
 
@@ -190,7 +183,7 @@ class TestSetupServerDiskLogging:
 
         tree = ast.parse((Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8"))
         offenders = []
-        for node in tree.body:  # module scope only
+        for node in tree.body:
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("loggers."):
                 offenders.append(f"line {node.lineno}: from {node.module} import ...")
             elif isinstance(node, ast.Import):
@@ -211,8 +204,7 @@ class TestSetupServerDiskLogging:
         src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
         body = src.index("def run_server")
         reject_idx = src.index("--secure requires the Cloudflare tunnel", body)
-        # Anchor on the assignment, not the bare name: a comment mentioning the call
-        # would otherwise satisfy this.
+        # Anchor on the assignment, not the bare name: a comment mentioning the call would otherwise satisfy this.
         tee_idx = src.index("_session_log = _setup_server_disk_logging()", body)
         assert reject_idx < tee_idx, (
             "the --secure/--no-cloudflare rejection must run before the tee is installed; "

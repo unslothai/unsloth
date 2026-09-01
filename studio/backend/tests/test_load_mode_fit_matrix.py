@@ -42,7 +42,6 @@ HARDWARE = {
 
 PLATFORMS = ["linux", "windows", "wsl", "macos"]
 
-# The cartesian product the matrix walks, materialised once.
 _OS_GPU = list(itertools.product(PLATFORMS, HARDWARE))
 
 
@@ -83,7 +82,6 @@ def _mode(platform, hw, footprint, avail_mib, monkeypatch, **kwargs):
     )
 
 
-# ---------------------------------------------------------------- the matrix
 
 
 @pytest.mark.parametrize("platform,hw", _OS_GPU)
@@ -209,7 +207,6 @@ def test_the_launch_charges_the_pipeline_overhead_per_extra_device():
     assert "pipeline_overhead_bytes=(max(0,_fit_devices-1)*_pipeline_overhead_bytes)" in compact
 
 
-# ------------------------------------------------- the CPU-pinned drafter
 
 
 class _DraftStub:
@@ -317,8 +314,8 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     assert compact.index("_cpu_draft_path=_mtp_draft_for_budget") < compact.index(
         "if_draft_on_cpu:_mtp_draft_for_budget=None"
     )
-    # ... and charged to the footprint as a HOST-ONLY term (free VRAM cannot pay for
-    # an allocation the child only ever makes in RAM), abstaining when unpriceable.
+    # ... and charged to the footprint as a HOST-ONLY term (free VRAM cannot pay for an allocation
+    # the child only ever makes in RAM), abstaining when unpriceable.
     assert "host_only_bytes=_cpu_draft_fit_bytesor0" in compact
     assert "or_cpu_draft_fit_bytesisNone" in compact
 
@@ -363,8 +360,8 @@ def test_a_cpu_pinned_drafter_is_not_paid_for_out_of_vram(monkeypatch):
 
     assert _fit() == FIT_MODE
     assert _fit(host_only_bytes = 3 * GIB) is None
-    # Same bytes on the GPU side of the ledger DO fit the card, which is the
-    # difference this term draws.
+    # The same bytes on the GPU side of the ledger DO fit the card, which is the difference this
+    # term draws.
     assert _fit(mtp_bytes = 3 * GIB) == FIT_MODE
     # And with RAM that can hold them, the host-only term is satisfied too.
     stub._avail_mib = 16 * 1024
@@ -380,7 +377,6 @@ def test_a_cpu_pinned_drafter_is_not_paid_for_out_of_vram(monkeypatch):
     )
 
 
-# ------------------------------------------- the fitter's own VRAM margin
 
 
 def test_the_fitters_margin_is_not_credited_to_the_fit(monkeypatch):
@@ -407,8 +403,8 @@ def test_the_fitters_margin_is_not_credited_to_the_fit(monkeypatch):
 
     # --fit off (Unsloth proved the placement): no fitter, no margin, the card pays.
     assert _fit(0.0) == FIT_MODE
-    # --fit on: the last 1 GiB is the fitter's, so 0.5 GiB of weights spill, and
-    # 2 GiB of RAM is exactly the headroom, so nothing is left to hold them.
+    # --fit on: the last 1 GiB is the fitter's, so 0.5 GiB of weights spill, and 2 GiB of RAM is
+    # exactly the headroom, so nothing is left to hold them.
     assert _fit(1024.0) is None
 
 
@@ -444,8 +440,8 @@ def test_the_fit_and_the_flag_read_the_same_margin(auto_fit, delta, supports, ex
         supports_fit_target = supports,
     )
     assert got == expected
-    # And the emitted flag is that same number, so the margin the child is told to
-    # keep and the margin the fit refuses to spend cannot drift.
+    # And the emitted flag is that same number, so the margin the child is told to keep and the
+    # margin the fit refuses to spend cannot drift.
     flags = LlamaCppBackend._ctx_integrity_flags(
         1,
         True,
@@ -468,11 +464,11 @@ def test_the_launch_charges_the_fitters_margin_only_when_fit_stays_on():
     call = compact[compact.index("_fit_margin_mib=(") :]
     call = call[: call.index("exceptExceptionase:")]
     assert "max(self._fit_target_margin_mib(" in call
-    # Not `use_fit`: the extras land after this launch's own --fit and llama.cpp is
-    # last-wins, so only the effective state may zero the whole margin.
+    # Not `use_fit`: the extras land after this launch's own --fit and llama.cpp is last-wins, so
+    # only the effective state may zero the whole margin.
     assert "or0.0,)if_fitter_runselse0.0" in call
-    # A fitter the extras turned back on gets llama.cpp's own default, not this
-    # launch's budget, which _ctx_integrity_flags never emitted for it.
+    # A fitter the extras turned back on gets llama.cpp's own default, not this launch's budget,
+    # which _ctx_integrity_flags never emitted for it.
     assert "fit_target_delta_mib=_fit_target_delta_mibifuse_fitelse0.0" in call
     assert "supports_fit_target=use_fitand" in call
     # And a pass-through --fit-target raises the margin above either.
@@ -495,7 +491,6 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
     compact = "".join(inspect.getsource(B.load_model).split())
     assert '_fitter_runs=fit_is_effectively_on(["--fit","on"ifuse_fitelse"off",' in compact
 
-    # The synthetic prefix the call site builds, exercised directly.
     def _runs(
         use_fit,
         extras,
@@ -507,8 +502,8 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
     assert _runs(True, []) is True
     assert _runs(False, ["--fit", "on"]) is True  # the bug this closes
     assert _runs(True, ["--fit", "off"]) is False
-    # The env twin cannot revive a fitter argv turned off: llama.cpp reads the
-    # env BEFORE argv, and this launch always emits a --fit.
+    # The env twin cannot revive a fitter argv turned off: llama.cpp reads the env BEFORE argv, and
+    # this launch always emits a --fit.
     assert _runs(False, [], {"LLAMA_ARG_FIT": "1"}) is False
 
 
@@ -518,17 +513,17 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
         ([], None, None),
         (["--fit-target", "4096"], None, 4096.0),
         (["-fitt", "8192"], None, 8192.0),
-        # A comma list is one margin per device; the fit credits every device it
-        # counts, so the largest is the only safe price.
+        # A comma list is one margin per device; the fit credits every device it counts, so the
+        # largest is the only safe price.
         (["--fit-target", "512,4096,1024"], None, 4096.0),
-        # Upstream splits on both "," and "/" (common/arg.cpp), so a slash list is
-        # a well-formed per-device margin, not an unreadable token.
+        # Upstream splits on both "," and "/" (common/arg.cpp), so a slash list is a well-formed
+        # per-device margin, not an unreadable token.
         (["--fit-target", "4096/4096"], None, 4096.0),
         (["-fitt", "512/4096/1024"], None, 4096.0),
         (["--fit-target", "512,4096/1024"], None, 4096.0),
         ([], {"LLAMA_ARG_FIT_TARGET": "1024/8192"}, 8192.0),
-        # Still unreadable when a slash-separated entry is: upstream's stoull
-        # throws on the whole list.
+        # Still unreadable when a slash-separated entry is: upstream's stoull throws on the whole
+        # list.
         (["--fit-target", "512/lots"], None, None),
         # Last-wins over argv, like every other llama.cpp flag.
         (["--fit-target", "4096", "--fit-target", "512"], None, 512.0),
@@ -545,7 +540,6 @@ def test_a_pass_through_fit_target_is_the_margin_the_child_really_keeps(extras, 
     assert fit_target_margin_in(extras, env) == expected
 
 
-# ------------------------------------------------------- the policy chain
 
 
 @pytest.fixture
@@ -597,7 +591,6 @@ def test_the_chain_never_emits_an_unknown_or_duplicate_mode(axes, toggles):
     (keep, no_reserve), user, fit, supports, host = axes
     toggles(keep, no_reserve)
     argv = _chain([], user_mode = user, fit_mode = fit, supports = supports, host_resident = host)
-    # At most one managed mode selector reaches the child.
     assert argv.count("--load-mode") <= 1
     if "--load-mode" in argv:
         value = argv[argv.index("--load-mode") + 1]
@@ -696,13 +689,11 @@ def test_a_hand_typed_flag_still_wins_by_last_arg(toggles):
         supports = True,
         host_resident = True,
     )
-    # Managed block first, the user's copy after it, so llama.cpp's last-wins
-    # parsing lands on the user's.
+    # Managed block first, the user's copy after it, so llama.cpp's last-wins parsing lands on the user's.
     assert argv == ["--load-mode", "none", "--load-mode", "mmap"]
     assert argv[-1] == "mmap"
 
 
-# ------------------------------------------- the paths that must take it back
 
 
 def test_the_cpu_fallback_drops_the_fits_load_mode(monkeypatch):
@@ -792,9 +783,8 @@ def test_the_fit_on_retry_drops_the_fits_load_mode():
     retry = retry[: retry.index("_did_fit_retry = True")]
     assert "_fit_load_mode_flags" in retry
     assert "_without_subsequence" in retry
-    # ...but the RECORD stays: this retry rewrites its own argv, not `cmd`, so the
-    # arch-crash respawn below still has to be able to name the tokens `cmd` is
-    # carrying. Clearing here would leave it stripping nothing.
+    # ...but the RECORD stays: this retry rewrites its own argv, not `cmd`, so the arch-crash respawn
+    # below still has to be able to name the tokens `cmd` is carrying.
     assert "self._fit_load_mode_flags = []" not in retry
 
 
@@ -816,8 +806,8 @@ def test_the_arch_crash_retry_voids_the_fit_the_weights_only_floor_still_allows(
 
     assert stub._fits_without_paging(footprint, rows, gpu_indices = [0]) is True
     assert stub._fits_without_paging(footprint, rows, gpu_indices = [1]) is False
-    # ...while the weights-only refusal the retry runs stays silent, so nothing on
-    # that path would take the fit's "none" back out on its own.
+    # ...while the weights-only refusal the retry runs stays silent, so nothing on that path would
+    # take the fit's "none" back out on its own.
     assert LlamaCppBackend._host_offload_shortfall_message(weights - 4_000 * MIB, 20_000) is None
 
 
@@ -837,8 +827,7 @@ def test_the_arch_crash_retry_drops_the_fits_load_mode():
     retry = retry[: retry.index('label = "-archfallback"')]
     assert "_without_subsequence(cmd, self._fit_load_mode_flags)" in retry
     assert "self._fit_load_mode_flags = []" in retry
-    # The record is dropped ONLY where `cmd` itself was rewritten. Anywhere else it
-    # would disarm this strip for a respawn that still carries the tokens.
+    # The record is dropped ONLY where `cmd` itself was rewritten.
     assert src.count("self._fit_load_mode_flags = []") == 1
 
 
@@ -855,14 +844,14 @@ def test_the_no_flash_retry_drops_the_fits_load_mode():
     from core.inference.llama_cpp import LlamaCppBackend as B
 
     src = inspect.getsource(B.load_model)
-    # Both sites, each bounded at its own respawn so the strip is proved to happen
-    # BEFORE it: the startup crash and the MTP first-decode crash.
+    # Both sites, each bounded at its own respawn so the strip is proved to happen BEFORE it: the
+    # startup crash and the MTP first-decode crash.
     for label in ('label = "-noflash"', 'label = "-noflash-mtp"'):
         arm = src[: src.index(label)]
         arm = arm[arm.rindex("self._with_flash_attn_off(") :]
         assert "_drop_fit_load_mode_for_no_flash(_fa_cmd)" in arm
-    # One helper, so the two arms cannot drift, and it strips without clearing:
-    # the CPU fallback below still respawns from an argv carrying the tokens.
+    # One helper, so the two arms cannot drift, and it strips without clearing: the CPU fallback
+    # below still respawns from an argv carrying the tokens.
     assert src.count("_drop_fit_load_mode_for_no_flash(_fa_cmd)") == 2
     helper = src[src.index("def _drop_fit_load_mode_for_no_flash(") :]
     helper = helper[: helper.index("def _spawn_and_wait(")]
@@ -883,18 +872,15 @@ def test_the_no_flash_rewrite_really_grows_the_footprint_the_fit_priced():
     cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
     out = B._with_flash_attn_off(cmd, mla = True)
     assert out is not None
-    # Flash attention really is off...
     assert "on" not in out[out.index("--flash-attn") : out.index("--flash-attn") + 2]
-    # ...and BOTH axes were upcast, which is more KV than the fit charged.
     assert out[out.index("--cache-type-v") + 1] == "f16"
     assert out[out.index("--cache-type-k") + 1] == "f16"
 
 
-# ------------------------------------ pass-through args that move the weights
 
 
-# Every spelling llama.cpp accepts for "run this somewhere the planner did not put
-# it", each appended AFTER Unsloth's own placement flags and so winning by last-arg.
+# Every spelling llama.cpp accepts for "run this somewhere the planner did not put it", each
+# appended AFTER Unsloth's own placement flags and so winning by last-arg.
 PLACEMENT_OVERRIDES = [
     ["-ngl", "0"],
     ["--gpu-layers", "0"],
@@ -975,8 +961,8 @@ def test_an_inherited_gpu_layer_count_voids_the_vram_credit(value, monkeypatch):
     it -- so the weights the fit credited to a card load into host RAM instead."""
     monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", value)
     assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) is None
-    # Dropped credit, not a dropped answer: RAM that holds the whole load is a fit
-    # wherever the count puts it.
+    # Dropped credit, not a dropped answer: RAM that holds the whole load is a fit wherever the
+    # count puts it.
     assert _mode("linux", "nvidia_discrete", 8 * GIB, 64 * 1024, monkeypatch) == FIT_MODE
 
 
@@ -1001,11 +987,11 @@ def test_the_launch_hands_the_fit_the_extras_the_child_will_get():
     call = src[src.index("_fit_extras = (") :]
     call = call[: call.index("except Exception as e:")]
     assert "extra_args = _fit_extras" in call
-    # A gpu_ids pin drops the device flags from the emitted extras, so the fit has
-    # to classify on the stripped copy rather than the request.
+    # A gpu_ids pin drops the device flags from the emitted extras, so the fit has to classify on
+    # the stripped copy rather than the request.
     assert "_strip_device_extra_args(extra_args)" in call
-    # Every one of those overrides has an env twin read BEFORE argv, so the tokens
-    # alone are half an answer, and the pin drops the twins with the flags.
+    # Every one of those overrides has an env twin read BEFORE argv, so the tokens alone are half an
+    # answer, and the pin drops the twins with the flags.
     assert "env = _fit_env" in call
     assert "_fit_env = dict(os.environ)" in call
     assert "self._clear_device_placement_env(_fit_env)" in call
@@ -1020,11 +1006,11 @@ def test_an_inherited_device_selection_voids_the_vram_credit(monkeypatch):
     nothing at all. llama.cpp applies the env before argv (common/arg.cpp).
     """
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "none")
-    # 8 GiB against a 24 GiB card would fit VRAM outright, but 4 GiB of RAM
-    # (minus the 2 GiB headroom) cannot hold it once the credit is void.
+    # 8 GiB against a 24 GiB card would fit VRAM outright, but 4 GiB of RAM (minus the 2 GiB
+    # headroom) cannot hold it once the credit is void.
     assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) is None
-    # ... and the argv still wins over the env, so a GPU pick in the extras is
-    # not condemned by a stale variable it overrides.
+    # ... and the argv still wins over the env, so a GPU pick in the extras is not condemned by a
+    # stale variable it overrides.
     assert (
         _mode(
             "linux",
@@ -1041,21 +1027,18 @@ def test_an_inherited_device_selection_voids_the_vram_credit(monkeypatch):
 @pytest.mark.parametrize(
     "hw,extras,gpu_indices,expected",
     [
-        # One card, one name: a restatement, not a narrowing.
         ("nvidia_discrete", ["--device", "CUDA0"], None, FIT_MODE),
-        # Two cards, one name: the child opens one of them, so crediting both
-        # pays for VRAM it never reaches.
+        # Two cards, one name: the child opens one of them, so crediting both pays for VRAM it never reaches.
         ("nvidia_multi", ["--device", "CUDA0"], None, None),
         ("nvidia_multi", ["-dev", "CUDA1"], None, None),
         # Both named: nothing is left out.
         ("nvidia_multi", ["--device", "CUDA0,CUDA1"], None, FIT_MODE),
-        # Two entries, ONE card: parse_device_list never deduplicates, so both
-        # resolve to the same device and one VRAM pool. A raw count would call it a
-        # restatement and credit a card that is not there; distinct names do not.
+        # Two entries, ONE card: parse_device_list never deduplicates, so both resolve to the same
+        # device and one VRAM pool.
         ("nvidia_multi", ["--device", "CUDA0,CUDA0"], None, None),
         ("nvidia_multi", ["-dev", "CUDA1,CUDA1,CUDA1"], None, None),
-        # ...and on a one-card host the same list still names every credited
-        # device, so it stays a restatement.
+        # ...and on a one-card host the same list still names every credited device, so it stays a
+        # restatement.
         ("nvidia_discrete", ["--device", "CUDA0,CUDA0"], None, FIT_MODE),
         # Last-wins, like every other llama.cpp flag.
         ("nvidia_multi", ["--device", "CUDA0", "--device", "CUDA0,CUDA1"], None, FIT_MODE),
@@ -1092,8 +1075,8 @@ def test_the_device_narrowing_is_counted_against_what_the_fit_credits(monkeypatc
     """Not against what was DETECTED: a launch already pinned to one card is not
     narrowed by an extras `--device` naming one, and voiding there would abstain on
     a fit that still holds."""
-    # 10 GiB on one 12 GiB card of a two-card host, and host RAM cannot hold it,
-    # so the answer turns entirely on whether the credit was voided.
+    # 10 GiB on one 12 GiB card of a two-card host, and host RAM cannot hold it, so the answer turns
+    # entirely on whether the credit was voided.
     for extras, expected in ((["--device", "CUDA0"], FIT_MODE), ([], FIT_MODE)):
         assert (
             _mode(
@@ -1109,7 +1092,6 @@ def test_the_device_narrowing_is_counted_against_what_the_fit_credits(monkeypatc
         )
 
 
-# ------------------------------------------------- split policy overrides
 
 
 def _multi(footprint, avail_mib, monkeypatch, **kwargs):
@@ -1129,7 +1111,6 @@ def _multi(footprint, avail_mib, monkeypatch, **kwargs):
 @pytest.mark.parametrize(
     "extras",
     [
-        # One GPU holds everything, so the second card's credit is imaginary.
         ["--split-mode", "none"],
         ["-sm", "none"],
         # An explicit zero starves its device.
@@ -1230,7 +1211,6 @@ def test_tensor_split_starvation_matches_upstream_parsing(raw, n_credited, expec
     assert split_policy_starves_devices(["-ts", raw], n_credited) is expected
 
 
-# ----------------------------------------------- vulkan device replacement
 
 
 def _vulkan(footprint, avail_mib, monkeypatch, **kwargs):
@@ -1294,7 +1274,6 @@ def test_a_replaced_cuda_pin_is_still_judged_by_count(monkeypatch):
     )
 
 
-# ------------------------------------------- CPU-pinned projector bytes
 
 
 def test_a_cpu_pinned_projector_is_charged_to_host_ram(monkeypatch):
@@ -1330,7 +1309,6 @@ def test_a_cpu_pinned_projector_fits_when_ram_really_holds_it(monkeypatch):
     )
 
 
-# ------------------------------------- mixed ROCm host: APU plus discrete card
 
 
 class _MixedRocmStub(_Stub):
@@ -1392,7 +1370,6 @@ def test_every_apu_on_a_mixed_host_loses_its_credit(monkeypatch):
     assert _mixed_rocm(20 * GIB, 4 * 1024, {0, 1}, rows, monkeypatch) is None
 
 
-# ---------------------------------------- a KV cache the launch pins to the host
 
 
 @pytest.mark.parametrize(
@@ -1405,8 +1382,8 @@ def test_every_apu_on_a_mixed_host_loses_its_credit(monkeypatch):
         (["-kvo", "-nkvo"], None),
         # The env twin parses BEFORE argv, so a false env survives an absent flag.
         ([], {"LLAMA_ARG_KV_OFFLOAD": "false"}),
-        # And the NEGATIVE spelling, which get_value_from_env checks first and
-        # forces falsey on PRESENCE, whatever it says (common/arg.cpp).
+        # And the NEGATIVE spelling, which get_value_from_env checks first and forces falsey on
+        # PRESENCE, whatever it says (common/arg.cpp).
         ([], {"LLAMA_ARG_NO_KV_OFFLOAD": "1"}),
         ([], {"LLAMA_ARG_NO_KV_OFFLOAD": "0"}),
         ([], {"LLAMA_ARG_NO_KV_OFFLOAD": ""}),
@@ -1486,7 +1463,6 @@ def test_a_cpu_only_kv_cache_is_not_charged_twice(monkeypatch):
     )
 
 
-# ---------------------------- the tensor-parallel compute buffer, replicated
 
 
 def test_a_tensor_split_charges_the_replicated_compute_buffer():
@@ -1503,14 +1479,11 @@ def test_a_tensor_split_charges_the_replicated_compute_buffer():
     from core.inference.llama_cpp import LlamaCppBackend as B
 
     compact = "".join(inspect.getsource(B.load_model).split())
-    # The tensor-mode rate is measured alongside the layer one...
     assert "_compute_buffer_tensor=self._estimate_compute_buffer_bytes(" in compact
     assert "per_device_tensor=True,)" in compact
-    # ...and the same flat fallback covers missing dims.
     assert "if_compute_buffer_tensor<=0:" in compact
-    # ...and it is what the fit charges per selected device, but only when the
-    # tensor-parallel branch really planned this load (tp_tensor_split cannot say:
-    # it stays None on a split llama.cpp is left to size itself).
+    # ...and it is what the fit charges per selected device, but only when the tensor-parallel branch
+    # really planned this load (tp_tensor_split stays None on a split llama.cpp sizes itself).
     assert "_tp_planned=False" in compact
     assert "use_fit=False_tp_planned=True" in compact
     assert (
@@ -1550,7 +1523,6 @@ def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
     assert _mode(footprint = 22 * GIB, compute_buffer_flat = 3 * GIB, **base) is None
 
 
-# ------------------------------- a drafter split between the GPU and the host
 
 
 @pytest.mark.parametrize(
@@ -1566,8 +1538,8 @@ def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
         (["--gpu-layers-draft", "14"], None, 28, True),
         (["--spec-draft-ngl=4"], None, 28, True),
         (["-ngld", "1"], None, None, True),  # unreadable block count says nothing
-        # Equal to the block count is still a split: i_gpu_start is 1 there, so
-        # the first block and its KV stay on the host.
+        # Equal to the block count is still a split: i_gpu_start is 1 there, so the first block and
+        # its KV stay on the host.
         (["-ngld", "28"], None, 28, True),
         # Only a count ABOVE the block count places the drafter whole.
         (["-ngld", "29"], None, 28, False),
@@ -1608,11 +1580,9 @@ def test_the_draft_whole_offload_threshold_matches_the_main_model():
         _draft_is_split_across_host([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "28"}, n_draft_layers = 28)
         is True
     )
-    # One above it clears the whole drafter onto the card, so a real fit survives.
     assert _draft_is_split_across_host(["-ngld", "29"], {}, n_draft_layers = 28) is False
-    # The same threshold the main model uses, asked of its own predicate over a
-    # stub: a count equal to the block count is partial there too. A premise test,
-    # here to pin the two thresholds together.
+    # The same threshold the main model uses, asked of its own predicate over a stub: a count equal
+    # to the block count is partial there too.
     stub = SimpleNamespace(n_layers = 28)
     assert B._partially_offloads_layers(stub, ["-ngl", "28"], {}) is True
     assert B._partially_offloads_layers(stub, ["-ngl", "29"], {}) is False
@@ -1638,8 +1608,8 @@ def test_a_partial_draft_offload_leaves_the_drafter_unsized():
     )
     # The same effective views the other overrides are classified on.
     assert "_draft_is_split_across_host(_fit_extras,_fit_env," in compact
-    # Scoped by the drafter's own block count, off the backend the KV sizing above
-    # already cached, so -ngld at or above it is not treated as a split.
+    # Scoped by the drafter's own block count, off the backend the KV sizing above already cached,
+    # so -ngld at or above it is not treated as a split.
     assert (
         'n_draft_layers=getattr(self._draft_backend_for(_mtp_draft_for_budget),"_n_layers",None,)'
         in compact
@@ -1648,7 +1618,6 @@ def test_a_partial_draft_offload_leaves_the_drafter_unsized():
     assert "or_draft_split_across_host" in compact
 
 
-# ------------------------------------- round 7: terms and paths the fit missed
 
 
 def test_the_cpu_projector_retry_voids_the_fit_it_was_proved_against():
@@ -1682,8 +1651,8 @@ def test_the_cpu_projector_retry_drops_the_fits_load_mode():
     arm = arm[arm.rindex("_cpu_projector_cmd = self._with_mmproj_offload_disabled(") :]
     assert "self._fit_load_mode_flags" in arm
     assert "_without_subsequence(" in arm
-    # The record stays: the fallbacks below respawn from an argv carrying these
-    # tokens and have to be able to name them.
+    # The record stays: the fallbacks below respawn from an argv carrying these tokens and have to
+    # be able to name them.
     assert "self._fit_load_mode_flags = []" not in arm
     assert src.count("self._fit_load_mode_flags = []") == 1
 
@@ -1763,11 +1732,9 @@ def test_an_inherited_loader_mode_wins_over_the_fits_pick():
             "_resolved_load_mode=load_modeor_fit_load_mode"
         )
     ]
-    # Asked of the child's environment AFTER the same scrub it gets, so a var a
-    # Model Memory toggle drops vetoes nothing.
+    # Asked of the child's environment AFTER the same scrub it gets, so a var a Model Memory toggle
+    # drops vetoes nothing.
     assert "scrub_memory_env(_fit_load_mode_env_view)" in arm
-    # Assert the CONDITIONS, not one rendering: the formatter is free to wrap this,
-    # which breaks a single-string pin. Each clause is asserted on its own.
     assert "_fit_load_mode" in arm and "notload_mode" in arm
     assert "memory_env_selects_load_mode(_fit_load_mode_env_view)" in arm
     assert "_fit_load_mode=None" in arm
@@ -1813,8 +1780,8 @@ def test_the_fit_prices_a_projector_inherited_through_the_environment():
         "mmproj_pinned_bytes=_mmproj_pinned_bytes+(_fit_env_mmproj_bytesif_fit_env_mmproj_on_hostelse0),"
         in compact
     )
-    # Not charged where the child never sees it: the vision switch and the
-    # paravirtual pin both scrub those vars out of the child environment.
+    # Not charged where the child never sees it: the vision switch and the paravirtual pin both
+    # scrub those vars out of the child environment.
     assert (
         "_fit_env_mmproj_scrubbed=bool(_pv_mmproj_unpinnableor_paravirtual_cpu_forced)" in compact
     )
@@ -1884,7 +1851,6 @@ def test_the_launch_wires_the_projector_allowance_into_the_fit():
     assert "soft_overhead=_fit_soft_overhead" in compact
 
 
-# ------------------------- round 8: adapter sidecars the extras pass through
 
 
 def test_pass_through_adapter_paths_follow_llama_cpp_parsing():
@@ -1896,14 +1862,13 @@ def test_pass_through_adapter_paths_follow_llama_cpp_parsing():
     assert _sidecar_adapter_paths(["--lora-scaled=/a.gguf:0.5"]) == ["/a.gguf"]
     assert _sidecar_adapter_paths(["--control-vector", "/cv.gguf"]) == ["/cv.gguf"]
     assert _sidecar_adapter_paths(["--control-vector-scaled", "/cv.gguf:2"]) == ["/cv.gguf"]
-    # ACCUMULATED, not last-wins: every handler push_back()s, so a second --lora
-    # adds to the first. Pricing only the last would understate the load.
+    # ACCUMULATED, not last-wins: every handler push_back()s, so a second --lora adds to the first.
     assert _sidecar_adapter_paths(["--lora", "/a.gguf", "--lora", "/b.gguf"]) == [
         "/a.gguf",
         "/b.gguf",
     ]
-    # string_split(item, ':') demands exactly two parts, so these are upstream's own
-    # throw: the child never starts and there is no placement to misprice.
+    # string_split(item, ':') demands exactly two parts, so these are upstream's own throw: the
+    # child never starts and there is no placement to misprice.
     assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf"]) == []
     assert _sidecar_adapter_paths(["--lora-scaled", "C:/a.gguf:0.5"]) == []
     assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf:half"]) == []
@@ -1984,8 +1949,8 @@ def test_the_fit_prices_the_legacy_two_token_scaled_adapter(tmp_path, monkeypatc
     from core.inference.llama_cpp import _sidecar_adapter_paths
 
     assert _sidecar_adapter_paths(["--lora-scaled", "C:/a.gguf", "0.5"]) == ["C:/a.gguf"]
-    # Today's syntax is unchanged, and a lone FNAME with no scale after it is still
-    # upstream's own throw rather than a load to price.
+    # Today's syntax is unchanged, and a lone FNAME with no scale after it is still upstream's own
+    # throw rather than a load to price.
     assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf:0.5"]) == ["/a.gguf"]
     assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf"]) == []
     assert _sidecar_adapter_paths(["--lora-scaled", "/a.gguf", "--lora", "/b.gguf"]) == [
@@ -2017,7 +1982,6 @@ def test_adapter_flags_really_reach_the_child():
         assert validate_extra_args([flag, "/a.gguf:0.5"]) == [flag, "/a.gguf:0.5"]
 
 
-# ----------------- round 8: a user's own load mode across a retry CHAIN
 
 
 def test_the_extras_own_load_mode_stands_the_fit_down():
@@ -2027,8 +1991,8 @@ def test_the_extras_own_load_mode_stands_the_fit_down():
     assert extra_args_select_load_mode(["--load-mode", "none"]) is True
     assert extra_args_select_load_mode(["-lm", "mmap"]) is True
     assert extra_args_select_load_mode(["--load-mode=mlock"]) is True
-    # The legacy flags the enum replaced, which is what this launch emits on a
-    # pre-enum binary, so a user's own copy collides there the same way.
+    # The legacy flags the enum replaced, which is what this launch emits on a pre-enum binary, so a
+    # user's own copy collides there the same way.
     assert extra_args_select_load_mode(["--no-mmap"]) is True
     assert extra_args_select_load_mode(["--mmap"]) is True
     # Nothing else on the command line picks a loader mode.
@@ -2068,23 +2032,19 @@ def test_a_chained_retry_cannot_eat_the_users_own_load_mode():
         argv = [*managed, "--temp", "0.7", *extras]
         return _without_subsequence(_without_subsequence(argv, fit_flags), fit_flags)
 
-    # Emitting the fit's pair alongside an identical user pair is what loses it:
-    # two rungs, two first-match removals, and the typed flag is the second.
     assert two_rungs("none") == ["--temp", "0.7"]
-    # Standing aside leaves one pair, so both rungs are the no-op the docstrings
-    # claim, and the flag the user typed is still there on the second respawn.
+    # Standing aside leaves one pair, so both rungs are the no-op the docstrings claim, and the flag
+    # the user typed is still there on the second respawn.
     assert two_rungs(None) == ["--temp", "0.7", "--load-mode", "none"]
 
-    # Reachability of the guard in load_model. A single call expression, so a
-    # reformat that wraps the `if` cannot break it once whitespace is stripped.
+    # Reachability of the guard in load_model.
     compact = "".join(inspect.getsource(B.load_model).split())
-    # Assert each clause on its own -- the formatter is free to wrap the `if`.
     assert "extra_args_select_load_mode(_mem_extras)" in compact
     assert "_fit_load_mode" in compact and "notload_mode" in compact
     assert "_fit_load_mode=None" in compact
-    # The view is pinned by the call above (_mem_extras, as Model Memory left them)
-    # and deliberately NOT by a second pin on the apply_load_mode_policy call: that
-    # is a multi-token run a reformat can wrap, the shape that broke CI last round.
+    # The view is pinned by the call above (_mem_extras, as Model Memory left them) and deliberately NOT
+    # by a second pin on the apply_load_mode_policy call: that is a multi-token run a reformat can wrap,
+    # the shape that broke CI last round.
 
 
 def test_the_fit_still_emits_when_the_extras_pick_nothing():
@@ -2100,7 +2060,6 @@ def test_the_fit_still_emits_when_the_extras_pick_nothing():
     assert passed == extras
 
 
-# ------------------ round 11: the record has to follow the argv on every rung
 
 
 def test_a_stripped_load_mode_changes_what_the_reload_predicate_answers(monkeypatch):
@@ -2130,8 +2089,7 @@ def test_a_stripped_load_mode_changes_what_the_reload_predicate_answers(monkeypa
 
     monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
-    # The stale record is the pessimistic direction: a reload that buys nothing,
-    # never a reservation left standing.
+    # The stale record is the pessimistic direction: a reload that buys nothing, never a reservation left standing.
     assert memory_state_satisfies_settings(stale, True) is False
     assert memory_state_satisfies_settings(fresh, True) is True
 
@@ -2165,8 +2123,8 @@ def test_the_no_flash_rung_recomputes_the_memory_record():
 
     src = inspect.getsource(B.load_model)
     helper = src[src.index("_drop_fit_load_mode_for_no_flash") :]
-    # Bounded at the next definition, so this proves the recompute is in the
-    # helper and not merely somewhere later in load_model.
+    # Bounded at the next definition, so this proves the recompute is in the helper and not merely
+    # somewhere later in load_model.
     helper = helper[: helper.index("_spawn_and_wait")]
     assert "self._memory_state" in helper
     compact = "".join(helper.split())
@@ -2208,13 +2166,11 @@ def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
         argv_after_retry, {}
     )
 
-    # Reachability: single call expression, whitespace stripped, so a reformat
-    # that wraps the call cannot break it.
+    # Reachability: single call expression, whitespace stripped, so a reformat that wraps the call cannot break it.
     compact = "".join(inspect.getsource(B.load_model).split())
     assert "resolve_effective_memory_state(cmd,env)" in compact
 
 
-# ------------------ round 12: the CPU fallback is a rung that strips the loader
 
 
 def test_the_cpu_replay_and_the_launch_record_disagree(monkeypatch):
@@ -2274,12 +2230,11 @@ def test_the_crash_path_cpu_fallback_recomputes_the_memory_record():
 
     from core.inference.llama_cpp import LlamaCppBackend as B
 
-    # Whitespace stripped before slicing, so a reformat that rewraps any of it
-    # cannot break the pin.
+    # Whitespace stripped before slicing, so a reformat that rewraps any of it cannot break the pin.
     src = "".join(inspect.getsource(B.load_model).split())
     arm = src[src.index("_try_auto_vulkan_cpu_fallback") :]
-    # Bounded at the normalisation that closes the recovery, so this proves the
-    # recompute is in the arm and not merely somewhere later in load_model.
+    # Bounded at the normalisation that closes the recovery, so this proves the recompute is in the
+    # arm and not merely somewhere later in load_model.
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
     assert "resolve_effective_memory_state(_last_spawn_cmd,env)" in arm
 
@@ -2292,8 +2247,8 @@ def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
     from core.inference.llama_cpp import LlamaCppBackend as B
 
     src = "".join(inspect.getsource(B.load_model).split())
-    # allow_manual_cpu is what distinguishes this eligibility check from the
-    # crash path's, which reads the same helper without it.
+    # allow_manual_cpu is what distinguishes this eligibility check from the crash path's, which
+    # reads the same helper without it.
     arm = src[src.index("allow_manual_cpu=True") :]
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
     assert "resolve_effective_memory_state(cmd,env)" in arm

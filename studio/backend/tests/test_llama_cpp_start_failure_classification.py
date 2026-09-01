@@ -23,13 +23,10 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Match sibling tests' stubbing so the module imports in a lightweight
-# env without fastapi.
+# Match sibling tests' stubbing so the module imports in a lightweight env without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
-# Give the structlog stub a real get_logger: a bare ModuleType poisons
-# sys.modules for later tests that call structlog.get_logger at import time.
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
@@ -62,7 +59,6 @@ class TestDiffusionArchitectures:
         assert "out of memory" not in msg.lower()
         assert "enough memory" not in msg.lower()
 
-    # Parametrize over the production set so new arches are auto-covered.
     @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._IMAGE_ARCHES))
     def test_every_image_arch_is_recognised(self, arch):
         out = f"error loading model: unknown model architecture: '{arch}'"
@@ -83,7 +79,7 @@ class TestDiffusionArchitectures:
         assert "enough memory" not in msg.lower()
 
     # An arch no page can run must promise NEITHER page: the picker tags these
-    # ``image-diffusion-unsupported``, hiding them from the Images and Video lists alike.
+    # image-diffusion-unsupported, hiding them from the Images and Video lists alike.
     @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES))
     def test_unrunnable_media_arch_names_no_page(self, arch):
         out = f"error loading model: unknown model architecture: '{arch}'"
@@ -114,9 +110,8 @@ class TestDiffusionArchitectures:
         assert sum(len(s) for s in sets) == len(set().union(*sets))
         assert set().union(*sets) == LlamaCppBackend._DIFFUSION_ARCHES
 
-    # The video set must stay inside what the Video picker offers: an arch routes.models
-    # tags unsupported can never be picked on the page we name. Video only -- the image half
-    # (sd1/sd3/sdxl/aura/hidream) predates the video split and is left to its own change.
+    # The video set must stay inside what the Video picker offers: an arch routes.models tags
+    # unsupported can never be picked on the page we name.
     def test_no_runnable_video_arch_is_tagged_unsupported_by_the_picker(self):
         from routes.models import _UNSUPPORTED_DIFFUSION_GGUF_ARCHS
         assert not (LlamaCppBackend._VIDEO_ARCHES & _UNSUPPORTED_DIFFUSION_GGUF_ARCHS)
@@ -128,12 +123,11 @@ class TestUnsupportedNonDiffusionArchitecture:
         msg = _classify(out, "/models/x.gguf", "local/x")
         assert "some_new_llm" in msg
         assert "architecture" in msg.lower()
-        # Specific, not the misleading memory message.
         assert "enough memory" not in msg.lower()
         assert "diffusion" not in msg.lower()
 
-    # Exact match: a chat arch merely containing a diffusion token (wan,
-    # sd1, flux, ...) must not be routed to the Images page.
+    # Exact match: a chat arch merely containing a diffusion token (wan, sd1, flux, ...) must not be
+    # routed to the Images page.
     @pytest.mark.parametrize(
         "arch",
         [
@@ -165,8 +159,8 @@ class TestOllamaAndFallback:
         assert "Ollama" in msg
 
     def test_ollama_unknown_arch_keeps_ollama_guidance(self):
-        # Ollama + non-diffusion unknown arch keeps the Ollama hint, not the
-        # generic llama.cpp "unsupported" message.
+        # Ollama plus a non-diffusion unknown arch keeps the Ollama hint, not the generic llama.cpp
+        # "unsupported" message.
         out = "error loading model: unknown model architecture: 'some_new_llm'"
         msg = _classify(out, self._OLLAMA_GGUF, "ollama/some-new")
         assert "Ollama" in msg
@@ -190,8 +184,8 @@ class TestOllamaAndFallback:
         assert "llama-server failed to start" in msg
 
     def test_health_timeout_names_probe_not_generic(self):
-        # A live server that never returns 200 on /health must name the probe and
-        # proxy/context causes, not blame a bad GGUF (#5740).
+        # A live server that never returns 200 on /health must name the probe and proxy/context
+        # causes, not blame a bad GGUF (#5740).
         msg = _classify(
             "llama-server health check timed out after 600.0s", "/models/x.gguf", "local/x"
         )
@@ -207,9 +201,6 @@ class TestOsKillReturncode:
     generic fallback."""
 
     def test_sigkill_with_no_output_names_oom(self, monkeypatch):
-        # Pin the platform: macOS SIGKILLs an invalid code signature the same
-        # way, so the message there names both readings (see
-        # TestMacOSLoaderFailures) and this wording is the non-Darwin one.
         monkeypatch.setattr(sys, "platform", "linux")
         msg = _classify("", "/models/big-bf16.gguf", "local/big", -9)
         assert "signal 9" in msg
@@ -230,8 +221,8 @@ class TestOsKillReturncode:
         assert "out of memory" not in msg.lower()
 
     def test_signal_crash_code_keeps_generic_message(self):
-        # -11 is handled by the retry ladder; if it reaches here with no output
-        # it gets the generic fallback, not the OOM message.
+        # -11 is handled by the retry ladder; if it reaches here with no output it gets the generic
+        # fallback, not the OOM message.
         msg = _classify("", "/models/x.gguf", "local/x", -11)
         assert "GGUF file is valid" in msg
         assert "out of memory" not in msg.lower()
@@ -264,9 +255,8 @@ class TestMissingSharedLibrary:
         assert "libgomp1" not in msg
 
     def test_exit_127_with_no_output_names_both_causes(self):
-        # 127 is also a shell-wrapper entrypoint whose exec target is gone, so
-        # it must not claim a distro package is missing. The generic
-        # file/memory message is still wrong.
+        # 127 is also a shell-wrapper entrypoint whose exec target is gone, so it must not claim a
+        # distro package is missing.
         msg = _classify("", "/models/x.gguf", "local/x", 127)
         assert "could not be found or run" in msg
         assert "shared libraries" in msg
@@ -275,9 +265,8 @@ class TestMissingSharedLibrary:
         assert "enough memory" not in msg.lower()
 
     def test_exit_127_on_a_pinned_binary_does_not_send_it_to_the_updater(self, monkeypatch):
-        # A wrapper whose exec target is gone exits 127 with no loader line, and
-        # the updater refuses to touch a LLAMA_SERVER_PATH pin, so the managed
-        # remedy is a dead end there too.
+        # A wrapper whose exec target is gone exits 127 with no loader line, and the updater refuses
+        # to touch a LLAMA_SERVER_PATH pin, so the managed remedy is a dead end there too.
         monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
         msg = _classify("", "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server")
         assert "unsloth studio update" not in msg
@@ -288,8 +277,8 @@ class TestMissingSharedLibrary:
         assert "unsloth studio update" in msg
 
     def test_wrapper_exec_failure_is_not_called_a_system_library(self):
-        # write_exec_wrapper's entrypoint: /bin/sh reports a missing exec
-        # target as "not found" and exits 127.
+        # write_exec_wrapper's entrypoint: /bin/sh reports a missing exec target as "not found" and
+        # exits 127.
         out = (
             "/home/t/.unsloth/llama.cpp/llama-server: 2: exec: ./build/bin/llama-server: not found"
         )
@@ -307,8 +296,8 @@ class TestMissingSharedLibrary:
         assert "hsa_amd_queue_create" not in msg
 
     def test_bundled_runtime_library_points_at_the_installer(self):
-        # libggml/libllama/libmtmd ship in build/bin (runtime_payload_health_groups)
-        # and no package manager can supply them.
+        # libggml/libllama/libmtmd ship in build/bin (runtime_payload_health_groups) and no package
+        # manager can supply them.
         out = (
             "/home/t/.unsloth/llama.cpp/build/bin/llama-server: error while loading "
             "shared libraries: libggml.so.0: cannot open shared object file: "
@@ -340,8 +329,8 @@ class TestMissingSharedLibrary:
         assert "unsloth studio update" in msg
         assert "is missing" not in msg
 
-    # Verified on glibc 2.39: an absolute DT_NEEDED dependency that exists but
-    # cannot be opened exits 127 with the EACCES strerror appended.
+    # Verified on glibc 2.39: an absolute DT_NEEDED dependency that exists but cannot be opened
+    # exits 127 with the EACCES strerror appended.
     def test_permission_denied_library_is_not_reported_as_missing(self):
         out = (
             "/opt/llama/llama-server: error while loading shared libraries: "
@@ -363,8 +352,8 @@ class TestMissingSharedLibrary:
         assert "Permission denied" in msg
         assert "is missing" not in msg
 
-    # glibc echoes the object name verbatim, so a path with spaces must not be
-    # truncated at the first space (verified on glibc 2.39).
+    # glibc echoes the object name verbatim, so a path with spaces must not be truncated at the
+    # first space (verified on glibc 2.39).
     def test_library_path_with_spaces_is_named_in_full(self):
         out = (
             "/opt/llama/llama-server: error while loading shared libraries: "
@@ -385,9 +374,7 @@ class TestMissingSharedLibrary:
         assert "is missing" in msg
 
     def test_an_absolute_path_is_not_offered_to_a_package_manager(self):
-        # An absolute DT_NEEDED names one exact file. No package puts a file at
-        # /opt/vendor, so apt/dnf is the wrong instruction whoever owns the
-        # binary.
+        # An absolute DT_NEEDED names one exact file.
         out = (
             "llama-server: error while loading shared libraries: "
             "/opt/vendor/libaccelerator.so: cannot open shared object file: "
@@ -411,9 +398,9 @@ class TestMissingSharedLibrary:
         assert "package manager" not in msg
 
     def test_a_bare_soname_keeps_package_advice_even_on_a_pinned_binary(self, monkeypatch):
-        # The counter-case that stops the rule from being "unmanaged means never
-        # mention a package": a custom-built llama.cpp on a bare-bones host is
-        # still missing a distro library, and libgomp1 is exactly what fixes it.
+        # The counter-case that stops the rule being "unmanaged means never mention a package": a
+        # custom-built llama.cpp on a bare-bones host is still missing a distro library, and libgomp1
+        # is exactly what fixes it.
         monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
         out = (
             "llama-server: error while loading shared libraries: "
@@ -424,11 +411,9 @@ class TestMissingSharedLibrary:
         assert "package manager" in msg
 
     def test_a_relative_dt_needed_is_an_exact_path_too(self):
-        # glibc's rule is `strchr (name, '/') == NULL`: a slash anywhere means
-        # no search happened, so subdir/libfoo.so names one exact file just as
-        # an absolute path does. Reproduced on glibc 2.39 with a SONAME-less .so
-        # linked by relative path; it takes both to get here, so this is about
-        # matching the loader's rule rather than a case users hit.
+        # glibc's rule is `strchr (name, '/') == NULL`: a slash anywhere means no search happened, so
+        # subdir/libfoo.so names one exact file just as an absolute path does. Reproduced on glibc 2.39
+        # with a SONAME-less .so linked by relative path.
         out = (
             "llama-server: error while loading shared libraries: "
             "subdir/libvendor.so: cannot open shared object file: "
@@ -459,8 +444,8 @@ class TestMissingSharedLibrary:
         assert "unsloth studio update" in msg
 
     def test_pinned_custom_binary_is_not_called_unsloths_runtime(self, monkeypatch):
-        # LLAMA_SERVER_PATH pins an install update_flow.managed_install_root
-        # refuses to manage, so `unsloth studio update` cannot repair it.
+        # LLAMA_SERVER_PATH pins an install update_flow.managed_install_root refuses to manage, so
+        # `unsloth studio update` cannot repair it.
         monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mybuild/bin/llama-server")
         out = (
             "/opt/mybuild/bin/llama-server: error while loading shared libraries: "
@@ -486,8 +471,8 @@ class TestMissingSharedLibrary:
         assert "unsloth studio update" in msg
 
     def test_nameless_loader_error_does_not_invent_a_library(self):
-        # glibc's own allocation failures pass an empty object name, so the
-        # text right after the colon is prose, not a soname.
+        # glibc's own allocation failures pass an empty object name, so the text right after the
+        # colon is prose, not a soname.
         out = "llama-server: error while loading shared libraries: cannot create search path array"
         msg = _classify(out, "/models/x.gguf", "local/x", 127)
         assert "cannot create search path array" in msg
@@ -504,8 +489,7 @@ class TestMissingSharedLibrary:
         assert "system library" not in msg
 
     def test_a_named_arch_wins_over_exit_127(self):
-        # The bare code is only a fallback, so it must not mask a diagnosis the
-        # output already gives.
+        # The bare code is only a fallback, so it must not mask a diagnosis the output already gives.
         msg = _classify(_QWEN_IMAGE_OUT, "/models/qwen-image.gguf", "local/qwen-image", 127)
         assert "Images page" in msg
         assert "system library" not in msg
@@ -548,8 +532,8 @@ class TestBundledHipRocrMismatch:
         assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(None)
 
     def test_another_lib_from_the_prepended_dir_is_the_same_mix(self):
-        # The prepend covers the whole system ROCm dir, so rocBLAS against a
-        # different-version HIP fails the same way and wants the same retry.
+        # The prepend covers the whole system ROCm dir, so rocBLAS against a different-version HIP
+        # fails the same way and wants the same retry.
         out = (
             "llama-server: symbol lookup error: "
             "/home/t/.unsloth/llama.cpp/build/bin/librocblas.so.4: "
@@ -563,8 +547,8 @@ class TestBundledHipRocrMismatch:
         assert "hsa_amd_queue_create" not in msg
 
     def test_an_oversized_loader_token_is_bounded_in_the_message(self):
-        # Straight from the child, and _drain_stdout keeps an unterminated line
-        # whole, so the message has to bound both captures.
+        # Straight from the child, and _drain_stdout keeps an unterminated line whole, so the
+        # message has to bound both captures.
         out = (
             "llama-server: symbol lookup error: "
             f"/b/libamdhip64.so.{'9' * 3000}: undefined symbol: {'s' * 8192}"
@@ -574,8 +558,8 @@ class TestBundledHipRocrMismatch:
         assert len(msg) < 1000
 
     def test_an_object_longer_than_a_path_is_not_the_mix(self):
-        # The object capture stops at PATH_MAX: no such path can exist, and an
-        # unbounded one lets a single hostile line drive the scan quadratically.
+        # The object capture stops at PATH_MAX: no such path can exist, and an unbounded one lets a
+        # single hostile line drive the scan quadratically.
         out = (
             "llama-server: symbol lookup error: "
             f"/b/libamdhip64.so.{'9' * 8192}: undefined symbol: hsa_amd_queue_create"
@@ -583,9 +567,8 @@ class TestBundledHipRocrMismatch:
         assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
 
     def test_a_bundle_under_a_path_with_spaces_is_still_the_mix(self):
-        # glibc echoes the object verbatim, and a custom LLAMA_SERVER_PATH can
-        # sit under a directory with spaces. Splitting on whitespace dropped
-        # those into the generic 127 text instead of the retry.
+        # glibc echoes the object verbatim, and a custom LLAMA_SERVER_PATH can sit under a directory
+        # with spaces.
         out = (
             "llama-server: symbol lookup error: "
             "/opt/My Runtime/build/bin/libamdhip64.so.7: "
@@ -623,9 +606,8 @@ class TestBundledHipRocrMismatch:
         assert "custom llama.cpp" in msg
 
     def test_hip_rocr_retry_is_checked_before_the_fit_on_retry(self):
-        # --fit cannot load a missing symbol, so the library check has to come
-        # first. The launch sequence itself is asserted behaviourally in
-        # test_gpu_init_crash_message.py::TestHipRocrRetryKeepsFitBudget.
+        # --fit cannot load a missing symbol, so the library check comes first. The launch sequence is
+        # asserted in test_gpu_init_crash_message.py::TestHipRocrRetryKeepsFitBudget.
         src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         text = src.read_text(encoding = "utf-8")
         spawn_start = text.index("def _spawn_and_wait(")
@@ -637,10 +619,8 @@ class TestBundledHipRocrMismatch:
         assert "use_system_rocm = False" in body
 
 
-# Real dyld output. macOS says none of the things glibc says, so before #8566
-# every one of these fell through to "invalid GGUF or not enough memory" on a
-# Mac that had neither problem. Classification is pure text matching, so these
-# run on any host.
+# Real dyld output. macOS says none of the things glibc says, so before #8566 every one of these
+# fell through to "invalid GGUF or not enough memory" on a Mac that had neither problem.
 _DYLD_MISSING_OUT = (
     "dyld[54231]: Library not loaded: @rpath/libllama.dylib\n"
     "  Referenced from: <A1B2C3D4> /Users/me/.unsloth/studio/llama.cpp/build/bin/llama-server\n"
@@ -708,8 +688,8 @@ class TestMacOSLoaderFailures:
         assert not _blames_the_gguf_or_memory(msg)
 
     def test_mtlresidency_symbol_is_read_as_a_too_new_macos_build(self):
-        # What a Tahoe-built libggml-metal actually reports on macOS 15; the
-        # installer's looks_like_macos_incompatibility keys on the same symbol.
+        # What a Tahoe-built libggml-metal actually reports on macOS 15; the installer's
+        # looks_like_macos_incompatibility keys on the same symbol.
         out = (
             "dyld[1]: Symbol not found: _MTLResidencySetDescriptor\n"
             "  Referenced from: .../libggml-metal.dylib"
@@ -723,8 +703,8 @@ class TestMacOSLoaderFailures:
         assert not _blames_the_gguf_or_memory(msg)
 
     def test_dyld_output_outranks_signal_9(self):
-        # -9 alone reads as the OOM killer; a dyld diagnostic is a fact and
-        # must win, or the user is sent to free memory they already have.
+        # -9 alone reads as the OOM killer; a dyld diagnostic is a fact and must win, or the user is
+        # sent to free memory they already have.
         msg = _classify(_DYLD_MISSING_OUT, "/models/x.gguf", "local/x", -9)
         assert "libllama.dylib" in msg
         assert "out of memory" not in msg.lower()
@@ -748,9 +728,8 @@ class TestMacOSLoaderFailures:
         assert "macOS" not in msg
 
     def test_silent_signal_9_on_macos_also_names_the_code_signature(self, monkeypatch):
-        # macOS kills an unsigned or altered Mach-O with SIGKILL before it can
-        # print anything, which is indistinguishable from the OOM killer by
-        # returncode alone. Offer both readings there instead of only memory.
+        # macOS kills an unsigned or altered Mach-O with SIGKILL before it can print anything, which
+        # is indistinguishable from the OOM killer by returncode alone.
         monkeypatch.setattr(sys, "platform", "darwin")
         msg = _classify("", "/models/x.gguf", "local/x", -9)
         assert "code signature" in msg.lower()
@@ -763,8 +742,7 @@ class TestMacOSLoaderFailures:
 
 
 class TestANonGgufFile:
-    # What llama.cpp prints when the bytes are not a GGUF. It formats the four it found with %c,
-    # so an AppleDouble sidecar's 0x00051607 arrives as unprintable characters (#8566).
+    # What llama.cpp prints when the bytes are not a GGUF.
     _OUT = (
         "build: 9415 (06d26dfd) with Apple clang version 17.0.0 for arm64-apple-darwin24.6.0\n"
         "gguf_init_from_reader: invalid magic characters: '\ufffd\ufffd\ufffd\ufffd', "
@@ -777,7 +755,6 @@ class TestANonGgufFile:
         msg = _classify(self._OUT, "/models/._muse-UD-Q2_K_XL.gguf", "local/muse", 1, None, log)
 
         assert "not a GGUF" in msg
-        # The two things the generic fallback used to blame, neither of which is the cause.
         assert "enough memory" not in msg.lower()
         assert not msg.startswith("llama-server failed to start.")
         # The echoed bytes are unreadable, so the path is the only usable identifier.
@@ -845,8 +822,8 @@ class TestStartupDiagnostics:
         )
 
     def test_a_classified_message_gains_no_diagnostics(self, tmp_path):
-        # Only the unknown fallback carries evidence; the specific messages are
-        # already actionable and must keep their exact text.
+        # Only the unknown fallback carries evidence; the specific messages are already actionable
+        # and must keep their exact text.
         log = tmp_path / "llama-1-port-8080.log"
         msg = _classify(_QWEN_IMAGE_OUT, "/models/q.gguf", "local/q", 1, None, log)
         assert "Images page" in msg
@@ -859,10 +836,8 @@ class TestMacOSLoaderEdgeCases:
     and a reason that can run for kilobytes."""
 
     def test_a_mixed_tried_list_judges_our_own_copy(self, monkeypatch, tmp_path):
-        # An Apple Silicon Mac with a leftover Intel Homebrew tree lists our
-        # missing dylib AND an x86_64 one under /usr/local. Scanning the whole
-        # list would report "wrong CPU architecture" for a file that is simply
-        # absent from our install.
+        # An Apple Silicon Mac with a leftover Intel Homebrew tree lists our missing dylib AND an
+        # x86_64 one under /usr/local.
         monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
         binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
         binary.parent.mkdir(parents = True)
@@ -910,8 +885,7 @@ class TestMacOSLoaderEdgeCases:
         assert "code signature" in msg.lower()
 
     def test_an_earlier_unrelated_reason_is_not_read_as_dylds(self):
-        # llama.cpp prints its own "Reason:" lines; only the one after the
-        # "Library not loaded:" explains it.
+        # llama.cpp prints its own "Reason:" lines; only the one after the "Library not loaded:" explains it.
         out = (
             "main: loading model\n"
             "llama_model_load: error loading model: Reason: unknown\n"
@@ -944,8 +918,8 @@ class TestMacOSLoaderEdgeCases:
         assert len(msg) < 1000
 
     def test_the_health_timeout_marker_is_not_absorbed_into_a_dyld_reason(self):
-        # Unsloth appends its own marker to the captured output; it must not be
-        # quoted back to the user as part of dyld's diagnosis.
+        # Unsloth appends its own marker to the captured output; it must not be quoted back to the
+        # user as part of dyld's diagnosis.
         out = (
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
             "  Reason: tried: '/x/libllama.dylib' (no such file)\n"
@@ -980,8 +954,8 @@ class TestDiagnosticsDoNotLeak:
         assert "/models/mymodels" in msg
 
     def test_a_credential_url_is_redacted_whatever_it_is_named(self, monkeypatch):
-        # DATABASE_URL / REDIS_URL match no name marker, so the value has to
-        # carry the verdict: scheme://user:secret@host is a credential.
+        # DATABASE_URL / REDIS_URL match no name marker, so the value has to carry the verdict:
+        # scheme://user:secret@host is a credential.
         monkeypatch.setenv("DATABASE_URL", "postgres://admin:hunter2secret@db:5432/prod")
         out = "dump: DATABASE_URL=postgres://admin:hunter2secret@db:5432/prod"
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
@@ -999,15 +973,8 @@ class TestDiagnosticsDoNotLeak:
         assert "hf_" + "a" * 34 not in msg
 
     def test_a_huge_unterminated_line_is_cheap(self):
-        # _drain_stdout keeps an unterminated line whole; the tail must be
-        # sliced before it is filtered character by character.
-        #
-        # Proven by BEHAVIOUR rather than by a stopwatch. The bound is observable: an
-        # argument error further back than the tail cannot be reported unless
-        # something read it. A wall-clock budget tests the same property by proxy and
-        # measures the runner instead, which is why this exact assertion goes red on
-        # the Windows runner for main as well as for a branch. The stopwatch stays
-        # only as a catastrophic guard, loose enough that no runner can trip it.
+        # _drain_stdout keeps an unterminated line whole; the tail must be sliced before it is
+        # filtered character by character.
         import time
 
         buried = "error: invalid argument: --nope\n" + "x" * 10_000_000 + "\nggml_metal_init: error"
@@ -1015,16 +982,14 @@ class TestDiagnosticsDoNotLeak:
         msg = _classify(buried, "/models/x.gguf", "local/x", 1)
         elapsed = time.perf_counter() - start
 
-        # 10 MB back, so out of the scanned tail: reporting it would mean the whole
-        # capture was walked.
+        # 10 MB back, so out of the scanned tail: reporting it would mean the whole capture was walked.
         assert "--nope" not in msg
-        # And what IS in the tail still surfaces.
         assert "ggml_metal_init: error" in msg
         assert elapsed < 5, f"{elapsed:.1f}s to classify one 10 MB line"
 
     def test_an_argument_error_inside_the_tail_is_still_reported(self):
-        # The other half of the bound: near the end is where llama-server actually
-        # prints it, immediately before exiting.
+        # The other half of the bound: near the end is where llama-server actually prints it,
+        # immediately before exiting.
         out = "x" * 10_000_000 + "\nerror: invalid argument: --nope"
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
 
@@ -1033,8 +998,8 @@ class TestDiagnosticsDoNotLeak:
 
 class TestDyldInstallNames:
     def test_an_rpath_placeholder_is_not_reported_as_a_location(self, monkeypatch):
-        # "@rpath/libfoo.dylib is missing from that exact location" is
-        # unusable advice: @rpath is a search directive, not a directory.
+        # "@rpath/libfoo.dylib is missing from that exact location" is unusable advice: @rpath is a
+        # search directive, not a directory.
         monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mybuild/bin/llama-server")
         out = (
             "dyld[1]: Library not loaded: @rpath/libomp.dylib\n"
@@ -1188,8 +1153,8 @@ class TestDiagnosticsAreAFixedPoint:
         assert twice == once
 
     def test_a_tail_that_merely_mentions_the_label_is_still_decorated(self):
-        # The guard keys on our own two-newline framing, so a server that
-        # printed the words itself does not suppress the diagnostics.
+        # The guard keys on our own two-newline framing, so a server that printed the words itself
+        # does not suppress the diagnostics.
         out = "llama-server output: 3 tokens/s\nthen it died"
         msg = LlamaCppBackend._with_startup_diagnostics("base", out, None)
         assert msg.startswith("base\n\nllama-server output:\n")
@@ -1197,26 +1162,15 @@ class TestDiagnosticsAreAFixedPoint:
 
 class TestTheDyldReasonIsBounded:
     def test_a_pathological_reason_does_not_stall_the_classifier(self):
-        # 100KB of "'a' (" drove the candidate scan quadratic: 6.3s measured
-        # before the cap, against 0.0s on main, on the thread serving the load.
+        # 100KB of "'a' (" drove the candidate scan quadratic: 6.3s measured before the cap, against
+        # 0.0s on main, on the thread serving the load.
         import time
 
         out = (
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
             "  Reason: tried: " + "'a' (" * 20000
         )
-        # CPU time, not wall clock. What the caps buy is that the candidate scan
-        # stops being quadratic, and that is a cost in cycles: a runner that
-        # descheduls this thread inflates the wall reading without a single extra
-        # cycle being spent. Measured here pinned to one core, the classifier holds
-        # ~0.0097s of CPU whether it runs alone or against four spinners, while the
-        # wall reading goes to 0.0516s, 5.3x, on identical work. CI hit that at
-        # 1.006s against this 1.0s budget and failed by six milliseconds, on a
-        # classifier costing ten.
-        #
-        # The budget stays 1.0s because it is still the right number: healthy is
-        # ~0.01s and the regression it guards is 6.3s, so there are two orders of
-        # magnitude of room on either side. It is only the clock that was wrong.
+        # CPU time, not wall clock.
         start = time.process_time()
         msg = _classify(
             out,
@@ -1375,14 +1329,13 @@ class TestOutputIsNeverTrustedForBeingOurOwnFraming:
         assert "sk-super-secret-value-1234567890" not in msg
         assert len(msg) < 3000, len(msg)
         assert msg != out
-        # The log path is the whole point of the fallback, and the bypass
-        # dropped it along with everything else.
+        # The log path is the whole point of the fallback, and the bypass dropped it along with
+        # everything else.
         assert self._LOG in msg
 
     def test_repeated_passes_stay_bounded_by_the_tail_cap(self):
-        # Re-classifying a result is not a fixed point: each pass wraps the
-        # previous message in a fresh tail, growing ~136 characters at a time.
-        # Bounded is the property that matters, and the cap supplies it.
+        # Re-classifying a result is not a fixed point: each pass wraps the previous message in a
+        # fresh tail, growing ~136 characters at a time.
         cur = "some unrecognised startup noise"
         seen = []
         for _ in range(60):
@@ -1469,8 +1422,7 @@ class TestAnEncodedSecretIsStillRedacted:
             'TOKEN="' + "y" * 100000,
         ],
         # Named, because pytest puts the whole parameter in the node id and then in
-        # PYTEST_CURRENT_TEST. Windows caps an environment variable at 32767
-        # characters, so a 100 KB id errors the test in setup on that OS alone.
+        # PYTEST_CURRENT_TEST.
         ids = ["escaped-quotes", "long-value", "many-pairs", "unterminated-quote"],
     )
     def test_the_name_pass_stays_linear(self, blob):
@@ -1694,8 +1646,8 @@ class TestTheRedactionHolesCodexFound:
     @pytest.mark.parametrize(
         "blob",
         ['TOKEN="' + "y" * 100000, "a.b.c.d=" * 12000, "A=1," * 25000],
-        # Same reason as above: the parameter is the node id, and the node id
-        # becomes an environment variable.
+        # Same reason as above: the parameter is the node id, and the node id becomes an environment
+        # variable.
         ids = ["unterminated-quote", "dotted-names", "many-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
@@ -1719,10 +1671,9 @@ class TestRejectedArguments:
         assert "memory" not in msg.lower()
 
     def test_a_flag_unsloth_set_itself_is_covered_by_the_same_message(self):
-        # Nothing reaching the classifier says whose flag it was, and Unsloth emits
-        # its own conditionally on the capability probe, so a binary swapped under a
-        # cached probe lands here too. The message has to serve that reader as well
-        # as the one who mistyped something in the box.
+        # Nothing reaching the classifier says whose flag it was, and Unsloth emits its own
+        # conditionally on the capability probe, so a binary swapped under a cached probe lands here
+        # too.
         msg = _classify("error: invalid argument: --flash-attn", "/models/x.gguf", "local/x", 1)
         assert "--flash-attn" in msg
         assert "reinstall llama.cpp" in msg
@@ -1750,8 +1701,8 @@ class TestRejectedArguments:
         assert "expected value" in msg
 
     def test_a_std_stoi_failure_is_translated(self):
-        # llama.cpp surfaces the C++ standard library's exception name verbatim.
-        # "stoi" is not an error message anyone outside libstdc++ can act on.
+        # llama.cpp surfaces the C++ standard library's exception name verbatim, and "stoi" is not
+        # an error message anyone outside libstdc++ can act on.
         msg = _classify(
             'error while handling argument "--top-k": stoi', "/models/x.gguf", "local/x", 1
         )
@@ -1759,10 +1710,8 @@ class TestRejectedArguments:
         assert "stoi" not in msg
 
     def test_a_value_error_on_a_flag_the_user_did_not_set_stays_neutral(self):
-        # Unsloth emits its own options conditionally on the capability probe, so a
-        # build that reads "--flash-attn on" differently rejects a value the box
-        # never held. Sending that reader to edit their extra arguments points them
-        # at a setting they cannot use to fix it.
+        # Unsloth emits its own options conditionally on the capability probe, so a build that reads
+        # "--flash-attn on" differently rejects a value the box never held.
         msg = _classify(
             'error while handling argument "--flash-attn": invalid value',
             "/models/x.gguf",
@@ -1773,8 +1722,8 @@ class TestRejectedArguments:
         assert "reinstall llama.cpp" in msg
 
     def test_a_value_error_on_a_flag_the_user_did_set_names_the_box(self):
-        # Ownership established: the extras really do carry the flag, so the box is
-        # where the fix is.
+        # Ownership established: the extras really do carry the flag, so the box is where the fix
+        # is.
         msg = LlamaCppBackend._classify_llama_start_failure(
             'error while handling argument "--numa": invalid value',
             "/models/x.gguf",
@@ -1790,8 +1739,8 @@ class TestRejectedArguments:
         assert "reinstall" not in msg
 
     def test_an_alias_spelling_falls_back_to_the_neutral_wording(self):
-        # -fa and --flash-attn are the same option to llama.cpp but not to this
-        # comparison, and a wrong "you set this" is worse than a neutral one.
+        # -fa and --flash-attn are the same option to llama.cpp but not to this comparison, and a
+        # wrong "you set this" is worse than a neutral one.
         msg = LlamaCppBackend._classify_llama_start_failure(
             'error while handling argument "--flash-attn": invalid value',
             "/models/x.gguf",
@@ -1805,32 +1754,27 @@ class TestRejectedArguments:
         assert "reinstall llama.cpp" in msg
 
     def test_an_ordinary_failure_is_untouched(self):
-        # The two new branches sit ahead of the generic diagnosis, so this pins
-        # that they do not swallow it.
+        # The two new branches sit ahead of the generic diagnosis, so this pins that they do not
+        # swallow it.
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
         assert "enough memory" in msg.lower()
         assert "argument" not in msg.lower()
 
     def test_the_argument_scan_reads_only_the_tail(self):
-        # The bound exists because _drain_stdout keeps an unterminated line whole,
-        # and scanning a 10 MB one twice puts the classifier past any sane budget.
-        # Asserted by BEHAVIOUR rather than by the clock: a wall-clock budget on a
-        # shared CI runner measures the runner, and a Windows one failed this at
-        # 204ms against 200 while the bound it was meant to prove was in place.
+        # The bound exists because _drain_stdout keeps an unterminated line whole, and scanning a 10
+        # MB one twice puts the classifier past any sane budget.
         from core.inference.llama_cpp import _FAILURE_SCAN_TAIL_CHARS
 
         # Inside the tail: found, and the whole capture is enormous either way.
         within = "x" * 10_000_000 + "\nerror: invalid argument: --tempp"
         assert "--tempp" in _classify(within, "/models/x.gguf", "local/x", 1)
-        # Before it: not found, which is only possible if the scan stopped short of
-        # the head. Reported as an ordinary failure instead.
+        # Before it: not found, which is only possible if the scan stopped short of the head.
         buried = "error: invalid argument: --tempp\n" + "x" * (_FAILURE_SCAN_TAIL_CHARS * 2)
         assert "--tempp" not in _classify(buried, "/models/x.gguf", "local/x", 1)
 
     def test_a_model_load_error_mentioning_arguments_is_not_misread(self):
-        # "invalid argument" as an errno string (EINVAL) is not llama.cpp's
-        # argument parser, and the anchored "error: invalid argument:" prefix is
-        # what keeps them apart.
+        # "invalid argument" as an errno string (EINVAL) is not llama.cpp's argument parser, and the
+        # anchored "error: invalid argument:" prefix is what keeps them apart.
         out = "llama_model_load: error loading model: invalid argument (22)"
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "does not recognise" not in msg
@@ -1840,14 +1784,13 @@ class TestArgumentErrorsAreQuotedShort:
     """What a failed start copies out of the child's own output."""
 
     def test_a_pathological_argument_is_truncated(self):
-        # A wrapper on LLAMA_SERVER_PATH can print anything, and the capture is a run
-        # of non-whitespace, so without a bound the API error becomes 64 KiB of it.
+        # A wrapper on LLAMA_SERVER_PATH can print anything, and the capture is a run of
+        # non-whitespace, so without a bound the API error becomes 64 KiB of it.
         out = "error: invalid argument: " + "x" * 50_000
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
 
         assert len(msg) < 1_000, len(msg)
         assert "..." in msg
-        # Still says what happened, and still names the beginning of the argument.
         assert "does not recognise the argument" in msg
         assert "xxxx" in msg
 
@@ -1883,12 +1826,11 @@ class TestTensorSplitQuantizedKvUnsupported:
 
         assert "b9455" in msg
         assert "quantized KV cache" in msg
-        # All three ways out, because which one is available depends on whether the
-        # user controls the binary.
+        # All three ways out, because which one is available depends on whether the user controls
+        # the binary.
         assert "Update" in msg
         assert "f16" in msg
         assert "Tensor Parallelism" in msg
-        # Not the fallback it used to get.
         assert "GGUF file is valid" not in msg
 
     def test_it_does_not_shadow_the_architecture_gate(self):

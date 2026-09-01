@@ -94,8 +94,8 @@ class TestReplacement:
         assert "2 replacements" in result
 
     def test_only_the_first_match_changes_without_replace_all(self, workdir):
-        # A unique-match rule that silently edited all of them would corrupt
-        # files whenever the model's snippet turned out not to be unique.
+        # A unique-match rule that silently edited all of them would corrupt files whenever the
+        # model's snippet turned out not to be unique.
         target = workdir / "a.py"
         target.write_text("head\nv = 1\nmid\nv = 1\ntail\n")
         _edit(
@@ -124,8 +124,7 @@ class TestCreation:
         assert result.startswith("Created")
 
     def test_both_strings_empty_creates_an_empty_file(self, workdir):
-        # __init__.py and .gitkeep are written this way, and the
-        # identical-strings no-op used to refuse them.
+        # __init__.py and .gitkeep are written this way, and the identical-strings no-op used to refuse them.
         result = _edit(path = "pkg/__init__.py", old_string = "", new_string = "")
         assert (workdir / "pkg" / "__init__.py").read_bytes() == b""
         assert result.startswith("Created")
@@ -197,7 +196,6 @@ class TestPathContainment:
         assert outside.read_text() == "secret\n"
 
     def test_a_code_interpreter_habit_path_keeps_its_suffix(self, workdir):
-        # The same rewrite the python shim applies.
         result = _edit(path = "/mnt/data/out.txt", old_string = "", new_string = "hi\n")
         assert not result.startswith("Error:")
         assert (workdir / "out.txt").read_text() == "hi\n"
@@ -208,8 +206,8 @@ class TestPathContainment:
 
 class TestReviewFindings:
     def test_a_long_line_does_not_blow_up_the_receipt(self, workdir):
-        # Capping diff LINES bounds nothing when one line is the whole file:
-        # before the char cap a 200KB file returned a 400KB receipt.
+        # Capping diff LINES bounds nothing when one line is the whole file: before the char cap a
+        # 200KB file returned a 400KB receipt.
         target = workdir / "min.js"
         target.write_text("var a=" + "x" * 200_000 + ";")
         result = _edit(path = "min.js", old_string = "var a=", new_string = "var b=")
@@ -244,8 +242,8 @@ class TestReviewFindings:
         assert _edit(path = "pipe", old_string = "a", new_string = "b").startswith("Error:")
 
     def test_an_absolute_path_inside_a_workdir_under_a_habit_prefix(self, workdir, monkeypatch):
-        # A project rooted at /workspace/repo had its own prefix stripped and
-        # rejoined onto itself, resolving to /workspace/repo/repo/a.py.
+        # A project rooted at /workspace/repo had its own prefix stripped and rejoined onto itself,
+        # resolving to /workspace/repo/repo/a.py.
         monkeypatch.setattr(tools, "_MISSING_PATH_PREFIXES", (str(workdir.parent), "/mnt/data"))
         (workdir / "a.py").write_text("x = 1\n")
         result = _edit(path = str(workdir / "a.py"), old_string = "x = 1", new_string = "x = 2")
@@ -259,8 +257,7 @@ class TestReviewFindings:
         assert (workdir / "out.txt").read_text() == "hi\n"
 
     def test_a_concurrent_write_is_not_silently_reverted(self, workdir):
-        # Both chats read, both write, and the later os.replace used to
-        # discard the earlier edit without a word.
+        # Both chats read, both write, and the later os.replace used to discard the earlier edit without a word.
         target = workdir / "s.py"
         target.write_text("A = 1\nB = 2\n")
         stale = target.read_bytes()
@@ -293,8 +290,8 @@ class TestReviewFindings:
 
 class TestSecondReviewFindings:
     def test_a_huge_replace_all_does_not_build_the_whole_diff(self, workdir):
-        # Fed the entire file and drained into a list, replace_all near the
-        # size cap allocated ~500MB for a 200-character receipt.
+        # Fed the entire file and drained into a list, replace_all near the size cap allocated
+        # ~500MB for a 200-character receipt.
         target = workdir / "big.txt"
         target.write_text("a\n" * 300_000)
         started = time.monotonic()
@@ -307,8 +304,8 @@ class TestSecondReviewFindings:
         assert target.read_text().startswith("b\nb\n")
 
     def test_the_receipt_keeps_real_file_line_numbers(self, workdir):
-        # difflib numbers the hunk from the slice it was handed, so a receipt
-        # pointing at line 3 of a 9000-line file would be worse than none.
+        # difflib numbers the hunk from the slice it was handed, so a receipt pointing at line 3 of
+        # a 9000-line file would be worse than none.
         target = workdir / "mid.py"
         target.write_text("".join(f"line{i}\n" for i in range(1, 9001)))
         result = _edit(path = "mid.py", old_string = "line8000\n", new_string = "CHANGED\n")
@@ -323,8 +320,8 @@ class TestSecondReviewFindings:
 
     @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX file mode")
     def test_a_created_file_gets_the_usual_mode(self, workdir):
-        # mkstemp makes the temp file 0600 and copymode had nothing to copy from,
-        # so new files landed 0600 and locked out anyone reading generated files.
+        # mkstemp makes the temp file 0600 and copymode had nothing to copy from, so new files
+        # landed 0600 and locked out anyone reading generated files.
         _edit(path = "fresh.py", old_string = "", new_string = "x = 1\n")
         umask = os.umask(0)
         os.umask(umask)
@@ -351,8 +348,8 @@ class TestSecondReviewFindings:
 
 class TestThirdReviewFindings:
     def test_the_receipt_does_not_invent_deletions_at_the_window_edge(self, workdir):
-        # Windowing each text by LINE COUNT made difflib report a second hunk:
-        # "-line319" for a line still in the file, which a model would restore.
+        # Windowing each text by LINE COUNT made difflib report a second hunk: "-line319" for a line
+        # still in the file, which a model would restore.
         target = workdir / "shift.py"
         target.write_text("".join(f"line{i}\n" for i in range(1, 401)))
         result = _edit(path = "shift.py", old_string = "line200\n", new_string = "A\nB\n")
@@ -382,8 +379,8 @@ class TestThirdReviewFindings:
 
     @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX FIFO")
     def test_creating_over_a_fifo_is_refused_rather_than_reopened(self, workdir):
-        # A FIFO reports st_size 0, so an empty old_string fell into the
-        # zero-byte branch, whose write reopens the target and never returns.
+        # A FIFO reports st_size 0, so an empty old_string fell into the zero-byte branch, whose
+        # write reopens the target and never returns.
         import threading
 
         os.mkfifo(workdir / "pipe")
@@ -399,9 +396,8 @@ class TestThirdReviewFindings:
         assert stat.S_ISFIFO(os.stat(workdir / "pipe").st_mode)
 
     def test_the_receipt_never_reports_a_change_the_file_does_not_show(self, workdir):
-        # The property behind the two window cases above: every '-' line really
-        # gone and every '+' line really present. The receipt is all the model
-        # learns, so an untruthful one is wrong even if the bytes are right.
+        # The property behind the two window cases above: every '-' line really gone and every '+'
+        # line really present.
         import random
 
         random.seed(7)
@@ -425,14 +421,8 @@ class TestThirdReviewFindings:
 
     @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX device node")
     def test_full_access_does_not_replace_a_device_node(self, workdir):
-        # /dev/null stats as zero bytes, so measuring size alone sent it down
-        # the create branch, whose rename would have swapped the character
-        # device for a regular file.
-        # Spelled as `edits`, not adapted through `_edit`: this one passes
-        # `disable_sandbox`, and the batched shape is what the tool now accepts. With the
-        # old top-level spelling the call is refused for a missing `edits` array, which
-        # also starts with "Error:" -- so the assertion below held while the device-node
-        # guard was never reached.
+        # /dev/null stats as zero bytes, so measuring size alone took the create branch, whose
+        # rename would swap the character device for a regular file.
         result = execute_tool(
             "edit_file",
             {"path": "/dev/null", "edits": [{"old_string": "", "new_string": "x\n"}]},
@@ -440,16 +430,15 @@ class TestThirdReviewFindings:
             disable_sandbox = True,
         )
         assert result.startswith("Error:")
-        # The refusal the GUARD produces, not the one a malformed call produces: pinned
-        # so this cannot go green again on an argument rejection.
+        # The refusal the GUARD produces, not the one a malformed call produces: pinned so this
+        # cannot go green again on an argument rejection.
         assert "already exists" in result
         assert stat.S_ISCHR(os.stat("/dev/null").st_mode)
 
     @pytest.mark.parametrize("path,old", [("app.py", "TODO"), ("fresh.py", "")])
     def test_an_unencodable_new_string_is_refused_not_dropped(self, workdir, path, old):
-        # '"\ud83d"' is a truncated emoji after json.loads: a lone surrogate
-        # that cannot be encoded. The UnicodeEncodeError was swallowed upstream
-        # into "Unknown tool: edit_file". Edit and create both encode.
+        # A truncated emoji after json.loads is a lone surrogate that cannot be encoded, and the
+        # UnicodeEncodeError was swallowed upstream into "Unknown tool: edit_file".
         import json
 
         arguments = json.loads(
@@ -588,9 +577,8 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
         assert (workdir / "report.py").read_text() == body
 
     def test_a_failure_at_close_leaves_nothing_either(self, workdir, monkeypatch):
-        # A payload smaller than the io buffer reaches the disk only at close,
-        # where a full disk reports failures for data written earlier. Injected
-        # rather than rlimit'd so it lands there whatever the buffer size.
+        # A payload smaller than the io buffer reaches the disk only at close, where a full disk
+        # reports failures for data written earlier.
         real = os.fdopen
 
         def failing(fd, *args, **kwargs):
@@ -598,8 +586,8 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
             closed = handle.close
 
             def close():
-                # CPython releases the descriptor even when the closing flush
-                # fails, so the real failure closes before it raises.
+                # CPython releases the descriptor even when the closing flush fails, so the real
+                # failure closes before it raises.
                 closed()
                 raise OSError(28, "No space left on device")
 
@@ -607,8 +595,8 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
             return handle
 
         monkeypatch.setattr(os, "fdopen", failing)
-        # As above: the top-level spelling is refused before the write is attempted, so
-        # the simulated ENOSPC and its cleanup were never exercised.
+        # As above: the top-level spelling is refused before the write is attempted, so the
+        # simulated ENOSPC and its cleanup were never exercised.
         result = execute_tool(
             "edit_file",
             {"path": "notes.py", "edits": [{"old_string": "", "new_string": "print('hi')\n"}]},
@@ -787,9 +775,8 @@ class TestBatchSize:
         from core.inference.tools import _MAX_EDITS_PER_CALL
 
         target = workdir / "a.py"
-        # Zero-padded and terminated: a bare "line1" is also a prefix of "line10", which
-        # the tool correctly refuses as ambiguous. That is the fixture's problem, not the
-        # batching's.
+        # Zero-padded and terminated: a bare "line1" is also a prefix of "line10", which the tool
+        # correctly refuses as ambiguous.
         target.write_text(
             "".join(f"line{i:03d}=0\n" for i in range(_MAX_EDITS_PER_CALL)),
             encoding = "utf-8",

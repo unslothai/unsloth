@@ -78,8 +78,7 @@ def test_every_bad_package_is_listed_not_just_the_first(monkeypatch):
 
 
 def test_an_import_that_raises_is_reported_with_its_error(monkeypatch):
-    # Versions satisfied but the module will not load, which is what a mlx-vlm
-    # built against a different transformers looks like from here.
+    # Versions satisfied but the module will not load: a mlx-vlm built against another transformers.
     _fake_versions(monkeypatch, _healthy())
 
     def explode(module: str):
@@ -133,8 +132,7 @@ def test_only_the_mlx_verdict_carries_a_detail(monkeypatch, reason):
     assert hw.CHAT_ONLY_DETAIL is None
 
 
-# The detail only means anything beside the reason it explains, so it travels with it
-# through every place the verdict is saved, restored, discarded or read.
+# The detail only means anything beside the reason it explains, so it travels with it.
 def test_a_failed_forced_redetect_restores_the_detail(monkeypatch):
     """detect_hardware() puts back the verdict a raising pass clobbered, detail included.
 
@@ -195,9 +193,8 @@ def test_health_reads_the_detail_inside_the_guarded_snapshot(monkeypatch):
     assert snapshot[2] == "mlx-vlm 0.1.0 is older than 0.4.4"
 
 
-# The gate and the detail ask the same question, so it is asked once. On the host that
-# needs the detail the mlx imports are the ones that hang, and this module already treats
-# them as able to park indefinitely; asking twice there is what a second call costs.
+# The gate and the detail ask the same question, so it is asked once: on the host that needs the
+# detail the mlx imports are the ones that hang, and asking twice is what a second call costs.
 def test_the_gate_measures_the_stack_once(monkeypatch):
     from utils.hardware import hardware as hw
 
@@ -249,13 +246,12 @@ def test_an_unreadable_gate_falls_back_to_the_bare_import(monkeypatch):
     monkeypatch.setattr(mr, "mlx_stack_blockers", explode)
     monkeypatch.setattr(hw, "_has_mlx", lambda: True)
     assert hw._has_usable_mlx_stack() is True
-    # And it published nothing, rather than leaving the stale list to be read as this
-    # pass's answer.
+    # It published nothing, rather than leaving the stale list to be read as this pass's answer.
     assert hw._MLX_BLOCKERS_MEASURED is None
 
 
-# A blocker line goes into /api/health and into the Train row's native tooltip. Neither
-# renders a paragraph, and a dyld failure lists every path it tried.
+# A blocker line goes into /api/health and the Train row's tooltip; neither renders a paragraph,
+# and a dyld failure lists every path it tried.
 def test_a_long_import_error_is_folded_to_one_bounded_line(monkeypatch):
     _fake_versions(monkeypatch, _healthy())
 
@@ -270,7 +266,6 @@ def test_a_long_import_error_is_folded_to_one_bounded_line(monkeypatch):
     assert "\n" not in blocker
     assert len(blocker) < 200, f"{len(blocker)} chars reaches the tooltip: {blocker}"
     assert blocker.endswith("...)"), blocker
-    # Still says which module and which error, which is the whole point of the line.
     assert blocker.startswith("mlx.core does not import (ImportError:")
 
 
@@ -285,9 +280,8 @@ def test_a_malformed_installed_version_is_bounded_too(monkeypatch):
     assert blocker.startswith("mlx 1.0 y")
 
 
-# A repair that installed and then failed its own validation has still changed the
-# environment, so the verdict beside it was measured against a stack that no longer exists:
-# it can name a package the install has since put there.
+# A repair that installed and then failed its own validation has still changed the environment,
+# so the verdict beside it was measured against a stack that no longer exists.
 def _fake_hardware(monkeypatch, calls: list[str]):
     """Stand the real hardware module's re-detection down, keeping the module identity."""
     from contextlib import nullcontext
@@ -328,8 +322,8 @@ def test_a_successful_repair_still_remeasures(monkeypatch):
     assert called == ["detect"]
 
 
-# uv passes every package with --reinstall-package, so it removes and replaces them as it
-# goes: a timeout or a non-zero exit part way through has already changed the stack.
+# uv passes every package with --reinstall-package, so a timeout part way through has already
+# changed the stack.
 @pytest.mark.parametrize(
     "outcome",
     ["timeout", "nonzero"],

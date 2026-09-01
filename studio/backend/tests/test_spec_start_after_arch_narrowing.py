@@ -104,7 +104,6 @@ def test_no_token_is_lost_by_any_narrowing():
     ):
         narrowed = _narrowed(*flags)
         fb = _fallback(narrowed)
-        # Everything except the spec block itself must still be present, in order.
         kept = [t for t in narrowed if t not in _SPEC_FLAGS]
         assert [t for t in fb if t != "--spec-default"] == kept, flags
 
@@ -114,8 +113,7 @@ def test_the_block_is_found_even_if_it_moved_right():
     block must not corrupt the slice either."""
     padded = ["--threads", "8", *_CMD]
     fb = _fallback(padded)
-    # The whole block goes and nothing else does: asserting only that --spec-type
-    # left would pass on a slice cut two tokens early, which eats --split-mode.
+    # Asserting only that --spec-type left would pass on a slice cut two tokens early, which eats --split-mode.
     assert [t for t in fb if t != "--spec-default"] == [t for t in padded if t not in _SPEC_FLAGS]
     assert fb.count("--spec-default") == 1
     assert fb[fb.index("--api-key") + 1] == "SECRET"

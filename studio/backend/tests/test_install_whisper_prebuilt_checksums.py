@@ -48,10 +48,9 @@ def _index(**overrides) -> dict:
     return payload
 
 
-# parse_release_checksums / expected_sha256_for are prebuilt_core re-exports;
-# their valid/fail-closed matrix is asserted against the real whisper
-# descriptor in tests/studio/install/test_prebuilt_core.py. The download-host
-# fast-path tests below still route through this module's parse wrapper.
+# parse_release_checksums / expected_sha256_for are prebuilt_core re-exports; their valid/fail-closed
+# matrix is asserted against the real whisper descriptor in
+# tests/studio/install/test_prebuilt_core.py.
 
 # release tag resolution.
 
@@ -91,7 +90,6 @@ def test_pins_symbols_are_gone():
         assert not hasattr(iwp, gone), f"{gone} should have been removed"
 
 
-# Download-host fast path (resolve + fetch the JSON assets with no GitHub API).
 
 _CPU_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
 
@@ -161,7 +159,6 @@ def test_fetch_release_for_install_explicit_tag_skips_the_head(monkeypatch):
 
 
 def test_fetch_release_for_install_falls_back_to_api(monkeypatch):
-    # Fast path returns None (e.g. a 404) -> the API path resolves the release.
     monkeypatch.setattr(iwp, "_resolve_release_via_download_host", lambda repo, tag: None)
     sentinel = iwp.ReleaseBundle(repo = _REPO, release_tag = _TAG, manifest = _manifest(), asset_urls = {})
     monkeypatch.setattr(iwp, "resolve_release_tag", lambda repo, *, published_release_tag: _TAG)

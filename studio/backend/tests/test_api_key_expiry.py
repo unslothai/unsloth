@@ -56,7 +56,6 @@ def subject_of(token):
     return asyncio.run(get_current_subject(credentials))
 
 
-# --- validate_api_key (storage layer) ---------------------------------------
 
 
 def test_unexpired_key_validates():
@@ -97,7 +96,6 @@ def test_unknown_key_rejected():
     assert storage.validate_api_key(storage.API_KEY_PREFIX + secrets.token_hex(16)) is None
 
 
-# --- get_current_subject (route dependency) ---------------------------------
 
 
 def test_dependency_accepts_unexpired_key():
@@ -113,7 +111,6 @@ def test_dependency_rejects_expired_key_as_401():
     assert exc.value.detail == "Invalid or expired API key"
 
 
-# --- JWT access-token expiry ------------------------------------------------
 
 
 def test_dependency_accepts_unexpired_jwt():
@@ -131,13 +128,12 @@ def test_dependency_rejects_expired_jwt_as_401():
     assert exc.value.detail == "Invalid or expired token"
 
 
-# --- derivation cache: speeds repeats without bypassing checks --------------
 
 
 def test_cache_skips_pbkdf2_on_repeat(monkeypatch):
     seed_user()
     raw = make_key(iso_from_now(days = 1))
-    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # warms cache
+    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
 
     calls = {"n": 0}
     real = storage._pbkdf2_api_key
@@ -149,7 +145,7 @@ def test_cache_skips_pbkdf2_on_repeat(monkeypatch):
     monkeypatch.setattr(storage, "_pbkdf2_api_key", counting)
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
-    assert calls["n"] == 0  # served from cache, KDF not re-run
+    assert calls["n"] == 0
 
 
 def test_cache_does_not_bypass_revocation():
@@ -159,7 +155,7 @@ def test_cache_does_not_bypass_revocation():
         name = "revoke-after-cache",
         expires_at = iso_from_now(days = 1),
     )
-    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # cached
+    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
     storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, int(row["id"]))
     assert storage.validate_api_key(raw) is None  # cache hit still re-checks is_active
 

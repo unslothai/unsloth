@@ -27,9 +27,8 @@ import pytest
 GUARD_PY = Path(__file__).resolve().parents[1] / "core" / "import_guards.py"
 
 
-# ── fake package bodies ──────────────────────────────────────────────
-# Real `unsloth` sets a sentinel (mimics _gpu_init's pre-zoo fixes) then
-# imports unsloth_zoo, which records whether that sentinel was set first.
+# Fake package bodies: `unsloth` sets a sentinel then imports unsloth_zoo, which records whether
+# that sentinel was set first.
 
 _REAL_UNSLOTH_INIT = textwrap.dedent(
     """
@@ -55,9 +54,8 @@ _REAL_ZOO_INIT = textwrap.dedent(
 )
 
 
-# ── subprocess driver ────────────────────────────────────────────────
-# Reads a JSON config, rebuilds sys.path / sys.meta_path to model the
-# scenario, runs the real guard, and writes the observed result as JSON.
+# Subprocess driver: reads a JSON config, rebuilds sys.path / sys.meta_path, runs the real
+# guard, and writes the observed result as JSON.
 
 _DRIVER = textwrap.dedent(
     """
@@ -178,13 +176,11 @@ def _run(
     env["GUARD_ORDER_FILE"] = str(order_file)
     env["GUARD_SENTINEL_FILE"] = str(sentinel_file)
     env.pop("UNSLOTH_GPU_INIT_RAN", None)
-    # Drop PYTHONPATH too so nothing re-introduces the real packages onto the
-    # path; -S already keeps site-packages off.
+    # Drop PYTHONPATH too so nothing re-introduces the real packages onto the path.
     env.pop("PYTHONPATH", None)
 
     proc = subprocess.run(
-        # -S: skip site-packages so the installed unsloth_zoo can't shadow-beat
-        # the namespace portion; the real package is served by the meta finder.
+        # -S: skip site-packages so the installed unsloth_zoo cannot shadow-beat the namespace portion.
         [sys.executable, "-S", str(driver), str(cfg_path)],
         env = env,
         capture_output = True,
@@ -197,7 +193,6 @@ def _run(
     return json.loads(out.read_text())
 
 
-# ── scenarios ────────────────────────────────────────────────────────
 
 
 def test_only_zoo_shadowed_imports_unsloth_first(tmp_path):
@@ -243,7 +238,7 @@ def test_healthy_install_is_noop(tmp_path):
     res = _run(tmp_path, shadow_roots = [], real = True)
 
     assert res["error"] is None
-    assert res["order"] == [], res  # guard short-circuits before importing
+    assert res["order"] == [], res
     assert res["path_restored"], res
 
 
@@ -253,7 +248,7 @@ def test_real_package_absent_surfaces_module_not_found(tmp_path):
     res = _run(tmp_path, shadow_roots = [shadow], real = False)
 
     assert res["error"] == "ModuleNotFoundError", res
-    assert res["path_restored"], res  # restored even on failure
+    assert res["path_restored"], res
 
 
 def test_multiple_shadow_entries_all_removed(tmp_path):
@@ -264,8 +259,7 @@ def test_multiple_shadow_entries_all_removed(tmp_path):
     res = _run(tmp_path, shadow_roots = [shadow_a, shadow_b], real = True)
 
     assert res["error"] is None
-    # if only one offending entry were dropped, zoo would still resolve to a
-    # namespace shadow and unsloth_zoo_real would be False
+    # If only one offending entry were dropped, zoo would still resolve to a namespace shadow.
     assert res["unsloth_zoo_real"], res
     assert res["order"] == ["unsloth", "unsloth_zoo"], res
     assert res["path_restored"], res

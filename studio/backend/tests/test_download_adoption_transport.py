@@ -24,8 +24,8 @@ def test_a_running_job_reports_the_transport_it_started_on():
     accepted, state = _claim(registry, "unsloth/Qwen3-4B-GGUF", "http")
     assert accepted is False and state == "running"
     assert registry.adoptable("unsloth/Qwen3-4B-GGUF") is True
-    # What it must be told, rather than the http it asked for: pausing a Xet
-    # run promises a resume that does not exist.
+    # What it must be told, rather than the http it asked for: pausing a Xet run promises a resume
+    # that does not exist.
     assert registry.job_transport("unsloth/Qwen3-4B-GGUF") == "xet"
 
 
@@ -113,7 +113,6 @@ def test_an_adopted_fallback_run_reports_its_marker_to_the_new_client():
         repo_id = key,
         cancel_marker_transport = "xet",
     )
-    # What the rejected second claim then reports.
     assert registry.adoptable(key) is True
     assert registry.job_transport(key) == "http"
     assert registry.job_cancel_transport(key) == "xet"

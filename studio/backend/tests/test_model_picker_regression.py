@@ -22,8 +22,7 @@ import types
 
 import pytest
 
-# Keep this test runnable without the optional structlog dependency (mirrors
-# tests/test_cached_gguf_routes.py), since importing routes.models pulls it in.
+# Keep this runnable without the optional structlog dependency: routes.models pulls it in.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -55,22 +54,20 @@ def _pin_default_embedder(monkeypatch):
     monkeypatch.setattr(rag_config, "default_gguf_repo", lambda: default)
 
 
-# --------------------------------------------------------------------------- #
-# Infra-model hiding (the "infra models resurfaced in the picker" regression)  #
-# --------------------------------------------------------------------------- #
+# Infra-model hiding (the "infra models resurfaced in the picker" regression).
 
 
 @pytest.mark.parametrize(
     "value",
     [
-        "ggml-org/models",  # the probe repo id
-        "unsloth/bge-small-en-v1.5",  # the RAG embedder repo
-        "unsloth/bge-small-en-v1.5-GGUF",  # its GGUF companion
-        "/root/.cache/huggingface/hub/x/stories260K.gguf",  # probe on disk
-        "/root/.cache/x/Stories260K.GGUF",  # case-insensitive
-        r"C:\\models\\stories260K.gguf",  # windows-style path
-        "/opt/models/bge-small-en-v1.5",  # embedder basename folder
-        "/opt/models/bge-small-en-v1.5-Q8_0.gguf",  # suffixed local weight
+        "ggml-org/models",
+        "unsloth/bge-small-en-v1.5",
+        "unsloth/bge-small-en-v1.5-GGUF",
+        "/root/.cache/huggingface/hub/x/stories260K.gguf",
+        "/root/.cache/x/Stories260K.GGUF",
+        r"C:\\models\\stories260K.gguf",
+        "/opt/models/bge-small-en-v1.5",
+        "/opt/models/bge-small-en-v1.5-Q8_0.gguf",
     ],
 )
 def test_infra_models_are_hidden(value):
@@ -80,10 +77,10 @@ def test_infra_models_are_hidden(value):
 @pytest.mark.parametrize(
     "value",
     [
-        "unsloth/gemma-3-270m-it-GGUF",  # a normal small chat GGUF
-        "unsloth/Qwen3-0.6B",  # a normal non-GGUF chat model
-        "user/stories260K-finetune-GGUF",  # repo id merely contains "stories260k"
-        "user/model-chat",  # generic repo must not be hidden
+        "unsloth/gemma-3-270m-it-GGUF",
+        "unsloth/Qwen3-0.6B",
+        "user/stories260K-finetune-GGUF",
+        "user/model-chat",
         "meta-llama/Llama-3.1-8B-Instruct",
     ],
 )
@@ -102,8 +99,8 @@ def test_hidden_model_matchers_expose_probe_needles():
     lowered = [n.lower() for n in needles]
     assert "ggml-org/models" in lowered
     assert "stories260k.gguf" in lowered
-    # The configured embedder is exposed as an exact repo id, never as a
-    # basename needle that would substring-hide unrelated chat models.
+    # The configured embedder is exposed as an exact repo id, never as a basename needle that would
+    # substring-hide unrelated chat models.
     assert "bge-small-en-v1.5" not in lowered
     assert "unsloth/bge-small-en-v1.5" in exact_ids
 
@@ -119,9 +116,8 @@ def test_hidden_model_matchers_custom_repo_publishes_exact_ids(monkeypatch):
 
 
 def test_hidden_model_matchers_local_owner_name_path_is_exact_path(monkeypatch, tmp_path):
-    # A local embedder shaped like owner/name that exists on disk must be an
-    # exact resolved path, not a Hub repo id (mirroring is_hidden_model), so the
-    # local row stays hidden instead of showing as a chat model.
+    # A local embedder shaped like owner/name that exists on disk must be an exact resolved path,
+    # not a Hub repo id, or the local row shows as a chat model.
     (tmp_path / "models" / "embedder").mkdir(parents = True)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "models/embedder")
@@ -132,9 +128,7 @@ def test_hidden_model_matchers_local_owner_name_path_is_exact_path(monkeypatch, 
     assert "models/embedder" not in exact_ids
 
 
-# --------------------------------------------------------------------------- #
-# HF token via header, query string only as a fallback (the token-leak fix)    #
-# --------------------------------------------------------------------------- #
+# HF token via header, query string only as a fallback (the token-leak fix).
 
 
 def test_get_hf_token_strips_and_returns():
@@ -167,9 +161,7 @@ def test_query_token_is_fallback_when_header_absent():
     assert resolved == "hf_query"
 
 
-# --------------------------------------------------------------------------- #
-# Chat-template byte caps (the unbounded-template hardening)                    #
-# --------------------------------------------------------------------------- #
+# Chat-template byte caps (the unbounded-template hardening).
 
 
 def _load_request(**overrides):
@@ -188,7 +180,7 @@ def test_nonblank_chat_template_override_preserved_verbatim():
 
 
 def test_chat_template_at_byte_limit_is_accepted():
-    template = "a" * MAX_CHAT_TEMPLATE_BYTES  # exactly the limit, 1 byte/char
+    template = "a" * MAX_CHAT_TEMPLATE_BYTES
     assert (
         len(_load_request(chat_template_override = template).chat_template_override)
         == MAX_CHAT_TEMPLATE_BYTES
@@ -196,14 +188,13 @@ def test_chat_template_at_byte_limit_is_accepted():
 
 
 def test_chat_template_over_char_limit_is_rejected():
-    with pytest.raises(Exception):  # pydantic ValidationError wrapping ValueError
+    with pytest.raises(Exception):
         _load_request(chat_template_override = "a" * (MAX_CHAT_TEMPLATE_BYTES + 1))
 
 
 def test_chat_template_over_byte_limit_is_rejected():
-    # Char count stays under the limit but UTF-8 bytes exceed it (3 bytes/char),
-    # so only the byte-count branch can catch this.
-    multibyte = "€" * (MAX_CHAT_TEMPLATE_BYTES // 2)  # euro sign, 3 bytes each
+    # Char count under the limit but UTF-8 bytes over it, so only the byte-count branch catches this.
+    multibyte = "€" * (MAX_CHAT_TEMPLATE_BYTES // 2)
     assert len(multibyte) <= MAX_CHAT_TEMPLATE_BYTES
     assert len(multibyte.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES
     with pytest.raises(Exception):

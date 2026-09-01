@@ -155,8 +155,8 @@ def executed(monkeypatch):
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
     monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
     monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: name == "python")
-    # raising = False: this helper moved during the external-provider work, and
-    # these tests must not depend on where it currently lives.
+    # raising = False: this helper moved during the external-provider work, and these tests must not
+    # depend on where it currently lives.
     monkeypatch.setattr(
         loop_mod, "strip_result_for_model", lambda result, name = None: result, raising = False
     )
@@ -270,7 +270,6 @@ def _answer_turn(text = "final answer"):
     return [_sse({"content": text}), _sse(finish = "stop"), _DONE]
 
 
-# ── Stream framing ────────────────────────────────────────────────
 
 
 def test_intermediate_done_sentinel_is_not_relayed(executed):
@@ -336,9 +335,8 @@ def test_non_json_data_line_is_relayed_untouched(executed):
         {"choices": [{"delta": {"tool_calls": [None, 3, "x"]}}]},
         {"choices": [{"delta": {"tool_calls": [{}]}}]},
         {"choices": [{"delta": {"tool_calls": [{"index": 0}]}}]},
-        # A string index is a protocol violation, but the id and name are a real
-        # request, so the call runs with the arguments actually sent (none). It is
-        # covered by its own test below rather than as a "must not execute" shape.
+        # A string index is a protocol violation, but the id and name are a real request, so the
+        # call runs with the arguments actually sent (none).
         {"choices": [{"finish_reason": 5}]},
         {},
         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
@@ -373,7 +371,6 @@ def test_zero_line_turn_terminates(executed):
     assert lines == []
 
 
-# ── Structured tool-call accumulation ─────────────────────────────
 
 
 def test_call_without_finish_reason_is_still_executed(executed):
@@ -806,7 +803,6 @@ def test_finish_reason_length_mid_tool_call_does_not_execute(executed):
     assert executed == []
 
 
-# ── Loop bounds ───────────────────────────────────────────────────
 
 
 def test_a_provider_that_always_calls_a_tool_terminates(executed):
@@ -849,7 +845,6 @@ def test_budget_exhaustion_stops_asking_the_provider_again(executed):
     assert len(transport.requests) <= 3
 
 
-# ── Text-form healing interactions ────────────────────────────────
 
 
 def test_text_and_structured_form_of_one_call_run_once(executed):
@@ -984,7 +979,6 @@ def test_undeclared_marked_call_is_relayed_verbatim(executed):
     assert "terminal" in _visible_text(lines)
 
 
-# ── Unicode ───────────────────────────────────────────────────────
 
 
 def test_emoji_split_across_chunks_survives(executed):
@@ -1042,7 +1036,6 @@ def test_unicode_arguments_round_trip_through_the_replay(executed):
     assert json.loads(replayed) == args
 
 
-# ── Large payloads ────────────────────────────────────────────────
 
 
 def test_one_megabyte_argument_streams_in_fragments(executed):
@@ -1125,7 +1118,6 @@ def test_hold_cap_releases_before_the_stream_ends(executed):
     assert min(text_lines) < marker_line[0], "nothing was released until the very end"
 
 
-# ── Ordering and conversation validity ────────────────────────────
 
 
 def test_text_around_tool_calls_keeps_document_order(executed):
@@ -1172,8 +1164,6 @@ def test_replayed_conversation_is_valid_for_a_strict_server(executed):
     assistant = messages[1]
     assert assistant["tool_calls"][0]["id"] == messages[2]["tool_call_id"]
     assert isinstance(assistant["content"], (str, type(None)))
-    # Two user turns in a row, or a tool result with no preceding call, are the
-    # two shapes a strict server rejects.
     for previous, current in zip(messages, messages[1:]):
         assert not (previous["role"] == "user" and current["role"] == "user"), roles
 
@@ -1185,9 +1175,7 @@ def test_disallowed_call_still_gets_a_tool_result_message(executed):
     )
     lines = _run(transport, tools = [WEB])
 
-    # Every announced call is closed out, on the wire and in the replay. A loop
-    # that declines to announce a disabled call at all is fine; announcing one
-    # and never closing it is not.
+    # Every announced call is closed out, on the wire and in the replay.
     assert len(_events(lines, "tool_end")) == len(_events(lines, "tool_start"))
     replays = [
         request["messages"]
@@ -1239,7 +1227,6 @@ def test_non_string_content_reaches_the_conversation_replay(executed):
     assert "SPOKEN" in json.dumps(assistant["content"])
 
 
-# ── Cancellation ──────────────────────────────────────────────────
 
 
 def test_cancel_before_the_first_turn_does_nothing(executed):
@@ -1315,7 +1302,6 @@ def test_closing_the_generator_closes_the_transport_stream(executed):
     assert closed == opened, f"{opened} transport streams opened, {closed} closed"
 
 
-# ── Approvals ─────────────────────────────────────────────────────
 
 
 def _approval_turns():
@@ -1362,9 +1348,7 @@ def test_approval_that_never_arrives_ends_on_cancel_without_leaking_a_slot(execu
     """Real approval plumbing: the user closes the tab while the card is up."""
     from state import tool_approvals
 
-    # Slots this test did not open. The registry is process-global and a sibling
-    # module that drives the route can leave one behind, so asserting the whole
-    # dict is empty makes this test pass or fail on collection order.
+    # Slots this test did not open.
     pre_existing = set(tool_approvals._pending)
     cancel_event = threading.Event()
     threading.Timer(0.6, cancel_event.set).start()

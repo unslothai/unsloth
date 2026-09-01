@@ -93,8 +93,7 @@ def test_uvicorn_duplicate_traceback_is_dropped(logs):
 
 
 def test_exception_never_seen_by_the_middleware_still_logs():
-    # Raised above LoggingMiddleware (CORS, remote-access, the protocol layer): it
-    # carries no marker, so uvicorn's traceback is the only record of it and must stay.
+    # Raised above LoggingMiddleware, so it carries no marker and uvicorn's traceback is the only record of it.
     try:
         raise RuntimeError("cors blew up")
     except RuntimeError as exc:
@@ -103,8 +102,7 @@ def test_exception_never_seen_by_the_middleware_still_logs():
 
 
 def test_other_uvicorn_error_records_pass_through(logs):
-    # Only the ASGI-application traceback is a duplicate; every other uvicorn error
-    # line is uvicorn's alone.
+    # Only the ASGI-application traceback is a duplicate; every other uvicorn error line is uvicorn's alone.
     raised = _raise_through_middleware(RuntimeError("boom"))
     record = _uvicorn_record(raised, msg = "ASGI callable returned without starting response.")
     assert _DropDuplicateAsgiException().filter(record) is True
@@ -130,8 +128,7 @@ def test_verbose_keeps_both_copies(logs, monkeypatch):
 
 
 def test_installed_filter_suppresses_the_record_on_uvicorn_error(logs):
-    # End to end through the logging module: the filter is attached to the
-    # uvicorn.error logger, so the handler never sees the duplicate.
+    # End to end: the filter is attached to the uvicorn.error logger, so the handler never sees the duplicate.
     uvicorn_logger = logging.getLogger("uvicorn.error")
     before = list(uvicorn_logger.filters)
     seen = []

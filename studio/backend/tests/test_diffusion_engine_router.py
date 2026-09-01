@@ -25,8 +25,8 @@ _ENVS = (
 def _clean_env_and_state(monkeypatch):
     for e in _ENVS:
         monkeypatch.delenv(e, raising = False)
-    # A light status-capable stub so selection / active_status() never import the heavy diffusers or sd.cpp
-    # backends; the active engine NAME is module state. unload() is part of the engine contract, so it is honoured.
+    # A light status-capable stub so selection / active_status() never import the heavy diffusers or
+    # sd.cpp backends; unload() is part of the engine contract, so it is honoured.
     monkeypatch.setattr(
         r,
         "get_active_diffusion_engine",
@@ -34,11 +34,12 @@ def _clean_env_and_state(monkeypatch):
             status = lambda: {"loaded": False, "repo_id": None}, unload = lambda: None
         ),
     )
-    # Default: no resident sd-server (tests exercise the sd-cli path) and a stubbed runnability probe, so neither reaches a real install/exec.
+    # Default: no resident sd-server (tests exercise the sd-cli path) and a stubbed runnability
+    # probe, so neither reaches a real install/exec.
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: True)
-    # The selection is module state and several tests below set it by plain assignment, so monkeypatch cannot undo it. A leaked ENGINE_SD_CPP left
-    # get_active_diffusion_engine() returning the sd.cpp backend for the rest of the process, 503ing eight tests in a full-suite run.
+    # The selection is module state set by plain assignment in several tests, so monkeypatch cannot
+    # undo it: a leaked ENGINE_SD_CPP 503'd eight tests in a full-suite run.
     saved_engine = r._active_engine_name
     saved_reason = r._fallback_reason
     try:
@@ -72,7 +73,6 @@ def _select(fam_name = "z-image"):
     return r.active_engine_name()
 
 
-# ── core selection matrix ─────────────────────────────────────────────────────
 
 
 def test_cpu_with_binary_and_supported_family_picks_sd_cpp(monkeypatch):
@@ -84,7 +84,8 @@ def test_cpu_with_binary_and_supported_family_picks_sd_cpp(monkeypatch):
 
 
 def test_cpu_with_only_sd_server_picks_sd_cpp(monkeypatch):
-    # An sd-server-only install (no runnable sd-cli) still routes to native: the backend prefers the resident server.
+    # An sd-server-only install (no runnable sd-cli) still routes to native: the backend prefers the
+    # resident server.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, None)  # no sd-cli
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
@@ -93,7 +94,8 @@ def test_cpu_with_only_sd_server_picks_sd_cpp(monkeypatch):
 
 
 def test_present_but_not_runnable_binary_falls_back(monkeypatch):
-    # A binary that exists but cannot run falls back to diffusers at selection, not commit native and fail inside the load.
+    # A binary that exists but cannot run falls back to diffusers at selection, not commit native
+    # and fail inside the load.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
@@ -129,9 +131,7 @@ def test_mps_default_diffusers_but_optin_sd_cpp(monkeypatch):
     _set_device(monkeypatch, "mps")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
-    # Default: MPS is not native-eligible -> diffusers.
     assert _select() == ENGINE_DIFFUSERS
-    # Opt in: MPS routes to sd.cpp.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MPS", "1")
     assert _select() == ENGINE_SD_CPP
 
@@ -175,7 +175,8 @@ def test_install_accelerator_maps_backend(backend, expected):
 
 
 def test_force_native_install_uses_gpu_accelerator(monkeypatch):
-    # Forcing sd_cpp on a ROCm host with no binary must install the ROCm build, else the forced-native generation silently runs on CPU.
+    # Forcing sd_cpp on a ROCm host with no binary must install the ROCm build, else the
+    # forced-native generation silently runs on CPU.
     _set_device(monkeypatch, "rocm")
     _set_runnable(monkeypatch)
     seen = {}
@@ -190,7 +191,6 @@ def test_force_native_install_uses_gpu_accelerator(monkeypatch):
     assert seen.get("accelerator") == "rocm"
 
 
-# ── active_status annotation ──────────────────────────────────────────────────
 
 
 def test_active_status_injects_engine_and_reason(monkeypatch):
@@ -202,12 +202,12 @@ def test_active_status_injects_engine_and_reason(monkeypatch):
     assert st["fallback_reason"] and "binary unavailable" in st["fallback_reason"]
 
 
-# ── engine-switch eviction ordering ───────────────────────────────────────────
 
 
 def test_switch_unloads_old_engine_before_publishing_new(monkeypatch):
-    # The arbiter's diffusion evictor unloads get_active_diffusion_engine(): publishing the new (empty) engine before the old
-    # one finished unloading would let a concurrent acquire take the GPU with the old model still resident.
+    # The arbiter's evictor unloads get_active_diffusion_engine(), so publishing the new engine
+    # before the old finished unloading lets a concurrent acquire take the GPU with the old model
+    # resident.
     seen = {}
 
     def _fake_engine():
@@ -224,7 +224,8 @@ def test_switch_unloads_old_engine_before_publishing_new(monkeypatch):
 
 
 def test_no_switch_keeps_engine_and_refreshes_reason(monkeypatch):
-    # When the engine does not change, _activate must not unload anything but must still refresh the recorded fallback reason.
+    # When the engine does not change, _activate must not unload anything but must still refresh the
+    # recorded fallback reason.
     calls = {"unload": 0}
 
     def _fake_engine():
@@ -242,7 +243,8 @@ def test_no_switch_keeps_engine_and_refreshes_reason(monkeypatch):
 
 
 def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
-    # Regression: without the transition lock a second _activate during a slow unload() reads the stale active engine, so the query must block until the switch ends.
+    # Regression: without the transition lock a second _activate during a slow unload() reads the
+    # stale active engine, so the query must block until the switch ends.
     import threading
 
     r._active_engine_name = ENGINE_DIFFUSERS
@@ -276,7 +278,6 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
 
     q = threading.Thread(target = _query)
     q.start()
-    # Serialized: the query cannot complete while the switch holds the transition lock.
     assert not query_done.wait(0.4)
 
     release_unload.set()
@@ -286,8 +287,8 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
 
 
 def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
-    # A load selects its engine, then yields (device probe, arbiter acquire) before registering. A second load choosing the
-    # OTHER engine unloads the captured engine in that gap, so registering there strands a model nothing can reach.
+    # A load selects its engine, then yields before registering; a second load choosing the OTHER
+    # engine unloads the captured engine in that gap, stranding a model nothing can reach.
     diffusers = SimpleNamespace(name = "diffusers")
     sd_cpp = SimpleNamespace(name = "sd_cpp")
     active = {"engine": diffusers}
@@ -305,7 +306,8 @@ def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
 
 
 def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
-    # The check and the registration must be one operation under the lock a switch takes, so no _activate can slip between them.
+    # The check and the registration must be one operation under the lock a switch takes, so no
+    # _activate can slip between them.
     import threading
 
     engine = SimpleNamespace(name = "diffusers")
@@ -328,8 +330,8 @@ def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
 
 
 def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
-    # A swallowed teardown failure published the new engine anyway and stranded the old model: the evictor, /images/unload and the next load all
-    # resolve through get_active_diffusion_engine(), so nothing could reclaim the resident pipeline. Keep the old engine published and fail the switch.
+    # A swallowed teardown failure published the new engine anyway and stranded the old model, since
+    # every reclaim path resolves through get_active_diffusion_engine().
     def _fake_engine():
         def _boom():
             raise RuntimeError("sd-server would not die")
@@ -340,15 +342,14 @@ def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
     r._active_engine_name = ENGINE_SD_CPP
     with pytest.raises(RuntimeError, match = "Could not switch the diffusion engine"):
         r._activate(ENGINE_DIFFUSERS, "switch test")
-    # Still the old engine, so the resident model remains reachable and reclaimable.
     assert r.active_engine_name() == ENGINE_SD_CPP
 
 
-# ── predict_engine: the download plan's read-only twin of the selection ───────
 
 
 def test_predict_engine_matches_the_selection_without_activating(monkeypatch):
-    # The download plan is built from this prediction, so it must agree with the selection the load will make, but staging must not unload a resident model: it activates nothing.
+    # The download plan is built from this prediction, so it must agree with the selection the load
+    # will make, but staging must not unload a resident model: it activates nothing.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
@@ -358,8 +359,8 @@ def test_predict_engine_matches_the_selection_without_activating(monkeypatch):
 
 
 def test_predict_engine_counts_an_installable_binary_as_available(monkeypatch):
-    # The first native load on a fresh CPU host installs the binary, so predicting diffusers just because nothing is on disk
-    # yet would stage components the load never opens. It must not install anything itself.
+    # The first native load on a fresh CPU host installs the binary, so predicting diffusers just
+    # because nothing is on disk yet would stage components the load never opens.
     _set_device(monkeypatch, "cpu")
     installs: list[dict] = []
 

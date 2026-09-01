@@ -39,13 +39,11 @@ def test_a_subscript_result_is_rewritten_too():
 
 
 def test_a_chain_of_numeric_lookups_is_rewritten_whole():
-    # Repairing only the head leaves "[0].1", which llama-server still throws on.
     assert repair_numeric_member_access("{{ rows.0.1 }}") == "{{ rows[0][1] }}"
     assert repair_numeric_member_access("{{ a.0.b.10 }}") == "{{ a[0].b[10] }}"
 
 
 def test_whitespace_around_the_dot_is_still_numeric_member_access():
-    # llama.cpp's lexer skips the spaces and throws on "x . 0" exactly as on "x.0".
     assert repair_numeric_member_access("{{ messages[i] . 0.role }}") == "{{ messages[i][0].role }}"
     assert repair_numeric_member_access("{{ m.content .0.type }}") == "{{ m.content[0].type }}"
     assert repair_numeric_member_access("{{ rows . 0 . 1 }}") == "{{ rows[0][1] }}"
@@ -67,8 +65,8 @@ def test_a_raw_block_keeps_the_braces_it_prints():
 
 
 def test_a_raw_body_is_literal_all_the_way_to_its_terminator():
-    # Jinja interprets nothing inside raw, so the "{#" here is text and the {% endraw %}
-    # it appears to wrap really does close the block.
+    # Jinja interprets nothing inside raw, so the "{#" here is text and the {% endraw %} it appears
+    # to wrap really does close the block.
     assert repair_numeric_member_access("{% raw %}{# {% endraw %} #}{{ m.content.0 }}") == (
         "{% raw %}{# {% endraw %} #}{{ m.content[0] }}"
     )
@@ -79,8 +77,8 @@ def test_a_raw_block_that_never_closes_repairs_nothing_after_it():
 
 
 def test_raw_tags_that_are_only_comment_text_do_not_open_a_raw_block():
-    # Matching the tags in the source would read the middle expression as verbatim and
-    # leave llama-server the numeric member it rejects.
+    # Matching the tags in the source would read the middle expression as verbatim and leave
+    # llama-server the numeric member it rejects.
     assert repair_numeric_member_access("{# {% raw %} #}{{ m.content.0 }}{# {% endraw %} #}") == (
         "{# {% raw %} #}{{ m.content[0] }}{# {% endraw %} #}"
     )

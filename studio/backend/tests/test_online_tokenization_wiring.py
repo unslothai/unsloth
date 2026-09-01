@@ -21,8 +21,7 @@ import pytest
 sys.path.insert(0, "studio/backend")
 
 datasets = pytest.importorskip("datasets")
-# Importing the trainer imports torch; a runner without it skips the module
-# rather than failing collection.
+# Importing the trainer imports torch; a runner without it skips the module rather than failing.
 pytest.importorskip("torch")
 
 from utils.datasets.online_tokenization import MIN_ROWS_FOR_ONLINE  # noqa: E402
@@ -175,11 +174,9 @@ def _run(
         "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
         lambda: True,
     )
-    # Pin the worker count for the same reason: resolve_worker_count sizes itself from
-    # CPU affinity and the cgroup quota and returns 0 below MIN_ONLINE_WORKERS, vetoing
-    # before the pass count is compared. On a two-core runner every case here asserted
-    # about the runner, on the wrong veto reason. The worker gate is covered by
-    # test_online_tokenization.py.
+    # Pin the worker count too: resolve_worker_count sizes itself from CPU affinity and the cgroup
+    # quota and returns 0 below MIN_ONLINE_WORKERS, vetoing before the pass count is compared, so on
+    # a two-core runner every case asserted about the runner on the wrong veto reason.
     monkeypatch.setattr(
         "utils.datasets.online_tokenization.resolve_worker_count",
         lambda desired = None: 4,
@@ -201,22 +198,17 @@ def _run(
     return decision, config_args, wrapper, trainer
 
 
-# ------------------------------------------------------------------ applied fully
 
 
 def test_a_qualifying_run_gets_all_four_parts_of_the_mechanism(monkeypatch):
     decision, config_args, wrapper, trainer = _run(monkeypatch)
     assert decision.enabled, decision.reason
-    # 1. lazy view in place of the eager split
     assert wrapper["dataset"].format["type"] == "custom"
     assert "input_ids" in wrapper["dataset"][0]
-    # 2. TRL told not to run its own tokenizing map
     assert config_args["dataset_kwargs"] == {"skip_prepare_dataset": True}
-    # 3. workers, overlapped with the GPU
     assert config_args["dataloader_num_workers"] >= 2
     assert config_args["dataloader_persistent_workers"] is True
     assert config_args["dataloader_prefetch_factor"] > 0
-    # 4. a prewarm depth for _preflight_first_batch to drain
     assert trainer._online_prewarm_batches == decision.prewarm_batches
 
 
@@ -283,7 +275,6 @@ def test_the_eval_split_gets_its_own_double_bos_probe(monkeypatch):
     assert tokenizer.seen == [False], "an eval split that already has BOS must not get a second"
 
 
-# ---------------------------------------------------- degradation: nothing touched
 
 
 def _assert_untouched(config_args, wrapper, trainer, original):
@@ -413,7 +404,6 @@ def test_a_failure_while_attaching_rolls_the_dataset_back(monkeypatch):
     _assert_untouched(config_args, wrapper, trainer, original)
 
 
-# ---------------------------------------------------------------- step-capped runs
 
 
 def test_a_step_cap_is_resolved_into_passes_rather_than_guessed(monkeypatch):
@@ -449,9 +439,8 @@ def test_world_size_scales_the_rows_a_step_consumes(monkeypatch):
     _assert_untouched(config_args, wrapper, trainer, original)
 
 
-# 200 steps x 2 x 4 = 1600 rows per replica over a 10_005-row split: 0.16 passes on
-# one process, 1.28 on eight. Every launcher below advertises the same eight, so these
-# cases differ from the control at the bottom only in whether the variable is read.
+# 200 steps x 2 x 4 = 1600 rows per replica over a 10_005-row split: 0.16 passes on one process,
+# 1.28 on eight. Every launcher below advertises the same eight.
 _EIGHT_RANK_STEPS = 200
 
 
@@ -512,8 +501,7 @@ def test_an_inline_hosts_payload_scales_the_rows_a_step_consumes(monkeypatch):
     _eight_ranks(monkeypatch, MLX_HOSTFILE = payload)
 
 
-# Only values that RAISE: the old max(1, int(...)) already answered 1 for "0" and
-# "-4", so those would pass against the bug and belong in dataset_bounds' own tests.
+# Only values that RAISE: the old max(1, int(...)) already answered 1 for "0" and "-4".
 @pytest.mark.parametrize("junk", ["auto", "", "eight"])
 def test_a_junk_world_size_no_longer_disables_online_tokenization(monkeypatch, junk):
     """The direction this used to fail in was not the obvious one.
@@ -604,7 +592,6 @@ def test_a_single_process_launch_still_qualifies(monkeypatch):
     assert decision.prewarm_batches > 0
 
 
-# ------------------------------------------------------------- the prewarm barrier
 
 
 def _preflight_self(loader_calls, batches):
@@ -659,8 +646,8 @@ def test_the_prewarm_drains_the_requested_depth_and_keeps_the_loader():
     trainer = _preflight_self(calls, [batch] * 32)
     trainer._online_prewarm_batches = 16
     assert trainer._preflight_first_batch() is None
-    # The memo is what makes the barrier mean anything: transformers rebuilds the
-    # train loader every call, so without it train() forks a second worker set.
+    # The memo is what makes the barrier mean anything: transformers rebuilds the train loader every
+    # call, so without it train() forks a second worker set.
     assert trainer.trainer._unsloth_online_memoized is True
     assert trainer.trainer.get_train_dataloader() is trainer.trainer.loader
     assert len(calls) == 1

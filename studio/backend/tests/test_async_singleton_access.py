@@ -22,9 +22,8 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# Every read below pins utf-8: Path.read_text() defaults to the locale encoding (cp1252
-# on Windows), which cannot decode routes/inference.py, so these guards would raise
-# instead of failing honestly.
+# Every read below pins utf-8: Path.read_text() defaults to the locale encoding (cp1252 on Windows),
+# which cannot decode routes/inference.py, so these guards would raise instead of failing honestly.
 _ROUTE_FILES = ("routes/inference.py", "routes/models.py")
 
 
@@ -67,9 +66,7 @@ def test_the_offload_is_actually_present():
             and node.func.attr == "to_thread"
             and any(isinstance(a, ast.Name) and a.id == "get_inference_backend" for a in node.args)
         )
-    # 13, not 14: the status poll's site became a non-constructing peek, which needs no
-    # offload at all. Lower the floor only when a site is removed that way, never when
-    # one goes back on the loop.
+    # 13, not 14: the status poll's site became a non-constructing peek.
     assert total >= 13, f"expected the offloaded call sites to survive, found {total}"
 
 
@@ -80,10 +77,9 @@ def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef):  # sync only
             continue
-        # The peek helper is the module's injection seam: it invokes the getter only
-        # when that global has been patched, which is a test double, and otherwise
-        # returns orchestrator.peek_inference_backend(). Reading it as a builder would
-        # report every caller that deliberately stopped constructing.
+        # The peek helper is the module's injection seam: it invokes the getter only under a test
+        # double, so reading it as a builder would report every caller that deliberately stopped
+        # constructing.
         if fn.name == "_peek_inference_backend":
             continue
         for sub in ast.walk(fn):
@@ -110,8 +106,8 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
             if not isinstance(fn, ast.AsyncFunctionDef):
                 continue
             for sub in ast.walk(fn):
-                # A bare Call to the helper runs it on the loop; passing it to
-                # to_thread makes it an ast.Name argument, never a Call.
+                # A bare Call to the helper runs it on the loop; passing it to to_thread makes it an
+                # ast.Name argument, never a Call.
                 if (
                     isinstance(sub, ast.Call)
                     and isinstance(sub.func, ast.Name)
@@ -119,16 +115,13 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
                 ):
                     offenders.append(f"{rel}:{sub.lineno} async {fn.name} -> {sub.func.id}()")
 
-    # Empty on purpose. Both monitor helpers used to sit here as a known gap: they
-    # reached the singleton through a sync helper and were not individually offloaded,
-    # so they blocked during exactly the window this path exists to fix. Both now peek
-    # instead. Do not add a name back without an offload or a justification here.
+    # Empty on purpose. Both monitor helpers sat here as a known gap and now peek instead; do not
+    # add a name back without an offload or a justification here.
     known: set[str] = set()
 
-    # _resolves_to_resident is offloaded at its two singleton-reading call sites. The
-    # third, in _openai_catalog_objects, passes llama_only = True, under which the
-    # helper never evaluates the getter. This sweep matches on callee name and cannot
-    # see that, so exempt by argument rather than blanket-exempting the helper.
+    # _resolves_to_resident never evaluates the getter under llama_only = True, and this
+    # name-matching sweep cannot see that, so exempt by argument rather than blanket-exempting the
+    # helper.
     def _is_llama_only(site: str) -> bool:
         rel, rest = site.split(":", 1)
         lineno = int(rest.split(" ", 1)[0])
@@ -168,10 +161,8 @@ def test_the_offload_stays_at_the_call_site():
     )
 
 
-# The read-only surface: these answer "what is loaded" and must never be the reason a
-# host imports torch. Each is polled from first paint or fired by a metadata-only
-# action, so building the singleton here defeats UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1
-# until a genuinely hardware-dependent operation runs.
+# The read-only surface: these answer "what is loaded" and must never be why a host imports torch,
+# which would defeat UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1.
 _READ_ONLY_SITES = (
     ("routes/inference.py", "_monitor_active_model"),
     ("routes/inference.py", "get_status"),
@@ -194,8 +185,6 @@ def test_read_only_endpoints_never_construct_the_singleton():
         )
         assert fn is not None, f"{rel}:{name} moved; update this guard"
         for sub in ast.walk(fn):
-            # Both shapes: a bare call on the loop, and the name handed to to_thread,
-            # which still constructs and still imports torch.
             if isinstance(sub, ast.Name) and sub.id == "get_inference_backend":
                 offenders.append(f"{rel}:{sub.lineno} {name}")
     assert not offenders, (

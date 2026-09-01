@@ -74,7 +74,6 @@ def _stub_torch(monkeypatch):
     return torch
 
 
-# ── normalisation ─────────────────────────────────────────────────────────────
 
 
 def test_normalize_speed_mode():
@@ -89,40 +88,33 @@ def test_resolve_speed_mode_gguf_auto_default():
     # Unset (None) -> default for GGUF (near-lossless), off for dense.
     assert resolve_speed_mode(None, is_gguf = True) == SPEED_DEFAULT
     assert resolve_speed_mode(None, is_gguf = False) == SPEED_OFF
-    # An explicit value is honored verbatim, including an explicit opt-out to off.
     assert resolve_speed_mode("off", is_gguf = True) == SPEED_OFF
     assert resolve_speed_mode("max", is_gguf = True) == SPEED_MAX
     assert resolve_speed_mode("max", is_gguf = False) == SPEED_MAX
-    # The video backend passes a dense default of `default` (clips amortise the compile); it must not affect GGUF or explicit values.
+    # The video backend passes a dense default of `default` (clips amortise the compile); it must
+    # not affect GGUF or explicit values.
     assert resolve_speed_mode(None, is_gguf = False, dense_default = SPEED_DEFAULT) == SPEED_DEFAULT
     assert resolve_speed_mode("off", is_gguf = False, dense_default = SPEED_DEFAULT) == SPEED_OFF
 
 
-# ── compile gating ────────────────────────────────────────────────────────────
 
 
 def test_compile_eligible_requires_bf16_cuda_friendly(monkeypatch):
     _stub_torch(monkeypatch)
-    # The happy path: bf16, CUDA, compile-friendly family.
     assert compile_eligible(_target(), is_gguf = False, family = _family()) is True
     # GGUF is compile-eligible too (measured ~2.3x, PSNR ~37 dB vs eager).
     assert compile_eligible(_target(), is_gguf = True, family = _family()) is True
-    # fp16 (non-bf16) is excluded.
     assert compile_eligible(_target(dtype = "float16"), is_gguf = False, family = _family()) is False
-    # A family flagged not compile-friendly is excluded.
     assert compile_eligible(_target(), is_gguf = False, family = _family(compile_ok = False)) is False
-    # No compile support (e.g. XPU/MPS) is excluded.
     assert compile_eligible(_target(compile_ok = False), is_gguf = False, family = _family()) is False
 
 
-# ── backend-flag snapshot / restore (TF32 / cudnn.benchmark leak guard) ────────
 
 
 def test_snapshot_restore_backend_flags(monkeypatch):
     torch = _stub_torch(monkeypatch)
     snap = snapshot_backend_flags()
     assert snap == {"matmul_tf32": False, "cudnn_tf32": False, "cudnn_benchmark": False}
-    # An opt-in max run flips the globals on...
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = True
@@ -172,7 +164,6 @@ def test_restore_is_independent_per_flag(monkeypatch):
     assert torch.backends.cudnn.benchmark is False
 
 
-# ── applier ───────────────────────────────────────────────────────────────────
 
 
 class _Pipe:
@@ -234,7 +225,8 @@ def test_speed_off_applies_nothing(monkeypatch):
 
 
 def test_speed_compiles_both_dits_for_dual_dit_family(monkeypatch):
-    # A dual-DiT family runs BOTH DiTs each step, so the regional block compile must engage on both or one runs eager while status claims compiled.
+    # A dual-DiT family runs BOTH DiTs each step, so the regional block compile must engage on both
+    # or one runs eager while status claims compiled.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     pipe = _Pipe(with_compile = True, with_second_dit = True)
@@ -246,7 +238,8 @@ def test_speed_compiles_both_dits_for_dual_dit_family(monkeypatch):
 
 
 def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
-    # A DENSE model has no GGUF dequant to compile, so `default` falls back to the regional block compile with no GGUF accelerators.
+    # A DENSE model has no GGUF dequant to compile, so `default` falls back to the regional block
+    # compile with no GGUF accelerators.
     torch = _stub_torch(monkeypatch)
     called = _stub_gguf_accel(monkeypatch)
     pipe = _Pipe(with_compile = True)
@@ -255,18 +248,19 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
     )
     assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
     assert applied["compiled"] is True and pipe.compiled is True
-    # default compiles with dynamic=True and no autotune mode: fast cold start, resolution-robust, sidesteps the CUDA-graph crash.
+    # default compiles with dynamic=True and no autotune mode: fast cold start, resolution-robust,
+    # sidesteps the CUDA-graph crash.
     assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": True}
     # default also autotunes the VAE convs but does NOT flip TF32 or fuse QKV.
     assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
     assert applied["tf32"] is False and applied["fused_qkv"] is False
-    # No GGUF dequant on a dense model.
     assert applied["compiled_dequant"] is False
     assert called == {"compiled_dequant": 0}
 
 
 def test_offload_active_drops_fullgraph(monkeypatch):
-    # Offload installs a torch.compiler.disable'd onload hook, so fullgraph=True crashes at the first denoise step (as an active step cache does): it must drop to False.
+    # Offload installs a torch.compiler.disable'd onload hook, so fullgraph=True crashes at the
+    # first denoise step (as an active step cache does): it must drop to False.
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
     applied = apply_speed_optims(
@@ -282,7 +276,8 @@ def test_offload_active_drops_fullgraph(monkeypatch):
 
 
 def test_speed_default_gguf_compiles_only_dequant(monkeypatch):
-    # GGUF `default` is the LIGHT path: compile ONLY the dequant op chain, NOT the regional block compile.
+    # GGUF `default` is the LIGHT path: compile ONLY the dequant op chain, NOT the regional block
+    # compile.
     _stub_torch(monkeypatch)
     called = _stub_gguf_accel(monkeypatch)
     pipe = _Pipe(with_compile = True)
@@ -291,13 +286,13 @@ def test_speed_default_gguf_compiles_only_dequant(monkeypatch):
     )
     assert applied["channels_last"] is True
     assert applied["compiled_dequant"] is True
-    # The transformer block is NOT regionally compiled under GGUF default.
     assert applied["compiled"] is False and pipe.compiled is False
     assert called == {"compiled_dequant": 1}
 
 
 def test_speed_eager_gguf_installs_no_accelerator(monkeypatch):
-    # eager = lossless-but-no-compile: only the process-wide lossless levers and the eager monkey-patches engage.
+    # eager = lossless-but-no-compile: only the process-wide lossless levers and the eager
+    # monkey-patches engage.
     _stub_torch(monkeypatch)
     called = _stub_gguf_accel(monkeypatch)
     pipe = _Pipe(with_compile = True)
@@ -310,7 +305,8 @@ def test_speed_eager_gguf_installs_no_accelerator(monkeypatch):
 
 
 def test_speed_max_gguf_regional_compile_not_dequant(monkeypatch):
-    # GGUF `max` is the FULL regional block compile (which fuses the dequant inline), so the standalone compiled dequant is OFF.
+    # GGUF `max` is the FULL regional block compile (which fuses the dequant inline), so the
+    # standalone compiled dequant is OFF.
     _stub_torch(monkeypatch)
     called = _stub_gguf_accel(monkeypatch)
     pipe = _Pipe(with_compile = True, with_fuse = True)
@@ -349,7 +345,6 @@ def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     assert pipe.compile_kwargs["dynamic"] is False
 
 
-# ── U-Net whole-module compile fallback (SDXL) ─────────────────────────────────
 
 
 class UNet2DConditionModel:
@@ -382,8 +377,8 @@ class _UNetPipe:
 
 
 def test_unet_whole_compile_default_tier(monkeypatch):
-    # SDXL's UNet has no _repeated_blocks, so `default` falls back to a whole-module STATIC compile (measured 1.61x at
-    # LPIPS 0.034): fullgraph on, dynamic OFF. The U-Net recipe also fuses QKV and compiles the VAE decode.
+    # SDXL's UNet has no _repeated_blocks, so `default` falls back to a whole-module STATIC compile
+    # (1.61x at LPIPS 0.034): fullgraph on, dynamic OFF.
     _stub_torch(monkeypatch)
     pipe = _UNetPipe()
     applied = apply_speed_optims(
@@ -396,7 +391,8 @@ def test_unet_whole_compile_default_tier(monkeypatch):
 
 
 def test_dit_default_tier_keeps_fuse_and_vae_decode_off(monkeypatch):
-    # The DiT default tier is unchanged: fused QKV measured exactly neutral so it stays max-only, and the VAE decode stays eager.
+    # The DiT default tier is unchanged: fused QKV measured exactly neutral so it stays max-only,
+    # and the VAE decode stays eager.
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True, with_fuse = True)
     applied = apply_speed_optims(
@@ -438,7 +434,8 @@ def test_unet_whole_compile_max_tier_mode(monkeypatch):
 
 
 def test_unet_whole_compile_gated_by_class_name(monkeypatch):
-    # An unlisted U-Net class (unmeasured architecture) stays eager rather than paying an unvalidated whole-module compile.
+    # An unlisted U-Net class (unmeasured architecture) stays eager rather than paying an
+    # unvalidated whole-module compile.
     _stub_torch(monkeypatch)
     pipe = _UNetPipe(unet = _SomeOtherUNet())
     applied = apply_speed_optims(
@@ -486,7 +483,6 @@ def test_apply_tolerates_missing_optims(monkeypatch):
     assert applied["channels_last"] is False and applied["fused_qkv"] is False
 
 
-# ── fp16 accumulation (consumer fp16-GEMM fast path) ──────────────────────────
 
 
 def _stub_torch_fp16_accum(
@@ -561,7 +557,8 @@ def test_fp16_accum_respects_kill_switch(monkeypatch):
 
 @pytest.mark.parametrize("value", ["TRUE", "Yes", "On", " true "])
 def test_fp16_accum_kill_switch_is_case_insensitive(monkeypatch, value):
-    # The escape hatch must honor the common boolean spellings, so UNSLOTH_DISABLE_FP16_ACCUM=TRUE is not ignored.
+    # The escape hatch must honor the common boolean spellings, so UNSLOTH_DISABLE_FP16_ACCUM=TRUE
+    # is not ignored.
     _stub_torch_fp16_accum(monkeypatch, consumer = True)
     _stub_gguf_accel(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DISABLE_FP16_ACCUM", value)
@@ -603,7 +600,8 @@ def test_fp16_accum_not_touched_off_cuda(monkeypatch):
 
 
 def test_fp16_accum_denied_on_fp16_dtype_below_max(monkeypatch):
-    # fp16 compute is where the accumulator width changes results (measured same-seed drift, mean 2-5%), so the quality-neutral tiers refuse it.
+    # fp16 compute is where the accumulator width changes results (measured same-seed drift, mean
+    # 2-5%), so the quality-neutral tiers refuse it.
     torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
     _stub_gguf_accel(monkeypatch)
     for mode in ("eager", "default"):
@@ -633,7 +631,6 @@ def test_fp16_accum_allowed_on_fp16_dtype_under_max(monkeypatch):
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is True
 
 
-# ── inductor precision-cast emulation (compile-vs-eager numeric parity) ─────────
 
 
 def _stub_inductor_config(
@@ -651,8 +648,9 @@ def _stub_inductor_config(
 
 
 def test_regional_compile_enables_emulate_precision_casts(monkeypatch):
-    # Inductor's fused pointwise kernels keep intermediates in fp32 where eager rounds to bf16 between ops, which compounds
-    # over a denoise. emulate_precision_casts restores eager's rounding at zero measured cost, so the regional compile sets it.
+    # Inductor's fused pointwise kernels keep intermediates in fp32 where eager rounds to bf16
+    # between ops, which compounds over a denoise; emulate_precision_casts restores eager's rounding
+    # at zero measured cost.
     torch = _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
@@ -665,7 +663,8 @@ def test_regional_compile_enables_emulate_precision_casts(monkeypatch):
 
 
 def test_snapshot_restores_emulate_precision_casts(monkeypatch):
-    # The flag is process-global, so unload must restore the pre-load value like the TF32 / cudnn.benchmark globals.
+    # The flag is process-global, so unload must restore the pre-load value like the TF32 /
+    # cudnn.benchmark globals.
     torch = _stub_torch(monkeypatch)
     cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
     snap = snapshot_backend_flags()
@@ -676,7 +675,8 @@ def test_snapshot_restores_emulate_precision_casts(monkeypatch):
 
 
 def test_missing_inductor_config_is_tolerated(monkeypatch):
-    # A build without torch._inductor (or with the flag renamed) must break neither the snapshot nor the compile path.
+    # A build without torch._inductor (or with the flag renamed) must break neither the snapshot nor
+    # the compile path.
     _stub_torch(monkeypatch)  # the stub torch has no _inductor attribute
     _stub_gguf_accel(monkeypatch)
     snap = snapshot_backend_flags()
@@ -689,8 +689,9 @@ def test_missing_inductor_config_is_tolerated(monkeypatch):
 
 
 def test_regional_compile_arms_cache_hook_inners(monkeypatch):
-    # Production engages the step cache BEFORE compile, so the regional compile pass must re-arm the installed cache hooks
-    # with compiled inner forwards, else every computed step runs eager under the hook's torch.compiler.disable.
+    # Production engages the step cache BEFORE compile, so the regional pass must re-arm the
+    # installed cache hooks with compiled inner forwards, else every computed step runs eager under
+    # the hook's torch.compiler.disable.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     from core.inference import diffusion_cache as dc_mod
@@ -709,7 +710,6 @@ def test_regional_compile_arms_cache_hook_inners(monkeypatch):
     assert armed == [pipe.transformer]
 
 
-# ── the inductor runtime gate ────────────────────────────────────────────────
 # The Unsloth workers already refuse torch.compile when Triton is missing on Windows; the diffusion
 # and video backends run in the SERVER process, which those gates never reach.
 

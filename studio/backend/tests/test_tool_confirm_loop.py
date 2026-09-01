@@ -94,16 +94,14 @@ def _drive(
         execute_tool = exec_fn,
         session_id = _SESSION,
         confirm_tool_calls = True,
-        # The confirm-gate mechanics (allow/deny/reissue/dedup) need every call to
-        # prompt; unset defaults to "auto", which only gates high-risk calls.
+        # The confirm-gate mechanics need every call to prompt; unset defaults to "auto", which gates high risk.
         permission_mode = "ask",
     )
     events = []
     for ev in gen:
         events.append(ev)
         if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
-            # Slot is already registered (begin ran before this yield), so
-            # the decision lands before the loop enters its blocking wait.
+            # The slot is already registered, so the decision lands before the loop enters its blocking wait.
             resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = _SESSION)
     return events, exec_fn.calls
 
@@ -134,7 +132,7 @@ def test_deny_skips_execution_and_feeds_rejection():
         [_tool_call("python", '{"code": "print(1)"}'), "final answer"],
         ["deny"],
     )
-    assert calls == []  # tool never ran
+    assert calls == []
     assert _tool_ends(events)[0]["result"] == TOOL_REJECTED_MESSAGE
 
 
@@ -160,16 +158,14 @@ def test_duplicate_call_is_not_prompted():
 
 
 def test_denied_call_can_be_reissued_and_approved():
-    # Deny, then the model re-issues the identical call -> approving it must
-    # execute, not get suppressed as a duplicate (denied calls are not added
-    # to the duplicate-detection history).
+    # Denied calls are not added to the duplicate history, so an identical re-issued call must run on approval.
     same = _tool_call("python", '{"code": "print(1)"}')
     events, calls = _drive([same, same, "final answer"], ["deny", "allow"])
     starts = _tool_starts(events)
     assert len(starts) == 2
     assert starts[0]["awaiting_confirmation"] is True
-    assert starts[1]["awaiting_confirmation"] is True  # not treated as dup
-    assert calls == [("python", {"code": "print(1)"})]  # ran once, on approve
+    assert starts[1]["awaiting_confirmation"] is True
+    assert calls == [("python", {"code": "print(1)"})]
     ends = _tool_ends(events)
     assert ends[0]["result"] == TOOL_REJECTED_MESSAGE
     assert ends[1]["result"] == "RESULT[python]"

@@ -29,7 +29,6 @@ def test_none_and_empty_return_empty_without_error(caplog):
 
 
 def test_unknown_string_still_returns_defaults_dict():
-    # A non-None unknown model name still resolves (falls back to default.yaml),
-    # i.e. the guard only short-circuits None/empty, nothing else.
+    # The guard only short-circuits None/empty: an unknown name still falls back to default.yaml.
     result = load_model_defaults("definitely-not-a-real-model-xyz")
     assert isinstance(result, dict)

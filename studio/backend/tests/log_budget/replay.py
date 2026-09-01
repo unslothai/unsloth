@@ -73,11 +73,7 @@ class Request:
     path: str
     status: int = 200
     query: bytes = b""
-    # How long the handler takes. Zero by default, which is what every scenario written
-    # before this field wanted: a request that costs no virtual time. It exists because
-    # the suppressors key on the STATUS CODE and never on the duration, so "a 200 that
-    # took a minute" is a case the harness could not express at all, and therefore could
-    # not budget or defend.
+    # Virtual handler duration: suppressors key on status code only, so "a slow 200"
     duration_ms: float = 0.0
 
 
@@ -97,8 +93,7 @@ def _app_returning(
     clock: "FakeClock | None" = None,
 ):
     async def app(scope, receive, send):
-        # Advance BEFORE responding: the middleware stamps its window on the end time, so
-        # a duration added afterwards would be invisible to the very rule under test.
+        # Advance BEFORE responding: the middleware stamps its window on the end time.
         if duration_ms and clock is not None:
             clock.advance(duration_ms / 1000.0)
         await send({"type": "http.response.start", "status": status, "headers": []})
@@ -149,7 +144,6 @@ def replay(
     middleware_by_status: dict[tuple[int, float], object] = {}
     result = ReplayResult(capture = capture)
 
-    # A single middleware object shared by every status, so its dedup map is the real one.
     shared_state = LoggingMiddleware(_app_returning(200))
 
     def send_request(request: Request) -> None:
@@ -172,8 +166,7 @@ def replay(
         send_request(Request(method = method, path = path, status = status))
         clock.advance(0.05)
 
-    # Whole-second ticks, so every period in the registry lands on an exact tick and the
-    # expectation formula and the replay agree by construction rather than by rounding.
+    # Whole-second ticks so every registry period lands on an exact tick (no rounding).
     tick = 0.5
     started_at = clock.now
     next_due = {path: 0.0 for path in polled}

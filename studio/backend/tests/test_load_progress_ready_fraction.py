@@ -21,10 +21,9 @@ from unittest.mock import patch
 
 import pytest
 
-# Stub heavy/unavailable deps before importing the module under test, so a
-# targeted run in the lightweight backend env (no structlog/httpx) still
-# collects. setdefault keeps the real modules when they are installed. Mirrors
-# test_llama_cpp_load_progress_matrix.py.
+# Stub heavy/unavailable deps before importing the module under test, so a targeted run in the
+# lightweight backend env (no structlog/httpx) still collects. setdefault keeps the real modules
+# when they are installed.
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -62,11 +61,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Only when the real library is absent: sys.modules holds what has been IMPORTED, not what is
+# installed, so setdefault does not defer to an untouched real httpx.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -117,8 +113,8 @@ def test_mmap_phase_reports_raw_rss_fraction(tmp_path, monkeypatch):
 
 
 def test_progress_fraction_is_monotonic(tmp_path, monkeypatch):
-    # RSS peaks during page-in, then drops after -ngl offload; the bar must hold
-    # its high-water mark instead of collapsing back to ~8% (#5740).
+    # RSS peaks during page-in, then drops after -ngl offload; the bar must hold its high-water mark
+    # instead of collapsing back to ~8% (#5740).
     be = _backend(_gguf(tmp_path, 10000), healthy = False)
     monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: 9000))
     assert be.load_progress()["fraction"] == 0.9
@@ -152,8 +148,7 @@ def test_none_when_rss_unreadable(tmp_path, monkeypatch):
 
 
 def test_read_rss_bytes_absent_pid_is_none():
-    # A pid with no readable /proc entry (or no /proc at all) yields None, never
-    # raises.
+    # A pid with no readable /proc entry (or no /proc at all) yields None, never raises.
     assert LlamaCppBackend._read_rss_bytes(2**31 - 1) is None
 
 

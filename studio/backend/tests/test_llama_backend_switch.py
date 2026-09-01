@@ -144,7 +144,6 @@ def _await_job(state = ("success", "error")) -> dict:
     raise AssertionError(f"job never reached {state}: {upd.get_update_status()['job']}")
 
 
-# ── Applying ──
 
 
 def test_a_switch_names_the_backend_and_keeps_the_installed_release(monkeypatch, tmp_path):
@@ -274,7 +273,6 @@ def test_a_switch_rejects_a_cross_repository_result(monkeypatch, tmp_path):
     assert "backend switch must preserve" in job["error"]
 
 
-# ── Refusing ──
 
 
 def test_switching_to_the_recorded_choice_is_refused(monkeypatch, tmp_path):
@@ -471,7 +469,6 @@ def test_a_source_build_has_no_backend_to_switch(monkeypatch, tmp_path):
 
 
 def test_a_switch_and_an_update_cannot_run_at_once(monkeypatch, tmp_path):
-    # The shared job prevents concurrent installers.
     _install(monkeypatch, tmp_path)
     with upd._job_lock:
         upd._job.update(state = upd._JOB_RUNNING, message = "busy")
@@ -524,7 +521,6 @@ def test_backend_resolution_is_part_of_the_serialized_operation(monkeypatch, tmp
     assert not upd._operation_lock.locked()
 
 
-# ── Status ──
 
 
 def test_status_reports_the_install_and_the_options(monkeypatch, tmp_path):
@@ -548,8 +544,8 @@ def test_status_reports_the_install_and_the_options(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(
-        # Bound into the update module at import, so the freshness module's copy
-        # is not the one it calls.
+        # Bound into the update module at import, so the freshness module's copy is not the one it
+        # calls.
         upd,
         "latest_release_assets",
         lambda repo, force_refresh = False: {"app-b9596-mix-abc-linux-x64-cuda12.tar.gz": 1234},
@@ -580,8 +576,7 @@ def test_status_reports_when_auto_now_resolves_to_another_backend(monkeypatch, t
 
 
 def test_status_keeps_a_concrete_choice_applied_when_its_asset_moves(monkeypatch, tmp_path):
-    # The recorded name and the installed backend agree, which is all a concrete
-    # choice claims. A newer asset for it is an update, not an unapplied selection.
+    # The recorded name and the installed backend agree, which is all a concrete choice claims.
     _install(
         monkeypatch,
         tmp_path,
@@ -598,9 +593,7 @@ def test_status_keeps_a_concrete_choice_applied_when_its_asset_moves(monkeypatch
 
 
 def test_a_switch_that_installs_nothing_plans_no_whisper_phase(monkeypatch):
-    # Whisper only re-pairs because llama's ggml is being replaced. Without a llama
-    # phase there is nothing to re-pair, so a refusal stays a refusal instead of
-    # turning into a whisper-only job that reports a switch nobody performed.
+    # Whisper only re-pairs because llama's ggml is being replaced.
     planned = []
     monkeypatch.setattr(
         whisper_upd, "repair_pairing_plan", lambda: planned.append(1) or {"phase": {"repair": True}}
@@ -661,8 +654,8 @@ def test_whisper_repair_installs_the_backend_llama_landed_on(monkeypatch, tmp_pa
 
 
 def test_whisper_repair_skips_a_backend_it_is_already_built_against(monkeypatch, tmp_path):
-    # Detection can land back where it was; the release is preserved either way,
-    # so the hardlinks still point at the same build.
+    # Detection can land back where it was; the release is preserved either way, so the hardlinks
+    # still point at the same build.
     _slim_whisper(monkeypatch, tmp_path)  # marker backend "cuda"
     monkeypatch.setattr(whisper_upd, "_installed_llama_bundle", lambda: ("cuda", "asset.tar.gz"))
     monkeypatch.setattr(

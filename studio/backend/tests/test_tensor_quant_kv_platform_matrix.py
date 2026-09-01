@@ -42,7 +42,6 @@ def _load(module_name: str, file_name: str):
     return module
 
 
-# Both harnesses already exist; by path, because the tests dir is not a package.
 _placement = _load("_placement_harness_tp_quant_kv", "test_llama_cpp_placement.py")
 _platforms = _load("_platform_harness_tp_quant_kv", "test_llama_extra_args_platforms.py")
 
@@ -51,14 +50,11 @@ _launch = _placement._launch
 _apply_platform = _platforms._apply_platform
 PLATFORMS = _platforms.PLATFORMS
 
-from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
-from utils.hardware import hardware as _hw  # noqa: E402
+from core.inference.llama_cpp import LlamaCppBackend
+from utils.hardware import hardware as _hw
 
 
-# (label, vulkan, is_rocm, apple_budget_bytes, memory, tensor_is_viable)
-# tensor_is_viable is the expectation, not an input: tensor mode needs >= 2 devices,
-# so every single-device and device-less cell must come out layer-split whatever the
-# cache type is.
+# tensor_is_viable is the expectation, not an input: under two devices every cell must come out layer-split.
 ACCELERATORS = [
     ("nvidia-multi", False, False, 0, [(0, 20_000, 24_000), (1, 20_000, 24_000)], True),
     ("nvidia-single", False, False, 0, [(0, 20_000, 24_000)], False),
@@ -68,17 +64,15 @@ ACCELERATORS = [
     ("cpu-only", False, False, 0, [], False),
 ]
 
-# The types the launcher will emit (_VALID_CACHE_TYPES), plus the two shapes that
-# only became reachable once the tensor gate was removed.
+# The types the launcher will emit, plus the two shapes that only became reachable once the tensor gate was removed.
 CACHE_CELLS = [
     ("f16", "f16", "f16"),
     ("q8_0", "q8_0", "q8_0"),
     ("q4_0", "q4_0", "q4_0"),
     ("q5_1", "q5_1", "q5_1"),
-    # iq4_nl is in _VALID_CACHE_TYPES, so the gate removal admits it. ggml-org/
-    # llama.cpp#27116 reports it still asserting under a tensor split on b10441;
-    # that abort carries split_axis, so _should_record_tensor_split_abort latches
-    # it and the route falls back. Unsloth's job is only to emit what was asked.
+    # iq4_nl is in _VALID_CACHE_TYPES so the gate removal admits it, and ggml-org/llama.cpp#27116
+    # reports it still asserting under a tensor split on b10441; that abort carries split_axis, so
+    # the latch catches it and the route falls back.
     ("iq4_nl", "iq4_nl", "iq4_nl"),
 ]
 
@@ -93,8 +87,7 @@ MATRIX = [
 def _cell_backend(tmp_path, monkeypatch, platform, accelerator):
     _label, vulkan, is_rocm, apple_budget, memory, _viable = accelerator
     _apply_platform(monkeypatch, platform)
-    # An inherited visibility mask would make "placement pinned nothing" read as a
-    # pin on any box that exports CUDA_VISIBLE_DEVICES.
+    # An inherited mask would make "pinned nothing" read as a pin wherever CUDA_VISIBLE_DEVICES is set.
     for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
         monkeypatch.delenv(name, raising = False)
     for name in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_SPLIT_MODE"):
@@ -106,8 +99,7 @@ def _cell_backend(tmp_path, monkeypatch, platform, accelerator):
         staticmethod(lambda: apple_budget),
     )
     backend, gguf = _backend(tmp_path, vulkan = vulkan, memory = list(memory))
-    # A session latch from another cell would silently turn a tensor cell into a
-    # layer cell and the assertion below would still pass for the wrong reason.
+    # A session latch from another cell would turn a tensor cell into a layer cell and pass for that reason.
     backend._tensor_split_aborts = lambda *args, **kwargs: False
     return backend, gguf
 
@@ -139,9 +131,7 @@ def test_the_requested_cache_reaches_every_platform_unchanged(
     assert ks[-1:] == [expect_k], f"K axis rewritten: {ks}"
     assert vs[-1:] == [expect_v], f"V axis rewritten: {vs}"
     assert backend.cache_type_kv == kv_type
-    # Tensor mode is a >= 2-device feature; below that the split-mode group must be
-    # gone entirely, not just set to layer, so an extras --tensor-split cannot
-    # re-engage it.
+    # Below two devices the split-mode group must be gone, not just layer, so extras cannot re-engage it.
     if tensor_viable:
         assert cmd[cmd.index("--split-mode") + 1] == "tensor"
     else:
@@ -174,7 +164,6 @@ def test_asymmetric_axes_reach_every_platform_unchanged(
     )["cmd"]
     ks, vs = _axes(cmd)
 
-    # Extras are appended last and win per axis.
     assert ks[-1] == kv_type, f"K axis rewritten: {ks}"
     assert vs[-1] == "f16", f"V axis rewritten: {vs}"
     assert cmd[cmd.index("--top-k") + 1] == "5", "unrelated user extras dropped"
@@ -212,14 +201,9 @@ def test_an_inherited_quantized_kv_env_survives_on_every_platform(
         # Tensor mode owns the ratio it computed, so a stale inherited one goes.
         assert "LLAMA_ARG_TENSOR_SPLIT" not in env
     else:
-        # A layer load only clears inherited placement when it also inherited a
-        # non-layer LLAMA_ARG_SPLIT_MODE; a bare ratio is a valid layer ratio and
-        # is left to the child. Pinned so the cache assertions above cannot be
-        # read as a claim about placement.
+        # A layer load clears inherited placement only with a non-layer LLAMA_ARG_SPLIT_MODE: a bare ratio is valid.
         assert env["LLAMA_ARG_TENSOR_SPLIT"] == "9,1"
-    # Env-only: Unsloth emits no flag of its own, so it records no type. Pinned
-    # because /status and the reload matcher both read this, and the matcher
-    # compares it against an intent field that is also None for this shape.
+    # Env-only: Unsloth emits no flag so it records no type, and the reload matcher compares against a None field.
     assert backend.cache_type_kv is None
 
 
@@ -238,7 +222,6 @@ def test_a_quantized_cache_survives_the_tensor_to_layer_downgrade(
     the mechanism -- the assertion the restore-path test used to carry.
     """
     backend, gguf = _cell_backend(tmp_path, monkeypatch, platform, accelerator)
-    # The session latch is the cheapest downgrade to force and needs no VRAM shape.
     backend._tensor_split_aborts = lambda *args, **kwargs: True
 
     cmd = _launch(
@@ -277,7 +260,7 @@ def test_a_tensor_launch_never_pairs_a_disabled_flash_attn(
     cmd = _launch(backend, gguf, tensor_parallel = True, cache_type_kv = kv_type)["cmd"]
 
     if not tensor_viable:
-        return  # layer split; llama.cpp imposes nothing here
+        return
     assert cmd[cmd.index("--split-mode") + 1] == "tensor"
     if "--flash-attn" in cmd:
         assert cmd[cmd.index("--flash-attn") + 1] != "off", _stable_join(cmd)
@@ -288,7 +271,6 @@ def _stable_join(cmd: list[str]) -> str:
     return " ".join(cmd)
 
 
-# ── Old installs ────────────────────────────────────────────────────────────
 
 
 def test_a_config_saved_by_a_pre_23792_studio_still_loads(tmp_path, monkeypatch):
@@ -323,12 +305,10 @@ def test_the_load_intent_gained_no_field(tmp_path):
     names = {f.name for f in fields(GgufLoadIntent)}
 
     assert "scratch_cache_type_kv" not in names
-    # The one the UI does own is still there and still spelled the same.
     assert "cache_type_kv" in names
     assert "tensor_parallel" in names
 
 
-# ── An inherited cache type llama.cpp cannot parse must not kill both attempts ──
 
 
 @pytest.mark.parametrize(
@@ -354,7 +334,6 @@ def test_an_unparseable_inherited_cache_type_is_dropped(
     env = _launch(backend, gguf, tensor_parallel = True)["env"]
 
     assert env.get("LLAMA_ARG_CACHE_TYPE_K") in (None, "")
-    # The valid axis is untouched -- this drops what llama.cpp rejects, nothing more.
     assert env["LLAMA_ARG_CACHE_TYPE_V"] == "q8_0"
 
 
@@ -379,7 +358,6 @@ def test_a_miscased_inherited_cache_type_is_normalised_not_dropped(
     assert env["LLAMA_ARG_CACHE_TYPE_V"] == "iq4_nl"
 
 
-# ── An inherited value llama.cpp cannot parse verbatim ──────────────────────
 
 
 @pytest.mark.parametrize(
@@ -389,9 +367,9 @@ def test_a_miscased_inherited_cache_type_is_normalised_not_dropped(
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        (" q8_0 ", "q8_0"),  # surrounding whitespace
-        ("\tq4_0\n", "q4_0"),  # any whitespace, not just spaces
-        (" Q8_0 ", "q8_0"),  # whitespace AND case together
+        (" q8_0 ", "q8_0"),
+        ("\tq4_0\n", "q4_0"),
+        (" Q8_0 ", "q8_0"),
     ],
 )
 def test_a_whitespace_padded_inherited_cache_type_is_rewritten(

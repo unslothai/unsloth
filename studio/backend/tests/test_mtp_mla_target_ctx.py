@@ -19,11 +19,8 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Stub heavy/unavailable deps before importing the module under test, so this
-# file is order-independent (importing core.inference pulls in orchestrator ->
-# structlog, absent in the lightweight test env). Mirrors test_mtp_vram_budget.
-# ---------------------------------------------------------------------------
+# Stub heavy/unavailable deps before importing the module under test, so this file is
+# order-independent (core.inference pulls in orchestrator -> structlog).
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -35,8 +32,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 
-# httpx -- only stub when the real library is missing. Unconditional stubbing
-# shadows HTTPError/Response that huggingface_hub.errors imports at load time.
+# Only stub httpx when missing: unconditional stubbing shadows huggingface_hub.errors' imports.
 try:
     import httpx as _httpx_real  # noqa: F401
 except ImportError:
@@ -136,21 +132,20 @@ class TestMlaTargetCtxReserve:
         draft = b._mtp_draft_kv_bytes(ctx)
         overhead = b._estimate_mtp_overhead_bytes(ctx)
         main_kv_f16 = b._estimate_kv_cache_bytes(ctx, "f16")
-        # Overhead = embedded draft head + a full f16 copy of the target KV.
         assert overhead == draft + main_kv_f16
         # The copy dominates: GLM-5.2 @1M is a ~2 GiB head next to a ~89 GiB copy.
         assert overhead / GIB > 80
         assert main_kv_f16 > 30 * draft
 
     def test_target_copy_is_f16_regardless_of_main_cache_type(self):
-        # The MTP target context is always f16 in llama.cpp; the reserve must not
-        # shrink when the user runs a quantized main KV.
+        # The MTP target context is always f16 in llama.cpp, so the reserve must not shrink on a
+        # quantized main KV.
         b = _make_mla_backend()
         ctx = 262144
         f16 = _kv_bytes_per_elem("f16")
         expected_copy = b._estimate_kv_cache_bytes(ctx, "f16")
         assert b._estimate_mtp_overhead_bytes(ctx) == (b._mtp_draft_kv_bytes(ctx) + expected_copy)
-        assert f16 == 2.0  # sanity: f16 is 2 bytes/elem
+        assert f16 == 2.0
 
     def test_target_copy_scales_linearly_with_context(self):
         b = _make_mla_backend()
@@ -165,26 +160,21 @@ class TestMlaTargetCtxReserve:
             assert b._estimate_mtp_overhead_bytes(ctx) == b._mtp_draft_kv_bytes(ctx)
 
     def test_mla_reserve_strictly_larger_than_non_mla_shape(self):
-        # Same embedded-head dims, MLA toggled on/off: only MLA adds the copy.
         mla = _make_mla_backend()
         non = _make_mla_backend()
-        non._kv_lora_rank = None  # flip MLA off, keep every other dim identical
+        non._kv_lora_rank = None
         ctx = 131072
         assert mla._estimate_mtp_overhead_bytes(ctx) > non._estimate_mtp_overhead_bytes(ctx)
 
     def test_separate_drafter_mode_drops_target_copy(self):
-        # The duplicated target context is MTP-only. draft-simple / draft-eagle3
-        # load a small separate drafter with its own KV (counted in the draft KV)
-        # and keep no target copy, so even on an MLA model the reserve must drop
-        # the f16 copy when mtp_keeps_target_ctx=False -- which is what the loader
-        # threads for those modes. The default (True) keeps the MTP copy.
+        # The duplicated target context is MTP-only: draft-simple / draft-eagle3 load a small separate
+        # drafter with its own KV and keep no target copy, so even on an MLA model the reserve must drop
+        # the f16 copy when mtp_keeps_target_ctx=False.
         b = _make_mla_backend()
         ctx = 262144
-        mtp = b._estimate_mtp_overhead_bytes(ctx)  # default True == MTP draft
+        mtp = b._estimate_mtp_overhead_bytes(ctx)
         separate = b._estimate_mtp_overhead_bytes(ctx, mtp_keeps_target_ctx = False)
-        # Separate-drafter overhead is exactly the draft KV (no target copy)...
         assert separate == b._mtp_draft_kv_bytes(ctx)
-        # ...and the MTP reserve is that plus the full f16 target copy.
         assert mtp == separate + b._estimate_kv_cache_bytes(ctx, "f16")
         assert mtp > separate
 

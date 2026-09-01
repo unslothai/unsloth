@@ -93,19 +93,17 @@ def _base_kwargs(**overrides):
 @pytest.fixture(autouse = True)
 def _no_env_override(monkeypatch):
     monkeypatch.delenv(ENV_FLAG, raising = False)
-    # The gate refuses on spawn platforms; these tests describe Linux behaviour
-    # and simulate the other platforms explicitly where that is the point.
+    # The gate refuses on spawn platforms; these tests describe Linux behaviour and simulate the
+    # others explicitly.
     monkeypatch.setattr(sys, "platform", "linux")
-    # Same for the TRL hook: the CPU test job installs no TRL, so leaving it
-    # ambient makes every gate below report "no skip_prepare_dataset hook".
-    # The detector itself is covered separately below.
+    # Same for the TRL hook: the CPU test job installs no TRL, so leaving it ambient makes every
+    # gate below report "no skip_prepare_dataset hook".
     monkeypatch.setattr(
         "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
         lambda: True,
     )
 
 
-# ---------------------------------------------------------------- the happy path
 
 
 def test_plain_text_single_epoch_run_goes_online():
@@ -119,16 +117,14 @@ def test_online_config_args_are_the_four_keys_the_mechanism_needs():
     decision = decide_online_tokenization(**_base_kwargs())
     args = online_config_args(decision)
     assert args["dataset_kwargs"] == {"skip_prepare_dataset": True}
-    # `Trainer._remove_unused_columns` reads `column_names`, which a transformed
-    # split answers from its BACKING table -- it would strip the text column the
-    # transform reads.
+    # `Trainer._remove_unused_columns` reads `column_names`, which a transformed split answers from
+    # its BACKING table -- it would strip the text column the transform reads.
     assert args["remove_unused_columns"] is False
     assert args["dataloader_num_workers"] == 4
     assert args["dataloader_prefetch_factor"] > 0
     assert args["dataloader_persistent_workers"] is True
 
 
-# ------------------------------------------------------- degradation, one per gate
 
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
@@ -356,7 +352,6 @@ def test_a_resolved_sub_epoch_step_cap_may_go_online():
     assert decision.enabled, decision.reason
 
 
-# ---------------------------------------------------------------- the eval split
 
 
 def test_a_raw_eval_split_is_transformed_alongside_the_train_split():
@@ -380,7 +375,6 @@ def test_an_already_tokenized_eval_split_disables_the_feature():
     assert "eval" in decision.reason
 
 
-# ------------------------------------------------------------------ escape hatch
 
 
 def test_env_flag_zero_forces_the_eager_path(monkeypatch):
@@ -407,7 +401,6 @@ def test_an_unrecognised_env_value_is_not_an_override(monkeypatch):
     assert decide_online_tokenization(**_base_kwargs()).enabled
 
 
-# ------------------------------------------------------------------- the transform
 
 
 def test_the_transform_returns_input_ids_for_the_whole_batch():
@@ -491,7 +484,6 @@ def test_the_transformed_view_still_reports_its_backing_columns():
     assert "input_ids" not in dataset_column_names(view)
 
 
-# ------------------------------------------------------- the double-BOS rule
 
 
 def test_add_special_tokens_is_off_when_the_template_emits_a_bos():
@@ -514,7 +506,6 @@ def test_no_bos_token_means_add_special_tokens_stays_on():
     assert resolve_add_special_tokens(tokenizer, "hello") is True
 
 
-# ----------------------------------------------------------------- small helpers
 
 
 @pytest.mark.parametrize(

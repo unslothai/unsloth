@@ -47,7 +47,6 @@ def stub_audio_decoder(monkeypatch):
     monkeypatch.setattr(
         stt_sidecar_module,
         "_decode_audio_bounded",
-        # Second arg is the cancel event the real decoder polls in its frame loop.
         lambda _audio, _cancel_event = None: np.zeros(8000, dtype = np.float32),
     )
     monkeypatch.setattr(
@@ -59,12 +58,9 @@ def stub_audio_decoder(monkeypatch):
         "_find_complete_cached_snapshot",
         lambda _model: Path("/cached/model"),
     )
-    # The stubbed snapshot path holds no files; snapshot-integrity tests
-    # restore the real check.
+    # The stubbed snapshot path holds no files; snapshot-integrity tests restore the real check.
     monkeypatch.setattr(stt_sidecar_module, "_snapshot_is_complete", lambda _snapshot: True)
-    # transcribe() gates on the runtime up front; treat it as present so these
-    # orchestration tests run without PyTorch/Transformers/PyAV installed.
-    # The runtime-specific tests restore the real check.
+    # transcribe() gates on the runtime up front; treat it as present so these run without PyTorch/PyAV.
     monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", lambda: None)
 
 
@@ -369,8 +365,7 @@ def test_unknown_language_is_not_reported_as_bad_audio(monkeypatch):
 def test_transcription_result_keeps_requested_model_id_during_switch(monkeypatch):
     sidecar = WhisperSttSidecar()
 
-    # Simulate another request changing the mutable resident-model state after
-    # this request pinned its own model id.
+    # Simulate another request changing the mutable resident-model state after this request pinned its own model id.
     infer = _CaptureInference(mutate = lambda: setattr(sidecar, "_model_id", "large-v3"))
     monkeypatch.setattr(sidecar, "_transcribe_decoded", infer)
 
@@ -475,8 +470,7 @@ def _install_fake_worker(monkeypatch, start = None):
 
 
 def test_load_hands_the_cached_snapshot_to_the_worker_process(monkeypatch):
-    # The model never enters this process: an accelerator context taken here is
-    # never given back, which is the whole reason the engine is out of process.
+    # An accelerator context taken here is never given back, which is why the engine is out of process.
     _install_fake_torch(monkeypatch)
     started = _install_fake_worker(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
@@ -484,7 +478,6 @@ def test_load_hands_the_cached_snapshot_to_the_worker_process(monkeypatch):
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
     sidecar.load("small")
 
-    # str(Path(...)), so the separator is the platform's.
     assert started == [(str(Path("/cached/model")), "cpu", "float32")]
     assert sidecar.loaded_model == "small"
 
@@ -519,7 +512,6 @@ def test_a_worker_that_died_is_not_resident_and_is_replaced_on_the_next_load(mon
 
 
 def test_unload_stops_the_worker_process(monkeypatch):
-    # empty_cache cannot return the context; ending the process is what does.
     _install_fake_torch(monkeypatch)
     _install_fake_worker(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
@@ -533,9 +525,7 @@ def test_unload_stops_the_worker_process(monkeypatch):
 
 
 def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkeypatch):
-    # cancel_pending_load() does not wait for the model lock, so it can land after
-    # start() came back with a live child. Nothing installed that child, and dropping
-    # the handle does not end the process holding the context training waits for.
+    # cancel_pending_load() does not wait for the model lock, so dropping the handle leaves the child running.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
@@ -555,7 +545,6 @@ def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkey
             _dtype_name,
             _cancel_event = None,
         ):
-            # The load succeeded; the cancel arrives a moment later.
             self.device = device
             assert sidecar.cancel_pending_load() is True
 
@@ -579,9 +568,7 @@ def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkey
 
 
 def test_a_late_cancelled_worker_that_outlived_the_kill_stays_resident(monkeypatch):
-    # The same late cancel, against a child that answers False: it survived terminate
-    # and kill and still holds its accelerator memory, so reporting nothing resident
-    # would let training be admitted against memory that is not free.
+    # A child that survived terminate and kill still holds accelerator memory: reporting nothing resident lies.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
@@ -621,8 +608,7 @@ def test_a_late_cancelled_worker_that_outlived_the_kill_stays_resident(monkeypat
         sidecar.load("small")
 
     assert len(workers) == 1
-    # Once. A second terminate-and-kill round on the way out would only spend
-    # another wait on a child that just proved it does not answer them.
+    # Once: a second terminate-and-kill round only spends another wait on a child that answers neither.
     assert workers[0].closes == 1
     assert sidecar.loaded_model == "small"
     assert sidecar.device == "cpu"
@@ -663,9 +649,7 @@ def _install_unkillable_worker(monkeypatch):
 
 
 def test_a_worker_that_outlived_the_kill_stays_resident_rather_than_reported_unloaded(monkeypatch):
-    # close() answers False for a child wedged in a driver call that outlives SIGKILL. It
-    # still holds its memory, so reporting the model unloaded would let training be
-    # admitted against memory that is not free.
+    # close() answers False for a child wedged in a driver call that outlives SIGKILL, and it still holds its memory.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     workers = _install_unkillable_worker(monkeypatch)
@@ -680,8 +664,7 @@ def test_a_worker_that_outlived_the_kill_stays_resident_rather_than_reported_unl
 
 
 def test_a_new_load_is_refused_while_the_previous_worker_still_holds_its_memory(monkeypatch):
-    # Starting a second child over one that never exited doubles the memory the
-    # first was unloaded to release, so refuse and let the caller retry.
+    # Starting a second child over one that never exited doubles the memory the first was unloaded to release.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     workers = _install_unkillable_worker(monkeypatch)
@@ -698,9 +681,7 @@ def test_a_new_load_is_refused_while_the_previous_worker_still_holds_its_memory(
 
 
 def test_a_surviving_worker_is_not_handed_to_the_next_dictation(monkeypatch):
-    # It is held for its memory, not for its answers: it already had its shutdown, a
-    # terminate and a kill, so handing it to a transcription costs the caller the whole
-    # command timeout under the model lock. Refuse, and let the retry kill it again.
+    # Held for its memory, not its answers: a spent child costs the caller a full command timeout under the lock.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     workers = _install_unkillable_worker(monkeypatch)
@@ -719,9 +700,7 @@ def test_a_surviving_worker_is_not_handed_to_the_next_dictation(monkeypatch):
 def test_a_worker_wedged_by_a_cancelled_transcription_is_not_handed_to_the_next_dictation(
     monkeypatch,
 ):
-    # A cancel that outruns the grace closes the worker from inside the handle, so
-    # close() answers False to nobody and the sidecar never learns the child outlived
-    # both signals. Handing it on spends the whole command timeout under the model lock.
+    # A cancel that outruns the grace closes the worker from inside, so close()'s False reaches nobody.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     workers = []
@@ -751,8 +730,7 @@ def test_a_worker_wedged_by_a_cancelled_transcription_is_not_handed_to_the_next_
             _generate_kwargs,
             _cancel_event = None,
         ):
-            # What _await does once the cancel grace expires: close() terminates and
-            # kills, the child answers neither, and the cancel is raised over its False.
+            # What _await does once the grace expires: close() terminates and kills, and the cancel rides its False.
             self.survived_kill = True
             raise stt_sidecar_module.SttTranscriptionCancelledError("Transcription cancelled.")
 
@@ -774,7 +752,6 @@ def test_a_worker_wedged_by_a_cancelled_transcription_is_not_handed_to_the_next_
         sidecar.load("small")
 
     assert len(workers) == 1
-    # Still accounted for: it holds its memory until the kill finally takes.
     assert sidecar.loaded_model == "small"
 
 
@@ -789,7 +766,6 @@ def _install_worker_that_survives_its_own_start(monkeypatch, error):
     class SurvivingStartWorker:
         def __init__(self) -> None:
             self.generation_config = SimpleNamespace(is_multilingual = None)
-            # start() never got as far as naming the device it loaded on.
             self.device = None
             workers.append(self)
 
@@ -817,10 +793,8 @@ def _install_worker_that_survives_its_own_start(monkeypatch, error):
 
 
 def test_a_child_that_outlived_the_kill_inside_start_stays_accounted(monkeypatch):
-    # The cancel lands while the child is inside from_pretrained, which never reads it,
-    # so the load kills the child on the way out and the child outlives it. Nothing
-    # installed that handle and it is the only one on the process: dropping it reports
-    # nothing resident while the context is taken, admitting training against it.
+    # The cancel lands while the child is inside from_pretrained, which never reads it, so the child
+    # outlives the load; dropping the only handle would report nothing resident while it holds context.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     workers = _install_worker_that_survives_its_own_start(
@@ -833,14 +807,12 @@ def test_a_child_that_outlived_the_kill_inside_start_stays_accounted(monkeypatch
 
     assert len(workers) == 1
     assert sidecar.loaded_model == "small"
-    # The child never named a device, so the one the attempt was made on stands in.
     assert sidecar.device == "cpu"
     assert sidecar.is_loading() is False
 
 
 def test_a_load_whose_child_outlived_the_kill_is_not_retried_onto_a_second_child(monkeypatch):
-    # The accelerator attempt failed leaving a live child, so the CPU retry would
-    # put a second child beside it and, installing that one, forget the first.
+    # The accelerator attempt failed leaving a live child, so the CPU retry would forget the first.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cuda", "float16"))
     workers = _install_worker_that_survives_its_own_start(
@@ -858,8 +830,7 @@ def test_a_load_whose_child_outlived_the_kill_is_not_retried_onto_a_second_child
 
 
 def test_an_idle_unload_retries_a_worker_that_outlived_the_kill(monkeypatch):
-    # Keeping the survivor resident must not strand it: the idle timer is rearmed
-    # so the release is tried again once the child finally goes.
+    # Keeping the survivor resident must not strand it: the idle timer is rearmed to retry the release.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     monkeypatch.setattr(stt_sidecar_module.threading, "Timer", _FakeTimer)
@@ -914,8 +885,7 @@ def _closed(worker):
 
 
 def test_a_worker_whose_liveness_cannot_be_read_stays_resident(monkeypatch):
-    # An unanswerable probe is not evidence that the context was released, so reporting
-    # nothing resident would let training be admitted against memory still held.
+    # An unanswerable probe is not evidence that the context was released.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
 
@@ -933,8 +903,7 @@ def test_a_worker_whose_liveness_cannot_be_read_stays_resident(monkeypatch):
 
 
 def test_a_close_that_raises_is_a_failed_release(monkeypatch):
-    # close() raising out of join/terminate/kill confirms nothing dead, so discarding
-    # the only handle would advertise memory the child is still holding as free.
+    # close() raising out of join/terminate/kill confirms nothing dead, so the only handle must not be dropped.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
 
@@ -953,8 +922,7 @@ def test_a_close_that_raises_is_a_failed_release(monkeypatch):
 
 
 def test_a_close_that_raises_over_a_child_already_gone_still_releases(monkeypatch):
-    # The other direction: bookkeeping that raised over a confirmed dead child
-    # holds no memory, and keeping it would refuse every later load.
+    # The other direction: bookkeeping that raised over a confirmed dead child holds no memory.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
 
@@ -976,9 +944,7 @@ def test_a_close_that_raises_over_a_child_already_gone_still_releases(monkeypatc
 
 
 def test_a_worker_being_reaped_stays_visible_to_training_admission(monkeypatch):
-    # loaded_model and summarize_resident_stt() read the fields without the model
-    # lock, so clearing them before the reap would report nothing resident for the
-    # whole close, and training would start into the child's accelerator memory.
+    # loaded_model and summarize_resident_stt() read without the model lock, so clearing early reports empty.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     release = threading.Event()
@@ -997,7 +963,7 @@ def test_a_worker_being_reaped_stays_visible_to_training_admission(monkeypatch):
     unloading = threading.Thread(target = sidecar.unload, daemon = True)
     unloading.start()
     try:
-        time.sleep(0.2)  # inside the close
+        time.sleep(0.2)
         seen["model"] = sidecar.loaded_model
         seen["device"] = sidecar.device
     finally:
@@ -1012,9 +978,7 @@ def test_a_worker_being_reaped_stays_visible_to_training_admission(monkeypatch):
 
 
 def test_a_host_that_cannot_spawn_keeps_dictation_in_process_on_cpu(monkeypatch):
-    # Moving the engine out of process may not take dictation away from a host that
-    # cannot create a child. The accelerator attempt goes through the usual CPU retry
-    # first, so nobody is downgraded before that has run.
+    # Moving the engine out of process must not cost dictation on a host that cannot fork; CPU retry runs first.
     import core.inference.stt_transformers_worker as worker_module
 
     _install_fake_torch(monkeypatch)
@@ -1049,7 +1013,6 @@ def test_a_host_that_cannot_spawn_keeps_dictation_in_process_on_cpu(monkeypatch)
     engine = sidecar.load("small")
 
     assert spawned == ["cuda", "cpu"]
-    # In process only after both spawns failed, and only ever on the CPU.
     assert loaded == [(str(Path("/cached/model")), "cpu", "float32")]
     assert sidecar.device == "cpu"
     assert sidecar.loaded_model == "small"
@@ -1080,7 +1043,6 @@ def test_load_reports_model_hub_cache_miss(monkeypatch):
     _install_fake_torch(monkeypatch)
 
     def missing(*_args, **_kwargs):
-        # What the worker reports for a cache miss it hit inside from_pretrained.
         raise SttModelNotDownloadedError("The dictation model is not downloaded.")
 
     _install_fake_worker(monkeypatch, start = missing)
@@ -1326,13 +1288,9 @@ def test_accelerator_load_failure_retries_on_cpu(monkeypatch):
 
 
 def test_pending_load_can_be_cancelled_without_waiting_for_model_lock(monkeypatch):
-    # The bound that carries the contract is the CANCEL thread's: it must come back while the
-    # build still holds the model lock, so two seconds against an indefinite wait is the whole
-    # question. The other waits below are liveness only -- they say "this must happen", and the
-    # assertion after each is what fails if it does not. Two seconds there was a budget on
-    # runner speed instead: after the build is released the load thread still has to be
-    # scheduled and run the cancel path's two full gc.collect()s, which a loaded two-core CI
-    # runner did not finish inside it.
+    # Only the CANCEL thread's bound carries a contract: it must come back while the build still holds
+    # the model lock. The other waits are liveness only, and two seconds there was a budget on runner
+    # speed, since after the build is released the load thread still runs two full gc.collect()s.
     settle = 30.0
     _install_fake_torch(monkeypatch)
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
@@ -1362,7 +1320,7 @@ def test_pending_load_can_be_cancelled_without_waiting_for_model_lock(monkeypatc
     result = []
     cancel_thread = threading.Thread(target = lambda: result.append(sidecar.cancel_pending_load()))
     cancel_thread.start()
-    cancel_thread.join(timeout = 2)  # the contract: back while the build still holds the lock
+    cancel_thread.join(timeout = 2)
 
     assert not cancel_thread.is_alive()
     assert result == [True]
@@ -1482,9 +1440,6 @@ def test_unload_releases_model_and_device():
     assert sidecar.device is None
 
 
-# ---------------------------------------------------------------------------
-# Snapshot download tracking
-# ---------------------------------------------------------------------------
 
 
 def _write_complete_snapshot(snapshot: Path, *, model_type: str = "whisper") -> None:
@@ -1612,8 +1567,7 @@ def test_snapshot_selection_includes_every_indexed_shard():
 
 
 def test_snapshot_selection_rejects_pickle_only_weights():
-    # A custom repo shipping only pytorch_model.bin (pickle) must fail closed:
-    # selecting it would download a checkpoint that runs code at load time.
+    # A custom repo shipping only pytorch_model.bin fails closed: selecting it downloads code that runs.
     info = SimpleNamespace(
         siblings = [
             _sibling("config.json", 10, "config"),
@@ -1630,9 +1584,7 @@ def test_snapshot_selection_rejects_pickle_only_weights():
 
 
 def test_snapshot_selection_rejects_safe_index_pointing_at_pickle_shards():
-    # A safetensors index can name .bin shards; Transformers dispatches shard
-    # loading by extension, so those shards would still pickle-load. The index
-    # is attacker-controlled, so a non-safetensors shard must fail closed.
+    # A safetensors index can name .bin shards and the index is attacker-controlled, so it must fail closed.
     info = SimpleNamespace(
         siblings = [
             _sibling("config.json", 10, "config"),
@@ -1726,7 +1678,6 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
         return _FakeDownloadProcess()
 
     monkeypatch.setattr("huggingface_hub.HfApi", FakeApi)
-    # The transfer runs in a worker process, so assert on its argv.
     monkeypatch.setattr("core.inference.stt_download_worker.spawn_download", fake_spawn_download)
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
@@ -1759,8 +1710,7 @@ def test_download_status_is_idle_before_any_download():
         "model": None,
         "error": None,
         "cancelled": False,
-        # Only set alongside cancelled: "model" goes None once the download thread stops, so
-        # this is what tells a settled cancellation from an unrelated one.
+        # Only set alongside cancelled: "model" goes None once the thread stops, so this settles the cancellation.
         "cancelled_model": None,
         "bytes_total": None,
         "bytes_done": None,
@@ -1778,7 +1728,6 @@ def test_download_rejects_a_second_model_while_one_is_in_flight(monkeypatch):
 
     state.start("small")
     try:
-        # Re-requesting the in-flight model is a no-op, not an error.
         state.start("small")
         with pytest.raises(SttModelIdError, match = "still"):
             state.start("tiny")
@@ -1790,7 +1739,6 @@ def test_download_rejects_a_second_model_while_one_is_in_flight(monkeypatch):
 
 def test_download_failure_is_reported_in_status(monkeypatch):
     state = stt_sidecar_module._SnapshotDownloadState()
-    # Mask huggingface_hub so the import inside _run fails fast.
     monkeypatch.setitem(sys.modules, "huggingface_hub", None)
 
     state.start("small")
@@ -1839,15 +1787,13 @@ def test_sharded_snapshot_with_missing_shard_is_not_downloaded(monkeypatch, tmp_
 
     assert stt_sidecar_module.is_model_downloaded("small") is False
 
-    # Completing the second shard flips the verdict.
     (snap / "model-00002-of-00002.safetensors").write_bytes(b"w" * 8)
     assert stt_sidecar_module.is_model_downloaded("small") is True
 
 
 @pytest.mark.parametrize("model_id", ["small", "openai/whisper-medium"])
 def test_preflight_rejects_partial_snapshot(monkeypatch, tmp_path, model_id):
-    # A resolvable snapshot with metadata but no weights must fail preflight,
-    # not survive until load() after the audio has already been decoded.
+    # A snapshot with metadata but no weights must fail preflight, not survive until after the decode.
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setattr(
@@ -1864,7 +1810,6 @@ def test_preflight_rejects_partial_snapshot(monkeypatch, tmp_path, model_id):
     with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
         WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded(model_id)
 
-    # Completing the snapshot clears the preflight.
     (snapshot / "preprocessor_config.json").write_text("{}")
     (snapshot / "tokenizer.json").write_text("{}")
     (snapshot / "model.safetensors").write_bytes(b"w" * 8)
@@ -1882,8 +1827,7 @@ def test_cpu_retry_releases_failed_accelerator_load(monkeypatch):
 
     def fake_build(self, repo, device, dtype, cancel_event):
         if device != "cpu":
-            # The frame local stands in for a partly loaded accelerator model
-            # kept alive only through the raised traceback.
+            # The frame local stands in for a partly loaded accelerator model kept alive by the raised traceback.
             marker = Marker()
             seen["ref"] = weakref.ref(marker)
             raise RuntimeError("accelerator load failed")
@@ -1895,8 +1839,7 @@ def test_cpu_retry_releases_failed_accelerator_load(monkeypatch):
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
     sidecar.load("small")
 
-    # The failed attempt must be collectable before the CPU model loads, or
-    # its accelerator memory stays stranded for the whole retry.
+    # The failed attempt must be collectable before the CPU model loads, or its memory stays stranded.
     assert seen["alive_during_retry"] is False
     assert sidecar.device == "cpu"
 

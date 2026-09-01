@@ -20,7 +20,7 @@ import pytest
 
 pytest.importorskip("torch")
 
-from routes.inference import _inject_video_part  # noqa: E402
+from routes.inference import _inject_video_part
 
 
 def test_a_video_part_is_appended_to_the_last_user_message():
@@ -30,7 +30,6 @@ def test_a_video_part_is_appended_to_the_last_user_message():
     ]
     _inject_video_part(messages, "AAAA")
     assert messages[1]["content"][-1] == {"type": "input_video", "input_video": {"data": "AAAA"}}
-    # The system message is untouched.
     assert messages[0]["content"] == "be brief"
 
 
@@ -132,7 +131,6 @@ def test_the_size_check_runs_before_the_automatic_switch():
     """A cheap length check must not cost a model load first: an oversized clip
     would otherwise evict a working model and 413 only afterwards."""
     source = _inference_source()
-    # Anchor inside the chat-completions handler; other routes switch too.
     handler = source.index("_needs_image = bool(_pre_parsed[2])")
     guard = source.index("_video_b64_rejection(payload.video_base64)", handler)
     switch = source.index("await _maybe_auto_switch_model(", handler)

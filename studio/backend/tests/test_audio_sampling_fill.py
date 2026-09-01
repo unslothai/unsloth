@@ -81,7 +81,6 @@ def _run_generate_audio(
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
 
-    # Recommendation source == the Chat UI's .inference block.
     monkeypatch.setattr(ic, "load_inference_config", lambda mid: dict(recommended or {}))
     ic._recommended_sampling.cache_clear()
 

@@ -45,9 +45,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Installs the process-wide loggers/structlog/httpx stubs and the GGUF builder,
-# and brings the route harness with it. Same import-for-side-effects pattern as
-# test_kv_cache_estimate_route.py.
+# Imported for its side effects: process-wide stubs, the GGUF builder and the route harness.
 from test_kv_cache_estimate_route import _call_route, _write_gguf  # noqa: E402
 
 import routes.inference as ri  # noqa: E402
@@ -82,8 +80,7 @@ def _reach_the_planner(monkeypatch, gguf: Path) -> None:
     monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
 
 
-# An ordinary GQA model. Nothing exotic: this is about the envelope, not the
-# arithmetic, and test_memory_estimate.py already owns the arithmetic.
+# An ordinary GQA model: this is about the envelope, not the arithmetic.
 _PLAIN_GQA = {
     "context_length": 32768,
     "block_count": 28,
@@ -94,9 +91,8 @@ _PLAIN_GQA = {
     "attention.value_length": 128,
 }
 
-# Every key GET /kv-cache-estimate has ever promised, as of the #7880 merge
-# (54367e59). The route returns a bare dict with no response_model, so nothing
-# in the framework enforces this and only this test does.
+# Every key GET /kv-cache-estimate has promised as of #7880 (54367e59). The route returns a
+# bare dict with no response_model, so only this test enforces it.
 _KV_CACHE_ESTIMATE_KEYS = frozenset(
     {
         "kv_bytes",
@@ -132,8 +128,7 @@ class TestTheKvCacheEstimateEnvelope:
         )
         assert out is not None, "the route answered None for a sizable local GGUF"
         got = set(out)
-        # Named both ways round so a failure says which direction moved rather
-        # than printing two sets and leaving the reader to diff them.
+        # Named both ways round so a failure says which direction moved.
         assert not got - _KV_CACHE_ESTIMATE_KEYS, (
             f"new keys on a route with no response_model: {sorted(got - _KV_CACHE_ESTIMATE_KEYS)}. "
             "Additive is safe for permissive clients and NOT safe for strict ones; "
@@ -145,13 +140,9 @@ class TestTheKvCacheEstimateEnvelope:
         )
 
     def test_weights_bytes_is_the_quant_file_alone(self, monkeypatch, tmp_path):
-        # The anchor for the whole consolidation. The figure handed to the route
-        # as the resolved quant size must come back out unchanged: not the
-        # planner's aggregate, not the aggregate minus something.
-        #
-        # Driven with the planner REACHED, so that the aggregate is a real and
-        # different number sitting right beside this field. Without that, this
-        # assertion holds vacuously.
+        # The anchor for the whole consolidation: the resolved quant size must come back unchanged,
+        # not the planner's aggregate. Driven with the planner REACHED, so the aggregate is a real and
+        # different number beside it; without that this holds vacuously.
         quant_size = 4_123_456_789
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         _reach_the_planner(monkeypatch, gguf)
@@ -177,10 +168,8 @@ class TestTheKvCacheEstimateEnvelope:
         )
 
     def test_the_planner_aggregate_travels_in_its_own_fields(self, monkeypatch, tmp_path):
-        # The corollary: the planner's numbers arrive, they are POPULATED, and
-        # they are not weights_bytes. Presence alone is not the assertion -- the
-        # fields are present-and-null whenever the delegation is skipped, which
-        # is most of this suite's sibling fixtures.
+        # The planner's numbers arrive POPULATED and are not weights_bytes: presence alone is not the
+        # assertion, since the fields are present-and-null whenever the delegation is skipped.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         _reach_the_planner(monkeypatch, gguf)
         out = _call_route(
@@ -196,8 +185,7 @@ class TestTheKvCacheEstimateEnvelope:
                 f"{out.get(field)!r}. A null here means the delegation added during "
                 "#7880's review stopped running."
             )
-        # The floor is what survives any context reduction, so it must be a
-        # strict fraction of the full GPU figure rather than a copy of it.
+        # The floor survives any context reduction, so it must be a strict fraction of the GPU figure.
         assert out["gpu_floor_bytes"] < out["gpu_bytes"]
 
 
@@ -205,10 +193,8 @@ class TestTheEstimateMemoryEnvelope:
     """POST /estimate-memory, field for field."""
 
     def test_weights_bytes_is_documented_as_the_aggregate(self):
-        # Read off the model rather than a live call: this is a statement about
-        # the CONTRACT, and the description is the contract for a field whose
-        # type says nothing useful. If someone narrows the meaning to match the
-        # sibling route, this is the tripwire.
+        # Read off the model rather than a live call: the description is the contract for a field whose
+        # type says nothing useful, and this is the tripwire if someone narrows its meaning.
         field = EstimateMemoryResponse.model_fields["weights_bytes"]
         description = (field.description or "").lower()
         assert "projector" in description and "drafter" in description, (
@@ -218,8 +204,7 @@ class TestTheEstimateMemoryEnvelope:
         )
 
     def test_the_response_model_still_carries_the_itemization(self):
-        # The panel prints one row per term. Losing any of these silently blanks
-        # a row rather than failing, so they are pinned by name.
+        # The panel prints one row per term, and losing one silently blanks a row rather than failing.
         expected = {
             "available",
             "reason",
@@ -262,13 +247,10 @@ class TestTheCollisionItself:
         """
         kv_route_meaning = models_routes.get_kv_cache_estimate.__doc__ or ""
         inference_meaning = EstimateMemoryResponse.model_fields["weights_bytes"].description or ""
-        # The inference route says so in its own words.
         assert (
             "projector" in inference_meaning.lower()
         ), "the aggregate meaning is no longer documented on /estimate-memory"
-        # And the models route hands back exactly what it resolved, which the
-        # sibling test above proves numerically. Here we only assert the two
-        # descriptions are not the same claim, so that a future merge onto one
+        # Asserting only that the two descriptions are not the same claim, so a future merge onto one
         # shared field cannot pass both suites unnoticed.
         assert "weights, projector, drafter" not in kv_route_meaning, (
             "/kv-cache-estimate has started describing weights_bytes as the "

@@ -98,9 +98,7 @@ def test_a_cancel_during_metadata_leaves_the_shared_cache_alone(
     cache would purge partials, both after the user was told it stopped.
     """
     claims, prepares, spawns = [], [], []
-    # Stub the Hub metadata call. Unstubbed it reaches huggingface.co, and when that
-    # fails (offline CI) the exception lands in _run's handler before the guard under
-    # test, so every assertion below passes without the guard existing at all.
+    # Unstubbed this reaches huggingface.co, and offline the exception lands before the guard under test.
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", lambda *a, **k: _FakeMeta())
@@ -120,7 +118,7 @@ def test_a_cancel_during_metadata_leaves_the_shared_cache_alone(
     )
 
     state = state_factory()
-    state._cancelled = True  # as cancel() leaves it during metadata
+    state._cancelled = True
     state._run(model_id, None, hub_cache = tmp_path)
 
     assert claims == [], "a cancelled run still reserved the repository"
@@ -242,7 +240,7 @@ def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
     real = state._downloaded_bytes
 
     def probe_after_a_restart(*args, **kwargs):
-        restart(state)  # the next run lands between the lock release and the probe
+        restart(state)
         return real(*args, **kwargs)
 
     state._downloaded_bytes = probe_after_a_restart

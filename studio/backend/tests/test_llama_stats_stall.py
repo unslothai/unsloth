@@ -109,8 +109,8 @@ def test_held_slot_with_no_decode_calls_is_reported(monkeypatch):
 
 
 def test_nothing_is_ever_cancelled(monkeypatch):
-    # The poller must expose no cancellation hook at all: acting on this signal
-    # would kill healthy generations, which is the bug this test guards.
+    # The poller must expose no cancellation hook at all: acting on this signal would kill healthy
+    # generations, which is the bug this test guards.
     lg = LlamaServerStatsLogger("http://127.0.0.1:0", _Capture())
     assert not hasattr(lg, "_on_stall")
     import inspect
@@ -119,10 +119,9 @@ def test_nothing_is_ever_cancelled(monkeypatch):
 
 
 def test_a_healthy_long_decode_is_never_flagged(monkeypatch):
-    # THE REGRESSION THIS FILE EXISTS FOR. llama-server does not move
-    # tokens_predicted_total until the slot is released, so a generation running
-    # at 5 tok/s for 20 minutes shows completely static token counters while
-    # decoding normally. Only n_decode_total distinguishes it from a wedge.
+    # THE REGRESSION THIS FILE EXISTS FOR. llama-server does not move tokens_predicted_total until
+    # the slot is released, so a generation running at 5 tok/s for 20 minutes shows static token
+    # counters while decoding normally.
     snaps = [
         {
             "tokens_predicted_total": 4096.0,  # frozen for the whole generation
@@ -137,8 +136,8 @@ def test_a_healthy_long_decode_is_never_flagged(monkeypatch):
 
 
 def test_a_healthy_long_prefill_is_never_flagged(monkeypatch):
-    # Multi-batch prefill: prompt_tokens_total does not flush until a decode
-    # produces output, so it too is static while the engine is busy.
+    # Multi-batch prefill: prompt_tokens_total does not flush until a decode produces output, so it
+    # too is static while the engine is busy.
     snaps = [
         {
             "tokens_predicted_total": 0.0,
@@ -169,8 +168,7 @@ def test_recovery_rearms_the_report(monkeypatch):
 
 
 def test_a_stalled_gauge_does_not_mask_a_wedge(monkeypatch):
-    # predicted_tokens_seconds stuck at a stale nonzero value while nothing
-    # decodes. A rate-based check would miss this.
+    # predicted_tokens_seconds stuck at a stale nonzero value while nothing decodes.
     snaps = [
         {
             "n_decode_total": 8192.0,
@@ -184,8 +182,8 @@ def test_a_stalled_gauge_does_not_mask_a_wedge(monkeypatch):
 
 
 def test_absent_decode_counter_disables_reporting(monkeypatch):
-    # A build whose /metrics lacks n_decode_total reads 0.0 through .get()
-    # forever, indistinguishable from a wedge. Report once, then stay quiet.
+    # A build whose /metrics lacks n_decode_total reads 0.0 through .get() forever,
+    # indistinguishable from a wedge.
     snaps = [{"requests_processing": 1.0} for _ in range(120)]
     cap = _drive(snaps, monkeypatch)
     assert not _stalls(cap)
@@ -200,8 +198,8 @@ def test_disabled_by_zero_timeout(monkeypatch):
 
 
 def test_counter_reset_after_reload_is_not_a_stall(monkeypatch):
-    # A model reload restarts llama-server, so n_decode_total goes back to 0.
-    # That is a change, so it must re-arm rather than read as progress-free.
+    # A model reload restarts llama-server, so n_decode_total goes back to 0. That is a change, so
+    # it must re-arm rather than read as progress-free.
     snaps = _wedged(20) + [
         {"n_decode_total": float(i), "requests_processing": 1.0} for i in range(5)
     ]
@@ -269,8 +267,7 @@ def test_the_clamped_interval_is_a_wait_every_platform_accepts():
     import threading
 
     assert ls._MAX_ENV_SECONDS <= threading.TIMEOUT_MAX
-    # The Windows ceiling, asserted on every platform so Linux cannot pass a cap Windows
-    # would reject.
+    # The Windows ceiling, asserted on every platform so Linux cannot pass a cap Windows would reject.
     assert ls._MAX_ENV_SECONDS <= (2**32 - 1) / 1000.0
     event = threading.Event()
     threading.Timer(0.05, event.set).start()

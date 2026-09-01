@@ -212,15 +212,8 @@ def test_consolidated_weights_are_not_hidden_by_their_companion():
     assert repo_ships_transformers_weights(["model.safetensors"]) is True
 
 
-# ---------------------------------------------------------------------------
-# The GGUF selection sites in core/inference/llama_cpp.py.
-#
-# Every one of these was filtered by #8919 and every one was silently reverted by
-# #9074's whole-file merge resolution. Only one of the five had a test, so CI
-# reported a lost error message and said nothing at all about the four selection
-# sites, which is the half that actually loads the wrong file. These cover the
-# selection behaviour directly, so a revert cannot come back quiet again.
-# ---------------------------------------------------------------------------
+# Every one of these was filtered by #8919 and silently reverted by #9074's whole-file merge; only
+# one of the five had a test, so cover the selection behaviour directly.
 
 
 def test_a_sidecar_never_wins_the_mmproj_preference():

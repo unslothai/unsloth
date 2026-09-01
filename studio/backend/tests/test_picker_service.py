@@ -153,7 +153,6 @@ def test_chat_template_from_dir_with_variant_still_prefers_tokenizer(tmp_path, m
 def test_chat_template_from_dir_with_variant_falls_back_to_gguf(tmp_path, monkeypatch):
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"")
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # With no tokenizer sidecar, the embedded GGUF template is still the fallback.
     assert _chat_template_from_dir(tmp_path, "Q4_K_M") == "FROM_GGUF"
 
 
@@ -178,13 +177,12 @@ def test_read_default_chat_template_direct_gguf_falls_back_to_embedded(tmp_path,
     gguf.write_bytes(b"")
     monkeypatch.setattr("picker.service._build_browse_allowlist", lambda: [tmp_path])
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # With no sidecar next to the file, the embedded GGUF template is the fallback.
     assert read_default_chat_template(str(gguf)) == "FROM_GGUF"
 
 
 def test_tokenizer_config_over_size_limit_is_skipped_not_parsed(tmp_path):
-    # An oversized tokenizer_config.json must be skipped before json.loads so a
-    # hostile sidecar cannot exhaust memory.
+    # An oversized tokenizer_config.json must be skipped before json.loads so a hostile sidecar
+    # cannot exhaust memory.
     padding = "x" * (MAX_TEMPLATE_METADATA_BYTES + 1024)
     (tmp_path / "tokenizer_config.json").write_text(
         json.dumps({"chat_template": "HELLO", "_pad": padding}), encoding = "utf-8"
@@ -201,7 +199,6 @@ def test_processor_json_over_size_limit_is_skipped_not_parsed(tmp_path):
 
 
 def test_tokenizer_config_at_size_limit_is_still_read(tmp_path):
-    # A normal-sized config is unaffected by the bound (regression guard).
     (tmp_path / "tokenizer_config.json").write_text(
         json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
     )
@@ -209,8 +206,8 @@ def test_tokenizer_config_at_size_limit_is_still_read(tmp_path):
 
 
 def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch):
-    # An uncached Hub repo whose template exceeds the cap must be skipped via the
-    # remote size pre-check, never downloaded.
+    # An uncached Hub repo whose template exceeds the cap must be skipped via the remote size
+    # pre-check, never downloaded.
     import huggingface_hub
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
@@ -231,10 +228,8 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
 
 
 def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, monkeypatch):
-    # A raw chat_template.jinja between the response cap (MAX_CHAT_TEMPLATE_BYTES)
-    # and the download bound (MAX_TEMPLATE_METADATA_BYTES) must not be returned: the
-    # route drops it, so the remote path must skip the oversized Jinja and fall
-    # through to the smaller tokenizer_config.json.
+    # A raw chat_template.jinja between the response cap and the download bound must not be
+    # returned: the route drops it, so the remote path must fall through to tokenizer_config.json.
     import huggingface_hub
     from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 

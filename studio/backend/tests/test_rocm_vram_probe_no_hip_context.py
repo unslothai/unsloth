@@ -140,7 +140,6 @@ class TestAUnifiedMemoryApuDefersToTorch:
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 98304)
         )
-        # amd-smi: 1 GiB used of the 8 GiB dedicated slice.
         monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: _payload((0, 1024, 8192)))
 
     def test_the_amd_smi_branch_declines(self, strix_halo):
@@ -174,11 +173,11 @@ class TestAUnifiedMemoryApuDefersToTorch:
 @pytest.mark.parametrize(
     "envelope",
     [
-        lambda rows: rows,  # a bare JSON array
-        lambda rows: {"gpu_data": rows},  # newer versions
+        lambda rows: rows,
+        lambda rows: {"gpu_data": rows},
         lambda rows: {"gpus": rows},
         lambda rows: {"gpu": rows},
-        lambda rows: rows[0],  # the single-GPU dict get_primary_gpu_utilization takes
+        lambda rows: rows[0],
     ],
 )
 def test_every_amd_smi_envelope_shape_is_read(rocm, monkeypatch, envelope):

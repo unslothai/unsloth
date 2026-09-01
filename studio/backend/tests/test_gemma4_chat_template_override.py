@@ -24,8 +24,8 @@ if _BACKEND_DIR not in sys.path:
 
 import pytest
 
-# ── chat_templates is dependency-light: load it directly so the pure-logic
-#    tests run without the studio venv / core.inference package side effects. ──
+# chat_templates is dependency-light: load it directly so the pure-logic tests run without the
+# studio venv / core.inference package side effects.
 _CT_PATH = Path(_BACKEND_DIR) / "core" / "inference" / "chat_templates.py"
 _ct_spec = importlib.util.spec_from_file_location("_gemma4_ct_test", _CT_PATH)
 chat_templates = importlib.util.module_from_spec(_ct_spec)
@@ -90,7 +90,6 @@ def _detect_reasoning_flags():
     return detect_reasoning_flags
 
 
-# ── Family matcher ───────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -116,7 +115,6 @@ def test_is_unsloth_gemma4_gguf(model_id, expected):
     assert is_unsloth_gemma4_gguf(model_id) is expected
 
 
-# ── Resolver precedence ──────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -143,8 +141,8 @@ def test_resolver_returns_edge_template_for_e2b_e4b():
 
 
 def test_resolver_handles_owner_less_shorthand():
-    # ModelConfig.from_identifier prefixes unsloth/ for bare ids; the resolver
-    # runs before that, so it must apply the same normalization.
+    # ModelConfig.from_identifier prefixes unsloth/ for bare ids; the resolver runs before that, so
+    # it must apply the same normalization.
     assert (
         resolve_effective_chat_template_override(
             model_identifier = "gemma-4-E2B-it-GGUF", user_override = None
@@ -192,7 +190,6 @@ def test_resolver_none_for_non_gemma():
     )
 
 
-# ── Bundled asset content + capability classification ────────────────
 
 
 @pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
@@ -203,9 +200,8 @@ def test_bundled_template_has_preserve_thinking_defaulted_off(tpl):
 
 @pytest.mark.parametrize("name", ["gemma-4.jinja", "gemma-4-edge.jinja"])
 def test_bundled_templates_are_ascii(name):
-    # The temp file written for --chat-template-file must encode on any locale.
-    # Keeping the bundled templates ASCII avoids UnicodeEncodeError on non-UTF-8
-    # Windows locales (cp932/cp1252) regardless of the writer's encoding.
+    # The temp file written for --chat-template-file must encode on any locale: keeping the bundled
+    # templates ASCII avoids UnicodeEncodeError on non-UTF-8 Windows locales (cp932/cp1252).
     text = load_bundled_chat_template(name)
     non_ascii = sorted({c for c in text if ord(c) > 127})
     assert not non_ascii, f"{name} has non-ASCII chars: {non_ascii}"
@@ -237,7 +233,6 @@ def test_edge_template_omits_empty_thought_block_on_thinking_off():
     assert EMPTY not in _render_with(EDGE, msgs, enable_thinking = True)
 
 
-# ── Jinja gate behaviour (off = omit prior reasoning, on = keep) ─────
 
 
 def _render_with(tpl, messages, **kw):
@@ -297,7 +292,6 @@ def test_enable_thinking_gates_think_token():
     assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
 
 
-# ── Reload dedup interaction (why the route resolves the effective override) ──
 
 
 def test_already_in_target_state_consistent_with_bundled_override():
@@ -341,7 +335,6 @@ def test_already_in_target_state_consistent_with_bundled_override():
         extra_args = None,
         is_vision = False,
     )
-    # Effective (resolved bundled) override -> already loaded, no reload.
     assert backend.adopt_load_intent_if_matched(
         GgufLoadIntent(chat_template_override = BUNDLED, **common)
     )

@@ -17,7 +17,6 @@ if str(_BACKEND) not in sys.path:
 
 import routes.inference as inference_route  # noqa: E402
 
-# Multiple turns make scheduler progress unambiguous.
 _CONTROL_TURNS = 5
 # Prevent a regression from hanging the suite.
 _GUARD_SECONDS = 10.0
@@ -99,10 +98,8 @@ def test_status_probe_runs_off_the_event_loop(monkeypatch):
 
         status = asyncio.create_task(inference_route.get_status(current_subject = "test"))
         control = asyncio.create_task(_control())
-        # Wait without blocking the event loop.
         started = await asyncio.to_thread(entered.wait, _GUARD_SECONDS)
         await control
-        # The control task finished while the probe remained blocked.
         probe_in_flight = not status.done()
         release.set()
         response = await asyncio.wait_for(status, timeout = _GUARD_SECONDS)
@@ -134,8 +131,7 @@ def test_overlapping_status_probes_leave_default_executor_for_streaming(monkeypa
 
     async def _run():
         loop = asyncio.get_running_loop()
-        # One worker makes default-executor starvation deterministic.  The status
-        # executor remains separate, so two overlapping polls still leave it free.
+        # One worker makes default-executor starvation deterministic.
         loop.set_default_executor(ThreadPoolExecutor(max_workers = 1))
         statuses = [
             asyncio.create_task(inference_route.get_status(current_subject = "test"))

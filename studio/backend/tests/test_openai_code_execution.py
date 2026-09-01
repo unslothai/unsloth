@@ -248,8 +248,8 @@ def test_shell_call_emits_tool_start_and_end(monkeypatch):
     assert len(ends) == 1
     assert starts[0]["tool_name"] == "code_execution"
     assert starts[0]["tool_call_id"] == "scall_1"
-    # `_server_tool: True` marks a synthetic builtin so the frontend can tell
-    # hosted tools from user-declared functions on history replay.
+    # `_server_tool: True` marks a synthetic builtin so the frontend can tell hosted tools from
+    # user-declared functions on history replay.
     assert starts[0]["arguments"] == {"kind": "bash", "command": "ls -la", "_server_tool": True}
     assert ends[0]["tool_call_id"] == "scall_1"
     assert "total 24" in ends[0]["result"]
@@ -329,7 +329,6 @@ def test_container_ready_not_emitted_when_id_unchanged(monkeypatch):
 
     lines = _drive(run())
     events = _tool_events(lines)
-    # No churn — id matches the one already on the thread record.
     assert not any(e["type"] == "container_ready" for e in events)
 
 
@@ -382,7 +381,6 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
         calls.append(body)
-        # Inspect the shell tool's environment.type.
         shell_env_type = None
         for tool in body.get("tools", []) or []:
             if tool.get("type") == "shell":
@@ -402,8 +400,7 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
                 ).encode("utf-8"),
                 headers = {"content-type": "application/json"},
             )
-        # Successful retry: minimal SSE — completed response with a fresh
-        # container_id so container_ready latches.
+        # Successful retry: a completed response with a fresh container_id so container_ready latches.
         sse = _openai_sse(
             [
                 {
@@ -439,8 +436,7 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
     lines = _drive(run())
     events = _tool_events(lines)
 
-    # Two outbound calls: the expired-container attempt, then the retry
-    # without the container field.
+    # Two outbound calls: the expired-container attempt, then the retry without the container field.
     assert len(calls) == 2
     shell_types = []
     for body in calls:
@@ -449,9 +445,7 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
                 shell_types.append(tool.get("environment", {}).get("type"))
     assert shell_types == ["container_reference", "container_auto"]
 
-    # container_invalidated emitted (frontend nulls its stored id).
     assert any(e.get("type") == "container_invalidated" for e in events)
-    # container_ready emitted from the retry stream with the fresh id.
     assert any(
         e.get("type") == "container_ready" and e.get("container_id") == "cntr_fresh_111"
         for e in events
@@ -508,6 +502,5 @@ def test_expired_container_retries_only_once(monkeypatch):
 
     # Exactly two calls (first + one retry); a third would be a loop.
     assert call_count["n"] == 2
-    # The second failure surfaces normally as an error SSE line.
     error_lines = [line for line in lines if '"error"' in line and "_toolEvent" not in line]
     assert len(error_lines) >= 1

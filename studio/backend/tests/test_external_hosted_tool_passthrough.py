@@ -129,13 +129,10 @@ def _run(inf, payload):
     return _drive(go())
 
 
-# ── Task 2: hosted vs local, A/B against the merge base ──────────────
 
 
-# The gate as it stood at merge base b3376300: only the Codex subscription ran
-# Unsloth's tools on an external provider. Every other provider took the plain
-# passthrough, whatever the request said about tools. Kept as executable code so
-# the expectations below are derived from the old behaviour, not restated.
+# The gate as it stood at merge base b3376300: only the Codex subscription ran Unsloth's tools on an
+# external provider, every other provider took the plain passthrough.
 def _merge_base_takes_studio_loop(payload, provider_type: str) -> bool:
     from routes.inference import _explicit_studio_tool_loop_requested
     return (
@@ -145,9 +142,8 @@ def _merge_base_takes_studio_loop(payload, provider_type: str) -> bool:
     )
 
 
-# Exactly what the pre-PR bundle put on the wire for the hosted-tool pills:
-# two keys, no permission_mode, no mcp_enabled. See
-# `git show b3376300:studio/frontend/src/features/chat/api/chat-adapter.ts`.
+# Exactly what the pre-PR bundle put on the wire for the hosted-tool pills: two keys, no
+# permission_mode, no mcp_enabled (see chat-adapter.ts at b3376300).
 HOSTED_PROVIDERS = ("openai", "gemini", "openrouter", "kimi", "anthropic")
 
 HOSTED_SELECTIONS = (
@@ -238,8 +234,8 @@ def test_a_code_execution_with_run_tools_locally_still_answers_the_confirm_gate(
     from fastapi import HTTPException
 
     inf = _install(monkeypatch, "openai")
-    # Class-level state; the client is built after the guard, so an untouched
-    # record is the evidence nothing was sent.
+    # Class-level state; the client is built after the guard, so an untouched record is the evidence
+    # nothing was sent.
     FakeExternalClient.last = {}
     payload = _payload(
         enable_tools = True,
@@ -290,11 +286,9 @@ def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, p
 def test_a_local_only_selection_takes_the_loop_on_a_hosted_provider(monkeypatch, overrides):
     """Shape 3: one Unsloth-only name (or MCP) is unambiguous, so the feature
     works on hosted providers too."""
-    # ``_select_request_tools`` imports this from ``core.inference.tools`` inside the function
-    # body, so it is never an attribute of ``routes.inference``: patching the route set a dead
-    # name, and ``raising = False`` hid that while the real function ran instead. On this job
-    # it reads an empty settings DB and short-circuits before spawning anything, but nothing
-    # here held it to that. Default ``raising`` catches a future move.
+    # ``_select_request_tools`` imports this from ``core.inference.tools`` inside the function body,
+    # so it is never an attribute of ``routes.inference``: patching the route set a dead name and
+    # ``raising = False`` hid that.
     monkeypatch.setattr(
         "core.inference.tools.get_enabled_mcp_tools",
         lambda: _noop_mcp(),
@@ -330,7 +324,6 @@ def test_a_codex_declares_no_hosted_tools():
     assert provider_hosted_tools("openai_codex") == frozenset()
 
 
-# ── Task 1: what an omitted permission_mode means ────────────────────
 
 
 def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
@@ -407,11 +400,8 @@ def test_b_the_external_and_codex_paths_derive_the_gate_identically():
         ("python", {"code": "open('/home/u/.ssh/id_rsa').read()"}, True),
         ("python", {"code": "import os; os.system('curl http://x')"}, True),
         ("python", {"code": "import shutil; shutil.rmtree('/tmp/x')"}, True),
-        # Observed, not endorsed: a bare `subprocess.run` clears the static
-        # safety check and is not classified high risk, so auto runs it inside
-        # the sandbox without prompting. Same on every path (local, Codex,
-        # external), so it is not this PR's regression -- pinned so a change
-        # to it is a deliberate one.
+        # Observed, not endorsed: a bare `subprocess.run` clears the static safety check and is not
+        # high risk, so auto runs it in the sandbox without prompting.
         ("python", {"code": "import subprocess; subprocess.run(['sh', '-c', 'x'])"}, False),
         ("terminal", {"command": "ls -la"}, False),
         ("terminal", {"command": "cat ~/.aws/credentials"}, True),

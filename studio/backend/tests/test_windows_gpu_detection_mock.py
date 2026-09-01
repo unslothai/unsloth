@@ -34,9 +34,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub heavy deps only if they fail to import (unconditional stubs would shadow
-# the real module for sibling tests). Use try-import, not find_spec: loggers
-# imports fastapi at load, so find_spec succeeds but the import then raises.
+# Stub heavy deps only if they fail to import; find_spec succeeds for loggers while the import still raises.
 import importlib as _importlib  # noqa: E402
 
 
@@ -95,17 +93,14 @@ _maybe_stub("httpx", _build_httpx_stub)
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 
-# Upstream b9103 cudart bundle: exactly these three DLLs per CUDA major,
-# no executables or subdirectories. Verified by direct unzip.
+# Upstream b9103 cudart bundle: exactly these three DLLs per CUDA major, no executables or subdirectories.
 REAL_UPSTREAM_CUDART_BUNDLE = {
     "12.4": ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"),
     "13.1": ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"),
 }
 
-# PyPI win_amd64 wheel layouts, verified via `pip download ... --platform
-# win_amd64` + `unzip -l`. Resolver only cares about directory structure.
+# PyPI win_amd64 wheel layouts, verified via `pip download --platform win_amd64` + `unzip -l`.
 REAL_PIP_NVIDIA_WHEEL_LAYOUTS = {
-    # Legacy cu-suffixed wheels
     "nvidia/cuda_runtime/bin": ["cudart64_12.dll"],
     "nvidia/cublas/bin": [
         "cublas64_12.dll",
@@ -117,7 +112,6 @@ REAL_PIP_NVIDIA_WHEEL_LAYOUTS = {
         "cudnn_adv64_9.dll",
         "cudnn_ops64_9.dll",
     ],
-    # Unsuffixed cu13 wheels
     "nvidia/cu13/bin/x86_64": [
         "cudart64_13.dll",
         "cublas64_13.dll",
@@ -135,7 +129,6 @@ def _populate_studio_venv(prefix: Path) -> None:
         d.mkdir(parents = True, exist_ok = True)
         for name in dlls:
             (d / name).write_bytes(b"PE-stub")
-    # install_python_stack always installs torch beside nvidia.
     (site / "torch" / "lib").mkdir(parents = True, exist_ok = True)
     for fn in ("c10.dll", "torch.dll", "torch_cpu.dll", "torch_python.dll"):
         (site / "torch" / "lib" / fn).write_bytes(b"PE-stub")
@@ -156,7 +149,6 @@ def _populate_studio_install(install_dir: Path, runtime: str = "13.1") -> None:
         "mtmd.dll",
     ):
         (rel / fn).write_bytes(b"PE-stub")
-    # The cudart overlay from #5322.
     for fn in REAL_UPSTREAM_CUDART_BUNDLE[runtime]:
         (rel / fn).write_bytes(b"PE-stub")
 
@@ -185,16 +177,12 @@ def _mock_nvidia_smi_run(fake_output: str, returncode: int = 0) -> "mock._patch"
     return mock.patch("subprocess.run", side_effect = fake_run)
 
 
-# --------------------------------------------------------------------- #
-# Tests
-# --------------------------------------------------------------------- #
 class TestWindowsGpuDetectionAfter5106Fix:
     """End-to-end #5106 fix on a synthetic Windows layout. nvidia-smi
     mocked; resolver, PATH builder, and install layout run live."""
 
     def test_nvidia_smi_probe_reports_synthetic_gpu(self, monkeypatch):
         """Probe parses CSV output and returns (index, free_mib)."""
-        # Clear inherited masks so the synthetic CSV isn't filtered.
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("NVIDIA_VISIBLE_DEVICES", raising = False)
         # The #5106 reporter's exact reproducer: RTX 4090, 22805 MiB.
@@ -220,10 +208,8 @@ class TestWindowsGpuDetectionAfter5106Fix:
             assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 24576)]
         with _mock_nvidia_smi_run("0, 22805\n"):
             assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 0)]
-        # A non-integer total must keep the GPU (total 0), not drop it.
         with _mock_nvidia_smi_run("0, 22805, N/A\n"):
             assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 0)]
-        # A bad free still skips that line (free is required).
         with _mock_nvidia_smi_run("0, N/A, 24576\n1, 22805, 24576\n"):
             assert LlamaCppBackend._get_gpu_memory() == [(1, 22805, 24576)]
 
@@ -264,7 +250,6 @@ class TestWindowsGpuDetectionAfter5106Fix:
         _populate_studio_install(install, runtime = "13.1")
         binary_dir = install / "build" / "bin" / "Release"
         path_dirs = _build_path_dirs_like_start_llama_server(binary_dir, prefix, cuda_path = "")
-        # binary_dir first -- Windows DLL search step 1.
         assert path_dirs[0] == str(
             binary_dir
         ), f"binary_dir must be first in PATH; got {path_dirs[0]}"
@@ -277,7 +262,6 @@ class TestWindowsGpuDetectionAfter5106Fix:
             f"cudart unreachable from any PATH entry -- #5106 not fixed.\n"
             f"PATH entries searched: {path_dirs}"
         )
-        # Defence in depth: both fix paths contribute cudart.
         sources = {Path(e).relative_to(tmp_path).parts[0] for e, _ in cudart_locations}
         assert "studio_install" in sources, f"#5322's cudart drop not reachable: {cudart_locations}"
         assert (
@@ -322,7 +306,6 @@ class TestWindowsGpuDetectionAfter5106Fix:
         install = tmp_path / "studio_install_pre5322"
         rel = install / "build" / "bin" / "Release"
         rel.mkdir(parents = True)
-        # Main archive payload only; cudart bundle absent.
         for fn in (
             "llama-server.exe",
             "llama.dll",
@@ -356,7 +339,6 @@ class TestWindowsGpuDetectionAfter5106Fix:
         rel.mkdir(parents = True)
         for fn in ("llama-server.exe", "llama.dll", "ggml-cuda.dll"):
             (rel / fn).write_bytes(b"PE-stub")
-        # Pre-PR PATH: binary_dir only, no pip nvidia dirs, no toolkit.
         pre_pr_path_dirs = [str(rel)]
         cudart_reachable_pre = any(
             (Path(d) / "cudart64_12.dll").exists() or (Path(d) / "cudart64_13.dll").exists()
@@ -379,6 +361,5 @@ class TestWindowsSysPlatformMocked:
         _populate_studio_venv(prefix)
         out = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(prefix))
         assert out, f"resolver returned empty under sys.platform=win32: {out}"
-        # cu13 arch dir must be in the output.
         cu13_arch = prefix / "Lib" / "site-packages" / "nvidia" / "cu13" / "bin" / "x86_64"
         assert str(cu13_arch) in out

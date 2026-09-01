@@ -53,7 +53,6 @@ from core.training.diffusion_train_common import (  # noqa: E402
 )
 
 
-# ── frame / latent arithmetic ────────────────────────────────────────────────
 def test_align_num_frames_snaps_up_to_the_vae_grid():
     # The video VAE encodes 17 * n + 5 frames; anything else is not encodable at all.
     assert h3_align_num_frames(22) == 22
@@ -88,11 +87,9 @@ def test_video_latent_frames_refuses_an_unaligned_count():
 def test_the_training_clip_is_exactly_one_vae_chunk():
     assert H3_TRAIN_NUM_FRAMES == H3_FRAMES_PER_CHUNK + H3_LATENTS_PER_CHUNK
     assert h3_align_num_frames(H3_TRAIN_NUM_FRAMES) == H3_TRAIN_NUM_FRAMES
-    # ... and is the SHORTEST encodable clip above the VAE's 5-frame head.
     assert h3_align_num_frames(H3_LATENTS_PER_CHUNK + 1) == H3_TRAIN_NUM_FRAMES
 
 
-# ── audio arithmetic ─────────────────────────────────────────────────────────
 def test_audio_latent_count_follows_the_forty_per_second_grid():
     assert h3_audio_latent_count(H3_FPS) == H3_AUDIO_LATENTS_PER_SECOND
     assert h3_audio_latent_count(124) == 207
@@ -100,8 +97,8 @@ def test_audio_latent_count_follows_the_forty_per_second_grid():
 
 
 def test_audio_sample_count_is_a_whole_number_of_hops():
-    # The audio VAE hops 800 samples and right-pads a short tail, so handing it exactly
-    # latents * hop is what makes the encode produce the row count the layout reserves.
+    # The audio VAE hops 800 samples and right-pads a short tail, so handing it exactly latents *
+    # hop makes the encode produce the row count the layout reserves.
     hop = H3_AUDIO_SAMPLING_RATE // H3_AUDIO_LATENTS_PER_SECOND
     assert hop == 800
     for frames in (22, 124, 345):
@@ -110,7 +107,6 @@ def test_audio_sample_count_is_a_whole_number_of_hops():
         assert samples // hop == h3_audio_latent_count(frames)
 
 
-# ── the packed sequence ──────────────────────────────────────────────────────
 def test_rows_per_latent_frame_applies_the_two_by_two_patch():
     assert h3_rows_per_latent_frame(48, 84) == 24 * 42
 
@@ -135,7 +131,6 @@ def test_a_five_second_clip_is_five_times_the_sequence_of_a_training_clip():
     assert full > 5 * short
 
 
-# ── the canvas rule ──────────────────────────────────────────────────────────
 def test_train_canvas_reproduces_the_released_sixteen_by_nine_canvas():
     assert h3_train_canvas(16, 9) == (1344, 768)
 
@@ -148,10 +143,8 @@ def test_train_canvas_snaps_both_axes_to_the_multiple():
 
 
 def test_train_canvas_scales_its_area_cap_with_the_short_edge():
-    # A smaller training canvas must keep the released AREA budget in units of the short edge,
-    # not the released pixel count: with a fixed cap a 384-edge canvas never reaches the cap at
-    # all, so a wide clip trains at a completely different area-to-edge ratio than it would at
-    # 768 and the geometry stops being a scaled-down version of the released one.
+    # A smaller training canvas keeps the released AREA budget in units of the short edge: with a fixed
+    # cap a 384-edge canvas never reaches it and the geometry stops being a scaled-down release.
     def area_ratio(short_edge: int) -> float:
         width, height = h3_train_canvas(21, 9, short_edge = short_edge)
         return width * height / short_edge**2
@@ -166,7 +159,7 @@ def test_train_canvas_refuses_an_untrained_aspect_ratio():
 
 
 def test_train_canvas_names_a_degenerate_size_as_such():
-    # A zero-sized source has no aspect ratio at all. Folding it into the trained-range message
+    # A zero-sized source has no aspect ratio at all, so folding it into the trained-range message
     # would tell the user to "crop it first", which cannot help.
     with pytest.raises(ValueError, match = "must be positive"):
         h3_train_canvas(0, 9)
@@ -174,7 +167,6 @@ def test_train_canvas_names_a_degenerate_size_as_such():
         h3_train_canvas(16, -1)
 
 
-# ── clip discovery ───────────────────────────────────────────────────────────
 def _clip(tmp_path: Path, name: str) -> Path:
     path = tmp_path / name
     path.write_bytes(b"not a real container")
@@ -244,7 +236,6 @@ def test_discover_clip_pairs_is_sorted_and_stable(tmp_path):
     assert [Path(p).name for p, _ in pairs] == ["a.mp4", "b.mp4", "c.mp4"]
 
 
-# ── the preflight has to run the trainer's own discovery ─────────────────────
 
 
 def test_discover_training_pairs_routes_h3_to_the_clip_discovery(tmp_path):
@@ -287,7 +278,6 @@ def test_the_clip_families_are_exactly_the_ones_whose_trainer_takes_clips():
     assert "ltx-2" not in CLIP_TRAINED_FAMILIES
 
 
-# ── the two coupled schedules ────────────────────────────────────────────────
 def test_the_two_shifts_come_from_the_released_scheduler_configs():
     from core.training.diffusion_h3_trainer import _H3_AUDIO_SHIFT, _H3_VIDEO_SHIFT
     assert _H3_VIDEO_SHIFT == 12.0
@@ -332,8 +322,8 @@ def test_an_explicit_flow_shift_still_overrides_the_video_default():
 def test_shifted_sigma_matches_the_schedulers_exponential_shift():
     from core.training.diffusion_h3_trainer import _shifted_sigma
     for shift in (3.0, 12.0):
-        # The endpoints are fixed points of the shift, which is what keeps t = 0 clean and
-        # t = 1 pure noise.
+        # The endpoints are fixed points of the shift, which is what keeps t = 0 clean and t = 1
+        # pure noise.
         assert _shifted_sigma(0.0, shift) == 0.0
         assert _shifted_sigma(1.0, shift) == 1.0
         for u in (0.1, 0.25, 0.5, 0.9):
@@ -341,8 +331,8 @@ def test_shifted_sigma_matches_the_schedulers_exponential_shift():
 
 
 def test_a_larger_shift_pushes_sigma_higher_so_video_is_always_noisier_than_audio():
-    # Both streams are indexed by the SAME step at inference, so the pair (video, audio) walks
-    # one curve. Drawing one u and pushing it through both shifts is what reproduces it.
+    # Both streams are indexed by the SAME step at inference, so drawing one u and pushing it
+    # through both shifts is what reproduces that pair.
     from core.training.diffusion_h3_trainer import (
         _H3_AUDIO_SHIFT,
         _H3_VIDEO_SHIFT,
@@ -361,9 +351,8 @@ def test_shifted_sigma_is_monotonic_in_u():
         previous = value
 
 
-# ── LoRA targets ─────────────────────────────────────────────────────────────
-# Every Linear of the released checkpoint, by name (num_layers and num_refiner_layers cut
-# down; the names are otherwise exactly what MiniMaxH3Transformer3DModel builds).
+# Every Linear of the released checkpoint, by name (num_layers and num_refiner_layers cut down; the
+# names are otherwise exactly what MiniMaxH3Transformer3DModel builds).
 _H3_LINEARS = (
     "proj_in",
     "audio_proj_in",
@@ -399,18 +388,17 @@ def _selected(target_regex: str) -> set:
 
 
 def test_h3_targets_are_a_regex_because_peft_does_not_glob():
-    # PEFT either suffix-matches a LIST of names or re.fullmatch-es a STRING. A list entry
-    # written "transformer_blocks.*.attn.to_q" matches nothing at all, so the adapter would
-    # train zero parameters while every step still reported a loss.
+    # PEFT either suffix-matches a LIST of names or re.fullmatch-es a STRING, so a list entry
+    # written "transformer_blocks.*.attn.to_q" matches nothing and trains zero parameters while
+    # still reporting a loss.
     from core.training.diffusion_h3_trainer import _H3_TARGETS
     assert isinstance(_H3_TARGETS, str)
     assert "*" not in _H3_TARGETS
 
 
 def test_h3_targets_never_adapt_the_text_refiner():
-    # MiniMaxH3TokenRefinerBlock carries `attn` and `ff` under the SAME leaf names as a
-    # transformer block, so a bare "to_q" would also adapt the two refiner blocks, i.e. the
-    # text stream rather than the denoiser.
+    # MiniMaxH3TokenRefinerBlock carries `attn` and `ff` under the SAME leaf names as a transformer
+    # block, so a bare "to_q" would adapt the text stream rather than the denoiser.
     from core.training.diffusion_h3_trainer import _H3_TARGETS
     assert not any(name.startswith("token_refiner") for name in _selected(_H3_TARGETS))
 
@@ -444,16 +432,13 @@ def test_h3_targets_cover_attention_and_the_feed_forward_and_nothing_else():
 
 
 def test_the_nf4_skip_list_covers_every_dtype_reading_module():
-    # The transformer aligns activations with `x.to(self.<m>.weight.dtype)` in five places. A
-    # bitsandbytes Params4bit reports uint8, so quantizing one of those casts the activation
-    # to Byte and the next RMSNorm raises. proj_in / audio_proj_in / proj_out /
-    # audio_proj_out / time_embedder are already excluded by _keep_in_fp32_modules; the three
-    # here are not.
+    # The transformer aligns activations with `x.to(self.<m>.weight.dtype)` in five places and a
+    # bitsandbytes Params4bit reports uint8, so quantizing one casts to Byte and the next RMSNorm
+    # raises.
     from core.training.diffusion_h3_trainer import _H3_NF4_SKIP_MODULES
     assert set(_H3_NF4_SKIP_MODULES) == {"context_embedder", "adaln_proj", "norm_out"}
 
 
-# ── routing ──────────────────────────────────────────────────────────────────
 def test_minimax_h3_is_a_trainable_video_family():
     assert "minimax-h3" in TRAINABLE_VIDEO_FAMILIES
 
@@ -464,8 +449,8 @@ def test_minimax_h3_routes_to_its_own_trainer():
 
 
 def test_minimax_h3_does_not_route_to_the_dit_trainer():
-    # Its objective is a two-schedule joint loss over one packed sequence, which the DiT
-    # loop's single sigma and single target cannot express.
+    # Its objective is a two-schedule joint loss over one packed sequence, which the DiT loop's
+    # single sigma and single target cannot express.
     from core.training import diffusion_dit_trainer
     assert get_trainer("minimax-h3") is not diffusion_dit_trainer.run_dit_lora_training
 
@@ -475,8 +460,8 @@ def test_the_official_h3_base_resolves_to_the_h3_family():
 
 
 def test_minimax_h3_is_a_flow_family_for_the_preflight_gates():
-    # Without this the start route skips the bf16 / accelerator checks for H3, evicts the
-    # resident GPU models, and only then fails inside the child.
+    # Without this the start route skips the bf16 / accelerator checks for H3, evicts the resident
+    # GPU models, and only then fails inside the child.
     assert "minimax-h3" in _FLOW_TRAIN_FAMILIES
     assert bf16_unsupported_reason("minimax-h3") is None or isinstance(
         bf16_unsupported_reason("minimax-h3"), str
@@ -502,7 +487,6 @@ def test_h3_defaults_train_at_the_released_short_edge():
     assert defaults["lora_rank"] == 16
 
 
-# ── config validation ────────────────────────────────────────────────────────
 def _cfg(**kw) -> DiffusionLoraConfig:
     base = {
         "base_model": "MiniMaxAI/MiniMax-H3",
@@ -540,7 +524,6 @@ def test_h3_resolves_to_its_family_through_normalized():
     assert _cfg().normalized().resolved_family == "minimax-h3"
 
 
-# ── entrypoint refusals, all of which must fire BEFORE anything loads ─────────
 def _run(**kw):
     from core.training.diffusion_h3_trainer import run_h3_lora_training
     return run_h3_lora_training(_cfg(**kw))
@@ -560,28 +543,23 @@ def test_h3_refuses_a_cfg_dropout():
 
 
 def test_h3_refuses_a_weighted_loss():
-    # Two schedules put video and audio at different sigmas in the same step, so a single
-    # weight over "the" timestep is ambiguous.
     with pytest.raises(ValueError, match = "weighting_scheme"):
         _run(weighting_scheme = "bell")
 
 
 def test_the_entrypoint_refusals_fire_before_the_data_directory_is_read():
-    # _cfg points data_dir at a path that does not exist, so any of these reaching discovery
-    # would raise FileNotFoundError instead -- and in a real run would have already evicted the
-    # resident GPU models.
+    # _cfg points data_dir at a path that does not exist, so any of these reaching discovery would
+    # raise FileNotFoundError instead -- after a real run had already evicted the resident GPU
+    # models.
     with pytest.raises(ValueError):
         _run(train_batch_size = 4)
 
 
-# ── the forward contract, against a fake transformer ─────────────────────────
 torch = pytest.importorskip("torch")
 
 try:
-    # diffusers' lazy module machinery makes a bare importorskip on the PACKAGE succeed even
-    # when the real module cannot import, so pull the symbol these tests actually use. Only
-    # the handful of tests below need it; the rest of this file stays runnable on a host
-    # without the MiniMax-H3 diffusers revision.
+    # diffusers' lazy module machinery makes a bare importorskip on the PACKAGE succeed even when
+    # the real module cannot import, so pull the symbol these tests actually use.
     from diffusers.modular_pipelines.minimax_h3.before_denoise import (  # noqa: F401
         MiniMaxH3PrepareLayoutStep,
     )
@@ -619,8 +597,8 @@ def test_the_layout_reserves_one_row_per_token_of_every_modality():
 
 @needs_h3_blocks
 def test_the_layout_has_no_conditioning_rows():
-    # The trainer trains the t2va layout: every media row is a generated row, so nothing is
-    # pinned at the keyframe noise-augmentation level.
+    # The trainer trains the t2va layout: every media row is a generated row, so nothing is pinned
+    # at the keyframe noise-augmentation level.
     layout = _layout()
     assert layout["num_condition_video_rows"] == 0
     assert layout["num_condition_audio_rows"] == 0
@@ -640,7 +618,6 @@ def test_the_row_timestep_plan_carries_exactly_the_two_generated_timesteps():
 
     layout = _layout()
     timestep, indices = _row_timesteps(layout, 6, 0.25, 0.75, "cpu")
-    # Two distinct noise levels in one forward: the video rows and the audio rows.
     assert sorted(round(float(t), 6) for t in timestep) == [0.25, 0.75]
     assert indices.shape == (layout["position_ids"].shape[0],)
     video_t = timestep[indices[layout["video_indices"]]]
@@ -662,8 +639,8 @@ def test_the_text_rows_inherit_the_video_timestep():
 
 @needs_h3_blocks
 def test_patchify_round_trips_through_the_decoder_unpack():
-    # The trainer packs the target the same way the sampler packs its noise, so the loss is
-    # taken in the transformer's own row order.
+    # The trainer packs the target the same way the sampler packs its noise, so the loss is taken in
+    # the transformer's own row order.
     from core.training.diffusion_h3_trainer import _patchify
 
     latents = torch.randn(1, 24, 2, 4, 6)
@@ -674,7 +651,6 @@ def test_patchify_round_trips_through_the_decoder_unpack():
 
 
 def test_audio_rows_are_channel_major_like_the_decoder_expects():
-    # (channels, latent_channels, n) -> rows, one block per stereo channel.
     audio = torch.randn(H3_AUDIO_CHANNELS, 32, 3)
     rows = audio.permute(0, 2, 1).reshape(-1, 32)
     assert rows.shape == (H3_AUDIO_CHANNELS * 3, 32)
@@ -683,9 +659,8 @@ def test_audio_rows_are_channel_major_like_the_decoder_expects():
 
 
 def test_the_velocity_target_is_data_ward():
-    # MiniMax-H3 predicts x0 = x_t + sigma * v, so v = latents - noise: the NEGATION of the
-    # convention in diffusion_dit_trainer. Getting this backwards trains a model that
-    # reliably converges and then generates noise.
+    # MiniMax-H3 predicts x0 = x_t + sigma * v, so v = latents - noise: the NEGATION of
+    # diffusion_dit_trainer's convention.
     import inspect
 
     from core.training import diffusion_h3_trainer
@@ -697,8 +672,8 @@ def test_the_velocity_target_is_data_ward():
 
 
 def test_the_loss_includes_both_modalities():
-    # A LoRA on the shared block stack changes the audio prediction whether or not audio is in
-    # the loss, so leaving audio out would degrade it silently.
+    # A LoRA on the shared block stack changes the audio prediction whether or not audio is in the
+    # loss, so leaving audio out would degrade it silently.
     import inspect
 
     from core.training import diffusion_h3_trainer
@@ -708,9 +683,6 @@ def test_the_loss_includes_both_modalities():
 
 
 def test_the_row_timestep_plan_is_built_video_first():
-    # build_row_timesteps takes (video_timestep, audio_timestep) in that order, and both are
-    # plain floats, so swapping them is silent: the video rows would be conditioned at the
-    # audio schedule's noise level and vice versa.
     import inspect
 
     from core.training import diffusion_h3_trainer
@@ -732,8 +704,8 @@ def test_one_base_u_drives_both_sigmas():
 
 
 def test_the_conditioning_phase_never_names_the_transformer():
-    # Naming it in load_components would put the 66 GB denoiser on the device alongside the
-    # 63 GiB conditioner, which is the whole point of the phased load.
+    # Naming it in load_components would put the 66 GB denoiser on the device alongside the 63 GiB
+    # conditioner, which is the whole point of the phased load.
     from core.training.diffusion_h3_trainer import _H3_CONDITIONING_COMPONENTS
 
     assert "transformer" not in _H3_CONDITIONING_COMPONENTS
@@ -772,8 +744,8 @@ def test_the_component_grid_assertion_catches_a_moved_constant():
 
 
 def test_the_saved_adapter_carries_the_diffusers_transformer_prefix(tmp_path):
-    # Diffusers ships no MiniMaxH3LoraLoaderMixin, so the file is written directly. It must
-    # still be the ordinary single-file layout, or nothing can load it.
+    # Diffusers ships no MiniMaxH3LoraLoaderMixin, so the file is written directly and must still be
+    # the ordinary single-file layout, or nothing can load it.
     from safetensors.torch import load_file
 
     from core.training.diffusion_h3_trainer import _save_lora
@@ -783,7 +755,6 @@ def test_the_saved_adapter_carries_the_diffusers_transformer_prefix(tmp_path):
     assert list(saved) == ["transformer.transformer_blocks.0.attn.to_q.lora_A.weight"]
 
 
-# ── the hosted denoiser is a component, not a base ───────────────────────────
 
 
 def test_the_hosted_prequant_denoiser_is_refused_as_a_training_base():
@@ -817,7 +788,6 @@ def test_the_real_h3_base_is_still_trainable():
     assert resolve_trainable_family(fam.base_repo) == "minimax-h3"
 
 
-# ── the checkpoint contract the H3 loop does not implement ───────────────────
 
 
 def _h3_cfg(**kw):
@@ -867,7 +837,6 @@ def test_an_image_family_keeps_its_checkpointing():
     assert cfg.save_steps == 50
 
 
-# ── the four review fixes ────────────────────────────────────────────────────
 
 
 def test_int8_training_applies_h3s_small_m_guards():
@@ -898,8 +867,8 @@ def test_int8_training_applies_h3s_small_m_guards():
 
 
 def test_int8_quantize_base_pads_the_families_small_m_linears(monkeypatch):
-    # The behavioural half: the helper must call the padding pass, with the family, AFTER
-    # quantize_ (which is what reparents the Linears the pass wraps).
+        # The behavioural half: the helper must call the padding pass, with the family, AFTER
+        # quantize_ (which is what reparents the Linears the pass wraps).
     import torch.nn as nn
 
     from core.training import diffusion_dit_trainer as dit
@@ -983,8 +952,8 @@ def test_a_mostly_silent_soundtrack_is_refused_rather_than_padded(tmp_path):
 
         def decode(self, audio = 0):
             block = types.SimpleNamespace(
-                # A real signal, not zeros: this test is about DURATION, and an all-zero window
-                # is separately refused for being silent, which would mask what it checks.
+                # A real signal, not zeros: this test is about DURATION, and an all-zero window is
+                # separately refused for being silent, which would mask what it checks.
                 to_ndarray = lambda: np.full(
                     (self._n * clips.H3_AUDIO_CHANNELS,), 0.25, dtype = "float32"
                 )
@@ -997,12 +966,10 @@ def test_a_mostly_silent_soundtrack_is_refused_rather_than_padded(tmp_path):
             open = lambda path: _Container(n),
         )
 
-    # A tail a few milliseconds short is still padded, as the comment promises.
     short_tail = target - int(0.002 * clips.H3_AUDIO_SAMPLING_RATE)
     out = clips._decode_clip_audio(tmp_path / "a.mp4", target, fake_av(short_tail), np)
     assert out.shape == (clips.H3_AUDIO_CHANNELS, target)
 
-    # A soundtrack that is materially shorter is refused instead.
     with pytest.raises(ValueError, match = "of audio for a"):
         clips._decode_clip_audio(tmp_path / "a.mp4", target, fake_av(target // 10), np)
 
@@ -1051,8 +1018,8 @@ def test_a_soundtrack_that_is_silent_throughout_is_refused(tmp_path):
         return np.zeros((n * clips.H3_AUDIO_CHANNELS,), dtype = "float32")
 
     def dithered(n):
-        # Not exact zeros: an encode/decode round trip leaves rounding dust on digital silence,
-        # and a threshold that only caught 0.0 would wave that through.
+        # Not exact zeros: an encode/decode round trip leaves rounding dust on digital silence, and
+        # a threshold that only caught 0.0 would wave that through.
         return (silent(n) + 1e-7).astype("float32")
 
     def one_real_sound(n):
@@ -1114,8 +1081,8 @@ def test_the_knobs_h3_cannot_honour_are_refused_or_normalised():
 
 
 def test_the_h3_preflight_runs_before_the_start_route_evicts_anything():
-    # The whole point of the shared helper: these used to reach the worker and 400 there, with
-    # the resident models already freed for a run that never began.
+    # The whole point of the shared helper: these used to reach the worker and 400 there, with the
+    # resident models already freed for a run that never began.
     import inspect
 
     import routes.training as tr
@@ -1142,7 +1109,6 @@ def test_the_augmentation_knobs_record_what_h3_actually_does():
     assert "replace(cfg, **train_recipe_overrides(cfg))" in src
     overrides = train_recipe_overrides(_h3_cfg().normalized())
     assert overrides["center_crop"] is True and overrides["random_flip"] is False
-    # And the two fields really are settable on the config the trainer normalises.
     cfg = _replace(_h3_cfg(), center_crop = True, random_flip = False)
     assert cfg.center_crop is True and cfg.random_flip is False
 
@@ -1230,7 +1196,6 @@ def test_an_over_long_clip_says_that_only_its_opening_trains(tmp_path, monkeypat
     )
     assert notes and "trains its first" in notes[0]
 
-    # A clip already at the training duration says nothing.
     notes.clear()
     _Stream.duration = clips.H3_FRAMES_PER_CHUNK
     clips.decode_clip(
@@ -1243,7 +1208,6 @@ def test_an_over_long_clip_says_that_only_its_opening_trains(tmp_path, monkeypat
     assert notes == []
 
 
-# ── what the run RECORDS vs what the loop RUNS ───────────────────────────────
 def test_the_precision_recorded_for_h3_is_the_one_its_loop_runs_in():
     """``identity_for_config`` records the EFFECTIVE mixed precision, and the helper it reads it
     from keyed the "this loop ignores the knob" branch on _DIT_TRAIN_FAMILIES, which H3 is not in.
@@ -1312,9 +1276,8 @@ def test_the_persisted_h3_recipe_is_the_one_the_loop_runs():
         "center_crop": True,
         "random_flip": False,
         "snr_gamma": None,
-        # The loop encodes each clip once into one cached tuple and frees the VAEs; it reads
-        # neither field, so a request for no cache, or for the schema's four variants, ran
-        # cached-with-one anyway and the record said otherwise.
+        # The loop encodes each clip once into one cached tuple and frees the VAEs; it reads neither
+        # field, so a request for no cache ran cached-with-one anyway and the record said otherwise.
         "cache_latents": True,
         "cache_variants": 1,
     }
@@ -1336,7 +1299,6 @@ def test_the_persisted_h3_recipe_is_the_one_the_loop_runs():
     assert "self._config.update(" in start_src
 
 
-# ── start-route gates ────────────────────────────────────────────────────────
 def test_the_strict_start_gate_probes_the_h3_transformer_not_modular_pipeline(monkeypatch):
     """A diffusers old enough to predate H3's blocks still exports the generic ``ModularPipeline``,
     so the listing probe (which reads the family's own transformer class) hid H3 while a direct
@@ -1361,10 +1323,8 @@ def test_the_strict_start_gate_probes_the_h3_transformer_not_modular_pipeline(mo
     assert family_pipeline_available(fam) is False
     reason = training_pipeline_import_error("minimax-h3")
     assert reason and "MiniMaxH3Transformer3DModel" in reason
-    # A conventional family on the same install is untouched.
     assert training_pipeline_import_error("flux.1") is None
 
-    # And the trainer-side half refuses before it can reach a download.
     with pytest.raises(ValueError, match = "MiniMaxH3Transformer3DModel"):
         _cfg().normalized()
 
@@ -1395,7 +1355,6 @@ def test_a_local_modular_h3_pipeline_is_an_acceptable_training_base(tmp_path):
     # Off by default: a conventional DiffusionPipeline load still needs the conventional index.
     with pytest.raises(ValueError, match = "model_index.json"):
         _assert_trusted_base_model(str(modular))
-    # And a directory that is neither is still refused on both paths.
     empty = tmp_path / "not-a-pipeline"
     empty.mkdir()
     for allow in (True, False):
@@ -1439,8 +1398,8 @@ def test_h3_advertises_that_it_cannot_checkpoint():
     assert "minimax-h3" in CHECKPOINTLESS_FAMILIES
     for name, info in infos.items():
         assert info["supports_checkpoints"] == (name not in CHECKPOINTLESS_FAMILIES), name
-    # The flag has to agree with the validation, or the panel hides a control that works or
-    # offers one that does not.
+    # The flag has to agree with the validation, or the panel hides a control that works or offers
+    # one that does not.
     with pytest.raises(ValueError, match = "save_steps is not supported"):
         _cfg(save_steps = 50).normalized()
     _cfg(save_steps = 0).normalized()
@@ -1516,10 +1475,6 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
     component_loads = seen[1:]
     assert len(component_loads) == 2
     assert all(call.get("token") == "hf_secret" for call in component_loads), component_loads
-    # And every one of them pinned to the LIVE cache root. An unset cache_dir resolves through
-    # huggingface_hub's import-time constant, which a mid-session cache-folder change does not
-    # update, and the training subprocess is spawned without the cache-environment wrapper: the
-    # components already in the selected root would be missed and re-downloaded into the old one.
     assert all(call.get("cache_dir") == "/live/hub" for call in component_loads), component_loads
 
     # No token configured -> the kwarg is omitted entirely rather than sent as None.
@@ -1628,11 +1583,9 @@ def _stub_training_stack(monkeypatch):
     peft.LoraConfig = object
     peft.utils = peft_utils
     for name, module in (
-        # The SUBMODULES only, never a bare ``diffusers`` parent. ``from a.b import c`` is
-        # satisfied straight from ``sys.modules["a.b"]`` without importing ``a``, and a stub
-        # parent would be worse than none here: ``resolve_trainable_family`` absorbs an
-        # unimportable diffusers but REFUSES one that imports and lacks
-        # MiniMaxH3Transformer3DModel, so faking the package turns a skipped probe into a raise.
+        # SUBMODULES only, never a bare ``diffusers`` parent: ``from a.b import c`` is satisfied from
+        # ``sys.modules["a.b"]``, and ``resolve_trainable_family`` REFUSES a diffusers that imports
+        # and lacks MiniMaxH3Transformer3DModel, so faking the package turns a skip into a raise.
         ("diffusers.optimization", scheduler),
         ("diffusers.training_utils", training_utils),
         ("peft", peft),
@@ -1755,8 +1708,7 @@ def _write_rotated_clip(
             for packet in video.encode(av.VideoFrame.from_ndarray(img, format = "rgb24")):
                 out.mux(packet)
         # An audible tone, not silence: these clips go through the real decode, which refuses a
-        # soundtrack that is silent end to end. A rotation test must not depend on that refusal
-        # being absent, and a clip with a working soundtrack is the realistic input anyway.
+        # soundtrack that is silent end to end.
         t = np.arange(48000 * seconds, dtype = "float32") / 48000.0
         tone = (0.3 * np.sin(2 * np.pi * 440.0 * t)).astype("float32").reshape(1, -1)
         frame = av.AudioFrame.from_ndarray(tone, format = "fltp", layout = "mono")
@@ -1827,8 +1779,8 @@ def test_decode_clip_returns_the_rotated_picture(tmp_path):
     frames, _waveform = decode_clip(clip, num_frames = 8, width = 64, height = 128)
 
     assert frames.shape == (8, 128, 64, 3)
-    # The red band occupies the top third of the CODED frame. Rotated 90 CCW for display it
-    # moves to the left third, so the rotation is observable in the pixels rather than assumed.
+    # The red band occupies the top third of the CODED frame; rotated 90 CCW for display it moves to
+    # the left third, so the rotation is observable in the pixels rather than assumed.
     first = frames[0].astype("int32")
     left = first[:, : 64 // 3, 0].mean()
     right = first[:, -(64 // 3) :, 0].mean()

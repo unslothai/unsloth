@@ -87,9 +87,8 @@ def test_a_process_that_cannot_be_terminated_is_not_an_error(monkeypatch, tmp_pa
     assert backend._process is None, "the state has to be cleared either way"
     assert backend._healthy is False
     assert recorder.warnings == [], f"warned about a non-process: {recorder.warnings}"
-    # The whole finalizer, not the three assignments an earlier version of this
-    # duplicated: the log handle has to be closed and the reader joined, or a
-    # teardown that takes this path leaks them.
+    # The whole finalizer, not the three assignments an earlier version of this duplicated: the log
+    # handle has to be closed and the reader joined, or a teardown that takes this path leaks them.
     assert log_fh.closed, "the log handle was left open"
     assert backend._llama_log_fh is None
     assert reader.joined, "the stdout reader was never joined"

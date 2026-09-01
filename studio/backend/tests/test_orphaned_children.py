@@ -32,8 +32,7 @@ def _load_installer_module():
         return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    # Registered before exec: its dataclasses resolve annotations through
-    # sys.modules, and a module that is not in there fails to build them.
+    # Registered before exec: its dataclasses resolve annotations through sys.modules.
     sys.modules[name] = module
     try:
         spec.loader.exec_module(module)
@@ -68,9 +67,7 @@ def _kill(pid: int) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# 1. Killing a tool call takes the payload with it
-# ---------------------------------------------------------------------------
+# 1. Killing a tool call takes the payload with it.
 def test_tool_kill_takes_the_shell_payload_with_it(tmp_path):
     from core.inference.tools import _get_shell_cmd, _kill_process_tree
 
@@ -102,17 +99,14 @@ def test_tool_kill_takes_the_shell_payload_with_it(tmp_path):
         time.sleep(2.0)
         survived = _alive(grandchild)
         print(f"payload pid {grandchild} alive after _kill_process_tree: {survived}")
-        # Windows reaches the payload via taskkill /T /F, POSIX via killpg. It
-        # used to survive on Windows, orphaning the venv python that then blocked
-        # `unsloth studio update`.
+        # Windows reaches the payload via taskkill /T /F, POSIX via killpg. It used to survive on
+        # Windows, orphaning the venv python that then blocked `unsloth studio update`.
         assert not survived, "the payload under the shell wrapper was orphaned"
     finally:
         _kill(grandchild)
 
 
-# ---------------------------------------------------------------------------
-# 2. One surviving venv process blocks `unsloth studio update` (Windows)
-# ---------------------------------------------------------------------------
+# 2. One surviving venv process blocks `unsloth studio update` (Windows).
 @pytest.mark.skipif(not IS_WINDOWS, reason = "the update gate is Windows-only")
 def test_update_gate_blocks_on_a_single_orphan(tmp_path):
     from unsloth_cli import _studio_runtime_gate
@@ -123,7 +117,6 @@ def test_update_gate_blocks_on_a_single_orphan(tmp_path):
     venv_python = venv / "Scripts" / "python.exe"
     assert venv_python.is_file()
 
-    # No orphan: the gate lets the update through.
     _studio_runtime_gate.ensure_managed_environment_is_idle(studio_home)
 
     orphan = subprocess.Popen([str(venv_python), "-c", "import time; time.sleep(120)"])
@@ -145,9 +138,7 @@ def test_update_gate_is_a_noop_on_posix(tmp_path):
     _studio_runtime_gate.ensure_managed_environment_is_idle(tmp_path / "anything")
 
 
-# ---------------------------------------------------------------------------
-# 3. Shutdown paths that are not signals
-# ---------------------------------------------------------------------------
+# 3. Shutdown paths that are not signals.
 def test_console_close_runs_the_graceful_shutdown():
     """Closing the console window is not a signal, so it needs its own handler."""
     import run
@@ -190,10 +181,9 @@ def test_macos_style_orphans_are_recorded_and_reaped(tmp_path, monkeypatch):
         record = records / f"{os.getpid()}.json"
         assert record.is_file(), "the child was not recorded"
 
-        # Pretend a previous Unsloth wrote this and died. The identity is what
-        # decides, not the pid: a dead pid is recycled fast on a busy machine
-        # (macOS especially), and an owner whose start time no longer matches is
-        # a different process, so its recorded children are orphans.
+        # Pretend a previous Unsloth wrote this and died. The identity decides, not the pid: a dead pid
+        # is recycled fast, so an owner whose start time no longer matches is a different process and
+        # its recorded children are orphans.
         import json
 
         payload = json.loads(record.read_text())
@@ -270,7 +260,6 @@ def test_a_live_owner_is_never_reaped(tmp_path, monkeypatch):
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         pl.adopt_pid(child.pid)
-        # owner_pid is this process, which is very much alive.
         assert pl.reap_recorded_children() == []
         assert _alive(child.pid)
     finally:
@@ -819,7 +808,6 @@ def test_forgetting_a_leader_keeps_its_live_group(tmp_path, monkeypatch):
         pl.forget_pid(leader.pid)
         assert leader.pid in pl._tracked_pids, "the group was dropped with its dead leader"
 
-        # And the backstop then takes it.
         pl.terminate_all(timeout = 5.0)
         time.sleep(0.5)
         assert not _alive(grandchild)
@@ -907,7 +895,6 @@ def test_a_retained_child_keeps_its_group(tmp_path, monkeypatch):
     assert pl._tracked_pids.get(4242) == "recorded"
     assert pl._tracked_pgids.get(4242) == 4242, "the group was dropped with the retained pid"
 
-    # And a confirmed survivor keeps it too.
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: "recorded")
     monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "recorded")
     monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: None)
@@ -1126,7 +1113,6 @@ def test_a_tool_subprocess_is_recorded_while_it_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "adopt_pid", watching_adopt)
     tools._python_exec("print('hi')", session_id = "__LOCALID_adopt01")
     assert seen, "the tool subprocess was never recorded"
-    # And it is not left on the record once it has exited.
     assert all(pid not in pl._tracked_pids for pid in seen), pl._tracked_pids
 
 
@@ -1503,8 +1489,7 @@ def test_an_exited_child_does_not_burn_the_shutdown_timeout():
         _posix_terminate(proc.pid, timeout = 5.0)
         elapsed = time.monotonic() - started
         assert elapsed < 2.0, f"waited {elapsed:.1f}s on a process that had exited"
-        # Still ours to reap: the wait must not consume the exit status the
-        # owner is about to read.
+        # Still ours to reap: the wait must not consume the exit status the owner is about to read.
         assert proc.wait(timeout = 5) == 0
     finally:
         if proc.poll() is None:
@@ -1681,7 +1666,6 @@ def test_a_validation_server_the_installer_started_is_recorded(monkeypatch, tmp_
     )
 
     assert adopted == [4321, 9911], adopted  # the installer, then its server
-    # Dropped on the stop line, before the installer's own record goes.
     assert forgotten[0] == 9911, forgotten
 
 
@@ -1728,8 +1712,8 @@ def test_the_installer_announces_and_groups_its_validation_server():
 
     assert '_announce_child("started", process.pid)' in source
     assert '_announce_child("stopped", process.pid)' in source
-    # Its own group, so a server that starts something of its own is still
-    # reachable through the one pid that gets recorded.
+    # Its own group, so a server that starts something of its own is still reachable through the one
+    # pid that gets recorded.
     assert '"start_new_session": True' in source
     assert "_terminate_validation_server" in source
     assert "killpg" in source
@@ -1761,8 +1745,7 @@ def test_one_malformed_record_does_not_stop_the_whole_sweep(tmp_path, monkeypatc
         [sys.executable, "-c", "import time; time.sleep(60)"],
         start_new_session = True,
     )
-    # Live, so its identity is readable and the record's is what gets compared
-    # against it. Unverifiable, so it must survive the sweep.
+    # Live, so its identity is readable; unverifiable, so it must survive the sweep.
     decoy = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
         start_new_session = True,
@@ -1888,8 +1871,7 @@ def test_a_tree_taskkill_could_not_take_keeps_its_record(tmp_path, monkeypatch):
     monkeypatch.setattr(lifetime, "_reap_orphaned_group", lambda pgid, pid, timeout: False)
     monkeypatch.setattr(lifetime, "_group_has_members", lambda pgid: False)
 
-    # Alive until it is signalled, gone afterwards: the leader dies, and only
-    # taskkill's exit status says whether its workers went with it.
+    # The leader dies, and only taskkill's exit status says whether its workers went with it.
     state = {"leader": True, "tree": False}
     monkeypatch.setattr(lifetime, "_pid_alive", lambda pid: state["leader"])
 
@@ -1915,7 +1897,6 @@ def test_a_tree_taskkill_could_not_take_keeps_its_record(tmp_path, monkeypatch):
     assert lifetime.reap_recorded_children(timeout = 1.0) == [999_102]
     assert (tmp_path / "previous.json").exists(), "dropped the only handle on a live tree"
 
-    # And once taskkill takes the tree, the record is consumed.
     state.update(leader = True, tree = True)
     write_record()
     assert lifetime.reap_recorded_children(timeout = 1.0) == [999_102]
@@ -1991,14 +1972,10 @@ def test_the_installer_waits_for_its_validation_group_not_the_leader(tmp_path):
         grandchild = int(proc.stdout.readline().strip())
         assert _alive(grandchild)
 
-        # grace = 1.0, not the 5.0 default. Both the leader and its child ignore
-        # SIGTERM on purpose, so every one of the four grace windows inside
-        # _terminate_validation_server (leader wait, group wait, post-SIGKILL group
-        # wait, final leader wait) is paid in full: 20s of pure waiting for a test
-        # about escalation order. 1.0s is still 20x what a SIGKILLed group needs to
-        # be reaped, and the escalation under test is unchanged -- the leader still
-        # has to outlive its SIGTERM and the group still has to be SIGKILLed for
-        # `gone` to come back True.
+        # grace = 1.0, not the 5.0 default: both the leader and its child ignore SIGTERM on purpose, so
+        # every one of the four grace windows inside _terminate_validation_server is paid in full, which
+        # is 20s of pure waiting for a test about escalation order. 1.0s is still 20x what a SIGKILLed
+        # group needs to be reaped, and the escalation under test is unchanged.
         gone = installer._terminate_validation_server(proc, grace = 1.0)
         assert gone is True, "reported a stop with the group still up"
         time.sleep(0.3)
@@ -2285,7 +2262,6 @@ def test_announced_children_survive_two_threads_draining_at_once():
     assert not failures, failures
     assert sorted(taken) == pids, "a pid was taken twice or lost"
 
-    # And the installer stream drains through it rather than a bare set.
     source = inspect.getsource(update_flow.stream_installer)
     assert "AnnouncedChildren()" in source
     assert "announced.take()" in source
@@ -2396,8 +2372,8 @@ def test_terminate_pid_leaves_a_pid_that_is_no_longer_ours_alone(monkeypatch):
         monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
         pl.terminate_pid(stranger.pid, timeout = 1.0)
         time.sleep(0.5)
-        # poll(), not a signal-0 probe: a killed child of this process answers
-        # that probe as a zombie until it is waited on.
+        # poll(), not a signal-0 probe: a killed child of this process answers that probe as a zombie
+        # until it is waited on.
         assert stranger.poll() is None, "signalled a pid the record does not match"
     finally:
         _kill(stranger.pid)

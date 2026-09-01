@@ -77,8 +77,8 @@ def _health(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    # health_check does `from utils.hardware import is_apple_silicon` at call time, so
-    # the package attribute is the one it reads.
+    # health_check does `from utils.hardware import is_apple_silicon` at call time, so the package
+    # attribute is the one it reads.
     monkeypatch.setattr(hardware_pkg, "is_apple_silicon", lambda: apple_silicon)
 
     hw_mod = main_mod._hw_module

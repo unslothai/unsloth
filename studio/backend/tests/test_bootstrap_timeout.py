@@ -19,7 +19,6 @@ from auth.bootstrap_timeout import (
 )
 
 
-# ── bootstrap_timeout_seconds ───────────────────────────────────────
 
 
 def test_default_when_unset():
@@ -45,13 +44,11 @@ def test_negative_disables():
 
 
 def test_invalid_falls_back_to_default():
-    # A typo must keep the protection, not silently disable it.
     assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "abc"}) == (
         DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
     )
 
 
-# ── should_arm_bootstrap_timeout matrix ─────────────────────────────
 
 
 def _arm_kwargs(**overrides):
@@ -73,7 +70,6 @@ def test_arm_exposed_wildcard_web_ui():
 
 
 def test_arm_secure_loopback_bind():
-    # --secure forces a loopback bind but exposes a public tunnel.
     assert should_arm_bootstrap_timeout(**_arm_kwargs(host = "127.0.0.1", secure = True)) is True
 
 
@@ -101,7 +97,6 @@ def test_no_arm_timeout_disabled():
     assert should_arm_bootstrap_timeout(**_arm_kwargs(timeout_seconds = 0)) is False
 
 
-# ── enforce_bootstrap_password_deadline ─────────────────────────────
 
 
 def _fake_storage(requires_change: bool):
@@ -137,7 +132,6 @@ def test_deadline_swallows_shutdown_errors():
     def _boom():
         raise RuntimeError("shutdown failed")
 
-    # A failing shutdown must not propagate out of the timer thread.
     result = enforce_bootstrap_password_deadline(
         _fake_storage(requires_change = True),
         _boom,
@@ -146,7 +140,6 @@ def test_deadline_swallows_shutdown_errors():
     assert result is True
 
 
-# ── _format_duration ────────────────────────────────────────────────
 
 
 def test_format_duration_sub_minute_uses_seconds():
@@ -167,8 +160,7 @@ def test_format_duration_minutes_and_seconds():
 
 
 def test_shutdown_message_uses_formatted_duration():
-    # The deadline message must reflect the real timeout, not a rounded
-    # "minute(s)" placeholder. Capture the warning via a fake logger.
+    # The deadline message must reflect the real timeout, not a rounded "minute(s)" placeholder.
     logged = []
 
     class _Logger:

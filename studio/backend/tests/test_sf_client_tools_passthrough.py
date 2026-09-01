@@ -92,8 +92,7 @@ class _ScriptedBackend:
     ):
         self.calls.append({"messages": messages, "tools": tools, **kwargs})
         snapshots = self._responder(messages, tools)
-        # A list scripts stats per call, where None is a generation that ended
-        # without publishing any -- a cancelled one, say.
+        # A list scripts stats per call, where None is a generation that ended without publishing any.
         _stats = self._stats
         if isinstance(_stats, list):
             _stats = _stats[min(len(self.calls), len(_stats)) - 1]
@@ -181,7 +180,6 @@ def _sse_objects(chunks):
     return out
 
 
-# ── Non-streaming ─────────────────────────────────────────────────
 
 
 def test_non_reasoning_backend_keeps_literal_think_tags(monkeypatch):
@@ -204,7 +202,6 @@ def test_xml_healed_to_tool_calls_non_streaming(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "lookup"
     assert json.loads(calls[0]["function"]["arguments"]) == {"q": "cats"}
-    # The client tools reached the generator (template injection).
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
 
 
@@ -246,7 +243,6 @@ def test_no_tools_request_untouched(monkeypatch):
     backend = _ScriptedBackend(_fixed("just a plain answer"))
     payload = _request(stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
-    # No tools and no tool messages -> plain path, normal ChatCompletion.
     choice = body["choices"][0]
     assert choice["finish_reason"] == "stop"
     assert choice["message"]["content"] == "just a plain answer"
@@ -297,7 +293,6 @@ def test_tool_role_follow_up_turn_preserves_history(monkeypatch):
     )
     body = _json_body(_call(payload, monkeypatch, backend))
     assert body["choices"][0]["message"]["content"] == "The weather is sunny."
-    # The tool history reached the generator intact (role=tool + assistant.tool_calls).
     sent = backend.calls[0]["messages"]
     roles = [m["role"] for m in sent]
     assert "tool" in roles
@@ -306,7 +301,6 @@ def test_tool_role_follow_up_turn_preserves_history(monkeypatch):
 
 
 def test_dict_arguments_history_does_not_crash(monkeypatch):
-    # Non-spec client: assistant tool_calls[].function.arguments as a dict.
     backend = _ScriptedBackend(_fixed("ok"))
     payload = _request(
         tools = [LOOKUP_TOOL],
@@ -332,7 +326,6 @@ def test_dict_arguments_history_does_not_crash(monkeypatch):
 
 
 def test_forced_tool_choice_narrows_promotion(monkeypatch):
-    # tool_choice forces `search`; a `lookup` text call must NOT promote.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
         tools = [LOOKUP_TOOL, SEARCH_TOOL],
@@ -398,8 +391,7 @@ class _ToolLoopBackend(_ScriptedBackend):
     ],
 )
 def test_stop_reason_recorded_without_backend_stats(monkeypatch, kind, stream, expected):
-    # last_generation_stats is MLX-only, so a transformers generation leaves
-    # stats_holder empty; the stop reason must not ride along with it.
+    # last_generation_stats is MLX-only, so a transformers run leaves stats_holder empty: no stop reason rides.
     if kind == "tool_loop":
         backend = _ToolLoopBackend(_fixed("done"))
         payload = _request(stream = stream, enable_tools = True)
@@ -421,11 +413,9 @@ def test_stop_reason_recorded_without_backend_stats(monkeypatch, kind, stream, e
     assert entry["stop_reason"] == expected
 
 
-# ── Nudge ─────────────────────────────────────────────────────────
 
 
 def test_nudge_default_off_single_generation(monkeypatch):
-    # Signal present but unparseable; without opt-in, no retry.
     truncated = '<tool_call>{"name": "lookup"'
     backend = _ScriptedBackend(_fixed(truncated))
     payload = _request(tools = [LOOKUP_TOOL], stream = False)
@@ -458,17 +448,15 @@ def test_nudge_double_failure_relays_original(monkeypatch):
     backend = _ScriptedBackend(_fixed(truncated))
     payload = _request(tools = [LOOKUP_TOOL], stream = False, nudge_tool_calls = True)
     body = _json_body(_call(payload, monkeypatch, backend))
-    assert len(backend.calls) == 2  # exactly one retry
+    assert len(backend.calls) == 2
     choice = body["choices"][0]
     assert choice["finish_reason"] == "stop"
     assert choice["message"]["content"] == truncated
 
 
-# ── Streaming ─────────────────────────────────────────────────────
 
 
 def test_streaming_heals_split_call_into_one_delta(monkeypatch):
-    # Cumulative snapshots that build the call across many increments.
     pieces = ["<tool", '<tool_call>{"name": "loo', '<tool_call>{"name": "lookup", "argum']
     cumulative = pieces + [_CALL_XML]
     backend = _ScriptedBackend(_fixed(*cumulative))
@@ -515,8 +503,7 @@ def test_n_serves_one_full_generation_per_choice(monkeypatch):
     body = _json_body(_call(_request(n = 2), monkeypatch, backend, supports_tools = False))
     assert [c["index"] for c in body["choices"]] == [0, 1]
     assert [c["message"]["content"] for c in body["choices"]] == ["first", "second"]
-    assert len(backend.calls) == 2  # a generation per choice, not one reused
-    # The shared prompt is counted once; only generated tokens accumulate.
+    assert len(backend.calls) == 2
     assert _totals(body) == {"prompt_tokens": 7, "completion_tokens": 6, "total_tokens": 13}
 
 
@@ -566,20 +553,17 @@ def test_one_monitor_row_describes_the_whole_turn(monkeypatch):
     )
     entry, _ = _monitor_entry(_request(n = 2), monkeypatch, backend, supports_tools = False)
     assert "first" in entry["reply"] and "second" in entry["reply"]
-    assert entry["prompt_tokens"] == 7  # the shared prompt, not 7 per choice
-    assert entry["completion_tokens"] == 3  # only the choice that published
-    # Per-choice reasons can differ, so the turn claims none of them.
+    assert entry["prompt_tokens"] == 7
+    assert entry["completion_tokens"] == 3
     assert entry.get("stop_reason") is None
 
 
 def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
-    # A stream cancelled via the registry ("Stop") must NOT promote the
-    # buffered-but-unclosed tool markup at finalize, else it executes a tool
-    # the user just cancelled. Guarded on cancel_event at the finalize step.
+    # A stream cancelled via the registry must NOT promote buffered tool markup at finalize and run the tool.
     import routes.inference as inf
 
     cancel_id = "cancel-me-6870"
-    # Balanced JSON but no closing </tool_call> -> healer HOLDS it until finalize.
+    # Balanced JSON but no closing </tool_call>, so the healer HOLDS it until finalize.
     held = '<tool_call>{"name": "lookup", "arguments": {"q": "cats"}}'
 
     class _CancelMidStream(_ScriptedBackend):
@@ -595,8 +579,8 @@ def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
             **kwargs,
         ):
             self.calls.append({"messages": messages, "tools": tools, **kwargs})
-            yield held  # healer holds the unclosed call
-            inf._cancel_by_cancel_id_or_stash(cancel_id)  # user hits Stop before EOF
+            yield held
+            inf._cancel_by_cancel_id_or_stash(cancel_id)
 
     backend = _CancelMidStream()
     payload = _request(tools = [LOOKUP_TOOL], stream = True, cancel_id = cancel_id)
@@ -607,13 +591,13 @@ def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
         for o in objs
         for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get("tool_calls", []) or []
     ]
-    assert tool_deltas == []  # no tool promoted after cancel
+    assert tool_deltas == []
     finishes = [
         o["choices"][0]["finish_reason"]
         for o in objs
         if o["choices"] and o["choices"][0].get("finish_reason")
     ]
-    assert "tool_calls" not in finishes  # ends with finish_reason=stop, not tool_calls
+    assert "tool_calls" not in finishes
 
 
 def test_streaming_no_tools_verbatim(monkeypatch):
@@ -682,7 +666,6 @@ def test_server_tool_streaming_invalid_event_is_error(monkeypatch):
 
 
 def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):
-    # Repeated then shrunk cumulative snapshots must not double-heal.
     backend = _ScriptedBackend(_fixed(_CALL_XML, _CALL_XML, _CALL_XML[:5], _CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = True)
     response = _call(payload, monkeypatch, backend)
@@ -719,7 +702,7 @@ def test_streaming_generator_error_closes_cleanly(monkeypatch):
     chunks = _collect_sse(response)
     joined = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
     assert "An internal error occurred" in joined
-    assert "secret/path" not in joined  # CWE-209: no path leak
+    assert "secret/path" not in joined
     assert backend.reset_count >= 1
 
 
@@ -743,7 +726,6 @@ def test_streaming_disconnect_resets_once(monkeypatch):
 
 
 def test_mlx_uses_same_path(monkeypatch):
-    # MLX and safetensors share get_inference_backend(); one scripted backend covers both.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -751,7 +733,6 @@ def test_mlx_uses_same_path(monkeypatch):
 
 
 def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
-    # tool_choice="none": no tools rendered into the template; history templating still applies.
     backend = _ScriptedBackend(_fixed("plain answer"))
     payload = _request(tools = [LOOKUP_TOOL], tool_choice = "none", stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -760,7 +741,6 @@ def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
 
 
 def test_developer_message_folded_into_system_prompt(monkeypatch):
-    # The "developer" role folds into one leading system message (local templates reject it).
     backend = _ScriptedBackend(_fixed("ok"))
     payload = _request(
         messages = [
@@ -778,13 +758,12 @@ def test_developer_message_folded_into_system_prompt(monkeypatch):
 
 
 def test_failed_nudge_retry_keeps_original_response(monkeypatch):
-    # A raising retry must not 500; the first response is returned.
     state = {"n": 0}
 
     def responder(messages, tools):
         state["n"] += 1
         if state["n"] == 1:
-            return ['<tool_call>{"name":"lookup"']  # unhealable signal
+            return ['<tool_call>{"name":"lookup"']
         raise RuntimeError("retry blew up")
 
     backend = _ScriptedBackend(responder)
@@ -796,16 +775,12 @@ def test_failed_nudge_retry_keeps_original_response(monkeypatch):
 
 
 def test_a_discarded_nudge_retry_still_bills_the_tokens_it_spent(monkeypatch):
-    # Double-failure nudge: the first response is delivered, but the retry's
-    # generate() overwrites stats_holder. The prompt reported is the delivered
-    # attempt's, never the discarded retry's -- but both attempts ran, so their
-    # completions are summed rather than one being dropped.
+    # The retry's generate() overwrites stats_holder, so the prompt is the delivered attempt's; completions sum.
     first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
     retry_stats = {"usage": {"prompt_tokens": 99, "completion_tokens": 99, "total_tokens": 198}}
 
     class _PerCallStatsBackend(_ScriptedBackend):
         def __init__(self):
-            # Unhealable truncated markup on both attempts -> retry is discarded.
             super().__init__(lambda m, t: ['<tool_call>{"name":"lookup"'])
             self._stats_seq = [first_stats, retry_stats]
 
@@ -832,17 +807,15 @@ def test_a_discarded_nudge_retry_still_bills_the_tokens_it_spent(monkeypatch):
         return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
 
     asyncio.run(_run())
-    assert len(backend.calls) == 2  # first attempt + one discarded retry
+    assert len(backend.calls) == 2
     [entry] = monitor.snapshot()
-    # The delivered response is the first attempt, so its prompt is the one
-    # reported; the retry's 99 completion tokens were still generated.
+    # The delivered response is the first attempt, so its prompt is reported while the retry's 99 still count.
     assert entry["prompt_tokens"] == 7
     assert entry["completion_tokens"] == 3 + 99
 
 
 def test_a_nudge_retry_that_never_reported_is_not_billed_twice(monkeypatch):
-    # The retry raises before publishing, so stats_holder still holds the first
-    # attempt's report. Folding that into itself would double its completion count.
+    # The retry raises before publishing, so stats_holder still holds attempt one and folding it doubles it.
     first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
 
     class _RetryRaisesBackend(_ScriptedBackend):
@@ -881,8 +854,7 @@ def test_a_nudge_retry_that_never_reported_is_not_billed_twice(monkeypatch):
 
 
 def test_cached_prompt_tokens_reach_the_usage_details(monkeypatch):
-    # MLX folds its reused prefix into prompt_tokens, so a caller reading the
-    # OpenAI field must see the same count rather than a flat zero.
+    # MLX folds its reused prefix into prompt_tokens, so the OpenAI field must show that, not a flat zero.
     stats = {
         "usage": {
             "prompt_tokens": 1200,
@@ -899,8 +871,7 @@ def test_cached_prompt_tokens_reach_the_usage_details(monkeypatch):
 
 
 def test_cached_tokens_never_exceed_the_prompt_they_describe(monkeypatch):
-    # Two choices can report different prompt counts (the nudge rebuilds a longer
-    # prompt), so the count and its details must come from the same choice.
+    # Two choices can report different prompt counts, so the count and its details must come from the same choice.
     rich = {
         "usage": {
             "prompt_tokens": 1200,
@@ -918,9 +889,7 @@ def test_cached_tokens_never_exceed_the_prompt_they_describe(monkeypatch):
 
 
 def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
-    # The retry heals, so its reply is delivered and its prompt is reported --
-    # but the first attempt generated tokens on the way there, and reporting the
-    # retry alone hides them from the caller's usage.
+    # The retry heals so its prompt is reported, but the first attempt's tokens must not be hidden.
     first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
     retry_stats = {"usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}}
 
@@ -955,7 +924,7 @@ def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
         return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
 
     body = _json_body(asyncio.run(_run()))
-    assert len(backend.calls) == 2  # first attempt + the retry that healed
+    assert len(backend.calls) == 2
     assert body["choices"][0]["message"]["tool_calls"]
     assert body["usage"]["prompt_tokens"] == 20
     assert body["usage"]["completion_tokens"] == 3 + 5
@@ -978,7 +947,6 @@ def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
 
 
 def test_streaming_monitor_records_healed_call_not_raw_xml(monkeypatch):
-    # Monitor mirrors what the client received, never the healed-away raw markup.
     backend = _ScriptedBackend(
         _fixed("Sure. ", 'Sure. <tool_call>{"name": "loo', "Sure. " + _CALL_XML)
     )
@@ -997,7 +965,6 @@ def test_streaming_monitor_records_healed_call_not_raw_xml(monkeypatch):
 
 
 def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
-    # A forced function is the only schema rendered into the template.
     backend = _ScriptedBackend(_fixed(_SEARCH_XML))
     payload = _request(
         tools = [LOOKUP_TOOL, SEARCH_TOOL],
@@ -1013,8 +980,7 @@ def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
 
 
 def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
-    # Remote image URLs leave image=None, so content arrives as a part LIST:
-    # text parts are kept, the image part dropped.
+    # Remote image URLs leave image=None, so content arrives as a part LIST: text parts kept, image part dropped.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
         messages = [
@@ -1040,8 +1006,7 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
 
 
 def test_string_arguments_history_deserialized_for_template(monkeypatch):
-    # JSON-string tool_calls arguments become dicts in the templated copy;
-    # the HTTP response stays OpenAI-shaped.
+    # JSON-string tool_calls arguments become dicts in the templated copy; the HTTP response stays OpenAI-shaped.
     backend = _ScriptedBackend(_fixed("done"))
     payload = _request(
         tools = [LOOKUP_TOOL],
@@ -1095,8 +1060,7 @@ def test_unparseable_arguments_string_left_untouched(monkeypatch):
 
 
 def test_mcp_enabled_without_server_tools_uses_passthrough(monkeypatch):
-    # mcp_enabled=true with an empty registry must not silently drop the
-    # declared tools; the gate keys on the server-side path claiming the request.
+    # mcp_enabled=true with an empty registry must not drop the declared tools: the gate keys on the claim.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = False, mcp_enabled = True)
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -1142,7 +1106,6 @@ def test_every_tool_loop_turn_is_billed_not_just_the_last():
     folded = _fold(_turn(100, 20), _turn(160, 30), _turn(220, 5))
 
     assert folded["usage"] == {"prompt_tokens": 220, "completion_tokens": 55, "total_tokens": 275}
-    # Rates describe the summed counts, not the last turn that arrived.
     assert folded["timings"]["predicted_n"] == 55
     assert folded["timings"]["predicted_ms"] == pytest.approx(550.0)
     assert folded["timings"]["predicted_per_token_ms"] == pytest.approx(10.0)
@@ -1151,14 +1114,11 @@ def test_every_tool_loop_turn_is_billed_not_just_the_last():
 def test_a_turn_that_ends_before_reporting_does_not_erase_the_loop():
     """A cancelled or errored final turn has no counts of its own. Seeding the
     fold from it would drop everything the loop already spent."""
-    # No report at all, in every position.
     assert _fold(_turn(100, 20), None, _turn(160, 30))["usage"]["completion_tokens"] == 50
     assert _fold(_turn(100, 20), _turn(160, 30), None)["usage"]["completion_tokens"] == 50
 
-    # Reported usage but no timings: the loop's totals must survive it.
     partial = _fold(_turn(100, 20), _turn(160, 30, timings = False))
     assert partial["timings"]["predicted_n"] == 20
-    # Reported timings but no usage: the prompt is still the loop's.
     errored = _fold(_turn(100, 20), {"timings": {"predicted_ms": 1.0, "predicted_n": 1}})
     assert errored["usage"] == {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
 

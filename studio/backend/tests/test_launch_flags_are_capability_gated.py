@@ -55,8 +55,8 @@ GATED = (
     "flash_attn_takes_value",
 )
 
-# Help text as llama.cpp actually prints it: the declaration starts at column 0
-# and its description is padded to column 40 (common_arg::to_string).
+# Help text as llama.cpp actually prints it: the declaration starts at column 0 and its description
+# is padded to column 40 (common_arg::to_string).
 NEW_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -339,7 +339,6 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
     def test_the_inherited_value_is_dropped(self):
         env = _flash_attn_env_scrub(known_off = True)
         assert "LLAMA_ARG_FLASH_ATTN" not in env
-        # ...and nothing else in the inherited env is touched.
         assert env == {"LLAMA_ARG_CTX_SIZE": "4096"}
 
     def test_the_recorded_state_then_matches_the_launch(self):
@@ -382,8 +381,8 @@ class _SelfShim:
 
     def __getattr__(self, name):
         attr = getattr(LlamaCppBackend, name)
-        # A staticmethod reached through the class is a plain function too, but it
-        # takes no self, so only genuine instance methods get bound.
+        # A staticmethod reached through the class is a plain function too, but it takes no self, so
+        # only genuine instance methods get bound.
         declared = inspect.getattr_static(LlamaCppBackend, name, None)
         if inspect.isfunction(attr) and not isinstance(declared, staticmethod):
             return _types.MethodType(attr, self)

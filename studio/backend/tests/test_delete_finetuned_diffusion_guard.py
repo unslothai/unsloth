@@ -56,7 +56,6 @@ def client(tmp_path, monkeypatch):
     outputs = tmp_path / "outputs"
     outputs.mkdir()
     monkeypatch.setattr(models_module, "outputs_root", lambda: outputs)
-    # No chat model is resident, so only the diffusion / video guards can refuse.
     monkeypatch.setattr(models_module, "get_inference_backend", lambda: _NoChat())
 
     app = FastAPI()
@@ -104,7 +103,6 @@ def test_refuses_the_companion_base_and_the_extra_repos_the_engine_reads(client,
     target = _model_dir(outputs)
     other = outputs / "somewhere-else"
     other.mkdir()
-    # The checkpoint is the loaded id; the deleted dir is only the companion base.
     monkeypatch.setattr(
         models_module,
         "_active_diffusion_backend",
@@ -113,7 +111,6 @@ def test_refuses_the_companion_base_and_the_extra_repos_the_engine_reads(client,
     monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
     assert _delete(c, target).status_code == 400
 
-    # Same for a companion the engine reports through loaded_repo_ids (sd.cpp VAE / TE).
     monkeypatch.setattr(
         models_module,
         "_active_diffusion_backend",
@@ -180,7 +177,8 @@ def test_an_unreadable_engine_state_fails_closed(client, monkeypatch):
 
 
 def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, monkeypatch):
-    # source="training" checked only the LLM trainer, so a delete could rmtree the output directory a live diffusion LoRA run is about to write into.
+    # source="training" checked only the LLM trainer, so a delete could rmtree the output directory
+    # a live diffusion LoRA run is about to write into.
     import sys
     import types
 
@@ -198,7 +196,6 @@ def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, mon
     assert "diffusion" in resp.json()["detail"].lower()
     assert target.exists()
 
-    # Idle again: the same delete goes through.
     stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active = lambda: False)
     assert _delete(c, target).status_code == 200
     assert not target.exists()

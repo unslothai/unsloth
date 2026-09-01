@@ -91,9 +91,8 @@ def asgi_scope(
     server = ("127.0.0.1", 8000),
     client = ("127.0.0.1", 50000),
 ):
-    # `headers` is the convenient dict form; `raw_headers` is the ASGI list, which is the
-    # only way to express a repeated header. A dict cannot, which is why the duplicate
-    # rules went untested until now.
+    # `headers` is the convenient dict form; `raw_headers` is the ASGI list, the only way to express
+    # a repeated header.
     encoded = [(name.lower().encode(), value.encode()) for name, value in (headers or {}).items()]
     encoded += list(raw_headers or [])
     return {
@@ -118,7 +117,6 @@ def resolve(request):
     return asyncio.run(security(request))
 
 
-# ── the headline invariant: off means off, through the dependency itself ──────
 
 
 def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate():
@@ -138,7 +136,6 @@ def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate(
             )
 
 
-# ── privilege escalation: can a keyless caller widen its own grant? ───────────
 
 
 def test_a_keyless_caller_cannot_widen_its_own_scope():
@@ -174,7 +171,6 @@ def test_a_keyless_caller_cannot_widen_its_own_scope():
     assert asyncio.run(authenticated_via_api_key(key_credentials)) is True
 
 
-# ── transport: the inference limb, isolated from the tunnel flag ──────────────
 
 
 def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
@@ -257,7 +253,6 @@ def test_every_hosted_mode_flag_closes_full_and_inference():
         ), f"active tunnel did not close scope={scope}"
 
 
-# ── route topology ───────────────────────────────────────────────────────────
 
 
 def test_management_routes_are_never_covered_by_inference_scope():
@@ -347,15 +342,12 @@ def test_no_v1_get_route_but_model_retrieval_matches_a_traversal_suffix():
             )[0]
             is not Match.NONE
         ]
-        # the SPA catch-all always matches; the point is that no /v1 API route does
         api_matched = [p for p in matched if p and p.startswith("/v1")]
         assert api_matched in ([], ["/v1/models/{model_id:path}"]), f"{path} reached {api_matched}"
 
-    # and the benign shape the allowlist exists to serve still resolves
     assert scope_covers("inference", "GET", "/v1/models/unsloth/Llama-3.2-1B") is True
 
 
-# ── credential precedence ────────────────────────────────────────────────────
 
 
 def test_a_session_jwt_naming_an_unknown_subject_is_refused():
@@ -403,11 +395,9 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
         ({"Authorization": "Bearer sk-unsloth-nope"}, False),
         ({"Authorization": "Bearer"}, False),
         ({"Authorization": "Basic bm90LW5lZWRlZA=="}, False),
-        # A doubled space after the scheme. This is the shape the two implementations
-        # used to disagree on: the dependency collapsed it and admitted the dummy while
-        # the twin did not, so the request was keyless to every route but not-keyless to
-        # the middleware that clamps the tool grant. Both now say keyless, which is the
-        # clamping answer.
+        # A doubled space after the scheme, the shape the two implementations used to disagree on: the
+        # dependency collapsed it and admitted the dummy while the twin did not, so the request was
+        # keyless to every route but not-keyless to the middleware clamping the tool grant.
         ({"Authorization": "bearer  not-needed"}, True),
         ({"Authorization": "Bearer not-needed-extra"}, False),
     ]
@@ -416,8 +406,8 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
         assert twin is expected, f"twin disagreed on {headers}"
         assert dependency_says_keyless(headers) is expected, f"dependency disagreed on {headers}"
 
-    # A repeated `Authorization` is the one shape where the two differ in form and agree
-    # in meaning: the twin returns False, the dependency raises. Both mean not-keyless.
+    # A repeated `Authorization` is the one shape where the two differ in form and agree in meaning:
+    # the twin returns False, the dependency raises.
     duplicated = [
         (b"authorization", b"Bearer not-needed"),
         (b"authorization", b"Bearer not-needed"),
@@ -447,9 +437,8 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
             "same-site",
             "CROSS-SITE",
             " cross-site ",
-            # `none` is set before the redirect chain is walked, so an attacker 302 from
-            # a navigation the user started arrives still saying `none`. Firefox 153 and
-            # WebKit 26.5 both deliver it. Nobody types an API route into an address bar.
+            # `none` is set before the redirect chain is walked, so an attacker 302 from a
+            # navigation the user started arrives still saying `none`.
             "none",
             # an empty or unregistered token is not one of the four spelled values
             "",
@@ -464,7 +453,6 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
                 is False
             ), f"{site!r} was admitted under {scope_name}"
 
-        # a page on Studio's own origin is not an attack
         for site in ("same-origin", "SAME-ORIGIN", " same-origin "):
             assert (
                 keyless_request_allowed(
@@ -473,13 +461,11 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
                 is True
             ), f"{site!r} was refused under {scope_name}"
 
-        # absence must stay admitted: curl, the OpenAI SDKs and Safari < 16.4 send
-        # no Sec-Fetch-* at all, and serving them is the entire point of the setting
+        # absence must stay admitted: curl, the OpenAI SDKs and Safari < 16.4 send no Sec-Fetch-* at
+        # all, and serving them is the entire point of the setting
         assert keyless_request_allowed(request_for(path = "/v1/models", method = "GET")) is True
 
-        # a repeated header is ambiguous, and `Headers.get()` would silently take the
-        # first. Neither h11 nor httptools rejects a repeated `Sec-Fetch-Site`, so this
-        # has to be refused here or not at all.
+        # a repeated header is ambiguous, and `Headers.get()` would silently take the first.
         for pair in (("same-origin", "cross-site"), ("cross-site", "same-origin")):
             assert (
                 keyless_request_allowed(
@@ -533,7 +519,6 @@ def test_a_loopback_spelling_the_browser_will_not_vouch_for_is_refused():
                 is False
             ), f"{spelling} was admitted under {scope_name}"
 
-        # the spellings the browser does vouch for keep working
         for spelling in ("127.0.0.1:8888", "127.0.0.2:8888", "[::1]:8888", "localhost:8888"):
             assert (
                 keyless_request_allowed(
@@ -620,7 +605,6 @@ def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
             _host_authority_is_direct(request_for(headers = {"Host": spelling}), "full") is False
         ), f"{spelling} admitted for full"
 
-    # loopback stays right for both, and so does an absent Host
     for spelling in ("127.0.0.1:8888", "127.0.0.2:8888", "localhost:8888", "[::1]:8888"):
         for scope_name in ("full", "inference"):
             assert (
@@ -671,8 +655,8 @@ def test_an_authority_that_is_not_a_bare_host_and_port_is_refused():
                 is False
             ), f"{malformed!r} was admitted under {scope_name}"
 
-        # a repeated Host is ambiguous. h11 rejects it on the wire, httptools passes
-        # both through, and `Headers.get()` would take the first.
+        # a repeated Host is ambiguous. h11 rejects it on the wire, httptools passes both through,
+        # and `Headers.get()` would take the first.
         for pair in (
             (b"127.0.0.1:8888", b"evil.example:8888"),
             (b"evil.example:8888", b"127.0.0.1:8888"),
@@ -713,7 +697,6 @@ def test_a_plain_http_lan_browser_request_is_not_covered_by_fetch_metadata():
     )
     # no Sec-Fetch-Site is sent to a plain-HTTP LAN origin, so the predicate is inert
     assert _browser_initiated_elsewhere(lan) is False
-    # and the authority is a literal, so the rebinding guard is satisfied too
     assert _host_authority_is_direct(lan, "inference") is True
     # a rebound page on the LAN is still refused, by the authority rule alone
     rebound = request_for(
@@ -797,8 +780,8 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
     for scope_name in ("off", "inference", "full"):
         set_keyless_api_access(scope_name)
         for label, transport in transports.items():
-            # via monkeypatch, so the stub cannot outlive this test: it is a module
-            # global, and test_lan_access_settings.py reads the real one
+            # via monkeypatch, so the stub cannot outlive this test: it is a module global, and
+            # test_lan_access_settings.py reads the real one
             monkeypatch.setattr(
                 lan_access,
                 "lan_listener_status",
@@ -827,7 +810,6 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
                     asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
                 ), f"{credential_name} stopped working on {label}/{scope_name}"
 
-    # and the credentials that must NOT work still do not, at the widest scope
     set_keyless_api_access("full")
     storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
     expired, _row = storage.create_api_key(
@@ -864,8 +846,8 @@ def test_a_rebound_hostname_cannot_pose_as_a_local_client():
             "127.0.0.1.evil.example:8888",
             "[::1]evil.example",
             "studio.internal:8888",
-            # WebKit sends no Sec-Fetch-* for a trailing-dot localhost, so the dotted
-            # spelling would be an absence-is-admitted gap on Safari alone.
+            # WebKit sends no Sec-Fetch-* for a trailing-dot localhost, so the dotted spelling would
+            # be an absence-is-admitted gap on Safari alone.
             "localhost.:8888",
             "foo.localhost.:8888",
         ):
@@ -880,7 +862,6 @@ def test_a_rebound_hostname_cannot_pose_as_a_local_client():
                 is False
             ), f"{hostile} was admitted under {scope_name}"
 
-        # a client that addressed the socket directly is unaffected
         for direct in (
             "127.0.0.1:8888",
             "localhost:8888",
@@ -899,7 +880,6 @@ def test_a_rebound_hostname_cannot_pose_as_a_local_client():
         assert keyless_request_allowed(request_for(path = path, method = "GET")) is True
 
 
-# ── the reported race, pinned deterministically ──────────────────────────────
 
 
 def test_revoking_a_key_after_the_admission_snapshot_never_yields_the_admin():
@@ -957,6 +937,6 @@ def test_revoking_a_key_after_the_admission_snapshot_never_yields_the_admin():
     assert observed["scheme"] == "Bearer"
     assert observed.get("subject_resolved") is not True, "revoked key resolved to a subject"
     assert observed["status"] == 401
-    # tools stay at the caller's own policy: an API-key client is not keyless, so
-    # the grant it already had is not taken away. It never reaches a handler anyway.
+    # tools stay at the caller's own policy: an API-key client is not keyless, so the grant it
+    # already had is not taken away.
     assert observed["tools"] is True

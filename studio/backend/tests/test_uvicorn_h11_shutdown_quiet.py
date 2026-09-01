@@ -132,11 +132,9 @@ async def _serve_then_shutdown_then_poll(protocol_class):
     """One keep-alive request, then a graceful shutdown, then a late poll."""
     protocol, transport = await _serve_one_request(protocol_class)
 
-    # uvicorn.Server.shutdown() calls this on every live connection.
     protocol.shutdown()
     assert protocol.conn.our_state is h11.CLOSED
 
-    # The poll that was already in the socket when we closed.
     protocol.data_received(REQUEST)
     return protocol, transport
 
@@ -227,8 +225,7 @@ async def _reject_then_poll(protocol_class):
     protocol.data_received(b"GET\r\n\r\n")
     await asyncio.sleep(0)
     assert b"400 Bad Request" in b"".join(transport.chunks)
-    # send_400_response() closes the transport without sending ConnectionClosed,
-    # so h11 parks the server at MUST_CLOSE rather than CLOSED.
+    # send_400_response() closes the transport without ConnectionClosed, so h11 parks at MUST_CLOSE.
     assert protocol.conn.our_state is h11.MUST_CLOSE
 
     protocol.data_received(REQUEST)

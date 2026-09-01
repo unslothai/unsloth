@@ -19,23 +19,19 @@ from unittest.mock import patch
 
 import pytest
 
-# Stub heavy / unavailable deps before importing the module under test.
-# Same pattern as test_kv_cache_estimation.py.
+# Stub heavy / unavailable deps before importing the module under test (same pattern as test_kv_cache_estimation.py).
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx
 _httpx_stub = _types.ModuleType("httpx")
 for _exc_name in (
     "ConnectError",
@@ -63,20 +59,14 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Only when the real library is absent: sys.modules holds what has been IMPORTED, not what is
+# installed, so setdefault does not defer to an untouched real httpx.
 try:
     import httpx  # noqa: F401
 except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 GIB = 1024**3
 
@@ -108,8 +98,8 @@ def _preflight(
     path_infos = [_FakePathInfo(name, size) for name, size in repo_files]
 
     with tempfile.TemporaryDirectory() as tmp:
-        # Sparse files so exists/getsize pass without allocating bytes on disk
-        # (critical for multi-GB models).
+        # Sparse files so exists/getsize pass without allocating bytes on disk (critical for
+        # multi-GB models).
         cache_paths = {}
         for name, sz in cached_files.items():
             p = Path(tmp) / name.replace("/", "_")
@@ -121,7 +111,6 @@ def _preflight(
         def fake_try_to_load_from_cache(repo_id, filename):
             return cache_paths.get(filename)
 
-        # Mirror the real code's names and control flow so drift is caught.
         total_bytes = sum((p.size or 0) for p in path_infos)
         already_cached_bytes = 0
         for p in path_infos:
@@ -146,9 +135,6 @@ def _preflight(
         }
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 class TestCacheAwarePreflight:

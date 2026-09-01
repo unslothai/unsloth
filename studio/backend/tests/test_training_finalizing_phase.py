@@ -49,19 +49,18 @@ def _progress(step = 0, total_steps = 0):
     return SimpleNamespace(step = step, total_steps = total_steps)
 
 
-# _is_finalizing
 
 
 @pytest.mark.parametrize(
     "step, total, msg, expected",
     [
-        (126, 126, "training in progress...", True),  # the reported symptom
-        (127, 126, "training in progress...", True),  # defensive overshoot
-        (125, 126, "training in progress...", False),  # steps remain
+        (126, 126, "training in progress...", True),
+        (127, 126, "training in progress...", True),
+        (125, 126, "training in progress...", False),
         (0, 126, "training in progress...", False),
-        (0, 0, "training in progress...", False),  # total unknown -> inert
+        (0, 0, "training in progress...", False),
         (5, 0, "training in progress...", False),
-        (0, 0, "saving model...", True),  # MLX/embedding say so
+        (0, 0, "saving model...", True),
         (10, 126, "saving stopped model...", True),
         (10, 126, "merging weights into 16bit", True),
         (10, 126, "ready to train", False),
@@ -79,7 +78,6 @@ def test_is_finalizing_tolerates_missing_attributes():
     assert fn(SimpleNamespace(step = None, total_steps = None), "training") is False
 
 
-# Contract guards
 
 
 def _phase_literals() -> set[str]:
@@ -95,7 +93,6 @@ def _phase_literals() -> set[str]:
                 and stmt.target.id == "phase"
             ):
                 sub = stmt.annotation
-                # phase: Literal[...] = Field(...)
                 while isinstance(sub, ast.Subscript) and not (
                     isinstance(sub.value, ast.Name) and sub.value.id == "Literal"
                 ):
@@ -110,7 +107,6 @@ def test_every_emitted_phase_is_in_the_response_literal():
     """A phase missing from the Literal makes /api/train/status 500, not degrade."""
     src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
     tree = ast.parse(src)
-    # The phase derivation moved into _build_training_status, so scan both, not just inline.
     fns = [
         n
         for n in ast.walk(tree)
@@ -139,7 +135,6 @@ def test_finalizing_is_declared():
 def test_completion_still_comes_only_from_is_completed():
     """100% must not be promoted to a terminal state."""
     src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
-    # Follow the phase derivation wherever it lives: it moved into _build_training_status.
     fn_src = next(
         seg
         for seg in (

@@ -76,8 +76,7 @@ def test_an_executed_call_gives_up_its_arguments():
     assert compacted == 1
     replayed = json.loads(_replayed_arguments(fitted))
     assert str(len(body)) in replayed["new_string"]
-    # The path survives: a model that cannot see which file it just wrote answers the
-    # receipt by writing it again.
+    # The path survives: a model that cannot see which file it just wrote answers the receipt by writing it again.
     assert replayed["path"] == "flappy-bird.html"
     assert "flappy-bird.html" in replayed["new_string"]
     assert len(_replayed_arguments(fitted)) < len(_replayed_arguments(messages))
@@ -193,7 +192,6 @@ def test_one_large_edit_beside_many_small_ones_still_compacts_all_of_them():
     fitted, compacted = compact_completed_tool_arguments(messages)
 
     assert compacted == 1
-    # Per-leaf mode leaves the fifty small edits whole, which is over half the payload.
     assert len(_args(fitted)) < before // 4
 
 
@@ -376,9 +374,8 @@ def test_compacting_a_refusal_leaves_other_calls_alone():
 @pytest.mark.parametrize(
     "prompt_tokens, servable",
     [
-        # Observed live at a 4096 window: the gate refused these while llama-server, which
-        # admits on size alone, would have served them. The model answered by retrying
-        # ever smaller edits against a bar it could not see.
+        # Observed live at a 4096 window: the gate refused these while llama-server, which admits on size
+        # alone, would have served them, and the model retried ever smaller edits against an unseen bar.
         (3504, True),
         (3549, True),
         (3712, True),
@@ -431,16 +428,13 @@ def test_a_receipt_cannot_be_mistaken_for_the_tools_output():
 
     assert "arguments you sent" in replayed
     assert "Not tool output" in replayed
-    # The tool's real result is the one record of what happened and is never touched.
     assert "Created a.html" in replayed
 
 
 @pytest.mark.parametrize(
     "reply",
     [
-        # The approval gate's own wording, verbatim.
         "The user declined to run this tool call.",
-        # The unreadable-arguments guard: the call never reached the tool.
         "Error: edit_file arguments were cut off after 82 characters and could not be "
         "read, so nothing ran. Resend as complete JSON.",
         "Error: edit_file arguments are not valid JSON, so nothing ran.",
@@ -598,7 +592,7 @@ def test_a_refused_call_with_malformed_arguments_is_not_replayed_as_having_run()
     The `tool` message beside it says nothing was written; the receipt said the call ran.
     Two accounts of one call, and the one the model can act on is the wrong one.
     """
-    broken = '{"path":"a.html","new_string":"' + "z" * 4000  # never closes
+    broken = '{"path":"a.html","new_string":"' + "z" * 4000
     messages = [
         {
             "role": "assistant",
@@ -633,7 +627,6 @@ def test_a_refused_call_with_malformed_arguments_is_not_replayed_as_having_run()
         ("edit_file", "ask for a smaller file"),
         ("python", "run a shorter program"),
         ("terminal", "run a shorter command"),
-        # Not a file, not a program, and not guessable: the neutral line.
         ("mcp__server__tool", "ask for less in one call"),
     ],
 )
@@ -666,10 +659,8 @@ def test_an_earlier_success_does_not_vouch_for_a_later_declined_call():
 
     fitted, compacted = compact_completed_tool_arguments(messages)
 
-    # The first call really did run, so it is still spent.
     assert compacted == 1
     assert "a" * 4000 not in json.dumps(fitted[1])
-    # The declined one keeps its arguments and is never called written.
     assert "b" * 4000 in json.dumps(fitted[3])
     assert "already written to second.html" not in json.dumps(fitted)
 
@@ -755,7 +746,7 @@ def test_the_destination_path_survives_aggregate_compaction():
 def test_the_refusal_blames_a_file_only_when_a_file_is_involved(tool_name, expect_file_wording):
     """`_blamed_role` sent every oversized tool call to the file advice, so a program or
     an MCP payload was answered with "ask for a smaller file"."""
-    from core.inference.context_window import _blamed_role  # noqa: PLC0415
+    from core.inference.context_window import _blamed_role
 
     message = {"role": "assistant", "tool_calls": [_call("c1", tool_name, code = "x")]}
 
@@ -778,7 +769,6 @@ def test_a_reply_pairs_with_the_newest_pending_call_of_a_reused_id():
         {
             "role": "assistant",
             "content": "",
-            # Announced, then the turn was interrupted: no `tool` reply ever followed.
             "tool_calls": [_call("call_0", "edit_file", path = "first.html", new_string = body_a)],
         },
         {"role": "user", "content": "Try again"},
@@ -809,7 +799,7 @@ def test_a_mixed_batch_is_blamed_on_the_call_that_made_it_large():
     that is too large, and the advice -- ask for a smaller file -- cannot shrink the
     payload that actually caused the refusal.
     """
-    from core.inference.context_window import _blamed_role  # noqa: PLC0415
+    from core.inference.context_window import _blamed_role
 
     message = {
         "role": "assistant",
@@ -824,7 +814,7 @@ def test_a_mixed_batch_is_blamed_on_the_call_that_made_it_large():
 
 def test_a_batch_whose_bulk_is_the_file_edit_still_gets_the_file_wording():
     """The other side of the same choice, so the fix cannot swallow the file case."""
-    from core.inference.context_window import _blamed_role  # noqa: PLC0415
+    from core.inference.context_window import _blamed_role
 
     message = {
         "role": "assistant",
@@ -844,8 +834,8 @@ def test_a_reply_the_window_replaced_does_not_prove_a_write():
     written" -- under exactly the tight context that makes compaction run. Absence of
     evidence is not evidence, so the neutral wording applies.
     """
-    from core.inference.context_window import _completed_phrase_for  # noqa: PLC0415
-    from core.inference.tools import _zero_room_stub  # noqa: PLC0415
+    from core.inference.context_window import _completed_phrase_for
+    from core.inference.tools import _zero_room_stub
 
     stub = _zero_room_stub(2401, None, True)
     written = _completed_phrase_for("edit_file", "Wrote 2401 chars to a.html")
@@ -858,7 +848,7 @@ def test_a_reply_the_window_replaced_does_not_prove_a_write():
 
 def test_a_truncated_reply_is_inconclusive_too():
     """The other shape of the same cause: a body cut down with a notice appended."""
-    from core.inference.context_window import _completed_phrase_for  # noqa: PLC0415
+    from core.inference.context_window import _completed_phrase_for
 
     cut = "Wrote 2401 ch\n\n... (truncated to 13 chars for the model; 2401 chars total)"
 
@@ -873,7 +863,7 @@ def test_a_refused_call_is_compacted_below_the_general_floor():
     is the difference between the user reading the refusal and reading llama-server's
     context error instead.
     """
-    from core.inference.context_window import (  # noqa: PLC0415
+    from core.inference.context_window import (
         _ARG_COMPACTION_TOTAL_FLOOR_CHARS,
         compact_refused_tool_arguments,
     )
@@ -898,7 +888,7 @@ def test_a_refused_call_is_compacted_below_the_general_floor():
 
 def test_a_receipt_that_would_grow_the_prompt_is_still_refused():
     """The floor's real job, kept: eliding must never cost more than it saves."""
-    from core.inference.context_window import compact_refused_tool_arguments  # noqa: PLC0415
+    from core.inference.context_window import compact_refused_tool_arguments
 
     messages = [
         {
@@ -921,7 +911,7 @@ def test_an_overflowing_tool_turn_is_blamed_on_the_call_not_the_reply():
     blaming the reply alone tells the user to ask for a smaller slice of a file when what
     overflowed was the payload they cannot shrink that way.
     """
-    from core.inference.context_window import _blamed_role_for_turn  # noqa: PLC0415
+    from core.inference.context_window import _blamed_role_for_turn
 
     messages = [
         {"role": "user", "content": "run it"},
@@ -938,7 +928,7 @@ def test_an_overflowing_tool_turn_is_blamed_on_the_call_not_the_reply():
 
 def test_a_tool_reply_with_no_call_behind_it_is_still_blamed_on_itself():
     """The fallback has to survive: a reply whose call is gone is the reply's own weight."""
-    from core.inference.context_window import _blamed_role_for_turn  # noqa: PLC0415
+    from core.inference.context_window import _blamed_role_for_turn
 
     messages = [
         {"role": "user", "content": "run it"},

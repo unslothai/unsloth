@@ -165,8 +165,8 @@ def test_final_answer_survives_preface_then_disabled_tool_noop(monkeypatch):
     preface = "Let me run a quick command to double-check."
     final = "All set."  # deliberately shorter than the preface -> truncation is visible
 
-    # Single turn: visible preface + a call to `terminal`, which is NOT in the
-    # enabled tool list, so the controller marks it disabled -> internal no-op.
+    # Single turn: visible preface plus a call to `terminal`, which is NOT in the enabled tool list,
+    # so the controller marks it disabled -> internal no-op.
     turn_stream = [
         _sse({"content": preface}),
         _sse(
@@ -211,9 +211,8 @@ def test_final_answer_survives_preface_then_disabled_tool_noop(monkeypatch):
     assert executed == []
     assert replay["tool_starts"] == []
 
-    # The generator must emit an empty status that resets the route cursor
-    # before the final pass; otherwise `final` (shorter than `preface`) would
-    # be diffed to nothing and dropped.
+    # The generator must emit an empty status that resets the route cursor before the final pass;
+    # otherwise `final` (shorter than `preface`) would be diffed to nothing and dropped.
     assert "" in replay["statuses"], "no cursor-resetting empty status emitted"
 
     # Both the preface and the final answer survive, in order, untruncated.
@@ -222,8 +221,7 @@ def test_final_answer_survives_preface_then_disabled_tool_noop(monkeypatch):
     assert replay["visible"].index(preface) < replay["visible"].index(final)
     assert replay["visible"].count(preface) == 1
 
-    # Negative control: a route loop that does NOT reset on empty status (the
-    # pre-fix behaviour) would diff `final` against the stale preface cursor
-    # and drop it -- proving the empty status is load-bearing here.
+    # Negative control: a route loop that does NOT reset on empty status (the pre-fix behaviour)
+    # would diff `final` against the stale preface cursor and drop it.
     no_reset = _replay_route_cursor_without_status_reset(events)
     assert final not in no_reset["visible"], no_reset["visible"]

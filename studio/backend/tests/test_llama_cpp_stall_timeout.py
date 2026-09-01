@@ -24,7 +24,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Mirror sibling tests' stubbing so the module imports without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -71,7 +70,6 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
     clock = {"t": 0.0}
     monkeypatch.setattr(llama_cpp_mod.time, "monotonic", lambda: clock["t"])
 
-    # One token then silence: every read times out, advancing fake time by its timeout.
     def silent_read(max_bytes, timeout = None):
         clock["t"] += timeout if timeout is not None else 0.0
         raise httpcore.ReadTimeout("slice timed out on silence")

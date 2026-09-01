@@ -20,18 +20,17 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-import pytest  # noqa: E402
-from fastapi import FastAPI  # noqa: E402
-from fastapi.encoders import jsonable_encoder  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+import pytest
+from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
-from utils.api_errors import (  # noqa: E402
+from utils.api_errors import (
     install_api_error_handlers,
     safe_validation_errors,
 )
 
-# Non-UTF-8: 0x80 is an invalid start byte, exactly like a RIFF/WAV payload.
 _BINARY = b"RIFF\x00\x00\x80\xff\xfe\xfd" * 64
 
 
@@ -44,16 +43,14 @@ def _client() -> TestClient:
     install_api_error_handlers(app)
 
     @app.post("/api/thing")
-    async def _thing(payload: _Body):  # pragma: no cover - never reached here
+    async def _thing(payload: _Body):
         return {"ok": True}
 
     return TestClient(app)
 
 
 def _post_multipart_binary(client: TestClient):
-    # A multipart upload to a JSON-body route: the shape that produced the 500.
-    # FastAPI reads the body, fails to coerce it to the model, and puts the raw
-    # bytes in the error's "input".
+    # A multipart upload to a JSON-body route, the 500's shape: FastAPI puts the raw bytes in the error's "input".
     return client.post("/api/thing", files = {"file": ("audio.wav", _BINARY, "audio/wav")})
 
 
@@ -95,7 +92,7 @@ def test_summarizer_makes_inputs_encodable(value, expected_fragment):
     errors = [{"type": "x", "loc": ("body",), "msg": "bad", "input": value}]
     safe = safe_validation_errors(errors)
     assert expected_fragment in str(safe[0]["input"])
-    jsonable_encoder(safe)  # must not raise
+    jsonable_encoder(safe)
 
 
 def test_short_inputs_are_left_alone():
@@ -111,7 +108,6 @@ def test_nested_binary_inside_a_dict_is_summarized():
 
 
 def test_a_huge_array_of_small_values_is_bounded():
-    # 200k integers are individually tiny but the list was copied whole.
     errors = [{"type": "x", "loc": ("body",), "msg": "bad", "input": list(range(200_000))}]
     safe = safe_validation_errors(errors)
     out = safe[0]["input"]
@@ -141,7 +137,6 @@ def test_deep_nesting_does_not_explode():
 
 
 def test_a_validator_message_quoting_the_value_is_bounded():
-    # models/training.py::_parse_lr raises f"... (got {v!r})".
     msg = "learning_rate must be parseable as float (got '" + "9" * 500_000 + "')"
     safe = safe_validation_errors([{"type": "x", "loc": ("body",), "msg": msg, "input": "x"}])
     assert len(safe[0]["msg"]) < 300, len(safe[0]["msg"])
@@ -164,8 +159,7 @@ def test_a_long_dictionary_key_is_truncated():
 
 
 def test_non_finite_numbers_do_not_break_json():
-    # Starlette's JSONResponse dumps with allow_nan = False, so an echoed NaN or
-    # Infinity turns the intended 422 into a 500.
+    # Starlette's JSONResponse dumps with allow_nan = False, so an echoed NaN turns a 422 into a 500.
     import json
 
     errors = [
@@ -197,15 +191,13 @@ def test_the_v1_surface_gets_the_same_message_cap():
 
 
 def test_a_long_loc_element_is_truncated():
-    # A typed mapping copies the offending key into loc, so it is user-controlled.
     errors = [{"type": "x", "loc": ("body", "budgets", "k" * 2_000_000), "msg": "bad", "input": 1}]
     out = safe_validation_errors(errors)[0]["loc"]
     assert all(not isinstance(p, str) or len(p) < 300 for p in out), [len(str(p)) for p in out]
 
 
 def test_an_enormous_integer_is_summarized():
-    # str() on an int past sys.get_int_max_str_digits() raises, and json.dumps would
-    # otherwise emit every digit.
+    # str() on an int past sys.get_int_max_str_digits() raises, and json.dumps would otherwise emit every digit.
     import json
 
     errors = [{"type": "x", "loc": ("body", "audio"), "msg": "bad", "input": 10**20_000}]
@@ -220,8 +212,7 @@ def test_an_ordinary_integer_is_left_alone():
 
 
 def test_a_lone_surrogate_can_still_be_encoded():
-    # Starlette encodes the response as UTF-8 with ensure_ascii = False, and a lone
-    # surrogate survives JSON parsing but cannot be encoded.
+    # Starlette encodes UTF-8 with ensure_ascii = False, and a lone surrogate parses but cannot encode.
     errors = [{"type": "x", "loc": ("body", "batch_size"), "msg": "bad", "input": "\ud800bad"}]
     safe = safe_validation_errors(errors)
     import json

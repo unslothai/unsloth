@@ -55,7 +55,6 @@ class _Case(NamedTuple):
     status: int
 
 
-# The first store call is enough to identify the handler's dispatch thread.
 _MUTATIONS = {
     "mcp-import": _Case(
         "post",
@@ -144,7 +143,6 @@ def _drive(monkeypatch, case: _Case):
     """Run one route through real FastAPI dispatch; return (handler threads, loop thread)."""
     threads: list[int] = []
     monkeypatch.setattr(getattr(case.module, case.store), case.read, _record(threads, case.result))
-    # A failed login from an earlier test in this session would otherwise 429 this one.
     monkeypatch.setattr(auth_routes, "_LOGIN_BUCKETS", {})
     monkeypatch.setattr(auth_routes, "_LOGIN_IP_BUCKETS", {})
 

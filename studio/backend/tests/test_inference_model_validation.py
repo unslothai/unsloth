@@ -36,7 +36,6 @@ def test_nonblank_chat_template_override_is_preserved_verbatim():
     assert req.chat_template_override == template
 
 
-# ---------- ChatCompletionRequest tool_call_id walkback ----------
 
 from models.inference import ChatCompletionRequest
 
@@ -222,7 +221,6 @@ def test_walkback_handles_malformed_function_string():
     assert req.messages[-1].tool_call_id == "call_a"
 
 
-# ── DiffusionLoadRequest.attention_backend casing (Literal validated before normalizer) ──
 import pytest
 from pydantic import ValidationError
 
@@ -234,7 +232,8 @@ def _diff_load(**kw):
 
 
 def test_attention_backend_casing_and_whitespace_normalized():
-    # The dispatcher accepts case/whitespace variants, so the before-validator must fold them or the lowercase Literal 422s a valid request.
+    # The dispatcher accepts case/whitespace variants, so the before-validator must fold them or the
+    # lowercase Literal 422s a valid request.
     assert _diff_load(attention_backend = "CuDNN").attention_backend == "cudnn"
     assert _diff_load(attention_backend = "  sage ").attention_backend == "sage"
 
@@ -261,7 +260,6 @@ def test_load_rejects_a_duplicate_lora_id_like_generate_does():
         _diff_load(loras = dup)
     with pytest.raises(ValidationError, match = "duplicate LoRA id"):
         DiffusionGenerateRequest(prompt = "a cat", loras = dup)
-    # Distinct ids are untouched.
     assert (
         len(_diff_load(loras = [{"id": "me/a", "weight": 0.8}, {"id": "me/b", "weight": 0.5}]).loras)
         == 2

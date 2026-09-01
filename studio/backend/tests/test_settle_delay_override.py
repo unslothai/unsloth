@@ -73,10 +73,8 @@ def test_the_override_shortens_the_wait_without_dropping_a_read(monkeypatch):
         return dm.DeviceMemory("cuda", "cuda:0", "vram", 1024, 100_000)
 
     monkeypatch.setattr(dm, "snapshot_device_memory", snapshot)
-    # Record the requested delays rather than timing the call. The loop's first act on cuda
-    # is a real torch.cuda.synchronize() + empty_cache(), which costs ~0.6s on a live card
-    # and has nothing to do with the spacing under test; asserting on wall-clock here would
-    # be a bound on the driver, not on this change.
+    # Record the requested delays rather than timing the call: the loop's first act on cuda is a real
+    # synchronize() + empty_cache() costing ~0.6s on a live card, so wall clock would bound the driver.
     monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
     monkeypatch.setenv("UNSLOTH_SETTLE_DELAY_S", "0")
 

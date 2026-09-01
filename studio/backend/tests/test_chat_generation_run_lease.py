@@ -164,7 +164,6 @@ def _sweeper(
     )
 
 
-# Lease writes
 
 
 def test_streamed_chunks_renew_the_lease(clock):
@@ -189,8 +188,8 @@ def test_lease_timestamp_never_moves_backwards(clock):
     _stream("run-1", token, count = 1)
     ahead, _tokens = runs_db.get_progress("run-1")
 
-    # NTP step / resume from suspend: the wall clock goes backwards. A regressing
-    # lease would age a live run straight into the sweep.
+    # NTP step / resume from suspend: the wall clock goes backwards, and a regressing lease would
+    # age a live run straight into the sweep.
     clock.advance_ms(-9 * _MINUTE_MS)
     _stream("run-1", token, count = 1)
     assert runs_db.get_progress("run-1") == (ahead, 2)
@@ -206,7 +205,6 @@ def test_a_settled_run_stops_taking_lease_writes(clock):
     assert runs_db.get_progress("run-1") == before
 
 
-# The sweep
 
 
 @pytest.mark.asyncio
@@ -224,8 +222,8 @@ async def test_sweep_reaps_a_run_that_stopped_producing(clock, capture):
     message = studio_db.get_chat_message("thread-1", "assistant-run-1")
     assert message["metadata"]["generationStatus"] == "failed"
     assert message["metadata"]["incomplete"] == {"reason": "interrupted"}
-    # Partial output survives the reap: the point is to release the UI, not to
-    # discard what the model already produced.
+    # Partial output survives the reap: the point is to release the UI, not to discard what the
+    # model already produced.
     assert message["content"] == [{"type": "text", "text": "partial answer"}]
     assert [event["type"] for event in runs_db.list_events("run-1")].count("chunk") == 2
     assert capture.names() == ["chat_generation_run_lease_expired"]
@@ -246,7 +244,6 @@ async def test_sweep_spares_a_slow_but_progressing_run(clock):
 
 @pytest.mark.asyncio
 async def test_sweep_reaps_a_run_wedged_before_its_first_token(clock):
-    # No lease write has ever landed, so the age comes from started_at/created_at.
     _running_run()
     clock.advance_ms(11 * _MINUTE_MS)
     assert await _sweeper(timeout_s = 600.0).sweep_once() == ["run-1"]
@@ -264,7 +261,7 @@ async def test_sweep_settles_a_stopped_run_as_cancelled(clock):
     assert await _sweeper(timeout_s = 600.0).sweep_once() == ["run-1"]
 
     run = runs_db.get_run("run-1", "alice")
-    # A Stop the user already asked for must not be reported back as a failure.
+
     assert (run["status"], run["finishReason"], run["error"]) == ("cancelled", "cancelled", None)
     message = studio_db.get_chat_message("thread-1", "assistant-run-1")
     assert message["metadata"]["incomplete"] == {"reason": "cancelled"}
@@ -279,8 +276,8 @@ async def test_sweep_cancels_the_wedged_producer(clock, capture):
     _running_run()
     clock.advance_ms(11 * _MINUTE_MS)
     assert await _sweeper(app, timeout_s = 600.0).sweep_once() == ["run-1"]
-    # Settling the row is not enough: a producer parked in the engine still holds
-    # its slot and activity reservation until it is cancelled.
+    # Settling the row is not enough: a producer parked in the engine still holds its slot and
+    # activity reservation until it is cancelled.
     assert cancelled == ["run-1"]
 
 
@@ -363,7 +360,6 @@ def test_an_oversized_but_finite_timeout_is_clamped(monkeypatch, raw):
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", raw)
     sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
     assert sweeper._timeout == runs_mod._MAX_ENV_SECONDS
-    # The conversion every consumer performs must survive the applied value.
     assert isinstance(int(sweeper._timeout * 1000), int)
 
 
@@ -384,7 +380,6 @@ def test_a_non_finite_interval_falls_back_to_the_default(monkeypatch):
     assert sweeper._interval == runs_mod._LEASE_SWEEP_INTERVAL_SECONDS
 
 
-# Boot reconciliation and shutdown
 
 
 def test_boot_reconcile_still_settles_a_freshly_progressing_run(clock):
@@ -430,8 +425,8 @@ async def test_stop_returns_when_a_sweep_will_not_finish(capture, monkeypatch):
         try:
             await asyncio.sleep(3600)
         except asyncio.CancelledError:
-            # An engine draining its subprocess inside aclose: the cancel lands but
-            # unwinding still outlasts the budget. stop() must return regardless.
+            # An engine draining its subprocess inside aclose: the cancel lands but unwinding still
+            # outlasts the budget, and stop() must return regardless.
             await asyncio.sleep(0.3)
 
     sweeper.sweep_once = wedged
@@ -439,7 +434,7 @@ async def test_stop_returns_when_a_sweep_will_not_finish(capture, monkeypatch):
     await asyncio.wait_for(started.wait(), timeout = 2)
     await asyncio.wait_for(sweeper.stop(), timeout = 5)
     assert any("shutdown budget" in name for name in capture.names())
-    await asyncio.sleep(0.4)  # let the abandoned sweep unwind before the loop closes
+    await asyncio.sleep(0.4)
 
 
 @pytest.mark.asyncio

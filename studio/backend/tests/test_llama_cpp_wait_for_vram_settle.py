@@ -27,20 +27,9 @@ if _BACKEND_DIR not in sys.path:
 
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-# Same reasoning as httpx below: only when the real one is absent. With _BACKEND_DIR on
-# sys.path the in-repo loggers package resolves, and stubbing over it trips the shadowing
-# guard in test_backend_ci_parallel_isolation.py.
-#
-# Probed with find_spec, not `import loggers`: an import bound purely to test
-# resolvability leaves an unused name that scripts/verify_import_hoist.py reads as a
-# botched hoist, and loggers/handlers.py imports structlog at module scope, whose stub is
-# not installed until below, so in the very environment this block exists for the import
-# would fail on that transitive dep and the except branch would stub over the real
-# package. find_spec answers "is it resolvable" without executing the module.
-#
-# Same except clause as _is_installed() in test_backend_ci_parallel_isolation.py:
-# find_spec raises for a missing parent, and ValueError when a prior test left a bare
-# ModuleType (__spec__ is None) in sys.modules, where the stub is already there anyway.
+# Same reasoning as httpx below: only when the real one is absent. With _BACKEND_DIR on sys.path the
+# in-repo loggers package resolves, and stubbing over it trips the shadowing guard in
+# test_backend_ci_parallel_isolation.py.
 try:
     _real_loggers = _importlib_util.find_spec("loggers") is not None
 except (ImportError, ValueError):
@@ -50,26 +39,17 @@ if not _real_loggers:
 
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-# Same reasoning as httpx below: only when the real one is absent. The real structlog
-# has get_logger, which is all this module wants from it.
+# Same reasoning as httpx below: only when the real one is absent.
 try:
     import structlog  # noqa: F401
 except ImportError:
     sys.modules.setdefault("structlog", _structlog_stub)
-# Set get_logger even if a prior test inserted a bare ``structlog`` stub.
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
-# Only when the real library is absent, the way test_llama_cpp_placement.py already does
-# it. setdefault reads as if it defers to the real httpx, but sys.modules holds what has
-# been IMPORTED, not what is installed, so in a process where nothing has touched httpx
-# yet the stub wins and shadows the real library for the whole session. This stub has no
-# Response, and starlette.testclient reads httpx.Response at import, so every module
-# collected afterwards that reaches fastapi.testclient or routes.inference dies on it.
-#
-# In the full parallel run something always imports httpx before this file is collected,
-# which is why it went unnoticed. Splitting the timing tests into a ten-file serial step
-# removed that accident and the 3.10 leg failed collection on two of them.
+# Only when the real library is absent. setdefault reads as if it defers to the real httpx, but
+# sys.modules holds what has been IMPORTED, not what is installed, so where nothing has touched
+# httpx the stub wins for the whole session.
 _httpx_stub = _types.ModuleType("httpx")
 for _exc in (
     "ConnectError",
@@ -100,9 +80,6 @@ from core.inference import llama_cpp as llama_cpp_module  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _patch_probe(samples):
@@ -134,9 +111,6 @@ def _patch_probe(samples):
     ), state
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 def _kw(**extra):
@@ -234,7 +208,7 @@ def test_max_wait_respected_when_never_settles():
         start = time.monotonic()
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 0.5, interval = 0.1))
         elapsed = time.monotonic() - start
-    # Must stop near max_wait, not run forever. Generous upper bound for CI.
+    # Must stop near max_wait, not run forever.
     assert 0.3 <= elapsed < 2.0, f"helper ignored max_wait: elapsed={elapsed:.3f}s"
 
 
@@ -252,8 +226,8 @@ def test_max_wait_respected_when_probe_is_slow():
             **_kw(max_wait = 0.4, interval = 0.25),
         )
         elapsed = time.monotonic() - start
-    # First probe (0.30 s) + at most one clipped sleep + bail.
-    # Hard cap well below the old 0.30 + 0.25 + 0.30 = 0.85.
+    # First probe (0.30 s) plus at most one clipped sleep and bail: a hard cap well below the old
+    # 0.30 + 0.25 + 0.30 = 0.85.
     assert elapsed < 0.85, f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
 
 
@@ -307,11 +281,11 @@ def test_load_model_calls_helper_outside_lock_and_uses_last_kill_timestamp():
     assert "_wait_for_vram_settle" in src
     assert "since_kill" in src
     assert "self._last_kill_monotonic" in src
-    # Must run before Phase 3's broad lock so /unload, /cancel, /status
-    # are not blocked during the wait.
+    # Must run before Phase 3's broad lock so /unload, /cancel and /status are not blocked during
+    # the wait.
     assert src.index("_wait_for_vram_settle") < src.index("# ── Phase 3:")
-    # An in-band ``had_live_process`` flag would regress the frontend
-    # /unload+/load Apply path; use the timestamp instead.
+    # An in-band ``had_live_process`` flag would regress the frontend /unload+/load Apply path; use
+    # the timestamp instead.
     assert "had_live_process" not in src
 
 
@@ -349,8 +323,8 @@ def test_kill_process_records_timestamp_on_actual_kill():
 
 
 def test_kill_process_tolerates_partially_constructed_backend():
-    # Teardown must not AttributeError on a __new__-built backend that never ran
-    # __init__: _stats_logger / _stdout_thread / _llama_log_fh are left unset.
+    # Teardown must not AttributeError on a __new__-built backend that never ran __init__:
+    # _stats_logger / _stdout_thread / _llama_log_fh are left unset.
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
 
     class _FakeProcess:
@@ -377,14 +351,12 @@ def test_helper_is_static_method_callable_off_class():
         )
 
 
-# ---------------------------------------------------------------------------
-# Startup orphan-reaper arms the settle clock (the "wrong card after restart"
-# root cause: reaped VRAM frees lazily, so the first load must wait).
-# ---------------------------------------------------------------------------
+# Startup orphan-reaper arms the settle clock (the "wrong card after restart" root cause: reaped
+# VRAM frees lazily, so the first load must wait).
 
 
-# Hiding /proc selects the psutil branch (what macOS and Windows take); the procfs
-# branch is covered separately below.
+# Hiding /proc selects the psutil branch (what macOS and Windows take); the procfs branch is covered
+# separately below.
 _NO_PROCFS = "/unsloth-test-no-such-proc-root"
 
 
@@ -498,14 +470,10 @@ def test_startup_reaper_arms_settle_timestamp():
     ), "no reap must leave the cold-start sentinel so the wait is skipped"
 
 
-# ---------------------------------------------------------------------------
-# Cross-session backstop: a server PID recorded at spawn is reaped on the next
-# startup even when parent-death cleanup did not run (macOS, a best-effort
-# PR_SET_PDEATHSIG / Job Object failure, or a pre-existing orphan), but ONLY when
-# it is a true orphan (its parent is gone), it still is a llama-server, and its
-# start-time identity matches. A live server (parent still running) is spared so a
-# helper backend built in-process can never kill the active chat server.
-# ---------------------------------------------------------------------------
+# Cross-session backstop: a server PID recorded at spawn is reaped on the next startup even when
+# parent-death cleanup did not run (macOS, a PR_SET_PDEATHSIG / Job Object failure, a pre-existing
+# orphan), but ONLY when it is a true orphan, still a llama-server, and its start-time identity
+# matches.
 
 
 class _FakeKillProc:
@@ -607,7 +575,6 @@ def test_reap_recorded_pid_spares_live_server(tmp_path):
     try:
         with (
             patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
-            # Force the name check True so ONLY the parent-alive guard can spare it.
             patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
         ):
             n = LlamaCppBackend._reap_recorded_pid()
@@ -854,8 +821,8 @@ def test_kill_orphaned_servers_procfs_refuses_a_reused_pid(tmp_path):
     killed = []
 
     def _pid_reused_between_scan_and_kill(pid):
-        # Runs after the scan and before the kill: stand in a different process
-        # on the same PID by giving it a later starttime.
+        # Runs after the scan and before the kill: stand in a different process on the same PID by
+        # giving it a later starttime.
         stat_file.write_bytes(_stat_bytes(pid, "some-daemon", start_time = 9999))
         return False
 

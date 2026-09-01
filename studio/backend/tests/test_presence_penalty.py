@@ -20,7 +20,7 @@ from core.inference.presence_penalty import (
 
 
 def test_seen_token_gets_exactly_minus_penalty_unseen_unchanged():
-    input_ids = torch.tensor([[0, 1, 3]])  # prompt [0, 1], completion [3]
+    input_ids = torch.tensor([[0, 1, 3]])
     scores = torch.zeros(1, 5)
     out = apply_presence_penalty(input_ids, scores, penalty = 1.5, prompt_len = 2)
     assert out[0, 3].item() == pytest.approx(-1.5)
@@ -44,7 +44,6 @@ def test_negative_penalty_raises_seen_logits():
 
 
 def test_prompt_tokens_excluded():
-    # Token 7 is prompt-only (untouched); token 4 in the completion is penalized.
     input_ids = torch.tensor([[7, 4, 4]])
     scores = torch.zeros(1, 8)
     out = apply_presence_penalty(input_ids, scores, penalty = 1.0, prompt_len = 1)
@@ -53,7 +52,7 @@ def test_prompt_tokens_excluded():
 
 
 def test_batch_rows_isolated():
-    input_ids = torch.tensor([[0, 1], [0, 2]])  # row completions [1] and [2]
+    input_ids = torch.tensor([[0, 1], [0, 2]])
     scores = torch.zeros(2, 4)
     out = apply_presence_penalty(input_ids, scores, penalty = 1.0, prompt_len = 1)
     assert out[0, 1].item() == pytest.approx(-1.0)
@@ -82,34 +81,31 @@ def test_empty_completion_is_noop():
 def test_out_of_vocab_id_ignored():
     # A generated id >= vocab_size (defensive) must not index out of bounds.
     input_ids = torch.tensor([[0, 9]])
-    scores = torch.zeros(1, 5)  # vocab 5, token 9 is out of range
+    scores = torch.zeros(1, 5)
     out = apply_presence_penalty(input_ids, scores, penalty = 1.0, prompt_len = 1)
     assert torch.equal(out, torch.zeros(1, 5))
 
 
 def test_negative_generated_id_ignored():
-    # A negative generated id (defensive) must be dropped, not wrap to scores[-1].
+    # A negative generated id must be dropped, not wrap to scores[-1].
     input_ids = torch.tensor([[0, -1]])
     scores = torch.zeros(1, 5)
     out = apply_presence_penalty(input_ids, scores, penalty = 1.0, prompt_len = 1)
-    # Nothing penalized; in particular the last row (the numpy/torch wrap target
-    # for id -1) is untouched.
+    # Nothing penalized; in particular the last row (the wrap target for id -1) is untouched.
     assert torch.equal(out, torch.zeros(1, 5))
 
 
 def test_mixed_oob_negative_and_valid_ids_only_in_range_penalized():
-    # Completion mixes a valid id (1), an out-of-vocab id (9 >= vocab 5) and a
-    # negative id (-1). Only the in-range distinct id is penalized; OOB/negative
-    # ids are ignored with no crash and no wrong-index wrap. This fails under the
-    # old ``seen[seen < vocab_size]`` filter (id -1 wraps to the last row) and
-    # passes only with the both-ends bound.
-    input_ids = torch.tensor([[0, 1, 9, -1, 1]])  # prompt [0], completion [1, 9, -1, 1]
+    # Only the in-range distinct id is penalized: this fails under the old
+    # ``seen[seen < vocab_size]`` filter (id -1 wraps to the last row) and passes only with the
+    # both-ends bound.
+    input_ids = torch.tensor([[0, 1, 9, -1, 1]])
     scores = torch.zeros(1, 5)
     out = apply_presence_penalty(input_ids, scores, penalty = 1.0, prompt_len = 1)
     expected = torch.zeros(1, 5)
-    expected[0, 1] = -1.0  # once per distinct in-range id (multiplicity ignored)
+    expected[0, 1] = -1.0
     assert torch.equal(out, expected)
-    assert out[0, 4].item() == pytest.approx(0.0)  # id -1 did not wrap to the last row
+    assert out[0, 4].item() == pytest.approx(0.0)
 
 
 def test_dtype_and_device_preserved():
@@ -144,11 +140,11 @@ def test_processor_composes_with_other_processors():
 
     presence = _make_presence_penalty_processor(1.0, prompt_len = 1)
     combined = LogitsProcessorList([_AddToTokenZero(), *presence])
-    input_ids = torch.tensor([[5, 2]])  # completion = [2]
+    input_ids = torch.tensor([[5, 2]])
     scores = torch.zeros(1, 6)
     out = combined(input_ids, scores)
-    assert out[0, 0].item() == pytest.approx(100.0)  # other processor ran
-    assert out[0, 2].item() == pytest.approx(-1.0)  # presence ran
+    assert out[0, 0].item() == pytest.approx(100.0)
+    assert out[0, 2].item() == pytest.approx(-1.0)
 
 
 def test_mlx_presence_penalty_callable():
@@ -161,28 +157,23 @@ def test_mlx_presence_penalty_callable():
     logits0 = mx.zeros((1, 20))
     out0 = proc(prompt, logits0)
     assert float(out0[0, 10]) == pytest.approx(0.0)
-    # Second call: one completion token (5) appended -> penalized once.
     seq = mx.array([10, 11, 5])
     logits1 = mx.zeros((1, 20))
     out1 = proc(seq, logits1)
     assert float(out1[0, 5]) == pytest.approx(-1.5)
-    assert float(out1[0, 10]) == pytest.approx(0.0)  # prompt token untouched
+    assert float(out1[0, 10]) == pytest.approx(0.0)
 
 
 def test_mlx_presence_penalty_bounds_out_of_range_ids():
-    # Documents (and, on Apple Silicon CI, enforces) the intended MLX bound:
-    # out-of-vocab and negative completion ids must be ignored. MLX does no
-    # bounds checking and OOB indexing is undefined behavior (crash / memory
-    # corruption), so the processor routes stray ids to a discarded scratch slot
-    # and penalizes only in-range distinct ids -- matching the torch filter
-    # seen[(seen >= 0) & (seen < vocab)]. Skips off arm64 macOS where MLX is absent.
+    # MLX does no bounds checking and OOB indexing is undefined behavior, so the processor routes
+    # stray ids to a discarded scratch slot and penalizes only in-range distinct ids, matching the
+    # torch filter seen[(seen >= 0) & (seen < vocab)].
     mx = pytest.importorskip("mlx.core", reason = "MLX only ships on arm64 macOS")
     from core.inference.mlx_inference import _make_mlx_presence_penalty_processor
 
     proc = _make_mlx_presence_penalty_processor(1.0)
-    proc(mx.array([10, 11]), mx.zeros((1, 8)))  # first call latches prompt_len = 2
-    # Completion appends a valid id (3), an out-of-vocab id (99 >= vocab 8) and a
-    # negative id (-1); only the in-range id is penalized and nothing crashes.
+    proc(mx.array([10, 11]), mx.zeros((1, 8)))
+    # Only the in-range id is penalized and nothing crashes.
     seq = mx.array([10, 11, 3, 99, -1])
     out = proc(seq, mx.zeros((1, 8)))
     assert float(out[0, 3]) == pytest.approx(-1.0)
@@ -228,7 +219,7 @@ def test_worker_forwards_all_sampling_params_to_backend():
 
         def generate_chat_response(self, **kwargs):
             self.received = kwargs
-            return iter(())  # empty stream -> loop exits, gen_done is sent
+            return iter(())
 
     class _FakeQueue:
         def __init__(self):

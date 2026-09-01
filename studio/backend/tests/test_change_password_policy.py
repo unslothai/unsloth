@@ -15,8 +15,8 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from models.auth import ChangePasswordRequest  # noqa: E402
 
-# Load routes/auth.py directly so collection does not execute routes/__init__.py,
-# which pulls in the heavy training/models/inference routers.
+# Load routes/auth.py directly so collection does not execute routes/__init__.py, which pulls in the
+# heavy training/models/inference routers.
 _route_path = _BACKEND_ROOT / "routes" / "auth.py"
 _spec = importlib.util.spec_from_file_location("_change_password_route", _route_path)
 assert _spec is not None and _spec.loader is not None
@@ -43,8 +43,8 @@ def _change(new_password):
         current_password = "bootstrap-pw",
         new_password = new_password,
     )
-    # is_desktop explicitly: positionally it would default to the Depends object,
-    # which is truthy, and silently take the preserve-desktop-secret branch.
+    # is_desktop explicitly: positionally it would default to the Depends object, which is truthy,
+    # and silently take the preserve-desktop-secret branch.
     return asyncio.run(auth_routes.change_password(payload, None, "unsloth", False))
 
 

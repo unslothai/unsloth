@@ -112,7 +112,6 @@ def _capture(
     return captured, out_lines
 
 
-# ──────────────────────────── dated snapshot prefix ────────────────────────────
 def test_fast_mode_attaches_on_dated_opus_4_8_snapshot(monkeypatch):
     """Dated snapshot ``claude-opus-4-8-2026-02-01`` must match the prefix."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8-2026-02-01")
@@ -127,7 +126,6 @@ def test_fast_mode_dropped_on_dated_opus_4_6_snapshot(monkeypatch):
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
-# ──────────────────────────── strict opt-in semantics ────────────────────────────
 def test_fast_mode_attaches_on_opus_4_8(monkeypatch):
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8")
     assert cap["body"].get("speed") == "fast", cap["body"]
@@ -159,7 +157,6 @@ def test_fast_mode_does_not_auto_enable_on_sonnet_dated_snapshot(monkeypatch):
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
-# ──────────────────────────── beta header merge ────────────────────────────
 def _beta_parts(headers: dict) -> list[str]:
     raw = headers.get("anthropic-beta", "")
     return [p.strip() for p in raw.split(",") if p.strip()]
@@ -176,7 +173,6 @@ def test_fast_mode_merges_with_code_execution_beta(monkeypatch):
     parts = _beta_parts(cap["headers"])
     assert "fast-mode-2026-02-01" in parts, cap["headers"]
     assert any(p.startswith("code-execution-") for p in parts), cap["headers"]
-    # No duplicates.
     assert len(parts) == len(set(parts)), parts
 
 
@@ -215,17 +211,14 @@ def test_fast_mode_beta_value_is_pinned(monkeypatch):
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8")
     parts = _beta_parts(cap["headers"])
     assert "fast-mode-2026-02-01" in parts, parts
-    # Reject obvious typos.
     assert not any(p.startswith("fastmode-") for p in parts), parts
     assert not any("fast_mode" in p for p in parts), parts
 
 
-# ──────────────────────────── non-destruction guarantee ────────────────────────────
 def test_fast_mode_unset_is_byte_identical_to_omitted(monkeypatch):
     """``fast_mode=None`` must produce the same body/headers as omission."""
     cap_none, _ = _capture(monkeypatch, fast_mode = None, model = "claude-opus-4-7")
 
-    # Re-run without passing fast_mode at all.
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -260,8 +253,7 @@ def test_fast_mode_unset_is_byte_identical_to_omitted(monkeypatch):
     _drive(run())
 
     assert cap_none["body"] == captured["body"], (cap_none["body"], captured["body"])
-    # Headers vary by httpx-injected fields (host, connection); compare
-    # the load-bearing ones.
+    # Headers vary by httpx-injected fields (host, connection); compare the load-bearing ones.
     for key in ("anthropic-version", "x-api-key", "content-type"):
         assert cap_none["headers"].get(key) == captured["headers"].get(key), key
     assert "anthropic-beta" not in cap_none["headers"]
@@ -277,7 +269,6 @@ def test_fast_mode_false_on_opus_4_7_byte_identical_to_unset(monkeypatch):
     assert "fast-mode-2026-02-01" not in cap_false["headers"].get("anthropic-beta", "")
 
 
-# ──────────────────────────── refusal stream ordering ────────────────────────────
 def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
     """The notice content delta must precede the finish_reason chunk."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
@@ -326,7 +317,6 @@ def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
     """The notice rides ``choices[0].delta.content`` (not a finish chunk);
     OpenAI-spec clients treat it as ordinary streamed text."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
-    # Find the chunk that carries the refusal text.
     notice_chunk = None
     for line in lines:
         if line.startswith("data: ") and "stopped by Anthropic" in line:
@@ -335,9 +325,7 @@ def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
     assert notice_chunk is not None, lines
     choice = notice_chunk["choices"][0]
     assert "delta" in choice and "content" in choice["delta"], notice_chunk
-    # Must NOT carry a finish_reason itself -- that comes on the next chunk.
     assert choice.get("finish_reason") in (None,), notice_chunk
-    # Refusal text is plain-spoken; no embedded sentinel.
     assert "studio:anthropic-refusal" not in choice["delta"]["content"]
 
 
@@ -358,7 +346,6 @@ def test_refusal_tool_event_chunk_shape(monkeypatch):
     assert choice["finish_reason"] is None, refusal_chunk
 
 
-# ──────────────────────────── future-proofing ────────────────────────────
 def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
     """Tuple must exactly match the two families in the upstream docs:
     https://platform.claude.com/docs/en/build-with-claude/fast-mode."""
@@ -401,7 +388,6 @@ def test_fast_mode_rejects_prefix_collision_4_6_extra(monkeypatch):
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
-# ──────────────────────────── usage.speed propagation ────────────────────────────
 def _fast_speed_sse(model: str = "claude-opus-4-7", speed: str = "fast") -> bytes:
     return (
         b'event: message_start\ndata: {"type":"message_start","message":'

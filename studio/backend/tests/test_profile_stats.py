@@ -41,7 +41,6 @@ def stats_db(tmp_path, monkeypatch):
     invalidate_profile_stats_cache()
 
 
-# _seed_thread writes the assistant reply this far after the user turn, and
 # fork_chat_thread copies created_at verbatim, so clones must reuse it.
 REPLY_DELAY = timedelta(seconds = 10)
 
@@ -125,8 +124,7 @@ def _metadata(
             "modelId": "unsloth/gpt-oss-20b",
         },
         "timing": {
-            # The adapter writes streamStartTime as an epoch stamp and
-            # firstTokenTime as the elapsed ms before the first chunk.
+            # The adapter writes streamStartTime as an epoch stamp and firstTokenTime as elapsed ms.
             "streamStartTime": 1_760_000_000_000,
             "firstTokenTime": 200,
             "totalStreamTime": 2000,
@@ -219,8 +217,8 @@ def test_api_usage_and_cache_are_subject_scoped_while_legacy_chat_is_shared(stat
     assert bob["totals"]["apiTokens"] == 23
     assert alice["totals"]["totalTokens"] == 26
     assert bob["totals"]["totalTokens"] == 38
-    # Both subjects deliberately have the same count/max-time fingerprint;
-    # distinct payloads prove the cache key includes identity.
+    # Both subjects share a count/max-time fingerprint, so distinct payloads prove the cache key
+    # includes identity.
     assert alice is not bob
 
 
@@ -239,7 +237,6 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
     assert after_insert["models"][0]["id"] == "unsloth/api-model"
     assert after_insert["streak"]["current"] == 1
 
-    # A fresh process/schema initialization still reads the same receipt.
     studio_db._schema_ready = False
     invalidate_profile_stats_cache()
     after_restart = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
@@ -347,8 +344,7 @@ def test_writer_retains_busy_receipt_after_inner_retry_budget(stats_db, monkeypa
         persisted.append(receipt.id)
         return True
 
-    # Exercise all inner record_api_usage retries plus another worker-level
-    # retry without paying the production backoff in this focused unit test.
+    # Exercise every retry without paying the production backoff.
     monkeypatch.setattr(api_usage_db, "_insert_api_usage", busy_then_success)
     monkeypatch.setattr(api_usage_db, "_sleep_after_busy", lambda _delay: None)
     writer = ApiUsageWriter()
@@ -373,7 +369,6 @@ def test_writer_busy_shutdown_is_bounded_then_drains_after_unlock(monkeypatch, c
         persisted.append(receipt.id)
         return True
 
-    # Keep the retry responsive without a hot spin in the test process.
     monkeypatch.setattr(
         api_usage_db,
         "_sleep_after_busy",
@@ -607,8 +602,7 @@ def test_api_usage_uses_iana_timezone_across_dst_dates(stats_db):
         subject = "external-client",
     )
     by_date = {day["date"]: day["tokens"] for day in stats["daily"]}
-    # Both UTC instants are before local midnight using the date-specific
-    # standard/daylight offset.
+    # Both UTC instants are before local midnight using the date-specific offset.
     assert by_date["2026-01-14"] == 11
     assert by_date["2026-07-14"] == 13
 
@@ -698,7 +692,6 @@ def test_tokens_streaks_and_models_are_aggregated(stats_db):
     assert stats["speed"]["bestTokensPerSecond"] == 120.0
     assert stats["speed"]["averageTokensPerSecond"] == pytest.approx(68.333, rel = 1e-3)
 
-    # Each turn is a user message plus an assistant reply 10s later.
     assert stats["longestChat"]["seconds"] == 30
     assert stats["longestChat"]["messages"] == 6
 
@@ -722,9 +715,8 @@ def test_completion_tokens_fall_back_to_adapter_count(stats_db):
 
     assert stats["totals"]["completionTokens"] == 64
     assert stats["totals"]["totalTokens"] == 64
-    # No modelId on the turn, so it is not credited to any model. The thread's
-    # model_id follows the current selection and would misattribute after a
-    # mid-conversation switch.
+    # No modelId on the turn, so it is not credited to any model: the thread's model_id follows the
+    # current selection and would misattribute after a mid-conversation switch.
     assert stats["models"] == []
 
 
@@ -875,7 +867,6 @@ def test_forked_threads_do_not_double_count_copied_history(stats_db):
     assert after["totals"]["totalTokens"] == 150
     assert after["totals"]["messages"] == 2
 
-    # A genuinely new turn in the fork still counts.
     conn = studio_db.get_connection()
     try:
         conn.execute(
@@ -897,9 +888,8 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
     """A resume continues the source's counters, so only the tail is counted."""
     conn = studio_db.get_connection()
     try:
-        # 'stopped' at step 10, then claimed by the resume below. The claim sets
-        # resume_blocked and leaves output_dir, which is how it is told apart
-        # from a cancelled run.
+        # 'stopped' at step 10, then claimed by the resume below: the claim sets resume_blocked and
+        # leaves output_dir, which is how it is told apart from a cancelled run.
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
             "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
@@ -914,7 +904,6 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
         )
         conn.executemany(
             "INSERT INTO training_metrics (run_id, step, num_tokens) VALUES (?, ?, ?)",
-            # The continuation's counter picks up where the source stopped.
             [("src", step, step * 100) for step in range(1, 11)]
             + [("cont", step, step * 100) for step in range(11, 16)],
         )
@@ -927,7 +916,6 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
     # Training reached step 15, not 10 + 15.
     assert training["steps"] == 15
     assert training["tokens"] == 1500
-    # Both attempts still show up as runs.
     assert training["runs"] == 2
 
 
@@ -1175,7 +1163,6 @@ def test_deleting_an_original_message_keeps_the_forks_clone(stats_db):
             "VALUES ('branch', 'fork', 'base', 'm', ?, ?, 'orig', 'orig-a0')",
             (_ms(now), _ms(now)),
         )
-        # The clone keeps the original's timestamp and role.
         conn.execute(
             "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
             "created_at) VALUES ('branch-a0', 'branch', 'assistant', '[]', ?, ?)",
@@ -1246,7 +1233,6 @@ def test_comparison_panes_count_as_one_chat(stats_db):
     stats = compute_profile_stats(days = 7)
 
     assert stats["totals"]["threads"] == 1
-    # Both panes still contribute their own messages and tokens.
     assert stats["totals"]["messages"] == 2
     assert stats["totals"]["totalTokens"] == 300
 
@@ -1307,8 +1293,7 @@ def test_out_of_range_timestamps_do_not_break_the_panel(stats_db):
 
     stats = compute_profile_stats(days = 7)
 
-    # Totals still include the bad row; only its day bucket is dropped, so the
-    # activity grid holds just the one well-formed day.
+    # Totals still include the bad row; only its day bucket is dropped.
     assert stats["totals"]["totalTokens"] == 30
     assert stats["totals"]["messages"] == 3
     assert stats["totals"]["activeDays"] == 1
@@ -1465,8 +1450,7 @@ def test_an_oversized_token_counter_does_not_break_the_panel(stats_db):
     finally:
         conn.close()
 
-    # The row degrades to zero instead of raising, and the absurd counter
-    # never reaches the totals; the healthy thread still reports.
+    # The row degrades to zero instead of raising, and the healthy thread still reports.
     stats = compute_profile_stats(days = 7)
     assert stats["totals"]["totalTokens"] == 150
     assert stats["totals"]["messages"] == 3
@@ -1506,7 +1490,6 @@ def test_divergent_sibling_forks_keep_their_own_branch_messages(stats_db):
     finally:
         conn.close()
 
-    # Both originals counted, both clones suppressed.
     assert compute_profile_stats(days = 7)["totals"]["totalTokens"] == 450
 
     conn = studio_db.get_connection()
@@ -1519,7 +1502,6 @@ def test_divergent_sibling_forks_keep_their_own_branch_messages(stats_db):
     invalidate_profile_stats_cache()
     stats = compute_profile_stats(days = 7)
 
-    # Each branch survives in exactly one fork, so nothing is lost or doubled.
     assert stats["totals"]["totalTokens"] == 450
     assert stats["totals"]["messages"] == 2
 
@@ -1551,7 +1533,6 @@ def test_a_resume_that_never_logged_a_step_keeps_the_source_counters(stats_db):
 
     training = compute_profile_stats(days = 7)["training"]
 
-    # The source's completed work is still the only work there is.
     assert training["steps"] == 10
     assert training["tokens"] == 1000
 
@@ -1572,7 +1553,6 @@ def test_a_future_dated_message_cannot_become_the_peak_day(stats_db):
 
     assert stats["peakDay"] is not None
     assert stats["peakDay"]["date"] == (now - timedelta(days = 1)).date().isoformat()
-    # The future day is not an active day either.
     assert stats["totals"]["activeDays"] == 1
 
 

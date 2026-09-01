@@ -29,8 +29,8 @@ PROVIDER_REGISTRY = _providers.PROVIDER_REGISTRY
 BLOCK_PRIVATE_ENV = _providers._BLOCK_PRIVATE_ENV
 
 
-# Every base URL a user can reach today: shipped registry defaults, the local
-# server presets, LAN gateways, docker-compose hostnames, query strings.
+# Every base URL a user can reach today: registry defaults, local server presets, LAN gateways,
+# docker-compose hostnames, query strings.
 _SUPPORTED = [
     "http://localhost:11434/v1",
     "http://localhost:8080/v1",
@@ -47,7 +47,6 @@ _SUPPORTED = [
     "http://1681207502/v1",
     # A DNS name is not link-local just because it starts with those digits.
     "http://169.254.gateway.example.com/v1",
-    # An internationalized host is left alone.
     "https://例え.テスト/v1",
     # A neighbour of the metadata address is an ordinary host.
     "http://[fd00:ec2::255]/v1",
@@ -63,9 +62,8 @@ def _default_policy(monkeypatch):
     """Default deployment: the private-address opt-in is off."""
     monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising = False)
 
-    # The lookup caches its answer per hostname and caps how many can be in
-    # flight; a stale entry or a slot still held by an abandoned stub would
-    # carry one test's stubbed resolver into the next.
+    # The lookup caches per hostname and caps how many can be in flight, so a stale entry or a slot
+    # held by an abandoned stub would carry one test's stubbed resolver into the next.
     def _reset():
         _providers._dns_cache.clear()
         _providers._dns_in_flight = threading.BoundedSemaphore(_providers._DNS_MAX_IN_FLIGHT)
@@ -92,8 +90,8 @@ def test_trailing_slash_and_whitespace_are_normalized():
 
 def test_no_dns_lookup_for_shipped_providers_or_ip_literals(monkeypatch):
     """The common path stays resolver-free: shipped hosts and IP literals."""
-    # Recorded rather than raised: the lookup runs on a worker thread, where an
-    # exception is swallowed into a warning and would never fail this test.
+    # Recorded rather than raised: the lookup runs on a worker thread, where an exception is
+    # swallowed into a warning.
     calls = []
 
     def _record(host, port, *args, **kwargs):
@@ -177,12 +175,11 @@ def test_unresolvable_names_are_refused_only_under_the_opt_in(monkeypatch):
 @pytest.mark.parametrize(
     "address",
     [
-        # A self-assigned host, an mDNS .local name on a network without DHCP,
-        # and a captive portal answering every query all land in 169.254/16.
+        # A self-assigned host, an mDNS .local name without DHCP, and a captive portal all land in
+        # 169.254/16.
         "169.254.3.7",
         "169.254.1.1",
-        # A LAN gateway and an ordinary public answer are equally none of our
-        # business on the default path.
+        # A LAN gateway and an ordinary public answer are equally none of our business by default.
         "192.168.1.50",
         "93.184.216.34",
     ],
@@ -278,8 +275,7 @@ def test_a_unicode_host_is_resolved_the_way_httpx_dials_it(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _record)
     with pytest.raises(ValueError, match = "metadata"):
         validate_provider_base_url("http://faß.attacker.test/v1")
-    # Not fass.attacker.test, which is what the resolver would have been asked
-    # for and is a different host with a different owner.
+    # Not fass.attacker.test, which is a different host with a different owner.
     assert seen == ["xn--fa-hia.attacker.test"]
 
 
@@ -328,8 +324,8 @@ def test_a_transient_failure_is_not_remembered(monkeypatch):
 
     monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
     monkeypatch.setattr(socket, "getaddrinfo", _flaky)
-    # The first failure is retried by the opt-in fallback rather than cached,
-    # so it costs one extra lookup instead of five minutes of refusal.
+    # The first failure is retried by the opt-in fallback rather than cached, so it costs one extra
+    # lookup instead of five minutes of refusal.
     for _ in range(2):
         assert validate_provider_base_url("https://flaky.example/v1") == "https://flaky.example/v1"
     assert len(attempts) > 1
@@ -365,9 +361,8 @@ def test_a_slow_resolver_does_not_stall_validation(monkeypatch):
     monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.1)
 
     def _never_answers(*args, **kwargs):
-        # Returns a real (empty) answer rather than None: the abandoned daemon
-        # thread wakes up long after this test and would otherwise raise inside
-        # an unrelated later one.
+        # Returns a real (empty) answer rather than None: the abandoned daemon thread wakes up long
+        # after this test and would otherwise raise inside an unrelated later one.
         _time.sleep(30)
         return []
 
@@ -408,15 +403,13 @@ def test_rejected_url_shapes(url, error):
         "http://metadata.google.internal/computeMetadata/v1/",
         "http://metadata/computeMetadata/v1/",
         "http://100.100.100.200/latest/meta-data/",
-        # Userinfo does not disguise the real host.
         "http://api.openai.com@169.254.169.254/latest/meta-data/",
         # Legacy numeric spellings the resolver maps to 169.254.169.254.
         "http://2852039166/latest/meta-data/",
         "http://0xA9FEA9FE/latest/meta-data/",
         "http://0251.0376.0251.0376/latest/meta-data/",
         "http://169.254.43518/latest/meta-data/",
-        # IDNA label separators: httpx encodes the host through idna, which
-        # splits on all of these, so they dial 169.254.169.254.
+        # IDNA label separators: httpx encodes the host through idna, which splits on all of these.
         "http://169。254。169。254/latest/meta-data/",
         "http://169．254．169．254/latest/meta-data/",
         "http://169｡254｡169｡254/latest/meta-data/",
@@ -438,7 +431,6 @@ def test_rejected_url_shapes(url, error):
 def test_cloud_metadata_endpoints_are_always_refused(url, monkeypatch):
     with pytest.raises(ValueError, match = "metadata"):
         validate_provider_base_url(url)
-    # Also refused with the private-address opt-in on.
     monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
     with pytest.raises(ValueError, match = "metadata"):
         validate_provider_base_url(url)
@@ -454,12 +446,11 @@ def test_cloud_metadata_endpoints_are_always_refused(url, monkeypatch):
     ],
 )
 def test_private_targets_blocked_only_with_the_opt_in(url, monkeypatch):
-    # Default: allowed (this is the normal local-provider flow).
     assert validate_provider_base_url(url) == url
 
     monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
-    # Names resolve to loopback; conftest blocks real resolution, and IP
-    # literals never reach the resolver.
+    # Names resolve to loopback; conftest blocks real resolution, and IP literals never reach the
+    # resolver.
     monkeypatch.setattr(
         socket,
         "getaddrinfo",

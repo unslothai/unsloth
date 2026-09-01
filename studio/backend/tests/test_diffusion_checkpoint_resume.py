@@ -39,7 +39,6 @@ from core.training.diffusion_train_common import (
 from routes.training import router as training_router
 
 
-# ── fixtures / doubles ────────────────────────────────────────────────────────
 def _identity(**overrides) -> dc.CheckpointIdentity:
     fields = {
         "family": "sdxl",
@@ -72,7 +71,6 @@ class _Run:
         torch.manual_seed(seed)
         self.model = torch.nn.Linear(4, 4, bias = False)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr = 1e-3)
-        # A decaying lambda so a wrong schedule position shows up as a different LR.
         self.lr_sched = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer, lr_lambda = lambda step: 1.0 / (1.0 + 0.01 * step)
         )
@@ -137,7 +135,6 @@ def run_dir(tmp_path, monkeypatch):
     return d
 
 
-# ── atomic write ──────────────────────────────────────────────────────────────
 def test_kill_mid_write_leaves_no_valid_looking_checkpoint(run_dir, monkeypatch):
     # Simulate a hard kill between "everything written" and the atomic promote: rmtree is
     # neutralised so the staging directory survives untouched, exactly as SIGKILL would leave it.
@@ -155,10 +152,8 @@ def test_kill_mid_write_leaves_no_valid_looking_checkpoint(run_dir, monkeypatch)
             lr_scheduler = run.lr_sched,
         )
 
-    # The staging directory really does hold a COMPLETE bundle, so this is a faithful mid-write kill...
     staged = list(run_dir.glob(".tmp-checkpoint-*"))
     assert staged and (staged[0] / dc.TRAINER_STATE_FILENAME).is_file()
-    # ...and yet nothing that any scanner would offer as resumable exists.
     assert dc.list_checkpoints(run_dir) == []
     assert dc.latest_valid_checkpoint(run_dir) is None
     assert dc.describe_resume_state(str(run_dir))["can_resume"] is False
@@ -212,8 +207,7 @@ def test_a_failed_promotion_puts_the_old_checkpoint_back(run_dir, monkeypatch):
     real_replace = dc.os.replace
 
     def _fail_the_promotion(src, dst):
-        # Only the staging -> slot rename. The swap-aside and the rescue that puts the old
-        # bundle back both move a "stale" directory and have to be allowed through.
+        # Only the staging -> slot rename.
         if Path(dst).name == "checkpoint-4" and not any(
             tag in Path(src).name for tag in ("stale", "replaced")
         ):
@@ -252,7 +246,7 @@ def test_a_kill_between_the_swap_and_the_rename_does_not_lose_the_checkpoint(run
 def test_failed_write_cleans_up_and_next_save_clears_stale_staging(run_dir, monkeypatch):
     run = _Run(run_dir)
     # A failure BEFORE the manifest (a full disk mid-optimizer-write) unwinds its own staging dir,
-    # and the shared wrapper turns it into a reported reason instead of killing the training run.
+    # and the shared wrapper turns it into a reported reason instead of killing the run.
     monkeypatch.setattr(
         dc, "_torch_save", lambda *a, **k: (_ for _ in ()).throw(OSError("no space left"))
     )
@@ -262,7 +256,6 @@ def test_failed_write_cleans_up_and_next_save_clears_stale_staging(run_dir, monk
     assert dc.list_checkpoints(run_dir) == []
     monkeypatch.undo()
 
-    # A stale staging directory left by an earlier killed process is swept by the next good save.
     stale = run_dir / f"{dc._STAGING_PREFIX}9-abcd1234"
     stale.mkdir()
     (stale / "junk").write_text("x", encoding = "utf-8")
@@ -274,9 +267,7 @@ def test_failed_write_cleans_up_and_next_save_clears_stale_staging(run_dir, monk
 
 def test_a_real_fsync_failure_fails_the_save_but_an_unsupported_one_does_not(run_dir, monkeypatch):
     # fsync is where delayed-allocation ENOSPC and writeback EIO surface, and the validator only
-    # parses a safetensors HEADER, so a bundle whose bytes never reached the device would be
-    # promoted and later read as valid. But Windows' _commit and several network filesystems
-    # refuse the flush outright, which says nothing about the write and must not fail the run.
+    # parses a safetensors HEADER, so an unflushed bundle would be promoted and read as valid.
     run = _Run(run_dir)
     real_fsync = dc.os.fsync
 
@@ -293,9 +284,8 @@ def test_a_real_fsync_failure_fails_the_save_but_an_unsupported_one_does_not(run
 
 
 def test_re_saving_the_bundle_this_run_resumed_from_keeps_it(run_dir):
-    # Resuming at N and stopping before N+1 re-saves byte-identical state, so keeping what is
-    # there avoids _promote's one destructive branch (swapping a good bundle out to make room),
-    # where a kill would leave the slot empty.
+    # Resuming at N and stopping before N+1 re-saves byte-identical state, so keeping what is there
+    # avoids _promote's one destructive branch, where a kill would leave the slot empty.
     run = _Run(run_dir)
     first, _ = run.save(9)
     before = (run_dir / "checkpoint-9" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
@@ -308,10 +298,8 @@ def test_re_saving_the_bundle_this_run_resumed_from_keeps_it(run_dir):
 
 
 def test_a_same_step_bundle_from_another_run_is_overwritten(run_dir):
-    # The dangerous half of the same arithmetic: resume checkpoint-10 in a folder that also
-    # holds checkpoint-15 and stop at 15. The old shortcut saw "step 15 already exists" and
-    # returned it, so checkpoint_saved named a bundle whose optimizer, scheduler, sampler and
-    # RNG were from the EARLIER run and this run's state was dropped on the floor.
+    # The dangerous half of the same arithmetic: resume checkpoint-10 in a folder that also holds
+    # checkpoint-15 and stop at 15. The old shortcut returned the EARLIER run's bundle.
     seeded = _Run(run_dir)
     seeded.save(10)
     seeded.step_once(0.5)
@@ -325,7 +313,6 @@ def test_a_same_step_bundle_from_another_run_is_overwritten(run_dir):
     assert error is None and path == str(run_dir / "checkpoint-15")
     written = dc.read_checkpoint(run_dir / "checkpoint-15")
     assert written is not None
-    # It is this run's state now, not the one that was sitting there.
     assert (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(
         encoding = "utf-8"
     ) != stale
@@ -341,12 +328,10 @@ def test_incomplete_or_inconsistent_bundles_are_rejected(run_dir):
     good = run_dir / "checkpoint-4"
     assert dc.read_checkpoint(good) is not None
 
-    # No manifest at all (the completion marker) -> not a checkpoint.
     (good / dc.TRAINER_STATE_FILENAME).unlink()
     assert dc.read_checkpoint(good) is None
     assert dc.latest_valid_checkpoint(run_dir) is None
 
-    # A manifest whose step disagrees with its directory name is a rename, not a checkpoint.
     run.save(5)
     manifest_path = run_dir / "checkpoint-5" / dc.TRAINER_STATE_FILENAME
     manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
@@ -354,7 +339,6 @@ def test_incomplete_or_inconsistent_bundles_are_rejected(run_dir):
     manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
     assert dc.read_checkpoint(run_dir / "checkpoint-5") is None
 
-    # A truncated tensor file fails the state-file probe even with a perfect manifest.
     run.save(6)
     (run_dir / "checkpoint-6" / dc.ADAPTER_FILENAME).write_bytes(b"")
     assert dc.read_checkpoint(run_dir / "checkpoint-6") is None
@@ -364,9 +348,8 @@ def test_incomplete_or_inconsistent_bundles_are_rejected(run_dir):
 
 
 def test_a_fresh_run_discards_an_earlier_runs_checkpoints(run_dir):
-    # Training a NEW run into an output dir a previous run already used (same adapter name) must
-    # not leave the old, higher-numbered bundles behind: latest_valid_checkpoint would pick one of
-    # them and a later Resume would silently continue the wrong training.
+    # A NEW run into an output dir a previous run used must not leave the old, higher-numbered
+    # bundles behind: latest_valid_checkpoint picks one and a later Resume continues the wrong run.
     old = _Run(run_dir)
     old.save(40)
     assert dc.latest_valid_checkpoint(run_dir)[1]["global_step"] == 40
@@ -378,8 +361,8 @@ def test_a_fresh_run_discards_an_earlier_runs_checkpoints(run_dir):
 
 
 def test_a_checkpoint_with_no_adapter_tensors_is_refused(run_dir):
-    # An empty safetensors file has no keys, so the bundle would fail its own validation and read
-    # as "no checkpoint": a run that thinks it saved but cannot be resumed.
+    # An empty safetensors file has no keys, so the bundle would fail its own validation and read as
+    # "no checkpoint": a run that thinks it saved but cannot be resumed.
     with pytest.raises(ValueError, match = "no adapter tensors"):
         dc.save_checkpoint(
             output_dir = str(run_dir),
@@ -396,7 +379,6 @@ def test_non_finite_progress_is_dropped_from_the_manifest(run_dir):
     run.save(2, progress = {"running_loss": float("nan"), "kept": 1.5})
     manifest = dc.read_checkpoint(run_dir / "checkpoint-2")
     assert manifest["progress"] == {"kept": 1.5}
-    # And the file is strict JSON (no bare NaN token that a stricter parser would reject).
     raw = (run_dir / "checkpoint-2" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
     assert "NaN" not in raw and "Infinity" not in raw
     assert dc.load_checkpoint(run_dir / "checkpoint-2").running_loss == 0.0
@@ -410,7 +392,6 @@ def test_save_total_limit_keeps_only_the_newest_bundles(run_dir):
     assert kept == ["checkpoint-3", "checkpoint-4"]
 
 
-# ── state round-trip ──────────────────────────────────────────────────────────
 def test_bundle_round_trips_optimizer_scheduler_sampler_and_rng(run_dir):
     reference = _Run(run_dir, seed = 3)
     for i in range(11):
@@ -419,7 +400,6 @@ def test_bundle_round_trips_optimizer_scheduler_sampler_and_rng(run_dir):
     path, error = reference.save(11)
     assert error is None and Path(path).name == "checkpoint-11"
 
-    # Keep training the reference, and separately resume a fresh run from the bundle.
     resumed = _Run(run_dir, seed = 999)  # a different seed: everything must come from the file
     resumed.cfg = __import__("dataclasses").replace(
         resumed.cfg, resume_from_checkpoint = str(run_dir)
@@ -427,16 +407,14 @@ def test_bundle_round_trips_optimizer_scheduler_sampler_and_rng(run_dir):
     loaded = resumed.restore()
     assert loaded is not None and loaded.step == 11
 
-    # Adapter weights, LR-schedule position and sampler cycle all match immediately.
     assert torch.equal(resumed.model.weight, reference.model.weight)
     assert resumed.lr_sched.get_last_lr() == reference.lr_sched.get_last_lr()
     assert resumed.sampler.state_dict() == reference.sampler.state_dict()
-    # ... and so do the RNG streams, which decide the next batch and the next noise draw.
     assert resumed.loop_rng.random() == reference.loop_rng.random()
     assert resumed.variant_rng.random() == reference.variant_rng.random()
 
-    # The optimizer MOMENTS are what a naive "reload the adapter" resume loses: the same
-    # gradient must therefore move both models to the same place, not just start from it.
+    # The optimizer MOMENTS are what a naive "reload the adapter" resume loses: the same gradient
+    # must move both models to the same place, not just start from it.
     for i in range(11, 16):
         grad = 0.01 * (i + 1)
         reference.step_once(grad)
@@ -477,14 +455,12 @@ def _pretend_bitsandbytes(monkeypatch, installed: bool) -> None:
 
 
 def test_a_foreign_optimizers_state_is_refused_instead_of_key_erroring(run_dir, monkeypatch):
-    # The trainers choose their optimizer from the HOST (bitsandbytes present, a fused kernel
-    # available, UNSLOTH_DIFFUSION_FP32_OPTIM), not the config, so a checkpoint can arrive with
-    # moments from a different implementation. Shapes and counts match, so load_state_dict
-    # accepts them and the first step dies on a bare KeyError deep in the optimizer.
-    #
+    # The trainers choose their optimizer from the HOST (bitsandbytes, a fused kernel,
+    # UNSLOTH_DIFFUSION_FP32_OPTIM), not the config, so a checkpoint can arrive with moments from
+    # another implementation: shapes match, load_state_dict accepts, and step 1 dies on a KeyError.
     # bitsandbytes present, so the preflight's "this host cannot build that optimizer at all"
-    # refusal does NOT fire and the comparison against the optimizer this run actually built is
-    # what has to catch it.
+    # refusal does NOT fire and the comparison against the optimizer this run built is what has to
+    # catch it.
     _pretend_bitsandbytes(monkeypatch, installed = True)
     run = _Run(run_dir)
     run.save(3)
@@ -497,9 +473,8 @@ def test_a_foreign_optimizers_state_is_refused_instead_of_key_erroring(run_dir, 
 
 
 def test_8bit_moments_are_refused_up_front_on_a_host_without_bitsandbytes(run_dir, monkeypatch):
-    # The other half of the same problem, and the one a CPU host hits: with no bitsandbytes to
-    # load the 8-bit moments, preflight_resume refuses BEFORE the route evicts the resident GPU
-    # models, rather than letting the child get as far as building an optimizer it cannot fill.
+    # The other half, and the one a CPU host hits: with no bitsandbytes to load the 8-bit moments,
+    # preflight_resume refuses BEFORE the route evicts the resident GPU models.
     _pretend_bitsandbytes(monkeypatch, installed = False)
     run = _Run(run_dir)
     run.save(3)
@@ -521,9 +496,9 @@ def test_a_partial_adapter_restore_is_refused(run_dir):
         {"weight": torch.zeros(4, 4), "renamed.weight": torch.zeros(4, 4)},
         str(adapter),
     )
-    # Rewriting a bundle by hand changes the adapter's size, which read_checkpoint now checks
-    # against the manifest. Keep it honest, or this exercises the truncation guard instead of
-    # the name-mismatch guard it is here for.
+    # Rewriting a bundle by hand changes the adapter's size, which read_checkpoint checks against
+    # the manifest; keep it honest, or this exercises the truncation guard instead of the
+    # name-mismatch one.
     manifest_path = run_dir / "checkpoint-3" / dc.TRAINER_STATE_FILENAME
     manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
     manifest["file_sizes"]["adapter"] = adapter.stat().st_size
@@ -536,9 +511,9 @@ def test_a_partial_adapter_restore_is_refused(run_dir):
 
 
 def test_resuming_reapplies_the_live_lr_schedule(run_dir):
-    # load_state_dict restores the rate the checkpoint was written with and never re-evaluates
-    # the lambda, so without the re-apply the first resumed step runs at the OLD schedule's
-    # value -- lr 0.0 when continuing a finished cosine run by raising the step count.
+    # load_state_dict restores the rate the checkpoint was written with and never re-evaluates the
+    # lambda, so without the re-apply the first resumed step runs at the OLD schedule's value --
+    # lr 0.0 when continuing a finished cosine run.
     def build(total: int):
         torch.manual_seed(0)
         model = torch.nn.Linear(4, 4, bias = False)
@@ -559,12 +534,10 @@ def test_resuming_reapplies_the_live_lr_schedule(run_dir):
         target_steps = 6,
         optimizer = optimizer,
         lr_scheduler = lr_sched,
-        # A real bundle carries both, and the preflight now insists on them.
         rng = dc.capture_rng_state(_STREAMS()),
         sampler_state = {"n": 1, "order": [0], "pos": 0},
     )
 
-    # Continue the same run with a raised target: the rate must come from the NEW 12-step curve.
     model2, optimizer2, lr_sched2 = build(12)
     cfg = DiffusionLoraConfig(
         base_model = "stabilityai/sdxl-turbo",
@@ -602,18 +575,17 @@ def test_torch_rng_state_is_restored(run_dir):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes AdamW8bit needs CUDA")
 def test_bitsandbytes_adamw8bit_state_round_trips(run_dir):
-    # The default diffusion optimizer is bnb AdamW8bit, whose moments are quantized uint8 plus
-    # their maps. torch.save/load must carry them exactly, or a "resumed" run silently restarts
-    # Adam from zero moments and spikes the loss.
+    # The default diffusion optimizer is bnb AdamW8bit, whose moments are quantized uint8 plus their
+    # maps; torch.save/load must carry them exactly, or a "resumed" run restarts Adam from zero.
     bnb = pytest.importorskip("bitsandbytes")
     if not isinstance(getattr(bnb.optim, "AdamW8bit", None), type):
-        # unsloth_zoo replaces bitsandbytes with a raising stub on hosts without it; the suite
+        # unsloth_zoo replaces bitsandbytes with a raising stub on hosts without it, and the suite
         # imports unsloth first, so that stub can be live even where real bnb is installed.
         pytest.skip("bitsandbytes is stubbed out in this environment")
 
     torch.manual_seed(0)
-    # Above bitsandbytes' min_8bit_size (4096): a smaller parameter gets plain fp32 moments, so
-    # the quantized state -- the part that actually needs a round-trip -- would never be written.
+    # Above bitsandbytes' min_8bit_size (4096): a smaller parameter gets plain fp32 moments, so the
+    # quantized state -- the part that needs a round-trip -- would never be written.
     param = torch.nn.Parameter(torch.randn(128, 64, device = "cuda"))
     optimizer = bnb.optim.AdamW8bit([param], lr = 1e-3)
     for i in range(4):
@@ -645,7 +617,6 @@ def test_bitsandbytes_adamw8bit_state_round_trips(run_dir):
     assert torch.equal(clone, param)
 
 
-# ── the loop resumes at N+1 up to the same TARGET ─────────────────────────────
 def _loop(run: _Run, *, stop_at: int | None = None) -> tuple[list[int], int]:
     """The exact shape of both trainers' loops: restore, then ``range(resumed, train_steps)``
     with ``done = opt_step + 1``."""
@@ -667,14 +638,12 @@ def test_resume_at_step_11_with_target_500_runs_steps_12_to_500(run_dir):
     first = _Run(run_dir, seed = 1)
     seen, done = _loop(first, stop_at = 11)
     assert seen == list(range(1, 12)) and done == 11
-    # Stop-and-save writes the bundle at the step actually reached.
     path, error = first.save(done)
     assert error is None and Path(path).name == "checkpoint-11"
 
     second = _Run(run_dir, seed = 1)
     second.cfg = __import__("dataclasses").replace(second.cfg, resume_from_checkpoint = str(run_dir))
     seen, done = _loop(second)
-    # train_steps is the TARGET TOTAL, not an extra budget: 12..500, then the run is finished.
     assert seen[0] == 12
     assert seen[-1] == 500
     assert seen == list(range(12, 501))
@@ -705,7 +674,6 @@ def test_both_trainers_loop_from_the_resumed_step():
         assert loops == ["range(resumed, cfg.train_steps)"], f"{name}: {loops}"
 
 
-# ── the identity gate ─────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [
@@ -725,15 +693,13 @@ def test_identity_mismatches_are_rejected_with_a_clear_reason(run_dir, overrides
     run.save(3)
     with pytest.raises(dc.ResumeError, match = expected):
         dc.preflight_resume(str(run_dir), identity = _identity(**overrides), target_steps = 500)
-    # The matching identity still passes, so the rejection is the mismatch and nothing else.
     path, step = dc.preflight_resume(str(run_dir), identity = _identity(), target_steps = 500)
     assert step == 3 and Path(path).name == "checkpoint-3"
 
 
 def test_unknown_revision_or_dataset_on_either_side_is_not_a_mismatch(run_dir):
-    # source_revision() reads "unresolved" for a repo that is not in the local Hub cache, and the
-    # start route computes the identity before it has walked the dataset. Neither may look like a
-    # changed base model / changed images, or every first resume would be refused.
+    # source_revision() reads "unresolved" for a repo not in the local Hub cache, and the start
+    # route computes the identity before walking the dataset; neither may look like a changed base.
     run = _Run(run_dir)
     run.identity = _identity(base_revision = "unresolved")
     run.save(3)
@@ -757,7 +723,6 @@ def test_resume_of_a_run_without_checkpoints_is_refused(run_dir):
         dc.preflight_resume(str(run_dir), identity = _identity(), target_steps = 500)
 
 
-# ── route preflight: reject BEFORE evicting the GPU ───────────────────────────
 class _FakeService:
     def __init__(self):
         self.calls: list[str] = []
@@ -856,8 +821,6 @@ _RESUME_BODY = {
 
 
 def _write_bundle(run_dir: Path, step: int, identity: dc.CheckpointIdentity) -> None:
-    # A real bundle carries optimizer and scheduler state, and the route preflight now insists
-    # on it, so the fixture has to be a bundle the trainer would actually accept.
     param = torch.nn.Parameter(torch.zeros(2, 2))
     optimizer = torch.optim.AdamW([param], lr = 1e-3)
     dc.save_checkpoint(
@@ -877,8 +840,6 @@ def test_route_resume_accepts_a_matching_checkpoint_and_pins_it(client, run_dir)
     _write_bundle(run_dir, 11, _request_identity())
     r = client.post("/api/train/diffusion/start", json = _RESUME_BODY)
     assert r.status_code == 200, r.text
-    # The exact bundle the preflight accepted is what the trainer gets, not "whatever is newest
-    # in that folder by the time the child runs".
     pinned = Path(client._fake.started_with["resume_from_checkpoint"])
     assert pinned == run_dir / "checkpoint-11"
     assert client._freed == ["freed"]
@@ -889,18 +850,14 @@ def test_route_resume_mismatch_400s_without_evicting_the_gpu(client, run_dir):
     r = client.post("/api/train/diffusion/start", json = _RESUME_BODY)
     assert r.status_code == 400, r.text
     assert "different model family" in r.json()["detail"]
-    # The whole point of preflighting here: the user's loaded Images pipeline survives a refusal.
     assert client._freed == []
     assert "start" not in client._fake.calls
 
 
 def test_route_resume_precision_mismatch_400s_without_evicting_the_gpu(client, run_dir):
-    # The guard the fixture above must not be allowed to defeat. Restoring moments produced
-    # under one set of frozen-base numerics into a run using another continues the trajectory at
-    # a different precision while reporting a clean resume, so a bundle recording a precision
-    # this host does not resolve to has to be refused -- and refused HERE, before the resident
-    # Images pipeline is torn down. Written against a precision picked to differ from whatever
-    # this machine resolves, so it is a real mismatch on a GPU box and on a CPU runner alike.
+    # Restoring moments produced under one set of frozen-base numerics into a run using another
+    # continues the trajectory at a different precision while reporting a clean resume, so it is
+    # refused HERE, before the resident Images pipeline is torn down.
     mismatched = _other_precision()
     assert mismatched != _resolved_request_precision()
     _write_bundle(run_dir, 11, _request_identity(precision = mismatched))
@@ -912,15 +869,14 @@ def test_route_resume_precision_mismatch_400s_without_evicting_the_gpu(client, r
 
 
 def test_route_resume_dataset_change_400s_without_evicting_the_gpu(client, run_dir):
-    # The dataset half of the identity is only knowable after discovery, which the route runs
-    # inside the reservation -- still before the GPU teardown.
+    # The dataset half of the identity is only knowable after discovery, which the route runs inside
+    # the reservation -- still before the GPU teardown.
     _write_bundle(run_dir, 11, _request_identity(dataset_fingerprint = "ds-9-other"))
     r = client.post("/api/train/diffusion/start", json = _RESUME_BODY)
     assert r.status_code == 400, r.text
     assert "training images have changed" in r.json()["detail"]
     assert client._freed == []
     assert "start" not in client._fake.calls
-    # The reservation is always released, so the next start is not locked out by the refusal.
     assert client._fake.calls.count("unreserve") == 1
 
 
@@ -945,7 +901,6 @@ def test_route_start_without_resume_is_unchanged(client, run_dir):
     assert client._fake.started_with.get("resume_from_checkpoint") is None
 
 
-# ── can_resume in the run history ─────────────────────────────────────────────
 @pytest.fixture
 def runs_dir(tmp_path, monkeypatch):
     import core.training.diffusion_training_service as dts
@@ -982,8 +937,8 @@ def test_can_resume_is_reported_per_run_state(runs_dir, run_dir):
     _write_bundle(stopped_dir, 11, _identity())
     _persist("a" * 32, "stopped", stopped_dir)
 
-    # A completed run reached its target, so it is never resumable -- even though a periodic
-    # bundle from partway through is still sitting in its folder.
+    # A completed run reached its target, so it is never resumable, even though a periodic bundle
+    # from partway through is still in its folder.
     from utils.paths import outputs_root
 
     completed_dir = outputs_root() / "done-run"
@@ -991,14 +946,13 @@ def test_can_resume_is_reported_per_run_state(runs_dir, run_dir):
     _write_bundle(completed_dir, 450, _identity())
     _persist("b" * 32, "completed", completed_dir)
 
-    # An errored run that DID reach a periodic checkpoint is exactly the case worth resuming.
     errored_dir = outputs_root() / "crashed-run"
     errored_dir.mkdir(parents = True, exist_ok = True)
     _write_bundle(errored_dir, 40, _identity())
     _persist("c" * 32, "error", errored_dir)
 
-    # A stop whose checkpoint write FAILED must stay blocked, with the writer's reason shown,
-    # even though an older bundle is still on disk (resuming it would silently lose steps).
+    # A stop whose checkpoint write FAILED must stay blocked, with the writer's reason shown, even
+    # though an older bundle is still on disk (resuming it would silently lose steps).
     blocked_dir = outputs_root() / "blocked-run"
     blocked_dir.mkdir(parents = True, exist_ok = True)
     _write_bundle(blocked_dir, 7, _identity())
@@ -1073,7 +1027,6 @@ def test_service_folds_the_resumed_and_checkpoint_events(runs_dir):
     service = DiffusionTrainingService()
     service._apply_event({"type": "resumed", "step": 11, "checkpoint_path": "/x/checkpoint-11"})
     snapshot = service.status()
-    # The step resumed FROM is lineage, not a bundle this run wrote.
     assert snapshot["resumed_from_step"] == 11
     assert snapshot["checkpoint_step"] is None
 
@@ -1086,10 +1039,8 @@ def test_service_folds_the_resumed_and_checkpoint_events(runs_dir):
     assert snapshot["checkpoint_path"] == "/x/checkpoint-40"
     assert snapshot["resume_blocked_reason"] is None
 
-    # A failed write is sticky: the older bundle predates the work this run did.
     service._apply_event({"type": "checkpoint_failed", "step": 50, "message": "disk full"})
     assert service.status()["resume_blocked_reason"] == "disk full"
-    # ...and a later good write clears it again.
     service._apply_event(
         {"type": "checkpoint_saved", "step": 60, "checkpoint_path": "/x/checkpoint-60"}
     )
@@ -1130,9 +1081,8 @@ def test_a_checkpoint_write_failure_blocks_resume_on_a_crashed_run(runs_dir, run
 
 
 def test_an_earlier_runs_checkpoints_are_not_offered_to_a_later_run(runs_dir, run_dir):
-    # Two runs can share an output dir (same adapter name trained twice) and the EARLIER one's
-    # bundles can carry higher step numbers. A later run must not advertise, and then resume,
-    # another run's training state.
+    # Two runs can share an output dir (same adapter trained twice) and the EARLIER one's bundles can
+    # carry higher step numbers, so a later run must not resume another run's training state.
     import time as _time
 
     from core.training.diffusion_training_service import get_diffusion_run
@@ -1145,12 +1095,10 @@ def test_an_earlier_runs_checkpoints_are_not_offered_to_a_later_run(runs_dir, ru
     assert record["can_resume"] is False
     assert "left by an earlier run" in record["resume_blocked_reason"]
 
-    # The run that actually wrote it still sees it.
     _persist("3" * 32, "stopped", run_dir, started_at = later_start - 60.0)
     assert get_diffusion_run("3" * 32)["checkpoint_step"] == 400
 
 
-# ── the sidecar records the step actually reached ─────────────────────────────
 def test_lora_sidecar_records_the_reached_step(tmp_path, monkeypatch):
     from core.inference import diffusion_lora as dl
     from core.training.diffusion_train_common import _publish_to_lora_catalog
@@ -1169,18 +1117,15 @@ def test_lora_sidecar_records_the_reached_step(tmp_path, monkeypatch):
         train_steps = 500,
     ).normalized()
 
-    # Stopped at step 11 of a 500-step run: the sidecar used to advertise the CONFIGURED 500.
     published = _publish_to_lora_catalog(str(source), cfg, 11)
     sidecar = json.loads(Path(published).with_suffix(".json").read_text(encoding = "utf-8"))
     assert sidecar["steps"] == 11
 
-    # Omitted, it still falls back to train_steps for callers that do not know the reached step.
     fallback = _publish_to_lora_catalog(str(source), cfg)
     meta = json.loads(Path(fallback).with_suffix(".json").read_text(encoding = "utf-8"))
     assert meta["steps"] == 500
 
 
-# ── config validation ─────────────────────────────────────────────────────────
 def test_checkpoint_config_is_validated_and_normalized():
     def build(**kw):
         return DiffusionLoraConfig(
@@ -1190,14 +1135,12 @@ def test_checkpoint_config_is_validated_and_normalized():
             **kw,
         )
 
-    # Off by default: no periodic checkpoints unless asked for.
     assert build().normalized().save_steps == 0
     assert build(save_steps = 50).normalized().save_steps == 50
     with pytest.raises(ValueError, match = "save_steps must be >= 0"):
         build(save_steps = -1).normalized()
     with pytest.raises(ValueError, match = "save_total_limit must be >= 0"):
         build(save_total_limit = -2).normalized()
-    # A blank resume path is "fresh run", not the outputs root.
     assert build(resume_from_checkpoint = "   ").normalized().resume_from_checkpoint is None
     assert (
         build(resume_from_checkpoint = " outputs/run ").normalized().resume_from_checkpoint
@@ -1211,23 +1154,20 @@ def test_sampler_state_round_trips_and_rejects_a_foreign_dataset_size():
     reference = PermutationBatchSampler(7, random.Random(0))
     reference.next_batch(5)
     state = reference.state_dict()
-    # The two indices left in the current cycle. Beyond them the sampler reshuffles from its rng,
-    # which the RNG snapshot restores separately, so this asserts only what the state owns.
+    # The two indices left in the current cycle.
     expected = reference.next_batch(2)
 
     # A sampler seeded differently still continues the SAME cycle once the state is loaded: the
-    # order is stored, not just the position, so a partly consumed permutation is reproduced.
+    # order is stored, not just the position.
     clone = PermutationBatchSampler(7, random.Random(99))
     clone.load_state_dict(state)
     assert clone.next_batch(2) == expected
 
-    # A state for a different dataset size is ignored rather than indexing out of range.
     other = PermutationBatchSampler(3, random.Random(0))
     other.load_state_dict(state)
     assert all(0 <= i < 3 for i in other.next_batch(10))
 
 
-# ── the header parse is not a load ────────────────────────────────────────────
 
 
 def test_a_truncated_tensor_storage_is_refused(run_dir):
@@ -1248,7 +1188,6 @@ def test_a_truncated_tensor_storage_is_refused(run_dir):
         members = [(i, src.read(i.filename)) for i in src.infolist()]
     with zipfile.ZipFile(optimizer_pt, "w") as dst:
         for info, blob in members:
-            # Every tensor storage clipped to one byte; the pickle and the header survive.
             if "/data/" in info.filename and len(blob) > 1:
                 blob = blob[:1]
             dst.writestr(info.filename, blob)
@@ -1268,20 +1207,17 @@ def test_a_bundle_torch_load_refuses_is_rejected_by_the_preflight(run_dir):
     run = _Run(run_dir)
     run.save(2)
     checkpoint = run_dir / "checkpoint-2"
-    # eval is not in the weights_only allowlist; the zip still parses.
     torch.save({"boom": eval}, str(checkpoint / dc.SCHEDULER_FILENAME), pickle_protocol = 2)
     manifest_path = checkpoint / dc.TRAINER_STATE_FILENAME
     manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
     manifest["file_sizes"]["scheduler"] = (checkpoint / dc.SCHEDULER_FILENAME).stat().st_size
     manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
 
-    # The cheap gate still passes it -- that is the point.
     assert dc.read_checkpoint(checkpoint) is not None
     with pytest.raises(dc.ResumeError, match = "scheduler"):
         dc.preflight_resume(str(checkpoint), identity = _identity(), target_steps = 500)
 
 
-# ── two runs sharing an output directory ──────────────────────────────────────
 
 
 def test_a_finished_run_does_not_offer_its_successors_checkpoint(run_dir):
@@ -1304,7 +1240,6 @@ def test_a_finished_run_does_not_offer_its_successors_checkpoint(run_dir):
         (run_dir / "checkpoint-50" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
     )["created_at"]
     assert later_created > early_created, "fixture did not order the two runs"
-    # The first run ended between the two saves.
     early_ended = (early_created + later_created) / 2.0
 
     fenced = dc.describe_resume_state(
@@ -1313,7 +1248,6 @@ def test_a_finished_run_does_not_offer_its_successors_checkpoint(run_dir):
     assert fenced["checkpoint_step"] == 10
     assert fenced["checkpoint_path"].endswith("checkpoint-10")
 
-    # The later run, with no upper fence of its own yet, still sees its own newest.
     live = dc.describe_resume_state(
         str(run_dir), status = "stopped", started_at = early_ended, ended_at = None
     )
@@ -1334,7 +1268,6 @@ def test_a_bundle_with_no_created_at_survives_the_upper_fence(run_dir):
     assert found is not None and dc.checkpoint_step(found[0]) == 4
 
 
-# ── RNG restore across a change in visible devices ────────────────────────────
 
 
 def test_cuda_rng_restores_the_devices_the_bundle_covers(monkeypatch):
@@ -1391,16 +1324,13 @@ def test_a_checkpoint_missing_a_live_tensor_is_refused():
     full = trainable_state_dict(model)
     assert len(full) >= 2
 
-    # Everything the checkpoint holds still lands, so the old count check was satisfied.
     partial = {k: v for k, v in full.items() if k != sorted(full)[0]}
     with pytest.raises(ValueError, match = "not in the checkpoint"):
         load_trainable_state_dict(model, partial)
 
-    # ...and the complete set is still accepted, so the guard is not simply refusing everything.
     assert load_trainable_state_dict(model, full) == len(full)
 
 
-# ── the writer must not destroy what it is replacing ──────────────────────────
 
 
 def test_the_bundle_just_written_survives_pruning(run_dir):
@@ -1435,7 +1365,6 @@ def test_a_failed_write_leaves_the_previous_checkpoints_alone(run_dir, monkeypat
         raise OSError("no space left on device")
 
     monkeypatch.setattr(dc, "_save_tensors", _boom)
-    # write_resume_checkpoint reports rather than raises, so the run survives a bad disk.
     written, error = run.save(1, discard_existing = True)
     assert written is None and error
 
@@ -1458,7 +1387,6 @@ def test_a_successful_discarding_write_still_replaces_the_old_bundles(run_dir):
     assert Path(written).name == "checkpoint-1"
 
 
-# ── a discard must not take the source checkpoint with it ─────────────────────
 
 
 def test_clearing_this_runs_checkpoints_spares_the_one_it_resumed_from(run_dir):
@@ -1481,7 +1409,6 @@ def test_clearing_this_runs_checkpoints_spares_the_one_it_resumed_from(run_dir):
     }, f"the discard removed the source bundle as well as its own: {survivors}"
 
 
-# ── EMA turned on by the resume ───────────────────────────────────────────────
 
 
 def test_enabling_ema_on_a_resume_starts_from_the_restored_weights():
@@ -1495,7 +1422,6 @@ def test_enabling_ema_on_a_resume_starts_from_the_restored_weights():
     ema = LoRAEMA(model, decay = 0.99)
     initial = ema.state_dict()["weight"].clone()
 
-    # ...the adapter is restored afterwards, exactly as the trainer orders it.
     with torch.no_grad():
         model.weight.copy_(torch.full_like(model.weight, 3.0))
     assert not torch.allclose(ema.state_dict()["weight"], model.weight)
@@ -1507,7 +1433,6 @@ def test_enabling_ema_on_a_resume_starts_from_the_restored_weights():
     assert ema.updates == 0, "the warmup ramp restarts with the shadow"
 
 
-# ── a run directory that happens to look like a bundle ────────────────────────
 
 
 def test_an_output_directory_named_like_a_checkpoint_is_still_scanned(tmp_path, monkeypatch):
@@ -1543,7 +1468,6 @@ def test_an_image_replaced_in_place_changes_the_dataset_fingerprint(tmp_path):
 
     assert dc.dataset_fingerprint(entries) != before
 
-    # ...and it is stable when nothing changed, or a resume would never be offered at all.
     assert dc.dataset_fingerprint(entries) == dc.dataset_fingerprint(entries)
 
 
@@ -1555,7 +1479,6 @@ def test_the_fingerprint_probe_does_not_read_whole_images(tmp_path):
     small = tmp_path / "small.png"
     small.write_bytes(b"\0" * (2 * dc._PROBE_BYTES))
     big = tmp_path / "big.png"
-    # Distinct bytes throughout, so a whole-file read could not be optimised away.
     big.write_bytes(bytes(range(256)) * (64 * 1024 // 256) * 128)
     assert big.stat().st_size >= 64 * 1024 * 128
 
@@ -1565,13 +1488,12 @@ def test_the_fingerprint_probe_does_not_read_whole_images(tmp_path):
             dc.dataset_fingerprint([(str(path), "caption")])
         return time.perf_counter() - started
 
-    # A whole-file hash would scale with the 128x size difference; head+tail does not.
     assert _elapsed(big) < 8 * max(
         _elapsed(small), 1e-4
     ), "the probe appears to scale with file size, so it is reading more than head and tail"
 
-    # The direct statement of the same thing: two files that differ only in the middle, past
-    # the probe window on both ends, are indistinguishable -- which is the documented tradeoff.
+    # The direct statement of the same thing: two files that differ only in the middle, past the
+    # probe window on both ends, are indistinguishable -- the documented tradeoff.
     a, b = tmp_path / "a.bin", tmp_path / "b.bin"
     body = b"\0" * (4 * dc._PROBE_BYTES)
     a.write_bytes(body)
@@ -1608,7 +1530,6 @@ def test_a_failed_first_save_does_not_retire_the_discard(run_dir, monkeypatch):
     """
     import core.training.diffusion_train_common as dtc
 
-    # An earlier run of the same adapter name left a bundle behind, at a higher step.
     stale = _Run(run_dir)
     stale.save(40)
     assert (run_dir / "checkpoint-40").is_dir()
@@ -1647,7 +1568,6 @@ def test_a_failed_first_save_does_not_retire_the_discard(run_dir, monkeypatch):
     assert wrote_checkpoint is False
     assert _attempt(6) is not None
 
-    # The stale higher-numbered bundle is gone, so a Resume by output directory picks step 6.
     assert not (run_dir / "checkpoint-40").exists()
     latest = dc.latest_valid_checkpoint(run_dir)
     assert latest is not None and dc.checkpoint_step(latest[0]) == 6
@@ -1675,7 +1595,6 @@ def test_a_partial_ema_shadow_is_refused_rather_than_half_restored():
     missing = ema.missing_from(partial)
     assert missing and len(missing) == len(full) - 1
 
-    # A shape change counts too: load_state_dict skips those on the same branch.
     mangled = {name: tensor[:1].clone() for name, tensor in full.items()}
     assert len(ema.missing_from(mangled)) == len(full)
 
@@ -1692,8 +1611,8 @@ def test_a_resume_refuses_a_checkpoint_whose_ema_is_incomplete(run_dir):
     path, error = run.save(3, ema = ema)
     assert error is None and path is not None
 
-    # A wider model on the resume side: the saved shadow covers only part of it, which is the
-    # shape a re-wrap (or a hand-edited bundle) produces.
+    # A wider model on the resume side: the saved shadow covers only part of it, which is the shape
+    # a re-wrap (or a hand-edited bundle) produces.
     save_file(
         {"weight": torch.zeros(4, 4)},
         str(Path(path) / dc.EMA_FILENAME),
@@ -1729,8 +1648,8 @@ def test_the_sdxl_trainer_binds_its_output_dir_before_scanning_checkpoints():
 
     source = inspect.getsource(diffusion_lora_trainer).splitlines()
     scan = next(i for i, line in enumerate(source) if "snapshot_checkpoints(out_dir)" in line)
-    # The binding that covers it has to be at the loop's own indentation -- one nested inside an
-    # `if` that returns does not run on the normal path.
+    # The binding that covers it has to be at the loop's own indentation: one nested inside an `if`
+    # that returns does not run on the normal path.
     scan_indent = len(source[scan]) - len(source[scan].lstrip())
     bound = [
         i
@@ -1774,7 +1693,6 @@ def test_a_bundle_overwritten_by_this_run_is_discarded_with_it(run_dir):
         dc._bundle_identity(run_dir / "checkpoint-15")
         == dict(preexisting)[run_dir / "checkpoint-15"]
     )
-    # And nothing is left hidden in the directory afterwards.
     assert list(run_dir.glob(f"{dc._STAGING_PREFIX}*")) == []
 
 
@@ -1791,7 +1709,6 @@ def test_resuming_into_another_directory_is_not_treated_as_owning_it(run_dir, tm
     by_folder = _Run(run_dir, resume_from_checkpoint = str(run_dir))
     assert dc.resumed_into_this_dir(by_folder.cfg, run_dir) is True
 
-    # ...but a bundle from ANOTHER directory says nothing about what is in this one.
     cross = _Run(run_dir, resume_from_checkpoint = str(elsewhere / "checkpoint-20"))
     assert dc.resumed_into_this_dir(cross.cfg, run_dir) is False
     fresh = _Run(run_dir)
@@ -1814,9 +1731,7 @@ def test_a_bundle_without_optimizer_state_is_refused(run_dir):
     manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
 
     resumed = _Run(run_dir, resume_from_checkpoint = path)
-    # Refused by the ROUTE preflight, before the resident GPU model is evicted. It used to get
-    # through here (the preflight only opened the roles the manifest listed) and fail in the
-    # child, having already torn down the pipeline the refusal exists to protect.
+    # Refused by the ROUTE preflight, before the resident GPU model is evicted.
     with pytest.raises(ResumeError, match = "missing the optimizer moments"):
         dc.preflight_resume(path, identity = run.identity, target_steps = 10)
     with pytest.raises(ResumeError):
@@ -1834,17 +1749,14 @@ def test_a_shortened_or_repeating_permutation_is_refused(run_dir):
     sampler = PermutationBatchSampler(4, rng)
     assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": 2}) is True
     assert sampler.load_state_dict({"n": 4, "order": [], "pos": 0}) is True
-    # Right size, wrong contents: index 1 twice and index 3 never.
     assert sampler.load_state_dict({"n": 4, "order": [0, 1, 1, 2], "pos": 0}) is False
-    # Short: the cycle would reshuffle a batch early.
     assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2], "pos": 0}) is False
-    # And a position outside the permutation is a damaged manifest, not a rounding error:
-    # clamping it re-serves the order from the top or ends the cycle early, behind the same
-    # already-restored RNG.
+    # And a position outside the permutation is a damaged manifest, not a rounding error: clamping
+    # it re-serves the order from the top or ends the cycle early, behind the same already-restored
+    # RNG.
     assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": 9}) is False
     assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": -1}) is False
     assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": "two"}) is False
-    # The two ends of the range are both legitimate: 0 is untouched, len(order) is exhausted.
     assert sampler.load_state_dict({"n": 4, "order": [0, 1, 2, 3], "pos": 4}) is True
 
 
@@ -1900,8 +1812,8 @@ def test_an_rng_file_with_no_torch_state_is_refused(run_dir):
     assert error is None and path is not None
     rng_file = Path(path) / dc.RNG_FILENAME
     torch.save({"cuda": {}}, rng_file)
-    # Keep the recorded size honest, so the bundle fails on its CONTENTS rather than on the
-    # cheap size check that would have caught this edit and hidden the real gap.
+    # Keep the recorded size honest, so the bundle fails on its CONTENTS rather than on the cheap
+    # size check that would have hidden the real gap.
     manifest_path = Path(path) / dc.TRAINER_STATE_FILENAME
     manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
     manifest["file_sizes"]["rng"] = rng_file.stat().st_size
@@ -1919,17 +1831,15 @@ def test_the_identity_covers_cfg_dropout(run_dir):
     changed = _Run(run_dir, cfg_dropout = 0.3)
     reason = dc.identity_for_config(run.cfg).mismatch_reason(dc.identity_for_config(changed.cfg))
     assert reason is not None and "caption dropout" in reason
-    # The same value still resumes.
     same = _Run(run_dir, cfg_dropout = 0.1)
     assert dc.identity_for_config(run.cfg).mismatch_reason(dc.identity_for_config(same.cfg)) is None
-    # An identity from before the field existed reads as unknown, not as a mismatch.
     older = dc.CheckpointIdentity.from_dict(
         {**dc.identity_for_config(run.cfg).as_dict(), "cfg_dropout": None}
     )
     assert older is not None
     assert older.mismatch_reason(dc.identity_for_config(changed.cfg)) is None
-    # But a manifest that DOES record it must read it back, or the optional-field rule turns
-    # every saved identity into "cannot tell" and the gate never fires on a real change.
+    # But a manifest that DOES record it must read it back, or the optional-field rule turns every
+    # saved identity into "cannot tell" and the gate never fires on a real change.
     saved = dc.CheckpointIdentity.from_dict(dc.identity_for_config(run.cfg).as_dict())
     assert saved is not None and saved.cfg_dropout == 0.1
     assert "caption dropout" in (saved.mismatch_reason(dc.identity_for_config(changed.cfg)) or "")
@@ -1952,13 +1862,11 @@ def test_the_identity_covers_the_trajectory_knobs(run_dir):
             dc.identity_for_config(changed.cfg)
         )
         assert reason is not None and label in reason, field
-        # A manifest from before the field was recorded reads unknown, not mismatched.
         older = dc.CheckpointIdentity.from_dict(
             {**dc.identity_for_config(base.cfg).as_dict(), field: None}
         )
         assert older is not None
         assert older.mismatch_reason(dc.identity_for_config(changed.cfg)) is None, field
-    # And an unchanged config still resumes.
     assert (
         dc.identity_for_config(base.cfg).mismatch_reason(dc.identity_for_config(_Run(run_dir).cfg))
         is None
@@ -1974,7 +1882,6 @@ def test_disabling_min_snr_is_a_mismatch_not_an_unknown(run_dir):
     reason = dc.identity_for_config(on.cfg).mismatch_reason(dc.identity_for_config(off.cfg))
     assert reason is not None and "min-SNR gamma" in reason
     assert dc.identity_for_config(off.cfg).snr_gamma == "off"
-    # Only a manifest that never recorded the field is unknown.
     older = dc.CheckpointIdentity.from_dict(
         {**dc.identity_for_config(on.cfg).as_dict(), "snr_gamma": None}
     )
@@ -1990,8 +1897,6 @@ def test_the_identity_covers_the_input_stream(run_dir):
 
     base = _Run(run_dir)
     for field, value, label in (
-        # seed goes through dataclasses.replace: _Run takes its own seed argument for
-        # torch.manual_seed and does not forward it to the config.
         ("seed", 1234, "random seed"),
         ("cache_latents", False, "latent caching"),
         ("cache_variants", 8, "cached crop variants"),
@@ -2008,7 +1913,6 @@ def test_the_identity_covers_the_input_stream(run_dir):
         )
         assert older is not None
         assert older.mismatch_reason(dc.identity_for_config(changed_cfg)) is None, field
-    # False is a VALUE, not an unknown: the flags are recorded as on/off for exactly that.
     flipped = dataclasses.replace(base.cfg, random_flip = False)
     assert dc.identity_for_config(flipped).random_flip == "off"
 
@@ -2032,12 +1936,12 @@ def test_the_identity_covers_the_update_shape_and_the_resolution(run_dir):
             dc.identity_for_config(changed_cfg)
         )
         assert reason is not None and label in reason, field
-    # 0.0 disables clipping and is a real value, so it is recorded as text rather than as a
-    # float that the optional rule would read as "not recorded".
+    # 0.0 disables clipping and is a real value, so it is recorded as text rather than as a float
+    # the optional rule would read as "not recorded".
     disabled = dataclasses.replace(base.cfg, max_grad_norm = 0.0)
     assert dc.identity_for_config(disabled).max_grad_norm == "0.0"
-    # resolution is NOT optional: every bundle has recorded it from the first version, so an
-    # unknown there would be a manifest we cannot trust anyway.
+    # resolution is NOT optional: every bundle has recorded it from the first version, so an unknown
+    # there would be a manifest we cannot trust anyway.
     assert "resolution" not in dc._OPTIONAL_IDENTITY_FIELDS
 
 
@@ -2070,13 +1974,12 @@ def test_the_resolved_cache_path_is_recorded_not_the_request(run_dir):
     assert cached.cache_mode == "cached" and in_loop.cache_mode == "in-loop"
     reason = cached.mismatch_reason(in_loop)
     assert reason is not None and "latent cache path" in reason
-    # The start route builds its identity before the loop decides, so it stays unknown there
-    # and the pre-eviction preflight is unaffected.
+    # The start route builds its identity before the loop decides, so it stays unknown there and the
+    # pre-eviction preflight is unaffected.
     assert base.cache_mode is None
     assert base.mismatch_reason(in_loop) is None
     assert cached.mismatch_reason(base) is None
 
-    # And both trainers record it.
     trainers = Path(dc.__file__).parent
     for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
         source = (trainers / name).read_text(encoding = "utf-8")
@@ -2097,7 +2000,6 @@ def test_a_first_periodic_save_does_not_spend_the_previous_runs_bundles(run_dir)
     assert error is None and mine is not None
     assert Path(kept).is_dir(), "the previous run's bundle survives the first periodic save"
 
-    # It goes on the COMPLETION path instead, once this run's adapter is actually saved.
     dc.retire_own_checkpoints(run_dir, [], resumed_here = False)
     assert dc.list_checkpoints(run_dir) == []
 
@@ -2119,7 +2021,6 @@ def test_both_trainers_honour_the_fp32_optimizer_override(run_dir):
             marker = source.find("def _make_lora_optimizer")
         assert marker > 0, name
         body = source[marker : marker + 1200]
-        # The env READ, not a mention of it in prose.
         read = 'os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM"'
         assert read in body, name
         assert body.index(read) < body.index("AdamW8bit"), name
@@ -2143,23 +2044,20 @@ def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):
     assert not Path(mine).exists(), "the completed run's own bundle must go"
     assert Path(kept).exists(), "a resumed run leaves its source directory's bundle alone"
 
-    # A FRESH run in a reused directory takes the earlier bundles with it: the adapter they
-    # belonged to has just been overwritten, and with the default save_steps=0 the run never
-    # writes one of its own, so nothing else ever clears them and a later resume by output
-    # directory continues the previous run's optimizer and RNG into the reused folder.
+    # A FRESH run in a reused directory takes the earlier bundles with it: their adapter has just
+    # been overwritten, and with save_steps=0 this run writes none of its own, so a later resume by
+    # output directory would continue the previous run's optimizer and RNG.
     dc.retire_own_checkpoints(run_dir, [], resumed_here = False)
     assert dc.list_checkpoints(run_dir) == []
 
-    # And both trainers actually call it on the success path. Running either end to end needs a
-    # GPU and a multi-GB base, so the call site is checked in the source: the helper being
-    # correct is no use if nothing invokes it.
+    # And both trainers actually call it on the success path.
     trainers = Path(dc.__file__).parent
     for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
         source = (trainers / name).read_text(encoding = "utf-8")
         marker = source.find("retire_own_checkpoints(")
         assert marker > 0, name
-        # With the resumption flag, or a fresh run in a reused directory keeps the previous
-        # run's bundles and a later resume by output directory continues them.
+        # With the resumption flag, or a fresh run in a reused directory keeps the previous run's
+        # bundles and a later resume by output directory continues them.
         assert "resumed_here = resumed_here" in source[marker : marker + 200], name
         guard = source.rfind("if not stopped:", 0, marker)
         assert (
@@ -2198,13 +2096,12 @@ def test_eight_bit_moments_are_refused_when_the_host_cannot_build_them(run_dir, 
     manifest["optimizer_class"] = "bitsandbytes.optim.adamw.AdamW8bit"
     manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
 
-    # The one direction that cannot be wrong: the override forces plain torch AdamW.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_FP32_OPTIM", "1")
     with pytest.raises(ResumeError, match = "8-bit optimizer state"):
         dc.preflight_resume(path, identity = run.identity, target_steps = 10)
 
-    # Without it, an installed bitsandbytes is not refused here -- an installed-but-broken
-    # wheel is the child's call, where the real optimizer object exists.
+    # Without it, an installed bitsandbytes is not refused here: an installed-but-broken wheel is
+    # the child's call, where the real optimizer object exists.
     monkeypatch.delenv("UNSLOTH_DIFFUSION_FP32_OPTIM")
     import importlib.util
 
@@ -2223,7 +2120,6 @@ def test_the_identity_covers_lora_dropout(run_dir):
     reason = dc.identity_for_config(run.cfg).mismatch_reason(dc.identity_for_config(changed.cfg))
     assert reason is not None and "dropout" in reason.lower()
 
-    # An identity from before the field existed reads as unknown, which must not be a mismatch.
     older = dc.CheckpointIdentity.from_dict(
         {**dc.identity_for_config(run.cfg).as_dict(), "lora_dropout": None}
     )
@@ -2249,12 +2145,10 @@ def test_the_resumed_event_seeds_the_live_counters(runs_dir):
     snapshot = service.status()
     assert snapshot["step"] == 400
     assert snapshot["total_steps"] == 500
-    # ...and still not a bundle this run wrote.
     assert snapshot["resumed_from_step"] == 400
     assert snapshot["checkpoint_step"] is None
 
 
-# ── round 6: the resume must not overstate what it can honour ─────────────────
 
 
 def test_a_resume_into_a_new_folder_that_died_first_is_still_resumable(run_dir, tmp_path):
@@ -2279,7 +2173,6 @@ def test_a_resume_into_a_new_folder_that_died_first_is_still_resumable(run_dir, 
     assert state["checkpoint_step"] == 10
     assert state["checkpoint_path"].endswith("checkpoint-10")
 
-    # With no source to fall back to, the missing folder is still the answer.
     blocked = dc.describe_resume_state(str(never_created), status = "error")
     assert blocked["can_resume"] is False
     assert "no longer exists" in blocked["resume_blocked_reason"]
@@ -2352,11 +2245,10 @@ def test_the_revision_is_pinned_once_the_base_is_on_disk(monkeypatch, run_dir):
     pinned = dc.with_resolved_revision(unresolved, cfg.base_model)
     assert pinned.base_revision == "rev-abc123"
 
-    # Already pinned, or still unresolvable: left exactly as it was.
     monkeypatch.setattr(dte, "source_revision", lambda ref: "rev-def456")
     # A pinned revision is RE-READ, not trusted: the local ref can still report the old commit
-    # before the load and be refreshed by from_pretrained itself, and a resume that compared the
-    # pre-load value against itself restored the adapter and the moments onto different weights.
+    # before the load and be refreshed by from_pretrained, so comparing the pre-load value against
+    # itself restored the adapter and the moments onto different weights.
     assert dc.with_resolved_revision(pinned, cfg.base_model).base_revision == "rev-def456"
     monkeypatch.setattr(dte, "source_revision", lambda ref: "unresolved")
     assert dc.with_resolved_revision(unresolved, cfg.base_model).base_revision == "unresolved"
@@ -2386,41 +2278,37 @@ def test_a_mirror_backed_run_pairs_the_revision_with_the_repo_it_came_from(monke
 
     def _revision(ref):
         seen.append(ref)
-        # The real-world shape: the canonical repo is NOT cached, which is what selected the
-        # mirror in the first place, so only the mirror resolves to a commit.
+        # The real-world shape: the canonical repo is NOT cached, which is what selected the mirror
+        # in the first place, so only the mirror resolves to a commit.
         return "rev-mirror111" if ref == mirror else "unresolved"
 
     monkeypatch.setattr(dte, "source_revision", _revision)
     via_mirror = dc.identity_for_config(dataclasses.replace(base, fetch_base_model = mirror))
 
-    # The canonical id is what the run is ABOUT; only the revision pair follows the fetch.
     assert via_mirror.base_model == source
     assert seen == [mirror]
     assert via_mirror.base_revision == "rev-mirror111"
     assert via_mirror.base_revision_repo == mirror
 
-    # 1. The check this exists for: the mirror advanced under a resume. Recording the
-    #    canonical repo made both sides "unresolved" and this went undetected.
+    # 1. The check this exists for: the mirror advanced under a resume.
     moved = dataclasses.replace(via_mirror, base_revision = "rev-mirror222")
     reason = via_mirror.mismatch_reason(moved)
     assert reason and "base model revision" in reason
 
-    # 2. And the refusal that must NOT happen: the same weights fetched from the other repo.
     direct = dataclasses.replace(
         via_mirror, base_revision = "rev-canonical1", base_revision_repo = source
     )
     assert via_mirror.mismatch_reason(direct) is None
     assert direct.mismatch_reason(via_mirror) is None
 
-    # 3. A bundle written before the field existed read the canonical repo, so it stays
-    #    comparable with a new canonical-fetched one rather than silently opting out.
+    # 3. A bundle written before the field existed read the canonical repo, so it stays comparable
+    # with a new canonical-fetched one rather than silently opting out.
     legacy = dataclasses.replace(
         via_mirror, base_revision = "rev-canonical9", base_revision_repo = None
     )
     legacy_reason = legacy.mismatch_reason(direct)
     assert legacy_reason and "base model revision" in legacy_reason
 
-    # 4. And it survives a manifest round trip, or the pairing is lost on reload.
     reloaded = dc.CheckpointIdentity.from_dict(via_mirror.as_dict())
     assert reloaded is not None
     assert reloaded.base_revision_repo == mirror
@@ -2457,7 +2345,6 @@ def test_a_raised_target_survives_a_run_that_died_before_the_resumed_event(run_d
     assert refreshed["can_resume"] is True, refreshed["resume_blocked_reason"]
     assert refreshed["checkpoint_step"] == 500
 
-    # And the original target still stops at the top, so this is not a blanket "always resumable".
     at_target = svc._refresh_resume_state(
         {**record, "config": {"output_dir": str(run_dir), "train_steps": 500}}
     )
@@ -2512,8 +2399,8 @@ def test_a_bundle_that_lost_its_random_streams_is_refused(run_dir):
     with pytest.raises(dc.ResumeError, match = "random-number streams"):
         dc.preflight_resume(path, identity = run.identity, target_steps = 500)
 
-    # And losing only ONE of them is the same failure: the variant stream drives the latent
-    # cache's crop and flip picks on its own.
+    # And losing only ONE of them is the same failure: the variant stream drives the latent cache's
+    # crop and flip picks on its own.
     manifest["rng"]["streams"] = {"loop": manifest["rng"].get("streams", {}).get("loop")}
     state.write_text(json.dumps(manifest), encoding = "utf-8")
     with pytest.raises(dc.ResumeError, match = "random-number streams"):
@@ -2568,10 +2455,7 @@ def test_every_completion_reports_whether_the_run_was_discarded(module):
         and any(isinstance(arg, ast.Constant) and arg.value == "complete" for arg in node.args)
     ]
     assert completions, f"{module} must emit a completion"
-    # Every name the discarded expression reads has to be bound in the function it sits in (or
-    # in an enclosing one). Passing `save_on_stop` inside a helper whose flag is really the
-    # caller's `_save_on_stop` accessor is a NameError raised INSTEAD of the terminal stopped
-    # event, which the service then records as a training failure for a user-requested stop.
+    # Every name the discarded expression reads must be bound in its enclosing function.
     scopes: dict[ast.AST, set[str]] = {}
     for func in ast.walk(tree):
         if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -2586,8 +2470,8 @@ def test_every_completion_reports_whether_the_run_was_discarded(module):
             elif isinstance(node, (ast.Global, ast.Nonlocal)):
                 bound.update(node.names)
         scopes[func] = bound
-    # TOP-LEVEL only: a name assigned inside some other function is not visible here, and
-    # walking the whole tree for them is exactly what would hide the bug this checks for.
+    # TOP-LEVEL only: a name assigned inside some other function is not visible here, and walking
+    # the whole tree for them is exactly what would hide the bug this checks for.
     module_level: set[str] = set()
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -2639,7 +2523,6 @@ def test_a_branched_resume_does_not_prune_the_bundles_it_found(run_dir):
     in the directory. Saving 15 with the default limit of 2 pinned 10 and 15, dropped keep to
     zero and deleted 20 and 30 outright -- bundles this run never wrote and a later
     stop-without-saving cannot bring back."""
-    # keep-all while seeding, so the three bundles the branch has to survive are really there.
     seeded = _Run(run_dir, save_total_limit = 0)
     for step in (10, 20, 30):
         seeded.step_once(0.5)
@@ -2683,7 +2566,6 @@ def test_the_tf32_setting_is_part_of_the_identity(run_dir):
     assert default.enable_tf32 == "on"
     with pytest.raises(dc.ResumeError, match = "TF32"):
         dc.preflight_resume(path, identity = default, target_steps = 500)
-    # And the matching setting still resumes.
     assert dc.preflight_resume(path, identity = strict.identity, target_steps = 500)[1] == 4
 
 
@@ -2745,8 +2627,8 @@ def test_directory_resume_falls_back_past_a_bundle_that_fails_full_validation(ru
     newest, error = run.save(8)
     assert error is None and newest is not None
 
-    # Structurally present, semantically gone: the manifest still lists the rng file and the
-    # header still parses, but the streams it must restore are missing.
+    # Structurally present, semantically gone: the manifest still lists the rng file and the header
+    # still parses, but the streams it must restore are missing.
     state = Path(newest) / dc.TRAINER_STATE_FILENAME
     manifest = json.loads(state.read_text(encoding = "utf-8"))
     manifest["rng"].pop("streams")
@@ -2755,7 +2637,6 @@ def test_directory_resume_falls_back_past_a_bundle_that_fails_full_validation(ru
     path, step = dc.preflight_resume(str(run_dir), identity = run.identity, target_steps = 500)
     assert Path(path).name == "checkpoint-4" and step == 4
 
-    # An EXPLICIT bundle has no alternatives, so its failure is still the answer.
     with pytest.raises(dc.ResumeError, match = "random-number streams"):
         dc.preflight_resume(newest, identity = run.identity, target_steps = 500)
 
@@ -2779,7 +2660,6 @@ def test_a_replaced_source_bundle_is_not_offered_back(run_dir):
     )
     assert state["can_resume"] is True and state["checkpoint_step"] == 10
 
-    # Another run rewrites the same slot.
     other = _Run(run_dir, seed = 9, save_total_limit = 0)
     other.step_once(2.0)
     other.save(10)
@@ -2789,7 +2669,6 @@ def test_a_replaced_source_bundle_is_not_offered_back(run_dir):
         source_created_at = original_created,
     )
     assert replaced["can_resume"] is False, replaced
-    # And with no recorded timestamp (a record from before this existed) the fallback still works.
     legacy = dc.describe_resume_state(str(run_dir / "nonexistent"), source_checkpoint = source)
     assert legacy["can_resume"] is True
 
@@ -2805,16 +2684,16 @@ def test_a_source_fallback_bundle_is_held_to_the_same_load_gate(run_dir):
     healthy = dc.describe_resume_state(str(run_dir / "nonexistent"), source_checkpoint = source)
     assert healthy["can_resume"] is True and healthy["checkpoint_step"] == 10
 
-    # Structurally present, semantically gone: the header still parses and the recorded sizes
-    # still match, but the streams a resume must restore are no longer listed.
+    # Structurally present, semantically gone: the header still parses and the recorded sizes still
+    # match, but the streams a resume must restore are no longer listed.
     state = Path(source) / dc.TRAINER_STATE_FILENAME
     manifest = json.loads(state.read_text(encoding = "utf-8"))
     manifest["rng"].pop("streams")
     state.write_text(json.dumps(manifest), encoding = "utf-8")
     assert dc.read_checkpoint(Path(source)) is not None  # the header scan still accepts it
 
-    # Both fallback routes: the run's own output dir gone, and present but holding nothing of
-    # this run's.
+    # Both fallback routes: the run's own output dir gone, and present but holding nothing of this
+    # run's.
     for answer in (
         dc.describe_resume_state(str(run_dir / "nonexistent"), source_checkpoint = source),
         dc.describe_resume_state(
@@ -2824,7 +2703,6 @@ def test_a_source_fallback_bundle_is_held_to_the_same_load_gate(run_dir):
         assert answer["can_resume"] is False, answer
         assert answer["checkpoint_path"] is None, answer
 
-    # And the start route agrees, which is what makes advertising it a dead action.
     with pytest.raises(dc.ResumeError, match = "random-number streams"):
         dc.preflight_resume(source, identity = seeded.identity, target_steps = 500)
 
@@ -2842,7 +2720,6 @@ def test_a_dit_family_records_the_bf16_it_actually_runs_in(run_dir):
         cfg = dataclasses.replace(base.cfg, resolved_family = "flux.1", mixed_precision = requested)
         expected = "bf16" if torch.cuda.is_available() else "no"
         assert dc.identity_for_config(cfg).precision == expected, requested
-    # SDXL keeps its own resolution: the request is what that trainer honours.
     sdxl = dataclasses.replace(base.cfg, resolved_family = "sdxl", mixed_precision = "fp16")
     assert dc.identity_for_config(sdxl).precision == ("fp16" if torch.cuda.is_available() else "no")
 
@@ -2861,7 +2738,6 @@ def test_a_checkpoint_at_the_target_does_not_roll_back_to_an_older_one(run_dir):
     with pytest.raises(dc.ResumeError, match = "already at step 500"):
         dc.preflight_resume(str(run_dir), identity = run.identity, target_steps = 500)
 
-    # Raising the target continues the newest, as before.
     path, step = dc.preflight_resume(str(run_dir), identity = run.identity, target_steps = 800)
     assert Path(path).name == "checkpoint-500" and step == 500
 
@@ -2875,7 +2751,6 @@ def test_the_latest_displaced_bundle_is_the_one_restored(run_dir):
     first.save(15)
     original = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
 
-    # A middle run displaces it and then dies, leaving its own replaced- orphan behind.
     middle = _Run(run_dir, seed = 5, save_total_limit = 0)
     middle.step_once(1.0)
     middle.save(15)
@@ -2915,13 +2790,11 @@ def test_the_first_preflight_does_not_pin_the_bundle_it_accepted(run_dir):
     _preflight_diffusion_resume(config, run.identity, 500, pin = False)
     assert config["resume_from_checkpoint"] == str(run_dir), "the directory must survive"
 
-    # The dataset-aware pass still pins, so the trainer resumes exactly what was approved.
     _preflight_diffusion_resume(config, run.identity, 500)
     assert Path(config["resume_from_checkpoint"]).name == "checkpoint-4"
 
-    # And the start route asks for it that way round: no pin AND no target, since the
-    # target refusal is terminal and this pass cannot yet tell whose dataset the newest
-    # bundle belongs to.
+    # And the start route asks for it that way round: no pin AND no target, since the target refusal
+    # is terminal and this pass cannot yet tell whose dataset the newest bundle belongs to.
     start = inspect.getsource(__import__("routes.training", fromlist = ["x"]))
     call = start.index(
         "_preflight_diffusion_resume,\n                config,\n                resume_identity,"
@@ -2938,7 +2811,6 @@ def test_a_read_does_not_undo_a_promotion_in_flight(run_dir):
     periodic or stop-and-save checkpoint and marking the run unresumable from its latest work."""
     run = _Run(run_dir, save_total_limit = 0)
     run.save(4)
-    # The exact mid-swap state: the old bundle moved aside, the slot empty, moments ago.
     in_flight = run_dir / f"{dc._STAGING_PREFIX}replaced-4-cafebabe"
     dc.os.replace(run_dir / "checkpoint-4", in_flight)
 
@@ -2947,7 +2819,6 @@ def test_a_read_does_not_undo_a_promotion_in_flight(run_dir):
     assert in_flight.is_dir(), "a live replacement must be left to its writer"
     assert not (run_dir / "checkpoint-4").exists()
 
-    # Once it is plainly not in flight any more, the same read repairs it.
     old = time.time() - (dc._LIVE_REPLACEMENT_GRACE_SECONDS + 60)
     os.utime(in_flight, (old, old))
     dc._recover_orphaned_slots(run_dir)
@@ -2972,7 +2843,6 @@ def test_read_side_recovery_restores_the_newest_stacked_bundle(run_dir):
     newer_state = (newer / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
     assert newer_state != older_state
 
-    # Both plainly abandoned, and the newer one really is newer on disk.
     stale = time.time() - (dc._LIVE_REPLACEMENT_GRACE_SECONDS + 600)
     os.utime(older, (stale, stale))
     os.utime(newer, (stale + 60, stale + 60))
@@ -3016,7 +2886,6 @@ def test_a_cuda_capture_that_half_failed_is_not_a_capture(run_dir, monkeypatch):
     captured = dc.capture_rng_state(_STREAMS())
     assert captured["tensors"] == {}, "a partial capture must not look like a capture"
 
-    # And the write refuses it rather than advertising an unresumable bundle.
     run = _Run(run_dir)
     path, error = run.save(4)
     assert path is None and error is not None and "random-number state" in error
@@ -3043,7 +2912,6 @@ def test_the_resume_action_names_a_bundle_that_actually_loads(run_dir):
     assert described["can_resume"] is True
     assert Path(described["checkpoint_path"]).name == "checkpoint-4"
     assert described["checkpoint_step"] == 4
-    # And the path it names really does resume.
     path, step = dc.preflight_resume(
         described["checkpoint_path"], identity = run.identity, target_steps = 500
     )
@@ -3057,7 +2925,6 @@ def test_a_displaced_bundle_is_stamped_when_it_is_moved_aside(run_dir):
     run = _Run(run_dir, save_total_limit = 0)
     written, error = run.save(4)
     assert error is None and written is not None
-    # Make the bundle plainly old, the way a checkpoint from an earlier session is.
     old = time.time() - 3600
     os.utime(written, (old, old))
 
@@ -3108,10 +2975,9 @@ def test_the_resolved_base_precision_is_part_of_the_identity(run_dir):
     took = dc.with_resolved_base_precision(fell_back.identity, "fp8")
     with pytest.raises(dc.ResumeError, match = "base precision"):
         dc.preflight_resume(path, identity = took, target_steps = 500)
-    # The same resolution still resumes...
     assert dc.preflight_resume(path, identity = fell_back.identity, target_steps = 500)[1] == 4
-    # ...and a side that never resolved one reads as "cannot tell" rather than as a mismatch,
-    # which is what keeps the route's pre-eviction preflight and the SDXL trainer unaffected.
+    # ...and a side that never resolved one reads as "cannot tell" rather than as a mismatch, which
+    # is what keeps the route's pre-eviction preflight and the SDXL trainer unaffected.
     import dataclasses
 
     unknown = dataclasses.replace(fell_back.identity, base_precision_effective = None)
@@ -3135,7 +3001,6 @@ def test_the_ema_decay_is_part_of_the_identity(run_dir):
     fast = dc.identity_for_config(dataclasses.replace(slow.cfg, ema_decay = 0.9))
     with pytest.raises(dc.ResumeError, match = "EMA decay"):
         dc.preflight_resume(path, identity = fast, target_steps = 500)
-    # Off is a value too, not the same as the request being absent.
     off = dc.identity_for_config(dataclasses.replace(slow.cfg, ema_decay = 0.0))
     assert off.ema_decay == "0.0"
     with pytest.raises(dc.ResumeError, match = "EMA decay"):

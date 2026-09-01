@@ -61,13 +61,12 @@ def stored_settings(monkeypatch):
     yield stored
     lan_access.stop_lan_listener()
     lan_access.clear_lan_listener_error()
-    # drain watchers are daemon threads that outlive their test, so the shared
-    # counter has to be reset or a later decrement lands on the next test's state
+    # drain watchers are daemon threads that outlive their test, so the shared counter has to be
+    # reset or a later decrement lands on the next test's state
     lan_access._pending_drains = 0
     host_policy._reset_loopback_default_state()
 
 
-# ── persisted preference ──
 
 
 def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_settings):
@@ -86,7 +85,6 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_se
     assert lan_settings.get_lan_access_auto_start() is False
 
 
-# ── launch policy ──
 
 
 @pytest.mark.parametrize(
@@ -268,7 +266,6 @@ def test_private_lan_launch_managed_matrix(
     )
 
 
-# ── status ──
 
 
 def test_a_loopback_launch_offers_a_startable_off_state():
@@ -521,7 +518,6 @@ def test_a_failed_start_is_reported_as_an_error_state(monkeypatch):
     assert status["can_start"] is True
 
 
-# ── address detection ──
 
 
 def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
@@ -561,8 +557,8 @@ def test_detection_survives_a_host_that_resolves_to_nothing(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "psutil", None)
     monkeypatch.setattr(lan_access.socket, "getaddrinfo", _boom)
-    # under the suite's outbound-network guard the UDP probe is refused too, so
-    # a failed lookup must contribute nothing rather than raise
+    # under the suite's outbound-network guard the UDP probe is refused too, so a failed lookup must
+    # contribute nothing rather than raise
     assert lan_access.detect_lan_addresses() == []
 
 
@@ -647,8 +643,8 @@ def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
             "vEthernet (WSL (Hyper-V firewall))": [
                 types.SimpleNamespace(family = socket.AF_INET, address = "172.25.32.1")
             ],
-            # An external Hyper-V switch can replace the physical adapter and is
-            # reachable from the LAN, so do not reject every vEthernet interface.
+            # An external Hyper-V switch can replace the physical adapter and is reachable from the
+            # LAN, so do not reject every vEthernet interface.
             "vEthernet (External LAN)": [
                 types.SimpleNamespace(family = socket.AF_INET, address = "192.168.1.21")
             ],
@@ -763,7 +759,6 @@ def test_concurrent_wsl_mode_checks_share_one_probe(monkeypatch):
     assert len(mode_calls) == 1
 
 
-# ── live listener ──
 
 
 def _free_port() -> int:
@@ -946,8 +941,8 @@ def test_stop_from_inside_the_event_loop_does_not_wait_on_itself(live_server):
         timeout = 5
     )
     assert elapsed < lan_access._STOP_TIMEOUT
-    # the gate closes at once, but ownership and the trust flag stay until uvicorn
-    # closes the sockets, which it cannot do while _graceful_shutdown holds the loop
+    # the gate closes at once, but ownership and the trust flag stay until uvicorn closes the
+    # sockets, which it cannot do while _graceful_shutdown holds the loop
     assert lan_access._bound_addresses == ()
     assert lan_access.lan_listener_status()["running"] is True
     assert host_policy.remote_connector_active() is True
@@ -971,7 +966,6 @@ def test_a_listener_that_fails_to_serve_gives_up_without_waiting_it_out(live_ser
     assert time.monotonic() - started < lan_access._START_TIMEOUT
     status = lan_access.lan_listener_status()
     assert status["running"] is False and status["error"] == "listener_start_failed"
-    # the sockets it opened were released, so the port is free again
     assert _free_port_is_bindable(live_server.port)
 
 
@@ -1033,7 +1027,6 @@ def test_a_stop_that_cannot_confirm_the_port_keeps_the_host_marked_reachable(mon
         assert retried["error"] == "stop_timed_out"
         assert host_policy.remote_connector_active() is True
 
-        # once the socket really closes, the retry settles and clears the error
         lingering.close()
         settled = lan_settings.stop_lan_access(app)
         assert settled["state"] == "off" and settled["error"] is None
@@ -1132,7 +1125,6 @@ def test_stop_releases_the_sockets_itself_when_the_serving_loop_is_gone(monkeypa
     assert lan_access.lan_listener_status()["running"] is False
 
 
-# ── settings orchestration ──
 
 
 def _configured(live_server):
@@ -1176,7 +1168,6 @@ def test_auto_start_brings_the_listener_up_at_boot(live_server, stored_settings)
     app = _configured(live_server)
     assert lan_settings.maybe_auto_start_lan_access(app) is True
     assert lan_settings.lan_access_status(app)["state"] == "online"
-    # stopping now must not silently clear the preference
     lan_settings.stop_lan_access(app)
     assert lan_settings.get_lan_access_auto_start() is True
 
@@ -1287,7 +1278,6 @@ def test_auto_start_is_skipped_entirely_when_the_preference_is_off(monkeypatch):
     assert lan_settings.maybe_auto_start_lan_access(_app()) is False
 
 
-# ── routes and wiring ──
 
 
 def test_colab_auto_start_setting_is_read_only(monkeypatch):
@@ -1312,7 +1302,6 @@ def test_management_rejects_api_keys():
     with pytest.raises(HTTPException) as exc:
         routes._require_ui_session(True)
     assert exc.value.status_code == 403
-    # every /lan-access handler must carry the UI-session gate
     tree = ast.parse(Path(routes.__file__).read_text(encoding = "utf-8"))
     gated = {}
     for node in ast.walk(tree):

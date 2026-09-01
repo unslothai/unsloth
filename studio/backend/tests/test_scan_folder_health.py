@@ -35,8 +35,7 @@ from utils.paths.scan_folder_health import (
 )
 
 
-# os.geteuid is missing on Windows, and a skipif condition is evaluated at import,
-# so the check has to be resolved before the decorator sees it.
+# os.geteuid is missing on Windows and skipif is evaluated at import, so resolve it before the decorator.
 requires_posix_permissions = pytest.mark.skipif(
     os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
     reason = "needs POSIX mode bits and a non-root user",
@@ -289,7 +288,6 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
         collect_local_models(tmp_path, custom_folders = list(rows))
         assert annotate_scan_folders(rows)[0]["status"] == STATUS_PERMISSION_DENIED
 
-        # And it recovers on its own once the folder is readable again.
         denied.chmod(stat.S_IRWXU)
         collect_local_models(tmp_path, custom_folders = list(rows))
         assert annotate_scan_folders(rows)[0]["status"] == STATUS_OK
@@ -300,13 +298,13 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
 @pytest.mark.parametrize(
     "winerror, expected",
     [
-        (5, STATUS_PERMISSION_DENIED),  # ERROR_ACCESS_DENIED
-        (65, STATUS_PERMISSION_DENIED),  # ERROR_NETWORK_ACCESS_DENIED
-        (21, STATUS_MISSING),  # ERROR_NOT_READY: nothing in the card reader
-        (53, STATUS_MISSING),  # ERROR_BAD_NETPATH
-        (267, STATUS_MISSING),  # ERROR_DIRECTORY
-        (23, STATUS_UNREADABLE),  # ERROR_CRC: the drive is failing
-        (31, STATUS_UNREADABLE),  # ERROR_GEN_FAILURE
+        (5, STATUS_PERMISSION_DENIED),
+        (65, STATUS_PERMISSION_DENIED),
+        (21, STATUS_MISSING),
+        (53, STATUS_MISSING),
+        (267, STATUS_MISSING),
+        (23, STATUS_UNREADABLE),
+        (31, STATUS_UNREADABLE),
     ],
 )
 def test_windows_errors_classify_from_the_native_code(winerror, expected):
@@ -363,9 +361,7 @@ def test_a_model_deleted_mid_scan_does_not_condemn_the_folder(tmp_path: Path):
             return next(self._entries)
 
     def _vanishing(path = "."):
-        # Read the listing to completion, then delete the temp dir. The entry is
-        # still in what we hand back, exactly as when a download renames it away
-        # between the folder being listed and the child being opened.
+        # The entry is still in what is handed back, as when a download renames it away between listing and opening.
         if str(path) == str(folder) and doomed.exists():
             with real_scandir(path) as entries:
                 listed = list(entries)
@@ -565,7 +561,6 @@ def test_the_deep_probe_finds_the_denial_in_a_few_opens(tmp_path: Path, monkeypa
     monkeypatch.setattr(os, "scandir", counting_scandir)
     try:
         assert probe_status(str(tmp_path), children = True) == STATUS_PERMISSION_DENIED
-        # Root, publisher, model.
         assert len(opened) == 3
     finally:
         denied.chmod(stat.S_IRWXU)
@@ -596,8 +591,7 @@ def test_the_child_probe_is_bounded(tmp_path: Path, monkeypatch):
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", counting_scandir)
-    # Too wide to finish inside the budget, so the answer is "did not see
-    # everything", not "healthy". Only an exhaustive probe may report ok.
+    # Too wide to finish inside the budget, so the answer is "did not see everything": only exhaustive is ok.
     assert probe_status(str(tmp_path), children = True) == STATUS_UNKNOWN
     # One shared budget across the whole walk, however deep or wide the tree.
     assert len(opened) <= health._PROBE_OPEN_LIMIT
@@ -825,7 +819,6 @@ def test_the_snapshot_level_costs_nothing_on_a_plain_folder(tmp_path: Path, monk
 
     monkeypatch.setattr(os, "scandir", counting_scandir)
     try:
-        # Root, publisher, model. The component level is still out of reach.
         assert probe_status(str(tmp_path), children = True) == STATUS_OK
         assert len(opened) == 3
     finally:

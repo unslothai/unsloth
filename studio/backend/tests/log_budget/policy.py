@@ -26,8 +26,6 @@ EXCLUDED = "excluded"
 
 ALL_CLASSES = (NORMAL, QUIET, LIVENESS, WATCHDOG, QUIET_SUCCESS, EXCLUDED)
 
-# Classes whose 2xx traffic is dropped outright rather than heartbeated, so no window and
-# no budget applies: the expected count is zero.
 NEVER_LOGGED_ON_SUCCESS = (QUIET_SUCCESS, EXCLUDED)
 
 
@@ -56,9 +54,7 @@ def classify(handlers, path: str) -> str:
         return EXCLUDED
     if path.startswith("/assets/"):
         return EXCLUDED
-    # _CHAT_LIST_PATHS rides the same suppressor as _QUIET_SUCCESS_PATHS in
-    # `_is_quiet_success`, so it is the same class even though it is a separate set (it
-    # carries a second rule about pre-auth 401s that the others do not).
+    # Same class as _QUIET_SUCCESS_PATHS (shared suppressor), plus a pre-auth 401 rule.
     if (
         path in handlers._QUIET_SUCCESS_PATHS
         or path in handlers._SELF_READ_PATHS
@@ -69,7 +65,6 @@ def classify(handlers, path: str) -> str:
         return WATCHDOG
     if path in handlers._LIVENESS_POLL_PATHS:
         return LIVENESS
-    # The middleware's own normaliser, so classification cannot drift from run time.
     if _normalize(handlers, path) in handlers._QUIET_POLL_PATHS:
         return QUIET
     return NORMAL
@@ -105,7 +100,7 @@ def expected_emissions(window_ms_value: Optional[int], period_s: float, duration
     if polls <= 0:
         return 0
     if window_ms_value <= 0:
-        return polls  # window off (--verbose): every poll logs
+        return polls
     polls_per_emission = max(1, math.ceil((window_ms_value / 1000.0) / period_s))
     return (polls - 1) // polls_per_emission + 1
 
@@ -120,5 +115,4 @@ def bucket_of(handlers, path: str) -> str:
     """
     if classify(handlers, path) == LIVENESS:
         return "\x00liveness"
-    # Templated paths share one bucket for the same reason: one question, one line.
     return _normalize(handlers, path)

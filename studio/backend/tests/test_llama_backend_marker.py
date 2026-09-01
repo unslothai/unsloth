@@ -28,7 +28,6 @@ for _path in (str(_BACKEND), str(_STUDIO)):
 ilp = importlib.import_module("install_llama_prebuilt")
 from utils.prebuilt import llama_backend as backend_marker  # noqa: E402
 
-# Marker shapes shared by the installer and backend reader.
 MARKERS = [
     {},
     {"asset": "app-b1-linux-x64-cuda12-older.tar.gz"},
@@ -122,7 +121,6 @@ def test_the_api_reports_an_unreadable_newer_backend_request_verbatim():
         ({"backend_request": "auto"}, False),
         # Legacy Vulkan stays eligible for automatic recovery.
         ({"asset": "llama-b1-bin-ubuntu-vulkan-x64.tar.gz"}, False),
-        # Chosen.
         ({"llama_backend": "vulkan"}, True),
         ({"force_cpu": True}, True),
         ({"backend_request": "vulkan"}, True),

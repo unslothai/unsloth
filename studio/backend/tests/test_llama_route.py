@@ -28,9 +28,7 @@ pytest.importorskip("fastapi")
 
 
 def _load_route():
-    # Prefer the real auth module; stub it only in minimal envs where its
-    # deps are absent. Stubs are popped after the load so they never leak
-    # into sys.modules for the rest of the suite.
+    # Prefer the real auth module; stub it only in minimal envs where its deps are absent.
     stubbed = []
     try:
         import auth.authentication  # noqa: F401

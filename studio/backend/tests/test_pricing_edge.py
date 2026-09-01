@@ -26,12 +26,10 @@ def _isclose(
     return math.isclose(a, b, rel_tol = tol, abs_tol = tol)
 
 
-# ── prefix-match boundary checks ────────────────────────────────────
 
 
 def test_prefix_match_requires_dash_boundary_opus_variant():
-    # `claude-opus-4-15` must not inherit `claude-opus-4-1` pricing; the next
-    # char must be `-` or end-of-string.
+    # `claude-opus-4-15` must not inherit `claude-opus-4-1` pricing; the next char must be `-` or EOS.
     assert _lookup("anthropic", "claude-opus-4-15") is None
     out = calculate_cost(
         "anthropic",
@@ -55,8 +53,7 @@ def test_prefix_match_requires_dash_boundary_gpt_variant():
 
 
 def test_prefix_match_requires_dash_boundary_pro_lookalike():
-    # `gpt-5.5-prod` must fall through `gpt-5.5-pro` (6x overcharge) and land on
-    # the canonical `gpt-5.5` row.
+    # `gpt-5.5-prod` must fall through `gpt-5.5-pro` (6x overcharge) to the canonical `gpt-5.5` row.
     prices = _lookup("openai", "gpt-5.5-prod")
     assert prices is not None
     assert (
@@ -72,7 +69,7 @@ def test_prefix_match_requires_dash_boundary_pro_lookalike():
 
 
 def test_prefix_match_still_resolves_legit_dated_snapshots():
-    # Boundary fix must not regress legit dated snapshots.
+    # The boundary fix must not regress legit dated snapshots.
     out = calculate_cost(
         "openai",
         "gpt-5.4-mini-2026-04-23",
@@ -81,7 +78,6 @@ def test_prefix_match_still_resolves_legit_dated_snapshots():
     assert out["priced"] is True
     assert _isclose(out["input_usd"], 0.75)
 
-    # Anthropic dated snapshot still resolves to the canonical row.
     out = calculate_cost(
         "anthropic",
         "claude-opus-4-7-20260414",
@@ -91,7 +87,6 @@ def test_prefix_match_still_resolves_legit_dated_snapshots():
     assert _isclose(out["input_usd"], 5.0)
 
 
-# ── precedence: input_tokens wins over prompt_tokens (and 0 is real) ──
 
 
 def test_explicit_zero_input_tokens_wins_over_stale_prompt_tokens():
@@ -100,7 +95,7 @@ def test_explicit_zero_input_tokens_wins_over_stale_prompt_tokens():
         "gpt-5.5",
         {
             "input_tokens": 0,
-            "prompt_tokens": 1_000_000,  # stale chat-style mirror
+            "prompt_tokens": 1_000_000,
             "output_tokens": 100,
         },
     )
@@ -126,7 +121,6 @@ def test_none_input_tokens_falls_through_to_prompt_tokens():
     assert _isclose(out["output_usd"], 5_000 / 1_000_000.0 * 30.0)
 
 
-# ── negative / corrupted upstream values clamp to zero ──────────────
 
 
 def test_negative_tokens_clamp_to_zero_no_negative_bill():
@@ -171,12 +165,10 @@ def test_negative_prompt_tokens_chat_style_clamp():
     assert out["total_usd"] == 0.0
 
 
-# ── cache_read > prompt_tokens corruption: no negative billable ─────
 
 
 def test_anthropic_chat_cache_read_exceeds_prompt_no_negative_billable():
-    # cache_read > prompt_tokens clamps uncached_input at 0; billable still
-    # reflects cache buckets (we charge for what we got).
+    # cache_read > prompt_tokens clamps uncached_input at 0; billable still reflects cache buckets.
     out = calculate_cost(
         "anthropic",
         "claude-opus-4-7",
@@ -187,9 +179,8 @@ def test_anthropic_chat_cache_read_exceeds_prompt_no_negative_billable():
             "completion_tokens": 0,
         },
     )
-    assert out["input_usd"] == 0.0  # uncached clamped to 0
-    assert out["billable_input_tokens"] == 500  # 0 uncached + 500 cache_read
-    # cache_read still priced at the discount rate.
+    assert out["input_usd"] == 0.0
+    assert out["billable_input_tokens"] == 500
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
     assert _isclose(out["cache_read_usd"], 500 / 1_000_000.0 * base * ANTHROPIC_CACHE_READ_MULT)
 
@@ -207,16 +198,13 @@ def test_openai_raw_cached_tokens_exceeds_input_clamp_non_cached():
         },
     )
     assert out["input_usd"] == 0.0
-    # Cache read still priced (the 0.1x bucket).
     assert _isclose(out["cache_read_usd"], 500 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT)
 
 
-# ── long-context tier crosses on billable, including cache_creation ──
 
 
 def test_openai_long_context_triggers_on_cache_creation_inflated_billable():
-    # cache_creation pushes billable past 272k -> long-context tier must fire to
-    # avoid undercounting.
+    # cache_creation pushes billable past 272k, so the long-context tier must fire.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -233,9 +221,8 @@ def test_openai_long_context_triggers_on_cache_creation_inflated_billable():
 
 
 def test_openai_long_context_threshold_boundary_exclusive():
-    # Threshold is exclusive (>). OpenAI prices "prompts with >272K input
-    # tokens" at 2x input / 1.5x output for the full session, so a prompt of
-    # exactly 272,000 is still on the standard rate.
+    # Threshold is exclusive: OpenAI prices prompts with >272K input tokens at the long rates, so
+    # exactly 272,000 is still standard.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -250,7 +237,6 @@ def test_openai_long_context_threshold_boundary_exclusive():
     assert "long-context" in out_hi["model_priced"]
 
 
-# ── chat-style vs raw envelope parity at OpenAI long-context tier ──
 
 
 def test_openai_chat_envelope_long_context_parity_with_raw():
@@ -269,12 +255,10 @@ def test_openai_chat_envelope_long_context_parity_with_raw():
     assert "long-context" in raw["model_priced"]
 
 
-# ── malformed sub-objects: no crash, no false bill ──────────────────
 
 
 def test_cache_creation_as_int_does_not_crash():
-    # Proxies sometimes fold cache_creation to an int; tolerate it and fall back
-    # to the 5m default.
+    # Proxies sometimes fold cache_creation to an int; tolerate it and fall back to the 5m default.
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
     out = calculate_cost(
         "anthropic",
@@ -283,10 +267,9 @@ def test_cache_creation_as_int_does_not_crash():
             "input_tokens": 0,
             "output_tokens": 0,
             "cache_creation_input_tokens": 1_000_000,
-            "cache_creation": 12345,  # malformed; must not raise
+            "cache_creation": 12345,
         },
     )
-    # Falls back to 5m default for the whole bucket.
     assert _isclose(
         out["cache_write_usd"],
         1_000_000 / 1_000_000.0 * base * ANTHROPIC_CACHE_5M_WRITE_MULT,
@@ -324,7 +307,6 @@ def test_non_dict_input_tokens_details_is_ignored():
     assert out["cache_read_usd"] == 0.0
 
 
-# ── unknown provider degrades gracefully ────────────────────────────
 
 
 def test_unknown_provider_priced_false_zero_bill():
@@ -335,13 +317,12 @@ def test_unknown_provider_priced_false_zero_bill():
     )
     assert out["priced"] is False
     assert out["total_usd"] == 0.0
-    # Tokens still report for the UI.
     assert out["billable_input_tokens"] == 1_000_000
     assert out["billable_output_tokens"] == 1_000_000
 
 
 def test_anthropic_provider_with_openai_model_priced_false():
-    # OpenAI id against Anthropic table must not falsely match.
+    # An OpenAI id against the Anthropic table must not falsely match.
     out = calculate_cost(
         "anthropic",
         "gpt-5.5",
@@ -350,17 +331,15 @@ def test_anthropic_provider_with_openai_model_priced_false():
     assert out["priced"] is False
 
 
-# ── all-zero / empty usage stays at zero ────────────────────────────
 
 
 def test_empty_usage_dict_zero_bill():
     out = calculate_cost("openai", "gpt-5.5", {})
-    assert out["priced"] is True  # model is in the table
+    assert out["priced"] is True
     assert out["billable_input_tokens"] == 0
     assert out["total_usd"] == 0.0
 
 
-# ── Defense-in-depth: Anthropic prompt_tokens_details.cached_tokens ──
 
 
 def test_anthropic_prompt_tokens_details_fallback_when_native_key_missing():
@@ -396,8 +375,7 @@ def test_anthropic_native_key_takes_precedence_over_mirrored():
             "cache_creation_input_tokens": 0,
         },
     )
-    # billable = uncached_input + cache_creation + cache_read
-    #         = (1M - 0 - 800k) + 0 + 800k = 1M
+    # billable = uncached_input + cache_creation + cache_read = (1M - 800k) + 0 + 800k = 1M
     assert r["billable_input_tokens"] == 1_000_000, r
     # cache_read uses 800k (native), not 1M (mirrored).
     assert math.isclose(r["cache_read_usd"], 0.4, rel_tol = 1e-3), r
@@ -417,16 +395,13 @@ def test_anthropic_native_zero_takes_precedence_over_mirrored():
             "prompt_tokens_details": {"cached_tokens": 1_000_000},
         },
     )
-    # Native is 0 -> cache_read stays 0.
     assert r["cache_read_usd"] == 0.0, r
-    # billable = input + cache_creation + cache_read = 1M + 0 + 0
     assert r["billable_input_tokens"] == 1_000_000, r
     # 1M uncached at $5/M (no discount).
     assert math.isclose(r["input_usd"], 5.0, rel_tol = 1e-3), r
     assert math.isclose(r["total_usd"], 5.0, rel_tol = 1e-3), r
 
 
-# ── _build_usage_chunk preserves cache_creation breakdown ──
 
 
 def test_build_usage_chunk_forwards_anthropic_cache_creation_breakdown():

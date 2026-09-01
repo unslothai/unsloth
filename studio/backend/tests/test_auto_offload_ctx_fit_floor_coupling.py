@@ -42,8 +42,8 @@ _spec = importlib.util.spec_from_file_location(
 _matrix = importlib.util.module_from_spec(_spec)
 import sys as _sys  # noqa: E402
 
-# dataclasses resolves annotations through sys.modules, so the module has to be
-# registered before it executes.
+# dataclasses resolves annotations through sys.modules, so the module has to be registered before it
+# executes.
 _sys.modules["_auto_offload_matrix_for_floor"] = _matrix
 _spec.loader.exec_module(_matrix)
 
@@ -59,11 +59,8 @@ MIB = _matrix.MIB
 PLATFORMS = _matrix.PLATFORMS
 LINUX = next(p for p in PLATFORMS if p[0] == "linux")
 
-# One 24 GB card with 20000 MiB free is 19280 MiB of pooled budget after the
-# occupancy reserve. 17000 MiB of weights leaves 2280 MiB, which holds the KV of
-# 4560 tokens at the 0.5 MiB/token rate the matrix harness prices: over the floor,
-# under 8192. That is exactly the window in which the fallback value decides
-# placement, and it is empty only because the floor closes it.
+# 20000 MiB free on one 24 GB card is 19280 MiB after the occupancy reserve; 17000 MiB of weights
+# leaves 2280 MiB, the KV of 4560 tokens: over the floor, under 8192, the window the fallback decides.
 CARD = Accelerator("nvidia-single", False, ((0, 20_000, 24_000),))
 MODEL_MIB = 17_000
 
@@ -127,8 +124,8 @@ def test_the_offload_context_never_sits_below_the_fit_search_floor():
             f"_AUTO_OFFLOAD_CTX ({_AUTO_OFFLOAD_CTX}) dropped below the default "
             f"min_ctx of {name} ({floor})"
         )
-    # The helpers' defaults are what _FIT_MIN_CTX documents. If they ever diverge,
-    # the comment on _FIT_MIN_CTX is wrong and so is the reasoning above.
+    # The helpers' defaults are what _FIT_MIN_CTX documents; if they diverge, the comment on
+    # _FIT_MIN_CTX is wrong and so is the reasoning above.
     assert set(floors.values()) == {_FIT_MIN_CTX}, floors
 
 
@@ -159,7 +156,6 @@ def test_the_floor_is_the_only_thing_keeping_the_fallback_out_of_placement(
 
     assert outcome["awarded"] is expect_award
     if expect_award:
-        # Residency awarded: Unsloth owns placement and llama.cpp's fitter is off.
         assert outcome["fit"] == "off"
         assert outcome["devices"] == (0,)
     else:

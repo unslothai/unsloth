@@ -218,7 +218,7 @@ def test_start_ingestion_accepts_precomputed_content_hash(
     _drain(job_id)
     _wait_completed(job_id)
 
-    assert calls == []  # start_ingestion never re-hashed the file
+    assert calls == []
     conn = rag_db.get_connection()
     try:
         assert store.get_document(conn, doc_id)["sha256"] == precomputed
@@ -270,8 +270,8 @@ def test_manual_upload_does_not_dedupe_to_linked_folder_document(
 
 
 def test_ingestion_reingests_when_existing_has_zero_chunks(rag_home, stub_embeddings, tmp_path):
-    # A prior ingest of identical bytes that yielded no chunks (e.g. a scanned PDF
-    # before a vision model loaded) must re-ingest, not dedupe to the empty record.
+    # A prior ingest of identical bytes that yielded no chunks must re-ingest, not dedupe to the
+    # empty record.
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie " * 50)
     sha = ingestion._sha256_file(path)
     scope = store.kb_scope("K1")
@@ -286,12 +286,12 @@ def test_ingestion_reingests_when_existing_has_zero_chunks(rag_home, stub_embedd
     events = _drain(job_id)
     _wait_completed(job_id)
 
-    assert not any(e.get("deduped") for e in events)  # not a dedupe -> real ingest
+    assert not any(e.get("deduped") for e in events)
     assert doc_id != empty_id
     conn = rag_db.get_connection()
     try:
         docs = store.list_documents(conn, scope)
-        assert len(docs) == 1  # the empty record was removed, replaced by the new one
+        assert len(docs) == 1
         assert docs[0]["num_chunks"] > 0
     finally:
         conn.close()
@@ -425,8 +425,8 @@ def test_delete_document_route_removes_stored_upload(rag_home):
 
 
 def test_get_job_status_includes_num_chunks(rag_home, stub_embeddings, tmp_path):
-    # The poll/reconcile path reads num_chunks from get_job_status (the SSE complete
-    # frame carries it, but a client that falls back to polling needs it here too).
+    # The poll/reconcile path reads num_chunks from get_job_status, which a client falling back to
+    # polling needs here too.
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie " * 50)
     scope = store.kb_scope("K1")
     _doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
@@ -456,7 +456,7 @@ def test_save_upload_rejects_oversize_file(rag_home, monkeypatch):
     with pytest.raises(HTTPException) as ei:
         rag_routes._save_upload(_Up())
     assert ei.value.status_code == 413
-    assert list(rag_uploads_root().glob("*.txt")) == []  # partial upload removed
+    assert list(rag_uploads_root().glob("*.txt")) == []
 
 
 def test_ingestion_delete_removes_all_rows(rag_home, stub_embeddings, tmp_path):

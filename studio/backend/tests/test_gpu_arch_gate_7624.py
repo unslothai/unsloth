@@ -18,8 +18,7 @@ import types
 
 import pytest
 
-# Imported eagerly so the fake torch below cannot be in place when the real
-# module graph is first loaded.
+# Imported eagerly so the fake torch below cannot be in place when the real module graph is first loaded.
 from core.inference.llama_cpp import _IGPU_HOST_RESERVE_MIB, LlamaCppBackend
 from core.training.worker import _rocm_classify_unified_memory  # noqa: F401
 
@@ -60,8 +59,8 @@ class TestInstalledLlamaGfxArchs:
         assert LlamaCppBackend._installed_llama_gfx_archs(binary) is None
 
     def test_unreadable_marker_is_unknown(self, tmp_path, monkeypatch):
-        # A raising marker read must answer "unknown", never propagate: it runs
-        # inside the GPU probe, where an exception would drop every device.
+        # A raising marker read must answer "unknown", never propagate: it runs inside the GPU
+        # probe, where an exception would drop every device.
         import utils.llama_cpp_freshness as freshness
 
         def _boom(_binary):
@@ -71,9 +70,7 @@ class TestInstalledLlamaGfxArchs:
         assert LlamaCppBackend._installed_llama_gfx_archs(str(tmp_path / "llama-server")) is None
 
 
-# Every shape the install marker can arrive in, as (label, contents). It is read
-# back after arbitrary upgrades, partial writes, disk damage and hand-editing, so
-# the reader parses untrusted input. A callable lays out a non-JSON-file shape.
+# Every shape the install marker can arrive in, as (label, contents).
 _MARKER_CORPUS = [
     ("absent_file", None),
     ("empty_file", ""),
@@ -100,9 +97,8 @@ _MARKER_CORPUS = [
         "permission_denied",
         lambda p: (p.write_text(json.dumps({"mapped_targets": ["gfx1030"]})), p.chmod(0o000)),
     ),
-    # Forwards compatibility: mapped_targets is remote data (it comes from the
-    # release manifest, which versions independently of this code), so a future
-    # publish can put a token in it that no device will ever report.
+    # Forwards compatibility: mapped_targets comes from the release manifest, which versions
+    # independently of this code, so a future publish can name a token no device will ever report.
     ("future_generic_target", '{"mapped_targets": ["gfx11-generic"]}'),
     ("future_generic_target_dashed", '{"mapped_targets": ["gfx10-3-generic"]}'),
     ("future_family_label", '{"mapped_targets": ["gfx110X"]}'),
@@ -136,23 +132,21 @@ class TestInstalledLlamaGfxArchsCorpus:
         if archs is None:
             return
         assert isinstance(archs, frozenset)
-        # Not merely non-empty: every token must be one a device can report,
-        # otherwise the set gates every GPU off the host.
+        # Not merely non-empty: every token must be one a device can report, otherwise the set gates
+        # every GPU off the host.
         assert archs, f"{label} returned an empty set, which would drop every GPU"
         assert all(
             LlamaCppBackend._CONCRETE_GFX_ARCH.match(a) for a in archs
         ), f"{label} returned unmatchable tokens {sorted(archs)}"
 
     def test_empty_set_is_converted_to_none(self, tmp_path):
-        # `return archs or None` is what does this. Pinned explicitly because a
-        # frozenset() return would type-check fine and fail closed at runtime.
+        # `return archs or None` is what does this.
         binary = _binary_with_marker(tmp_path, {"mapped_targets": ["", "   ", ":"]})
         assert LlamaCppBackend._installed_llama_gfx_archs(binary) is None
 
     def test_non_list_targets_are_rejected_before_iteration(self, tmp_path, monkeypatch):
-        # Pins the isinstance(targets, list) guard alone: every non-list json.loads
-        # can produce is ALSO caught downstream, so the corpus cannot tell the guard
-        # from its absence. A tuple is not JSON-reachable, which is the point.
+        # Pins the isinstance(targets, list) guard alone: every non-list json.loads can produce is
+        # ALSO caught downstream, so the corpus cannot tell the guard from its absence.
         import utils.llama_cpp_freshness as freshness
         monkeypatch.setattr(
             freshness, "read_install_marker", lambda _b: {"mapped_targets": ("gfx1030",)}
@@ -160,9 +154,8 @@ class TestInstalledLlamaGfxArchsCorpus:
         assert LlamaCppBackend._installed_llama_gfx_archs(str(tmp_path / "llama-server")) is None
 
     def test_concrete_targets_still_gate(self, tmp_path):
-        # The corpus is all about degrading safely; this pins that the normal
-        # case is untouched, so "never fails closed" cannot be met by gutting
-        # the feature.
+        # The corpus is all about degrading safely; this pins that the normal case is untouched, so
+        # "never fails closed" cannot be met by gutting the feature.
         binary = _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1030", "gfx90a"]})
         assert LlamaCppBackend._installed_llama_gfx_archs(binary) == frozenset(
             {"gfx1030", "gfx90a"}
@@ -194,9 +187,9 @@ class TestForwardsCompatibleArchTokens:
         assert LlamaCppBackend._installed_llama_gfx_archs(binary) is None
 
     def test_one_bad_token_disables_the_whole_gate(self, tmp_path):
-        # Deliberately all-or-nothing. Keeping just the concrete half of
-        # ["gfx1100", "gfx11-generic"] would gate a gfx1101 device off a build
-        # that the generic object actually covers.
+        # Deliberately all-or-nothing: keeping just the concrete half of ["gfx1100",
+        # "gfx11-generic"] would gate a gfx1101 device off a build the generic object actually
+        # covers.
         binary = _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1100", "gfx11-generic"]})
         assert LlamaCppBackend._installed_llama_gfx_archs(binary) is None
 
@@ -204,15 +197,14 @@ class TestForwardsCompatibleArchTokens:
         "token", ["gfx803", "gfx900", "gfx906", "gfx908", "gfx90a", "gfx90c", "gfx942", "gfx950"]
     )
     def test_real_concrete_archs_are_accepted(self, token, tmp_path):
-        # The published manifest's mapped_targets entries, plus the CDNA parts
-        # whose trailing hex letter a digits-only pattern would wrongly reject.
+        # The published manifest's mapped_targets entries, plus the CDNA parts whose trailing hex
+        # letter a digits-only pattern would wrongly reject.
         binary = _binary_with_marker(tmp_path, {"mapped_targets": [token]})
         assert LlamaCppBackend._installed_llama_gfx_archs(binary) == frozenset({token})
 
     def test_every_published_mapped_target_is_accepted(self, tmp_path):
-        # Verbatim from llama-prebuilt-manifest.json (b10360-mix-87da1a2): the union
-        # of every ROCm bundle's mapped_targets. A pattern rejecting any of these
-        # turns the gate off for real installs.
+        # Verbatim from llama-prebuilt-manifest.json (b10360-mix-87da1a2): the union of every ROCm
+        # bundle's mapped_targets.
         published = [
             "gfx908", "gfx90a",
             "gfx1030", "gfx1031", "gfx1032", "gfx1034",
@@ -224,8 +216,8 @@ class TestForwardsCompatibleArchTokens:
         assert LlamaCppBackend._installed_llama_gfx_archs(binary) == frozenset(published)
 
     def test_generic_target_keeps_every_gpu(self, tmp_path, monkeypatch, rocm_probe_env):
-        # End to end: without the guard this host loses BOTH cards and drops to
-        # CPU, because neither gfx1100 nor gfx1101 equals "gfx11-generic".
+        # End to end: without the guard this host loses BOTH cards and drops to CPU, because neither
+        # gfx1100 nor gfx1101 equals "gfx11-generic".
         _binary_with_marker(tmp_path, {"mapped_targets": ["gfx11-generic"]})
         monkeypatch.setitem(
             sys.modules, "torch", _fake_torch(["gfx1100", "gfx1101"], [12000, 13000])
@@ -246,9 +238,8 @@ class TestKernelImageInvalidMarker:
         assert LlamaCppBackend._kernel_image_invalid(tail)
 
     def test_detects_the_no_binary_for_gpu_spelling(self):
-        # hipErrorNoBinaryForGpu: the same arch mismatch, and the code whose
-        # documented cause IS "compiled for a different GPU architecture". A
-        # build that raises this one must reach the retry too.
+        # hipErrorNoBinaryForGpu: the same arch mismatch, and the code whose documented cause IS
+        # "compiled for a different GPU architecture".
         tail = (
             "ggml-cuda.cu:76: ROCm error\n"
             "  no kernel image is available for execution on the device\n"
@@ -311,9 +302,8 @@ def rocm_probe_env(tmp_path, monkeypatch):
 
 class TestGpuArchGate:
     def test_igpu_dropped_when_arch_unsupported(self, tmp_path, monkeypatch, rocm_probe_env):
-        # dGPU (gfx1101) + iGPU (gfx1036) whose shared-RAM "free memory"
-        # outranks the dGPU's free VRAM -- the #7624 / #7669 shape. Only the
-        # dGPU may survive enumeration.
+        # dGPU (gfx1101) + iGPU (gfx1036) whose shared-RAM "free memory" outranks the dGPU's free
+        # VRAM -- the #7624 / #7669 shape.
         _binary_with_marker(
             tmp_path, {"mapped_targets": ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]}
         )
@@ -343,9 +333,7 @@ class TestGpuArchGate:
 
     @pytest.mark.parametrize("attr", ["gcn_arch_name", "arch_name", "gfx_arch_name"])
     def test_alternate_arch_attribute_spellings(self, attr, tmp_path, monkeypatch, rocm_probe_env):
-        # AMD SDK / Radeon wheels may omit the canonical gcnArchName. Reading
-        # only that attribute would leave the arch map empty and fail the gate
-        # open, which is exactly the crash this PR exists to prevent.
+        # AMD SDK / Radeon wheels may omit the canonical gcnArchName.
         props_cls = type("_AltProps", (_FakeProps,), {"_ATTR": attr})
         _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1101"]})
         monkeypatch.setitem(
@@ -359,9 +347,8 @@ class TestGpuArchGate:
     def test_amd_sdk_wheel_without_version_hip_is_gated(
         self, tmp_path, monkeypatch, rocm_probe_env
     ):
-        # AMD SDK / Radeon ROCm wheels can leave torch.version.hip unset while
-        # __version__ still identifies ROCm. A bare version.hip test would skip
-        # the gate there; the shared _torch_is_rocm predicate does not.
+        # AMD SDK / Radeon ROCm wheels can leave torch.version.hip unset while __version__ still
+        # identifies ROCm.
         _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1101"]})
         monkeypatch.setitem(
             sys.modules,
@@ -405,8 +392,8 @@ class TestTorchCallersStayUnfiltered:
     def test_rag_auto_still_picks_sentence_transformers(
         self, tmp_path, monkeypatch, rocm_probe_env
     ):
-        # Every visible device is unsupported by the prebuilt; the torch caller
-        # must still see a GPU and choose the torch backend.
+        # Every visible device is unsupported by the prebuilt; the torch caller must still see a GPU
+        # and choose the torch backend.
         from core.rag import embeddings
 
         _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1101"]})
@@ -414,8 +401,8 @@ class TestTorchCallersStayUnfiltered:
         assert embeddings._resolve_auto() == "sentence-transformers"
 
     def test_embed_llama_server_probe_opts_in(self, tmp_path, monkeypatch, rocm_probe_env):
-        # The GGUF embedding backend IS llama-server, so the same unsupported
-        # device must not count as an available GPU there.
+        # The GGUF embedding backend IS llama-server, so the same unsupported device must not count
+        # as an available GPU there.
         import utils.hardware as uh
         from core.rag.embed_llama_server import LlamaServerBackend
 
@@ -434,8 +421,8 @@ class TestArchGateCoexistsWithUnifiedMemory:
     while the unsupported device is still dropped."""
 
     def test_apu_reserve_and_arch_gate_together(self, tmp_path, monkeypatch, rocm_probe_env):
-        # gfx1151 Strix Halo (unified memory, supported by the bundle),
-        # gfx1101 dGPU (supported), gfx1036 (NOT in the bundle).
+        # gfx1151 Strix Halo (unified memory, supported by the bundle), gfx1101 dGPU (supported),
+        # gfx1036 (NOT in the bundle).
         _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1101", "gfx1151"]})
         monkeypatch.setitem(
             sys.modules,
@@ -448,7 +435,6 @@ class TestArchGateCoexistsWithUnifiedMemory:
         assert LlamaCppBackend._get_gpu_memory(for_llama_server = True) == [
             # Shared pool: host reserve held back, total reported 0.
             (0, 20000 - _IGPU_HOST_RESERVE_MIB, 0),
-            # Discrete supported card: untouched.
             (1, 12049, 32768),
             # gfx1036 dropped by the arch gate.
         ]
@@ -472,8 +458,8 @@ class TestArchCrashRetrySet:
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0], [0, 1, 2]) == [1, 2]
 
     def test_narrows_to_discrete_when_every_gpu_was_selected(self, monkeypatch):
-        # The planner took both cards, so there is no untouched device left.
-        # Dropping the shared-pool APU still leaves a launchable dGPU (#7624).
+        # The planner took both cards, so there is no untouched device left; dropping the
+        # shared-pool APU still leaves a launchable dGPU (#7624).
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
         )

@@ -14,7 +14,6 @@ import pytest
 from core.inference import diffusion_controlnet as dc
 
 
-# ── Pure helpers ────────────────────────────────────────────────────────────
 
 
 def test_sanitize_id():
@@ -33,7 +32,6 @@ def test_list_controlnets_family_filter():
 def test_resolve_controlnet_catalog_bare_repo_and_unknown():
     r = dc.resolve_controlnet("flux-union-pro", family = "flux.1")
     assert r.path == "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro" and not r.is_local
-    # A bare public repo id passes through.
     r2 = dc.resolve_controlnet("owner/some-controlnet")
     assert r2.path == "owner/some-controlnet" and not r2.is_local
     with pytest.raises(FileNotFoundError):
@@ -41,23 +39,21 @@ def test_resolve_controlnet_catalog_bare_repo_and_unknown():
 
 
 def test_resolve_controlnet_rejects_filesystem_like_ids():
-    # The bare-repo fallback must never accept a path-shaped id: from_pretrained would treat it as a local directory, bypassing controlnets_dir().
+    # The bare-repo fallback must never accept a path-shaped id: from_pretrained would treat it as a
+    # local directory, bypassing controlnets_dir().
     for bad in ("/tmp/model", "../some/model", "./x/y", "~/x/y", "a/b/c", "C:\\x/y", ".hidden/x"):
         with pytest.raises(FileNotFoundError):
             dc.resolve_controlnet(bad)
 
 
 def test_resolve_controlnet_enforces_family_match():
-    # A curated entry tagged for another family is rejected before download so it never reaches the wrong ControlNet pipeline class.
     with pytest.raises(ValueError, match = "not the"):
         dc.resolve_controlnet("qwen-union", family = "flux.1")
-    # The matching family resolves fine, and no family (unfiltered) is permissive.
     assert dc.resolve_controlnet("qwen-union", family = "qwen-image").path
     assert dc.resolve_controlnet("qwen-union").path
 
 
 def test_resolve_controlnet_repo_id_still_family_gated():
-    # A curated ControlNet addressed by its full repo id must still hit the family gate, not slip through the bare-repo fallback.
     with pytest.raises(ValueError, match = "is for"):
         dc.resolve_controlnet("InstantX/Qwen-Image-ControlNet-Union", family = "flux.1")
     r = dc.resolve_controlnet("InstantX/Qwen-Image-ControlNet-Union", family = "qwen-image")
@@ -65,7 +61,6 @@ def test_resolve_controlnet_repo_id_still_family_gated():
 
 
 def test_union_control_mode_maps_only_union_entries():
-    # Union entries map a known control type to its integer mode; an unmapped type defaults to 0, and a non-union id returns None.
     assert dc.union_control_mode("flux-union-pro", "canny") == 0
     assert dc.union_control_mode("flux-union-pro", "depth") == 2
     assert dc.union_control_mode("flux-union-pro", "pose") == 4
@@ -74,26 +69,25 @@ def test_union_control_mode_maps_only_union_entries():
 
 
 def test_union_control_mode_rejects_unknown_type():
-    # An unknown / typo'd control type must NOT fall back to the canny head (0): preprocess_control passes non-canny maps through
-    # unchanged, so mode 0 would read a foreign map as canny. Only passthrough (or empty) defaults to 0; anything else raises.
+    # An unknown / typo'd control type must NOT fall back to the canny head (0): preprocess_control
+    # passes non-canny maps through unchanged, so mode 0 would read a foreign map as canny.
     with pytest.raises(ValueError, match = "Unknown control type"):
         dc.union_control_mode("flux-union-pro", "detph")
     with pytest.raises(ValueError, match = "Unknown control type"):
         dc.union_control_mode("flux-union-pro", "scribble")
-    # passthrough and empty still default to 0; a non-union entry returns None and never raises.
     assert dc.union_control_mode("flux-union-pro", "") == 0
     assert dc.union_control_mode("some/bare-repo", "detph") is None
 
 
 def test_union_control_mode_matches_curated_repo_id():
-    # resolve_controlnet() accepts a curated union model by bare repo id, so union_control_mode() must recognise it too, else control_mode is dropped and the union pipeline runs the wrong head.
+    # resolve_controlnet() accepts a curated union model by bare repo id, so union_control_mode()
+    # must recognise it too, else control_mode is dropped and the union pipeline runs the wrong
+    # head.
     assert dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "depth") == 2
     assert dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "pose") == 4
     assert dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "passthrough") == 0
     assert dc.union_control_mode("InstantX/Qwen-Image-ControlNet-Union", "canny") == 0
-    # A bare repo id that is NOT a curated union model still returns None (caller omits the kwarg).
     assert dc.union_control_mode("some/other-controlnet", "canny") is None
-    # A typo'd type against a repo-id-matched union still raises (route 400), like the short-id path.
     with pytest.raises(ValueError, match = "Unknown control type"):
         dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "detph")
 
@@ -113,7 +107,8 @@ def test_resolve_controlnet_local(tmp_path, monkeypatch):
 
 
 def test_scan_local_skips_config_only_folder(tmp_path, monkeypatch):
-    # A folder with config.json but no weight/index (interrupted copy) must not be advertised: it would fail deep in from_pretrained as a 500.
+    # A folder with config.json but no weight/index (interrupted copy) must not be advertised: it
+    # would fail deep in from_pretrained as a 500.
     d = tmp_path / "controlnets"
     d.mkdir()
     incomplete = d / "incomplete-cn"
@@ -121,7 +116,6 @@ def test_scan_local_skips_config_only_folder(tmp_path, monkeypatch):
     (incomplete / "config.json").write_text("{}")
     monkeypatch.setattr(dc, "controlnets_dir", lambda: d)
     assert "incomplete-cn" not in {e.id for e in dc.list_controlnets()}
-    # A sharded weight index counts as a loadable weight.
     (incomplete / "diffusion_pytorch_model.safetensors.index.json").write_text("{}")
     assert "incomplete-cn" in {e.id for e in dc.list_controlnets()}
 
@@ -130,15 +124,14 @@ def test_preprocess_control_passthrough_and_canny():
     from PIL import Image
 
     img = Image.new("RGB", (32, 24), (10, 20, 30))
-    # passthrough returns the same object.
     assert dc.preprocess_control(img, "passthrough") is img
-    # A flat image has no edges, so the map is all black; passing the source through would condition the ControlNet on raw luminance.
+    # A flat image has no edges, so the map is all black; passing the source through would condition
+    # the ControlNet on raw luminance.
     import numpy as np
 
     flat = dc.preprocess_control(img, "canny")
     assert flat.mode == "RGB" and flat.size == (32, 24)
     assert np.asarray(flat).max() == 0
-    # An image with structure yields an edge map: RGB, same size, some white pixels.
 
     arr = np.zeros((24, 32, 3), np.uint8)
     arr[:, 16:, :] = 255  # a hard vertical edge
@@ -151,11 +144,9 @@ def test_supports_controlnet_matrix():
     ok = dict(engine = "diffusers", family = "flux.1", has_controlnet_pipeline = True)
     assert dc.supports_controlnet(**ok, model_kind = "pipeline", transformer_quant = None)
     assert dc.supports_controlnet(**ok, model_kind = "single_file", transformer_quant = None)
-    # GGUF-via-diffusers and fp8/int8 dense are gated off, like LoRA.
     assert not dc.supports_controlnet(**ok, model_kind = "gguf", transformer_quant = None)
     assert not dc.supports_controlnet(**ok, model_kind = "single_file", transformer_quant = "fp8")
     assert not dc.supports_controlnet(**ok, model_kind = "single_file", transformer_quant = "int8")
-    # native engine + a family without a CN pipeline are off.
     assert not dc.supports_controlnet(
         engine = "sd_cpp",
         family = "flux.1",
@@ -172,7 +163,6 @@ def test_supports_controlnet_matrix():
     )
 
 
-# ── Request-model validation ────────────────────────────────────────────────
 
 
 def test_controlnet_spec_and_request_validation():
@@ -189,18 +179,15 @@ def test_controlnet_spec_and_request_validation():
         },
     )
     assert req.controlnet.id == "flux-union-pro" and req.controlnet.strength == 0.6
-    # defaults
     s = ControlNetSpec(id = "a", image = "b")
     assert s.control_type == "passthrough" and s.strength == 1.0
     assert s.guidance_start == 0.0 and s.guidance_end == 1.0
-    # bounds
     with pytest.raises(Exception):
         ControlNetSpec(id = "a", image = "b", strength = 3.0)
     with pytest.raises(Exception):
         ControlNetSpec(id = "a", image = "b", guidance_end = 1.5)
 
 
-# ── Family wiring ───────────────────────────────────────────────────────────
 
 
 def test_families_declare_controlnet_classes():
@@ -210,11 +197,9 @@ def test_families_declare_controlnet_classes():
     assert by_name["flux.1"].controlnet_pipeline_class == "FluxControlNetPipeline"
     assert by_name["flux.1"].controlnet_model_class == "FluxControlNetModel"
     assert by_name["qwen-image"].controlnet_pipeline_class == "QwenImageControlNetPipeline"
-    # z-image has no diffusers ControlNet pipeline -> gated off.
     assert by_name["z-image"].controlnet_pipeline_class is None
 
 
-# ── Diffusers ControlNet pipe manager ───────────────────────────────────────
 
 
 class _FakeCNModel:
@@ -225,7 +210,8 @@ class _FakeCNModel:
         torch_dtype = None,
         token = None,
         use_safetensors = None,
-        # cache_dir (and any future loader kwarg) rides through: the real call pins the live cache root so a load cannot split across two.
+        # cache_dir (and any future loader kwarg) rides through: the real call pins the live cache
+        # root so a load cannot split across two.
         **kwargs,
     ):
         m = cls()
@@ -298,25 +284,23 @@ def test_controlnet_pipe_loads_once_and_caches(monkeypatch):
     _allow_cn_security(monkeypatch)
     b = DiffusionBackend()
     st = _state()
-    # The pipe cache only commits while ``st`` is the CURRENT load (an unload racing from_pipe must not repopulate it), so mirror the loaded invariant.
+    # The pipe cache only commits while ``st`` is the CURRENT load (an unload racing from_pipe must
+    # not repopulate it), so mirror the loaded invariant.
     b._state = st
     resolved = dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False)
     p1 = b._controlnet_pipe(st, resolved, threading.Event())
     assert isinstance(p1, _FakeCNPipe) and isinstance(p1.controlnet, _FakeCNModel)
     assert p1.controlnet.path == "repo/id" and p1.controlnet.device == "cpu"
-    # A remote (non-local) ControlNet must force safetensors so a pickle cannot deserialize even if the Hub scan failed open.
     assert p1.controlnet.use_safetensors is True
-    # The cast never reaches the resident base modules the ControlNet pipe shares (#9186).
     assert _FakeCNPipe.recast_dtype is None
-    # cached: same id -> same model + same pipe, no reload.
     p2 = b._controlnet_pipe(st, resolved, threading.Event())
     assert p2 is p1
     assert b._cn_models["flux-union-pro"] is p1.controlnet
 
 
 def test_controlnet_pipe_blocks_flagged_remote_repo(monkeypatch):
-    # A bare owner/name ControlNet is accepted by resolve_controlnet without the base trust gate, so the load path must run the
-    # Hub malware preflight: a flagged remote repo raises BEFORE from_pretrained downloads it.
+    # resolve_controlnet accepts a bare owner/name ControlNet without the base trust gate, so the
+    # load path must run the Hub malware preflight: a flagged repo raises BEFORE from_pretrained.
     import threading
 
     import utils.security
@@ -358,7 +342,6 @@ def test_controlnet_pipe_blocks_flagged_remote_repo(monkeypatch):
 
 
 def test_controlnet_pipe_skips_scan_for_local_dir(monkeypatch, tmp_path):
-    # A local dir the user picked has no Hub scan, so the preflight must not block it even if the (unused) scan stub says blocked.
     import threading
 
     import utils.security
@@ -376,7 +359,6 @@ def test_controlnet_pipe_skips_scan_for_local_dir(monkeypatch, tmp_path):
     resolved = dc.ResolvedControlNet("my-cn", str(tmp_path), is_local = True)
     p = b._controlnet_pipe(st, resolved, threading.Event())
     assert isinstance(p, _FakeCNPipe)
-    # A local dir the user chose is exempt from the forced-safetensors gate (may be .bin).
     assert p.controlnet.use_safetensors is None
 
 
@@ -393,7 +375,8 @@ def test_controlnet_pipe_rejects_family_without_classes():
 
 
 def test_controlnet_pipe_not_cached_after_unload_race(monkeypatch):
-    # An unload landing while from_pipe assembles must not let the wrapper repopulate the cache around the torn-down base pipe.
+    # An unload landing while from_pipe assembles must not let the wrapper repopulate the cache
+    # around the torn-down base pipe.
     import threading
 
     from core.inference.diffusion import DiffusionBackend

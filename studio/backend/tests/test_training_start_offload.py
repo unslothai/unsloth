@@ -38,7 +38,6 @@ class _FakeBackend:
         before_spawn = None,
         **kwargs,
     ):
-        # The real backend runs before_spawn synchronously inside this call, so this thread is the one the blocking VRAM hook runs on.
         self.start_thread = threading.current_thread()
         self.hook = before_spawn
         self.current_job_id = job_id
@@ -52,7 +51,7 @@ def _request() -> TrainingStartRequest:
         format_type = "alpaca",
         hf_dataset = "org/data",
         load_in_4bit = False,
-        # Skip the YAML trust_remote_code lookup (needs the model catalog on disk).
+        # Skip the YAML trust_remote_code lookup, which needs the model catalog on disk.
         trust_remote_code = True,
     )
 
@@ -82,15 +81,13 @@ def test_start_route_offloads_blocking_start(monkeypatch):
     loop_thread, resp = asyncio.run(_run())
 
     assert resp.status == "queued", resp
-    # The VRAM-freeing hook was wired in and the blocking call left the loop thread.
     assert fake.hook is not None
     assert fake.start_thread is not None
     assert fake.start_thread is not loop_thread
 
 
 def test_backend_start_guard_blocks_overlapping_starts():
-    # With the route offloaded to worker threads, two overlapping /train/start requests can reach
-    # start_training concurrently, so the compare-and-set reservation must let exactly one proceed.
+    # With the route offloaded to threads, two /train/start requests race, so the compare-and-set admits one.
     from core.training.training import TrainingBackend
 
     backend = TrainingBackend()
@@ -116,24 +113,22 @@ def test_backend_start_guard_blocks_overlapping_starts():
     t = threading.Thread(target = _first, daemon = True)
     t.start()
     assert first_entered.wait(timeout = 5.0)
-    # A second start while the first is still inside the impl: refused by the guard, without ever entering the impl.
+    # A second start while the first is still inside the impl is refused by the guard, without entering the impl.
     results["second"] = backend.start_training("job-b")
     release_first.set()
     t.join(timeout = 5.0)
 
     assert results["first"] is True
     assert results["second"] is False
-    # The reservation is cleared once the winning start returns, so a later start may proceed.
     assert backend._spawn_in_progress is False
     assert backend._new_job_spawn_id is None
 
 
 def test_is_training_active_true_during_start_reservation():
-    # A run reserved in start_training but not yet spawned must already read as active, else the load/start guards let another pipeline race it for the freed VRAM.
+    # A run reserved but not spawned must already read active, or another pipeline races for the VRAM.
     from core.training.training import TrainingBackend
 
     backend = TrainingBackend()
-    # Not reserved yet: idle.
     assert backend.is_training_active() is False
 
     entered = threading.Event()
@@ -155,11 +150,10 @@ def test_is_training_active_true_during_start_reservation():
     t = threading.Thread(target = lambda: backend.start_training("job-a"), daemon = True)
     t.start()
     assert entered.wait(timeout = 5.0)
-    # Inside the pre-spawn window: reserved, so active even though no proc/progress is set.
+    # Inside the pre-spawn window: reserved, so active even though no proc or progress is set.
     captured["in_window"] = backend.is_training_active()
     release.set()
     t.join(timeout = 5.0)
 
     assert captured["in_window"] is True
-    # Reservation cleared once the start returns; with no live proc it reads idle again.
     assert backend.is_training_active() is False

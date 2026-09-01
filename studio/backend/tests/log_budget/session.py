@@ -17,37 +17,25 @@ a per-class check.
 
 from __future__ import annotations
 
-# path -> (period_seconds, provenance)
-#
-# Polls that run when NOTHING is happening: the app is open and the user is not doing
-# anything. This is the scenario the idle envelope is set against, and the one a new chatty
-# endpoint will usually land in.
+# path -> (period_seconds, provenance). Idle: polls that run when nothing is happening.
 IDLE_POLLS: dict[str, tuple[float, str]] = {
-    # The loaded-models indicator fires all four together for as long as the app is open.
-    # This burst is what the shared liveness bucket exists to collapse.
+    # Fired together for as long as the app is open; the shared liveness bucket collapses them.
     "/api/auth/status": (5.0, "measured"),
     "/api/inference/monitor": (5.0, "measured"),
     "/api/inference/images/status": (5.0, "measured"),
     "/api/inference/video/status": (5.0, "measured"),
     "/api/inference/audio/stt/status": (5.0, "measured"),
-    # Deliberately outside the shared bucket: their own latency is worth seeing, because
-    # /api/health waits on hardware detection and /api/inference/status reads llama.cpp
-    # capabilities.
+    # Deliberately outside the shared bucket: their own latency is worth seeing.
     "/api/health": (5.0, "measured"),
     "/api/inference/status": (5.0, "measured"),
-    # The desktop shell's watchdog probe: HEALTH_WATCHDOG_INTERVAL between rounds.
     "/api/liveness": (15.0, "measured"),
-    # Re-read while the settings dialog or the remote-access section is open.
     "/api/settings/remote-access": (5.0, "measured"),
-    # Tab lists, refetched on a timer and on every tab switch.
     "/api/train/runs": (20.0, "measured"),
     "/api/models/checkpoints": (20.0, "measured"),
     "/api/models/local": (20.0, "measured"),
     "/api/rag/knowledge-bases": (20.0, "measured"),
-    # Chat lists, polled while the sidebar is open.
     "/api/chat/projects": (10.0, "declared"),
     "/api/chat/threads": (10.0, "declared"),
-    # Small reads the shell and the settings pane make on a slow timer.
     "/api/llama/update-status": (5.0, "declared"),
     "/api/models/loras": (10.0, "declared"),
     "/api/providers/": (10.0, "declared"),
@@ -56,10 +44,8 @@ IDLE_POLLS: dict[str, tuple[float, str]] = {
     "/api/system": (10.0, "declared"),
 }
 
-# Polls that only exist while an operation is in flight: a download running, a generation
-# running, a training run live, the log viewer open. Budgeted separately because holding
-# all of them at once is not idle, and averaging them into the idle envelope would hide a
-# regression in either direction.
+# Busy: polls that exist only while an operation is in flight. Budgeted separately so
+# holding all of them at once cannot hide a regression in the idle envelope.
 BUSY_POLLS: dict[str, tuple[float, str]] = {
     "/api/models/download-progress": (1.0, "declared"),
     "/api/models/gguf-download-progress": (1.0, "declared"),
@@ -69,7 +55,6 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     "/api/inference/images/load-progress": (1.0, "declared"),
     "/api/inference/video/load-progress": (1.0, "declared"),
     "/api/train/diffusion/status": (1.5, "declared"),
-    # Suppressed entirely on success, but still polled, and still logged on failure.
     "/api/export/logs": (1.0, "declared"),
     "/api/export/status": (1.0, "declared"),
     "/api/hub/active-downloads": (1.0, "declared"),
@@ -82,74 +67,37 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     "/api/hub/gguf-download-progress": (1.0, "declared"),
     "/api/hub/transport-status": (1.0, "declared"),
     "/api/inference/load-progress": (1.0, "declared"),
-    # The log viewer reading its own log. Suppressed so that watching a log cannot append
-    # to the log being watched.
+    # Suppressed so that watching a log cannot append to the log being watched.
     "/api/settings/debug/logs": (3.0, "declared"),
     "/api/settings/debug/logs/sources": (3.0, "declared"),
-    # Chat detail reads, driven by the streaming persistence loop rather than a timer, so
-    # busy-only. Measured over four tabs on Qwen3.8-27B UD-Q4_K_XL: thread reads 0.57s
-    # apart, fork reads 0.40s apart, aggregated per template because a template shares one
-    # bucket. Rounded to the replay's 0.5s tick, the nearest value it can poll on.
+    # Driven by the streaming persistence loop, not a timer. Measured ~0.4-0.6s apart,
+    # rounded to the replay's 0.5s tick.
     "/api/chat/threads/{id}": (0.5, "measured"),
     "/api/chat/threads/{id}/forks": (0.5, "measured"),
-    # Training panels, live only while a run is going.
     "/api/train/status": (2.0, "declared"),
     "/api/train/metrics": (2.0, "declared"),
     "/api/train/hardware": (2.0, "declared"),
 }
 
-# Every classified path lives in exactly one scenario. `test_log_budget` proves it.
 ALL_POLLS: dict[str, tuple[float, str]] = {**IDLE_POLLS, **BUSY_POLLS}
 
 STEADY_IDLE_SECONDS = 30 * 60
 BUSY_SECONDS = 5 * 60
 
-# Paths that are polled often and still sit in the `normal` burst class, so they write a
-# line per poll. Introducing this guard to a codebase that already had violations means
-# either recording them or weakening the rule, and weakening it would defeat the point.
-#
-# This list is self-expiring: `test_every_polled_path_has_exactly_one_class` fails if an
-# entry here is NO LONGER a violation, so fixing one forces its removal and the list cannot
-# quietly become permanent. Do not add to it to make a new endpoint pass.
-#
-#   /api/settings/remote-access  360 lines per idle half hour  -> fixed by #8763
-#   /api/liveness                120 lines per idle half hour  -> fixed by #8763
-# Empty, and worth keeping empty. #8763 gave both former entries a heartbeat class, and the
-# closure test fails on a stale entry as loudly as on a missing one, so this cannot quietly
-# become a place to park a chatty endpoint.
+# Recorded violations: polled-often paths still in the `normal` burst class. Self-expiring --
+# `test_every_polled_path_has_exactly_one_class` fails on a stale entry as loudly as on a
+# missing one, so do NOT add here to make a new chatty endpoint pass.
 KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 
-# The envelopes. These are what catch a NEW chatty endpoint: a path can satisfy its own
-# class formula perfectly and still push the total up, which is exactly what happened to
-# /api/liveness, whose 15s probe sat in the 300ms burst class and logged every single time.
-#
-# Raising either of these is a product decision about how much Unsloth is allowed to write.
-# It is not a knob to turn because a test went red. The class formulas tell you whether the
-# suppression rules are being honoured; these tell you whether the result is acceptable.
-#
-# Set from the measured behaviour of this revision plus room for a genuinely new endpoint,
-# NOT from an aspiration.
-#
-# Ratcheted once already. Before #8763 idle measured 1380 and the envelope was 1450; the
-# note here predicted the fix would take idle to roughly 930. It did not: idle now measures
-# 1110. The prediction assumed /api/settings/remote-access would stop contributing, but a
-# 10s heartbeat against a 5s poll still emits half of them, 180 lines over 30 minutes,
-# which is now the joint-largest contributor. Left at 1450 the envelope would have had 340
-# lines of slack, which is room for a whole new chatty endpoint to arrive unnoticed.
-#
-# Re-measure and ratchet again whenever a suppression rule changes. An envelope carrying
-# the old number after a fix has stopped guarding anything.
-#
-# Busy rose from 260 to 325 for an ACCOUNTING change, not a volume regression.
-# /api/chat/threads/{id} and its /forks sibling sat in the `normal` class, in no scenario,
-# so the envelope never saw them: modelled over the busy window, 675 lines. A heartbeat
-# class brings them in at 59. The number goes up because they are finally being counted.
+# The envelopes catch a NEW chatty endpoint: a path can satisfy its own class formula and
+# still push the total up (see /api/liveness, a 15s probe in the 300ms burst class).
+# Raising either is a product decision about how much Unsloth may write, not a knob to turn
+# because a test went red. Set from measured behaviour of this revision plus room for one
+# genuinely new endpoint; re-measure and ratchet whenever a suppression rule changes.
 STEADY_IDLE_LINE_ENVELOPE = 1170
 BUSY_LINE_ENVELOPE = 325
 
-# One-shot requests the app makes once on startup. Present so the boot window is not
-# mistaken for steady state, and so a mutation record and a failure record exist to assert
-# against.
+# Startup one-shots, so the boot window is not mistaken for steady state.
 BOOT_REQUESTS: tuple[tuple[str, str, int], ...] = (
     ("POST", "/api/auth/login", 200),
     ("GET", "/api/settings", 200),

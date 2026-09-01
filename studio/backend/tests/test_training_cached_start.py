@@ -223,7 +223,6 @@ def test_hf_dataset_preflight_verifies_an_unpinned_repo_with_a_stray_cache(tmp_p
 
 
 def test_hf_dataset_preflight_accepts_an_unpinned_cached_repo_offline(tmp_path):
-    # Offline there is no Hub to verify against, so a cached copy still starts.
     route = _load_route_module("training_route_unpinned_dataset_offline")
 
     class UnexpectedApi:
@@ -1036,8 +1035,7 @@ def test_remote_format_probe_preserves_root_level_repo_id():
 
 
 def test_remote_format_probe_resolves_the_bicodec_alias():
-    # "Spark-TTS-0.5B/LLM" is a registry alias, not a repo: probing it literally 404s, so preflight
-    # has to probe what the trainer downloads.
+    # "Spark-TTS-0.5B/LLM" is a registry alias, not a repo, so preflight must probe what is downloaded.
     route = _load_route_module("training_route_remote_bicodec_alias")
     info = SimpleNamespace(
         siblings = [
@@ -1454,13 +1452,11 @@ def test_unscoped_reset_cannot_touch_a_live_run(monkeypatch):
         backend, "force_terminate", lambda **_kw: pytest.fail("unscoped reset terminated a run")
     )
 
-    # A stop was already requested, so this is the pre-rework cancel-then-dismiss flow and
-    # the client may clear its UI. Still no force_terminate: the stub above would fail.
+    # A stop was already requested, so this is cancel-then-dismiss and the client may clear its UI.
     assert backend.reset_training_state() == "superseded"
     assert backend.reset_training_state(expected_job_id = "job_old") == "superseded"
 
-    # No stop requested, so a bodyless reset of a live run is stale: 409, not a 200 that
-    # would tell an older client a running job had been cleared.
+    # No stop requested, so a bodyless reset of a live run is stale: 409, not a 200 claiming it cleared.
     backend._cancel_requested = False
     assert backend.reset_training_state() == "active"
 
@@ -1558,7 +1554,6 @@ def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
     assert response.status == "queued"
     assert captured["model_snapshot_path"] == str(old_model)
     assert captured["dataset_snapshot_path"] == str(old_dataset)
-    # The route posix-normalizes this field, so compare against the same shape.
     assert captured["model_local_path"] == model_root.as_posix()
     assert captured["dataset_local_path"] == str(dataset_root)
     assert captured["load_in_4bit"] is True

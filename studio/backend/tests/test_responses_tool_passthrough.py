@@ -91,9 +91,6 @@ def _codex_apply_patch_tool():
     }
 
 
-# =====================================================================
-# Request model — tools / tool_choice / parallel_tool_calls
-# =====================================================================
 
 
 class TestResponsesRequestTools:
@@ -159,9 +156,6 @@ class TestResponsesRequestTools:
             ResponsesFunctionTool(type = "web_search", name = "x")
 
 
-# =====================================================================
-# Request model — function_call / function_call_output input items
-# =====================================================================
 
 
 class TestResponsesMultiTurnInput:
@@ -223,9 +217,6 @@ class TestResponsesMultiTurnInput:
         assert isinstance(req.input[1], ResponsesCustomToolCallOutputInputItem)
 
 
-# =====================================================================
-# Translators — tools, tool_choice
-# =====================================================================
 
 
 class TestToolsTranslation:
@@ -445,8 +436,7 @@ class TestBuildChatRequest:
         assert _extract_response_format(chat_req) == {"type": "json_object"}
 
     def test_text_format_text_carries_no_response_format(self):
-        # Codex and the Agents SDK send this on ordinary requests; constraining
-        # them would route every call onto the schema path.
+        # Codex and the Agents SDK send this on ordinary requests; constraining them routes every call to schemas.
         payload = ResponsesRequest(input = "hi", text = {"format": {"type": "text"}})
         messages = [ChatMessage(role = "user", content = "hi")]
 
@@ -524,9 +514,6 @@ class TestBuildChatRequest:
         assert chat_req.enable_thinking is False
 
 
-# =====================================================================
-# _normalise_responses_input — multi-turn tool mapping
-# =====================================================================
 
 
 class TestNormaliseResponsesInputWithTools:
@@ -913,9 +900,6 @@ class TestNormaliseResponsesInputWithTools:
         assert _responses_tool_output_content("  done  ") == "  done  "
 
 
-# =====================================================================
-# Response mapping — tool_calls → function_call output items
-# =====================================================================
 
 
 class TestChatToolCallsToResponsesOutput:
@@ -1013,9 +997,6 @@ class TestChatToolCallsToResponsesOutput:
         assert _responses_custom_tool_input(arguments) == expected
 
 
-# =====================================================================
-# Non-streaming Responses adapter
-# =====================================================================
 
 
 class TestResponsesNonStreamingAdapter:
@@ -1239,7 +1220,6 @@ class TestResponsesNonStreamingAdapter:
         [entry] = monitor.snapshot()
         assert entry["completion_tokens"] == 50
         assert entry["decode_ms"] == 1000
-        # 9s of that request was queue wait and prefill; the model generated at 50 tok/s.
         assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
 
     def test_in_process_engine_timings_update_outer_monitor_live(self, monkeypatch):
@@ -1474,9 +1454,6 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"][0]["text"] == "plan"
 
 
-# =====================================================================
-# Streaming Responses adapter
-# =====================================================================
 
 
 class TestResponsesStreamAdapter:
@@ -2283,7 +2260,6 @@ class TestResponsesStreamAdapter:
                 is_vision = False,
                 context_length = 4096,
                 base_url = "http://llama.test",
-                # Non-reasoning template: the real backend returns None here.
                 _request_reasoning_kwargs = (
                     lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
                 ),
@@ -2327,9 +2303,6 @@ class TestResponsesStreamAdapter:
         }
 
 
-# =====================================================================
-# Response model — ResponsesOutputFunctionCall / mixed output
-# =====================================================================
 
 
 class TestResponsesOutputFunctionCall:
@@ -2400,9 +2373,6 @@ class TestResponsesOutputFunctionCall:
         assert d["output"][1]["type"] == "function_call"
 
 
-# =====================================================================
-# Regression: ChatMessage validator still accepts mapped tool messages
-# =====================================================================
 
 
 class TestCodexStyleRequestShapes:
@@ -2539,15 +2509,12 @@ class TestCodexStyleRequestShapes:
             ],
         )
         msgs = _normalise_responses_input(payload)
-        # One leading merged system; no mid-conversation system.
         assert msgs[0].role == "system"
         assert sum(1 for m in msgs if m.role == "system") == 1
         assert "Base instructions." in msgs[0].content
         assert "Dev override." in msgs[0].content
 
         roles = [m.role for m in msgs[1:]]
-        # Reasoning dropped. Order: user, assistant(tool_calls), tool,
-        # assistant(text), user.
         assert roles == ["user", "assistant", "tool", "assistant", "user"]
         assert msgs[2].tool_calls is not None
         assert msgs[3].role == "tool"
@@ -2597,8 +2564,7 @@ class TestTranslatedMessagesValidate:
         )
         msgs = _normalise_responses_input(payload)
         for m in msgs:
-            # Building a fresh ChatMessage from the dump round-trips the
-            # role-shape validator — the passthrough's key invariant.
+            # Building a fresh ChatMessage from the dump round-trips the role-shape validator, the key invariant.
             ChatMessage(**m.model_dump(exclude_none = True))
 
     def test_empty_tool_output_round_trips_through_chat_message_validator(self):
@@ -2616,11 +2582,9 @@ class TestTranslatedMessagesValidate:
             ChatMessage(**m.model_dump(exclude_none = True))
 
 
-# reasoning_prefilled: enable_thinking templates prefill an unclosed <think>, so
-# generation begins inside the block; the extractor must start in reasoning.
+# enable_thinking templates prefill an unclosed <think>, so the extractor must start in reasoning.
 class TestReasoningPrefilledExtractor:
     def test_prefilled_single_feed_splits_lone_close(self):
-        # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
         reasoning, visible = _extract_responses_reasoning(
             "plan</think>answer",
             parse_think_markers = True,
@@ -2630,7 +2594,7 @@ class TestReasoningPrefilledExtractor:
         assert visible == "answer"
 
     def test_prefilled_never_closed_is_all_reasoning(self):
-        # T2: truncated mid-thought (no </think>) -> all reasoning (GGUF parity).
+        # Truncated mid-thought (no close tag) is all reasoning, for GGUF parity.
         reasoning, visible = _extract_responses_reasoning(
             "still thinking with no close",
             parse_think_markers = True,
@@ -2640,7 +2604,7 @@ class TestReasoningPrefilledExtractor:
         assert visible == ""
 
     def test_prefilled_close_split_across_feeds(self):
-        # T3: </think> straddles two feed() calls; holdback resolves it.
+        # A close tag straddling two feed() calls is resolved by holdback.
         ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
         r1, v1 = ex.feed("plan</th")
         r2, v2 = ex.feed("ink>ans")
@@ -2649,7 +2613,6 @@ class TestReasoningPrefilledExtractor:
         assert (v1 + v2 + fv) == "ans"
 
     def test_prefilled_close_split_one_char_per_feed(self):
-        # T4: every char in its own feed still splits correctly.
         ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
         reasoning, visible = "", ""
         for ch in "plan</think>x":
@@ -2661,7 +2624,6 @@ class TestReasoningPrefilledExtractor:
         assert (visible + fv) == "x"
 
     def test_prefilled_empty_generation(self):
-        # T5: nothing generated.
         reasoning, visible = _extract_responses_reasoning(
             "",
             parse_think_markers = True,
@@ -2671,7 +2633,6 @@ class TestReasoningPrefilledExtractor:
         assert visible == ""
 
     def test_prefilled_whitespace_after_close_is_visible(self):
-        # T6: Qwen commonly emits </think>\n\n before the answer.
         reasoning, visible = _extract_responses_reasoning(
             "plan</think>\n\nanswer",
             parse_think_markers = True,
@@ -2681,8 +2642,7 @@ class TestReasoningPrefilledExtractor:
         assert visible == "\n\nanswer"
 
     def test_prefilled_stray_open_tag_is_suppressed(self):
-        # T7: a re-emitted literal <think> inside prefilled reasoning is dropped,
-        # not leaked into the drawer (covers enable_thinking_effort full-tag output).
+        # A re-emitted literal <think> inside prefilled reasoning is dropped, not leaked into the drawer.
         reasoning, visible = _extract_responses_reasoning(
             "a<think>b</think>c",
             parse_think_markers = True,
@@ -2693,7 +2653,6 @@ class TestReasoningPrefilledExtractor:
         assert "<think>" not in reasoning
 
     def test_prefilled_close_at_start_empty_reasoning(self):
-        # T8: model closed immediately (empty reasoning) then answered.
         reasoning, visible = _extract_responses_reasoning(
             "</think>hi",
             parse_think_markers = True,
@@ -2703,7 +2662,7 @@ class TestReasoningPrefilledExtractor:
         assert visible == "hi"
 
     def test_not_prefilled_lone_close_preserves_current_behavior(self):
-        # T9: without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
+        # Without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
         reasoning, visible = _extract_responses_reasoning(
             "reasoning</think>ans",
             parse_think_markers = True,
@@ -2713,7 +2672,6 @@ class TestReasoningPrefilledExtractor:
         assert visible == "reasoningans"
 
     def test_not_prefilled_full_pair_still_splits(self):
-        # T10: normal explicit <think>..</think> (GGUF / Harmony) unchanged.
         reasoning, visible = _extract_responses_reasoning(
             "<think>r</think>v",
             parse_think_markers = True,
@@ -2723,7 +2681,6 @@ class TestReasoningPrefilledExtractor:
         assert visible == "v"
 
     def test_prefilled_ignored_when_markers_not_parsed(self):
-        # T11: a non-reasoning model passes text through even with reasoning_prefilled False.
         reasoning, visible = _extract_responses_reasoning(
             "just an answer",
             parse_think_markers = False,
@@ -2733,9 +2690,6 @@ class TestReasoningPrefilledExtractor:
         assert visible == "just an answer"
 
 
-# =====================================================================
-# Streaming passthrough healing — text-form calls promoted in order
-# =====================================================================
 
 
 class TestResponsesStreamHealing:
@@ -2797,9 +2751,7 @@ class TestResponsesStreamHealing:
         item_added = [
             (name, payload) for name, payload in events if name == "response.output_item.added"
         ]
-        # The call came first in the model output, so its item is added first
-        # and claims the lower output_index; the trailing text's message item
-        # follows.
+        # The call came first in the model output, so its item claims the lower output_index.
         assert [payload["item"]["type"] for _, payload in item_added] == [
             "function_call",
             "message",
@@ -2826,9 +2778,7 @@ class TestResponsesStreamHealing:
         assert text == self._XML
 
     def test_healed_call_splits_message_items(self, monkeypatch):
-        # Text on both sides of a healed call becomes TWO message items: the
-        # healed function_call closes the first, trailing text opens a fresh
-        # one with a later output index (native Responses stream shape).
+        # Text on both sides of a healed call becomes TWO message items, the native Responses stream shape.
         events = self._run_stream(monkeypatch, f"before {self._XML} after.")
         added = [
             (payload["output_index"], payload["item"]["type"], payload["item"].get("id"))
@@ -2841,8 +2791,7 @@ class TestResponsesStreamHealing:
             "message",
         ]
         assert [idx for idx, _, _ in added] == sorted(idx for idx, _, _ in added)
-        assert added[0][2] != added[2][2]  # distinct message item ids
-        # Text deltas attribute to their OWN message item.
+        assert added[0][2] != added[2][2]
         deltas = [
             (payload["item_id"], payload["delta"])
             for name, payload in events
@@ -2850,7 +2799,6 @@ class TestResponsesStreamHealing:
         ]
         assert [d for i, d in deltas if i == added[0][2]] == ["before "]
         assert [d for i, d in deltas if i == added[2][2]] == [" after."]
-        # The completed snapshot lists all three items with per-item text.
         completed = [payload for name, payload in events if name == "response.completed"]
         output = completed[0]["response"]["output"]
         assert [item["type"] for item in output] == ["message", "function_call", "message"]
@@ -2858,10 +2806,7 @@ class TestResponsesStreamHealing:
         assert output[2]["content"][0]["text"] == " after."
 
     def test_parallel_cap_drops_native_after_healed(self, monkeypatch):
-        # parallel_tool_calls=false: a healed call consumed the single allowed
-        # slot; a later native structured call (index 0, so it survives
-        # _drop_parallel_tool_call_deltas) must not open a second
-        # function_call item.
+        # parallel_tool_calls=false: a healed call took the one slot, so a later native call opens no second item.
         TestResponsesStreamAdapter._install_stream_mock(
             monkeypatch,
             [
@@ -2908,8 +2853,7 @@ class TestResponsesStreamHealing:
 
 
 def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
-    # Healed output bypasses append_reply, so a text-form tool call would go untimed
-    # until the item closes near end-of-stream.
+    # Healed output bypasses append_reply, so a text-form tool call went untimed until the item closed.
     from core.inference.api_monitor import api_monitor
 
     xml = TestResponsesStreamHealing._XML
@@ -2942,8 +2886,7 @@ def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
 
 
 def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
-    # A response that is only an unclosed tool block heals in finalize() after the
-    # chunk loop, so nothing before it stamped; the item closes several yields later.
+    # A response that is only an unclosed tool block heals in finalize(), so nothing before it stamped.
     from core.inference.api_monitor import api_monitor
 
     unclosed = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}'
@@ -2972,14 +2915,12 @@ def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
 
     lines = asyncio.run(run())
 
-    # The call really was promoted, so the stamp covers a function_call the client saw.
     assert any("response.function_call_arguments.delta" in line for line in lines)
     assert stamped, "a finalized healed call is output the client already received"
 
 
 def test_healed_responses_tool_call_reports_a_tool_call_stop(monkeypatch):
-    # The upstream chunk still says "stop" while this adapter emitted a function_call,
-    # so the monitor would disagree with the chat stream's synthetic finish line.
+    # The upstream chunk still says "stop" while this adapter emitted a function_call, so the monitor would disagree.
     from core.inference.api_monitor import api_monitor
 
     xml = TestResponsesStreamHealing._XML
@@ -3007,7 +2948,6 @@ def test_healed_responses_tool_call_reports_a_tool_call_stop(monkeypatch):
 
 
 def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
-    # Nothing was promoted, so the upstream reason still describes the response.
     from core.inference.api_monitor import api_monitor
 
     tool = TestResponsesStreamHealing._TOOL

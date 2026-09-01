@@ -76,12 +76,9 @@ def _doc(
     conn.commit()
 
 
-# --------------------------------------------------------------------------------------
-# A. an install that predates the tables the roster's predicate names
-# --------------------------------------------------------------------------------------
+# A. an install that predates the tables the roster's predicate names.
 
-# documents as it shipped before linked folders, project sources and the archive columns:
-# no linked_folder_id, no linked_folder_retired_scopes, no linked_folder_files.
+# documents as it shipped before linked folders, project sources and the archive columns.
 _ANCIENT_SCHEMA = """
 CREATE TABLE documents (
     id TEXT NOT NULL PRIMARY KEY,
@@ -206,7 +203,7 @@ def test_roster_degrades_rather_than_raising_when_the_gate_lies(rag_home, monkey
     from routes import inference
 
     monkeypatch.setattr(rag_db, "_extension_loaded", True)
-    monkeypatch.setattr(rag_db, "_schema_ready", True)  # so nothing migrates it
+    monkeypatch.setattr(rag_db, "_schema_ready", True)
     out = _nudge({"project_id": "p1"})
     assert inference._RAG_GROUNDING_NUDGE in out
     assert _roster(out) == "" or "legacy.pdf" in _roster(out)
@@ -245,12 +242,10 @@ def test_roster_failure_does_not_break_the_rest_of_the_nudge(rag_home, monkeypat
     assert "attached documents are:" not in out
 
 
-# --------------------------------------------------------------------------------------
-# B. file names that carry more than a name
-# --------------------------------------------------------------------------------------
+# B. file names that carry more than a name.
 
-# Only linked folders can produce these: routes/rag.py:_sanitize_filename runs an
-# allowlist over anything uploaded, while folder_sync stores the relative path as found.
+# Only linked folders can produce these: _sanitize_filename runs an allowlist over anything
+# uploaded, while folder_sync stores the relative path as found.
 _HOSTILE = [
     ("esc", "a\x1b[2Kb.pdf", "\x1b"),
     ("bel", "a\x07b.pdf", "\x07"),
@@ -400,9 +395,7 @@ def test_a_name_python_cannot_encode_never_reaches_the_database(rag_conn):
         _doc(rag_conn, "project_p1", "d1", "bad\udcffname.pdf")
 
 
-# --------------------------------------------------------------------------------------
-# C. the async conversion
-# --------------------------------------------------------------------------------------
+# C. the async conversion.
 
 
 def _rag_db_fds():
@@ -444,8 +437,7 @@ def test_many_concurrent_reads_leak_no_database_handles(rag_conn):
     for _ in range(5):
         outs = asyncio.run(_burst(200))
     assert len({*outs}) == 1 and '"f0.pdf"' in outs[0]
-    # 1000 reads. A connection that escaped its finally would be 1000 handles; the
-    # threadpool's own are capped by anyio's 40-worker default.
+    # 1000 reads: a connection that escaped its finally would be 1000 handles.
     assert _rag_db_fds() < 100, f"{_rag_db_fds()} handles open after 1000 reads"
 
 
@@ -512,9 +504,7 @@ def test_the_read_does_not_run_on_the_event_loop(rag_conn, monkeypatch):
     assert loop_thread["read"] != loop_thread["main"]
 
 
-# --------------------------------------------------------------------------------------
-# D. portability
-# --------------------------------------------------------------------------------------
+# D. portability.
 
 
 def test_roster_strip_table_covers_every_control_and_format_character():
@@ -576,9 +566,7 @@ def test_the_roster_needs_nothing_newer_than_the_declared_python_floor():
     assert inference._roster_scopes.__annotations__["return"] == list[str]
 
 
-# --------------------------------------------------------------------------------------
-# F. the roster is not a hardware path
-# --------------------------------------------------------------------------------------
+# F. the roster is not a hardware path.
 
 _ACCELERATORS = [
     ("nvidia", {"CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": ""}),
@@ -630,9 +618,7 @@ def test_the_roster_touches_no_device_or_accelerator_code():
         assert not hit, f"{forbidden}: {src[max(0, hit.start() - 40):hit.end() + 40]!r}"
 
 
-# --------------------------------------------------------------------------------------
-# The count path and the completion path have to agree
-# --------------------------------------------------------------------------------------
+# The count path and the completion path have to agree.
 
 
 def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monkeypatch):
@@ -640,8 +626,8 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
     the composer's context meter prices the roster the model will actually receive. If
     the ids are dropped, or the count path stops awaiting the nudge, the meter
     under-reports by exactly the roster and nothing else notices."""
-    # conftest puts the backend root on sys.path, not the tests directory, so reach the
-    # sibling module's count-endpoint harness the same way pytest itself found it.
+    # conftest puts the backend root on sys.path, not the tests directory, so the sibling module is
+    # reached the same way pytest found it.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from test_openai_auto_switch import _count_request, _count_tokens_backend, _counted_body
 
@@ -656,8 +642,8 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
 
     monkeypatch.setattr(inference_routes, "_select_request_tools", _select)
 
-    # Ending on an assistant turn on purpose: the route refuses to price a pending turn
-    # that would retrieve, so this is the only shape where the roster reaches the meter.
+    # Ending on an assistant turn on purpose: the route refuses to price a pending turn that would
+    # retrieve, so this is the only shape where the roster reaches the meter.
     _counted_body(
         _count_request(
             [
@@ -679,9 +665,7 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
     assert MARK + expected in system, system
 
 
-# --------------------------------------------------------------------------------------
-# The list never claims to be complete when it is not
-# --------------------------------------------------------------------------------------
+# The list never claims to be complete when it is not.
 
 
 @pytest.mark.parametrize("thread_names", [0, 1, 39, 40, 41])

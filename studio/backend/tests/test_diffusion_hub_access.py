@@ -45,7 +45,6 @@ def test_no_token_asks_for_access_and_a_token():
     assert "black-forest-labs/FLUX.2-klein-9B is gated" in message
     assert "https://huggingface.co/black-forest-labs/FLUX.2-klein-9B" in message
     assert "token" in message
-    # The resolve URL and request id are the noise this replaces.
     assert "model_index.json" not in message
     assert "Request ID" not in message
 

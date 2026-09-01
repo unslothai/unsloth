@@ -7,9 +7,8 @@ from core.data_recipe.jobs.types import Job
 
 
 def test_current_sampling_log_sets_stage_and_rows():
-    # data-designer's current phrasing (seen in issue #5848 logs). Without this
-    # the sampling stage never fires and the row total used for overall progress
-    # is lost. The legacy "Preparing samplers ..." line is covered below.
+    # data-designer's current phrasing (issue #5848 logs). Without this the sampling stage never
+    # fires and the row total used for overall progress is lost.
     update = parse_log_message("🌱 Sampling 25 records from seed dataset")
 
     assert update is not None

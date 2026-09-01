@@ -44,7 +44,7 @@ def _alive(pid: int) -> bool:
     if sys.platform == "win32":
         return _win_alive(pid)
     try:
-        os.kill(pid, 0)  # POSIX existence probe (on Windows this would terminate it)
+        os.kill(pid, 0)
         return True
     except OSError:
         return False
@@ -73,19 +73,18 @@ def _wait_dead(pid: int, timeout: float) -> bool:
     return not _alive(pid)
 
 
-# ── No-op safety / composition ──
 
 
 def test_initialize_idempotent_and_noop_on_posix():
     pl.initialize_parent_lifetime()
-    pl.initialize_parent_lifetime()  # second call short-circuits
+    pl.initialize_parent_lifetime()
     if IS_POSIX:
-        assert pl._win_job_handle is None  # POSIX installs no job
+        assert pl._win_job_handle is None
 
 
 def test_adopt_pid_tolerates_none_and_dead_pid():
-    pl.adopt_pid(None)  # ignored
-    pl.adopt_pid(2**31 - 1)  # almost-certainly-dead pid: recorded, never raises
+    pl.adopt_pid(None)
+    pl.adopt_pid(2**31 - 1)
     assert None not in pl._tracked_pids
 
 
@@ -93,7 +92,7 @@ def test_child_popen_kwargs_linux_vs_other(monkeypatch):
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
     assert "preexec_fn" in pl.child_popen_kwargs()
     monkeypatch.setattr(pl, "_is_linux", lambda: False)
-    assert pl.child_popen_kwargs() == {}  # Windows/macOS add nothing here
+    assert pl.child_popen_kwargs() == {}
 
 
 def test_compose_preexec_runs_pdeathsig_then_existing(monkeypatch):
@@ -101,7 +100,7 @@ def test_compose_preexec_runs_pdeathsig_then_existing(monkeypatch):
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
     monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: calls.append(("death", owner)))
     pl.compose_preexec(lambda: calls.append("existing"), 4242)()
-    assert calls == [("death", 4242), "existing"]  # ordering matters for sandbox hooks
+    assert calls == [("death", 4242), "existing"]
 
 
 def test_compose_preexec_passthrough_off_linux(monkeypatch):
@@ -112,8 +111,8 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
 
 
 def test_child_popen_kwargs_binds_the_spawning_pid(monkeypatch):
-    # Compare against the forking pid, so a healthy child of a pid-1 parent is
-    # not mistaken for an orphan (#7886).
+    # Compare against the forking pid, so a healthy child of a pid-1 parent is not mistaken for an
+    # orphan (#7886).
     seen = []
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
     monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: seen.append(owner))
@@ -121,7 +120,6 @@ def test_child_popen_kwargs_binds_the_spawning_pid(monkeypatch):
     assert seen == [os.getpid()]
 
 
-# ── Orphan decision inside the preexec hook ──
 
 
 class _ExitCalled(BaseException):
@@ -147,8 +145,8 @@ def _run_preexec(monkeypatch, *, owner_pid, getppid):
 
 
 def test_pdeathsig_keeps_child_whose_parent_is_pid_1(monkeypatch):
-    # Unsloth as a container entrypoint runs as pid 1, so a healthy child sees
-    # getppid() == 1; killing it took down every llama-server spawn (#7886).
+    # Unsloth as a container entrypoint runs as pid 1, so a healthy child sees getppid() == 1;
+    # killing it took down every llama-server spawn (#7886).
     _run_preexec(monkeypatch, owner_pid = 1, getppid = 1)
 
 
@@ -170,11 +168,10 @@ def _bind_with_parent(monkeypatch, parent):
 
 
 def test_bind_keeps_a_worker_whose_creator_is_alive(monkeypatch):
-    # The decision comes from the creator's sentinel, not a pid compare: under
-    # forkserver the kernel parent is the fork server, so pids would read every
-    # healthy worker as orphaned.
+    # The decision comes from the creator's sentinel, not a pid compare: under forkserver the kernel
+    # parent is the fork server, so pids would read every healthy worker as orphaned.
     seen, exited = _bind_with_parent(monkeypatch, _FakeParent(4242, alive = True))
-    assert seen == [os.getppid()]  # PDEATHSIG still bound to the kernel parent
+    assert seen == [os.getppid()]
     assert exited == []
 
 
@@ -192,8 +189,8 @@ def test_bind_only_arms_pdeathsig_outside_a_multiprocessing_worker(monkeypatch):
 
 
 def test_bind_keeps_a_non_worker_whose_parent_is_pid_1(monkeypatch):
-    # Runs the REAL hook: a non-worker under a container init sees getppid() == 1,
-    # which the bare fallback killed outright.
+    # Runs the REAL hook: a non-worker under a container init sees getppid() == 1, which the bare
+    # fallback killed outright.
     import ctypes
     import multiprocessing
 
@@ -215,7 +212,6 @@ class _FakeParent:
         return self._alive
 
 
-# ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
 
 
 @pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
@@ -233,7 +229,7 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
     try:
         sleeper_pid = int(proc.stdout.readline().strip())
         assert _alive(sleeper_pid)
-        proc.kill()  # hard-kill the parent (no graceful shutdown runs)
+        proc.kill()
         proc.wait(timeout = 5)
         assert _wait_dead(sleeper_pid, 5.0), "child orphaned after parent SIGKILL"
     finally:
@@ -242,9 +238,8 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows Job Object")
 def test_windows_job_kills_child_when_parent_dies(tmp_path):
-    # Real kill-on-job-close: the parent installs the job and assigns itself, a
-    # child inherits it automatically, and terminating the parent must reap the
-    # child (the orphaned-cloudflared.exe scenario).
+    # Real kill-on-job-close: the parent installs the job and assigns itself, a child inherits it,
+    # and terminating the parent must reap the child (the orphaned-cloudflared.exe scenario).
     mid = tmp_path / "mid.py"
     mid.write_text(
         "import sys, subprocess, time\n"
@@ -261,14 +256,13 @@ def test_windows_job_kills_child_when_parent_dies(tmp_path):
         child_pid, installed = int(first[0]), first[1] == "1"
         assert installed, "Windows Job Object was not installed"
         assert _alive(child_pid)
-        proc.kill()  # TerminateProcess the parent -> last job handle closes
+        proc.kill()
         proc.wait(timeout = 5)
         assert _wait_dead(child_pid, 5.0), "child orphaned after parent killed"
     finally:
         proc.kill()
 
 
-# ── terminate_all backstop sweep ──
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
@@ -276,8 +270,8 @@ def test_terminate_all_signals_tracked_and_is_idempotent():
     p = subprocess.Popen(["sleep", "300"])
     pl.adopt_pid(p.pid)
     pl.terminate_all()
-    assert p.wait(timeout = 5) is not None  # reap + confirm it died
-    pl.terminate_all()  # registry now empty; must not raise
+    assert p.wait(timeout = 5) is not None
+    pl.terminate_all()
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
@@ -290,10 +284,10 @@ def test_terminate_all_escalates_to_sigkill():
             "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)",
         ]
     )
-    time.sleep(0.5)  # let the handler install
+    time.sleep(0.5)
     pl.adopt_pid(p.pid)
     pl.terminate_all(timeout = 0.3)
-    assert p.wait(timeout = 5) == -signal.SIGKILL  # SIGTERM ignored, SIGKILL wins
+    assert p.wait(timeout = 5) == -signal.SIGKILL
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
@@ -313,7 +307,7 @@ def test_terminate_all_lets_cooperative_child_exit_cleanly(tmp_path):
     time.sleep(0.5)
     pl.adopt_pid(p.pid)
     pl.terminate_all(timeout = 3.0)
-    assert p.wait(timeout = 3) == 0  # exited via its own handler, not SIGKILL
+    assert p.wait(timeout = 3) == 0
     assert marker.read_text() == "clean"
 
 
@@ -328,19 +322,18 @@ def test_forget_pid_unregisters():
 def test_terminate_all_skips_recycled_pid(monkeypatch):
     # A tracked pid whose identity changed (recycled) must not be signalled.
     p = subprocess.Popen(["sleep", "300"])
-    pl.adopt_pid(p.pid)  # records the real identity
+    pl.adopt_pid(p.pid)
     monkeypatch.setattr(pl, "_pid_identity", lambda _pid: "DIFFERENT")
     pl.terminate_all()
-    assert _alive(p.pid)  # left untouched: identity mismatch
+    assert _alive(p.pid)
     p.kill()
     p.wait(timeout = 5)
 
 
 @pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
 def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
-    # multiprocessing workers can't take a preexec_fn, so the child binds itself
-    # via bind_current_process_to_parent_lifetime(). Killing the parent must reap
-    # it (the gap reviewers found in adopt_pid alone).
+    # multiprocessing workers cannot take a preexec_fn, so the child binds itself via
+    # bind_current_process_to_parent_lifetime(); killing the parent must still reap it.
     mid = tmp_path / "mid_mp.py"
     mid.write_text(
         "import sys, time, multiprocessing as mp\n"
@@ -366,7 +359,6 @@ def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
         proc.kill()
 
 
-# ── Windows Job Object path (mocked kernel32, runs on Linux CI) ──
 
 
 class _Call:
@@ -405,26 +397,25 @@ def test_windows_job_install_order(monkeypatch):
     _patch_windows(monkeypatch, _FakeKernel32(log))
     pl._install_windows_job()
     assert log.index("create") < log.index("set") < log.index("assign")
-    assert pl._win_job_handle == 4321  # handle retained
+    assert pl._win_job_handle == 4321
 
 
 def test_windows_job_install_degrades_on_create_failure(monkeypatch):
     log: list[str] = []
     _patch_windows(monkeypatch, _FakeKernel32(log, create_ret = 0))
-    pl._install_windows_job()  # must not raise
+    pl._install_windows_job()
     assert pl._win_job_handle is None
-    assert "set" not in log  # short-circuited after the failed create
+    assert "set" not in log
 
 
 def test_windows_job_install_degrades_on_assign_failure(monkeypatch):
     log: list[str] = []
     _patch_windows(monkeypatch, _FakeKernel32(log, assign_ret = 0))
     pl._install_windows_job()
-    assert pl._win_job_handle is None  # not retained when assignment fails
-    assert "close" in log  # the orphaned job handle is closed
+    assert pl._win_job_handle is None
+    assert "close" in log
 
 
-# Daemonic workers spawning children (#9094)
 
 
 _NESTED_CHILD_SCRIPT = """
@@ -499,7 +490,6 @@ def test_daemonic_worker_spawns_children_through_the_shim(tmp_path):
     stdout, grandchild_ran = _run_nested_child_arm(tmp_path, "shim")
     assert "worker started exit=0" in stdout
     assert grandchild_ran
-    # The parent still sees the worker as daemonic.
     assert "parent-sees-daemon True" in stdout
 
 

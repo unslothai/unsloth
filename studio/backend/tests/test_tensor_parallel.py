@@ -33,8 +33,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Same external-dep stubs as the other llama_cpp unit tests so importing
-# the backend doesn't drag in structlog / httpx / loggers.
+# The same external-dep stubs as the other llama_cpp unit tests, so the import drags nothing in.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -63,13 +62,12 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Only when the real library is absent: sys.modules holds what has been IMPORTED, so setdefault
+# does not defer to a real httpx nothing has touched yet. This stub has no Response, and
+# starlette.testclient reads httpx.Response at import, so every module collected afterwards that
+# reaches fastapi.testclient dies.
 try:
-    import httpx  # noqa: F401
+    import httpx
 except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
@@ -91,7 +89,6 @@ from models.inference import (
 )
 
 
-# ── Pydantic contract (snake_case key, default False) ────────────────
 
 
 def test_load_request_defaults_tensor_parallel_false():
@@ -105,7 +102,6 @@ def test_load_request_accepts_tensor_parallel():
 
 
 def test_load_request_round_trips_json_key():
-    # The frontend sends the snake_case key verbatim.
     req = LoadRequest.model_validate({"model_path": "owner/repo", "tensor_parallel": True})
     assert req.tensor_parallel is True
     assert req.model_dump()["tensor_parallel"] is True
@@ -113,7 +109,6 @@ def test_load_request_round_trips_json_key():
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
 def test_response_models_emit_tensor_parallel(model_cls):
-    # Default False, and the key is always present in the JSON body.
     if model_cls is LoadResponse:
         default = model_cls(
             status = "loaded",
@@ -135,7 +130,6 @@ def test_response_models_emit_tensor_parallel(model_cls):
     assert on.model_dump()["tensor_parallel"] is True
 
 
-# ── Backend property + reset ─────────────────────────────────────────
 
 
 class _FakeProcess:
@@ -172,12 +166,11 @@ def test_unload_resets_tensor_parallel():
     assert backend.tensor_parallel is False
 
 
-# ── _already_in_target_state reload-detection branch ─────────────────
 
 
 def _loaded_backend(tensor_parallel: bool) -> LlamaCppBackend:
     backend = LlamaCppBackend()
-    backend._process = _FakeProcess()  # is_loaded only checks "is not None"
+    backend._process = _FakeProcess()
     backend._healthy = True
     backend._model_identifier = "owner/repo"
     backend._hf_variant = "Q4_K_M"
@@ -219,8 +212,7 @@ def test_already_in_target_state_matches_same_tensor_parallel(flag):
     [(False, True), (True, False)],
 )
 def test_already_in_target_state_reloads_on_tensor_parallel_change(loaded, requested):
-    # Flipping the toggle either direction must force a reload so the
-    # command is rebuilt with/without --split-mode tensor.
+    # Flipping the toggle either way must force a reload so the command is rebuilt around --split-mode.
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
@@ -232,8 +224,7 @@ def test_already_in_target_state_reloads_when_swa_full_env_changes(monkeypatch):
 
 
 def test_already_in_target_state_reconciles_split_mode_extras():
-    # Tensor engaged via --split-mode in extras (boolean omitted/default False)
-    # must match a server already running tensor mode -- no spurious reload.
+    # Tensor engaged via --split-mode in extras must match a server already running tensor, with no reload.
     backend = _loaded_backend(tensor_parallel = True)
     backend._extra_args = ["--split-mode", "tensor"]
     assert (
@@ -255,7 +246,6 @@ def test_already_in_target_state_reconciles_split_mode_extras():
     )
 
 
-# ── --split-mode tensor is emitted only behind the toggle ────────────
 
 
 def _load_model_source() -> str:
@@ -267,8 +257,7 @@ def test_split_mode_tensor_is_gated_on_the_toggle():
     assert (
         'cmd.extend(["--split-mode", "tensor"])' in src
     ), "the tensor-parallel flag emission must be present in load_model"
-    # The emission lives behind `if tensor_parallel:` -- it must never be
-    # part of the unconditional base cmd list.
+    # The emission lives behind `if tensor_parallel:` and must never be part of the unconditional base cmd list.
     base_start = src.find("cmd = [")
     base_end = src.find("\n                ]", base_start)
     base_block = src[base_start:base_end] if base_end > base_start else ""
@@ -281,14 +270,11 @@ def test_split_mode_tensor_is_gated_on_the_toggle():
 
 
 def test_proportional_tensor_split_is_emitted_in_tensor_mode():
-    # Asymmetric GPUs (e.g. 48 GB + 24 GB) OOM the smaller card under the
-    # even default; the allocator weights --tensor-split by free VRAM. Pin
-    # that the flag is emitted from inside the tensor-parallel block.
+    # Asymmetric GPUs OOM the smaller card under the even default, so --tensor-split is weighted by free VRAM.
     src = _load_model_source()
     assert '"--tensor-split"' in src
     gate = src.find("if tensor_parallel:")
-    # Find the TP block's emission (after the gate); manual mode emits its own
-    # --tensor-split earlier in the source from the user's per-GPU shares.
+    # Find the TP block's emission after the gate; manual mode emits its own --tensor-split earlier.
     ts = src.find('"--tensor-split"', gate)
     nxt_else = src.find("self._tensor_parallel = False")
     assert 0 <= gate < ts < nxt_else, "--tensor-split must be emitted under `if tensor_parallel:`"
@@ -296,18 +282,15 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
 
 
 def test_mtp_decode_probe_wired_under_tensor_parallel():
-    # MTP-draft can pass /health and crash the CUDA FA kernel only on the first
-    # decode under --split-mode tensor. Rather than statically banning MTP+TP
-    # (which a future llama.cpp may support), load_model probes a decode; a hard
-    # fault retries --flash-attn off first, else routes into the MTP-drop fallback.
+    # MTP-draft can pass /health and crash the CUDA FA kernel only on the first decode under
+    # --split-mode tensor, so load_model probes a decode rather than statically banning MTP+TP;
+    # a hard fault retries with flash-attn off first.
     src = _load_model_source()
     probe = src.find("_probe_mtp_decode()")
     assert probe != -1, "load_model must decode-probe MTP under tensor parallelism"
-    # Gated on tensor mode AND an MTP request (ordinary MTP loads stay unprobed).
     guard = src[max(0, probe - 400) : probe]
     assert "self._tensor_parallel" in guard and "_spec_requested_mtp" in guard
-    # A hard fault retries FA-off (keeps MTP) before flipping healthy so the
-    # shared drafter-drop fallback fires.
+    # A hard fault retries FA-off, keeping MTP, before flipping healthy so the shared drafter-drop fallback fires.
     after = src[probe : probe + 900]
     assert "_with_flash_attn_off" in after and "healthy = False" in after
     fallback = src.find(
@@ -317,9 +300,7 @@ def test_mtp_decode_probe_wired_under_tensor_parallel():
 
 
 def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
-    # The probe is the decode-time health gate: True only on a clean 200 from a
-    # live server; any error (dropped connection, non-200, dead process) is a
-    # failed probe so the caller drops MTP and retries.
+    # True only on a clean 200 from a live server; any error is a failed probe, so the caller drops MTP and retries.
     backend = LlamaCppBackend()
     backend._port = 0
 
@@ -327,7 +308,7 @@ def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
         def __init__(self, code):
             self.status_code = code
 
-    backend._process = None  # liveness check skipped; exercise the HTTP result
+    backend._process = None
     monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
     assert backend._probe_mtp_decode(timeout = 1.0) is True
 
@@ -340,18 +321,15 @@ def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
     monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(500), raising = False)
     assert backend._probe_mtp_decode(timeout = 1.0) is False
 
-    # 200 but the server aborted right after (poll() returns an exit code).
     backend._process = _FakeProcess()
     monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
     assert backend._probe_mtp_decode(timeout = 1.0) is False
 
 
-# ── generation-time MTP recovery (mid-stream crash) ──────────────────
 
 
 def _recovery_backend() -> LlamaCppBackend:
-    # A backend that loaded MTP under tensor parallelism and whose server has
-    # since exited (the _FakeProcess poll() returns 0 -> a dead subprocess).
+    # A backend that loaded MTP under tensor parallelism and whose server has since exited.
     b = LlamaCppBackend()
     b._tensor_parallel = True
     b._speculative_type = "draft-mtp"
@@ -367,15 +345,13 @@ def _recovery_backend() -> LlamaCppBackend:
 
 
 def test_generate_chat_completion_wires_runtime_recovery():
-    # The non-tool generation path must route a mid-stream server death into the
-    # recovery helper (the tool + passthrough paths do so from the routes).
+    # The non-tool generation path must route a mid-stream server death into the recovery helper, as the routes do.
     src = inspect.getsource(LlamaCppBackend.generate_chat_completion)
     assert "_maybe_recover_from_mtp_crash" in src
 
 
 def test_runtime_recovery_reloads_without_mtp(monkeypatch):
-    # One background reload with speculative_type="off" (rest of snapshot kept),
-    # then spec_fallback_reason="runtime_error" and single-flight released.
+    # One background reload with speculative_type="off", the snapshot kept, then the reason and release.
     b = _recovery_backend()
     done = threading.Event()
     captured = {}
@@ -390,13 +366,12 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     assert done.wait(timeout = 5)
     assert captured["speculative_type"] == "off"
     assert captured["model_identifier"] == "owner/repo"
-    assert captured["n_parallel"] == 4  # snapshot replayed faithfully
+    assert captured["n_parallel"] == 4
     deadline = time.monotonic() + 2
     while b._spec_fallback_reason != "runtime_error" and time.monotonic() < deadline:
         time.sleep(0.02)
     assert b._spec_fallback_reason == "runtime_error"
-    # The reload thread clears the single-flight flag in its finally, a beat after
-    # it sets the fallback reason -- wait for that instead of racing the thread.
+    # The reload thread clears the single-flight flag in its finally, a beat after the reason: wait, do not race.
     deadline = time.monotonic() + 2
     while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -413,8 +388,7 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     ],
 )
 def test_runtime_recovery_skips_when_not_applicable(monkeypatch, mutate):
-    # No reload when this launch is not running MTP+tensor, there is no snapshot,
-    # the process handle is gone, or the request was cancelled.
+    # No reload when this launch is not MTP+tensor, there is no snapshot, the handle is gone, or it cancelled.
     b = _recovery_backend()
     mutate(b)
     calls = []
@@ -424,8 +398,7 @@ def test_runtime_recovery_skips_when_not_applicable(monkeypatch, mutate):
 
 
 class _BlockingDeadProc:
-    # Reports alive until released, then dead -- lets a test mutate backend state
-    # while the recovery thread is still in its death-confirm poll.
+    # Reports alive until released, then dead, so a test can mutate state during the death-confirm poll.
     def __init__(self):
         self._dead = threading.Event()
 
@@ -447,10 +420,9 @@ class _BlockingDeadProc:
 
 
 def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
-    # MTP driven by user extra_args / LLAMA_ARG_SPEC_TYPE leaves _speculative_type
-    # unset, but the launch flag still gates recovery on (pass-through MTP).
+    # MTP from user extras or LLAMA_ARG_SPEC_TYPE leaves _speculative_type unset, but the flag still gates.
     b = _recovery_backend()
-    b._speculative_type = None  # Unsloth stepped back; user/env owns the spec
+    b._speculative_type = None
     done = threading.Event()
     captured = {}
 
@@ -466,9 +438,8 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
 
 
 def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
-    # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
-    # so MTP can't re-engage and loop. Appending --spec-default cannot do it:
-    # llama.cpp appends spec types rather than replacing, so the flag has to go.
+    # A user --spec-type draft-mtp in extra_args must be neutralised on the reload or MTP re-engages
+    # and loops; appending --spec-default cannot do it, because llama.cpp appends spec types.
     b = _recovery_backend()
     b._last_load_intent = replace(
         b._last_load_intent,
@@ -491,14 +462,13 @@ def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
 
 
 def test_runtime_recovery_restores_requested_mode(monkeypatch):
-    # After the off-reload, /status must show the user's requested mode + the
-    # runtime-error note, not a bare "off" (matches the startup MTP fallback).
+    # After the off-reload, /status must show the user's requested mode plus the runtime-error note, not a bare "off".
     b = _recovery_backend()
     b._last_load_intent = replace(b._last_load_intent, speculative_type = "mtp")
     done = threading.Event()
 
     def _fake_load_model(intent):
-        b._requested_spec_mode = "off"  # what a real off-reload would leave behind
+        b._requested_spec_mode = "off"
         done.set()
         return True
 
@@ -609,16 +579,15 @@ def test_runtime_recovery_publishes_state_atomically_with_unload(monkeypatch):
 
 
 def test_runtime_recovery_skips_when_process_replaced(monkeypatch):
-    # A newer user load that replaces the process during the death-confirm poll
-    # must not be clobbered by the stale recovery replay.
+    # A newer user load replacing the process during the death-confirm poll must survive the stale replay.
     b = _recovery_backend()
     p1 = _BlockingDeadProc()
     b._process = p1
     calls = []
     monkeypatch.setattr(b, "load_model", lambda intent: calls.append(intent))
-    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True  # captures p1
-    b._process = _FakeProcess()  # a newer load swapped the live process
-    p1.release()  # p1 now reports dead -> recovery runs its staleness check
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    b._process = _FakeProcess()
+    p1.release()
     time.sleep(0.6)
     assert calls == [], "stale recovery replayed over a newer load"
 
@@ -638,7 +607,6 @@ def test_runtime_recovery_skips_when_snapshot_changed(monkeypatch):
 
 
 def test_runtime_recovery_is_single_flight(monkeypatch):
-    # Concurrent failures schedule only one reload.
     b = _recovery_backend()
     started = threading.Event()
     release = threading.Event()
@@ -651,15 +619,12 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
     monkeypatch.setattr(b, "load_model", _slow_load)
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
     assert started.wait(timeout = 5)
-    # Second failure while the first reload is in flight is a no-op.
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
     release.set()
 
 
 def test_single_flight_claim_is_released_when_the_reload_cannot_start(monkeypatch):
-    # Only the reload thread's finally clears the claim, so if starting it raises the
-    # claim must not latch: nothing else resets it, and _respawn_if_dead then refuses
-    # forever, for every later model.
+    # Only the reload thread's finally clears the claim, so a raise while starting it would latch it forever.
     b = _recovery_backend()
 
     class _NoThread:
@@ -676,8 +641,7 @@ def test_single_flight_claim_is_released_when_the_reload_cannot_start(monkeypatc
 
 
 def test_load_intent_is_read_once_before_the_claim(monkeypatch):
-    # Gate and snapshot must share one read: reading twice lets an unload null
-    # the intent in between and strand the flag with no thread alive to clear it.
+    # Gate and snapshot must share one read: reading twice lets an unload null the intent and strand the flag.
     b = _recovery_backend()
 
     class _CountingIntent:
@@ -697,7 +661,7 @@ def test_load_intent_is_read_once_before_the_claim(monkeypatch):
     counter = _CountingIntent(GgufLoadIntent(model_identifier = "owner/repo"))
     monkeypatch.setattr(type(b), "_last_load_intent", counter, raising = False)
 
-    class _UnstartedThread:  # keep the reload off-thread so only sync reads count
+    class _UnstartedThread:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -711,8 +675,7 @@ def test_load_intent_is_read_once_before_the_claim(monkeypatch):
 
 
 def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
-    # "Already recovering" must not read as "not an MTP crash": respawning replays the
-    # crashing MTP intent and aborts the in-flight no-MTP reload on its "newer load" check.
+    # "Already recovering" must not read as "not an MTP crash": respawning replays the crashing MTP intent.
     b = _recovery_backend()
     b._mtp_runtime_fallback_in_progress = True
     loads: list[GgufLoadIntent] = []
@@ -721,38 +684,34 @@ def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
     assert b._respawn_if_dead() is False
     assert loads == []
 
-    # Once that reload finishes, an ordinary respawn works again.
     b._mtp_runtime_fallback_in_progress = False
-    b._process.returncode = -9  # only the respawn path logs it
+    b._process.returncode = -9
     assert b._respawn_if_dead() is True
     assert [intent.speculative_type for intent in loads] == ["auto"]
 
 
 def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
-    # Callers losing the same child queue on _respawn_lock and wake holding the healthy
-    # REPLACEMENT. Unable to tell it from their own child, each burns the reap grace, and
-    # that sleep is held under the lock, so N callers cost N grace periods.
+    # Callers losing the same child queue on _respawn_lock and each burns the reap grace: N callers, N graces.
     class _LiveProcess(_FakeProcess):
         returncode = None
 
         def __init__(self):
             self.polls = 0
 
-        def poll(self):  # never reapable, so the grace loop runs to its deadline
+        def poll(self):
             self.polls += 1
             return None
 
     workers = 4
     b = _recovery_backend()
     b._healthy = True
-    b._process.returncode = -9  # only the respawn path logs it
+    b._process.returncode = -9
     live = _LiveProcess()
     loads: list[GgufLoadIntent] = []
     guard = threading.Lock()
     all_in_flight = threading.Event()
 
-    # Subclass this instance, not the class: a descriptor on LlamaCppBackend would
-    # redirect _process for every other live backend, including atexit-registered ones.
+    # Subclass this instance, not the class: a descriptor on LlamaCppBackend redirects every live backend.
     state = {"proc": b._process, "readers": set()}
 
     class _Tracked(type(b)):
@@ -773,15 +732,14 @@ def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
     b.__class__ = _Tracked
 
     def _load(intent):
-        # A real load_model takes seconds, so every caller that lost this child is in
-        # flight before the replacement appears; waiting reproduces that ordering. The
-        # timeout keeps the pre-fix build, where losers cannot read until the lock is
-        # free, from hanging instead of failing.
+        # A real load_model takes seconds, so every caller that lost this child is in flight before the
+        # replacement appears; the timeout keeps the pre-fix build, where losers cannot read until the
+        # lock is free, from hanging instead of failing.
         all_in_flight.wait(timeout = 2)
         with guard:
             loads.append(intent)
         b._process = live
-        b._healthy = True  # the real load_model marks the new server healthy
+        b._healthy = True
         return True
 
     monkeypatch.setattr(b, "load_model", _load)
@@ -802,8 +760,7 @@ def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
 
     assert results == [True] * workers, results
     assert len(loads) == 1, f"{len(loads)} reloads, expected one"
-    # The grace loop is the only poll() of a live process, so any count means a queued
-    # caller charged the wait to a server that never failed.
+    # The grace loop is the only poll() of a live process, so any count means a queued caller paid the wait.
     assert live.polls == 0, "queued caller waited out the grace on a healthy server"
     assert elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S * (workers - 1)
 
@@ -835,9 +792,8 @@ class _DyingChild(_FakeProcess):
 
 
 def test_respawn_does_not_resurrect_a_deliberate_unload(monkeypatch):
-    # unload_model() sets _cancel_event before killing, so a request that loses the
-    # connection can watch that deliberate exit through the grace loop and call it a
-    # crash, with _last_load_intent still populated (unload clears it after the kill).
+    # unload_model() sets _cancel_event before killing, so a request that loses the connection can
+    # watch that deliberate exit through the grace loop and call it a crash.
     b = _recovery_backend()
     b._healthy = True
     b._process = _DyingChild()
@@ -850,7 +806,6 @@ def test_respawn_does_not_resurrect_a_deliberate_unload(monkeypatch):
 
 
 def test_respawn_rechecks_the_cancel_flag_after_the_grace_wait(monkeypatch):
-    # The unload can also begin while we are already sleeping in the grace loop.
     b = _recovery_backend()
     b._healthy = True
     b._process = _DyingChild(on_death = b._cancel_event.set)
@@ -862,8 +817,7 @@ def test_respawn_rechecks_the_cancel_flag_after_the_grace_wait(monkeypatch):
 
 
 def test_respawn_does_not_revert_a_newer_load(monkeypatch):
-    # A model switch landing while we wait must win; replaying the old intent would
-    # swap the user's new model back out.
+    # A model switch landing while we wait must win; replaying the old intent would swap the user's new model back out.
     b = _recovery_backend()
     b._healthy = True
     replacement = _DyingChild(alive_polls = 10**6)
@@ -877,7 +831,6 @@ def test_respawn_does_not_revert_a_newer_load(monkeypatch):
 
 
 def test_respawn_still_recovers_an_ordinary_crash(monkeypatch):
-    # Guard rail: none of the above may disable the recovery this path exists for.
     b = _recovery_backend()
     b._healthy = True
     b._process = _DyingChild(code = -9)
@@ -898,9 +851,7 @@ class _NeverReapable(_FakeProcess):
 
 
 def test_a_transient_error_against_a_live_server_costs_nothing(monkeypatch):
-    # The reap grace must not be charged to a server that never died: the sleep is
-    # held under _respawn_lock, so a full grace per caller serialises into N seconds
-    # of added latency on an install that is working fine.
+    # The reap grace must not be charged to a server that never died: held under the lock, it serialises.
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -926,8 +877,7 @@ def test_a_transient_error_against_a_live_server_costs_nothing(monkeypatch):
 
 
 def test_a_closed_port_still_waits_for_the_child_to_be_reapable(monkeypatch):
-    # The other half: no listener means the server really is gone, so the grace
-    # still runs and the reap-race fix is preserved.
+    # No listener means the server really is gone, so the grace still runs and the reap-race fix is preserved.
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     probe.bind(("127.0.0.1", 0))
     dead_port = probe.getsockname()[1]
@@ -945,9 +895,7 @@ def test_a_closed_port_still_waits_for_the_child_to_be_reapable(monkeypatch):
 
 
 def test_socket_fast_path_honours_a_pending_unload(monkeypatch):
-    # unload_model() sets _cancel_event before it kills, so the child is still
-    # accepting when the probe runs. Reporting it healthy aims the retry at a server
-    # that is deliberately going away.
+    # unload_model() sets _cancel_event before it kills, so a healthy verdict aims the retry at a dying server.
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -968,10 +916,9 @@ def test_socket_fast_path_honours_a_pending_unload(monkeypatch):
 
 
 def test_an_unload_landing_during_the_reload_is_undone(monkeypatch):
-    # The cancel check cannot live under _serial_load_lock alone: unload_model never
-    # takes that lock, so it can land entirely between the check and load_model and
-    # the captured intent then restarts a model the user stopped. load_model clears
-    # _cancel_event on the way in, so _unload_epoch is the surviving evidence.
+    # The cancel check cannot live under _serial_load_lock alone: unload_model never takes that lock,
+    # so it can land entirely between the check and load_model. load_model clears _cancel_event on
+    # the way in, so _unload_epoch is the surviving evidence.
     b = _recovery_backend()
     b._healthy = True
     b._process = _FakeProcess()
@@ -983,7 +930,6 @@ def test_an_unload_landing_during_the_reload_is_undone(monkeypatch):
     real_unload = b.unload_model
     monkeypatch.setattr(b, "unload_model", lambda: unloads.append(1) or real_unload())
 
-    # The warning marks the window: after the snapshot, before the reload.
     real_warning = llama_cpp_module.logger.warning
     fired: list[int] = []
 
@@ -1000,8 +946,7 @@ def test_an_unload_landing_during_the_reload_is_undone(monkeypatch):
 
 
 def test_socket_probe_is_false_without_a_port():
-    # Unloaded backends have no port; the probe must not raise, and the caller
-    # then falls back to the poll-based grace.
+    # Unloaded backends have no port, so the probe must not raise and the caller falls back to the poll-based grace.
     b = _recovery_backend()
     b._port = None
     assert b._server_socket_is_open() is False
@@ -1024,8 +969,7 @@ def test_runtime_recovery_rechecks_cancel_after_the_death_poll(monkeypatch):
 
 
 def test_probe_mtp_decode_uses_api_key_auth(monkeypatch):
-    # Direct-stream mode runs llama-server with --api-key; the probe must send
-    # the same bearer auth or it gets a spurious 401 and falsely drops MTP.
+    # Direct-stream mode runs llama-server with --api-key, so the probe must send it or a 401 drops MTP.
     backend = LlamaCppBackend()
     backend._port = 0
     backend._process = None
@@ -1074,8 +1018,7 @@ class _ToggleProcess:
 
 
 def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
-    # The watchdog must notice the process exit and recover even when no request
-    # handler observed it (e.g. the direct proxy endpoints).
+    # The watchdog must notice the process exit and recover even when no request handler observed it.
     b = _recovery_backend()
     proc = _ToggleProcess()
     b._process = proc
@@ -1088,15 +1031,14 @@ def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
 
 
 def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
-    # A planned reload/unload stops the watchdog before killing the process, so
-    # the resulting death must not be mistaken for a crash.
+    # A planned reload or unload stops the watchdog before killing, so that death is not read as a crash.
     b = _recovery_backend()
     proc = _ToggleProcess()
     b._process = proc
     fired = threading.Event()
     monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
     b._start_mtp_crash_watchdog()
-    b._stop_mtp_crash_watchdog()  # what _kill_process does first
+    b._stop_mtp_crash_watchdog()
     proc.die()
     assert not fired.wait(timeout = 2)
     assert b._mtp_watchdog_thread is None
@@ -1110,7 +1052,6 @@ def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
     ],
 )
 def test_crash_watchdog_not_armed_when_inapplicable(mutate):
-    # Only a launch actually running MTP+tensor with a live process arms it.
     b = _recovery_backend()
     b._process = _ToggleProcess()
     mutate(b)
@@ -1119,8 +1060,7 @@ def test_crash_watchdog_not_armed_when_inapplicable(mutate):
 
 
 def test_kill_process_stops_crash_watchdog(monkeypatch):
-    # _kill_process is the single deliberate-termination chokepoint; it must
-    # stop the watchdog so the planned kill isn't seen as a crash.
+    # _kill_process is the single deliberate-termination chokepoint, so it must stop the watchdog itself.
     b = _recovery_backend()
     proc = _ToggleProcess()
     b._process = proc
@@ -1134,8 +1074,7 @@ def test_kill_process_stops_crash_watchdog(monkeypatch):
 
 
 def test_kill_process_stops_watchdog_before_terminate():
-    # Ordering matters: stop the watchdog before terminating so the watchdog's
-    # post-death stop re-check reliably sees a planned kill.
+    # Ordering matters: stop the watchdog before terminating so its post-death re-check reliably sees a planned kill.
     src = inspect.getsource(LlamaCppBackend._kill_process)
     stop = src.find("_stop_mtp_crash_watchdog()")
     term = src.find(".terminate(")
@@ -1143,8 +1082,7 @@ def test_kill_process_stops_watchdog_before_terminate():
 
 
 def test_crash_watchdog_rechecks_stop_before_recovery():
-    # After a detected exit the watchdog re-checks the stop flag so a kill that
-    # raced in between the poll-wait and the poll-read can't fire recovery.
+    # After a detected exit the watchdog re-checks the stop flag, so a kill racing the poll cannot fire recovery.
     src = inspect.getsource(LlamaCppBackend._start_mtp_crash_watchdog)
     check = src.find("stop.is_set()")
     recover = src.find("_maybe_recover_from_mtp_crash")
@@ -1152,16 +1090,13 @@ def test_crash_watchdog_rechecks_stop_before_recovery():
 
 
 def test_load_model_arms_crash_watchdog():
-    # The healthy-load commit arms the watchdog for this load.
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_start_mtp_crash_watchdog" in src
 
 
-# ── tensor-mode allocation: conservative VRAM budget ─────────────────
 
 
 def _kv_seeded_backend() -> LlamaCppBackend:
-    # Minimal GGUF metadata so _can_estimate_kv() is True (legacy KV path).
     backend = LlamaCppBackend()
     backend._n_layers = 32
     backend._embedding_length = 4096
@@ -1174,13 +1109,12 @@ def _kv_seeded_backend() -> LlamaCppBackend:
 def test_fit_context_budget_frac_override_is_tighter():
     backend = _kv_seeded_backend()
     model_size = 8 * 1024**3
-    pool_mib = 24 * 1024  # tight enough that KV capping bites
+    pool_mib = 24 * 1024
 
     fit_default = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16")
     fit_tp = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16", budget_frac = 0.80)
     assert fit_tp < 131072, "expected the context to be capped at this VRAM tier"
     assert fit_tp <= fit_default, "a tighter budget must not allow MORE context"
-    # Omitting the override must reproduce the default budget exactly.
     assert backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
 
 
@@ -1217,7 +1151,6 @@ def test_fit_context_follows_the_user_vram_budget(monkeypatch):
     assert fit_max > fit_default, "claiming the whole card must buy context back"
     assert fit_min < fit_default, "a smaller budget must give context up"
 
-    # And clearing it returns to exactly the historical number, not merely close.
     monkeypatch.setattr(vb, "_cached_setting", lambda _key: None)
     assert _fit() == fit_default
 
@@ -1250,13 +1183,11 @@ def test_tensor_plan_leaves_the_floor_reserve_at_a_full_budget():
             vram_fraction = frac,
         )
 
-    # The fraction whose percentage reserve is exactly the floor on this card, so
-    # a floored 100% and this must plan identically.
+    # The fraction whose percentage reserve is exactly the floor here, so a floored 100% must plan the same.
     floor_frac = 1.0 - lc._VRAM_FLOOR_RESERVE_MIB / total_mib
     assert floor_frac > lc._CTX_FIT_VRAM_FRACTION, "24 GiB: 1% is under the floor"
 
-    # The weighted split exposes the per-device budget directly: each weight is
-    # the usable budget less the per-device buffers.
+    # The weighted split exposes the per-device budget: each weight is usable less the per-device buffers.
     *_, split_full = _plan(1.0, 40)
     *_, split_floor = _plan(floor_frac, 40)
     *_, split_default = _plan(lc._CTX_FIT_VRAM_FRACTION, 40)
@@ -1264,18 +1195,15 @@ def test_tensor_plan_leaves_the_floor_reserve_at_a_full_budget():
     assert (
         split_full == split_floor
     ), f"100% spent {split_full} per card where the floor allows {split_floor}"
-    # The default still reserves its full 3% (737 MiB > the floor), so the floor
-    # must not have flattened every budget onto the same number.
+    # The default still reserves its full 3%, so the floor must not have flattened every budget onto the same number.
     assert all(d < f for d, f in zip(split_default, split_full))
 
-    # And the fitted context, which is what actually OOMs at startup.
     ctx_full, *_ = _plan(1.0, 36)
     ctx_floor, *_ = _plan(floor_frac, 36)
     assert ctx_full < 131072, "expected the context to be capped at this VRAM tier"
     assert ctx_full == ctx_floor
 
 
-# ── unsupported-arch load failure -> clean message ───────────────────
 
 
 def test_split_mode_tensor_arch_failure_message():
@@ -1295,14 +1223,11 @@ def test_unrelated_arch_failure_not_hijacked_by_tensor_message():
     assert "Tensor parallelism" not in msg
 
 
-# ── _plan_tensor_parallel: the allocation math (pure, no model/GPU) ───
-# Seeded full-attention KV (~128 KiB/token) via _kv_seeded_backend, so the
-# context cap + split are deterministic. Asserts relationships rather than
-# magic numbers so the KV estimate can evolve without breaking these.
+# Seeded full-attention KV so the cap and split are deterministic; relationships, not numbers, so KV can evolve.
 
 _GB = 1024**3
-_ASYM = [(0, 48000), (1, 24000)]  # asymmetric pool, 72000 MiB
-_SYM = [(0, 24000), (1, 24000)]  # symmetric pool
+_ASYM = [(0, 48000), (1, 24000)]
+_SYM = [(0, 24000), (1, 24000)]
 
 
 def _plan(
@@ -1316,7 +1241,6 @@ def _plan(
 
 
 def _kv_budget_b(model_gb, gpus = _ASYM):
-    # No totals here, so usable is the legacy free*frac (keeps the 5% cushion).
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     usable = sum(f * _CTX_FIT_VRAM_FRACTION for _, f in gpus)
     return (usable - len(gpus) * reserve) * 1024 * 1024 - int(model_gb * _GB)
@@ -1326,21 +1250,18 @@ def test_tp_plan_weighted_split_on_asymmetric_big_model():
     b, (ec, mac, gi, ts) = _plan(50)
     reserve = b._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     assert gi == [0, 1]
-    # split weighted by (usable - flat buffer - per-device context compute); with
-    # no totals usable is free*frac. The per-device cc is subtracted so the smaller
-    # card isn't weighted above its real usable budget (see below).
+    # Split weighted by usable less the flat buffer and per-device context compute, so the small card fits.
     cc_per_dev = b._compute_buffer_ctx_bytes(ec, None, None) // (1024 * 1024)
     assert cc_per_dev > 0
     assert ts == [
         int(48000 * _CTX_FIT_VRAM_FRACTION - reserve - cc_per_dev),
         int(24000 * _CTX_FIT_VRAM_FRACTION - reserve - cc_per_dev),
     ]
-    assert ec < 131072  # capped below native
+    assert ec < 131072
 
 
 def test_tp_plan_even_split_when_model_fits():
-    # A small model whose even share fits the smallest GPU -> llama.cpp's even
-    # default (None), which is safe for archs that crash on a weighted split.
+    # A small model whose even share fits the smallest GPU keeps llama.cpp's even default, safe for all archs.
     _, (ec, mac, gi, ts) = _plan(4)
     assert ts is None
 
@@ -1352,28 +1273,24 @@ def test_tp_plan_symmetric_gpus_use_even_split():
 
 def test_tp_plan_context_fits_pool_budget_no_oom():
     b, (ec, mac, gi, ts) = _plan(50)
-    # the chosen context's KV must fit the pooled budget (weights + buffers)
     assert b._estimate_kv_cache_bytes(ec) <= _kv_budget_b(50)
 
 
 def test_tp_plan_uses_available_vram_not_wasteful():
-    # when the cap engages, the chosen context nearly fills the budget
     b, (ec, mac, gi, ts) = _plan(50)
     assert b._estimate_kv_cache_bytes(ec) >= 0.9 * _kv_budget_b(50)
 
 
 def test_tp_plan_weights_exceed_pool_floors_context():
-    # 70 GB > pool minus per-GPU reserves -> floor (triggers layer fallback)
     _, (ec, mac, gi, ts) = _plan(70)
     assert ec == 2048
 
 
 def test_tp_plan_floor_never_exceeds_explicit_small_context():
-    # An explicit context below the 2048 floor must not be raised: a caller
-    # asking for 1024 should not have KV sized for 2048 (avoidable OOM).
-    _, (ec, mac, gi, ts) = _plan(70, target = 1024)  # weights exceed pool -> floor path
+    # An explicit context below the 2048 floor must not be raised: 1024 asked for is not KV sized for 2048.
+    _, (ec, mac, gi, ts) = _plan(70, target = 1024)
     assert ec == 1024
-    _, (ec2, *_rest) = _plan(50, target = 1024)  # cap path with a tiny budget
+    _, (ec2, *_rest) = _plan(50, target = 1024)
     assert ec2 <= 1024
 
 
@@ -1388,13 +1305,12 @@ def test_tp_plan_explicit_context_capped_when_too_large():
 
 
 def test_tp_plan_max_available_ctx_reports_native_not_explicit_ctx():
-    # An explicit small ctx caps effective_ctx but the UI ceiling
-    # (max_available_ctx) must reflect the native/hardware cap, not the request.
+    # An explicit small ctx caps effective_ctx, but max_available_ctx must show the hardware cap.
     b = _kv_seeded_backend()
     ec, mac, _gi, _ts = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 8192, max_target_ctx = 131072)
     _, native_mac, *_ = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
-    assert ec == 8192  # explicit request honored for the load
-    assert mac == native_mac > ec  # ceiling reflects the hardware cap
+    assert ec == 8192
+    assert mac == native_mac > ec
 
 
 def test_tp_plan_mtp_reserves_extra_and_shrinks_context():
@@ -1404,10 +1320,8 @@ def test_tp_plan_mtp_reserves_extra_and_shrinks_context():
 
 
 def test_tp_plan_reserves_context_linear_compute_buffer():
-    # Tensor mode replicates the compute graph on every device; measured on
-    # Qwen3.5-9B at f16 the per-device buffer grows ~n_ubatch*2 B/token (~1024
-    # B/tok), so the fit must reserve n_dev x that on top of the flat reserve or
-    # it over-pins and OOMs at high context. The chosen KV must leave room for it.
+    # Tensor mode replicates the compute graph on every device, and measured on Qwen3.5-9B at f16 the
+    # per-device buffer grows about 1024 B/token, so the fit reserves n_dev times that.
     b, (ec, mac, gi, ts) = _plan(50)
     cc = len(gi) * b._compute_buffer_ctx_bytes(ec, None, "f16")
     assert cc > 0
@@ -1415,20 +1329,16 @@ def test_tp_plan_reserves_context_linear_compute_buffer():
 
 
 def test_tp_plan_context_shrinks_vs_compute_unaware():
-    # With the context-linear term the pinned context is strictly below what a
-    # KV-only (compute-unaware) fit at the same budget would allow.
+    # With the context-linear term the pinned context is strictly below a compute-unaware fit's.
     b, (ec, *_r) = _plan(50)
     b2 = _kv_seeded_backend()
-    b2._embedding_length = 0  # kills the context-linear compute term (returns 0)
+    b2._embedding_length = 0
     ec_naive, *_r2 = b2._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
     assert ec < ec_naive
 
 
 def test_tp_plan_soft_overhead_shrinks_context():
-    # The CUDA-ctx / mmproj / MTP-draft reserve the layer path folds into the fit
-    # budget (model_size_fit) must also shrink the tensor context. Tensor mode has
-    # no --fit valve, so an unreserved overshoot OOMs at startup instead of
-    # offloading. A non-zero soft_overhead must pin a strictly smaller context.
+    # Tensor mode has no --fit valve, so the reserve must shrink the tensor context or an overshoot OOMs at startup.
     b = _kv_seeded_backend()
     ec_no, *_r = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
     ec_soft, *_r2 = b._plan_tensor_parallel(
@@ -1438,8 +1348,7 @@ def test_tp_plan_soft_overhead_shrinks_context():
 
 
 def test_tp_plan_soft_overhead_reserved_against_budget():
-    # The pinned context must leave the whole soft reserve free on top of KV and
-    # the replicated context compute, so the real footprint stays within the pool.
+    # The pinned context must leave the whole soft reserve free on top of KV and the replicated context compute.
     b = _kv_seeded_backend()
     soft = 2 * _GB
     ec, *_r = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072, soft_overhead_bytes = soft)
@@ -1448,11 +1357,10 @@ def test_tp_plan_soft_overhead_reserved_against_budget():
 
 
 def test_tp_plan_weighted_split_keeps_small_gpu_within_budget():
-    # Regression: the weighted split must subtract each device's replicated context
-    # compute (cc_bytes/n_dev), not just the flat reserve. Otherwise the smaller
-    # card is weighted above its usable budget and OOMs at launch. Model the split:
-    # llama.cpp distributes weights+KV by the tensor-split weights; every device
-    # also holds the flat reserve plus its per-device context compute.
+    # The weighted split must subtract each device's replicated context compute, not just the flat
+    # reserve, or the smaller card is weighted above its usable budget and OOMs at launch. llama.cpp
+    # distributes weights+KV by the tensor-split weights while every device also holds the flat
+    # reserve plus its per-device context compute.
     b, (ec, mac, gi, ts) = _plan(50)
     assert ts is not None and len(ts) == len(gi) == 2
     reserve = b._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
@@ -1463,24 +1371,22 @@ def test_tp_plan_weighted_split_keeps_small_gpu_within_budget():
     for w, idx in zip(ts, gi):
         placed = split_content_mib * w / total_weight
         usable = free_by_idx[idx] * _CTX_FIT_VRAM_FRACTION
-        assert placed + reserve + cc_per_dev <= usable + 1  # +1 MiB for int rounding
+        assert placed + reserve + cc_per_dev <= usable + 1
 
-    # Lock the regression: under the old formula (flat reserve only) the smaller
-    # card was placed over its budget; the cc term is what pulls it back.
+    # Under the old formula the smaller card was placed over its budget; the cc term is what pulls it back.
     old_adj = [int(free_by_idx[i] * _CTX_FIT_VRAM_FRACTION - reserve) for i in gi]
     old_small_placed = split_content_mib * old_adj[1] / sum(old_adj)
     assert old_small_placed + reserve + cc_per_dev > free_by_idx[1] * _CTX_FIT_VRAM_FRACTION
 
 
 def test_tp_plan_no_kv_metadata_floors_context():
-    b = LlamaCppBackend()  # no KV metadata -> can't size safely
+    b = LlamaCppBackend()
     ec, mac, gi, ts = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
     assert ec <= 4096
 
 
 def test_tp_plan_single_gpu_never_splits():
-    # The toggle is a no-op without >= 2 GPUs (most dev/CI machines). Even if
-    # the planner is reached, it must not emit a tensor split.
+    # The toggle is a no-op under two GPUs, and even if the planner is reached it emits no tensor split.
     b = _kv_seeded_backend()
     ec, mac, gi, ts = b._plan_tensor_parallel([(0, 24000)], int(8 * _GB), 8192)
     assert ts is None
@@ -1495,9 +1401,7 @@ def test_tp_plan_zero_gpus_never_splits():
 
 
 def test_tp_plan_drops_gpu_below_buffer_reserve():
-    # A GPU with less free VRAM than the per-device compute-buffer reserve
-    # can't host tensor mode; it's excluded, which here leaves <2 usable -> no
-    # split (and gpu_indices reflects only the usable device).
+    # A GPU with less free VRAM than the per-device compute reserve cannot host tensor mode and is excluded.
     b = _kv_seeded_backend()
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     ec, mac, gi, ts = b._plan_tensor_parallel([(0, 48000), (1, reserve - 1)], int(8 * _GB), 8192)
@@ -1505,10 +1409,8 @@ def test_tp_plan_drops_gpu_below_buffer_reserve():
     assert ts is None
 
 
-# ── route auto-fallback survives a *raised* tensor-load crash ─────────
-# A tensor-incompatible model makes load_model RAISE (not return False); the
-# /load fallback must catch it and retry with layer split (stripping --split-mode
-# so the retry can't relaunch tensor), while a non-tensor load propagates.
+# A tensor-incompatible model makes load_model RAISE rather than return False, so /load must catch
+# it and retry with layer split, stripping --split-mode so the retry cannot relaunch tensor.
 
 
 class _RecordingLoader:
@@ -1532,7 +1434,6 @@ def test_tensor_fallback_retries_layer_on_crash():
         load_with_tensor_fallback(loader, requested_tensor = True, extra_args = None, label = "m")
     )
     assert ok is True
-    # tensor first (crashes), then layer split.
     assert [c[0] for c in loader.calls] == [True, False]
 
 
@@ -1547,12 +1448,11 @@ def test_tensor_fallback_no_retry_on_success():
         load_with_tensor_fallback(_ok, requested_tensor = True, extra_args = None, label = "m")
     )
     assert ok is True
-    assert calls == [True]  # no fallback when the tensor load succeeds
+    assert calls == [True]
 
 
 def test_tensor_fallback_retries_when_tensor_returns_false():
-    # load_model can signal failure by *returning False* (not only by raising);
-    # that must trigger the layer-split retry just like a crash does.
+    # load_model can signal failure by returning False, which must trigger the layer-split retry just like a crash.
     calls: list[bool] = []
 
     async def _false_on_tensor(tensor_parallel, extra_args):
@@ -1569,8 +1469,7 @@ def test_tensor_fallback_retries_when_tensor_returns_false():
 
 
 def test_tensor_fallback_returns_false_when_both_attempts_fail():
-    # Tensor fails and the layer retry also fails -> the helper returns False so
-    # the route raises its own HTTP 500 (it does not crash mid-flight).
+    # Tensor fails and the layer retry also fails, so the helper returns False and the route raises its own HTTP 500.
     calls: list[bool] = []
 
     async def _always_false(tensor_parallel, extra_args):
@@ -1581,12 +1480,11 @@ def test_tensor_fallback_returns_false_when_both_attempts_fail():
         load_with_tensor_fallback(_always_false, requested_tensor = True, extra_args = None, label = "m")
     )
     assert ok is False
-    assert calls == [True, False]  # tried tensor, then layer split
+    assert calls == [True, False]
 
 
 def test_tensor_fallback_skips_layer_retry_when_cancelled():
-    # load_model returns False on a user cancellation too. When cancelled() is
-    # True, the helper must NOT relaunch the load the user just cancelled.
+    # load_model returns False on a user cancellation too, and cancelled() must stop the relaunch.
     calls: list[bool] = []
 
     async def _false_on_tensor(tensor_parallel, extra_args):
@@ -1603,7 +1501,7 @@ def test_tensor_fallback_skips_layer_retry_when_cancelled():
         )
     )
     assert ok is False
-    assert calls == [True]  # no layer-split retry after cancellation
+    assert calls == [True]
 
 
 @pytest.mark.parametrize(
@@ -1616,31 +1514,25 @@ def test_tensor_fallback_skips_layer_retry_when_cancelled():
     ],
 )
 def test_tensor_fallback_strips_split_mode_from_extras_on_retry(extras):
-    # Tensor engaged via extras (boolean False); the retry must drop every
-    # --split-mode form (long/short, space/=) and force layer, keeping the user's
-    # other flags, else tensor is re-enabled and relaunches the crash.
+    # The retry must drop every --split-mode form and force layer, or tensor is re-enabled and relaunches the crash.
     loader = _RecordingLoader()
     ok = asyncio.run(
         load_with_tensor_fallback(loader, requested_tensor = False, extra_args = extras, label = "m")
     )
     assert ok is True
     assert len(loader.calls) == 2
-    # User --split-mode replaced by an explicit layer override; -c kept.
     assert loader.calls[1][1] == ["-c", "4096", "--split-mode", "layer"]
 
 
 def test_tensor_fallback_env_tensor_retry_forces_layer(monkeypatch):
-    # Env-only tensor (toggle off, no --split-mode extra): load_model engages
-    # tensor via LLAMA_ARG_SPLIT_MODE and a tensor-incompatible model crashes. The
-    # wrapper must (1) recognise the env tensor request and retry, and (2) force
-    # --split-mode layer so the retry doesn't re-engage tensor via the still-set
-    # env and crash again (#6312).
+    # Env-only tensor: load_model engages tensor via LLAMA_ARG_SPLIT_MODE, so the wrapper must
+    # recognise the env request and force --split-mode layer on the retry or the still-set env
+    # re-engages tensor and crashes again (#6312).
     monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
     calls: list = []
 
     async def _crash_when_effectively_tensor(tensor_parallel, extra_args):
         calls.append(list(extra_args) if extra_args else extra_args)
-        # Mirror real load_model: env-aware tensor engagement crashes.
         if _effective_tensor_parallel(extra_args, tensor_parallel):
             raise RuntimeError("llama-server failed to start (tensor)")
         return True
@@ -1655,7 +1547,6 @@ def test_tensor_fallback_env_tensor_retry_forces_layer(monkeypatch):
     )
     assert ok is True
     assert len(calls) == 2
-    # The forced layer override neutralises the inherited tensor env on retry.
     assert calls[1] == ["--split-mode", "layer"]
 
 
@@ -1671,33 +1562,29 @@ def test_tensor_fallback_propagates_non_tensor_crash():
         )
 
 
-# ── _plan_tensor_parallel: total-based headroom + ubatch (review fixes) ──
 
 
 def test_tensor_caps_context_to_total_vram_budget():
-    # Partly-used 80 GB cards: 20 GB free each. With total_by_idx the planner must
-    # cap occupancy at 0.95*total (not spend the cushion the layer-split paths keep).
+    # Partly-used 80 GB cards, 20 GB free: with total_by_idx the planner caps at 0.95*total, keeping the cushion.
     b = _kv_seeded_backend()
     gpus = [(0, 20000), (1, 20000)]
     totals = {0: 81920, 1: 81920}
     model = int(18 * _GB)
     with_total, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = totals)
     without, *_ = b._plan_tensor_parallel(gpus, model, 131072)
-    assert with_total < without  # total cap tightens the chosen context
+    assert with_total < without
 
     MIB = 1024 * 1024
-    reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB  # flat (no vocab dims)
+    reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     pool_usable = sum(f - (1.0 - _CTX_FIT_VRAM_FRACTION) * totals[i] for i, f in gpus)
     foot_total = (model + b._estimate_kv_cache_bytes(with_total, None)) / MIB + len(gpus) * reserve
     foot_free = (model + b._estimate_kv_cache_bytes(without, None)) / MIB + len(gpus) * reserve
-    assert foot_total <= pool_usable + 2  # fix: fits the total-based budget
-    assert foot_free > pool_usable  # old behavior over-spent the cushion
+    assert foot_total <= pool_usable + 2
+    assert foot_free > pool_usable
 
 
 def test_tensor_unknown_total_keeps_fraction_cushion():
-    # A two-column nvidia-smi probe yields total 0. The planner must fall back to
-    # free*frac (keep the 5% cushion), like _select_gpus/_gpu_usable, not raw free,
-    # or it over-advertises context exactly where the PR is hardening the budget.
+    # A two-column nvidia-smi probe yields total 0, so fall back to free*frac like _select_gpus, not raw free.
     b = _kv_seeded_backend()
     gpus = [(0, 20000), (1, 20000)]
     MIB = 1024 * 1024
@@ -1705,16 +1592,15 @@ def test_tensor_unknown_total_keeps_fraction_cushion():
     model = int(18 * _GB)
     ec_zero, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = {0: 0, 1: 0})
     ec_none, *_ = b._plan_tensor_parallel(gpus, model, 131072)
-    assert ec_zero == ec_none  # total 0 == total absent: both use free*frac
+    assert ec_zero == ec_none
     pool_free = sum(f for _, f in gpus)
     foot = (model + b._estimate_kv_cache_bytes(ec_zero, None)) / MIB + len(gpus) * reserve
-    assert foot <= pool_free * _CTX_FIT_VRAM_FRACTION + 2  # within free*frac, not raw free
+    assert foot <= pool_free * _CTX_FIT_VRAM_FRACTION + 2
 
 
 def test_tensor_reserve_scales_with_ubatch():
-    # A user --ubatch override must enlarge the per-device reserve -> less ctx room.
     b = _kv_seeded_backend()
-    b._vocab_size = 152064  # enable the deterministic compute-buffer estimate
+    b._vocab_size = 152064
     gpus = [(0, 16000), (1, 16000)]
     model = int(18 * _GB)
     small_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch = 512)
@@ -1723,14 +1609,11 @@ def test_tensor_reserve_scales_with_ubatch():
 
 
 def test_plan_tensor_carries_unsized_mtp_flat_reserve():
-    # review run3 #1/#5: with a weights-only (KV-unsized) MTP reserve, the planner
-    # gets a non-None mtp_overhead_fn but must still subtract the flat unsized-KV
-    # cushion, or its binary search spends it on context. Passing the reserve must
-    # pick a strictly smaller context than passing 0.
+    # A weights-only MTP reserve still needs the flat unsized-KV cushion, or the binary search spends it on context.
     b = _kv_seeded_backend()
-    gpus = [(0, 14000), (1, 14000)]  # tight pool so the context is actually capped
+    gpus = [(0, 14000), (1, 14000)]
     model = int(8 * _GB)
-    weights_only = lambda c: 3 * _GB  # noqa: E731 -- constant drafter weights, no KV term
+    weights_only = lambda c: 3 * _GB
     ctx_no_flat, *_ = b._plan_tensor_parallel(
         gpus,
         model,
@@ -1751,64 +1634,52 @@ def test_plan_tensor_carries_unsized_mtp_flat_reserve():
 
 
 def test_tensor_admission_drops_gpu_below_usable_budget():
-    # A partly-used big card can clear the buffer reserve on raw free yet have no
-    # usable budget left (free - 0.05*total). Admit by usable budget: GPU 0 here is
-    # 6000 free on an 80 GB card -> usable 1904 < flat reserve 5120, so it's dropped
-    # (leaving <2 -> no split). Without total_by_idx, raw free 6000 >= 5120 admits it.
+    # A partly-used big card can clear the buffer reserve on raw free yet have no usable budget left:
+    # 6000 free on an 80 GB card is usable 1904 < the flat reserve 5120, so it is dropped.
     b = _kv_seeded_backend()
     gpus = [(0, 6000), (1, 40000)]
     totals = {0: 81920, 1: 81920}
     _ec, _mac, gi, ts = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192, total_by_idx = totals)
-    assert gi == [1] and ts is None  # GPU 0 excluded on usable budget
+    assert gi == [1] and ts is None
     _ec2, _mac2, gi_raw, _ts2 = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192)
-    assert gi_raw == [0, 1]  # raw free would have admitted both
+    assert gi_raw == [0, 1]
 
 
 def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
-    # load_model is too entangled (subprocess + GPU probe) to drive end-to-end, so
-    # assert at the source level that the tensor prefilter admits on the usable
-    # budget (_gpu_usable), not raw free, and downgrades to layer split when the
-    # pooled budget can't hold weights + per-device compute buffers.
+    # load_model is too entangled to drive end to end, so assert at the source level that the tensor
+    # prefilter admits on the usable budget, not raw free, and downgrades to layer split when the
+    # pooled budget cannot hold weights plus per-device compute buffers.
     src = inspect.getsource(LlamaCppBackend.load_model)
-    assert "_gpu_usable(g) >= reserve_mib" in src  # admit by usable budget
-    assert "g[1] >= reserve_mib" not in src  # not raw free
-    assert "_tp_weight_budget_mib" in src  # pooled-weight capacity gate
-    assert "falling back to layer split" in src  # downgrade on overcommit
-    # The gate's required footprint must include the non-shrinkable MTP reserve,
-    # not weights alone, or a separate-drafter MTP load can still overcommit.
+    assert "_gpu_usable(g) >= reserve_mib" in src
+    assert "g[1] >= reserve_mib" not in src
+    assert "_tp_weight_budget_mib" in src
+    assert "falling back to layer split" in src
+    # The gate's required footprint must include the non-shrinkable MTP reserve, not weights alone.
     assert "_tp_mtp_floor" in src
     assert "model_size + _tp_mtp_floor" in src
 
 
 def test_load_model_tensor_floor_keeps_flat_reserve_for_weights_only():
-    # Tensor mode has no --fit valve, so a weights-only drafter (KV unsized) must
-    # keep the flat reserve as the draft-KV cushion, not just the byte weights
-    # (Finding H1, the tensor analog of the layer-split _mtp_kv_unsized handling).
+    # Tensor mode has no --fit valve, so a weights-only drafter keeps the flat reserve as the KV cushion.
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-    # byte-only floor used only when KV is sizable (not the weights-only case)
     assert "mtp_overhead_fnisnotNoneandnot_mtp_kv_unsized" in compact
-    # weights-only / dims-unavailable: flat reserve, never below the byte floor
     assert "_tp_mtp_floor=max(" in compact
 
 
 def test_load_model_reserves_pipeline_per_device_overhead():
-    # Layer split must reserve the fixed per-device overhead per EXTRA device so a
-    # tight multi-GPU split can't pin a context that OOMs a device (Finding A); k=1
-    # adds nothing.
+    # Layer split reserves the fixed per-device overhead per EXTRA device so a tight split cannot OOM one.
     assert LlamaCppBackend._PIPELINE_PER_DEVICE_OVERHEAD_MIB > 0
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert "def_subset_model_size(n_gpus:int)->int:" in compact
     assert "max(0,n_gpus-1)*_pipeline_overhead_bytes" in compact
-    assert "_subset_model_size(n_gpus)" in compact  # used in the layer-split fit
+    assert "_subset_model_size(n_gpus)" in compact
 
 
 def test_load_model_does_not_gate_the_kv_cache_on_tensor_mode():
-    # llama.cpp runs a quantized KV cache under --split-mode tensor (ggml-org/
-    # llama.cpp#23792), so Unsloth must not carry its own whitelist.
+    # llama.cpp runs a quantized KV cache under a tensor split (llama.cpp#23792), so carry no whitelist.
     assert not hasattr(LlamaCppBackend, "_TENSOR_PARALLEL_KV_TYPES")
 
 
-# ── Pre-b9455 llama.cpp: one doomed attempt, latched, then never again ───────
 
 
 class TestLegacyBuildQuantizedKvInTensorMode:
@@ -1893,7 +1764,7 @@ class TestLegacyBuildQuantizedKvInTensorMode:
                         cache_type_kv = "q8_0",
                     )
                 )
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 error.append(exc)
         return backend, gguf, spawns, (error[0] if error else None)
 
@@ -1928,20 +1799,17 @@ class TestLegacyBuildQuantizedKvInTensorMode:
         """Without this the doomed attempt repeats on every load, forever."""
         backend, gguf, _spawns, _error = self._run(tmp_path, monkeypatch)
 
-        # Binary-wide, not model-and-pair: the refusal is a capability this
-        # llama.cpp lacks for every model and every quantized type.
+        # Binary-wide, not model-and-pair: the refusal is a capability this llama.cpp lacks for everything.
         assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(
             "/fake/llama-server", ("q8_0", "q8_0")
         )
         assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(
             "/fake/llama-server", ("q4_0", "q4_0")
         )
-        # But f16 runs fine under a tensor split on such a binary, so the latch
-        # must not take tensor mode away from a config that works.
+        # But f16 runs fine under a tensor split there, so the latch must not disable a config that works.
         assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(
             "/fake/llama-server", ("f16", "f16")
         )
-        # The model+pair latch stays clean: this was never a geometry abort.
         assert not LlamaCppBackend._tensor_split_abort_keys
 
     def test_a_current_build_is_untouched(self, tmp_path, monkeypatch):
@@ -1986,11 +1854,8 @@ class TestLegacyBuildLatchIsBinaryWide:
         Path(binary).write_text("x")
         LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
 
-        # Same model, a different quantized type.
         assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q4_0", "q4_0"))
-        # A completely different model.
         assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
-        # One quantized axis is enough, since llama.cpp checks both.
         assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q4_0", "f16"))
         assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("f16", "q4_0"))
 
@@ -2035,7 +1900,6 @@ class TestLegacyBuildLatchIsBinaryWide:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         gate = load.find("self._tensor_quant_kv_unsupported_binary(")
         assert gate != -1
-        # The bump sits inside this skip's own body, before the next gate.
         nxt = load.find("self._tensor_split_aborts(", gate)
         assert nxt != -1
         assert "_layer_min_gpus=max(_layer_min_gpus,len(gpus))" in load[gate:nxt]
@@ -2046,7 +1910,5 @@ class TestLegacyBuildLatchIsBinaryWide:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         gate = load.find("self._tensor_quant_kv_unsupported_binary(")
         assert gate != -1, "the binary-wide gate is gone"
-        # Ahead of the first spawn.
         assert gate < load.find("healthy=_spawn_and_wait(cmd)")
-        # And the skip must strip the split-mode group like every other TP drop.
         assert "extra_args=strip_split_mode_only(extra_args)" in load

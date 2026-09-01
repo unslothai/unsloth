@@ -141,14 +141,12 @@ class TestRequestStatesToolIntent:
         assert _request_states_tool_intent(_req(messages = [_msg(tool_calls = [{}])])) is True
 
     def test_response_format_is_a_contract(self):
-        # The tool loop would break structured output; the GGUF passthrough
-        # already exempts these requests from the policy.
+        # The tool loop would break structured output; the GGUF passthrough already exempts these requests.
         payload = _req(response_format = {"type": "json_object"})
         assert _request_states_tool_intent(payload) is True
 
     def test_empty_tools_reads_as_omitted(self):
-        # bool(payload.tools) is the GGUF router's own reading in
-        # _takes_tool_passthrough; both paths treat [] like an absent catalog.
+        # bool(payload.tools) is the GGUF router's own reading: both paths treat [] like an absent catalog.
         assert _request_states_tool_intent(_req(tools = [])) is False
 
 
@@ -201,7 +199,6 @@ class TestSafetensorsGateHonorsStatedIntent:
         assert _sf_tools_on(payload) is True
 
     def test_cli_enable_tools_is_unchanged(self):
-        # Pre-existing --enable-tools behavior on this path is untouched.
         set_tool_policy_default(True)
         set_tool_policy(True)
         assert _sf_tools_on(_req(tools = [{"function": {"name": "f"}}])) is True

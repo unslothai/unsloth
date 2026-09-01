@@ -86,7 +86,6 @@ def _hold_writer_lock(conn) -> None:
     )
 
 
-# --- synchronous=NORMAL, but only where WAL makes it safe -------------------------------
 
 
 def test_wal_database_drops_to_normal(db):
@@ -175,7 +174,7 @@ def test_concurrent_openers_all_get_normal(db):
                 results.append(_synchronous(conn))
             finally:
                 conn.close()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(exc)
 
     threads = [threading.Thread(target = worker) for _ in range(16)]
@@ -187,7 +186,6 @@ def test_concurrent_openers_all_get_normal(db):
     assert results == [NORMAL] * 16
 
 
-# --- the attachment inventory is dirtied by attachments, not by bookkeeping -------------
 
 
 @pytest.mark.parametrize(
@@ -338,7 +336,7 @@ def test_eight_processes_upgrading_at_once_all_succeed(db):
                     ("chat_attachment_inventory_dirty_update",),
                 ).fetchone()["sql"]
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(exc)
         finally:
             conn.close()
@@ -369,7 +367,6 @@ def test_the_migration_is_skipped_once_the_scoped_trigger_is_installed(db):
         held = sqlite3.connect(str(db), timeout = 0.2)
         try:
             _hold_writer_lock(held)
-            # No writer lock is taken, so this returns even while one is held elsewhere.
             studio_db._replace_inventory_update_trigger(conn)
         finally:
             held.rollback()
@@ -399,8 +396,7 @@ def test_a_lost_create_race_cannot_raise(db):
         first.execute(studio_db._INVENTORY_UPDATE_TRIGGER_SQL)
         first.commit()
 
-        # Without IF NOT EXISTS this raises out of get_connection, so the second process
-        # cannot open the database at all.
+        # Without IF NOT EXISTS this raises out of get_connection and the second process cannot open the DB.
         unguarded = studio_db._INVENTORY_UPDATE_TRIGGER_SQL.replace("IF NOT EXISTS ", "")
         with pytest.raises(sqlite3.OperationalError, match = "already exists"):
             second.execute(unguarded)
@@ -484,7 +480,6 @@ def test_downgrade_still_sees_attachment_changes(db):
         conn.close()
 
 
-# --- claim_next: cheap when idle, unchanged when there is work --------------------------
 
 
 def _make_run(
@@ -597,7 +592,7 @@ def test_concurrent_workers_claim_a_run_exactly_once(db):
         try:
             if research_runs_db.claim_next(name) is not None:
                 claims.append(name)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(exc)
 
     threads = [threading.Thread(target = worker, args = (f"w{i}",)) for i in range(8)]
@@ -609,7 +604,6 @@ def test_concurrent_workers_claim_a_run_exactly_once(db):
     assert len(claims) == 1, f"the read-first probe must not let two workers claim: {claims}"
 
 
-# --- the busy predicate and the supervisor's error ladder -------------------------------
 
 
 @pytest.mark.parametrize(
@@ -707,7 +701,6 @@ def test_cancellation_still_propagates():
         asyncio.run(_Ladder([asyncio.CancelledError()], logger).run())
 
 
-# --- expected client errors are not server faults ---------------------------------------
 
 
 class _RecordingLogger:

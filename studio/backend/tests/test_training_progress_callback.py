@@ -26,8 +26,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# core/training/trainer.py imports unsloth and trl at module level (heavy, GPU init). Stub
-# whichever are missing just long enough to import it, then restore.
+# trainer.py imports unsloth and trl at module level, so stub the missing ones long enough to import.
 _STUBS = {
     "unsloth": ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"),
     "unsloth.chat_templates": ("get_chat_template",),
@@ -48,7 +47,6 @@ def _stub_if_missing(name, attrs):
         pass
     _STUBBED.append(name)
     module = types.ModuleType(name)
-    # A spec-less module reads as "no namespace shadow" to ensure_real_packages.
     module.__spec__ = None
     for attr in attrs:
         setattr(module, attr, MagicMock())
@@ -62,9 +60,9 @@ if not _TRAINER_PRE_IMPORTED:
     for _name, _attrs in _STUBS.items():
         _stub_if_missing(_name, _attrs)
 
-from core.training.trainer import UnslothTrainer  # noqa: E402
-from core.training.training import TrainingBackend, _MLXTrainerAdapter  # noqa: E402
-from core.training.worker import (  # noqa: E402
+from core.training.trainer import UnslothTrainer
+from core.training.training import TrainingBackend, _MLXTrainerAdapter
+from core.training.worker import (
     _create_embedding_progress_callback,
     _create_trainer_progress_callback,
 )
@@ -72,8 +70,7 @@ from core.training.worker import (  # noqa: E402
 if not _TRAINER_PRE_IMPORTED:
     for _name in _STUBBED:
         sys.modules.pop(_name, None)
-    # Drop the stub-bound module and its parent package so a later test re-imports it against the
-    # real packages; the UnslothTrainer class held above stays usable.
+    # Drop the stub-bound module and parent so a later test re-imports the real ones; the class stays usable.
     sys.modules.pop("core.training.trainer", None)
     sys.modules.pop("core.training", None)
 
@@ -117,13 +114,11 @@ def _drive(
     return state, control
 
 
-# --- LLM/VLM/audio path: UnslothTrainer._create_progress_callback ->
 # worker._create_trainer_progress_callback ---
 
 
 def _make_owner():
-    # __new__ dispatches to the MLX adapter on Apple hardware, which has no
-    # _create_progress_callback; go straight to the class under test.
+    # __new__ dispatches to the MLX adapter on Apple, which has no _create_progress_callback: use the class.
     owner = object.__new__(UnslothTrainer)
     UnslothTrainer.__init__(owner)
     owner._update_progress(is_training = True, total_steps = 4, status_message = "Starting training...")
@@ -159,7 +154,6 @@ def test_parent_status_advances_over_the_whole_chain():
     backend = TrainingBackend()
     event_queue = _FakeQueue()
     owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
-    # The worker sends this right before trainer.train().
     event_queue.put({"type": "status", "message": "Starting training...", "ts": 0.0})
 
     _drive(owner._create_progress_callback(), steps = 3)
@@ -234,9 +228,6 @@ def test_stop_status_is_never_replaced_by_the_active_one(stop_status):
     assert control.should_training_stop is True
 
 
-# ---------------------------------------------------------------------------
-# Embedding path: worker._create_embedding_progress_callback
-# ---------------------------------------------------------------------------
 
 
 def _make_embedding_callback(event_queue, should_stop = lambda: False):
@@ -251,7 +242,6 @@ def _make_embedding_callback(event_queue, should_stop = lambda: False):
 def test_embedding_parent_status_advances_over_the_whole_chain():
     event_queue = _FakeQueue()
     backend = TrainingBackend()
-    # The worker sends this right before trainer.train().
     event_queue.put({"type": "status", "message": "Starting embedding training...", "ts": 0.0})
 
     _drive(_make_embedding_callback(event_queue), steps = 3)
@@ -281,7 +271,7 @@ def test_embedding_train_begin_reports_nothing_once_a_stop_was_requested():
 
 
 def test_embedding_callback_survives_a_real_queue():
-    # The worker's queue is an mp.Queue; nothing put on it may be unpicklable.
+    # The worker's queue is an mp.Queue, so nothing put on it may be unpicklable.
     import pickle
 
     event_queue = _queue.Queue()

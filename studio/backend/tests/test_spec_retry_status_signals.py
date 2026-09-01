@@ -42,7 +42,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# conftest's autouse fixture imports core.inference.llama_cpp, which wants these.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -100,9 +99,7 @@ def test_answers_only_for_the_two_binary_reasons():
 
 
 def test_reports_the_whole_retry_predicate():
-    # The predicate, not just its revision half: binary_no_mtp also asks whether the
-    # replacement advertises what the drafter kind needs, and a replacement that still
-    # lacks it never repairs, so a half answer would prompt on every later re-pick.
+    # binary_no_mtp also asks whether the replacement advertises what the kind needs, or every re-pick prompts.
     helper = _load_helper()
     for reason in ("binary_no_mtp", "binary_outdated"):
         assert helper(_Backend(reason, changed = False)) is False
@@ -110,8 +107,7 @@ def test_reports_the_whole_retry_predicate():
 
 
 def test_an_unreadable_binary_is_unknown_not_false():
-    # False would tell the client the drafter cannot be repaired and suppress the reload
-    # an update was meant to enable; None leaves it with the coarser answer.
+    # False would say the drafter cannot be repaired and suppress the reload; None leaves the coarser answer.
     helper = _load_helper()
     assert helper(_Backend("binary_no_mtp", raises = True)) is None
 
@@ -145,11 +141,8 @@ def test_the_probe_arm_only_probes_once_a_launch_was_degraded():
     helper = _load_helper("_spec_probe_retry_pending")
     settled = _SpecBackend(inconclusive = False)
     assert helper(settled) is False
-    # The status is polled from first paint; a healthy runtime must not pay for this.
     assert settled.probes == 0
-    # Still inconclusive: nothing has changed, so an identical load would dedupe.
     assert helper(_SpecBackend(inconclusive = True, probe = True)) is False
-    # Answering now: the degraded runtime is re-derived once.
     assert helper(_SpecBackend(inconclusive = True, probe = False)) is True
 
 
@@ -171,8 +164,7 @@ def test_a_backend_without_the_dflash_flag_is_unknown():
     helper = _load_helper("_spec_dflash_retry_pending")
 
     class _Bare:
-        # Attribute access raises rather than returning a default, so the helper's
-        # try/except is what keeps the status route answering at all.
+        # Attribute access raises rather than defaulting, so the helper's try/except keeps the status route alive.
         def __getattr__(self, name):
             raise AttributeError(name)
 
@@ -214,8 +206,7 @@ def test_the_arch_gate_drop_is_reported():
 
 
 def test_the_paravirtual_pin_follows_the_detector(monkeypatch):
-    # The helper reads the detector rather than deciding anything itself, so drive the
-    # detector. It is lru_cached, which is what keeps this free on the status poll.
+    # The helper reads the detector rather than deciding, and the detector is lru_cached: free on the poll.
     helper = _load_helper("_gpu_placement_paravirtual")
     from core.inference import llama_cpp
 
@@ -226,8 +217,7 @@ def test_the_paravirtual_pin_follows_the_detector(monkeypatch):
 
 
 def test_a_detector_that_raises_is_unknown_not_false(monkeypatch):
-    # False would tell the client placement is comparable on a host where it is not,
-    # which is the direction that adopts a runtime the user did not ask for.
+    # False would call placement comparable where it is not, adopting a runtime the user did not ask for.
     helper = _load_helper("_gpu_placement_paravirtual")
     from core.inference import llama_cpp
 
@@ -239,8 +229,7 @@ def test_a_detector_that_raises_is_unknown_not_false(monkeypatch):
 
 
 def test_a_pending_audio_probe_is_reported():
-    # _reuse_loaded_gguf reads _audio_probed with a True default, and this mirrors it: a
-    # backend that never tracked the probe is not one with an outstanding probe.
+    # _reuse_loaded_gguf reads _audio_probed with a True default: never tracked is not outstanding.
     helper = _load_helper("_audio_probe_pending")
 
     class _Probed:
@@ -257,8 +246,7 @@ def test_a_pending_audio_probe_is_reported():
 
 
 def test_the_diffusion_split_support_is_reported_for_diffusion_only():
-    # Off a diffusion runner there is no split to apply, and answering False there would
-    # tell a client the recheck does not apply when the question never arose.
+    # Off a diffusion runner there is no split to apply, and False would deny a question that never arose.
     helper = _load_helper("_diffusion_split_supported")
 
     class _Runner:

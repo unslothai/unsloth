@@ -33,7 +33,6 @@ from core.inference.providers import (
 )
 
 
-# ── helpers ──────────────────────────────────────────────────────────
 
 
 def _drive(coro):
@@ -61,12 +60,10 @@ def _capturing_handler(captured: dict):
     return handler
 
 
-# The four self-hosted presets. They are ``hidden`` in the registry and are
-# surfaced by the UI through CUSTOM_PROVIDER_PRESETS rather than the dropdown.
+# The four self-hosted presets.
 SELF_HOSTED_PRESETS = ("custom", "vllm", "ollama", "llama_cpp")
 
-# Keys the pre-change bundle already read off every registry row. Dropping or
-# renaming any of them breaks a cached bundle even though the server is new.
+# Keys the pre-change bundle already read off every registry row.
 LEGACY_REGISTRY_KEYS = frozenset(
     {
         "provider_type",
@@ -85,7 +82,6 @@ LEGACY_REGISTRY_KEYS = frozenset(
 )
 
 
-# ── 1a. old frontend + new backend ───────────────────────────────────
 
 
 def test_registry_default_still_hides_self_hosted_presets():
@@ -142,7 +138,6 @@ def test_registry_rows_keep_every_pre_change_key():
         assert not missing, f"{entry['provider_type']} lost legacy keys {missing}"
 
 
-# ── 1b. new frontend + old backend ───────────────────────────────────
 
 
 def test_registry_entry_schema_tolerates_a_pre_change_payload():
@@ -168,7 +163,6 @@ def test_registry_entry_schema_tolerates_a_pre_change_payload():
     assert entry.hidden is False
 
 
-# ── capability allowlist ─────────────────────────────────────────────
 
 
 def test_anthropic_is_not_studio_tools_capable():
@@ -201,7 +195,6 @@ def test_capability_flag_agrees_with_the_registry_entry():
         assert entry["supports_studio_tools"] is provider_runs_local_tools(entry["provider_type"])
 
 
-# ── 1c. no DB migration ──────────────────────────────────────────────
 
 
 def test_llm_providers_schema_gains_no_column():
@@ -237,9 +230,7 @@ def test_llm_providers_schema_gains_no_column():
         "models_json",
         "available_models_json",
     }
-    # The capability must stay registry-derived. A column here would mean saved
-    # connections carry their own copy, which needs a migration story this
-    # change deliberately does not have.
+    # The capability must stay registry-derived.
     assert not [
         column
         for column in columns
@@ -247,7 +238,6 @@ def test_llm_providers_schema_gains_no_column():
     ]
 
 
-# ── 4. response_format stays opt-in ──────────────────────────────────
 
 
 def test_response_format_is_omitted_when_the_caller_does_not_ask(monkeypatch):
@@ -309,7 +299,6 @@ def test_response_format_is_forwarded_verbatim_when_requested(monkeypatch):
     assert captured["body"]["response_format"] == {"type": "json_object"}
 
 
-# ── 5. response_format reaches the native provider shapes ────────────
 
 
 def test_gemini_translates_response_format_to_a_response_mime_type(monkeypatch):

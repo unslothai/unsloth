@@ -92,7 +92,6 @@ def test_retrieves_relevant_passages_as_chunks(rag_home):
     assert "<chunk" in rendered
     assert "LoRA" in rendered
     assert sources and sources[0]["citationId"] == 1
-    # source attribution is the page title, via Unsloth's formatter
     assert 'source="LoRA"' in rendered
 
 
@@ -131,5 +130,4 @@ def test_ephemeral_scope_is_cleaned_up(rag_home):
     pages = [{"text": "LoRA low-rank adaptation fine tuning.", "title": "LoRA", "url": "https://a"}]
     rendered, _ = web_rank.retrieve_web_chunks(pages, "lora", top_n = 5, min_score = 0.0)
     assert "<chunk" in rendered
-    # nothing from the auto-read is left in the store
     assert _scope_rows(rag_home) == (0, 0)

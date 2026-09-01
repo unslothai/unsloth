@@ -132,8 +132,8 @@ def test_re_resolved_backend_reindexes_before_the_stale_backend_is_rebuilt(
     scope = store.kb_scope("K4-resolved")
     first = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
 
-    # The same model now has a GGUF plan, but the first encode has not yet had a
-    # chance to replace the resident ST wrapper.
+    # The same model now has a GGUF plan, but the first encode has not yet replaced the resident ST
+    # wrapper.
     choice["backend"] = "llama-server"
     second = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
 
@@ -182,7 +182,7 @@ def test_legacy_rows_keep_answering_and_are_reported(
     document_id = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
     conn = rag_db.get_connection()
     try:
-        store.set_document_embedding_model(conn, document_id, MODEL)  # pre-tag spelling
+        store.set_document_embedding_model(conn, document_id, MODEL)
         assert store.count_untagged_documents(conn) == 1
         assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL)
         monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
@@ -436,8 +436,8 @@ def test_a_saturated_scope_keeps_widening_after_another_scope_is_full(rag_conn):
     current = config.embedding_identity("sentence-transformers", MODEL)
     # The thread scope answers on the first fetch, with the weakest hits in the corpus.
     _put(rag_conn, "thread_t", "weak", ["alpha bravo charlie delta"] * 5, current)
-    # The project scope's whole first fetch is another embedder's, and the compatible
-    # chunk that outranks every thread hit sits just behind it.
+    # The project scope's whole first fetch is another embedder's, and the compatible chunk that
+    # outranks every thread hit sits just behind it.
     _put(rag_conn, "kb_p", "old", ["alpha"] * 20, stale)
     _put(rag_conn, "kb_p", "new", ["alpha bravo"], current)
     hits = store.search_dense(

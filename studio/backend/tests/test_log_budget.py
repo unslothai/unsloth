@@ -24,8 +24,8 @@ from pathlib import Path
 
 import pytest
 
-# Same idiom as test_server_disk_logging.py: make the import work regardless of which
-# directory pytest was invoked from, rather than depending on the rootdir it picked.
+# Same idiom as test_server_disk_logging.py: make the import work regardless of which directory
+# pytest was invoked from, rather than depending on the rootdir it picked.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
@@ -170,8 +170,8 @@ class TestVolumeEnvelope:
 
         mismatches = []
         for path, (period, _provenance) in polls.items():
-            # Shared buckets are asserted below; a member that is not the bucket owner
-            # legitimately emits zero.
+            # Shared buckets are asserted below; a member that is not the bucket owner legitimately
+            # emits zero.
             if policy.bucket_of(hmod, path) != path:
                 continue
             cls = policy.classify(hmod, path)

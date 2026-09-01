@@ -41,5 +41,4 @@ def test_openai_models_returns_clean_id_without_path(monkeypatch):
     blob = json.dumps(objs)
     assert "/srv/models" not in blob
     assert ".gguf" not in blob
-    # Context fields still flow through.
     assert objs[0]["context_length"] == 4096

@@ -27,12 +27,8 @@ import storage.studio_db as studio_db
 
 @pytest.fixture(autouse = True)
 def _denylist_inert(monkeypatch):
-    # These tests exercise allowlist containment and the file-vs-directory guard,
-    # not the system-directory denylist (which has its own suite in
-    # test_browse_denylist.py). On macOS tmp_path resolves under /private/var, a
-    # denied prefix, so _resolve_browse_target would 403 the fixture dirs before
-    # the containment logic runs. Keep the denylist inert here so these
-    # assertions hold on every platform.
+    # These exercise allowlist containment and the file-vs-directory guard, not the denylist
+    # (test_browse_denylist.py): on macOS tmp_path resolves under the denied /private/var.
     monkeypatch.setattr(studio_db, "is_denied_system_path", lambda _p: False)
 
 

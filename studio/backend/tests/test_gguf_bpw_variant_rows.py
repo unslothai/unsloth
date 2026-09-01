@@ -69,9 +69,6 @@ def _materialize(root, files):
     return root
 
 
-# --------------------------------------------------------------------------------------
-# The key itself
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -87,8 +84,8 @@ def _materialize(root, files):
         ("model-IQ4_XS-3.57bpw-00001-of-00002.gguf", "IQ4_XS-3.57bpw"),
         # The modifier can live on the directory instead, when the basename has no quant.
         ("IQ4_XS-3.53bpw/model.gguf", "IQ4_XS-3.53bpw"),
-        # A modifier that does not trail the token is not part of it: it belongs to
-        # something else in the name and cannot be relied on to identify the file.
+        # A modifier that does not trail the token is not part of it: it belongs to something else
+        # in the name and cannot be relied on to identify the file.
         ("flux1-dev-Q8_0-fp32-08.577bpw.gguf", "Q8_0"),
         # No modifier at all: the historical key, unchanged.
         ("Wan2.2-TI2V-5B-Q8_0.gguf", "Q8_0"),
@@ -164,9 +161,6 @@ def test_loader_mirror_agrees_on_bpw_labels():
         assert _extract_quant_label(path) == gguf_variant_key(path)
 
 
-# --------------------------------------------------------------------------------------
-# Rows
-# --------------------------------------------------------------------------------------
 
 
 def test_each_bit_width_gets_its_own_row_at_its_own_size():
@@ -205,9 +199,6 @@ def test_a_bpw_row_reads_as_its_own_quant_and_needs_no_scope_suffix():
     assert {v.display_label for v in variants} == {None}
 
 
-# --------------------------------------------------------------------------------------
-# The row must be downloadable, loadable and complete-able under its own key
-# --------------------------------------------------------------------------------------
 
 
 def test_every_row_key_matches_exactly_its_own_file():

@@ -24,9 +24,9 @@ def _bare_orchestrator():
     o._active_cancel_lock = threading.Lock()
     o._active_cancel_events = []
     o._executing_cancel_events = []
-    o._cancel_event = threading.Event()  # stands in for the mp.Event
-    o._drain_event = threading.Event()  # stands in for the unload-drain mp.Event
-    o._proc = object()  # truthy so _ensure_subprocess_alive reports alive
+    o._cancel_event = threading.Event()
+    o._drain_event = threading.Event()
+    o._proc = object()
     o._cmd_queue = object()
     o._resp_queue = object()
     o._dispatcher_thread = None
@@ -112,11 +112,10 @@ def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
     monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
 
-    # A generation holds _gen_lock and releases it only once cancelled.
     o._gen_lock.acquire()
 
     def releaser():
-        o._cancel_event.wait(timeout = 5)  # released only after the cancel fires
+        o._cancel_event.wait(timeout = 5)
         o._gen_lock.release()
 
     t = threading.Thread(target = releaser)
@@ -132,7 +131,6 @@ def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
     assert {"type": "unload", "model_name": "m"} in sent
     assert o.active_model_name is None
     assert "m" not in o.models
-    # Waited on the released-after-cancel lock, not a full generation.
     assert elapsed < 2.0
 
 
@@ -149,7 +147,6 @@ def test_unload_no_active_generation_unloads_normally(monkeypatch):
     assert ok is True
     assert {"type": "unload", "model_name": "m"} in sent
     assert o.active_model_name is None
-    # Lock released for the next caller.
     assert o._gen_lock.acquire(blocking = False)
     o._gen_lock.release()
 
@@ -162,7 +159,6 @@ def test_unload_falls_back_to_shutdown_when_generation_wont_yield(monkeypatch):
     monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send unload when wedged"))
 
-    # A wedged worker never releases _gen_lock, even after the cancel.
     o._gen_lock.acquire()
 
     ok = o.unload_model("m")
@@ -173,14 +169,10 @@ def test_unload_falls_back_to_shutdown_when_generation_wont_yield(monkeypatch):
 
 
 def test_unload_tears_down_when_compare_dispatcher_wedged(monkeypatch):
-    # A wedged compare-mode generation bypasses _gen_lock, so the acquire guard
-    # misses it and _send_cmd/_wait_response would hang on resp_queue. Unload must
-    # instead tear the subprocess down, like the wedged locked-generation path.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(orch_mod, "_DISPATCH_IDLE_TIMEOUT", 0.2)
 
-    # A live dispatcher whose mailbox never drains == a wedged compare-mode gen.
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {"req-1": object()}
 
@@ -204,7 +196,6 @@ def test_unload_tears_down_when_compare_dispatcher_wedged(monkeypatch):
         ),
     )
 
-    # _gen_lock is free (compare mode never took it), so the acquire guard passes.
     ok = o.unload_model("m")
 
     assert ok is True
@@ -214,9 +205,6 @@ def test_unload_tears_down_when_compare_dispatcher_wedged(monkeypatch):
 
 
 def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
-    # After a wedged-worker teardown a fresh load swaps _proc/_resp_queue; the
-    # still-live generation thread must detect the swap and bail, not re-block on
-    # the new queue while holding _gen_lock.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -224,7 +212,7 @@ def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
     )
 
     def read_one(timeout):
-        o._proc = object()  # simulate the reload swapping the subprocess
+        o._proc = object()
         return None
 
     gen = o._consume_token_stream(read_one, lambda: None, crash_context = "generation")
@@ -244,12 +232,10 @@ def test_unload_pending_clears_after_unload(monkeypatch):
 
     o.unload_model("m")
 
-    # The flag must not leak past the unload, else every later generation bails.
     assert o._unload_pending is False
 
 
 def test_generation_bails_when_unload_pending(monkeypatch):
-    # Winning the _gen_lock handoff mid-switch must not start on the outgoing model.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     o._unload_pending = True
@@ -257,14 +243,11 @@ def test_generation_bails_when_unload_pending(monkeypatch):
     out = list(o._generate_inner(messages = [{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
-    # It released (or never held) the lock, so the pending unload can proceed.
     assert o._gen_lock.acquire(blocking = False)
     o._gen_lock.release()
 
 
 def test_dispatched_generation_bails_when_unload_pending(monkeypatch):
-    # Compare-mode bypasses _gen_lock, so it must early-out on a pending switch or
-    # it enqueues a generate on the outgoing model and delays the unload.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -281,7 +264,6 @@ def test_dispatched_generation_bails_when_unload_pending(monkeypatch):
 
 
 def test_audio_input_generation_bails_when_unload_pending(monkeypatch):
-    # The audio path takes _gen_lock but must also skip the outgoing model mid-switch.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -292,14 +274,11 @@ def test_audio_input_generation_bails_when_unload_pending(monkeypatch):
     out = list(o._generate_audio_input_inner(audio_array = [0.0, 0.1]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
-    # Lock released so the pending unload can proceed.
     assert o._gen_lock.acquire(blocking = False)
     o._gen_lock.release()
 
 
 def test_audio_response_bails_when_unload_pending(monkeypatch):
-    # TTS (generate_audio_response) is blocking, so it RAISES rather than starting on the
-    # outgoing model mid-switch; it takes _gen_lock and must release it either way.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -310,21 +289,16 @@ def test_audio_response_bails_when_unload_pending(monkeypatch):
     with pytest.raises(RuntimeError, match = "unload"):
         o.generate_audio_response("hello")
 
-    # Lock released so the pending unload can proceed.
     assert o._gen_lock.acquire(blocking = False)
     o._gen_lock.release()
 
 
-# ----------------------------------------------------------------------------
-# Preserve unload cancels across the queue handoff (drain_event) — items #1/#4.
-# ----------------------------------------------------------------------------
 
 
 def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
-    # The worker clears cancel_event at the start of every generate, so a cancel set
-    # while a generate is still queued would be lost when it is dequeued. drain_event
-    # is the durable signal: while it is set the worker skips the generate (emitting an
-    # immediate gen_done so the stream/mailbox drains) instead of running it.
+    # The worker clears cancel_event at the start of every generate, so a cancel set while a
+    # generate is still queued would be lost. drain_event is the durable signal: while set the
+    # worker skips the generate, emitting an immediate gen_done so the mailbox drains.
     import queue as _queue
 
     from core.inference.worker import _drain_skip_generate
@@ -333,14 +307,11 @@ def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
     rq: _queue.Queue = _queue.Queue()
     cmd = {"type": "generate", "request_id": "r1"}
 
-    # Not draining -> run normally (do not skip, emit nothing).
     assert _drain_skip_generate(cmd, rq, drain) is False
     assert rq.empty()
-    # Missing event (older worker) -> also runs normally.
     assert _drain_skip_generate(cmd, rq, None) is False
     assert rq.empty()
 
-    # Draining -> skip and emit a cancelled gen_done for this request_id.
     drain.set()
     assert _drain_skip_generate(cmd, rq, drain) is True
     resp = rq.get_nowait()
@@ -350,9 +321,6 @@ def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
 
 
 def test_worker_generate_branches_check_drain_before_clearing_cancel():
-    # Guarded branches check the drain skip before clearing cancel_event and
-    # again after, so a queued command can't erase an unload's cancel. Four
-    # today: MLX generate + generate_audio_input, GPU generate, and GPU TTS.
     import inspect
 
     from core.inference import worker
@@ -364,10 +332,9 @@ def test_worker_generate_branches_check_drain_before_clearing_cancel():
 
 
 def test_worker_generate_rechecks_drain_after_clearing_cancel():
-    # The exact interleaving item #3 describes: the drain check reads unset, then the
-    # parent sets drain+cancel for an unload, then the worker clears cancel_event
-    # (erasing that cancel). A second drain check *after* the clear catches it and
-    # skips the generate instead of running the outgoing model to completion.
+    # The exact interleaving: the drain check reads unset, the parent sets drain+cancel for an
+    # unload, then the worker clears cancel_event, erasing it. The post-clear drain re-check catches
+    # that and skips the generate instead of running the outgoing model to completion.
     import queue as _queue
 
     from core.inference.worker import _drain_skip_generate
@@ -377,19 +344,15 @@ def test_worker_generate_rechecks_drain_after_clearing_cancel():
     rq: _queue.Queue = _queue.Queue()
     cmd = {"type": "generate", "request_id": "r1"}
 
-    # 1. Pre-clear drain check: not draining yet -> run (no skip, no emit).
     assert _drain_skip_generate(cmd, rq, drain) is False
     assert rq.empty()
 
-    # 2. Parent starts an unload: sets drain, then cancel (orchestrator order).
     drain.set()
     cancel.set()
 
-    # 3. Worker clears cancel at the start of the generate -- erasing the cancel.
     cancel.clear()
     assert not cancel.is_set()
 
-    # 4. Post-clear drain re-check catches the erased cancel and skips.
     assert _drain_skip_generate(cmd, rq, drain) is True
     resp = rq.get_nowait()
     assert resp["type"] == "gen_done" and resp["cancelled"] is True
@@ -404,16 +367,12 @@ def test_unload_sets_drain_event_during_switch_and_clears_after(monkeypatch):
     seen = {}
 
     def record_send(cmd):
-        # drain_event must be set for the whole unload round-trip so any generate the
-        # worker dequeues in this window is skipped, not run.
         seen["drain_set"] = o._drain_event.is_set()
 
     monkeypatch.setattr(o, "_send_cmd", record_send)
 
     assert o.unload_model("m") is True
     assert seen.get("drain_set") is True
-    # Cleared on exit so a later generation (e.g. unloading a non-active model, or a
-    # reused subprocess) is not wrongly skipped.
     assert o._drain_event.is_set() is False
 
 
@@ -423,27 +382,21 @@ def test_unload_clears_drain_event_even_on_wedged_teardown(monkeypatch):
     monkeypatch.setattr(orch_mod, "_UNLOAD_GEN_LOCK_TIMEOUT", 0.2)
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send when wedged"))
 
-    # A wedged worker never releases _gen_lock; unload tears the subprocess down. The
-    # real teardown nulls _drain_event, so emulate that so the finally exercises its guard.
     def fake_shutdown(timeout = 5):
         o._drain_event = None
 
     monkeypatch.setattr(o, "_shutdown_subprocess", fake_shutdown)
     o._gen_lock.acquire()
 
-    assert o.unload_model("m") is True  # must not raise in the drain_event clear
+    assert o.unload_model("m") is True
 
 
-# ----------------------------------------------------------------------------
-# Recheck the active model after the lock wait — items #2/#3.
-# ----------------------------------------------------------------------------
 
 
 def test_generation_rechecks_model_after_lock_wait(monkeypatch):
-    # A request passes the pre-lock active-model check, then blocks on _gen_lock while
-    # an unload clears/swaps the model. Even if _unload_pending was already reset (the
-    # unload's finally runs after the lock release), the under-lock active-model recheck
-    # must make it bail instead of sending a generate to the wrong/unloaded backend.
+    # A request passes the pre-lock active-model check, then blocks on _gen_lock while an unload
+    # swaps the model. Even with _unload_pending already reset, the under-lock recheck must make it
+    # bail instead of sending a generate to the wrong backend.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -451,13 +404,11 @@ def test_generation_rechecks_model_after_lock_wait(monkeypatch):
     )
 
     reached_lock = threading.Event()
-    # _wait_dispatcher_idle runs after the pre-lock check and before acquiring the lock;
-    # signalling here means the generator captured the model and is about to block.
     monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda: (reached_lock.set(), True)[1])
 
     o.active_model_name = "m"
     o._unload_pending = False
-    o._gen_lock.acquire()  # stand in for an in-flight unload holding the lock
+    o._gen_lock.acquire()
 
     out: list = []
 
@@ -467,7 +418,6 @@ def test_generation_rechecks_model_after_lock_wait(monkeypatch):
     t = threading.Thread(target = run)
     t.start()
     assert reached_lock.wait(timeout = 5)
-    # Unload finished: model swapped, pending already cleared. Release the lock.
     o.active_model_name = "other"
     o._gen_lock.release()
     t.join(timeout = 5)
@@ -476,7 +426,6 @@ def test_generation_rechecks_model_after_lock_wait(monkeypatch):
 
 
 def test_generation_rechecks_model_when_unloaded_to_none(monkeypatch):
-    # Same race, but the unload left no active model (a plain unload, not a switch).
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -502,15 +451,9 @@ def test_generation_rechecks_model_when_unloaded_to_none(monkeypatch):
     assert out and any("unloaded" in chunk.lower() for chunk in out)
 
 
-# ----------------------------------------------------------------------------
-# Don't unload a stale model name (worker's active-model fallback) — item #5.
-# ----------------------------------------------------------------------------
 
 
 def test_unload_of_stale_name_does_not_touch_active_model(monkeypatch):
-    # If the named model isn't loaded (e.g. a concurrent load already swapped in a
-    # different one), unload must not send a command the worker would satisfy by
-    # unloading its *active* model.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -520,16 +463,14 @@ def test_unload_of_stale_name_does_not_touch_active_model(monkeypatch):
     o.models = {"current": {}}
 
     assert o.unload_model("stale") is True
-    # The active model is left intact.
     assert o.active_model_name == "current"
     assert "current" in o.models
 
 
 def test_unload_matches_active_model_case_insensitively(monkeypatch):
-    # active_model_name can differ in case from the raw model_path a client sends
-    # to /unload (the load path canonicalizes casing). The stale-name guard must
-    # match case-insensitively too; otherwise it no-ops the unload and leaves the
-    # model resident while reporting success.
+    # active_model_name can differ in case from the raw model_path a client sends to /unload, so the
+    # stale-name guard must match case-insensitively or it no-ops the unload and leaves the model
+    # resident while reporting success.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     sent = []
@@ -540,20 +481,13 @@ def test_unload_matches_active_model_case_insensitively(monkeypatch):
     o.active_model_name = "unsloth/Qwen3-4B"
     o.models = {"unsloth/Qwen3-4B": {}}
 
-    # Client unloads with the casing it originally typed, before canonicalization.
     assert o.unload_model("unsloth/qwen3-4b") is True
-    # The guard did not no-op: an unload for the canonical active model reached
-    # the worker (not the raw lowercase name, so the worker matches it directly).
     assert {"type": "unload", "model_name": "unsloth/Qwen3-4B"} in sent
-    # Local state is cleared for the canonical name, not left stale.
     assert o.active_model_name is None
     assert o.models == {}
 
 
 def test_unload_of_stale_name_still_no_ops_after_case_insensitive_match(monkeypatch):
-    # The case-insensitive match must only rescue the active model; a genuinely
-    # different model name (case-insensitively too) must still no-op so the
-    # worker's absent-name fallback can't tear down the active model.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -568,11 +502,9 @@ def test_unload_of_stale_name_still_no_ops_after_case_insensitive_match(monkeypa
 
 
 def test_load_does_not_accumulate_stale_models_defeating_the_unload_guard(monkeypatch):
-    # A load always spawns a fresh subprocess holding only the new model, so
-    # self.models must mirror that instead of accumulating the previous model's name.
-    # Otherwise switching A -> B leaves 'A' in self.models, so a later unload('A')
-    # passes the "not in self.models" guard and the worker's absent-name fallback
-    # unloads the *active* model B.
+    # A load always spawns a fresh subprocess holding only the new model, so self.models must mirror
+    # that: otherwise switching A -> B leaves 'A' behind, and a later unload('A') passes the "not in
+    # self.models" guard and the worker's absent-name fallback unloads the active model B.
     import types
 
     from utils import transformers_version as _tv
@@ -601,14 +533,13 @@ def test_load_does_not_accumulate_stale_models_defeating_the_unload_guard(monkey
         assert o.load_model(types.SimpleNamespace(identifier = name, gguf_variant = None)) is True
 
     _load("modelA")
-    _load("modelB")  # switch to B without unloading A first
+    _load("modelB")
 
     # self.models mirrors the single live model; the swapped-out name is gone.
     assert o.active_model_name == "modelB"
     assert set(o.models) == {"modelB"}
 
-    # A stale unload of the swapped-out model must not reach the worker (whose
-    # absent-name fallback would unload the active model B).
+    # A stale unload of the swapped-out model must not reach the worker.
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("stale unload reached the worker"))
     assert o.unload_model("modelA") is True
     assert o.active_model_name == "modelB"
@@ -616,8 +547,6 @@ def test_load_does_not_accumulate_stale_models_defeating_the_unload_guard(monkey
 
 
 def test_unload_route_serializes_with_loads_via_lifecycle_gate(monkeypatch):
-    # Item #5: /unload must hold the same lifecycle gate as /load so a concurrent load
-    # can't swap the backend subprocess/queues mid-unload.
     import asyncio
 
     import routes.inference as inference_route
@@ -645,13 +574,11 @@ def test_unload_route_serializes_with_loads_via_lifecycle_gate(monkeypatch):
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
 
     async def scenario():
-        # Hold the real gate, exactly as an in-flight /load would.
         assert kw._lifecycle_lock.acquire(blocking = False)
         try:
             task = asyncio.ensure_future(
                 inference_route.unload_model(UnloadRequest(model_path = "m"), "tester")
             )
-            # Yield to the loop repeatedly: the route must stay blocked on the gate.
             for _ in range(10):
                 await asyncio.sleep(0.01)
             assert unloaded == [], "unload ran while the lifecycle gate was held"
@@ -665,13 +592,10 @@ def test_unload_route_serializes_with_loads_via_lifecycle_gate(monkeypatch):
     asyncio.run(scenario())
 
 
-# ----------------------------------------------------------------------------
-# Cancel an in-flight load OFF the lifecycle gate (Stop-loading regression).
-# /load holds the gate for the whole load, so a gated /unload could never
-# interrupt it; cancel_load only tears the loading subprocess down.
-# ----------------------------------------------------------------------------
 
 
+# Cancel an in-flight load OFF the lifecycle gate: /load holds the gate for the whole load, so a
+# gated /unload could never interrupt it; cancel_load only tears the loading subprocess down.
 def test_cancel_load_terminates_loading_subprocess_and_sends_no_command(monkeypatch):
     o = _bare_orchestrator()
     o.loading_models = {"m"}
@@ -687,7 +611,6 @@ def test_cancel_load_terminates_loading_subprocess_and_sends_no_command(monkeypa
     assert shutdown, "must tear the loading subprocess down"
     assert "m" not in o.loading_models
     assert o.active_model_name is None
-    # A name that is not loading -> no-op, returns False so the caller takes the gate.
     assert o.cancel_load("other") is False
 
 
@@ -701,7 +624,6 @@ def test_cancel_load_matches_loading_model_case_insensitively(monkeypatch):
 
 
 def test_unload_model_cancels_a_loading_model_via_cancel_load(monkeypatch):
-    # unload_model still cancels an in-flight load (shared logic with cancel_load).
     o = _bare_orchestrator()
     o.loading_models = {"m"}
     o.active_model_name = None
@@ -717,9 +639,6 @@ def test_unload_model_cancels_a_loading_model_via_cancel_load(monkeypatch):
 
 
 def test_unload_route_cancels_in_flight_load_without_waiting_on_gate(monkeypatch):
-    # The regression: /unload wrapped its whole body in the lifecycle gate, so the
-    # Stop-loading button (cancelLoading -> /unload) could not interrupt a safetensors
-    # load that holds the gate for its full duration. The cancel must run off-gate.
     import asyncio
 
     import routes.inference as inference_route
@@ -753,10 +672,8 @@ def test_unload_route_cancels_in_flight_load_without_waiting_on_gate(monkeypatch
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
 
     async def scenario():
-        # Hold the real gate, exactly as an in-flight /load would.
         assert kw._lifecycle_lock.acquire(blocking = False)
         try:
-            # Even with the gate held, the loading-cancel must go through.
             resp = await inference_route.unload_model(UnloadRequest(model_path = "m"), "tester")
             assert resp.status == "unloaded"
             assert cancelled == ["m"]
@@ -1167,18 +1084,12 @@ def test_stale_unload_does_not_hide_an_update_refusal():
         )
 
 
-# ----------------------------------------------------------------------------
-# A dispatched (compare-mode) request that races an unload must not orphan its
-# mailbox after _wait_dispatcher_idle stops the dispatcher.
-# ----------------------------------------------------------------------------
 
 
 def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypatch):
-    # The request passes the pre-work _unload_pending check, then an unload sets
-    # _unload_pending and _wait_dispatcher_idle stops the dispatcher (mailboxes empty)
-    # before this request registers its mailbox. The recheck under _mailbox_lock must
-    # make it bail, or the worker's skipped-generate reply has nothing to route it and
-    # the compare stream hangs on an orphaned mailbox.
+    # The request passes the pre-work _unload_pending check, then an unload stops the dispatcher
+    # before this request registers its mailbox. The recheck under _mailbox_lock must make it bail,
+    # or the worker's skipped-generate reply has nothing to route it and the compare stream hangs.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -1187,8 +1098,6 @@ def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypa
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
 
-    # Flip the unload flag after the pre-work check (626) but before mailbox
-    # registration -- exactly the window _wait_dispatcher_idle exploits.
     def flip(*a, **k):
         o._unload_pending = True
         return {"type": "generate", "request_id": "r1"}
@@ -1204,10 +1113,6 @@ def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypa
     assert o._mailboxes == {}, "must not leave an orphaned mailbox"
 
 
-# ----------------------------------------------------------------------------
-# Dispatched path: bail when a cleared-pending unload swapped the model or
-# tore the dispatcher down during the pre-registration window -- item #2.
-# ----------------------------------------------------------------------------
 
 
 class _AliveDispatcher:
@@ -1218,10 +1123,6 @@ class _AliveDispatcher:
 
 
 def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeypatch):
-    # The request passes the pre-work checks, then a full unload+reload completes
-    # (clearing _unload_pending) before this request registers its mailbox. The
-    # under-lock recheck must notice active_model_name changed and bail, instead of
-    # sending a generate that lands on the swapped-in model.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -1231,8 +1132,6 @@ def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeyp
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
 
-    # Swap the active model after the pre-work check but before registration,
-    # with _unload_pending already back to False (the unload finally ran).
     def swap(*a, **k):
         o.active_model_name = "other"
         return {"type": "generate", "request_id": "r1"}
@@ -1249,9 +1148,6 @@ def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeyp
 
 
 def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(monkeypatch):
-    # Same window, but the unload was a same-model reload so active_model_name is
-    # unchanged; the give-away is that the dispatcher was stopped. Registering a
-    # mailbox with no dispatcher to route the reply would hang the compare stream.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -1262,7 +1158,7 @@ def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(mo
     monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
 
     def stop_dispatcher(*a, **k):
-        o._dispatcher_thread = None  # unload's _stop_dispatcher cleared it
+        o._dispatcher_thread = None
         return {"type": "generate", "request_id": "r1"}
 
     monkeypatch.setattr(o, "_build_generate_cmd", stop_dispatcher)
@@ -1277,8 +1173,6 @@ def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(mo
 
 
 def test_dispatched_happy_path_registers_and_sends(monkeypatch):
-    # Guard against a false bail: with the model unchanged and the dispatcher alive,
-    # the recheck must let the generate through (register a mailbox and send).
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -1293,7 +1187,6 @@ def test_dispatched_happy_path_registers_and_sends(monkeypatch):
     sent = []
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: sent.append(cmd))
 
-    # Feed one gen_done so the consumer returns promptly.
     def fake_consume(read_mailbox, drainer, **k):
         mbox = o._mailboxes.get("r1")
         if mbox is not None:
@@ -1308,15 +1201,12 @@ def test_dispatched_happy_path_registers_and_sends(monkeypatch):
     assert o._mailboxes == {}, "mailbox popped in finally"
 
 
-# ----------------------------------------------------------------------------
-# load_model observes a cancel that discarded its loading marker -- item #4.
-# ----------------------------------------------------------------------------
 
 
 def test_load_model_aborts_when_cancelled_before_spawn(monkeypatch):
-    # Stop-loading during GPU placement discards the loading marker (cancel_load) with
-    # no child yet to kill. load_model must observe the removal and not spawn a worker
-    # that loads the model after /unload already reported it unloaded.
+    # Stop-loading during GPU placement discards the loading marker with no child yet to kill, so
+    # load_model must observe the removal and not spawn a worker that loads the model after /unload
+    # already reported it unloaded.
     o = _bare_orchestrator()
     o.active_model_name = None
     o.models = {}
@@ -1332,7 +1222,6 @@ def test_load_model_aborts_when_cancelled_before_spawn(monkeypatch):
 
     monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
 
-    # cancel_load discards the marker while we resolve GPU placement.
     def cancel_during_gpu(gpu_ids, **k):
         o.loading_models.discard("m")
         return ([0], "sel")
@@ -1350,9 +1239,6 @@ def test_load_model_aborts_when_cancelled_before_spawn(monkeypatch):
 
 
 def test_load_model_aborts_when_old_worker_survives_shutdown(monkeypatch):
-    # A wedged worker that outlives terminate/kill makes _shutdown_subprocess return
-    # False. load_model must not spawn a second worker over it (double GPU allocation +
-    # the survivor's handle is lost); it aborts so the load can retry once it exits.
     import types
 
     from utils import transformers_version as tv
@@ -1366,20 +1252,18 @@ def test_load_model_aborts_when_old_worker_survives_shutdown(monkeypatch):
     monkeypatch.setattr(orch_mod.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_cancel_generation", lambda: None)
-    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **k: False)  # survivor
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **k: False)
     monkeypatch.setattr(
         o, "_spawn_subprocess", lambda cfg: pytest.fail("must not spawn over a live survivor")
     )
 
     with pytest.raises(RuntimeError, match = "did not exit"):
         o.load_model(types.SimpleNamespace(identifier = "new", gguf_variant = None))
-    # The except path cleared the loading marker and mirrors.
     assert "new" not in o.loading_models
     assert o.active_model_name is None
 
 
 def test_load_model_proceeds_when_not_cancelled(monkeypatch):
-    # Guard against a false abort: an uncancelled load keeps its marker and spawns.
     o = _bare_orchestrator()
     o.active_model_name = None
     o.models = {}
@@ -1412,8 +1296,6 @@ def test_load_model_proceeds_when_not_cancelled(monkeypatch):
 
 
 def test_load_model_reaps_worker_after_inactivity_timeout(monkeypatch):
-    # A quiet install can trip the inactivity timeout; the failure path must
-    # still tear its worker down (#9398).
     import types
 
     from utils import transformers_version as tv
@@ -1484,7 +1366,6 @@ def test_worker_reported_load_failure_reaps_worker(monkeypatch):
 
 
 def test_failed_load_keeps_timeout_after_cancel_teardown(monkeypatch):
-    # Both paths may request teardown; the serialized second call is harmless.
     import types
 
     from utils import transformers_version as tv
@@ -1547,7 +1428,6 @@ def test_failed_load_keeps_timeout_after_cancel_teardown(monkeypatch):
 
 
 def test_failed_load_keeps_the_timeout_when_teardown_raises(monkeypatch):
-    # A teardown failure must stay a warning, not replace the load error.
     import types
 
     from utils import transformers_version as tv
@@ -1586,12 +1466,10 @@ def test_failed_load_keeps_the_timeout_when_teardown_raises(monkeypatch):
 
 
 def test_load_model_aborts_when_cancelled_during_spawn(monkeypatch):
-    # Stop-loading can land AFTER the pre-spawn marker recheck but while
-    # _spawn_subprocess is still creating the queues/process, so cancel_load's
-    # _shutdown_subprocess finds _proc not yet alive and no-ops. load_model must
-    # recheck the marker once the child exists and tear the orphaned worker down,
-    # instead of waiting for "loaded" and publishing a model /unload already
-    # reported as unloaded (a live subprocess nothing later reaps).
+    # Stop-loading can land after the pre-spawn marker recheck but while _spawn_subprocess is still
+    # creating the queues, so cancel_load's _shutdown_subprocess finds _proc not yet alive and
+    # no-ops. load_model must recheck the marker once the child exists and tear the orphaned worker
+    # down instead of publishing a model /unload already reported as unloaded.
     import types
 
     from utils import transformers_version as tv
@@ -1605,8 +1483,6 @@ def test_load_model_aborts_when_cancelled_during_spawn(monkeypatch):
     monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
     monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda gpu_ids, **k: ([0], "sel"))
 
-    # The cancel lands during the spawn window: cancel_load already discarded the
-    # marker, but its teardown no-oped because _proc was not alive yet.
     def spawn_then_cancel(cfg):
         o.loading_models.discard("m")
 
@@ -1631,15 +1507,9 @@ def test_load_model_aborts_when_cancelled_during_spawn(monkeypatch):
     assert "m" not in o.loading_models
 
 
-# ----------------------------------------------------------------------------
-# /unload cancels a still-loading GGUF off the lifecycle gate -- item #1.
-# ----------------------------------------------------------------------------
 
 
 def test_unload_cancels_loading_gguf_off_gate(monkeypatch):
-    # A still-loading GGUF (is_active, not is_loaded) must be cancelled off the gate:
-    # /load holds the lifecycle gate for the whole load, so a gated unload would wait
-    # it out. Assert the gate is never entered and unload_model() runs.
     import asyncio as _asyncio
 
     import routes.inference as ri
@@ -1670,7 +1540,7 @@ def test_unload_cancels_loading_gguf_off_gate(monkeypatch):
 
     class _Unsloth:
         def get_loading_model(self):
-            return None  # no Unsloth load in flight -> Unsloth fast path skipped
+            return None
 
     monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: llama)
     monkeypatch.setattr(ri, "get_inference_backend", lambda: _Unsloth())
@@ -1686,8 +1556,6 @@ def test_unload_cancels_loading_gguf_off_gate(monkeypatch):
 
 
 def test_unload_loaded_gguf_still_uses_gate(monkeypatch):
-    # Guard: an already-loaded GGUF (is_loaded True) is NOT caught by the off-gate
-    # fast path; it goes through the gate as before.
     import asyncio as _asyncio
 
     import routes.inference as ri
@@ -1735,13 +1603,10 @@ def test_unload_loaded_gguf_still_uses_gate(monkeypatch):
 
 
 def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch):
-    # A still-loading GGUF X (is_active, not is_loaded) must NOT be torn down by the
-    # off-gate fast path when /unload names a DIFFERENT model Y. The single llama-server
-    # can only load one GGUF at a time, so this fast path is "stop loading THIS model";
-    # without a target check it fires for any in-flight GGUF and would abort an unrelated
-    # load (e.g. a second tab unloading Y kills the load of X). A mismatched target must
-    # fall through to the lifecycle gate (where, in production, it waits out X's /load and
-    # then no-ops) instead of taking the off-gate teardown.
+    # A still-loading GGUF X must NOT be torn down by the off-gate fast path when /unload names a
+    # DIFFERENT model Y: the fast path is "stop loading THIS model", and without a target check it
+    # fires for any in-flight GGUF and would abort an unrelated load. A mismatched target falls
+    # through to the lifecycle gate instead.
     import asyncio as _asyncio
 
     import routes.inference as ri
@@ -1772,7 +1637,7 @@ def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch)
 
     class _Unsloth:
         def get_loading_model(self):
-            return None  # no Unsloth load in flight -> Unsloth fast path skipped
+            return None
 
     monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: llama)
     monkeypatch.setattr(ri, "get_inference_backend", lambda: _Unsloth())
@@ -1780,7 +1645,7 @@ def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch)
     monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
     monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
 
-    req = ri.UnloadRequest(model_path = "gguf-Y")  # different from the loading model X
+    req = ri.UnloadRequest(model_path = "gguf-Y")
     _asyncio.run(ri.unload_model(req, current_subject = "s"))
 
     assert gate_entered["v"] is True, (
@@ -1789,20 +1654,12 @@ def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch)
     )
 
 
-# ----------------------------------------------------------------------------
-# cancel_load clears its loading marker BEFORE tearing the subprocess down, so a
-# racing off-gate load_model observes the cancel during the shutdown window.
-# ----------------------------------------------------------------------------
 
 
 def test_cancel_load_clears_marker_before_shutdown(monkeypatch):
-    # cancel_load runs off the lifecycle gate, concurrently with a load_model that
-    # rechecks the loading marker before each spawn to observe the cancel.
-    # _shutdown_subprocess can block (tearing a live child down / joining the compare
-    # dispatcher), so discarding the marker only AFTER it leaves a long window in which
-    # that load_model reads the marker still set, passes its pre-spawn recheck, and
-    # spawns + loads the model after /unload already reported it cancelled. The marker
-    # (and local state) must be cleared before the teardown.
+    # _shutdown_subprocess can block, so discarding the marker only AFTER it leaves a long window in
+    # which a racing load_model reads the marker still set, passes its pre-spawn recheck, and loads
+    # the model after /unload already reported it cancelled.
     o = _bare_orchestrator()
     o.loading_models = {"m"}
     o.active_model_name = "m"
@@ -1833,14 +1690,10 @@ def test_cancel_load_clears_marker_before_shutdown(monkeypatch):
 
 
 def test_cancel_load_reclears_state_when_racing_load_repopulates_during_teardown(monkeypatch):
-    # cancel_load (off the lifecycle gate) can race a load_model whose worker already
-    # queued its successful "loaded" reply. cancel_load discards the loading marker and
-    # clears the local mirrors, then tears the subprocess down; but the still-running
-    # load_model thread can consume that "loaded" DURING the teardown window and repopulate
-    # active_model_name/models. _shutdown_subprocess nulls the queues but never touches those
-    # mirrors, so without a second clear /unload reports success while the backend keeps
-    # advertising a model whose worker was just killed. cancel_load must re-clear after the
-    # teardown so no phantom loaded model survives.
+    # cancel_load can race a load_model whose worker already queued its "loaded" reply: the load
+    # thread can consume that DURING the teardown window and repopulate active_model_name/models,
+    # which _shutdown_subprocess never touches, so without a second clear /unload reports success
+    # while the backend advertises a model whose worker was just killed.
     import types
 
     from utils import transformers_version as _tv
@@ -1849,15 +1702,15 @@ def test_cancel_load_reclears_state_when_racing_load_repopulates_during_teardown
     o.loading_models = {"m"}
     o.active_model_name = None
     o.models = {}
-    o._proc = None  # no prior subprocess -> load_model goes straight to the spawn loop
+    o._proc = None
 
     monkeypatch.setattr(_tv, "needs_transformers_5", lambda name: False)
     monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([], {}))
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
     monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
 
-    parked = threading.Event()  # load_model is parked in _wait_response("loaded")
-    release_loaded = threading.Event()  # cancel_load lets the load consume "loaded"
+    parked = threading.Event()
+    release_loaded = threading.Event()
     load_done = threading.Event()
 
     def blocking_wait_response(expected, timeout = 300.0):
@@ -1887,9 +1740,6 @@ def test_cancel_load_reclears_state_when_racing_load_repopulates_during_teardown
     loader.start()
     assert parked.wait(timeout = 5), "load_model must reach _wait_response"
 
-    # The teardown IS the window in which the racing load repopulates the mirrors: the
-    # marker is already discarded here, so release the load and wait for it to finish
-    # repopulating, mirroring the 0.5s cancel-settle inside the real _shutdown_subprocess.
     def racing_shutdown(timeout = 0.5):
         release_loaded.set()
         assert load_done.wait(timeout = 5), "the racing load must repopulate during teardown"
@@ -1899,33 +1749,26 @@ def test_cancel_load_reclears_state_when_racing_load_repopulates_during_teardown
     assert o.cancel_load("m") is True
     loader.join(timeout = 5)
 
-    # Fail-without: load_model set active_model_name/models during racing_shutdown and
-    # cancel_load left them set, so the backend advertises a model whose worker was killed.
     assert o.active_model_name is None, "cancel_load must not leave a repopulated active model"
     assert o.models == {}, "cancel_load must not leave a repopulated models mirror"
     assert "m" not in o.loading_models
 
 
-# ----------------------------------------------------------------------------
-# A dispatched (compare-mode) request that starts the dispatcher and then bails on
-# a racing unload must stop the dispatcher it started, or that orphaned dispatcher
-# steals the worker's "unloaded" reply and hangs unload_model on its 300s timeout.
-# ----------------------------------------------------------------------------
 
 
+# A dispatched request that starts the dispatcher and then bails on a racing unload must stop
+# the dispatcher it started, or that orphan steals the worker's "unloaded" reply and hangs
+# unload_model on its 300s timeout.
 def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
-    # The request passes the pre-work _unload_pending check and starts the dispatcher
-    # (none was running), then an unload sets _unload_pending so the under-lock recheck
-    # bails. The just-started dispatcher, left running with no mailboxes, competes with
-    # unload_model()'s _wait_response for the worker's "unloaded" reply off the shared
-    # resp_queue and drops it as unroutable, hanging the unload until its 300s timeout.
-    # The bail must stop the dispatcher it started.
+    # The request starts the dispatcher, then an unload sets _unload_pending so the under-lock
+    # recheck bails; the just-started dispatcher, left running with no mailboxes, competes for the
+    # worker's "unloaded" reply and drops it as unroutable.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
     o._request_cancel_events = {}
     o._unload_pending = False
-    o._dispatcher_thread = None  # none running -> this call starts it
+    o._dispatcher_thread = None
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
 
     started = {"v": False}
@@ -1934,7 +1777,7 @@ def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
     def fake_start():
         started["v"] = True
         o._dispatcher_thread = _AliveDispatcher()
-        return True  # _start_dispatcher returns True for the caller that spawned it
+        return True
 
     def fake_stop():
         stopped["v"] = True
@@ -1943,7 +1786,6 @@ def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
     monkeypatch.setattr(o, "_start_dispatcher", fake_start)
     monkeypatch.setattr(o, "_stop_dispatcher", fake_stop)
 
-    # An unload flips _unload_pending after the pre-work check but before registration.
     def flip(*a, **k):
         o._unload_pending = True
         return {"type": "generate", "request_id": "r1"}
@@ -1962,9 +1804,6 @@ def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
 
 
 def test_dispatched_bail_keeps_dispatcher_with_other_active_mailbox(monkeypatch):
-    # Guard against over-stopping: if another compare request registered a mailbox on the
-    # dispatcher this call started, the bail must NOT stop it, or that request's token
-    # routing dies mid-stream.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -1981,7 +1820,6 @@ def test_dispatched_bail_keeps_dispatcher_with_other_active_mailbox(monkeypatch)
         lambda: pytest.fail("must not stop a dispatcher another compare request is using"),
     )
 
-    # A concurrent compare request registers its mailbox, then an unload flips the flag.
     def flip(*a, **k):
         o._mailboxes["other"] = object()
         o._unload_pending = True
@@ -1999,16 +1837,12 @@ def test_dispatched_bail_keeps_dispatcher_with_other_active_mailbox(monkeypatch)
 
 
 def test_dispatched_bail_keeps_preexisting_dispatcher(monkeypatch):
-    # Guard: if the dispatcher was already running before this request (an earlier compare
-    # request started it), a bail must not stop it even with no mailboxes now -- this
-    # request did not start it and another may re-use it. Only the call that starts an
-    # otherwise-idle dispatcher during the race is responsible for stopping it.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
     o._request_cancel_events = {}
     o._unload_pending = False
-    o._dispatcher_thread = _AliveDispatcher()  # already running
+    o._dispatcher_thread = _AliveDispatcher()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
     monkeypatch.setattr(
@@ -2029,23 +1863,16 @@ def test_dispatched_bail_keeps_preexisting_dispatcher(monkeypatch):
     assert any("unloaded" in chunk.lower() for chunk in out)
 
 
-# ----------------------------------------------------------------------------
-# load_model rechecks the loading marker AFTER _wait_response("loaded") and
-# BEFORE publishing -- item #6. cancel_load's post-teardown re-clear only wipes a
-# repopulation that lands during its shutdown; a publish that lands after
-# cancel_load returns survives it, so the recheck must abort the publish itself.
-# ----------------------------------------------------------------------------
 
 
+# load_model rechecks the loading marker AFTER _wait_response("loaded") and BEFORE publishing:
+# cancel_load's post-teardown re-clear only wipes a repopulation landing during its shutdown, so
+# a publish that lands after cancel_load returns survives it.
 def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatch):
-    # cancel_load (off the lifecycle gate) discards the loading marker BEFORE its teardown
-    # and re-clears the mirrors AFTER it. A racing load_model can consume its worker's
-    # already-queued "loaded" reply and reach the publish block only AFTER cancel_load has
-    # fully returned -- so cancel_load's post-teardown re-clear cannot undo that publish.
-    # Without a marker recheck between _wait_response("loaded") and the publish, load_model
-    # advertises active_model_name/models for a model /unload already reported cancelled,
-    # over a subprocess cancel_load just killed. The recheck must observe the discarded
-    # marker and abort the publish.
+    # A racing load_model can consume its worker's already-queued "loaded" reply and reach the
+    # publish block only AFTER cancel_load has fully returned, so the post-teardown re-clear cannot
+    # undo it. Without a marker recheck between _wait_response("loaded") and the publish, load_model
+    # advertises a model /unload already reported cancelled over a subprocess cancel_load killed.
     import types
 
     from utils import transformers_version as _tv
@@ -2054,24 +1881,20 @@ def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatc
     o.loading_models = {"m"}
     o.active_model_name = None
     o.models = {}
-    o._proc = None  # no prior subprocess -> load_model goes straight to the spawn loop
+    o._proc = None
 
     monkeypatch.setattr(_tv, "needs_transformers_5", lambda name: False)
     monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([], {}))
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
     monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
-    # cancel_load tears the worker down; a no-op keeps the test off real subprocesses.
     monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: None)
 
-    parked = threading.Event()  # load_model reached _wait_response("loaded")
-    cancel_done = threading.Event()  # cancel_load fully returned (marker discarded + re-clear)
+    parked = threading.Event()
+    cancel_done = threading.Event()
     load_done = threading.Event()
 
     def blocking_wait_response(expected, timeout = 300.0):
         parked.set()
-        # Do not consume "loaded" until cancel_load has fully returned, so the publish
-        # would land AFTER cancel_load's post-teardown re-clear -- the window the
-        # re-clear alone cannot cover.
         assert cancel_done.wait(timeout = 5)
         return {
             "type": "loaded",
@@ -2097,40 +1920,30 @@ def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatc
     loader.start()
     assert parked.wait(timeout = 5), "load_model must reach _wait_response"
 
-    # cancel_load runs to completion while the load is parked: it discards the marker and
-    # re-clears the mirrors (post-teardown), then returns. Only then let the load consume
-    # "loaded" and attempt to publish.
     assert o.cancel_load("m") is True
     cancel_done.set()
 
     loader.join(timeout = 5)
     assert load_done.is_set()
 
-    # Fail-without: load_model published active_model_name/models for 'm' AFTER cancel_load
-    # returned, advertising a cancelled model over a killed subprocess.
     assert load_result.get("ok") is False, "the cancelled load must not report success"
     assert o.active_model_name is None, "must not publish a cancelled model's active name"
     assert o.models == {}, "must not publish a cancelled model's mirror"
     assert "m" not in o.loading_models
 
 
-# ----------------------------------------------------------------------------
-# Concurrent compare-mode requests must not each spawn a dispatcher. Compare mode
-# (_generate_dispatched) deliberately bypasses _gen_lock, so two requests can reach
-# _start_dispatcher at once. Without _dispatcher_lifecycle_lock the check-then-spawn
-# races: both observe no live dispatcher and each start one. The extra dispatcher is
-# orphaned (self._dispatcher_thread tracks only the last) and later consumes the
-# "unloaded" reply off the shared resp_queue before unload_model's _wait_response,
-# hanging the unload on its 300s timeout. The lifecycle lock must serialize the
-# check-then-spawn so exactly one dispatcher thread is ever created.
-# ----------------------------------------------------------------------------
+# Concurrent compare-mode requests must not each spawn a dispatcher. Compare mode bypasses
+# _gen_lock, so two requests can reach _start_dispatcher at once and the check-then-spawn races.
+# The extra dispatcher is orphaned (only the last is tracked) and later consumes the "unloaded"
+# reply off the shared resp_queue, hanging the unload on its 300s timeout, so the lifecycle lock
+# must serialize the check-then-spawn.
 
 
 def test_concurrent_start_dispatcher_spawns_exactly_one():
     import queue as _queue
 
     o = _bare_orchestrator()
-    o._resp_queue = _queue.Queue()  # real queue so the dispatcher loop blocks and stays alive
+    o._resp_queue = _queue.Queue()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
     o._request_cancel_events = {}
@@ -2139,8 +1952,6 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
     o._dispatcher_lifecycle_lock = threading.Lock()
 
     n = 32
-    # A barrier aligns every thread on the check-then-spawn window: without the lifecycle
-    # lock several would clear the "is a dispatcher alive?" check together and each spawn one.
     barrier = threading.Barrier(n)
     results: list = []
     results_lock = threading.Lock()
@@ -2158,11 +1969,8 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
         t.join(timeout = 5)
 
     try:
-        # _start_dispatcher returns True only for the caller that actually spawned a thread.
-        # Exactly one caller may win; every other must observe the dispatcher alive and bail.
         assert results.count(True) == 1, f"expected exactly one spawn, got {results.count(True)}"
         assert results.count(False) == n - 1
-        # And exactly one live dispatcher thread exists -- no orphan racing resp_queue.
         live = [
             t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()
         ]
@@ -2171,7 +1979,6 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
     finally:
         o._stop_dispatcher()
 
-    # Stop joins and clears it; no dispatcher thread must survive.
     assert o._dispatcher_thread is None
     remaining = [
         t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()
@@ -2179,26 +1986,17 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
     assert remaining == [], "dispatcher must be stopped and joined"
 
 
-# ----------------------------------------------------------------------------
-# A compare request whose _start_dispatcher is queued behind an unload's
-# _stop_dispatcher must NOT spawn a fresh dispatcher. The idle-dispatcher stop
-# and the queued start both serialize on _dispatcher_lifecycle_lock; if the
-# queued start spawned a new dispatcher after the stop, it would become the
-# resp_queue reader and consume unload_model's "unloaded" reply (unroutable, so
-# dropped) before _wait_response saw it -- hanging the unload on its 300s
-# timeout. unload_model sets _unload_pending under the SAME lifecycle lock ahead
-# of the stop, so _start_dispatcher observes it and refuses.
-# ----------------------------------------------------------------------------
 
 
+# A compare request whose _start_dispatcher is queued behind an unload's _stop_dispatcher must
+# NOT spawn a fresh dispatcher: it would become the resp_queue reader and consume unload_model's
+# "unloaded" reply as unroutable, hanging the unload on its 300s timeout. unload_model sets
+# _unload_pending under the SAME lifecycle lock ahead of the stop, so the start observes it.
 def test_start_dispatcher_refuses_while_unload_pending():
-    # Direct unit guard: with an unload in progress (_unload_pending set under the
-    # lifecycle lock by unload_model), _start_dispatcher must refuse and spawn nothing,
-    # even though no dispatcher is currently running.
     import queue as _queue
 
     o = _bare_orchestrator()
-    o._resp_queue = _queue.Queue()  # a spawned dispatcher would block-read here and stay alive
+    o._resp_queue = _queue.Queue()
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
@@ -2213,9 +2011,6 @@ def test_start_dispatcher_refuses_while_unload_pending():
 
 
 def test_start_dispatcher_resumes_after_unload_clears():
-    # Guard the other direction: once the unload finishes and clears _unload_pending, a
-    # later compare request must be able to start the dispatcher again (the gate must not
-    # wedge). Proves the refusal above is scoped to the unload, not permanent.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -2237,16 +2032,13 @@ def test_start_dispatcher_resumes_after_unload_clears():
 
 
 def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
-    # Codex's exact ordering, forced deterministically: an unload holds
-    # _dispatcher_lifecycle_lock across its _stop_dispatcher (the idle dispatcher's join
-    # is gated by an event), while a compare request's _start_dispatcher is queued behind
-    # it on the same lock. When the stop releases the lock the queued start must observe
-    # _unload_pending (set under the lock ahead of the stop) and refuse: no fresh
-    # dispatcher may be left running to steal the "unloaded" reply.
+    # The exact ordering, forced deterministically: an unload holds _dispatcher_lifecycle_lock
+    # across its _stop_dispatcher while a compare _start_dispatcher queues behind it, and when the
+    # stop releases the lock the queued start must observe _unload_pending and refuse.
     import queue as _queue
 
     o = _bare_orchestrator()
-    o._resp_queue = _queue.Queue()  # a spawned dispatcher would block-read here and stay alive
+    o._resp_queue = _queue.Queue()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
     o._request_cancel_events = {}
@@ -2254,13 +2046,10 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     o._dispatcher_lifecycle_lock = threading.Lock()
     o._unload_pending = False
 
-    start_queued = threading.Event()  # release the stop's join once the start is queued behind it
+    start_queued = threading.Event()
     join_may_finish = threading.Event()
 
     class _IdleDispatcher:
-        # Stand-in for the idle compare-mode dispatcher the unload stops. Its join blocks
-        # until we confirm the compare _start_dispatcher is queued behind the stop, so the
-        # stop provably holds _dispatcher_lifecycle_lock across that window.
         def is_alive(self):
             return True
 
@@ -2271,8 +2060,6 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     o._dispatcher_thread = _IdleDispatcher()
 
     def unload_side():
-        # unload_model's sequence: set _unload_pending under the lifecycle lock, then stop
-        # the idle dispatcher (also under the lock, via _wait_dispatcher_idle).
         with o._dispatcher_lifecycle_lock:
             o._unload_pending = True
         o._stop_dispatcher()
@@ -2284,17 +2071,14 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
 
     u = threading.Thread(target = unload_side, name = "unload-side")
     u.start()
-    # Let the unload set _unload_pending, enter _stop_dispatcher, and block in the gated join
-    # while holding the lifecycle lock.
     time.sleep(0.2)
 
     c = threading.Thread(target = compare_side, name = "compare-side")
     c.start()
-    # Let the compare _start_dispatcher block on the lifecycle lock (queued behind the stop).
     time.sleep(0.2)
 
-    start_queued.set()  # the start is now queued behind the stop
-    join_may_finish.set()  # let the stop's join complete and release the lock
+    start_queued.set()
+    join_may_finish.set()
 
     u.join(timeout = 5)
     c.join(timeout = 5)
@@ -2324,8 +2108,8 @@ def _dispatch(o, resps):
 
 def test_worker_ownership_follows_the_worker_not_the_consumer():
     # The subprocess runs one generation at a time and can start B while A's consumer has yet to
-    # drain its mailbox. A must stop owning the worker the moment its gen_done is routed, else
-    # a late Stop for A cancels B.
+    # drain its mailbox, so A must stop owning the worker the moment its gen_done is routed or a
+    # late Stop for A cancels B.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -2340,24 +2124,19 @@ def test_worker_ownership_follows_the_worker_not_the_consumer():
     assert o._owns_worker(a_cancel), "the request the worker is answering owns it"
     assert not o._owns_worker(b_cancel), "a queued request does not"
 
-    # A finishes. B has been sent but has not answered yet (it is prefilling), so the gap
-    # between the two is the window a late Stop for A used to fire into.
     _dispatch(o, [{"type": "gen_done", "request_id": "a"}])
     assert not o._owns_worker(a_cancel), "a finished request stops owning the worker"
     assert o._owns_worker(b_cancel), "the next queued request is the one prefilling"
 
-    # Worker moves on to B, still before A's consumer reads anything.
     _dispatch(o, [{"type": "token", "request_id": "b", "token": "yo"}])
     assert not o._owns_worker(a_cancel), "a finished request must not cancel its successor"
     assert o._owns_worker(b_cancel), "the worker moved on to B, so B owns it"
 
-    # A's own stream unwinding afterwards must not disturb B.
     o._release_worker(a_cancel)
     assert o._owns_worker(b_cancel)
 
 
 def test_status_responses_do_not_transfer_worker_ownership():
-    # Status lines are not an answer to any request; the dispatcher drops them before routing.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -2369,15 +2148,14 @@ def test_status_responses_do_not_transfer_worker_ownership():
     o._claim_worker(b_cancel)
 
     _dispatch(o, [{"type": "status", "request_id": "b", "message": "loading"}])
-    # Nothing has answered, so the oldest claim is still the one prefilling.
     assert o._owns_worker(a_cancel)
     assert not o._owns_worker(b_cancel)
 
 
 def test_only_the_latest_responder_executes():
-    # The subprocess runs one generation at a time, so answering B means it has left A.
-    # _generate_inner promotes from its own consumer and can share the worker with a
-    # dispatched request, so the two must not both count as executing.
+    # The subprocess runs one generation at a time, so answering B means it has left A;
+    # _generate_inner can share the worker with a dispatched request, so the two must not both
+    # count as executing.
     o = _bare_orchestrator()
     a_cancel, b_cancel = threading.Event(), threading.Event()
     o._claim_worker(a_cancel)
@@ -2388,15 +2166,14 @@ def test_only_the_latest_responder_executes():
     o._mark_worker_started(b_cancel)
     assert o._owns_worker(b_cancel), "the latest responder is the one executing"
     assert not o._owns_worker(a_cancel), "and it is the only one"
-    # Idempotent: more of B's own tokens must not disturb it.
     o._mark_worker_started(b_cancel)
     assert o._owns_worker(b_cancel)
 
 
 def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
-    # A dispatched consumer can still be draining tokens after the dispatcher retired its request
-    # and started the next one. Stopping it then must tear down only its own stream: signalling
-    # the shared worker event would end its successor.
+    # A dispatched consumer can still be draining tokens after the dispatcher started the next
+    # request, so stopping it must tear down only its own stream: signalling the shared worker
+    # event would end its successor.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -2406,7 +2183,6 @@ def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
     o._request_cancel_events = {"a": a_cancel, "b": b_cancel}
     o._claim_worker(a_cancel)
     o._claim_worker(b_cancel)
-    # Worker finished A and moved on to B.
     _dispatch(
         o,
         [
@@ -2416,7 +2192,6 @@ def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
     )
     assert o._owns_worker(b_cancel) and not o._owns_worker(a_cancel)
 
-    # A's consumer now reads a token buffered before that, with A stopped.
     a_cancel.set()
     stale = [{"type": "token", "request_id": "a", "text": "late"}]
     drained = []
@@ -2432,7 +2207,6 @@ def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
     assert drained, "the stopped stream still tears itself down"
     assert not o._cancel_event.is_set(), "a retired request must not signal the shared worker event"
 
-    # The generation that does own the worker still can.
     b_cancel.set()
     stale_b = [{"type": "token", "request_id": "b", "text": "live"}]
     list(
@@ -2448,9 +2222,9 @@ def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
 
 
 def test_a_dispatcher_started_mid_stream_still_reaches_the_direct_reader():
-    # A compare request can start the dispatcher while an ordinary chat is streaming. The
-    # dispatcher then owns resp_queue, and without a mailbox for the direct reader it dropped
-    # that chat's tokens and its gen_done as unaddressed, hanging it.
+    # A compare request can start the dispatcher while an ordinary chat is streaming: the dispatcher
+    # then owns resp_queue, and without a mailbox for the direct reader it dropped that chat's
+    # tokens as unaddressed.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -2480,9 +2254,6 @@ def test_a_dispatcher_started_mid_stream_still_reaches_the_direct_reader():
 
 
 def test_the_direct_reader_hands_back_a_compare_response_it_took():
-    # The mirror race: this reader is already blocked on resp_queue when a compare request's
-    # dispatcher starts, so it can take that request's response first. Consuming it would
-    # corrupt this chat and hang the compare pane.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -2492,7 +2263,7 @@ def test_the_direct_reader_hands_back_a_compare_response_it_took():
     o._direct_mailboxes = {}
     o._request_cancel_events = {}
     o._resp_queue = _queue.Queue()
-    o._dispatcher_thread = None  # no dispatcher yet: this reader owns the queue
+    o._dispatcher_thread = None
 
     read_one, _drain, release = o._direct_reader("direct-1")
     try:
@@ -2506,8 +2277,6 @@ def test_the_direct_reader_hands_back_a_compare_response_it_took():
 
 
 def test_a_direct_mailbox_is_not_mistaken_for_compare_activity():
-    # _mailboxes means "compare requests are in flight" to the unload and distributed paths,
-    # so an ordinary chat's mailbox must live somewhere else.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -2521,9 +2290,9 @@ def test_a_direct_mailbox_is_not_mistaken_for_compare_activity():
 
 
 def test_replacing_the_subprocess_clears_worker_scoped_state():
-    # Ownership is keyed only by cancel-event identity, so a consumer still blocked on its
-    # mailbox when the worker was replaced stayed recorded as the executor. A generation on
-    # the fresh worker then failed _owns_worker and could not be stopped.
+    # Ownership is keyed only by cancel-event identity, so a consumer still blocked on its mailbox
+    # when the worker was replaced stayed recorded as the executor, and a generation on the fresh
+    # worker then failed _owns_worker and could not be stopped.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -2541,15 +2310,12 @@ def test_replacing_the_subprocess_clears_worker_scoped_state():
     assert o._mailboxes == {} and o._direct_mailboxes == {}
     assert o._request_cancel_events == {}
     assert o._active_cancel_events == [] and o._executing_cancel_events == []
-    # A generation on the fresh worker owns it rather than being refused by a ghost.
     fresh = threading.Event()
     o._claim_worker(fresh)
     assert o._owns_worker(fresh), "the dead worker's request must not outrank a live one"
 
 
 def test_audio_input_claims_the_worker_before_sending():
-    # Unclaimed, a compare request queued behind an audio-input generation looked like the
-    # oldest owner, so stopping that queued request signalled the worker and killed this.
     import ast
     import pathlib
 
@@ -2571,10 +2337,9 @@ def test_audio_input_claims_the_worker_before_sending():
 
 
 def test_generation_stopped_while_queued_is_never_sent(monkeypatch):
-    # Two chats on the serialized backend: the second blocks on _gen_lock, and Stop sets its
-    # event while it waits. Sending anyway occupied the worker with a run the user ended --
-    # the cancel is only checked on a token, so a long prefill (or a generation that reaches
-    # gen_done without one) still held up its siblings.
+    # Two chats on the serialized backend: the second blocks on _gen_lock and Stop sets its event
+    # while it waits. Sending anyway occupied the worker with a run the user ended, since the cancel
+    # is only checked on a token.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda *a, **k: None)
@@ -2595,7 +2360,6 @@ def test_generation_stopped_while_queued_is_never_sent(monkeypatch):
 
 
 def test_audio_input_stopped_while_queued_is_never_sent(monkeypatch):
-    # Same lock, same hole.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -2631,7 +2395,7 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
             UnloadRequest(model_path = "org/a", cancel_load_request_id = "handshake-drop"), "s"
         )
         assert attempt is not None and is_running
-        attempt.cancel_complete.clear()  # the teardown never reached its finally
+        attempt.cancel_complete.clear()
         return {"status": "loaded"}
 
     inf._load_model_impl = cancel_then_die

@@ -29,15 +29,14 @@ from pathlib import Path
 _TESTS_DIR = Path(__file__).resolve().parent
 _BACKEND = _TESTS_DIR.parent
 
-# Top-level packages the backend pytest job does not install. `unsloth` is the one that raises
-# (its _gpu_init insists on unsloth_zoo); the other two are unimportable there for the same reason.
+# Top-level packages the backend pytest job does not install.
 _HEAVY_PACKAGES = ("unsloth", "unsloth_zoo", "trl")
 
 # Outside the backend's own import graph (unsloth_compiled_cache is a gitignored artifact dir).
 _SKIP_TOP_LEVEL = frozenset({"tests", "vendor", "unsloth_compiled_cache"})
 
-# Naming `unsloth` is enough to prove intent: a module that stubs it and forgets `trl` fails
-# loudly at collection, whereas one that stubs nothing is the silent case this guard catches.
+# Naming `unsloth` is enough to prove intent: a module that stubs it and forgets `trl` fails loudly
+# at collection, whereas one that stubs nothing is the silent case this guard catches.
 _REQUIRED_STUB = "unsloth"
 
 
@@ -121,10 +120,7 @@ def _heavy_backend_modules() -> frozenset[str]:
     return frozenset(tainted)
 
 
-# What an `except` clause has to name for an unstubbed import under it to be a
-# deliberate guard rather than an omission. ModuleNotFoundError is a SUBCLASS of
-# ImportError, so it does not belong here: it catches strictly less, and a stub whose
-# absence raises plain ImportError would go through it.
+# What an `except` clause must name for an unstubbed import under it to be a deliberate guard.
 _CATCHES_IMPORT_ERROR = frozenset({"ImportError", "Exception", "BaseException"})
 
 
@@ -582,9 +578,8 @@ def _certain_nodes(node: ast.AST, flags: dict[str, bool] | None = None):
         imported = _true_when_imported(node.test, flags)
         if imported is None:
             return
-        # Only the branch that runs when the module is ABSENT: that is the one whose
-        # stubs the import needs, and on the other branch the import resolves out of
-        # sys.modules and cannot fail.
+        # Only the branch that runs when the module is ABSENT: on the other branch the import
+        # resolves out of sys.modules and cannot fail.
         for child in node.orelse if imported else node.body:
             yield from _certain_nodes(child, flags)
         return
@@ -592,11 +587,8 @@ def _certain_nodes(node: ast.AST, flags: dict[str, bool] | None = None):
         # Not even the `else`: it is skipped when the loop leaves through `break`.
         return
     if isinstance(node, ast.Try):
-        # Only the `finally`. A try body whose handler swallows the exception is
-        # exactly a block that may stop part way: an optional import fails, the
-        # handler catches it, and the stub call below it never runs while the heavy
-        # import after the try does. Counting the body reported that file stubbed.
-        # `else` and the handlers are conditional by construction.
+        # Only the `finally`. A handler that swallows can stop part way, so the stub call below
+        # may never run while the heavy import after the try does.
         for child in node.finalbody:
             yield from _certain_nodes(child, flags)
         return
@@ -629,8 +621,8 @@ def _running_before(
         if _end_line(statement) < line:
             yield statement, list(_certain_nodes(statement, flags))
             continue
-        # This statement encloses the line. Its header ran; its blocks did not,
-        # except for the one holding the line.
+        # This statement encloses the line: its header ran, its blocks did not, except the one
+        # holding the line.
         header = [
             node
             for field, value in ast.iter_fields(statement)
@@ -701,8 +693,7 @@ def _is_offender(source: str, heavy: frozenset[str]) -> bool:
     except SyntaxError:  # not this guard's job to report
         return False
     lines = _heavy_import_lines(tree, heavy)
-    # EVERY one of them, since any single unstubbed import is the one that kills
-    # collection, whatever the others do.
+    # EVERY one of them, since any single unstubbed import is the one that kills collection.
     return any(not _stubs_before(tree, line) for line in lines)
 
 
@@ -724,8 +715,7 @@ def _import_time_nodes(node: ast.AST):
     annotations on a ``def``. Only a function body is deferred.
     """
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-        # Lambda.body is one expression; a def's is a list. Compared by identity so a
-        # node is never tested with `in` against another AST node.
+        # Lambda.body is one expression; a def's is a list.
         body = node.body if isinstance(node.body, list) else [node.body]
         deferred = {id(statement) for statement in body}
         for child in ast.iter_child_nodes(node):
@@ -768,9 +758,8 @@ def _reachable_import_time_nodes(node: ast.AST):
     import never runs, and reported a file safe that still raises.
     """
     if isinstance(node, ast.If) and _constant_test(node) is not None:
-        # Only the branch the interpreter takes. Pruning the body of `if False:` but
-        # descending into the `else:` of `if True:` left the second half of the same
-        # hole open: an import there never runs either.
+        # Only the branch the interpreter takes: pruning the body of `if False:` but descending into
+        # the `else:` of `if True:` left the second half of the same hole open.
         taken = node.body if _constant_test(node) else node.orelse
         for child in taken:
             yield from _reachable_import_time_nodes(child)
@@ -810,8 +799,8 @@ def _eagerly_imports(tree: ast.Module, target: str, line: int) -> bool:
     for statement in tree.body:
         if statement.lineno >= line:
             break
-        # Asked through _stubs_before rather than restated here, so "are the stubs
-        # live" has one answer in this file and cannot drift between the two callers.
+        # Asked through _stubs_before rather than restated, so "are the stubs live" has one answer
+        # and cannot drift between the two callers.
         if not _stubs_before(tree, statement.lineno):
             continue
         for node in _reachable_import_time_nodes(statement):
@@ -920,37 +909,21 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
     while changed:
         changed = False
         for caller, line in list(first.items()):
-            # Only the calls that actually run when the outer helper runs. ast.walk
-            # would also visit one under `if False:` and one inside a nested def that
-            # nothing calls, and handing those the outer boundary fails a file Python
-            # never executes that way. Same reachability rule as
-            # the module body uses, so the two cannot answer differently.
-            # Every definition of the name, not just the first. Two enclosing
-            # functions can each define a helper called the same thing, and keeping
-            # only one dropped the other from the call graph: its importorskip then
-            # took the end-of-module boundary and a stub installed after the enclosing
-            # call read as being in time. Which of them a call
-            # names cannot be told apart here, so all of them take the boundary, which
-            # is the strict answer.
+            # Only the calls that actually run when the outer helper runs: ast.walk would also visit
+            # one under `if False:` and one in an uncalled nested def.
             for definition in functions[caller]:
                 for statement in definition.body:
                     for node in _reachable_import_time_nodes(statement):
                         if not isinstance(node, ast.Call):
                             continue
                         callee = _callee_name(node)
-                        # The inner helper runs when the OUTER one is called, so it
-                        # inherits that line rather than its own, which is only where
-                        # it is written.
+                        # The inner helper runs when the OUTER one is called, so it inherits that
+                        # line rather than its own.
                         if callee in functions and line < first.get(callee, line + 1):
                             first[callee] = line
                             changed = True
-                    # Nothing after an unconditional exit runs, so a call below one is
-                    # not reached at import and must not inherit this boundary: doing
-                    # so rejected a stub installed below the outer call while the inner
-                    # helper had never run. Checked AFTER the statement, since
-                    # `return _inner()` runs its own expression. A CONDITIONAL exit is
-                    # not enough to stop: the path that skips it still reaches the
-                    # calls below.
+                    # Nothing after an unconditional exit runs, so a call below one must not inherit
+                    # this boundary.
                     if isinstance(statement, (ast.Return, ast.Raise)):
                         break
     return first
@@ -1031,25 +1004,18 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
       stub and call the file safe while it still breaks collection.
     """
     bare_names = _importorskip_bare_names(tree)
-    # Reachability-aware on both counts. A call under `if False:` or `if TYPE_CHECKING:`
-    # never runs, so it is neither an import-time call nor a call at all, and reporting
-    # it failed a file that type-checks or deliberately disables an import.
+    # Reachability-aware on both counts: a call under `if False:` or `if TYPE_CHECKING:` never runs,
+    # so reporting it failed a file that type-checks or deliberately disables an import.
     module_scope = {
         id(node) for statement in tree.body for node in _reachable_import_time_nodes(statement)
     }
     reachable = {id(node) for node in _reachable_nodes(tree)}
     end = max((statement.lineno for statement in tree.body), default = 0) + 1
-    # A call inside a def is deferred only if nothing runs that def during import. Where
-    # the module body calls it, the body runs at collection like any other import-time
-    # statement, and the end-of-module boundary would let a stub installed BELOW the call
-    # count. Those calls take the line the helper is invoked from.
+    # A call inside a def is deferred only if nothing runs that def during import; where the module
+    # body calls it, the end-of-module boundary would let a stub installed BELOW the call count.
     called_at_import = _functions_called_at_import(tree)
-    # The function a call belongs to is the INNERMOST one. ast.walk descends into a
-    # nested def, which attributed a call there to the enclosing module-level function
-    # and handed it that function's import-time boundary, while a nested body cannot run
-    # until something calls it -- by which time a stub installed below is in place. So
-    # this defers nested bodies, and a call inside one falls through to the end-of-module
-    # boundary, which is what deferred means.
+    # The function a call belongs to is the INNERMOST one: ast.walk descends into nested defs, and
+    # the enclosing function's boundary is one a nested body cannot reach until it is called.
     in_function = {
         id(node): name
         for name, definitions in _module_functions(tree).items()
@@ -1171,14 +1137,8 @@ def _importorskip_offence(tree: ast.Module, heavy: frozenset[str]) -> bool:
     for target, boundary in _importorskip_calls(tree, heavy):
         if not _stubs_before(tree, boundary):
             return True
-        # Installing the stub is not enough if the module has already dropped it again
-        # by the time the call runs. What makes the call resolve then is the module
-        # having imported the target itself while the stubs were live. Both questions
-        # are asked against the same boundary as the install, so an import-time call is
-        # judged on the pops above IT (a call between the install and the pop is fine,
-        # one below the pop is not) and a lazy call on the whole module body. Judging
-        # only lazy calls here let a module install, pop, then call at import time and
-        # still read as safe, while it raises during collection.
+        # Installing the stub is not enough if the module dropped it again before the call runs;
+        # what makes it resolve is importing the target while the stubs were live.
         if _drops_stubs(tree, boundary) and not _eagerly_imports(tree, target, boundary):
             return True
     return False
@@ -1253,8 +1213,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(lazy_stubbed)
 
-    # `from pytest import importorskip` then a bare call: the same offence, and the
-    # attribute-only match this guard shipped with could not see it at all.
+    # `from pytest import importorskip` then a bare call: the same offence, and the attribute-only
+    # match this guard shipped with could not see it.
     bare_unstubbed = (
         "from pytest import importorskip\n"
         "def test_x():\n"
@@ -1263,8 +1223,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     assert calls(bare_unstubbed) == [("core.inference.inference", 3)]  # end-of-module boundary
     assert not safe(bare_unstubbed)
 
-    # A module-scope call runs during collection, so a stub BELOW it is too late.
-    # Scanning to the end of the module would call this safe.
+    # A module-scope call runs during collection, so a stub BELOW it is too late; scanning to the
+    # end of the module would call this safe.
     stub_too_late = (
         "import pytest, sys\n"
         "inf = pytest.importorskip('core.inference.inference')\n"
@@ -1280,11 +1240,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(stub_in_time)
 
-    # A nested def is deferred only while nothing runs it. An outer helper the module
-    # body calls, which defines and calls an inner one, runs that inner body during
-    # collection, so the call inside it takes the OUTER call's line and a stub below
-    # that line is too late. Leaving nested defs out of the function map handed this
-    # the end-of-module boundary instead, the lenient answer.
+    # A nested def is deferred only while nothing runs it: an outer helper the module body calls
+    # runs the inner body during collection, so the inner call takes the OUTER call's line.
     nested_called_at_import = (
         "import pytest, sys\n"
         "def _outer():\n"
@@ -1297,7 +1254,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     assert calls(nested_called_at_import) == [("core.inference.inference", 6)]
     assert not safe(nested_called_at_import)
 
-    # ...and the same file with the stub above the call site is fine.
     nested_stub_in_time = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1309,8 +1265,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(nested_stub_in_time)
 
-    # A call below an unconditional exit is not reached at import, so the helper it
-    # names keeps the deferred boundary and a stub anywhere in the body is in time.
+    # A call below an unconditional exit is not reached at import, so the helper it names keeps the
+    # deferred boundary.
     after_return = (
         "import pytest, sys\n"
         "def _outer():\n"
@@ -1323,9 +1279,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(after_return), after_return
 
-    # Two enclosing functions can define a helper of the same name. Keeping only the
-    # first dropped the second from the call graph, and its importorskip then took the
-    # lenient end-of-module boundary.
     same_name = (
         "import pytest, sys\n"
         "def _unused():\n"
@@ -1353,8 +1306,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     ):
         assert safe(dead), dead
 
-    # A nested def nothing calls at import is still deferred: it runs at test time,
-    # by which point a stub anywhere in the module body is in place.
+    # A nested def nothing calls at import is still deferred: it runs at test time, by which point a
+    # stub anywhere in the module body is in place.
     nested_deferred = (
         "import pytest, sys\n"
         "def _outer():\n"
@@ -1365,8 +1318,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(nested_deferred)
 
-    # A class body runs at import time, so a stub below it is too late, exactly like a
-    # module-scope call. Only a function BODY is deferred.
+    # A class body runs at import time, so a stub below it is too late; only a function BODY is
+    # deferred.
     class_body_late = (
         "import pytest, sys\n"
         "class T:\n"
@@ -1376,7 +1329,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     assert calls(class_body_late) == [("core.inference.inference", 3)]
     assert not safe(class_body_late)
 
-    # So do default expressions on a def.
     default_arg_late = (
         "import pytest, sys\n"
         "def f(x = pytest.importorskip('core.inference.inference')):\n"
@@ -1386,8 +1338,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     assert calls(default_arg_late) == [("core.inference.inference", 2)]
     assert not safe(default_arg_late)
 
-    # A lazy call in a module that stubs, imports the target, then DROPS the stubs is
-    # fine, because the module is in sys.modules by then.
+    # A lazy call in a module that stubs, imports the target, then DROPS the stubs is fine, because
+    # the module is in sys.modules by then.
     stub_import_drop = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1399,8 +1351,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert _offender_free(stub_import_drop)
 
-    # The same file without the eager import is NOT fine: the stubs are gone by the
-    # time the lazy call runs, so it raises. This is the shape a copy-paste drops.
+    # The same file without the eager import is NOT fine: the stubs are gone by the time the lazy
+    # call runs.
     stub_drop_no_import = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1411,10 +1363,9 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert not _offender_free(stub_drop_no_import)
 
-    # The same trap at IMPORT time, which the drop check used to skip entirely: stub,
-    # pop, then call at module scope. The stub is installed above the call, so the
-    # install check is satisfied, but it is gone again by the time the call runs and
-    # collection dies.
+    # The same trap at IMPORT time, which the drop check used to skip entirely: the stub is
+    # installed above the call so the install check is satisfied, but it is gone again by the time
+    # the call runs.
     drop_then_import_time_call = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1425,8 +1376,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     assert calls(drop_then_import_time_call) == [("core.inference.inference", 5)]
     assert not _offender_free(drop_then_import_time_call)
 
-    # And its safe sibling: the pop comes AFTER the call, so the stub is live for it.
-    # Bounding the drop check by the call's line is what separates these two.
+    # Its safe sibling: the pop comes AFTER the call.
     import_time_call_then_drop = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1436,9 +1386,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert _offender_free(import_time_call_then_drop)
 
-    # Eager import above the pop, import-time call below it: also safe, because the
-    # target is in sys.modules by then. The eager-import check has to be bounded by
-    # the call's line too, or the mirror image of this file would read as safe.
+    # Eager import above the pop, import-time call below it: also safe.
     eager_then_drop_then_call = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1449,9 +1397,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert _offender_free(eager_then_drop_then_call)
 
-    # A try/except probe BEFORE the stubs is not an eager import: on the matrix it
-    # fails, and Python drops the half-initialised module, so the later call still
-    # reaches the real dependency. Counting it read this file as safe. Reported here.
+    # A try/except probe BEFORE the stubs is not an eager import: it fails, Python drops the
+    # half-initialised module, and the later call still reaches the real dependency.
     failed_probe_then_drop = (
         "import pytest, sys\n"
         "try:\n"
@@ -1466,9 +1413,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert not _offender_free(failed_probe_then_drop)
 
-    # Unrelated module-cache cleanup in a properly stubbed file is not a stub drop,
-    # and neither is a pop on something that merely has a `.modules`. Both used to
-    # report the file as an offender. Reported here.
+    # Unrelated module-cache cleanup in a properly stubbed file is not a stub drop, and neither is a
+    # pop on something that merely has a `.modules`.
     unrelated_pop = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1485,9 +1431,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "    inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert _offender_free(foreign_modules)
-    # The real files pop through a module-level list the stub helper records into,
-    # so that still reads as a drop. The link is followed through the helper body,
-    # which is why the helper is spelled out here as the real files spell it.
+    # The real files pop through a module-level list the stub helper records into, so that still
+    # reads as a drop; the helper is spelled out here as the real files spell it.
     _HELPER = (
         "def _stub_if_missing(name, attrs):\n"
         "    _STUBBED.append(name)\n"
@@ -1503,9 +1448,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert not _offender_free(drop_through_a_list)
 
-    # But an UNRELATED module-level list is not the stub record, even when it is
-    # popped from sys.modules. Accumulating every assignment target made this read
-    # as a stub drop and reported a properly stubbed file.
+    # An UNRELATED module-level list is not the stub record, even when popped from sys.modules:
+    # accumulating every assignment target reported a properly stubbed file.
     unrelated_cleanup_list = (
         "import pytest, sys\n"
         "_STUBBED = []\n"
@@ -1517,8 +1461,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert _offender_free(unrelated_cleanup_list)
 
-    # importorskip(modname = ...) is the documented signature, so matching only the
-    # positional form let a file written that way past the guard. Reported here.
+    # importorskip(modname = ...) is the documented signature, so matching only the positional form
+    # let a file written that way past the guard.
     keyword_target = (
         "import pytest\n"
         "def test_x():\n"
@@ -1527,9 +1471,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     assert calls(keyword_target) == [("core.inference.inference", 3)]  # end-of-module
     assert not safe(keyword_target)
 
-    # exc_type=ImportError is pytest's own opt-in to skipping on a plain ImportError,
-    # which is the exact failure this guard is about, so such a call is safe unstubbed
-    # and flagging it was a false report. Reported here.
+    # exc_type=ImportError is pytest's own opt-in to skipping on a plain ImportError, which is the
+    # exact failure this guard is about, so such a call is safe unstubbed.
     explicit_import_error = (
         "import pytest\n"
         "def test_x():\n"
@@ -1539,7 +1482,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert calls(explicit_import_error) == []
     assert safe(explicit_import_error)
-    # ModuleNotFoundError is the default, so spelling it out changes nothing.
     explicit_default = (
         "import pytest\n"
         "def test_x():\n"
@@ -1549,8 +1491,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert calls(explicit_default) and not safe(explicit_default)
 
-    # An import under `if TYPE_CHECKING:` never runs, so it is not what cached the
-    # target, and the file still raises after the stubs are dropped. Reported here.
+    # An import under `if TYPE_CHECKING:` never runs, so it is not what cached the target, and the
+    # file still raises after the stubs are dropped.
     type_checking_import = (
         "import pytest, sys\n"
         "from typing import TYPE_CHECKING\n"
@@ -1564,9 +1506,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert not _offender_free(type_checking_import)
 
-    # But a class body DOES run at import time, so an eager import written there
-    # caches the target and the file is safe. Stopping at every class reported it as
-    # an offender. Reported here.
+    # But a class body DOES run at import time, so an eager import written there caches the target;
+    # stopping at every class reported it as an offender.
     class_body_import = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1579,9 +1520,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert _offender_free(class_body_import)
 
-    # An importorskip inside a helper the MODULE BODY calls runs at collection, so a
-    # stub installed below that call site is too late. The end-of-module boundary said
-    # it was in time. Reported here.
+    # An importorskip inside a helper the MODULE BODY calls runs at collection, so a stub installed
+    # below that call site is too late.
     helper_called_at_import = (
         "import pytest, sys\n"
         "def _probe():\n"
@@ -1592,10 +1532,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     assert calls(helper_called_at_import) == [("core.inference.inference", 4)]
     assert not safe(helper_called_at_import)
 
-    # And through a second helper: the module calls the outer one, the inner one holds
-    # the importorskip, and the stub arrives after. Stopping at one level handed the
-    # inner call the end-of-module boundary and read the later stub as in time, while
-    # collection has already run the inner import.
+    # And through a second helper: stopping at one level handed the inner call the end-of-module
+    # boundary while collection has already run the inner import.
     nested_helper_at_import = (
         "import pytest, sys\n"
         "def _inner():\n"
@@ -1608,9 +1546,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     assert calls(nested_helper_at_import) == [("core.inference.inference", 6)]
     assert not safe(nested_helper_at_import)
 
-    # A call the outer helper never makes does not propagate: neither one under a
-    # constant-false test, nor one inside a nested def that nothing invokes. Handing
-    # those the outer boundary failed a file Python never executes that way.
+    # A call the outer helper never makes does not propagate: neither one under a constant-false
+    # test, nor one inside a nested def that nothing invokes.
     unreachable_inner_call = (
         "import pytest, sys\n"
         "def _inner():\n"
@@ -1636,7 +1573,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(deferred_inner_call)
 
-    # A chain nothing calls at import time still keeps the deferred boundary.
     nested_helper_never_called = (
         "import pytest, sys\n"
         "def _inner():\n"
@@ -1647,7 +1583,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(nested_helper_never_called)
 
-    # The same helper NOT called at import time keeps the deferred boundary.
     helper_never_called = (
         "import pytest, sys\n"
         "def _probe():\n"
@@ -1656,8 +1591,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(helper_never_called)
 
-    # `from pytest import importorskip as ios` is a valid call the raw-name match could
-    # not see, so an unstubbed module written that way walked past the guard. Reported here.
+    # `from pytest import importorskip as ios` is a valid call the raw-name match could not see.
     aliased = (
         "from pytest import importorskip as ios\n"
         "def test_x():\n"
@@ -1665,7 +1599,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert calls(aliased) == [("core.inference.inference", 3)]
     assert not safe(aliased)
-    # A name bound to the attribute form counts too.
     rebound = (
         "import pytest\n"
         "_ios = pytest.importorskip\n"
@@ -1673,7 +1606,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "    inf = _ios('core.inference.inference')\n"
     )
     assert calls(rebound) and not safe(rebound)
-    # A bare call to something that is NOT pytest's importorskip is not one.
     unrelated_bare = (
         "from mymod import importorskip\n"
         "def test_x():\n"
@@ -1681,8 +1613,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert calls(unrelated_bare) == []
 
-    # The other half of the unreachable-branch hole: an import in the `else:` of a
-    # constant-true test never runs either. Reported here.
+    # The other half of the unreachable-branch hole: an import in the `else:` of a constant-true test never runs either.
     else_of_true = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1696,7 +1627,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "    inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert not _offender_free(else_of_true)
-    # And the branch a constant-false test DOES take still counts.
     else_of_false = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1711,9 +1641,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert _offender_free(else_of_false)
 
-    # An importorskip inside a NESTED def does not run when the outer helper is called,
-    # so it keeps the deferred boundary and a stub installed after the outer call is in
-    # time. Attributing it to the outer function rejected a file that works.
+    # An importorskip inside a NESTED def does not run when the outer helper is called, so it keeps
+    # the deferred boundary; attributing it to the outer function rejected a file that works.
     nested_def_holds_the_call = (
         "import pytest, sys\n"
         "def _outer():\n"
@@ -1725,8 +1654,8 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(nested_def_holds_the_call)
 
-    # A call under a branch the interpreter never takes is not a call. Reporting it
-    # failed a file that only type-checks the import, or deliberately disables it.
+    # A call under a branch the interpreter never takes is not a call; reporting it failed a file
+    # that only type-checks the import.
     type_checking_call = (
         "import pytest\n"
         "from typing import TYPE_CHECKING\n"
@@ -1742,8 +1671,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert calls(disabled_call) == []
     assert safe(disabled_call)
-    # And a helper invoked only from such a branch is not called at import time either,
-    # so a stub below it is still in time for the lazy call that does run.
+    # And a helper invoked only from such a branch is not called at import time either.
     helper_called_only_when_disabled = (
         "import pytest, sys\n"
         "def _probe():\n"
@@ -1754,7 +1682,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert safe(helper_called_only_when_disabled)
 
-    # importorskip of something harmless is not an offence.
     assert calls("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n") == []
 
 
@@ -1762,7 +1689,6 @@ def test_the_heavy_module_set_is_derived_from_the_backend_sources():
     """A derivation that quietly returned nothing would make the guard below pass on anything."""
     heavy = _heavy_backend_modules()
     assert "core.training.trainer" in heavy
-    # The one the hardcoded version of this guard could never have seen.
     assert "core.inference.inference" in heavy
     assert not any(name.startswith("tests.") for name in heavy)
 
@@ -1783,13 +1709,10 @@ def test_the_guard_would_catch_an_unstubbed_module():
     heavy = _heavy_backend_modules()
 
     for source in (
-        # Split form: the source never spells "core.training.trainer". Asserted through
-        # _is_offender, the same entry point _offenders uses, so no textual prefilter can be
-        # reintroduced in front of it.
+        # Split form: the source never spells "core.training.trainer".
         "from core.training import trainer as t\n",
         "from core.training.trainer import UnslothTrainer\n",
         "import core.training.trainer\n",
-        # The shape the hardcoded guard was blind to.
         "from core.inference.inference import InferenceEngine\n",
         "from core.inference import inference\n",
     ):
@@ -1799,16 +1722,15 @@ def test_the_guard_would_catch_an_unstubbed_module():
 
     for stubbed in (
         '_stub_if_missing("unsloth", ())\nfrom core.training import trainer as t\n',
-        # The loop form the preflight tests use: the package names sit in the iterable, not in
-        # the call, so the whole module-scope statement has to be read, not just the call node.
+        # The loop form the preflight tests use: the package names sit in the iterable, not in the
+        # call, so the whole module-scope statement has to be read.
         'for _n, _a in (("unsloth", ()),):\n'
         "    _stub_if_missing(_n, _a)\n"
         "from core.training import trainer as t\n",
-        # No helper at all, just the assignment the helper would have made.
         'import sys\nsys.modules["unsloth"] = object()\n'
         "from core.training import trainer as t\n",
-        # The shape of the real files: the table sits above the loop that feeds it to the
-        # helper, so the name reaches the call through ``_STUBS`` rather than in it.
+        # The shape of the real files: the table sits above the loop that feeds it to the helper, so
+        # the name reaches the call through ``_STUBS``.
         'import sys\n_STUBS = {"unsloth": ()}\n'
         "for _n, _a in _STUBS.items():\n"
         "    _stub_if_missing(_n, _a)\n"
@@ -1819,9 +1741,8 @@ def test_the_guard_would_catch_an_unstubbed_module():
         ), stubbed
         assert not _is_offender(stubbed, heavy), stubbed
 
-    # A module-scope `with` or `if` runs at import exactly like a top-level line, so a heavy
-    # import inside one is an offence. Reading only the direct children of the module body
-    # made this shape invisible to the guard entirely.
+    # A module-scope `with` or `if` runs at import exactly like a top-level line, so a heavy import
+    # inside one is an offence; reading only direct children made this shape invisible.
     for nested, at in (
         ("with open('x') as fh:\n    from core.training import trainer as t\n", 2),
         ("import os\nif os.environ.get('X'):\n    from core.inference import inference\n", 3),
@@ -1829,9 +1750,8 @@ def test_the_guard_would_catch_an_unstubbed_module():
         assert _first_heavy_import_line(_parse(nested), heavy) == at, nested
         assert _is_offender(nested, heavy), nested
 
-    # ...and the context manager that HOLDS the stubs is how two of the real files are
-    # written, so the installing code sits one call away from module scope and the
-    # statement itself spells neither the module name nor sys.modules.
+    # ...and the context manager that HOLDS the stubs is how two of the real files are written: the
+    # installing code sits one call away from module scope.
     held = (
         "import contextlib, sys\n"
         '_STUBS = (("unsloth", ()),)\n'
@@ -1847,28 +1767,26 @@ def test_the_guard_would_catch_an_unstubbed_module():
     assert _stubs_before(_parse(held), 9), held
     assert not _is_offender(held, heavy), held
 
-    # Same helper, never called: still not stubbed, or reading through the call would have
-    # made a defined-and-unused helper into its own proof.
+    # Same helper, never called: still not stubbed, or reading through the call would have made a
+    # defined-and-unused helper into its own proof.
     assert _is_offender(held.replace("with _stubbed():\n    from", "from"), heavy)
 
-    # A stub installed BELOW the yield runs on the way out of the block, after the
-    # import inside it has already been attempted.
+    # A stub installed BELOW the yield runs on the way out of the block, after the import inside it
+    # has already been attempted.
     after_yield = held.replace(
         "    for _n, _a in _STUBS:\n        sys.modules[_n] = object()\n    yield\n",
         "    yield\n    for _n, _a in _STUBS:\n        sys.modules[_n] = object()\n",
     )
     assert after_yield != held
     assert _is_offender(after_yield, heavy), after_yield
-    # ...and one on a branch of the helper that never runs is no better.
     never_runs = held.replace(
         "    for _n, _a in _STUBS:\n        sys.modules[_n] = object()\n",
         "    if False:\n        for _n, _a in _STUBS:\n            sys.modules[_n] = object()\n",
     )
     assert never_runs != held
     assert _is_offender(never_runs, heavy), never_runs
-    # The yield that stops the scan has to be the helper's OWN. One belonging to a
-    # generator defined inside it says nothing about when the helper suspends, and
-    # taking it cut the scan off above the install this file does perform.
+    # The yield that stops the scan has to be the helper's OWN: one belonging to a generator defined
+    # inside it cut the scan off above the install.
     nested_yield = held.replace(
         "def _stubbed():\n",
         "def _stubbed():\n    def _inner():\n        yield 1\n",
@@ -1876,9 +1794,8 @@ def test_the_guard_would_catch_an_unstubbed_module():
     assert nested_yield != held
     assert not _is_offender(nested_yield, heavy), nested_yield
 
-    # Order still decides it INSIDE the block. Widening the search into compound
-    # statements without narrowing the stub side to match read the whole enclosing
-    # statement as preceding the import, so a stub written below it counted.
+    # Order still decides it INSIDE the block: widening the search into compound statements without
+    # narrowing the stub side read the whole enclosing statement as preceding the import.
     inside_after = (
         "if True:\n"
         "    from core.inference import inference\n"
@@ -1886,7 +1803,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert _first_heavy_import_line(_parse(inside_after), heavy) == 2, inside_after
     assert _is_offender(inside_after, heavy), inside_after
-    # ...and the same block with the two lines the other way round is fine.
     inside_before = (
         "if True:\n"
         '    _stub_if_missing("unsloth", ())\n'
@@ -1894,7 +1810,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert not _is_offender(inside_before, heavy), inside_before
 
-    # A branch that never runs is not an import, and not a stub either.
     for unreachable in (
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
@@ -1909,8 +1824,8 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert _is_offender(stub_that_never_runs, heavy), stub_that_never_runs
 
-    # A try body can stop part way. The stub below a failed optional import never
-    # runs, while the heavy import after the try does.
+    # A try body can stop part way: the stub below a failed optional import never runs, while the
+    # heavy import after the try does.
     swallowed = (
         "try:\n"
         "    import optional_thing\n"
@@ -1920,7 +1835,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert _is_offender(swallowed, heavy), swallowed
-    # A `finally` does run, on both paths.
     in_finally = (
         "try:\n"
         "    import optional_thing\n"
@@ -1932,8 +1846,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert not _is_offender(in_finally, heavy), in_finally
 
-    # Two branches, each with its own heavy import. Stubbing before the first one does
-    # nothing for the second, and stopping at the first import reported this safe.
     one_branch_stubbed = (
         "if enabled():\n"
         '    _stub_if_missing("unsloth", ())\n'
@@ -1943,7 +1855,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert _heavy_import_lines(_parse(one_branch_stubbed), heavy) == [3, 5], one_branch_stubbed
     assert _is_offender(one_branch_stubbed, heavy), one_branch_stubbed
-    # Both branches stubbed is fine.
     both_stubbed = (
         "if enabled():\n"
         '    _stub_if_missing("unsloth", ())\n'
@@ -1954,8 +1865,8 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert not _is_offender(both_stubbed, heavy), both_stubbed
 
-    # A stub on a branch the import cannot be on. Line order alone put it above the
-    # import while the two exclude each other.
+    # A stub on a branch the import cannot be on: line order alone put it above the import while the
+    # two exclude each other.
     other_branch = (
         "if enabled():\n"
         '    _stub_if_missing("unsloth", ())\n'
@@ -1963,7 +1874,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "    from core.inference import inference\n"
     )
     assert _is_offender(other_branch, heavy), other_branch
-    # The same shape with the import on the stub's own branch is fine.
     same_branch = (
         "if enabled():\n"
         '    _stub_if_missing("unsloth", ())\n'
@@ -1971,16 +1881,15 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert not _is_offender(same_branch, heavy), same_branch
 
-    # A stub that only MIGHT have run is not one the import can rely on.
     optional = (
         'if enabled():\n    _stub_if_missing("unsloth", ())\n'
         "from core.training import trainer as t\n"
     )
     assert _is_offender(optional, heavy), optional
 
-    # ...except the one condition that makes skipping the stubs safe, which is how
-    # test_training_progress_callback.py is written: on the branch that skips them the
-    # import resolves out of sys.modules and never reaches the real dependency.
+    # ...except the one condition that makes skipping the stubs safe (how
+    # test_training_progress_callback.py is written): on that branch the import resolves out of
+    # sys.modules.
     already_imported = (
         "import sys\n"
         '_PRE = "core.training.trainer" in sys.modules\n'
@@ -1989,7 +1898,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert not _is_offender(already_imported, heavy), already_imported
-    # The direct form, without the flag.
     assert not _is_offender(
         "import sys\n"
         'if "core.training.trainer" not in sys.modules:\n'
@@ -1997,9 +1905,8 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n",
         heavy,
     )
-    # Written the other way up, the stubs are installed only when they are not needed
-    # and skipped when they are, so the polarity has to be read rather than the
-    # presence of a sys.modules test.
+    # Written the other way up, the stubs are installed only when they are not needed, so the
+    # polarity has to be read rather than the presence of a sys.modules test.
     wrong_way_up = (
         "import sys\n"
         '_PRE = "core.training.trainer" in sys.modules\n'
@@ -2009,30 +1916,28 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert _is_offender(wrong_way_up, heavy), wrong_way_up
 
-    # Naming ImportError is not absorbing it.
     for reraised in (
         "try:\n    from core.training import trainer as t\nexcept ImportError:\n    raise\n",
         "try:\n    from core.training import trainer as t\n"
         "except ImportError as exc:\n    raise RuntimeError('no trainer') from exc\n",
     ):
         assert _is_offender(reraised, heavy), reraised
-    # Python dispatches to the FIRST matching handler, so a broad one that re-raises
-    # decides it even when an absorbing ImportError handler follows.
+    # Python dispatches to the FIRST matching handler, so a broad one that re-raises decides it even
+    # when an absorbing ImportError handler follows.
     broad_first = (
         "try:\n    from core.training import trainer as t\n"
         "except Exception:\n    raise\n"
         "except ImportError:\n    t = None\n"
     )
     assert _is_offender(broad_first, heavy), broad_first
-    # The same two the other way round: the absorbing one runs.
     absorbing_first = (
         "try:\n    from core.training import trainer as t\n"
         "except ImportError:\n    t = None\n"
         "except Exception:\n    raise\n"
     )
     assert not _is_offender(absorbing_first, heavy), absorbing_first
-    # A handler that only DEFINES something containing a raise absorbs the import: the
-    # nested body does not run while the exception is being handled.
+    # A handler that only DEFINES something containing a raise absorbs the import: the nested body
+    # does not run while the exception is being handled.
     defines_a_raiser = (
         "try:\n    from core.training import trainer as t\n"
         "except ImportError:\n"
@@ -2041,7 +1946,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert not _is_offender(defines_a_raiser, heavy), defines_a_raiser
 
-    # A module-level skip is a call, not a raise, so it stays exempt.
     skipped = (
         "import pytest\n"
         "try:\n    from core.training import trainer as t\n"
@@ -2049,7 +1953,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert not _is_offender(skipped, heavy), skipped
 
-    # A helper that can return before installing has not installed anything.
     early_return = (
         "import sys\n"
         "def _setup():\n"
@@ -2059,7 +1962,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert _is_offender(early_return, heavy), early_return
-    # ...but returning because the module is already there is the point of the branch.
     available_return = (
         "import sys\n"
         "def _setup():\n"
@@ -2070,7 +1972,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert not _is_offender(available_return, heavy), available_return
 
-    # A call named "stub" is not an installation. Both of these leave unsloth absent.
     for not_installing in (
         "import sys\n"
         "def _remove_stub(name):\n    sys.modules.pop(name, None)\n"
@@ -2083,7 +1984,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
     ):
         assert _is_offender(not_installing, heavy), not_installing
 
-    # A while-else is skipped when the loop leaves through break.
     while_else = (
         "while enabled():\n"
         "    break\n"
@@ -2093,9 +1993,8 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert _is_offender(while_else, heavy), while_else
 
-    # The membership test has to name the module that decides the import. An unrelated
-    # cached package says nothing about unsloth, and the branch is skipped when it is
-    # present.
+    # The membership test has to name the module that decides the import: an unrelated cached
+    # package says nothing about unsloth.
     unrelated_key = (
         "import sys\n"
         'if "pytest" not in sys.modules:\n'
@@ -2103,7 +2002,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert _is_offender(unrelated_key, heavy), unrelated_key
-    # The required stub itself counts, as well as the import target.
     for key in ('"unsloth"', '"core.training.trainer"'):
         source = (
             "import sys\n"
@@ -2113,8 +2011,7 @@ def test_the_guard_would_catch_an_unstubbed_module():
         )
         assert not _is_offender(source, heavy), source
 
-    # A key this file cannot read is not the guard either. Only a stub helper deciding
-    # about its own argument gets that latitude, and never at module scope.
+    # A key this file cannot read is not the guard either.
     variable_key = (
         "import sys\n"
         '_KEY = "pytest"\n'
@@ -2124,7 +2021,6 @@ def test_the_guard_would_catch_an_unstubbed_module():
     )
     assert _is_offender(variable_key, heavy), variable_key
 
-    # Calling an async def builds a coroutine and runs none of its body.
     unawaited = (
         "import sys\n"
         "async def _setup():\n"
@@ -2133,11 +2029,9 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert _is_offender(unawaited, heavy), unawaited
-    # The same helper written synchronously does install them.
     awaited_equivalent = unawaited.replace("async def _setup", "def _setup")
     assert not _is_offender(awaited_equivalent, heavy), awaited_equivalent
 
-    # An except clause is matched by what it CATCHES, not by what its name contains.
     for not_guarded in (
         "try:\n    from core.training import trainer as t\nexcept MyImportError:\n    t = None\n",
         "try:\n    from core.training import trainer as t\nexcept ExceptionGroup:\n    t = None\n",
@@ -2152,11 +2046,9 @@ def test_the_guard_would_catch_an_unstubbed_module():
     ):
         assert not _is_offender(guarded, heavy), guarded
 
-    # And a stub that lands too late does not count.
     too_late = 'from core.training import trainer as t\n_stub_if_missing("unsloth", ())\n'
     assert not _stubs_before(_parse(too_late), _first_heavy_import_line(_parse(too_late), heavy))
 
-    # An import inside a function is lazy already, so it is not an offence.
     lazy = "def test_x():\n    from core.training.trainer import UnslothTrainer\n"
     assert _first_heavy_import_line(ast.parse(lazy), heavy) is None
 
@@ -2171,37 +2063,32 @@ def test_only_an_installed_stub_counts_as_stubbing():
     heavy = _heavy_backend_modules()
 
     for source in (
-        # Prose about stubbing unsloth, in the module docstring.
         '"""Stubs unsloth before importing, or it would need sys.modules surgery."""\n'
         "from core.training import trainer as t\n",
-        # The names in a module-level table and a stub helper that is never called, which is
-        # what a file looks like the moment its one call site is dropped.
+        # The names in a module-level table and a stub helper that is never called, which is what a
+        # file looks like the moment its one call site is dropped.
         "import sys\n"
         '_STUBS = {"unsloth": ()}\n'
         "def _stub_if_missing(name, attrs):\n"
         "    sys.modules[name] = attrs\n"
         "from core.training import trainer as t\n",
-        # The same, with the call parked inside a fixture that runs long after collection.
         "import sys\n"
         '_STUBS = {"unsloth": ()}\n'
         "def fixture():\n"
         "    for _n, _a in _STUBS.items():\n"
         "        _stub_if_missing(_n, _a)\n"
         "from core.training import trainer as t\n",
-        # Reading sys.modules is not writing it.
         'import sys\nassert "unsloth" not in sys.modules\n'
         "from core.training import trainer as t\n",
-        # The same read, one call away: a helper that is called at module scope and names
-        # the module without installing anything. Reading through a call has to keep
-        # asking what the helper DOES, or every helper mentioning the name would count.
+        # The same read, one call away: reading through a call has to keep asking what the helper
+        # DOES, or every helper mentioning the name would count.
         "import sys\n"
         "def _require_absent():\n"
         '    assert "unsloth" not in sys.modules\n'
         "_require_absent()\n"
         "from core.training import trainer as t\n",
-        # A stub of something ELSE, with the required name loose in the file rather than in
-        # the operation. Both halves are present, so a prefix-wide pairing reads this as
-        # stubbed while unsloth is not stubbed at all.
+        # A stub of something ELSE, with the required name loose in the file: both halves are
+        # present, so a prefix-wide pairing reads this as stubbed while unsloth is not.
         'import sys\n_HEAVY = "unsloth"\nsys.modules["fake_backend"] = object()\n'
         "from core.training import trainer as t\n",
         '_stub_if_missing("trl", ())\n_HEAVY = ("unsloth",)\n'

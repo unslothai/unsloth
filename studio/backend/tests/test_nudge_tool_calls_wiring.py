@@ -38,11 +38,9 @@ _CHAT_ADAPTER_SOURCE = (
 )
 
 try:
-    # core.inference.inference imports unsloth at module scope, which requires
-    # unsloth_zoo. The dependency-light backend CI matrix job does not install
-    # it, so the safetensors InferenceBackend is folded into the checks below
-    # only when the unsloth stack is importable (local runs / full CI); the
-    # other entry points are always checked.
+    # core.inference.inference imports unsloth at module scope, which requires unsloth_zoo. The
+    # dependency-light CI job does not install it, so the safetensors backend is folded in only when
+    # the unsloth stack is importable.
     from core.inference.inference import InferenceBackend
 except ImportError:
     InferenceBackend = None
@@ -61,18 +59,17 @@ def test_backends_accept_the_flag():
         InferenceOrchestrator.generate_chat_completion_with_tools,
         LlamaCppBackend.generate_chat_completion_with_tools,
     ]
-    if InferenceBackend is not None:  # safetensors path; needs the unsloth stack
+    if InferenceBackend is not None:
         methods.append(InferenceBackend.generate_chat_completion_with_tools)
     for method in methods:
         assert "nudge_tool_calls" in _params(method), method.__qualname__
 
 
 def test_delegating_backends_forward_the_flag_to_the_shared_loop():
-    # safetensors (in-process transformers) and MLX (parent-process orchestrator)
-    # both delegate to run_safetensors_tool_loop; GGUF runs its own in-file loop
-    # and consumes the flag directly (asserted separately by the gate test).
+    # safetensors and MLX both delegate to run_safetensors_tool_loop; GGUF runs its own in-file loop
+    # and consumes the flag directly.
     methods = [InferenceOrchestrator.generate_chat_completion_with_tools]
-    if InferenceBackend is not None:  # safetensors path; needs the unsloth stack
+    if InferenceBackend is not None:
         methods.append(InferenceBackend.generate_chat_completion_with_tools)
     for method in methods:
         src = inspect.getsource(method)
@@ -107,9 +104,8 @@ def test_api_request_models_default_the_flag_off():
 
 
 def test_studio_routes_forward_the_request_flag():
-    # The Unsloth chat frontend posts to /v1/chat/completions and /v1/messages
-    # with nudge_tool_calls=true; the route handlers forward the request value
-    # (external API clients that omit it fall back to the opt-in default).
+    # The chat frontend posts nudge_tool_calls=true and the route handlers forward it; external API
+    # clients that omit it fall back to the opt-in default.
     from routes import inference as routes_inference
     for handler in (
         routes_inference.produce_openai_chat_completions,

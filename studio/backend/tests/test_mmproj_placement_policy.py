@@ -40,11 +40,10 @@ MIB = 1024 * 1024
 GIB = 1024**3
 _REAL_POPEN = subprocess.Popen
 
-# Model + projector fit at 4096 but not at the native length: the placement loop
-# shrinks the context long before it would spill a layer, so pricing residency at
-# the native length is the bug this policy exists to avoid.
+# Model + projector fit at 4096 but not at the native length: the placement loop shrinks the
+# context long before it would spill a layer, which is the bug this policy avoids.
 NATIVE_CTX = 262144
-KV_PER_TOKEN = 64 * 1024  # 4096 ctx -> 256 MiB, NATIVE_CTX -> 16 GiB
+KV_PER_TOKEN = 64 * 1024
 
 
 def _write_gguf(path: Path) -> Path:
@@ -98,8 +97,7 @@ def _backend(
     )
     backend._mmproj_vram_bytes = lambda _path: mmproj_bytes
     backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
-    # Only the speculative-decoding test asks for a drafter; everywhere else the
-    # resolution has to come back empty or MTP engages behind the scenes.
+    # Only the speculative-decoding test asks for a drafter; elsewhere MTP would engage unseen.
     backend._resolve_launch_mtp_path = lambda **_kw: str(drafter) if drafter_bytes else None
     backend._apu_ram_shortfall_message = lambda *_a, **_kw: None
     backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: False
@@ -139,9 +137,8 @@ def _launch(backend, gguf, **load_kwargs):
 
     intent_kwargs = {
         "is_vision": True,
-        # Auto context, the mode the policy is about: 0 resolves to the model's
-        # native length and lets the placement loop shrink it. A request pinned at
-        # 4096 would hide the whole floor question.
+        # Auto context, the mode the policy is about: 0 resolves to the native length and lets the
+        # placement loop shrink it, where a request pinned at 4096 would hide the floor question.
         "n_ctx": 0,
         **load_kwargs,
     }
@@ -169,8 +166,8 @@ def test_projector_stays_on_gpu_when_it_fits_at_the_floor(tmp_path):
 
     assert "--mmproj" in cmd
     assert "--no-mmproj-offload" not in cmd
-    # The premise the pin would have been traded against: every layer is already
-    # resident, so what the native length cost was context, not residency.
+    # The premise the pin trades against: every layer is already resident, so the native length
+    # cost context, not residency.
     assert cmd[cmd.index("--fit") + 1] == "off"
     assert int(cmd[cmd.index("-c") + 1]) < NATIVE_CTX
 
@@ -190,8 +187,8 @@ def test_projector_pinned_to_cpu_when_it_does_not_fit(tmp_path):
 
     assert "--mmproj" in cmd
     assert "--no-mmproj-offload" in cmd
-    # And the trade was paid for: the model alone is fully resident, which is the
-    # only thing the slower image encode is bought with.
+    # The trade was paid for: the model alone is fully resident, which is what the slower image
+    # encode buys.
     assert cmd[cmd.index("--fit") + 1] == "off"
 
 
@@ -239,8 +236,8 @@ def test_shared_memory_pools_are_not_charged_as_discrete(tmp_path, memory, label
     assert "--no-mmproj-offload" not in cmd, label
 
 
-# The drafter tests share one shape: a small native context so the drop probe
-# prices the reserve near the floor, and a 2 GiB drafter. Only the budget moves.
+# The drafter tests share one shape: a small native context so the drop probe prices the reserve
+# near the floor, and a 2 GiB drafter. Only the budget moves.
 DRAFTER_NATIVE_CTX = 8192
 
 
@@ -313,19 +310,16 @@ def test_the_drafters_vram_is_part_of_the_pin_decision(tmp_path):
 
     assert "--no-mmproj-offload" in pinned
     assert "--model-draft" in pinned
-    # Same card, same model, same projector: only the drafter differs.
     assert "--no-mmproj-offload" not in unpinned
 
 
 @pytest.mark.parametrize(
     "is_vision,disable_vision,expect_disabled,expect_by_user",
     [
-        # A vision GGUF with the switch on: the projector exists and the user
-        # turned it off, so both are true.
+        # A vision GGUF with the switch on: the projector exists and the user turned it off.
         (True, True, True, True),
-        # A GGUF that never had a projector, switch on. The request still has to
-        # round-trip or the toggle reseeds itself to off after every load, but
-        # nothing was taken away from the user, so the narrow field stays false.
+        # A GGUF that never had a projector: the request must round-trip or the toggle reseeds itself
+        # to off after every load, but nothing was taken away, so the narrow field stays false.
         (False, True, True, False),
         (True, False, False, False),
         (False, False, False, False),
@@ -381,7 +375,6 @@ def test_the_training_guard_does_not_charge_a_projector_the_load_will_not_open(t
     freed = _estimate_gguf_required_gb(config, disable_vision = True)
 
     assert charged is not None and freed is not None
-    # Exactly the projector, and nothing else moved.
     assert round((charged - freed) * 1024) == 1
     assert freed < charged
 
@@ -429,8 +422,7 @@ def test_the_training_guard_forwards_the_switch_to_its_estimator(tmp_path):
                 config, request, load_in_4bit = False, placement = placement
             )
         except Exception:
-            # The verdict is not what this test is about; the forwarded keyword is,
-            # and it is already captured by the time anything downstream can fail.
+            # The forwarded keyword is the subject, and it is captured before anything downstream can fail.
             pass
 
     assert seen.get("disable_vision") is True
@@ -462,14 +454,11 @@ def test_the_vision_switch_does_not_take_audio_only_projectors_away(
     assert ("--mmproj" in cmd) is projector_expected, label
 
 
-# The pin reads no platform flag. It sees the GPU probe's output, the Metal
-# budget, the paravirtual capability answer, tensor_parallel and the memory
-# mode, and nothing else, so an OS reaches it only through what its probe
-# reports. These are the probe signatures the supported pairs produce: what
-# varies between a Windows and a WSL RTX 4090 is nothing the decision reads.
-# Free VRAM is 7600 MiB against a footprint that needs more, i.e. the case that
-# pins on a discrete card, so any cell reporting "no pin" is doing so because
-# its memory is shared, not because it had room.
+# The pin reads no platform flag: it sees the GPU probe's output, the Metal budget, the
+# paravirtual answer, tensor_parallel and the memory mode, so an OS reaches it only through what
+# its probe reports. These are the probe signatures the supported pairs produce. Free VRAM is
+# 7600 MiB against a larger footprint, i.e. the case that pins on a discrete card, so any cell
+# reporting "no pin" does so because its memory is shared, not because it had room.
 _TOPOLOGIES = [
     ([(0, 7_600, 8_192)], True, "linux_nvidia_discrete"),
     ([(0, 7_600, 8_192)], True, "windows_nvidia_discrete"),
@@ -595,7 +584,6 @@ def test_the_training_guard_still_charges_an_audio_only_projector(tmp_path):
     assert audio_only is not None and vision is not None and charged is not None
     # Kept for audio, so it is charged exactly as an enabled projector would be.
     assert audio_only == charged
-    # An image projector really is dropped, so the switch still frees its bytes.
     assert vision < charged
 
 
@@ -645,7 +633,6 @@ def test_the_download_interlock_is_not_relaxed_by_the_vision_switch(tmp_path):
         # Vision off still downloads, so the interlock still applies.
         assert _run(disable_vision = True) is True
         assert _run(disable_vision = False) is True
-        # The extras opting out is the one case that downloads nothing.
         assert _run(disable_vision = True, extra_args = ["--no-mmproj"]) is False
 
 
@@ -658,7 +645,6 @@ def test_a_user_pinned_projector_is_not_charged_against_vram(tmp_path):
     cmd = _launch(backend, gguf, extra_args = ["--no-mmproj-offload"])["cmd"]
 
     assert "--mmproj" in cmd
-    # Fully placed, exactly as an unpinned load on this card is.
     assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "off"
     assert cmd[cmd.index("-c") + 1] == "9984"
 
@@ -671,10 +657,9 @@ def test_a_user_demanding_gpu_offload_still_pays_for_it(tmp_path):
 
     cmd = _launch(backend, gguf, extra_args = ["--mmproj-offload"])["cmd"]
 
-    # Charging the projector leaves nothing that fits, so this lands on the Auto
-    # offload fallback. The value is that constant, not a literal: the point of the
-    # assertion is that the context shrank to pay for the projector, and pinning the
-    # number here only records which release the test was written in.
+    # Charging the projector leaves nothing that fits, so this lands on the Auto offload fallback.
+    # The assertion is that the context shrank to pay for the projector; the constant only records
+    # which release the test was written in.
     assert cmd[cmd.index("-c") + 1] == str(_AUTO_OFFLOAD_CTX)
 
 
@@ -793,12 +778,11 @@ def test_the_vision_switch_keeps_an_inherited_audio_only_encoder(tmp_path, monke
         result = _launch(backend, gguf, disable_vision = True)
 
     assert result["env"].get("LLAMA_ARG_MMPROJ")
-    # And the probe follows the scrub, so the composer is told what the child has.
+    # The probe follows the scrub, so the composer is told what the child has.
     assert backend._mmproj_has_audio is True
     assert backend._mmproj_accepts_image is False
-    # --no-mmproj-auto does not unload it (server-context.cpp gates the load on a
-    # non-empty mmproj.path and never reads no_mmproj), but it does make the router
-    # advertise the model text-only, so a projector kept on purpose must not get it.
+    # --no-mmproj-auto does not unload it (server-context.cpp gates the load on a non-empty
+    # mmproj.path), but it makes the router advertise the model text-only.
     assert "--no-mmproj-auto" not in result["cmd"]
 
 
@@ -830,9 +814,8 @@ def test_a_diffusion_runtime_is_not_torn_down_over_the_vision_switch(tmp_path):
     backend._is_diffusion = True
     backend._disable_vision = False
     backend._gguf_path = str(tmp_path / "diffusion.gguf")
-    # Enough state for the comparison under test to be REACHED: the checks above it
-    # return early on their own, and a test where both calls fail for an unrelated
-    # reason passes whatever this line does (it did, until the mutant survived).
+    # Enough state for the comparison under test to be REACHED: the checks above it return early on
+    # their own, and a test where both calls fail for an unrelated reason passes regardless.
     backend._requested_n_ctx = 4096
     backend._cache_type_kv = None
 
@@ -868,7 +851,6 @@ def test_a_projector_the_resolve_rejected_is_not_blamed_on_the_switch(tmp_path):
     there tells the user to turn Vision back on when the same projector will just be
     rejected again. Only a usable image projector the switch itself dropped counts."""
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
-    # What a family-check failure looks like from here.
     backend._resolve_launch_mmproj_path = lambda **_kw: None
 
     _launch(backend, gguf, disable_vision = True)
@@ -895,8 +877,7 @@ def test_an_explicit_context_is_priced_at_the_length_it_asked_for(tmp_path):
 
     assert "--mmproj" in cmd
     assert "--no-mmproj-offload" in cmd
-    # What the pin bought, and the whole reason it was worth making: the requested
-    # context survives intact with the model fully resident.
+    # What the pin bought: the requested context survives intact with the model fully resident.
     assert cmd[cmd.index("--fit") + 1] == "off"
     assert cmd[cmd.index("-c") + 1] == "65536"
 
@@ -925,7 +906,6 @@ def test_an_environment_owned_placement_is_not_reversed_by_the_pin(tmp_path, mon
     the variable globally owns the placement exactly as one who passed the flag
     does, which is already how the CPU-recovery gate reads it."""
     monkeypatch.setenv("LLAMA_ARG_MMPROJ_OFFLOAD", "1")
-    # The card that pins when nobody has claimed the placement.
     backend, gguf = _backend(tmp_path, memory = [(0, 8_692, 16_384)])
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -945,7 +925,6 @@ def test_an_environment_pinned_projector_is_not_charged_against_vram(tmp_path, m
 
     assert "--mmproj" in cmd
     assert cmd[cmd.index("--fit") + 1] == "off"
-    # The same context the flag spelling earns on this card.
     assert cmd[cmd.index("-c") + 1] == "9984"
 
 
@@ -1017,11 +996,10 @@ def test_an_explicit_context_too_large_for_either_still_gives_the_projector_up_f
     assert cmd[cmd.index("--fit") + 1] == "on"
 
 
-# The context-compute buffer, at the shape the real one has: linear in context, and
-# _CTX_COMPUTE_SPLIT_MULT times larger PER DEVICE once the model is layer-split. The
-# shared _backend stubs it to a flat 0, which is fine for the single-GPU cases above
-# and is exactly why none of them can see a split-rate error.
-_CC_PER_TOKEN = 1536  # 6 MiB at 4096, the rate the bundled estimator produces
+# The context-compute buffer at the shape the real one has: linear in context, and
+# _CTX_COMPUTE_SPLIT_MULT times larger PER DEVICE once the model is layer-split. The shared
+# _backend stubs it to a flat 0, which is why the single-GPU cases cannot see a split-rate error.
+_CC_PER_TOKEN = 1536
 
 
 def _split_rate_backend(tmp_path, *, memory, **kwargs):
@@ -1052,8 +1030,8 @@ def test_the_probe_prices_an_explicit_context_the_way_the_split_placement_does(t
 
     assert "--mmproj" in cmd
     assert "--no-mmproj-offload" in cmd
-    # The point of the pin: the requested context is placed on the two cards rather
-    # than the model being offloaded around a resident projector.
+    # The point of the pin: the context is placed on the two cards rather than the model being
+    # offloaded around a resident projector.
     assert cmd[cmd.index("--fit") + 1] == "off"
     assert cmd[cmd.index("-c") + 1] == "65536"
 
@@ -1164,8 +1142,7 @@ def test_a_load_that_keeps_the_projector_on_the_gpu_reports_nothing(tmp_path):
 @pytest.mark.parametrize(
     ("env", "expected_retry"),
     [
-        # get_value_from_env checks the LLAMA_ARG_NO_ spelling first and forces falsey
-        # on presence alone, so the projector is already in host RAM either way.
+        # get_value_from_env checks the LLAMA_ARG_NO_ spelling first and forces falsey on presence alone.
         ({"LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1"}, False),
         ({"LLAMA_ARG_NO_MMPROJ_OFFLOAD": ""}, False),
         # It wins over the positive spelling, exactly as arg.cpp orders them.
@@ -1284,8 +1261,7 @@ def test_a_pinned_projector_costs_the_shared_pool_beside_a_discrete_card(tmp_pat
     cmd = _launch(backend, gguf, extra_args = ["--no-mmproj-offload"])["cmd"]
     pinned_ctx = int(cmd[cmd.index("-c") + 1])
 
-    # Same reference as the single-device case: a CPU-resident projector in a
-    # shared pool costs exactly what the same bytes cost as model weights.
+    # A CPU-resident projector in a shared pool costs exactly what the same bytes cost as weights.
     reference, ref_gguf = _backend(tmp_path, memory = memory, model_bytes = 7 * GIB, mmproj_bytes = 0)
     ref_cmd = _launch(reference, ref_gguf)["cmd"]
 
@@ -1351,7 +1327,6 @@ def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(tmp_pa
     charged = _estimate_gguf_required_gb(_estimator_config(model, resolved))
 
     assert expected is not None and charged is not None
-    # The 2 MiB ambient file is not in it, so the env changed nothing.
     assert charged == expected
 
 
@@ -1379,7 +1354,6 @@ def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(tmp_
         patch.object(_meta, "mmproj_capabilities", _caps),
         patch.object(_meta, "mmproj_accepts_image", lambda p: _caps(p)[1]),
     ):
-        # Weights alone: the switch drops the image projector and no env one exists.
         weights_only = _estimate_gguf_required_gb(
             _estimator_config(model, configured), disable_vision = True
         )
@@ -1389,7 +1363,6 @@ def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(tmp_
         )
 
     assert charged is not None and weights_only is not None
-    # The 2 MiB inherited projector, not the 1 MiB configured one that never loads.
     assert round((charged - weights_only) * 1024) == 2
 
 
@@ -1427,7 +1400,6 @@ def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(tmp_path
     config = _estimator_config(model, configured)
 
     monkeypatch.delenv("LLAMA_ARG_MMPROJ", raising = False)
-    # The configured projector, charged, with no opt-out in play.
     normal = _estimate_gguf_required_gb(config)
     weights_only = _estimate_gguf_required_gb(_estimator_config(model))
     opted_out = _estimate_gguf_required_gb(config, llama_extra_args = ["--no-mmproj"])
@@ -1440,7 +1412,6 @@ def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(tmp_path
     assert round((normal - weights_only) * 1024) == 1
     # The opt-out drops the configured projector, because it never loads.
     assert opted_out == weights_only
-    # And the inherited one takes its place at its own size.
     assert round((inherited - weights_only) * 1024) == 2
 
 
@@ -1473,7 +1444,6 @@ def test_a_virtualised_metal_device_does_not_keep_the_inherited_projector(tmp_pa
     assert "LLAMA_ARG_MMPROJ" not in result["env"]
     # Nothing survives to rediscover a projector with.
     assert "--no-mmproj-auto" in result["cmd"]
-    # And the probe describes the child that actually launched.
     assert backend._mmproj_has_audio is False
 
 
@@ -1534,7 +1504,6 @@ def test_a_cpu_recovery_records_the_vision_state_it_launched_with(tmp_path):
 
     assert backend._disable_vision is True
     assert backend._vision_disabled_by_user is True
-    # The rest of the recovery state still lands, so this is additive.
     assert backend._cpu_fallback_reason == "vulkan_startup_crash"
 
 
@@ -1545,8 +1514,8 @@ def test_both_cpu_recovery_call_sites_pass_the_vision_state(tmp_path):
     source = inspect.getsource(LlamaCppBackend.load_model)
     calls = source.count("self._apply_cpu_fallback_state(")
     assert calls == 2, f"expected 2 recovery call sites, found {calls}"
-    # The load's own `self._vision_disabled_by_user = ...` uses the same words, so
-    # subtract it rather than matching loosely and passing on the wrong occurrence.
+    # The load's own `self._vision_disabled_by_user = ...` uses the same words, so subtract it
+    # rather than matching loosely and passing on the wrong occurrence.
     keyword_uses = source.count("vision_disabled_by_user = bool(") - source.count(
         "self._vision_disabled_by_user = bool("
     )
@@ -1577,11 +1546,10 @@ def test_a_tensor_load_downgraded_to_layer_split_still_gives_the_projector_up(
 
     cmd = _launch(backend, gguf, tensor_parallel = True, cache_type_kv = cache_type_kv)["cmd"]
 
-    # Reachable ONLY through the deferred application: with tensor_parallel requested
-    # the probe never applies its verdict at the probe site.
+    # Reachable ONLY through the deferred application: with tensor_parallel requested the probe
+    # never applies its verdict at the probe site.
     assert "--no-mmproj-offload" in cmd
     assert "--mmproj" in cmd
-    # And the trade was paid for: every layer stays resident.
     assert cmd[cmd.index("--fit") + 1] == "off"
 
 

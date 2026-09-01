@@ -34,7 +34,6 @@ def _pin_prequant_safe_globals(real_prequant_safe_globals):
     return real_prequant_safe_globals
 
 
-# ── resolve_prequant_source ──────────────────────────────────────────────────────
 def _fam(prequant_repos = (), prequant_variant_repos = ()):
     return DiffusionFamily(
         name = "z-image",
@@ -85,7 +84,8 @@ def test_resolve_variant_base_picks_variant_repo():
 
 
 def test_resolve_variant_base_falls_back_to_default():
-    # An unknown variant base (or none) keeps the family default entry: base_model_id validation then refuses it and dense-quantises.
+    # An unknown variant base (or none) keeps the family default entry: base_model_id validation
+    # then refuses it and dense-quantises.
     fam = _fam(
         prequant_repos = (("int8", "org/default-fp8"),),
         prequant_variant_repos = (("org/model-dev", "int8", "org/dev-fp8"),),
@@ -95,7 +95,6 @@ def test_resolve_variant_base_falls_back_to_default():
         resolve_prequant_source(fam, "int8", base_repo = "org/other-variant").location
         == "org/default-fp8"
     )
-    # Scheme still has to match within the variant table.
     assert resolve_prequant_source(fam, "int8", base_repo = "org/model-dev").location == "org/dev-fp8"
 
 
@@ -116,9 +115,9 @@ def test_flux1_variant_prequant_wiring():
 
 
 def test_resolve_prefers_a_family_declared_filename():
-    # A family may host a SECOND artifact for the same repo and scheme. Naming it makes it the
-    # primary and demotes the derived name to the fallback, so a build that knows the new name
-    # gets it while an older one still resolves the artifact it already understands.
+    # A family may host a SECOND artifact for the same repo and scheme: naming it makes it primary
+    # and demotes the derived name to the fallback, so an older build still resolves what it
+    # understands.
     fam = _fam(prequant_repos = (("int8", "unsloth/Model-FP8"),))
     fam = dataclasses.replace(fam, prequant_filenames = (("int8", "Model-INT8-ConvRot.pt"),))
     src = resolve_prequant_source(fam, "int8")
@@ -143,8 +142,9 @@ def test_resolve_nothing_configured_is_none():
 
 
 def test_local_prequant_path_ready(tmp_path, monkeypatch):
-    # The auto-policy planner budgets the small prequant plan only when a request-supplied path would actually load: present
-    # AND inside an allowlisted root. Otherwise the loader refuses it and rebuilds dense after evicting.
+    # The auto-policy planner budgets the small prequant plan only when a request-supplied path would
+    # actually load: present AND inside an allowlisted root, else the loader refuses it and rebuilds
+    # dense after evicting.
     import os
 
     ckpt = tmp_path / "model.pt"
@@ -157,7 +157,6 @@ def test_local_prequant_path_ready(tmp_path, monkeypatch):
     assert pq.local_prequant_path_ready(str(ckpt)) is False
 
 
-# ── usable_prequant_source ───────────────────────────────────────────────────────
 @pytest.fixture
 def restricted_load_available(monkeypatch):
     """Whether this install could open a checkpoint depends on the host's torchao. The resolution
@@ -166,8 +165,9 @@ def restricted_load_available(monkeypatch):
 
 
 def test_usable_source_missing_path_is_none(tmp_path, monkeypatch, restricted_load_available):
-    # An allowlisted but ABSENT path is not a prequant source: load_prequantized_transformer would find no file and fall back
-    # to the dense bf16 build after evicting, so the planner must run the dense fit checks up front.
+    # An allowlisted but ABSENT path is not a prequant source: the loader finds no file and falls
+    # back to the dense bf16 build after evicting, so the planner must run the dense fit checks up
+    # front.
     import os
 
     monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
@@ -177,7 +177,8 @@ def test_usable_source_missing_path_is_none(tmp_path, monkeypatch, restricted_lo
 
 
 def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch, restricted_load_available):
-    # A path OUTSIDE the UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH allowlist (including the empty default) is refused by the loader, so it resolves to None even when it exists.
+    # A path OUTSIDE the UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH allowlist (including the empty default)
+    # is refused by the loader, so it resolves to None even when it exists.
     ckpt = tmp_path / "model.pt"
     ckpt.write_bytes(b"x")
     monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [])
@@ -186,7 +187,8 @@ def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch, restricted
 
 
 def test_usable_source_allowed_present_path_wins(tmp_path, monkeypatch, restricted_load_available):
-    # Allowlisted, present AND baked for this scheme: the override is usable and beats the hosted repo, exactly like resolve_prequant_source.
+    # Allowlisted, present AND baked for this scheme: the override is usable and beats the hosted
+    # repo, exactly like resolve_prequant_source.
     import os
 
     ckpt = tmp_path / "model.pt"
@@ -216,7 +218,6 @@ def test_usable_source_rejects_an_override_baked_for_another_scheme(
     monkeypatch.setattr(pq, "local_prequant_scheme", lambda _p: "int8")
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
     assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
-    # The same file IS usable for the scheme it was actually baked for.
     src = pq.usable_prequant_source(fam, "int8", path_override = str(ckpt))
     assert src == PrequantSource(kind = "path", location = str(ckpt), filename = None)
 
@@ -276,7 +277,6 @@ def test_usable_source_repo_unaffected_by_allowlist(monkeypatch, restricted_load
     assert src is not None and src.kind == "repo" and src.location == "org/hosted-fp8"
 
 
-# ── load_prequantized_transformer ────────────────────────────────────────────────
 class _FakeTransformer:
     calls: dict = {}
 
@@ -390,7 +390,8 @@ def _load(
 ):
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, ckpt, load_raises = load_raises)
-    # The local-path branch is opt-in via a directory ALLOWLIST (it loads arbitrary weights); allowlist tmp_path unless a test checks the gate.
+    # The local-path branch is opt-in via a directory ALLOWLIST (it loads arbitrary weights);
+    # allowlist tmp_path unless a test checks the gate.
     if allow_local:
         monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
     else:
@@ -415,7 +416,6 @@ def _load(
 def test_load_meta_init_and_assign(monkeypatch, tmp_path):
     t = _load(monkeypatch, tmp_path, _good_ckpt())
     assert t is not None
-    # meta-init path was used, not the dense from_pretrained.
     assert "from_config" in _FakeTransformer.calls
     assert "from_pretrained" not in _FakeTransformer.calls
     # assign=True is the whole point (copy into meta is a no-op).
@@ -425,7 +425,8 @@ def test_load_meta_init_and_assign(monkeypatch, tmp_path):
 
 
 def test_load_puts_transformer_in_eval_mode(monkeypatch, tmp_path):
-    # Built via from_config, so the loader must eval() it like the dense/GGUF paths or train-mode dropout makes inference nondeterministic.
+    # Built via from_config, so the loader must eval() it like the dense/GGUF paths or train-mode
+    # dropout makes inference nondeterministic.
     t = _load(monkeypatch, tmp_path, _good_ckpt())
     assert t is not None
     assert t.eval_called is True
@@ -446,7 +447,6 @@ def test_load_format_mismatch_is_none(monkeypatch, tmp_path):
 
 
 def test_load_scheme_mismatch_is_none(monkeypatch, tmp_path):
-    # checkpoint built for int8, but fp8 was requested.
     assert _load(monkeypatch, tmp_path, _good_ckpt(scheme = "int8"), scheme = "fp8") is None
 
 
@@ -455,11 +455,11 @@ def test_load_base_mismatch_is_none(monkeypatch, tmp_path):
 
 
 def test_load_fp8_stale_per_tensor_is_rejected(monkeypatch, tmp_path):
-    # A pre-fix fp8 checkpoint has no fp8_granularity (old per-tensor layout), so it must be rejected and rebuilt rather than reproduce the noise failure.
+    # A pre-fix fp8 checkpoint has no fp8_granularity (old per-tensor layout), so it must be
+    # rejected and rebuilt rather than reproduce the noise failure.
     stale = _good_ckpt(scheme = "fp8")
     del stale["metadata"]["fp8_granularity"]
     assert _load(monkeypatch, tmp_path, stale, scheme = "fp8") is None
-    # An explicit per-tensor granularity is likewise rejected.
     per_tensor = _good_ckpt(scheme = "fp8")
     per_tensor["metadata"]["fp8_granularity"] = "per_tensor"
     assert _load(monkeypatch, tmp_path, per_tensor, scheme = "fp8") is None
@@ -471,14 +471,16 @@ def test_load_int8_ignores_fp8_granularity(monkeypatch, tmp_path):
 
 
 def test_load_missing_base_metadata_is_none(monkeypatch, tmp_path):
-    # A checkpoint whose keys match a different base loads strict=True and renders from the wrong weights, so one requested with a base but recording none is refused.
+    # A checkpoint whose keys match a different base loads strict=True and renders from the wrong
+    # weights, so one requested with a base but recording none is refused.
     ckpt = _good_ckpt()
     del ckpt["metadata"]["base_model_id"]
     assert _load(monkeypatch, tmp_path, ckpt) is None
 
 
 def test_load_fast_accum_mismatch_is_none(monkeypatch, tmp_path):
-    # fp8 fast-accum is baked into the saved kernels, so a request contradicting the recorded value falls to the dense path, which honors it.
+    # fp8 fast-accum is baked into the saved kernels, so a request contradicting the recorded value
+    # falls to the dense path, which honors it.
     ckpt = _good_ckpt()
     ckpt["metadata"]["fast_accum"] = True
     assert _load(monkeypatch, tmp_path, ckpt, fast_accum = False) is None
@@ -498,7 +500,8 @@ def test_load_fast_accum_auto_ignores_baked(monkeypatch, tmp_path):
 
 
 def test_load_exclude_tokens_mismatch_is_none(monkeypatch, tmp_path):
-    # An int8 checkpoint recording a stale exclusion set would bake M=1 modulation linears as int8 and crash, so it is rejected.
+    # An int8 checkpoint recording a stale exclusion set would bake M=1 modulation linears as int8
+    # and crash, so it is rejected.
     ckpt = _good_ckpt(scheme = "int8")
     ckpt["metadata"]["exclude_name_tokens"] = ["stale_token"]
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
@@ -513,8 +516,9 @@ def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
 
 
 def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
-    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens, under _int_mm's floor of 16), so an artifact
-    # recording the family but building its set with family=None is rejected. Pins the offline builder to exclude_tokens_for_scheme(scheme, fam.name).
+    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens,
+    # under _int_mm's floor of 16), so an artifact recording the family but building its set with
+    # family=None is rejected.
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
     for family in ("qwen-image", "qwen-image-edit"):
         family_less = _good_ckpt(scheme = "int8")
@@ -531,7 +535,8 @@ def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
 
 
 def test_load_require_bf16_mismatch_is_none(monkeypatch, tmp_path):
-    # An fp8 (scaled_mm) checkpoint built WITHOUT the bf16 gate quantised a different layer set than the runtime filter produces, so it is rejected.
+    # An fp8 (scaled_mm) checkpoint built WITHOUT the bf16 gate quantised a different layer set than
+    # the runtime filter produces, so it is rejected.
     ckpt = _good_ckpt(scheme = "fp8")
     ckpt["metadata"]["require_bf16"] = False
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
@@ -544,14 +549,16 @@ def test_load_require_bf16_match_ok(monkeypatch, tmp_path):
 
 
 def test_load_require_bf16_int8_true_is_none(monkeypatch, tmp_path):
-    # int8 (torch._int_mm) tolerates non-bf16 weights so it never sets the gate; a checkpoint claiming it did is rejected.
+    # int8 (torch._int_mm) tolerates non-bf16 weights so it never sets the gate; a checkpoint
+    # claiming it did is rejected.
     ckpt = _good_ckpt(scheme = "int8")
     ckpt["metadata"]["require_bf16"] = True
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
 
 
 def test_load_require_bf16_nvfp4_false_ok(monkeypatch, tmp_path):
-    # nvfp4 quantises fp32 fine, so the runtime filter leaves the bf16 gate off and a checkpoint built the same way matches.
+    # nvfp4 quantises fp32 fine, so the runtime filter leaves the bf16 gate off and a checkpoint
+    # built the same way matches.
     ckpt = _good_ckpt(scheme = "nvfp4")
     ckpt["metadata"]["require_bf16"] = False
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is not None
@@ -565,7 +572,8 @@ def test_load_require_bf16_nvfp4_true_is_none(monkeypatch, tmp_path):
 
 
 def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
-    # The allowlist gate expands ~, so the existence check must too, or a "~/..." checkpoint that passed the gate is silently skipped.
+    # The allowlist gate expands ~, so the existence check must too, or a "~/..." checkpoint that
+    # passed the gate is silently skipped.
     import os
 
     real = tmp_path / "transformer_fp8.pt"
@@ -575,7 +583,6 @@ def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
     assert pq._resolve_checkpoint_path(source, None) == str(real)
 
 
-# ── deserialization gate (RCE guard) ─────────────────────────────────────────────
 def test_the_checkpoint_is_deserialized_under_an_allowlist(monkeypatch):
     """A pre-quant checkpoint is a pickle, so the load has to be ``weights_only``.
 
@@ -757,7 +764,6 @@ def test_the_probe_and_the_loader_agree_on_what_is_readable(tmp_path, monkeypatc
     )
     monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
 
-    # The probe: unknown, so planning budgets the dense build.
     assert pq.local_prequant_scheme(str(path)) is None
     fam = _fam(prequant_repos = (("int8", "org/hosted-int8"),))
     assert pq.usable_prequant_source(fam, "int8", path_override = str(path)) is None
@@ -857,7 +863,6 @@ def test_a_torchao_that_resolves_nothing_reports_no_support(monkeypatch):
     )
     assert pq.restricted_prequant_load_supported() is False
 
-    # Both present: supported, and registered exactly once.
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(
         pq,
@@ -952,9 +957,9 @@ def test_the_allowlist_is_registered_once_and_never_withdrawn(monkeypatch):
     assert calls[0], "and with the allowlist, not an empty list"
 
 
-# ── local-path opt-in gate ───────────────────────────────────────────────────────
 def test_load_local_path_refused_by_default(monkeypatch, tmp_path):
-    # Even a valid checkpoint is refused: torch.load must never run on a request-supplied path without the operator opt-in.
+    # Even a valid checkpoint is refused: torch.load must never run on a request-supplied path
+    # without the operator opt-in.
     called = {"load": False}
 
     def _explode(*a, **k):
@@ -1029,7 +1034,8 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
 
 
 def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
-    # A repo still carrying the legacy transformer_<scheme>.pt name serves the download after the model-name filename 404s; both are requested in order.
+    # A repo still carrying the legacy transformer_<scheme>.pt name serves the download after the
+    # model-name filename 404s; both are requested in order.
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, _good_ckpt())
     monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
@@ -1083,7 +1089,8 @@ def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
 
 
 def test_load_local_path_outside_allowlist_refused(monkeypatch, tmp_path):
-    # Even with the opt-in set, a path outside every allowlisted directory must not be unpickled: one trusted dir is not a wildcard.
+    # Even with the opt-in set, a path outside every allowlisted directory must not be unpickled:
+    # one trusted dir is not a wildcard.
     called = {"load": False}
 
     def _explode(*a, **k):
@@ -1116,7 +1123,8 @@ def test_load_local_path_outside_allowlist_refused(monkeypatch, tmp_path):
 
 
 def test_load_min_features_mismatch_is_none(monkeypatch, tmp_path):
-    # A checkpoint built with a different --min-features quantises a different Linear set, so it is rejected when the runtime threshold is supplied.
+    # A checkpoint built with a different --min-features quantises a different Linear set, so it is
+    # rejected when the runtime threshold is supplied.
     ckpt = _good_ckpt()
     ckpt["metadata"]["min_features"] = 256  # built with 256, runtime asks for 512
     _FakeTransformer.calls = {}
@@ -1161,7 +1169,6 @@ def test_load_base_fork_tail_matches(monkeypatch, tmp_path):
     assert result is not None
 
 
-# ── kernel preference ────────────────────────────────────────────────────────
 
 
 class _FakeKernelPreference:
@@ -1190,9 +1197,9 @@ class _FakeFp8Weight:
 
 
 def test_pin_kernel_preference_rewrites_auto(monkeypatch):
-    # The published checkpoints serialize KernelPreference.AUTO on every fp8 weight, re-arming the MSLK
-    # kernel _fp8_config pins away from; mslk.f8f8bf16_rowwise has no fake impl, so a COMPILED generate
-    # then fails to trace. Loading must normalise it.
+    # The published checkpoints serialize KernelPreference.AUTO on every fp8 weight, re-arming the
+    # MSLK kernel _fp8_config pins away from; mslk.f8f8bf16_rowwise has no fake impl, so a COMPILED
+    # generate then fails to trace.
     _stub_kernel_preference(monkeypatch)
     sd = {
         "a.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO),
@@ -1209,7 +1216,8 @@ def test_pin_kernel_preference_rewrites_auto(monkeypatch):
 
 
 def test_pin_kernel_preference_survives_a_frozen_weight(monkeypatch):
-    # A subclass that refuses the assignment must not sink the load: the checkpoint is still usable eagerly, and raising here would lose it entirely.
+    # A subclass that refuses the assignment must not sink the load: the checkpoint is still usable
+    # eagerly, and raising here would lose it entirely.
     _stub_kernel_preference(monkeypatch)
 
     class _Frozen:
@@ -1232,7 +1240,6 @@ def test_pin_kernel_preference_no_torchao(monkeypatch):
     assert sd["a.weight"].kernel_preference == _FakeKernelPreference.AUTO
 
 
-# ── local cache lookup (no network) ──────────────────────────────────────────────
 def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     # Memory planning asks this, so it must be a pure lookup: no Hub call, no raise.
     from core.inference.diffusion_prequant import prequant_checkpoint_cached
@@ -1264,21 +1271,19 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     )
 
     assert prequant_checkpoint_cached(source, cache_dir = "/models/hub") is True
-    # The live root is asked first, and the model-name file resolves, so no legacy lookup.
     assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
 
     # Only the legacy name on disk does NOT count: whether the repo publishes the canonical one
     # needs a network call, so this reads as "would download" and the GGUF runs.
     ckpt.unlink()
     assert prequant_checkpoint_cached(source) is False
-    # Neither name cached -> same answer, for the ordinary reason.
     legacy.unlink()
     assert prequant_checkpoint_cached(source) is False
 
 
 def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatch, tmp_path):
-    # hf_hub_download(cache_dir = live) reuses that root's blob AND revalidates, so a hit there
-    # must not be short-circuited: returning it raw would pin a stale checkpoint past a republish.
+    # hf_hub_download(cache_dir = live) reuses that root's blob AND revalidates, so a hit there must
+    # not be short-circuited: returning it raw would pin a stale checkpoint past a republish.
     live = tmp_path / "live-hub"
     live.mkdir()
     ckpt = live / "Z-Image-Turbo-FP8.pt"
@@ -1329,9 +1334,9 @@ def _other_root_source():
 
 
 def test_a_hit_only_in_the_other_root_is_revalidated_through_that_root(monkeypatch, tmp_path):
-    # hf_hub_download(cache_dir = live) would not look in huggingface_hub's import-time root and
-    # would re-fetch multiple GB, while returning the cached path raw would pin it past a
-    # republish. So the download is re-run THROUGH the root that holds the copy: one HEAD.
+    # hf_hub_download(cache_dir = live) would miss huggingface_hub's import-time root and re-fetch
+    # multiple GB, while returning the cached path raw would pin it past a republish, so the
+    # download is re-run THROUGH the root that holds the copy: one HEAD.
     default_root = tmp_path / "default-hub"
     default_root.mkdir()
     ckpt = default_root / "Z-Image-Turbo-FP8.pt"
@@ -1364,8 +1369,8 @@ def test_a_hit_only_in_the_other_root_is_revalidated_through_that_root(monkeypat
 
     assert pq.prequant_checkpoint_cached(source, cache_dir = "/models/live") is True
     assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(ckpt)
-    # cache_dir None, never the live root: the live root is empty, so pinning it there would be
-    # the multi-GB re-fetch the caller declined on.
+    # cache_dir None, never the live root: the live root is empty, so pinning it there would be the
+    # multi-GB re-fetch the caller declined on.
     assert asked == [("Z-Image-Turbo-FP8.pt", None)]
 
 
@@ -1578,8 +1583,8 @@ def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkey
     monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
 
     assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(legacy)
-    # The primary was tried in the live root and 404'd; the legacy was revalidated through the
-    # root that actually holds it, never re-fetched into the live one.
+    # The primary was tried in the live root and 404'd; the legacy was revalidated through the root
+    # that actually holds it, never re-fetched into the live one.
     assert asked == [("Z-Image-Turbo-FP8.pt", "/models/live"), ("transformer_fp8.pt", None)]
 
 
@@ -1806,7 +1811,6 @@ def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch
     assert seen == [None]  # read straight through the root that supplied the checkpoint
 
 
-# ── small-M activation padding on the hosted path ────────────────────────────────
 
 
 def test_load_pads_the_small_m_linears_with_the_recorded_family(monkeypatch, tmp_path):
@@ -1856,7 +1860,6 @@ def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
 
 
-# ── fp8 activation scale floor ──────────────────────────────────────────────────
 
 
 class _FakeFp8Tensor:
@@ -1868,10 +1871,9 @@ class _FakeFp8Tensor:
 
 def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
     # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised
-    # tensor, and stays broken however it is loaded: torchao's per-row activation quantiser divides
-    # by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The metadata checks around
-    # this one all accept an absent field for back-compat, which is exactly wrong here, so the floor
-    # is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
+    # tensor and stays broken however it is loaded: torchao's per-row activation quantiser divides
+    # by the row amax, so qwen's all-zero text rows give scale 0 and NaN (412 of 512 rows
+    # non-finite).
     floored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(1e-12)}
     unfloored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(None)}
     assert pq._fp8_activation_floor_present(floored, None) is True
@@ -1882,8 +1884,8 @@ def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
 
 def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
     # A dense tensor carries no act_quant_kwargs, so it is not evidence of a missing floor; the
-    # scheme / granularity checks own that case. Same for a state dict this cannot walk at all:
-    # failing closed here would reject every int8 checkpoint too.
+    # scheme and granularity checks own that case, and failing closed here would reject int8
+    # checkpoints too.
     assert pq._fp8_activation_floor_present({"w": object()}, None) is True
     assert pq._fp8_activation_floor_present(None, None) is True
     assert pq._fp8_activation_floor_present({}, None) is True

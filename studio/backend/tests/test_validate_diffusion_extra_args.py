@@ -79,8 +79,7 @@ class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
         self.assertEqual(self._validate(route, diffusion_kind = True), [[]])
 
     def test_an_ordinary_gguf_still_estimates_with_them(self):
-        # The drop is narrow on purpose: this is the path the editor exists for, and
-        # a --ctx-size here has to reach the estimate that approves the load.
+        # The drop is narrow on purpose: a --ctx-size here has to reach the estimate that approves the load.
         route = _load_route_module("inf_route_diffusion_extra_args_2")
         self.assertEqual(
             self._validate(route, diffusion_kind = False),
@@ -88,8 +87,7 @@ class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
         )
 
     def test_an_inconclusive_gguf_keeps_them(self):
-        # None is "nothing to read yet", not "diffusion". Dropping on it would strip a
-        # working override from an ordinary model whose header has not arrived.
+        # None is "nothing to read yet", not "diffusion": dropping on it strips a working override before the header.
         route = _load_route_module("inf_route_diffusion_extra_args_3")
         self.assertEqual(
             self._validate(route, diffusion_kind = None),
@@ -139,9 +137,7 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
             return asyncio.run(route.validate_model(request, current_subject = "test-user"))
 
     def test_an_attached_offload_spelling_is_refused_not_translated(self):
-        # llama.cpp looks the whole token up in its option map, so "--gpu-layers=20"
-        # is an argument it has never heard of; /load refuses the list. Translating
-        # first read the 20, stripped the token, and approved the switch.
+        # llama.cpp looks the whole token up, so "--gpu-layers=20" is unknown; translating first approved the switch.
         from fastapi import HTTPException
 
         route = _load_route_module("inf_route_validate_order_1")
@@ -151,8 +147,7 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
         self.assertIn("two separate arguments", str(caught.exception.detail))
 
     def test_a_malformed_layer_count_is_a_refusal_not_a_crash(self):
-        # parse_gpu_layers_override raises on a non-integer, and it used to run
-        # before the try that turns a bad list into a 400, so this was a 500.
+        # parse_gpu_layers_override raises on a non-integer and ran before the try that 400s, so this 500'd.
         from fastapi import HTTPException
 
         route = _load_route_module("inf_route_validate_order_2")
@@ -219,20 +214,17 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
     def test_an_explicit_layer_count_reaches_the_guard(self):
         route = _load_route_module("inf_route_manual_ngl_1")
         seen = self._validate(route, gpu_layers = 0, extra_args = ["-ngl", "20"])
-        # The layer count the load will really run, and the raw flag stripped out of
-        # the list exactly as /load strips it once it owns the field.
+        # The layer count the load will really run, and the raw flag stripped out exactly as /load strips it.
         self.assertEqual(seen, [(20, [])])
 
     def test_a_zero_layer_override_is_read_the_same_way(self):
-        # The inverse pairing: asked for 20, overridden to 0. Judged as the CPU-only
-        # load it is, rather than refused for VRAM it never takes.
+        # The inverse pairing: judged as the CPU-only load it is, rather than refused for VRAM it never takes.
         route = _load_route_module("inf_route_manual_ngl_2")
         seen = self._validate(route, gpu_layers = 20, extra_args = ["-ngl", "0"])
         self.assertEqual(seen, [(0, [])])
 
     def test_auto_mode_leaves_the_flag_alone(self):
-        # Only manual mode owns these. In Auto the flag is a pass-through the loader
-        # honours, so translating it here would invent a first-class value /load never set.
+        # Only manual mode owns these: in Auto the flag passes through, so translating invents a value.
         route = _load_route_module("inf_route_manual_ngl_3")
         seen: list = []
 
@@ -374,8 +366,7 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         )
 
     def test_defaults_clamp_nothing(self):
-        # Nothing overrides the batch, so the launch runs llama.cpp's own 2048 and the
-        # micro-batch is nowhere near the slot count.
+        # Nothing overrides the batch, so the launch runs llama.cpp's own 2048.
         route = _load_route_module("inf_route_embed_clamp_3")
         self.assertEqual(
             self._clamped(route, is_embedding = True, extra_args = ["--numa", "distribute"]),
@@ -383,8 +374,7 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         )
 
     def test_the_clamp_floors_at_one_slot(self):
-        # "-b 0" resolves to a zero micro-batch, and --parallel 0 is rejected at arg
-        # parse, which is the floor load_model applies too.
+        # "-b 0" resolves to a zero micro-batch, and --parallel 0 is rejected at arg parse: that is the floor.
         route = _load_route_module("inf_route_embed_clamp_4")
         self.assertEqual(
             self._clamped(route, is_embedding = True, extra_args = ["-b", "0", "-ub", "0"]),
@@ -392,8 +382,7 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         )
 
     def test_an_unreadable_header_leaves_the_refusal_alone(self):
-        # _is_embedding_gguf answers False for a GGUF that is not on this disk yet, so
-        # nothing is relaxed on a guess.
+        # _is_embedding_gguf answers False for a GGUF that is not on this disk yet, so nothing is relaxed on a guess.
         route = _load_route_module("inf_route_embed_clamp_5")
         config = SimpleNamespace(identifier = "someone/gguf", gguf_file = None, gguf_hf_repo = None)
         self.assertFalse(route._is_embedding_gguf(config))
@@ -435,8 +424,7 @@ class TestValidateAllowsTheEmbeddingClampedBatch(TestValidateRefusesWhatLoadWoul
         self.assertIn("aborts on --batch-size", str(caught.exception.detail))
 
     def test_an_embedding_gguf_below_its_own_floor_is_still_refused(self):
-        # The clamp floors at one slot, and llama-server aborts on a batch of 1 at any
-        # slot count, so this is not a refusal the clamp may lift.
+        # The clamp floors at one slot and llama-server aborts on a batch of 1, so the clamp may not lift this.
         route = _load_route_module("inf_route_validate_embed_3")
         with (
             patch.object(route, "_is_embedding_gguf", return_value = True),

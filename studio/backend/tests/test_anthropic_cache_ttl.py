@@ -88,7 +88,6 @@ def _cache_controls(body: dict) -> list[dict]:
     return out
 
 
-# ── default (omitted) writes into the 5m pool ──────────────────────
 
 
 def test_omitted_ttl_uses_default_5m_pool(monkeypatch):
@@ -99,7 +98,6 @@ def test_omitted_ttl_uses_default_5m_pool(monkeypatch):
         assert cc == {"type": "ephemeral"}, cc
 
 
-# ── explicit 5m round-trips as-is ─────────────────────────────────
 
 
 def test_explicit_5m_ttl_round_trips(monkeypatch):
@@ -110,7 +108,6 @@ def test_explicit_5m_ttl_round_trips(monkeypatch):
         assert cc == {"type": "ephemeral", "ttl": "5m"}, cc
 
 
-# ── 1h writes the new pool field on every marker ───────────────────
 
 
 def test_1h_ttl_writes_into_1h_pool(monkeypatch):
@@ -122,9 +119,8 @@ def test_1h_ttl_writes_into_1h_pool(monkeypatch):
 
 
 def test_1h_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
-    # The extended-cache-ttl-2025-04-11 beta header is now GA (verified live
-    # 2026-05-22); 1h TTL works with no beta header. Pin so a regression that
-    # re-adds the header surfaces here.
+    # The extended-cache-ttl-2025-04-11 beta header is now GA (verified live 2026-05-22): 1h TTL
+    # works with no beta header.
     captured = _capture(monkeypatch, ttl = "1h")
     beta = captured["headers"].get("anthropic-beta", "")
     assert "extended-cache-ttl-2025-04-11" not in beta, beta
@@ -136,7 +132,6 @@ def test_5m_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
     assert "extended-cache-ttl-2025-04-11" not in beta, beta
 
 
-# ── unknown values are dropped, not forwarded ──────────────────────
 
 
 @pytest.mark.parametrize("bogus", ["6m", "2h", "", "forever", "1d", "0", "1"])
@@ -145,11 +140,9 @@ def test_unknown_ttl_silently_dropped(monkeypatch, bogus):
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
-        # Bogus TTLs must not round-trip; marker stays at default (no ttl = 5m).
         assert cc == {"type": "ephemeral"}, cc
 
 
-# ── opt-out still skips cache_control entirely ─────────────────────
 
 
 def test_opt_out_skips_cache_control(monkeypatch):

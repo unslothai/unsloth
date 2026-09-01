@@ -102,7 +102,6 @@ class TestVisionImageSizeCap:
 
     @pytest.mark.parametrize("value", ["５１２", "٥١٢", "१०२४"])
     def test_unicode_digit_string_rejected(self, value):
-        # Reject non-ASCII (full-width/Arabic-Indic/Devanagari) digits.
         with pytest.raises(ValidationError) as exc:
             _check_field("vision_image_size", value)
         assert "integer or null" in str(exc.value)

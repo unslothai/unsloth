@@ -37,11 +37,8 @@ def test_an_echo_that_ignores_line_boundaries():
 @pytest.mark.parametrize(
     "text",
     [
-        # Real code: similar shapes, different content.
         "".join(f"  ctx.lineTo({i * 3}, {i * 7 % 31});\n" for i in range(80)),
-        # Prose cut mid-word. Written out rather than multiplied: a repeated sentence is
-        # exactly what the guard is for, so building this case with `* 6` would have
-        # asserted the opposite of what it claims.
+        # Written out rather than `* 6`: a repeated sentence is what the guard is for, so multiplying inverts it.
         "The bird falls under gravity and the pipes scroll leftward. Each pipe carries a "
         "gap whose centre drifts as the score climbs, so the difficulty ramps without any "
         "explicit level system. Collision is checked against the bird's bounding circle "

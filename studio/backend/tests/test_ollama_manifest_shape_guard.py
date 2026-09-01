@@ -74,7 +74,7 @@ def test_one_bad_manifest_does_not_hide_the_good_models(tmp_path, payload):
         {"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": 42}]},
         {"config": "not-a-dict"},
         {"config": ["digest"]},
-        # A dict config carrying a non-string digest: truthy, so it reaches
+        # A dict config carrying a non-string digest is truthy, so it reaches
         # config_digest.replace(":", "-") once a blobs/ dir exists.
         {"config": {"digest": 42}},
     ],

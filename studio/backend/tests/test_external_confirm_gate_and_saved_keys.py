@@ -139,7 +139,6 @@ def _run(
     return _drive(go())
 
 
-# ── the confirm gate reads the effective mode, not the raw flag ──────────────
 
 
 def test_non_streaming_ask_mode_is_rejected_like_the_local_routes(monkeypatch):
@@ -215,7 +214,6 @@ def test_a_non_streaming_request_without_any_confirm_intent_still_proxies(monkey
     assert FakeExternalClient.last["passthrough"] is not None
 
 
-# ── the summed usage chunk keeps the model it was spent on ───────────────────
 
 
 def test_the_external_loop_is_told_which_model_the_usage_belongs_to(monkeypatch):
@@ -287,7 +285,6 @@ def test_the_usage_chunk_falls_back_only_when_no_model_is_known():
     assert ToolLoopRun(messages = []).model is None
 
 
-# ── the saved-credential exception is scoped to the workflow that needs it ───
 
 
 def test_a_data_recipe_key_cannot_spend_a_saved_cloud_credential(monkeypatch):
@@ -360,7 +357,6 @@ def test_an_interactive_session_still_uses_its_saved_connection(monkeypatch):
     assert seen == [True]
 
 
-# ── the watcher the stream starts is joined, not just cancelled ──────────────
 
 
 def test_the_external_disconnect_watcher_is_awaited_after_cancel():
@@ -390,8 +386,8 @@ def test_the_external_disconnect_watcher_is_awaited_after_cancel():
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and node.id == "disconnect_task"
     ]
-    # Every cancel site must be followed by a gather of the same task; counting
-    # the bare references is enough to catch a cancel with no join next to it.
+    # Every cancel site must be followed by a gather of the same task; counting the bare references
+    # is enough to catch a cancel with no join next to it.
     assert len(gathers) >= len(cancels) * 3, "each disconnect_task.cancel() needs a gather"
 
 

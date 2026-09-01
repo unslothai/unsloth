@@ -70,8 +70,8 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
     budget = rng.choice([2048, 4096, 65536])
     queue = LlamaAdmissionQueue(f"stress-{seed}")
 
-    # Every holder is admitted at a size that fits alongside the others, so any excess is
-    # the queue's doing, not the workload's. The escape is exercised separately.
+    # Every holder is admitted at a size that fits alongside the others, so any excess is the
+    # queue's doing, not the workload's.
     opening = max(1, budget // max(1, capacity))
     leases = [
         lease
@@ -109,8 +109,6 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
     snapshot = queue.snapshot()
     assert snapshot.committed == 0, f"seed={seed}: {snapshot.committed} tokens stranded"
     assert queue._reparking == 0, f"seed={seed}: repark counter leaked, the queue is wedged"
-    # One holder may sit above the budget via the alone escape, so the ceiling is the
-    # budget plus the largest single request.
     assert (
         ceiling.peak <= budget * 2
     ), f"seed={seed}: committed peaked at {ceiling.peak} against a {budget} cache"
@@ -155,8 +153,8 @@ async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
             tokens = rng.randint(1, share),
             budget = budget,
         )
-        # await, never time.sleep: a granted lease is delivered with
-        # loop.call_soon_threadsafe, so a synchronous poll blocks its own delivery.
+        # await, never time.sleep: a granted lease is delivered with loop.call_soon_threadsafe, so a
+        # synchronous poll blocks its own delivery.
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             lease = reservation.lease_nowait()
@@ -192,8 +190,7 @@ async def test_a_wait_that_can_never_be_satisfied_gives_up_rather_than_wedging_t
     no possible end must expire, restore its old figure and let the queue run again."""
     budget = 4096
     queue = LlamaAdmissionQueue("timeout")
-    # All but one token, so the grower is still admitted alongside it and the cache is
-    # exactly full. A squatter holding the whole budget would leave nothing to admit it.
+    # All but one token, so the grower is still admitted alongside it and the cache is exactly full.
     squatter = _lease(queue, tokens = budget - 1, budget = budget, capacity = 4)
     assert squatter is not None
     grower = _lease(queue, tokens = 1, budget = budget, capacity = 4)
@@ -204,8 +201,8 @@ async def test_a_wait_that_can_never_be_satisfied_gives_up_rather_than_wedging_t
     waited = time.monotonic() - start
     assert 0.4 <= waited < 15, f"gave up after {waited}s, expected roughly the timeout"
     assert queue._reparking == 0, "the wait line is still shut after a timeout"
-    # The queue is usable again: the grower is back at its old figure, so releasing the
-    # squatter leaves exactly that behind.
+    # The queue is usable again: the grower is back at its old figure, so releasing the squatter
+    # leaves exactly that behind.
     squatter.release()
     assert queue.snapshot().committed == 1
     grower.release()

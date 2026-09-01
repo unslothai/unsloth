@@ -23,7 +23,6 @@ from test_llama_cpp_placement import _backend, _launch, _write_gguf  # noqa: E40
 
 _MEMORY = [(0, 40 * 1024**3, 48 * 1024**3)]
 
-# Everything the MTP branch of _build_speculative_flags probes for.
 _CAPS = {
     "found": True,
     "supports_kv_unified": True,

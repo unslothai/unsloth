@@ -65,9 +65,8 @@ _message = LlamaCppBackend._metal_context_overcommit_message
 _ENV = LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV
 _REAL_POPEN = subprocess.Popen
 
-# What the stubbed fit reports as the largest context that fits, and the GGUF's native
-# length. Anything between them is a context the user can type today and the machine
-# cannot hold.
+# The stubbed largest fitting context and the GGUF's native length: anything between them is a
+# context the user can type today and the machine cannot hold.
 CEILING = 8192
 NATIVE = 262144
 
@@ -162,13 +161,9 @@ def _launch(
         else (lambda **kwargs: None)
     )
     backend._apu_ram_shortfall_message = lambda *a, **k: None
-    # This harness does not model host RAM, and None is the documented way to say so: both
-    # _apu_ram_shortfall_message and _host_offload_shortfall_message treat unknown
-    # available memory as "never refuse". Without it the sibling host-RAM guard fires on
-    # the paravirtual path (the one placement here that reports child_has_no_gpu and so
-    # gets past that guard's empty-pool early return) and prices the model against the
-    # REAL machine, so the virtualised-device tests passed on a 16 GB runner and failed on
-    # a 7 GB one. Host-memory dependent, not OS dependent.
+    # This harness does not model host RAM, and None is the documented way to say so. Without it the
+    # sibling host-RAM guard fires on the paravirtual path and prices the model against the REAL
+    # machine, so the virtualised-device tests passed on a 16 GB runner and failed on a 7 GB one.
     backend._available_system_memory_mib = lambda *a, **k: None
     backend._amd_apu_wants_unified_memory = lambda *a, **k: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
@@ -188,10 +183,8 @@ def _launch(
             "Process",
             (),
             {
-                # One below pid_max: validly shaped but names no process, so the
-                # lifetime registry's identity check drops it. Not inert decoration
-                # -- load_model adopts whatever pid it is given and teardown signals
-                # that process group, and killpg(1) is kill(-1), everything the user owns.
+                # One below pid_max: validly shaped but names no process, so the registry's identity check drops
+                # it. Not decoration -- teardown signals the pid's process group, and killpg(1) is kill(-1).
                 "pid": 4194303,
                 "stdout": (),
                 "poll": lambda self: None,
@@ -224,7 +217,6 @@ class TestTheRefusalItself:
     def test_a_context_above_the_ceiling_is_refused(self):
         msg = _message(32768, CEILING)
         assert msg is not None
-        # Both numbers, so the user can act on it without a second round trip.
         assert "32,768" in msg and "8,192" in msg
 
     def test_it_names_the_opt_out(self):
@@ -390,8 +382,8 @@ class TestTheMessageSurvivesTheRoute:
         import ast
         import re
 
-        # encoding is not optional: routes/inference.py carries non-ASCII (the DeepSeek
-        # tool-call tokens), and read_text() defaults to cp1252 on Windows.
+        # encoding is not optional: routes/inference.py carries non-ASCII and read_text() defaults to
+        # cp1252 on Windows.
         route_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
             encoding = "utf-8"
         )
@@ -431,8 +423,7 @@ class TestWhatARefusedReloadCosts:
     """
 
     def test_the_refused_reload_leaves_nothing_running(self, tmp_path, monkeypatch):
-        # is_active, not is_loaded: this asks whether a child process exists, and
-        # health is a separate signal the stubbed launch does not model.
+        # is_active, not is_loaded: this asks whether a child process exists.
         backend = _launch(tmp_path, monkeypatch, n_ctx = 4096)["backend"]
         assert backend.is_active
         with pytest.raises(RuntimeError, match = "unified"):
@@ -481,13 +472,11 @@ class TestTheContextCanArriveByAnotherDoor:
         assert _ctx_values(cmd) and _ctx_values(cmd)[-1] != "0"
 
 
-# 1 MiB of KV per token, so a handful of thousand tokens is worth gigabytes and the
-# fit's own 4096 floor can be pushed past the budget on a stub model.
+# 1 MiB of KV per token, so the fit's own 4096 floor can be pushed past the budget.
 _FAT_KV = 1024 * 1024
 _BUDGET = 9 * 1024**3
-# load_model folds a flat compute-buffer reserve into the weights before the fit sees
-# them, so a 9 GiB budget leaves well under 9 GiB for weights + KV. Sized so the weights
-# fit with room for a few hundred tokens and nothing like 4096.
+# load_model folds a flat compute-buffer reserve into the weights before the fit sees them, so a
+# 9 GiB budget leaves well under 9 GiB for weights + KV.
 _TIGHT_WEIGHTS = 3300 * 1024**2
 _TIGHT_CEILING = 768
 
@@ -526,8 +515,8 @@ class TestWhenEvenTheFitsOwnMinimumDoesNotFit:
                 compute_ctx_bytes_fn = lambda _ctx: 0,
             )
 
-        assert fit(4096) == 4096  # the floor, not a measurement
-        assert fit(256) == 2048  # what actually fits
+        assert fit(4096) == 4096
+        assert fit(256) == 2048
 
     def _tight(self, tmp_path, monkeypatch, **kw):
         return _launch(
@@ -596,7 +585,6 @@ class TestAContextAboveTheModelsNativeLength:
         )
 
     def test_it_launches_when_unified_memory_holds_it(self, tmp_path, monkeypatch):
-        # 1 KiB per token: 131,072 tokens is 128 MiB against a 9 GiB budget.
         cmd = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)["cmd"]
         assert _ctx_values(cmd)[-1] == str(self._ASKED)
 
@@ -646,8 +634,7 @@ class TestAContextAboveTheModelsNativeLength:
         """A refusal that names the native length reports the wrong limit: memory holds
         sixteen times it here, so "lower the context to 4,096" throws away a context that
         would have loaded."""
-        # 64 KiB per token against ~4 GiB of headroom: tens of thousands of tokens fit,
-        # far past the 4096 this GGUF was trained at.
+        # 64 KiB per token against ~4 GiB of headroom: far past the 4096 this GGUF was trained at.
         with pytest.raises(RuntimeError) as excinfo:
             _launch(
                 tmp_path,
@@ -737,10 +724,8 @@ class TestWhenNothingFitsAtAll:
     that arm returns the request untouched for any min_ctx, so it cannot shrink.
     """
 
-    # Weights heavy enough that the budget cannot afford 256 tokens on top of them at
-    # 1 MiB each, but light enough that the fit can shrink at all, the signal that
-    # separates this state from weights-alone-over-budget. Measured window for this
-    # harness: ~3850 to ~4050 MiB (3300 leaves room for 768 tokens, 4100 tips over).
+    # Weights heavy enough that the budget cannot afford 256 tokens on top at 1 MiB each, but light
+    # enough that the fit can shrink at all. Measured window here: ~3850 to ~4050 MiB.
     NOTHING_FITS = dict(
         real_fit = True,
         budget_bytes = _BUDGET,

@@ -353,8 +353,8 @@ def test_roster_reads_a_database_from_before_linked_folders(rag_home, monkeypatc
     )
     legacy.commit()
     legacy.close()
-    # after the file exists, since rag_available() opens the connection that migrates it:
-    # where vec0 will not load (the common macOS case) there is no roster to read at all
+    # after the file exists, since rag_available() opens the connection that migrates it: where vec0
+    # will not load (the common macOS case) there is no roster to read at all
     if not rag_db.rag_available():
         pytest.skip("sqlite-vec unavailable here, so there is no roster to migrate into")
     assert '"legacy.pdf"' in _nudge({"project_id": "p1"})

@@ -49,10 +49,8 @@ _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat1
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
-# Build it while the stubs are live, then drop them, as the sibling files do: a stub
-# left in sys.modules is a cross-file leak that
-# test_audio_type_inconclusive.py::test_the_stubs_do_not_outlive_this_module asserts
-# against. The peft gate below still decides whether the test runs.
+# Build it while the stubs are live, then drop them, as the sibling files do: a stub left in
+# sys.modules is a cross-file leak test_audio_type_inconclusive.py asserts against.
 try:
     import core.inference.inference  # noqa: E402,F401
 except ImportError:  # pragma: no cover - the real dep set imports fine
@@ -204,8 +202,8 @@ def test_audio_response_cancellation_signals_worker_and_drains_terminal_response
             assert orchestrator._cancel_event.is_set() is False
             return None
         if reads == 2:
-            # The worker acknowledges only after clearing stale shared state. The
-            # parent must not signal while the TTS command is merely queued.
+            # The worker acknowledges only after clearing stale shared state, so the parent must not
+            # signal while the TTS command is merely queued.
             assert orchestrator._cancel_event.is_set() is False
             return {
                 "type": "audio_started",
@@ -289,8 +287,8 @@ def test_audio_response_cancellation_before_worker_start_is_still_bounded(monkey
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(orchestrator_module, "_AUDIO_GENERATION_TIMEOUT", 100.0)
     monkeypatch.setattr(orchestrator_module, "_AUDIO_CANCEL_DRAIN_TIMEOUT", 0.03)
-    # Before audio_started there is nobody to receive the cancel, so this window is the
-    # teardown budget, not the drain: a prefill pass is slow, not unresponsive. Still bounded.
+    # Before audio_started there is nobody to receive the cancel, so this window is the teardown
+    # budget, not the drain: a prefill pass is slow, not unresponsive.
     monkeypatch.setattr(orchestrator_module, "_AUDIO_CANCEL_TEARDOWN_TIMEOUT", 0.05)
     caller_cancel = threading.Event()
 
@@ -477,8 +475,8 @@ def test_worker_audio_prepare_rechecks_unload_drain_after_clear():
 
     class _Cancel:
         def clear(self):
-            # Exact race: unload lands after the first drain check but before the
-            # worker clear would otherwise erase its shared cancel.
+            # Exact race: unload lands after the first drain check but before the worker clear would
+            # otherwise erase its shared cancel.
             drain.set()
 
     responses = queue.Queue()
@@ -678,9 +676,8 @@ def test_worker_audio_forwards_shared_cancel_event():
 
 
 def test_backend_tts_generation_uses_cancel_stopping_criteria(monkeypatch):
-    # core.inference.inference pulls the training stack in, which the backend-test job does
-    # not install; without this the whole job fails on ModuleNotFoundError rather than
-    # reporting a skip for a test that cannot run there.
+    # core.inference.inference pulls in the training stack, which the backend-test job does not
+    # install; without this the whole job fails on ModuleNotFoundError instead of skipping.
     pytest.importorskip("peft")
     from core.inference.inference import InferenceBackend
 

@@ -78,7 +78,6 @@ def test_get_base_model_from_lora_rejects_full_finetune_dirs(tmp_path: Path):
 
 
 def test_lora_identifier_resolves_local_dir_like_the_local_helper(tmp_path: Path):
-    # Local path: behaves like the directory reader, no Hub call.
     (tmp_path / "adapter_config.json").write_text(
         json.dumps({"base_model_name_or_path": "HuggingFaceTB/SmolLM-135M"})
     )
@@ -88,8 +87,7 @@ def test_lora_identifier_resolves_local_dir_like_the_local_helper(tmp_path: Path
 
 
 def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
-    # Remote adapter: the identifier helper fetches adapter_config.json from the Hub so
-    # the gate can scan the base, where the local helper returns None.
+    # Remote adapter: the identifier helper fetches adapter_config.json so the gate can scan the base.
     cfg = tmp_path / "adapter_config.json"
     cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
 
@@ -103,24 +101,22 @@ def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
         assert fn == "adapter_config.json"
         return str(cfg)
 
-    assert get_base_model_from_lora("someone/my-remote-lora") is None  # local-only: misses it
+    assert get_base_model_from_lora("someone/my-remote-lora") is None
     with patch("huggingface_hub.hf_hub_download", side_effect = _dl):
         base = get_base_model_from_lora_identifier("someone/my-remote-lora")
     assert base == "unsloth/Llama-3.2-1B-Instruct"
 
 
 def test_lora_identifier_returns_none_for_non_adapter_remote_repo():
-    # Non-LoRA remote repo: a 404 on adapter_config.json returns None without retrying.
     from huggingface_hub.utils import EntryNotFoundError
 
     mock = patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404"))
     with mock as m:
         assert get_base_model_from_lora_identifier("unsloth/Llama-3.2-1B-Instruct") is None
-    assert m.call_count == 1  # 404 is definitive -> no retry
+    assert m.call_count == 1
 
 
 def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
-    # A transient error is retried (not treated as "not a LoRA"); the retry resolves the base.
     cfg = tmp_path / "adapter_config.json"
     cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
     calls = {"n": 0}
@@ -139,12 +135,11 @@ def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
     with patch("huggingface_hub.hf_hub_download", side_effect = _dl):
         base = get_base_model_from_lora_identifier("someone/remote-lora")
     assert base == "unsloth/Llama-3.2-1B-Instruct"
-    assert calls["n"] == 2  # retried once
+    assert calls["n"] == 2
 
 
 def test_lora_identifier_persistent_transient_returns_none():
-    # Two transient errors -> None, logged at WARNING (a missed base is gated by neither).
-    # Assert on the logger directly: robust to the logging backend (structlog vs stub).
+    # Two transient errors yield None, logged at WARNING. Assert on the logger, so the backend can change.
     from utils.models import model_config as _mc
     with (
         patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("down")),

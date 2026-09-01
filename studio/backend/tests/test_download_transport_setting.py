@@ -46,8 +46,7 @@ def store(monkeypatch):
 
 def test_nothing_picked_means_auto(store):
     assert transport_settings.get_download_transport_mode() == "auto"
-    # Read-only: seeding a value would be this setting deciding for an install that never
-    # opened it.
+    # Read-only: seeding a value would be this setting deciding for an install that never opened it.
     assert store == {}
 
 
@@ -79,9 +78,6 @@ def test_set_validates_and_persists(store):
             transport_settings.set_download_transport_mode(junk)
 
 
-# ------------------------------------------------------------------------------------------
-# Routes
-# ------------------------------------------------------------------------------------------
 
 
 @pytest.fixture

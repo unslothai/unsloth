@@ -40,8 +40,7 @@ def _drive(snaps):
 
 
 def test_gen_tok_s_uses_token_metrics_not_decode_calls():
-    # tokens_predicted_total jumps 95 while n_decode_total only moves 9; the
-    # gauge reports 95 tok/s. Decode-call rate (9) must not be reported.
+    # tokens_predicted_total jumps 95 while n_decode_total only moves 9; the gauge reports 95 tok/s.
     snaps = [
         {
             "tokens_predicted_total": 0.0,

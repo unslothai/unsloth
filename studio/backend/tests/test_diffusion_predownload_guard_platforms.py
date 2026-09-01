@@ -31,8 +31,8 @@ from core.inference.diffusion_memory import DeviceMemory, snapshot_device_memory
 MIB = 1024 * 1024
 GIB_MIB = 1024
 
-# unsloth/FLUX.2-dev, 112.9 GB: too large for every pool below, so a machine that keeps
-# loading it is one the guard genuinely never reaches.
+# unsloth/FLUX.2-dev, 112.9 GB: too large for every pool below, so a machine that keeps loading it
+# is one the guard genuinely never reaches.
 FLUX2_DEV = [
     (f"{name}/model.safetensors", mib * MIB)
     for name, mib in (
@@ -53,8 +53,7 @@ LUMINA_2 = [
     )
 ]
 
-# Every OS Unsloth ships on. The classifier reads the device and the driver's `integrated`
-# flag and never sys.platform, so these are here to prove that rather than to vary it.
+# Every OS Unsloth ships on.
 PLATFORMS = ("linux", "wsl", "win32", "darwin")
 
 
@@ -254,7 +253,6 @@ def test_no_offload_request_can_talk_a_shared_pool_into_it(monkeypatch, memory_m
     assert verdict(LUMINA_2, "Alpha-VLLM/Lumina-Image-2.0") is None
 
 
-# ── the manifest read ─────────────────────────────────────────────────────────
 
 _MANIFEST = {
     "_class_name": "FluxPipeline",
@@ -365,7 +363,6 @@ def test_an_ignore_list_of_the_wrong_shape_is_tolerated(monkeypatch, tmp_path):
     assert ignored == frozenset()
 
 
-# ── the two switches the plan exposes ─────────────────────────────────────────
 
 
 def _plan_probe(monkeypatch, calls):

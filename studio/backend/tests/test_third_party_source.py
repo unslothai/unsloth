@@ -662,8 +662,7 @@ def test_dac_weights_use_immutable_revision_and_active_cache(monkeypatch, tmp_pa
 
     result = source.ensure_dac_speech_weights()
 
-    # The download is installed into the pinned destination, so the next load hits the
-    # fast path instead of re-downloading and re-hashing the artifact.
+    # The download is installed into the pinned destination, so the next load takes the fast path.
     assert result.is_relative_to(hub_cache)
     assert result.read_bytes() == payload
     assert calls == [

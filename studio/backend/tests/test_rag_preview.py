@@ -139,8 +139,8 @@ def test_norm_token_decomposes_ligatures():
     # NFKC folds ligature glyphs to ASCII so anchors match (search_for misses these).
     from core.rag.locators import _norm_token
 
-    assert _norm_token("signiﬁcant") == "significant"  # ﬁ
-    assert _norm_token("eﬀort.") == "effort"  # ﬀ + trailing punct
+    assert _norm_token("signiﬁcant") == "significant"
+    assert _norm_token("eﬀort.") == "effort"
     assert _norm_token("**Bold**") == "bold"
     assert _norm_token("...") == ""
 
@@ -154,7 +154,7 @@ def test_locator_handles_midword_anchor_and_locates_line():
     doc = pymupdf.open()
     page = doc.new_page()
     page.insert_text((72, 200), "alpha beta gamma delta epsilon zeta eta theta", fontsize = 12)
-    page_text = doc[0].get_text("text")  # mirrors what the parser stores
+    page_text = doc[0].get_text("text")
     start = page_text.index("lpha")
     end = page_text.index("theta") + 3
     match = LocatorMatch(page_index = 0, page_number = 1, start = start, end = end)
@@ -171,8 +171,8 @@ def test_locator_handles_midword_anchor_and_locates_line():
 
 
 def test_locator_anchors_through_markdown_table_pipes():
-    # Markdown table cells are pipe-joined with no spaces; the locator splits on pipes
-    # so a table-row chunk still anchors to the raw PDF word stream.
+    # Markdown table cells are pipe-joined with no spaces, so the locator splits on pipes and a
+    # table-row chunk still anchors to the raw PDF word stream.
     import pymupdf
 
     from core.rag.locators import LocatorMatch, _regions_for_match
@@ -180,7 +180,6 @@ def test_locator_anchors_through_markdown_table_pipes():
     doc = pymupdf.open()
     page = doc.new_page()
     page.insert_text((72, 200), "Quarter Revenue Growth Q1 sales strong here", fontsize = 12)
-    # What the Markdown parser stores for the row (cells joined by pipes, no spaces).
     page_text = "|Quarter|Revenue|Growth|Q1|sales|strong|here|"
     match = LocatorMatch(page_index = 0, page_number = 1, start = 0, end = len(page_text))
     rects = _regions_for_match(doc, page_text, match)
@@ -194,5 +193,5 @@ def test_sign_verify_roundtrip(rag_home):
 
     tok = rag_routes._sign_document("doc-123")
     assert rag_routes._verify_document_token(tok) == "doc-123"
-    assert rag_routes._verify_document_token("doc-123.0.deadbeef") is None  # expired/bad
+    assert rag_routes._verify_document_token("doc-123.0.deadbeef") is None
     assert rag_routes._verify_document_token("garbage") is None

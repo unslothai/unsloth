@@ -21,7 +21,6 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
 @pytest.mark.parametrize(
     "cloudflare,host,secure,api_only,is_colab,expected",
     [
-        # Non-secure wildcard binds tunnel only when --cloudflare is passed (True).
         (True, "0.0.0.0", False, False, False, True),
         (True, "::", False, False, False, True),
         (True, "::0", False, False, False, True),
@@ -30,23 +29,17 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
         (True, "::ffff:0.0.0.0", False, False, False, True),
         (True, "127.0.0.1", False, False, False, False),
         (True, "localhost", False, False, False, False),
-        # --secure tunnels a loopback bind too.
         (True, "127.0.0.1", True, False, False, True),
         (True, "0.0.0.0", True, False, False, True),
-        # --no-cloudflare always wins.
         (False, "0.0.0.0", False, False, False, False),
         (False, "::", False, False, False, False),
         (False, "127.0.0.1", True, False, False, False),
-        # Unset (None, no flag) behaves as off for non-secure binds.
         (None, "0.0.0.0", False, False, False, False),
         (None, "::", False, False, False, False),
         (None, "127.0.0.1", False, False, False, False),
-        # Non-secure api-only never tunnels (Tauri).
         (True, "0.0.0.0", False, True, False, False),
         (True, "::", False, True, False, False),
-        # --secure tunnels even api-only (headless secure API server).
         (True, "127.0.0.1", True, True, False, True),
-        # Colab never tunnels, even --secure.
         (True, "0.0.0.0", False, False, True, False),
         (True, "::", False, False, True, False),
         (True, "127.0.0.1", True, False, True, False),
@@ -149,8 +142,7 @@ def test_bound_request_host_fails_closed_without_a_listener():
 
 
 def test_arg_parser_secure_polarity_and_not_secure_alias():
-    # --secure/--no-secure is the documented flag; --not-secure is a hidden,
-    # back-compat alias for --no-secure. Last flag wins (BooleanOptionalAction).
+    # --not-secure is a hidden back-compat alias for --no-secure, and the last flag wins (BooleanOptionalAction).
     import run
 
     parser = run._build_arg_parser()
@@ -177,13 +169,11 @@ def test_run_server_accepts_enable_tools_kwarg():
 
     params = inspect.signature(run.run_server).parameters
     assert "enable_tools" in params
-    assert params["enable_tools"].default is None  # default: leave policy unset
+    assert params["enable_tools"].default is None
 
 
 def test_tool_policy_not_auto_disabled_by_bind():
-    # No flag installs neither an override nor a tools-on default on any bind: the
-    # default belongs to `unsloth studio run`, which installs it itself. The
-    # backend never changes the policy from host/secure.
+    # No flag installs neither an override nor a tools-on default: that belongs to `unsloth studio run`.
     import run
     from state.tool_policy import (
         get_tool_policy,
@@ -193,22 +183,21 @@ def test_tool_policy_not_auto_disabled_by_bind():
 
     for host in ("127.0.0.1", "localhost", "0.0.0.0"):
         reset_tool_policy()
-        run._apply_cli_tool_policy(None)  # no flag, on any bind
-        assert get_tool_policy() is None, host  # no override: request off honored
-        assert get_tool_policy_default() is None, host  # no default from this path
+        run._apply_cli_tool_policy(None)
+        assert get_tool_policy() is None, host
+        assert get_tool_policy_default() is None, host
 
     reset_tool_policy()
-    run._apply_cli_tool_policy(True)  # --enable-tools: forced on
+    run._apply_cli_tool_policy(True)
     assert get_tool_policy() is True
 
     reset_tool_policy()
-    run._apply_cli_tool_policy(False)  # --disable-tools: forced off
+    run._apply_cli_tool_policy(False)
     assert get_tool_policy() is False
     reset_tool_policy()
 
 
 def test_apply_cli_tool_policy_is_idempotent():
-    # Both the CLI and run_server() apply the pair; re-applying must not drift.
     import run
     from state.tool_policy import get_tool_policy, get_tool_policy_default, reset_tool_policy
 
@@ -222,10 +211,8 @@ def test_apply_cli_tool_policy_is_idempotent():
 
 
 def test_tool_policy_notice_wording():
-    # The plain-server startup banner states the resolved policy for every bind.
     import run
 
-    # No flag on this launcher: no tools-on default, so the request decides.
     for host, secure_mode in (("127.0.0.1", False), ("0.0.0.0", False), ("127.0.0.1", True)):
         notice = run._tool_policy_notice(host, secure_mode, None)
         assert "follow each request's enable_tools" in notice, notice
@@ -238,7 +225,6 @@ def test_tool_policy_notice_wording():
 
 
 def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
-    # Plain `unsloth studio -H 0.0.0.0` must not be silent about tools now.
     import run
 
     monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
@@ -261,8 +247,7 @@ def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
 
 
 def test_run_server_rejects_secure_without_cloudflare():
-    # Direct backend callers (not just the CLI) must reject the contradictory
-    # combo: --secure asks for the tunnel, --no-cloudflare (cloudflare=False) forbids it.
+    # --secure asks for the tunnel and --no-cloudflare forbids it, so the backend must reject the pair too.
     import run
     with pytest.raises(SystemExit) as exc:
         run.run_server(secure = True, cloudflare = False)
@@ -270,7 +255,6 @@ def test_run_server_rejects_secure_without_cloudflare():
 
 
 def test_failclosed_message_present_in_source():
-    # The exact, user-facing fail-closed message must not drift.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert (
         "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
@@ -281,10 +265,10 @@ def test_failclosed_message_present_in_source():
 @pytest.mark.parametrize(
     "api_only,secure,expected",
     [
-        (False, False, ["*"]),  # plain server: any origin
-        (False, True, ["*"]),  # secure UI server: any origin
-        (True, True, ["*"]),  # secure api-only: remote browsers need any origin
-        (True, False, "tauri"),  # local api-only: locked to the Tauri app
+        (False, False, ["*"]),
+        (False, True, ["*"]),
+        (True, True, ["*"]),
+        (True, False, "tauri"),
     ],
 )
 def test_cors_origins_for_mode(api_only, secure, expected):
@@ -329,8 +313,7 @@ def test_api_only_cors_tracks_published_public_url():
 
 
 def test_run_server_exports_secure_env_for_cors():
-    # run_server must export UNSLOTH_SECURE before importing main so the CORS
-    # profile can tell remote secure serving from local Tauri use.
+    # run_server exports UNSLOTH_SECURE before importing main so CORS can tell remote secure from local Tauri.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert 'os.environ["UNSLOTH_SECURE"] = "1"' in src
     assert "set_studio_tunnel_runtime_callback(set_remote_connector_active)" in src
@@ -339,8 +322,7 @@ def test_run_server_exports_secure_env_for_cors():
 
 
 def test_run_server_emit_tauri_port_defaults_on():
-    # Default on keeps the desktop app's stdout contract; the headless
-    # `run --api-only` path opts out explicitly.
+    # Default on keeps the desktop app's stdout contract; the headless `run --api-only` path opts out explicitly.
     import inspect
 
     import run
@@ -351,15 +333,13 @@ def test_run_server_emit_tauri_port_defaults_on():
 
 
 def test_tauri_port_print_is_gated_in_source():
-    # The TAURI_PORT line must depend on emit_tauri_port, not api_only alone.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert "if api_only and emit_tauri_port:" in src
 
 
 def test_cors_preflight_cache_window_is_short():
-    # is_allowed_origin closes the instant the tunnel URL clears, but a preflight
-    # the browser already cached does not. Measured in WebKit: with Starlette's
-    # 600s default a state-changing request still reached the server after Stop.
+    # is_allowed_origin closes the instant the tunnel URL clears, but a cached preflight does not:
+    # measured in WebKit, with Starlette's 600s default a state-changing request survived Stop.
     from types import SimpleNamespace
 
     from starlette.datastructures import Headers

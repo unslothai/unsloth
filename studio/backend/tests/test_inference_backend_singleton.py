@@ -29,8 +29,8 @@ import core.inference.orchestrator as orch
 
 _ORCHESTRATOR_SRC = Path(orch.__file__)
 
-# Wide enough that every thread is inside the window before the first leaves it, small
-# enough to stay a unit test. The real window is ~2.9s.
+# Wide enough that every thread is inside the window before the first leaves it, small enough to
+# stay a unit test.
 _BUILD_SECONDS = 0.20
 _THREADS = 8
 
@@ -119,8 +119,8 @@ def test_warm_path_does_not_take_the_lock(fresh_singleton, stub_orchestrator):
 
     returned: list[object] = []
     with orch._inference_backend_lock:
-        # Lock held by this thread: a warm call from another must still return,
-        # which it can only do by skipping the lock.
+        # Lock held by this thread: a warm call from another must still return, which it can only do
+        # by skipping the lock.
         t = threading.Thread(target = lambda: returned.append(orch.get_inference_backend()))
         t.start()
         t.join(timeout = 10)

@@ -103,7 +103,7 @@ def test_forged_signature_is_rejected(rag_home, tmp_path):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"operation": "load-model"},  # a model grant cannot be spent as an attachment
+        {"operation": "load-model"},
         {"path_kind": "model"},
     ],
 )

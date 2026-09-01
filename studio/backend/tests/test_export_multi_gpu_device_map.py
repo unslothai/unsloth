@@ -39,7 +39,6 @@ def _stub_hardware(monkeypatch, visible, device_map):
     monkeypatch.setattr(hw, "get_device_map", lambda ids: device_map, raising = False)
 
 
-# ── _multi_gpu_device_map_kwargs ──
 
 
 def test_multi_gpu_host_gets_balanced(monkeypatch):
@@ -118,7 +117,6 @@ def test_hardware_probe_failure_keeps_loader_default(monkeypatch):
     assert mod._multi_gpu_device_map_kwargs() == {}
 
 
-# ── load_checkpoint forwards the kwargs to from_pretrained ──
 
 
 class _RecordingLoader:
@@ -210,7 +208,6 @@ def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter
     assert adapter_path.read_text(encoding = "utf-8") == original_adapter
 
 
-# ── a load that succeeds but offloads to CPU/disk ──
 
 
 def test_cpu_offloaded_modules_counts_cpu_and_disk(monkeypatch):
@@ -257,18 +254,18 @@ def _run_spill_loader(monkeypatch, tmp_path, device_map_kwargs):
 
 
 def test_successful_load_that_offloads_to_cpu_retries_single_device(monkeypatch, tmp_path):
-    # Nothing raises, so only hf_device_map catches it; otherwise the params stay on meta and kill the export.
+    # Nothing raises, so only hf_device_map catches it; otherwise the params stay on meta and kill
+    # the export.
     ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {"device_map": "balanced"})
     assert ok, message
     assert len(calls) == 2
     assert calls[0]["device_map"] == "balanced"
-    # Named, not omitted: an omitted map is unsloth's marked default, which is upgraded
-    # back to the planner rather than being the single-device load this retry wants.
+    # Named, not omitted: an omitted map is unsloth's marked default, which is upgraded back to the
+    # planner rather than being the single-device load this retry wants.
     assert calls[1]["device_map"] == "sequential"
 
 
 def test_single_gpu_offload_is_left_alone(monkeypatch, tmp_path):
-    # No multi-GPU map was requested, so there is nothing to retry on.
     ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {})
     assert ok, message
     assert len(calls) == 1
@@ -306,7 +303,6 @@ def test_retry_result_is_kept_even_if_it_also_offloads(monkeypatch, tmp_path):
     assert len(_AlwaysSpills.calls) == 2
 
 
-# ── the "unsloth" planner refusing to place the model ──
 
 
 def test_is_device_map_infeasible_matches_by_class_name(monkeypatch):
@@ -362,8 +358,8 @@ def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_pa
 
 
 def test_an_unrelated_error_is_still_reported_rather_than_retried(monkeypatch, tmp_path):
-    # The retry is for placement, not for every failure: a broken checkpoint must not
-    # be loaded twice and reported against the second attempt.
+    # The retry is for placement, not for every failure: a broken checkpoint must not be loaded
+    # twice and reported against the second attempt.
     mod = _export_mod(monkeypatch)
 
     class _AlwaysBroken:

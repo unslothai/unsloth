@@ -21,17 +21,13 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Stub heavy/unavailable deps before importing the module under test.
-# Mirrors test_llama_cpp_context_fit.py.
-# ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Prefer the real modules so importing this file first cannot poison later
-# test modules with stubs; only stub what the environment genuinely lacks.
+# Prefer the real modules so importing this file first cannot poison later test modules with stubs;
+# only stub what the environment genuinely lacks.
 try:
     import loggers  # noqa: F401
 except ImportError:
@@ -81,9 +77,6 @@ from core.inference.llama_cpp import LlamaCppBackend
 import core.inference.llama_cpp as llama_cpp_mod
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 class _FakeResponse:
@@ -106,8 +99,8 @@ def _make_backend(
 ):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._port = port
-    # __init__ always sets this; __new__ skips it, and the readback reads it via
-    # _auth_headers to authenticate against a --api-key child server.
+    # __init__ always sets this; __new__ skips it, and the readback reads it via _auth_headers to
+    # authenticate against a --api-key child server.
     inst._api_key = api_key
     inst._effective_context_length = effective_ctx
     inst._context_length = 262144
@@ -132,9 +125,9 @@ def _stub_props(
         assert url.endswith("/props")
 
         assert trust_env is False
-        # /props sits behind llama-server's api-key middleware, so a direct-stream
-        # child must be addressed with the bearer token; without one the header
-        # stays absent rather than becoming a bogus "Bearer None".
+        # /props sits behind llama-server's api-key middleware, so a direct-stream child must be
+        # addressed with the bearer token; without one the header stays absent, not a bogus "Bearer
+        # None".
         assert headers is None or headers == {"Authorization": "Bearer test-key"}
         if exc is not None:
             raise exc
@@ -143,9 +136,7 @@ def _stub_props(
     monkeypatch.setattr(llama_cpp_mod.httpx, "get", fake_get, raising = False)
 
 
-# ---------------------------------------------------------------------------
 # _query_server_n_ctx parsing
-# ---------------------------------------------------------------------------
 
 
 def test_query_n_ctx_reads_default_generation_settings(monkeypatch):
@@ -171,9 +162,7 @@ def test_query_n_ctx_swallows_transport_errors(monkeypatch):
     assert _make_backend()._query_server_n_ctx() is None
 
 
-# ---------------------------------------------------------------------------
 # _reconcile_effective_ctx_with_server decisions
-# ---------------------------------------------------------------------------
 
 
 def test_fit_shrunk_ctx_overwrites_advertised_value(monkeypatch):
@@ -306,9 +295,7 @@ def test_props_failure_keeps_studio_value(monkeypatch):
     assert inst._effective_context_length == 98304
 
 
-# ---------------------------------------------------------------------------
 # _ctx_integrity_flags: keep the per-request window equal to the advertised ctx
-# ---------------------------------------------------------------------------
 
 _CAPS_ALL = {"supports_kv_unified": True, "supports_fit_ctx": True}
 _CAPS_NONE = {"supports_kv_unified": False, "supports_fit_ctx": False}
@@ -332,14 +319,13 @@ def test_kv_unified_skipped_for_single_slot_or_old_build():
 
 
 def test_fit_ctx_floors_explicit_request_under_fit():
-    # An explicit requested ctx floors --fit-ctx at that value on any --fit
-    # path, including legacy auto (auto_fit False).
+    # An explicit requested ctx floors --fit-ctx at that value on any --fit path, including legacy
+    # auto (auto_fit False).
     flags = LlamaCppBackend._ctx_integrity_flags(1, True, False, 98304, 98304, _CAPS_ALL)
     assert flags[flags.index("--fit-ctx") + 1] == "98304"
 
 
 def test_fit_ctx_skipped_without_fit_or_support():
-    # No --fit on -> no --fit-ctx.
     assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
         1, False, False, 98304, 98304, _CAPS_ALL
     )
@@ -350,12 +336,11 @@ def test_fit_ctx_skipped_without_fit_or_support():
 
 
 def test_fit_ctx_floors_auto_request_at_8192_only_under_auto_fit():
-    # Manual + Auto (auto_fit) floors the auto window at 8192 so --fit can't
-    # shrink it to a tiny size.
+    # Manual + Auto (auto_fit) floors the auto window at 8192 so --fit cannot shrink it to a tiny size.
     flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 262144, _CAPS_ALL)
     assert flags[flags.index("--fit-ctx") + 1] == "8192"
-    # Legacy auto (fit on but not auto_fit) emits -c 0 to pin native, so the
-    # 8192 floor must NOT ride along and override that pin.
+    # Legacy auto (fit on but not auto_fit) emits -c 0 to pin native, so the 8192 floor must NOT
+    # ride along and override that pin.
     assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
         1, True, False, 0, 262144, _CAPS_ALL
     )

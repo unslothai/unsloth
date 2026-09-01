@@ -122,7 +122,6 @@ def test_a_4bit_run_declares_that_the_latest_sidecar_would_strand_it(tmp_path):
     assert "require_exact_model_resource" not in persisted
 
     assert exact_resume_requires_current_4bit(persisted) is True
-    # And the refusal it is predicting, from the flags routes/training.py rebuilds.
     with patch("utils.transformers_version.latest_tier_active_for", return_value = True):
         with pytest.raises(ExactResumeResourcesUnavailable):
             effective_training_load_in_4bit(
@@ -137,7 +136,6 @@ def test_a_16bit_run_has_no_4bit_load_mode_to_lose(tmp_path):
 
 
 def test_an_unresumable_provenance_is_not_made_worse_by_the_install(tmp_path):
-    # Already refused, so there is no working resume for the install to take away.
     config, event, _model, _dataset = _complete_event(tmp_path, load_in_4bit = True)
     persisted = {**config, **normalize_worker_provenance_event(event, config)}
     persisted[RESOURCE_PROVENANCE_KEY] = {

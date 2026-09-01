@@ -22,9 +22,8 @@ from core.inference.generation_timing import (
 from core.inference.presence_penalty import _make_presence_penalty_processor
 
 try:
-    # core.inference.inference imports unsloth at module scope, which requires
-    # unsloth_zoo. The dependency-light backend CI matrix job does not install it,
-    # so the _record_generation_stats check runs only when the stack is importable.
+    # core.inference.inference imports unsloth at module scope, which requires unsloth_zoo, and the
+    # dependency-light backend CI job does not install it.
     from core.inference.inference import InferenceBackend
 except ImportError:
     InferenceBackend = None

@@ -100,7 +100,7 @@ def test_non_wav_response_format_is_400(monkeypatch):
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
     assert resp.status_code == 400
     assert "mp3" in resp.json()["error"]["message"]
-    assert calls == []  # rejected before any generation
+    assert calls == []
 
 
 def test_null_response_format_means_wav(monkeypatch):
@@ -174,8 +174,8 @@ def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
     budget = routes_module._tts_max_new_tokens(payload, text)
 
     assert budget < 2048
-    # Minus the codec wrapper too: the backends generate from a formatted prompt, not the
-    # raw text, so budgeting the whole remainder left the few delimiter tokens to overflow.
+    # Minus the codec wrapper too: the backends generate from a formatted prompt, so budgeting the
+    # whole remainder left the few delimiter tokens to overflow.
     assert budget == (
         2048 - routes_module._prompt_token_estimate(text) - routes_module._TTS_PROMPT_FORMAT_RESERVE
     )
@@ -193,7 +193,6 @@ def test_an_over_context_prompt_is_a_client_error(monkeypatch):
 
     assert excinfo.value.status_code == 400
     assert "too long" in str(excinfo.value.detail).lower()
-    # A normal line is untouched.
     routes_module._raise_if_prompt_leaves_no_speech_budget("A short line.")
 
 
@@ -244,7 +243,6 @@ def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatc
 
     remaining = {clip["id"] for clip in gallery.list_audio()}
     assert len(remaining) == 3
-    # Newest kept, oldest dropped.
     assert set(ids[-3:]) == remaining
 
 
@@ -305,7 +303,6 @@ def test_unreachable_subprocess_tokenizers_use_a_conservative_byte_budget():
         assert estimate(text) == len(text.encode("utf-8"))
 
 
-# ── External connection proxying (provider_id) ───────────────────
 
 
 def _install_external(
@@ -365,8 +362,8 @@ def test_provider_id_routes_to_external_endpoint(monkeypatch):
     assert resp.status_code == 200
     assert resp.content == b"external-audio"
     assert resp.headers["content-type"].startswith("audio/wav")
-    assert calls == []  # the local TTS core never runs
-    assert saved == []  # external clips skip the gallery
+    assert calls == []
+    assert saved == []
     assert created[0]["base_url"] == "http://tts.local:8880/v1"
     assert created[0]["provider_type"] == "custom"
     assert speech_calls[0]["model"] == "kokoro"
@@ -886,8 +883,8 @@ def test_external_rejects_a_cross_process_provider_edit_after_resolving_its_key(
         "display_name": "New TTS",
         "base_url": "http://new-tts.local:8880/v1",
     }
-    # A second process is not covered by provider_config_guard. It can update
-    # the row and then the secret while this process is resolving that secret.
+    # A second process is not covered by provider_config_guard: it can update the row and then the
+    # secret while this process is resolving that secret.
     snapshots = iter((old_config, old_config, new_config))
     monkeypatch.setattr(routes_module.providers_db, "get_provider", lambda _pid: next(snapshots))
     monkeypatch.setattr(routes_module, "validate_provider_base_url", lambda url: url)

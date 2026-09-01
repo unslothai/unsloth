@@ -120,8 +120,7 @@ def test_missing_file_is_rejected(monkeypatch):
 
 
 def test_sidecar_errors_keep_their_status(monkeypatch):
-    # The shared error mapping (SttModelIdError -> 422, empty audio -> 400, ...) sits inside
-    # _transcribe_audio_result; the route must not swallow or rewrap what it raises.
+    # The shared error mapping sits inside _transcribe_audio_result; the route must not rewrap it.
     async def _bad_model(raw):
         raise HTTPException(status_code = 422, detail = "Unknown STT model id.")
 
@@ -203,7 +202,6 @@ def test_verbose_json_without_a_language_is_refused_before_any_work(monkeypatch)
 
 
 def test_verbose_json_works_when_the_caller_supplies_a_language(monkeypatch):
-    # Echoing a language the caller named is correct, so this half of verbose_json works.
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli, data = {"response_format": "verbose_json", "language": "en"})
     assert resp.status_code == 200
@@ -294,7 +292,6 @@ def test_sidecar_failure_records_an_error_row(monkeypatch):
 
 
 def test_client_abort_records_a_cancelled_row(monkeypatch):
-    # SttTranscriptionCancelledError surfaces as a 499, so the row is a cancellation.
     async def _cancelled(raw):
         raise HTTPException(status_code = 499, detail = "Transcription cancelled")
 
@@ -382,7 +379,6 @@ def test_a_non_http_failure_records_a_friendly_error_row(monkeypatch):
 
 
 def test_the_monitor_label_never_carries_a_local_path(monkeypatch):
-    # Sidecar ids are curated or owner/model today; the row still goes over the tunnel.
     async def _pathy(raw):
         return {
             "text": "t",
@@ -789,7 +785,6 @@ def test_external_transcription_reply_preview_for_plain_text(monkeypatch):
 
 
 def test_external_transcription_failure_records_an_error_row(monkeypatch):
-    # A disabled connection is rejected before the proxy call; the row still closes.
     cli, sidecar_calls = _make_client(monkeypatch)
     _install_external(monkeypatch, enabled = False)
     api_monitor.clear()
@@ -805,8 +800,8 @@ def test_external_transcription_failure_records_an_error_row(monkeypatch):
 
 
 def test_external_reply_preview_handles_an_uppercase_json_media_type(monkeypatch):
-    # Content-Type is case-insensitive, so Application/JSON is still a JSON envelope and
-    # the row should show the transcript, not the whole {"text": ...} wrapper.
+    # Content-Type is case-insensitive, so Application/JSON is still a JSON envelope and the row
+    # should show the transcript, not the wrapper.
     cli, sidecar_calls = _make_client(monkeypatch)
     _install_external(monkeypatch, media_type = "Application/JSON")
     api_monitor.clear()
@@ -819,8 +814,8 @@ def test_external_reply_preview_handles_an_uppercase_json_media_type(monkeypatch
 
 
 def test_timestamp_granularities_reach_a_capable_provider(monkeypatch):
-    # The sidecar cannot produce timings, but a saved connection may, so the proxied arm
-    # forwards the parameter instead of dropping it.
+    # The sidecar cannot produce timings, but a saved connection may, so the proxied arm forwards
+    # the parameter instead of dropping it.
     cli, sidecar_calls = _make_client(monkeypatch)
     _client_args, transcription_calls, _creds = _install_external(monkeypatch)
     resp = _post(
@@ -908,5 +903,4 @@ def test_the_proxied_row_never_carries_a_local_path(monkeypatch):
     assert resp.status_code == 200
     row = api_monitor.snapshot(include_details = False)[0]
     assert row["model"] == "whisper-v3"
-    # Only the label is redacted; the provider is still asked for what the client sent.
     assert transcription_calls[-1]["model"] == "/home/ana/models/whisper-v3"

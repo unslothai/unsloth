@@ -85,18 +85,13 @@ def _run_case(tmp_path: Path, mode: str) -> bool:
         payload_pid = int(pidfile.read_text().strip())
         assert _alive(payload_pid)
 
-        # Hard kill, no tree flag: exactly what "End Task" / a crash does.
         if IS_WINDOWS:
             subprocess.run(["taskkill", "/PID", str(parent.pid), "/F"], capture_output = True)
         else:
             os.kill(parent.pid, 9)
         parent.wait(timeout = 30)
-        # Poll the 5s reaping grace out instead of sleeping through it. The verdict
-        # is identical -- "still alive after 5s" is still "survived" -- but where the
-        # payload does die (Linux PR_SET_PDEATHSIG) it dies in milliseconds, so the
-        # answer is available long before the window ends. Only the platforms that
-        # genuinely leak the payload now pay the full 5s, and they are the ones the
-        # window was written for.
+        # Poll the 5s reaping grace out instead of sleeping through it: where the payload does die
+        # (Linux PR_SET_PDEATHSIG) it dies in milliseconds, so only the leaking platforms pay it.
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and _alive(payload_pid):
             time.sleep(0.05)

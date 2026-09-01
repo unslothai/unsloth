@@ -48,7 +48,6 @@ def test_set_and_read_back_each_flag(gdir):
 
 def test_none_leaves_the_other_flag_alone(gdir):
     flags.set_flags(gdir, "a", pinned = True, archived = True)
-    # Patch only `archived`; the pin must survive.
     assert flags.set_flags(gdir, "a", archived = False) == {"pinned": True, "archived": False}
 
 
@@ -80,7 +79,6 @@ def test_a_coarse_clock_still_orders_two_pins(gdir, monkeypatch):
     items = flags.read(gdir)
     ranks = [flags.pin_rank(items, i) for i in ("first", "second", "third")]
     assert ranks[0] < ranks[1] < ranks[2], ranks
-    # Re-pinning an already pinned id still moves it to the front of the group.
     flags.set_flags(gdir, "first", pinned = True)
     items = flags.read(gdir)
     assert flags.pin_rank(items, "first") > flags.pin_rank(items, "third")
@@ -171,7 +169,6 @@ def test_set_flags_raises_when_the_store_cannot_be_written(gdir, monkeypatch):
     monkeypatch.setattr(flags.os, "replace", _boom)
     with pytest.raises(OSError):
         flags.set_flags(gdir, "a", pinned = True)
-    # The failed write leaves no temp behind.
     assert [p.name for p in gdir.iterdir() if p.name.startswith(".flags.json.tmp")] == []
 
 
@@ -193,12 +190,13 @@ def test_a_corrupt_store_is_replaced_rather_than_blocking_new_flags(gdir):
 
 def test_a_store_rebuilt_from_illegible_contents_stays_untrusted(gdir):
     # The write must not be blocked, but the file it leaves is not evidence: the old contents were
-    # never read. Trusting it let an unrelated pin hand every archived image to the next clear().
+    # never read.
     _store(gdir).write_text("[]", encoding = "utf-8")
     flags.set_flags(gdir, "a", archived = True)
     with pytest.raises(flags.FlagsUnavailable):
         flags.read_trusted(gdir)
-    # And it stays that way across further writes, rather than being laundered clean by the next one.
+    # And it stays that way across further writes, rather than being laundered clean by the next
+    # one.
     flags.set_flags(gdir, "b", pinned = True)
     with pytest.raises(flags.FlagsUnavailable):
         flags.read_trusted(gdir)
@@ -218,8 +216,8 @@ def test_a_malformed_entry_taints_the_whole_store_for_trusted_reads(gdir):
 
 
 def test_exclusive_serializes_against_set_flags(gdir):
-    # clear() decides from a snapshot then unlinks; an archive landing in that window must wait,
-    # not slip in and leave the file deleted after its PATCH reported success.
+    # clear() decides from a snapshot then unlinks; an archive landing in that window must wait, not
+    # slip in and leave the file deleted after its PATCH reported success.
     import threading
 
     started = threading.Event()
@@ -242,8 +240,8 @@ def test_exclusive_serializes_against_set_flags(gdir):
 
 
 def test_forget_locked_does_not_deadlock_inside_exclusive(gdir):
-    # The cross-process lock is per descriptor, so a nested forget() would block on the lock its
-    # own caller holds. clear() uses forget_locked for exactly this reason.
+    # The cross-process lock is per descriptor, so a nested forget() would block on the lock its own
+    # caller holds; clear() uses forget_locked for exactly this reason.
     flags.set_flags(gdir, "a", pinned = True)
     with flags.exclusive(gdir):
         flags.forget_locked(gdir, ["a"])
@@ -287,10 +285,8 @@ def test_a_write_repairs_a_store_with_a_malformed_entry(gdir):
         encoding = "utf-8",
     )
     flags.set_flags(gdir, "new", pinned = True)
-    # Trusted again, so a default clear is no longer blocked.
     items = flags.read_trusted(gdir)
     assert set(items) == {"good", "bad", "new"}
-    # The readable flags survived the repair.
     assert flags.is_archived(items, "good") is True
     assert flags.flags_for(items, "new")["pinned"] is True
     # The unreadable one is kept on the archive shelf rather than handed to the next clear().
@@ -330,7 +326,7 @@ def test_a_write_repairs_a_bad_field_without_dropping_the_archive(gdir):
 
 def test_a_write_never_repairs_an_archive_into_an_active_item(gdir):
     # Dropping the unreadable flag would leave the store trusted and the item active, so the next
-    # default clear() would delete a file that was on the archive shelf. Resolve it the safe way.
+    # default clear() would delete a file that was on the archive shelf.
     _store(gdir).write_text(
         json.dumps({"version": 1, "items": {"a": {"archived": None}}}), encoding = "utf-8"
     )
@@ -359,11 +355,7 @@ def test_archived_false_is_a_shape_we_write_and_stays_trusted(gdir):
 
 
 def test_a_filesystem_that_cannot_lock_still_completes_the_write(gdir, monkeypatch):
-    # Some network filesystems refuse to lock. Acquisition already tolerated that, but the matching
-    # unlock did not, so the store was written and the call still raised, failing a PATCH whose
-    # work had landed (and, through clear(), one that had already deleted files).
-    # Whichever primitive this platform uses: fcntl does not exist on Windows, and importing it
-    # unconditionally failed the test there rather than exercising the branch that runs.
+    # Some network filesystems refuse to lock.
     if os.name == "nt":
         import msvcrt as locking
         primitive = "locking"

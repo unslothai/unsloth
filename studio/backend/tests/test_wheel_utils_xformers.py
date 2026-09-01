@@ -240,10 +240,7 @@ def test_every_url_the_matrix_can_produce_is_live(platform_tag):
             with urllib.request.urlopen(urllib.request.Request(url, method = "HEAD"), timeout = 30):
                 pass
         except urllib.error.HTTPError as exc:
-            # Only a 404 says the matrix row names a wheel that does not exist. A 403 / 429
-            # / 5xx is the CDN having a moment, and failing the suite on one turns a
-            # correct matrix into a red build whenever download.pytorch.org rate-limits the
-            # 14-request sweep -- the opposite of this test's stated contract.
+            # Only a 404 says the row names a missing wheel; a 403 / 429 / 5xx is the CDN and would red the build.
             if exc.code == 404:
                 dead.append(f"{exc.code} {url}")
             else:
@@ -298,9 +295,7 @@ class TestStableAbiPatchReleases:
 
 class TestPytorchMirror:
     def test_the_wheel_url_follows_the_configured_mirror(self, monkeypatch):
-        # An air-gapped install has one lever, UNSLOTH_PYTORCH_MIRROR, and the rest of the
-        # installer stack already honours it. A hard-coded download.pytorch.org here was the
-        # one path that could not reach a mirror-only host.
+        # An air-gapped install has one lever, UNSLOTH_PYTORCH_MIRROR, and a hard-coded host could not reach a mirror.
         monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/pytorch/whl/")
         url = wheel_utils.xformers_wheel_url(_env())
         assert url is not None
@@ -322,7 +317,6 @@ class TestPytorchMirror:
             wheel_utils.join_wheel_url("https://m/whl#frag", "cu130/x.whl")
             == "https://m/whl/cu130/x.whl#frag"
         )
-        # And the ordinary case is unchanged, trailing slash or not.
         assert wheel_utils.join_wheel_url("https://m/whl/", "cu130/x.whl") == (
             "https://m/whl/cu130/x.whl"
         )

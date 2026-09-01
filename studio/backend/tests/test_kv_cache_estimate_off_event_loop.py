@@ -23,8 +23,8 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-# Installs the process-wide loggers/structlog/httpx stubs, so this module can be
-# run on its own rather than only after something else has imported them.
+# Installs the process-wide loggers/structlog/httpx stubs, so this module can be run on its own
+# rather than only after something else has imported them.
 import test_kv_cache_estimation  # noqa: F401,E402
 
 import routes.models as models_routes  # noqa: E402
@@ -58,9 +58,8 @@ def test_the_estimate_does_not_stall_other_requests(monkeypatch, tmp_path):
 
         beat = asyncio.create_task(heartbeat())
         await asyncio.sleep(heartbeat_seconds * 5)
-        # Ticks recorded strictly between the call and its return: a gap measured
-        # over the whole list cannot separate the two versions, because the stall
-        # leaves no gap in the list at all.
+        # Ticks recorded strictly between the call and its return: a gap measured over the whole
+        # list cannot separate the two versions, because the stall leaves no gap in the list at all.
         before = len(ticks)
         result = await models_routes.get_kv_cache_estimate(
             repo_id = "org/repo",
@@ -84,6 +83,6 @@ def test_the_estimate_does_not_stall_other_requests(monkeypatch, tmp_path):
 
     asyncio.run(_drive())
 
-    # A loaded runner lands well below the ~30 an idle one records; blocking
-    # records exactly 0, so the floor is loose and still separates the two.
+    # A loaded runner lands well below the ~30 an idle one records; blocking records exactly 0, so
+    # the floor is loose and still separates the two.
     assert during[0] >= 3, f"heartbeat ran {during[0]} times during a {resolve_seconds}s estimate"

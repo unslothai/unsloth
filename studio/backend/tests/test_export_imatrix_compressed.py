@@ -32,7 +32,6 @@ def _func_src(rel, name):
     return ast.get_source_segment(src, node)
 
 
-# -- schema -------------------------------------------------------------------------------------
 
 
 def test_gguf_request_imatrix_defaults_and_set():
@@ -58,7 +57,6 @@ def test_merged_request_rejects_unknown_format():
         ExportMergedModelRequest(save_directory = "/tmp/x", format_type = "bogus")
 
 
-# -- threading (ast) ----------------------------------------------------------------------------
 
 
 def test_export_gguf_threads_imatrix_to_save_and_push():
@@ -73,7 +71,6 @@ def test_export_gguf_threads_imatrix_to_save_and_push():
 
 def test_export_gguf_guards_unsupported_imatrix_build():
     # A build that cannot apply an imatrix gets a clean error, not a TypeError or a silent drop.
-    # The kwarg probe is not enough here: the MLX binding takes **kwargs and filters them.
     g = _func_src("core/export/export.py", "export_gguf")
     assert "_imatrix_export_supported(" in g
 
@@ -130,7 +127,6 @@ def test_compressed_hub_push_uploads_local_dir_without_recompressing():
     assert "hf_api.upload_folder(" in m and "folder_path = output_path" in m
 
 
-# -- torchao portable FP8/INT8 (device-agnostic, no NVIDIA GPU) ---------------------------------
 
 
 def test_merged_request_accepts_torchao_aliases():
@@ -142,13 +138,11 @@ def test_merged_request_accepts_torchao_aliases():
 
 def test_export_merged_routes_torchao_and_skips_nvidia_guard():
     m = _func_src("core/export/export.py", "export_merged_model")
-    # torchao is classified separately and its suffix comes from the torchao normalizer.
     assert "_normalize_torchao_method(compressed_alias)" in m
     assert "is_torchao = torchao_info is not None" in m
     assert "is_compressed = compressed_alias is not None and not is_torchao" in m
     # The NVIDIA guard applies to compressed-tensors only, not torchao.
     assert "_has_nvidia_gpu()" in m
-    # torchao routes through save_method just like compressed.
     assert "elif is_compressed or is_torchao:" in m
 
 
@@ -174,7 +168,6 @@ def test_unsloth_save_has_torchao_registry_and_path():
     assert "def _normalize_torchao_method" in save_py
     assert "def _unsloth_save_torchao" in save_py
     assert "TORCHAO_EXPORT_SCHEMES = {" in save_py
-    # torchao aliases must map to (scheme, suffix) so the backend routes to the torchao path.
     assert '"torchao_fp8": ("fp8", "torchao-fp8")' in save_py
     assert '"torchao_int8": ("int8", "torchao-int8")' in save_py
 
@@ -209,7 +202,6 @@ def test_gguf_export_request_falls_back_to_the_load_token():
     assert "hf_token: params.token ?? params.loadToken ?? null," in gguf
 
 
-# -- GGUF multi-quant list ----------------------------------------------------------------------
 
 
 def test_gguf_request_accepts_list_of_quants():
@@ -225,7 +217,6 @@ def test_export_gguf_normalizes_quant_list():
     assert "quant_methods" in g
 
 
-# -- GGUF LoRA adapter export -------------------------------------------------------------------
 
 
 def test_lora_request_has_gguf_fields():
@@ -262,7 +253,6 @@ def test_route_passes_lora_gguf():
     assert "gguf = request.gguf" in r and "gguf_outtype = request.gguf_outtype" in r
 
 
-# -- compressed_method ("all formats" dropdown) -------------------------------------------------
 
 
 def test_merged_request_accepts_compressed_method():

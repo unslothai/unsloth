@@ -58,7 +58,6 @@ def test_is_same_origin_request_port_mismatch_is_cross_origin():
     assert _is_same_origin_request(req) is False
 
 
-# ── Canonicalisation: default-port stripping + case folding ─────────
 
 
 def test_is_same_origin_request_https_default_port_stripped_on_origin():

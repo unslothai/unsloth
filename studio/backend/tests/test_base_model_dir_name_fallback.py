@@ -18,9 +18,6 @@ import types
 
 import pytest
 
-# Keep this runnable where optional logging deps are absent. Probe the installed distribution,
-# not sys.modules: structlog is a real dependency, and stubbing it merely because nothing has
-# imported it yet would replace the package for every test collected afterwards.
 if importlib.util.find_spec("structlog") is None:  # pragma: no cover - minimal environments
 
     class _DummyLogger:
@@ -45,35 +42,29 @@ from utils.training_runs import (  # noqa: E402
 @pytest.mark.parametrize(
     "dir_name,expected",
     [
-        # The shape the heuristic is written for.
         ("unsloth_Qwen3-8B_1771227800", "unsloth/Qwen3-8B"),
-        # A hand-made or foreign folder may carry a date-time stamp instead of an epoch.
         ("unsloth_Qwen3-8B_20260101-120000", "unsloth/Qwen3-8B"),
         ("unsloth_Qwen3-8B_20260101", "unsloth/Qwen3-8B"),
-        # Underscores inside the model name survive the round trip.
         ("unsloth_llama_3_8b_1771227800", "unsloth/llama_3_8b"),
         # No model segment between the prefix and the timestamp: the originally reported bug.
         ("unsloth_Qwen3-8B", None),
         ("unsloth_", None),
         ("unsloth", None),
         ("unsloth__1771227800", None),
-        # A doubled separator means the name really does start with '_', which HF allows.
-        # Stripping it would resolve a different, equally valid repo.
+        # A doubled separator means the name really does start with '_', which HF allows; stripping
+        # it would resolve a different, equally valid repo.
         ("unsloth__Qwen3-8B_1771227800", "unsloth/_Qwen3-8B"),
-        # The project suffix is not part of the model name.
         ("unsloth_Qwen3-8B__project-demo_1771227800", "unsloth/Qwen3-8B"),
         # ...and a name containing the marker is escaped by the generator.
         ("unsloth_x__project--y_1771227800", "unsloth/x__project-y"),
-        # A non-timestamp tail belongs to the model name, so the whole name is unparseable
-        # rather than truncated. Truncating gave 'unsloth/llama_3' -- valid, but nonexistent.
+        # A non-timestamp tail belongs to the model name, so the whole name is unparseable rather
+        # than truncated ('unsloth/llama_3' is valid but nonexistent).
         ("unsloth_llama_3_8b", None),
         ("unsloth_gpt_oss_20b", None),
         ("unsloth_Qwen3-8B_final", None),
         ("unsloth_Qwen3-8B_v2", None),
         ("unsloth_Qwen3-8B_checkpoint-500", None),
-        # A model name that is itself all digits still round-trips.
         ("unsloth_20260101_1771227800", "unsloth/20260101"),
-        # Not ours: leave it to the caller's "could not detect" path.
         ("my-finetune_1771227800", None),
         ("meta-llama_Llama-3.1-8B_1771227800", None),
         ("Unsloth_Qwen3-8B_1771227800", None),
@@ -190,7 +181,6 @@ def test_the_transcribed_repo_id_rule_is_never_looser_than_the_hubs():
 
 def _write_adapter(directory):
     directory.mkdir(parents = True)
-    # No base_model_name_or_path, so detection has to fall through to the directory name.
     (directory / "adapter_config.json").write_text(json.dumps({}), encoding = "utf-8")
     (directory / "adapter_model.safetensors").write_bytes(b"")
 
@@ -243,9 +233,9 @@ def test_a_trailing_separator_does_not_change_the_answer(tmp_path):
     assert get_base_model_from_lora(str(adapter) + "/") == "unsloth/Qwen3-8B"
 
 
-# --- the two resolvers in utils.transformers_version ---------------------------------------
-# _resolve_base_model is reached *through* get_base_model_from_lora, so while it kept its own
-# copy of the parse it rebuilt the bogus id one branch after the fixed function returned None.
+# _resolve_base_model is reached *through* get_base_model_from_lora, so while it kept its own copy
+# of the parse it rebuilt the bogus id one branch after the fixed function returned None. copy of
+# the parse it rebuilt the bogus id one branch after the fixed function returned None.
 
 
 def test_the_transformers_resolvers_agree_with_the_model_config_one(tmp_path):

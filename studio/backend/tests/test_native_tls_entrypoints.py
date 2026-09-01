@@ -30,9 +30,8 @@ _ENTRYPOINTS = [
     "core/data_recipe/jobs/worker.py",
 ]
 
-# `python -c` children carry the gate as source. Read the assembled script off
-# the module: it is concatenated, so scraping AST literals would miss the
-# generated part.
+# `python -c` children carry the gate as source; read the assembled script off the module, since
+# it is concatenated and scraping AST literals would miss the generated part.
 _PROBE_SCRIPTS = [
     ("utils.transformers_version", "_PROBE_CONFIG_SCRIPT"),
     ("utils.models.model_config", "_VISION_CHECK_SCRIPT"),
@@ -66,8 +65,7 @@ def test_entrypoint_activates_native_tls_at_module_level(relative):
 @pytest.mark.parametrize(("module", "attr"), _PROBE_SCRIPTS)
 def test_probe_script_activates_before_it_downloads(module, attr):
     script = getattr(importlib.import_module(module), attr)
-    ast.parse(script)  # it is real source; a paste error only shows up in the child
-    # The shared helper, or the generated gate, which honours the opt-out itself.
+    ast.parse(script)
     activate = max(script.find("activate_native_tls"), script.find("inject_into_ssl"))
     assert activate != -1, f"{attr} lost its native TLS activation"
     if "inject_into_ssl" in script:

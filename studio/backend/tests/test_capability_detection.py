@@ -54,7 +54,6 @@ def _write_model_dir(
     return str(tmp_path)
 
 
-# load_model_config default
 class TestLoadModelConfigDefault:
     @patch("transformers.AutoConfig.from_pretrained")
     def test_default_off_with_token(self, fp):
@@ -81,20 +80,17 @@ class TestLoadModelConfigDefault:
         assert fp.call_args.kwargs["trust_remote_code"] is True
 
 
-# subprocess script literal
 def test_vision_check_script_disables_remote_code():
     assert '"trust_remote_code": False' in _VISION_CHECK_SCRIPT
     assert '"trust_remote_code": True' not in _VISION_CHECK_SCRIPT
 
 
-# _is_vlm matrix (pure function, registry-backed)
 def _cfg(**kw):
     return SimpleNamespace(**kw)
 
 
 class TestIsVlm:
     def test_deepseek_ocr_vision_via_vision_config(self):
-        # auto_map repo-code model; vision-ness is declarative.
         c = _cfg(
             model_type = "deepseek_vl_v2",
             architectures = ["DeepseekOCRForCausalLM"],
@@ -125,7 +121,6 @@ class TestIsVlm:
         assert _is_vlm(c) is True
 
     def test_t5_not_misclassified_as_vision(self):
-        # Regression: ForConditionalGeneration must NOT be a vision signal.
         c = _cfg(model_type = "t5", architectures = ["T5ForConditionalGeneration"])
         assert _is_vlm(c) is False
 
@@ -142,25 +137,21 @@ class TestIsVlm:
         assert _is_vlm(c) is False
 
     def test_native_vlm_via_registry_model_type(self):
-        # llava is in the transformers vision registry.
         assert "llava" in _VLM_MODEL_TYPES
         c = _cfg(model_type = "llava", architectures = ["LlavaForConditionalGeneration"])
         assert _is_vlm(c) is True
 
     def test_native_vlm_via_registry_class_name(self):
-        # Class-name match works even if model_type were unknown.
         cls = next(iter(_VLM_CLASS_NAMES))
         c = _cfg(model_type = "something_unlisted", architectures = [cls])
         assert _is_vlm(c) is True
 
     def test_omni_audio_plus_vision_is_vision(self):
-        # An audio-registry model_type with an explicit vision sub-config is still vision.
         audio_mt = next(iter(_AUDIO_ONLY_MODEL_TYPES - _VLM_MODEL_TYPES))
         c = _cfg(model_type = audio_mt, architectures = ["X"], vision_config = {})
         assert _is_vlm(c) is True
 
 
-# _raw_config_has_vision_config (code-free reader, mocked HF download)
 def _mock_raw_config(tmp_path, payload):
     p = tmp_path / "config.json"
     p.write_text(json.dumps(payload))
@@ -216,7 +207,6 @@ class TestRawConfigVisionReader:
             assert _raw_config_has_vision_config("org/model") is expected
 
     def test_reader_never_executes_remote_code(self, tmp_path):
-        # Even with auto_map present, the reader only parses JSON: no AutoConfig touched.
         cfg_path = _mock_raw_config(
             tmp_path,
             {
@@ -237,7 +227,6 @@ class TestRawConfigVisionReader:
             assert _raw_config_has_vision_config("org/deepseek-ocr") is True
 
 
-# Probes: model-details + GPU estimate never execute remote code
 def test_gpu_estimate_probe_is_code_free():
     from utils.hardware import hardware
 
@@ -260,8 +249,8 @@ def test_gpu_estimate_probe_is_code_free():
 
 
 def test_models_route_source_has_no_remote_code_probe():
-    # The metadata probe must never build a trust_remote_code=True loader; referencing
-    # the static consent scanner or the requires_trust_remote_code flag is fine.
+    # The metadata probe must never build a trust_remote_code=True loader; referencing the static
+    # consent scanner or the requires_trust_remote_code flag is fine.
     import inspect
     import routes.models as models_route
 
@@ -270,9 +259,7 @@ def test_models_route_source_has_no_remote_code_probe():
     assert "trust_remote_code=True" not in src
 
 
-# Adversarial end-to-end: is_vision_model + the two metadata probes never run auto_map.
 def test_no_code_execution_on_detection(tmp_path):
-    # A malicious local auto_map -> modeling_evil must not execute through any probe.
     cfg = {
         "model_type": "deepseek_vl_v2",
         "architectures": ["DeepseekOCRForCausalLM"],
@@ -294,7 +281,7 @@ def test_no_code_execution_on_detection(tmp_path):
     raw = _load_config_json(path)
 
     assert not sentinel.exists(), "SECURITY FAILURE: auto_map code executed during detection"
-    assert result is True  # detected as vision via raw vision_config, no exec
+    assert result is True
     assert ns is not None and getattr(ns, "max_position_embeddings", None) == 4096
     assert raw is not None and raw.get("model_type") == "deepseek_vl_v2"
 
@@ -302,7 +289,6 @@ def test_no_code_execution_on_detection(tmp_path):
 @pytest.mark.parametrize(
     "cfg, expected",
     [
-        # repo-code VLMs (auto_map) detected via declarative vision_config
         (
             {
                 "model_type": "deepseek_vl_v2",
@@ -321,7 +307,6 @@ def test_no_code_execution_on_detection(tmp_path):
             },
             True,
         ),
-        # newer-native vision via vision_config
         (
             {
                 "model_type": "gemma4_unified",
@@ -331,13 +316,11 @@ def test_no_code_execution_on_detection(tmp_path):
             },
             True,
         ),
-        # text / seq2seq / audio that share the ForConditionalGeneration suffix
         ({"model_type": "glm4_moe_lite", "architectures": ["Glm4MoeLiteForCausalLM"]}, False),
         ({"model_type": "t5", "architectures": ["T5ForConditionalGeneration"]}, False),
         ({"model_type": "bart", "architectures": ["BartForConditionalGeneration"]}, False),
         ({"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}, False),
         ({"model_type": "csm", "architectures": ["CsmForConditionalGeneration"]}, False),
-        # registry-native VLMs via model_type
         ({"model_type": "qwen2_vl", "architectures": ["Qwen2VLForConditionalGeneration"]}, True),
         ({"model_type": "llava", "architectures": ["LlavaForConditionalGeneration"]}, True),
     ],
@@ -348,7 +331,6 @@ def test_is_vision_model_end_to_end(tmp_path, cfg, expected):
 
 
 def test_registry_derivation():
-    # Registry-derived sets are large and include the curated repo-code VLMs.
     assert len(_VLM_MODEL_TYPES) >= 50, f"_VLM_MODEL_TYPES too small: {len(_VLM_MODEL_TYPES)}"
     assert (
         len(_AUDIO_ONLY_MODEL_TYPES) >= 20

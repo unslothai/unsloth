@@ -95,7 +95,6 @@ def _drive_stream(sse_events, enabled_tools, monkeypatch):
     return _drive(run())
 
 
-# ── web_search per-card result ─────────────────────────────────────────
 
 
 def test_web_search_each_call_carries_its_own_query_as_result(monkeypatch):
@@ -173,9 +172,7 @@ def test_web_search_last_call_overwritten_with_citations(monkeypatch):
     # Keep the LAST tool_end per id (citation overwrite for ws_2).
     for e in ends:
         by_id[e["tool_call_id"]] = e
-    # First call keeps its own query.
     assert by_id["ws_1"]["result"] == "Searching: first query"
-    # Last call overwritten with the citation block.
     assert "Title: Example A" in by_id["ws_2"]["result"]
     assert "URL: https://example.com/a" in by_id["ws_2"]["result"]
 
@@ -200,7 +197,6 @@ def test_web_search_empty_query_falls_back_to_empty_result(monkeypatch):
     assert ends[0]["result"] == ""
 
 
-# ── shell_call output fallbacks ────────────────────────────────────────
 
 
 def test_shell_call_emits_tool_end_when_output_bundled_on_done(monkeypatch):

@@ -102,9 +102,8 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert body["input"] == [{"role": "user", "content": "Hi"}]
     assert body["max_output_tokens"] == 512
     assert body["stream"] is True
-    # Responses API on reasoning-class models (gpt-5.x / o3 / gpt-4.5 — the only
-    # OpenAI ids the registry allowlist exposes) rejects these as `Unsupported
-    # parameter`. Never silently forward them.
+    # The Responses API rejects these as `Unsupported parameter` on reasoning-class models
+    # (gpt-5.x / o3 / gpt-4.5), so never silently forward them.
     assert "temperature" not in body
     assert "top_p" not in body
     assert "presence_penalty" not in body
@@ -200,7 +199,6 @@ def test_responses_translates_image_parts(monkeypatch):
     parts = captured["body"]["input"][0]["content"]
     assert parts[0] == {"type": "input_text", "text": "What is this?"}
     assert parts[1] == {"type": "input_image", "image_url": "data:image/png;base64,AAA"}
-    # No max_output_tokens key when caller passes max_tokens=None.
     assert "max_output_tokens" not in captured["body"]
 
 
@@ -238,7 +236,6 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
 
     lines = _drive(run())
 
-    # Keep only data lines for assertion clarity.
     data_lines = [line for line in lines if line.startswith("data:")]
     payloads = []
     for line in data_lines:
@@ -248,7 +245,6 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
         else:
             payloads.append(json.loads(raw))
 
-    # Two text deltas, one terminal chunk, then [DONE].
     assert payloads[0]["choices"][0]["delta"]["content"] == "Hello"
     assert payloads[0]["choices"][0]["finish_reason"] is None
     assert payloads[1]["choices"][0]["delta"]["content"] == ", world"
@@ -339,7 +335,6 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
     assert tc["id"] == "call_xyz"
     assert tc["function"]["name"] == "get_weather"
     assert tc["function"]["arguments"] == '{"city":"SF"}'
-    # Final chunk reports tool_calls, not stop.
     terminal = next(
         p
         for p in payloads
@@ -794,7 +789,6 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
 @pytest.mark.parametrize(
     ("body", "expected"),
     (
-        # OpenAI, Anthropic and Gemini error envelopes.
         (
             '{"error": {"message": "You have no credits remaining.",'
             ' "type": "insufficient_quota", "code": "credit_balance_exhausted"}}',
@@ -817,7 +811,6 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
             ' {"msg": "bad temperature"}]}',
             "field required; bad temperature",
         ),
-        # Already-friendly text passes through; empty/detail-free bodies fall back.
         ("Timeout waiting for openai response", "Timeout waiting for openai response"),
         ("", "openai returned HTTP 500 with no error details."),
         ('{"error": {}}', "openai returned HTTP 500 with no error details."),

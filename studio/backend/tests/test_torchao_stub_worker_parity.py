@@ -20,9 +20,9 @@ from pathlib import Path
 
 from core._torchao_stub import install_torchao_windows_rocm_stub
 
-_BACKEND = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND = Path(__file__).resolve().parent.parent
 _CORE = _BACKEND / "core"
-_STUB = install_torchao_windows_rocm_stub.__name__  # a rename breaks the import loudly
+_STUB = install_torchao_windows_rocm_stub.__name__
 
 _ENTRYPOINTS = [
     _CORE / "training" / "worker.py",
@@ -84,8 +84,7 @@ def _imports_transformers(node) -> bool:
                 or module.startswith(_INFERENCE_MOD + ".")
                 or (module == "core.inference" and any(a.name == "inference" for a in node.names))
             )
-        # Relative forms inside core/inference/worker.py: ``from .inference import X`` and
-        # ``from . import inference`` both resolve to core.inference.inference.
+        # Relative forms in worker.py: `from .inference import X` and `from . import inference` both resolve there.
         return module == "inference" or (
             not module and any(a.name == "inference" for a in node.names)
         )

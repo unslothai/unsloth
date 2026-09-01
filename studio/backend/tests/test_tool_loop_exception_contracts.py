@@ -22,23 +22,21 @@ from pathlib import Path
 
 import pytest
 
-# Backend root plus the tests dir: the two harnesses this borrows sit alongside
-# and import as top-level modules.
+# Backend root plus the tests dir: the two harnesses this borrows sit alongside and import as top-level modules.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 for _entry in (_BACKEND_DIR, _TESTS_DIR):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from test_llama_cpp_tool_loop import (  # noqa: E402
+from test_llama_cpp_tool_loop import (
     _done,
     _make_backend,
     _sse,
     _structured_tool_call,
 )
 
-# The reported call: `code` is a number, so `_python_exec` fails on `.strip()`
-# before anything runs.
+# `code` is a number, so `_python_exec` fails on `.strip()` before anything runs.
 BAD_PYTHON = {"code": 42}
 REAL_ERROR = "'int' object has no attribute 'strip'"
 
@@ -106,7 +104,6 @@ def test_the_failing_tool_result_reaches_the_model(monkeypatch):
     assert REAL_ERROR in json.dumps(tool_messages)
 
 
-# ── The external-provider loop ────────────────────────────────────
 
 
 def test_the_studio_loop_reports_the_real_error_and_continues(monkeypatch):
@@ -187,7 +184,6 @@ def test_the_studio_loop_still_reports_a_genuinely_unknown_tool(monkeypatch):
     assert ends[0]["result"] == "Unknown tool: no_such_tool_at_all"
 
 
-# ── The duplicate-call ledger ─────────────────────────────────────
 
 
 def test_a_repeated_failing_call_stays_bounded(monkeypatch):
@@ -232,7 +228,6 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
         studio_h._DONE,
     ]
     max_calls = 4
-    # More identical turns scripted than the budget allows.
     transport = studio_h.FakeTransport([list(bad_turn) for _ in range(max_calls + 6)])
     lines = studio_h._run(
         transport,
@@ -247,8 +242,7 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
     )
     ends = studio_h._events(lines, "tool_end")
     assert ends, "no tool_end at all"
-    # Every execution reports the real error; the trailing card is the
-    # controller's budget notice, which is how the loop says it stopped.
+    # Every execution reports the real error; the trailing card is the controller's budget notice.
     executed_ends = [e for e in ends if REAL_ERROR in e["result"]]
     assert len(executed_ends) == len(executions), [e["result"] for e in ends]
     assert "limit was reached" in ends[-1]["result"], ends[-1]["result"]
@@ -256,7 +250,6 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
     assert transport.turns, "the loop consumed every scripted turn instead of stopping"
 
 
-# ── research_runs stays outside the blast radius ──────────────────
 
 
 def test_research_only_calls_tools_that_are_not_session_guarded():
@@ -277,7 +270,6 @@ def test_research_only_calls_tools_that_are_not_session_guarded():
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        # execute_tool(name, ...) directly, or via asyncio.to_thread(execute_tool, name, ...)
         if getattr(func, "id", None) == "execute_tool" and node.args:
             first = node.args[0]
         elif (

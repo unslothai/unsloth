@@ -192,7 +192,6 @@ def test_get_tolerates_corrupt_stored_value(client):
     assert body == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
 
 
-# ── per-subject scoping ─────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -250,7 +249,6 @@ def test_an_upgraded_install_still_sees_the_shared_row(multi_subject_client):
 def test_subject_keys_do_not_collide(multi_subject_client):
     _, _, _ = multi_subject_client
     keys = {settings._last_local_model_key(s) for s in ("a", "b", "a:b", "", "  ")}
-    # "" and "  " degrade to the shared key; the rest are distinct.
     assert len(keys) == 4
     assert settings._last_local_model_key("") == settings.LAST_LOCAL_MODEL_SETTING_KEY
 
@@ -262,7 +260,6 @@ def test_a_delayed_put_is_dated_from_arrival_not_from_the_load(client):
     c, store = client
     now = int(time.time() * 1000)
 
-    # The newer load reaches the server first.
     c.put(
         "/last-local-model",
         json = {"id": "newer", "kind": "model", "loaded_at": now, "client_now": now},

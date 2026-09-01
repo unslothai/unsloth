@@ -28,7 +28,7 @@ def _img(w: int, h: int):
 def test_oversized_source_is_bounded_by_the_requested_box():
     # The reported case: a big upload with the sliders set small.
     out = _fit_within(_img(4000, 3000), 512, 512)
-    assert out.size == (512, 384)  # fits the box, aspect ratio preserved
+    assert out.size == (512, 384)
 
 
 def test_bound_is_the_box_not_just_the_longest_side():
@@ -42,7 +42,6 @@ def test_small_source_is_never_enlarged():
     # Growing a source is the Upscale workflow; Transform must not silently do it.
     src = _img(384, 256)
     assert _fit_within(src, 2048, 2048) is src
-    # Exactly on the box is also a no-op (identity, no resample pass).
     on_box = _img(512, 512)
     assert _fit_within(on_box, 512, 512) is on_box
 
@@ -68,7 +67,6 @@ def _cuda(free_mib: int, total_mib: int) -> DeviceMemory:
 
 
 def _shortfall(**kwargs) -> str:
-    # 4096x4096 on a card with ~14 GB free is well past both arms of the guard.
     message = image_activation_shortfall_message(
         device_memory = _cuda(free_mib = 14000, total_mib = 16000),
         width = 4096,

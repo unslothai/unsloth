@@ -181,8 +181,8 @@ def test_the_follow_up_turn_replays_reasoning_before_its_function_call(monkeypat
     reasoning = items[1]
     assert reasoning["id"] == "rs_1"
     assert reasoning["encrypted_content"] == "enc_blob"
-    # Responses rejects `status` on an input item, and the recorded copy carries
-    # one, so the replay has to be re-sanitized rather than passed through.
+    # Responses rejects `status` on an input item and the recorded copy carries one, so the replay
+    # has to be re-sanitized rather than passed through.
     assert "status" not in reasoning
 
 

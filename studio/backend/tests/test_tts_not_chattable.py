@@ -62,7 +62,6 @@ def _model_dir(tmp_path: Path, name: str, architectures, tokens) -> Path:
 
 
 def _snac_tokens() -> list[str]:
-    # Orpheus ships a stray <|audio|> beside its codebook; the codec must still win.
     return ["<|audio|>"] + [f"<custom_token_{index}>" for index in range(10_002)]
 
 
@@ -139,7 +138,6 @@ def test_is_tts_audio_type_excludes_the_input_only_types():
 
 
 def test_the_tts_set_is_a_subset_of_the_classifier():
-    # A type here that the patterns cannot produce would never fire.
     assert TTS_AUDIO_TYPES <= set(AUDIO_TOKEN_PATTERNS)
 
 
@@ -152,7 +150,6 @@ def test_curated_tts_repo_ids_cover_the_gguf_companion():
     assert is_curated_tts_repo_id("unsloth/Llama-OuteTTS-1.0-1B")
     assert not is_curated_tts_repo_id("unsloth/gemma-4-E2B-it")
     assert not is_curated_tts_repo_id(None)
-    # The two curated sets describe different halves of the Audio page.
     assert not is_curated_tts_repo_id("unsloth/whisper-large-v3")
     assert not is_curated_stt_repo_id("unsloth/orpheus-3b-0.1-ft")
 

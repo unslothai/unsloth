@@ -34,10 +34,8 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-# Same dependency stubs the neighbouring estimation tests install, but the
-# structlog stand-in carries get_logger: a bare module here is what the rest of
-# the suite finds under setdefault, and utils/prebuilt/freshness_flow.py calls
-# structlog.get_logger at import time.
+# The structlog stand-in carries get_logger: a bare module is what the rest of the suite finds
+# under setdefault, and freshness_flow.py calls structlog.get_logger at import time.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -80,7 +78,7 @@ def test_glm4_moe_nextn_block_stays_in_target_kv():
     nextn block. The estimate must therefore cover 47 layers, not 46.
     """
     b = _gqa_backend(_nextn_predict_layers = 1)
-    cells = 4096  # already 256-aligned, so cells == n_ctx at one unified slot
+    cells = 4096
     per_layer = cells * 8 * (128 + 128) * 2
 
     assert b._estimate_kv_cache_bytes(4096, "f16") == 47 * per_layer
@@ -142,13 +140,11 @@ def test_qwen35_hybrid_nextn_subtraction_is_correct():
     }.items():
         setattr(b, k, v)
 
-    # 64 trunk blocks -> ceil(64/4) = 16 attention layers, 48 recurrent.
     per_slot = 48 * ((4 - 1) * (6144 + 2 * 16 * 128) + 128 * 6144) * 4
     kv_only = 16 * 4096 * 4 * (256 + 256) * 2
     assert b._estimate_kv_cache_bytes(4096, "f16") == kv_only + per_slot
 
 
-# ─────────── per-architecture truth table (real GGUF headers) ───────────
 
 # arch -> does llama.cpp's TARGET context leave the nextn block out?
 ARCH_TRUTH_TABLE = [
@@ -173,7 +169,7 @@ ARCH_TRUTH_TABLE = [
     ("bailingmoe2", False),
     ("cohere2moe", False),
     ("exaone4", False),
-    ("granite-switch", False),  # nextn=1 leaks for a ROUTER layer that needs KV
+    ("granite-switch", False),
     # An arch this Unsloth has never heard of must fail closed.
     ("some_future_arch", False),
 ]
@@ -239,7 +235,6 @@ def test_a_hybrid_header_is_evidence_even_for_an_unknown_arch():
     )
 
     assert b._target_kv_excludes_nextn() is True
-    # 64 trunk blocks -> 16 attention layers + 48 recurrent.
     per_slot = 48 * ((4 - 1) * (6144 + 2 * 16 * 128) + 128 * 6144) * 4
     assert b._estimate_kv_cache_bytes(4096, "f16") == 16 * 4096 * 4 * (256 + 256) * 2 + per_slot
 
@@ -273,7 +268,6 @@ def test_a_nextn_equal_to_block_count_does_not_collapse():
     assert b._estimate_kv_cache_bytes(4096, "f16") == 12 * 4096 * 8 * (128 + 128) * 2
 
 
-# ───────────────────── old / unusual llama.cpp builds ─────────────────────
 
 
 def test_recurrent_state_is_independent_of_the_arch_gate():

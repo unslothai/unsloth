@@ -34,10 +34,8 @@ _loggers_stub = types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog is only a module-level import here; a bare stub suffices.
 sys.modules.setdefault("structlog", types.ModuleType("structlog"))
 
-# Stub utils.paths so orchestrator.py's top-level import resolves.
 _utils_pkg = types.ModuleType("utils")
 _utils_pkg.__path__ = []  # mark as package
 _utils_paths_stub = types.ModuleType("utils.paths")
@@ -62,9 +60,6 @@ def _append(
     orch._append_log({"type": "log", "stream": stream, "line": line, "ts": 0.0})
 
 
-# ---------------------------------------------------------------------------
-# clear_logs() semantics
-# ---------------------------------------------------------------------------
 
 
 def test_run_start_seq_is_zero_before_any_logs(orchestrator) -> None:
@@ -87,32 +82,26 @@ def test_clear_logs_snapshots_current_seq(orchestrator) -> None:
     assert orchestrator.get_current_log_seq() == 3  # seq counter preserved
 
 
-# ---------------------------------------------------------------------------
 # Race regression: SSE connects AFTER lines have been emitted
-# ---------------------------------------------------------------------------
 
 
 def test_sse_default_cursor_catches_all_current_run_lines(orchestrator) -> None:
     """POST-then-SSE race: worker emits lines right after clear_logs(), SSE
     connects later. get_run_start_seq() as the default cursor returns every
     line since clear_logs() (pre-fix it missed them)."""
-    # Previous run leaves some buffered lines.
     _append(orchestrator, "previous run line A")
     _append(orchestrator, "previous run line B")
 
-    # New run starts: orchestrator clears the buffer and snapshots seq.
     orchestrator.clear_logs()
     run_start = orchestrator.get_run_start_seq()
 
-    # Worker emits early lines BEFORE the SSE connects.
     _append(orchestrator, "Importing Unsloth...")
     _append(orchestrator, "Loading checkpoint: /foo/bar")
     _append(orchestrator, "Starting export...")
 
-    # SSE connects and asks for everything after the run start cursor.
     entries, new_cursor = orchestrator.get_logs_since(run_start)
 
-    # All three early lines must be present. Pre-fix this was [].
+    # All three early lines must be present.
     lines = [e["line"] for e in entries]
     assert lines == [
         "Importing Unsloth...",

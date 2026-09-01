@@ -41,7 +41,7 @@ class _FakePopen:
     ):
         self.pid = 4242
         self._lines = list(lines)
-        self._exit = exit_code  # None == alive
+        self._exit = exit_code
         self.returncode = exit_code
         self.terminated = False
         self.killed = False
@@ -54,7 +54,7 @@ class _FakePopen:
         def _gen():
             for ln in self._lines:
                 yield ln
-            self._done.wait()  # hold the pipe open until the process ends
+            self._done.wait()
 
         return _gen()
 
@@ -147,13 +147,11 @@ def patched(monkeypatch):
 def _server_with(popen, client):
     s = SdCppServer("/x/sd-server")
     s._client = client
-    # Attach the fake process + port so generation tests can run without start().
     s._process = popen
     s.port = 1234
     return s
 
 
-# ── start / readiness ──────────────────────────────────────────────────────────
 
 
 def test_start_becomes_ready_when_capabilities_200(patched):
@@ -168,10 +166,8 @@ def test_start_becomes_ready_when_capabilities_200(patched):
 
 
 def test_start_fails_fast_when_process_exits(patched):
-    # Model load failed, so the process exits before listening; start must raise with the tail.
     popen = _FakePopen(lines = ["error: bad model"], exit_code = 1)
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
-    # Capabilities never answers (connection refused), so readiness relies on exit detection.
     s = _server_with(
         popen, _FakeClient(get = lambda url: (_ for _ in ()).throw(srv.httpx.ConnectError("refused")))
     )
@@ -179,7 +175,6 @@ def test_start_fails_fast_when_process_exits(patched):
         s.start(_FILES, startup_timeout = 2.0)
 
 
-# ── generation ───────────────────────────────────────────────────────────────
 
 
 def _completed_job(images_b64):
@@ -198,7 +193,6 @@ def test_img_gen_returns_image_bytes_in_index_order(patched):
         popen,
         _FakeClient(
             post = lambda url, json: _Resp(202, {"id": "jobA"}),
-            # result images deliberately out of order -> manager must sort by index.
             get = lambda url: _Resp(
                 200,
                 {
@@ -216,7 +210,7 @@ def test_img_gen_returns_image_bytes_in_index_order(patched):
     blobs = s.img_gen({"prompt": "x", "batch_count": 2, "sample_params": {"sample_steps": 4}})
     assert len(blobs) == 2
     first = Image.open(io.BytesIO(blobs[0])).convert("RGB").getpixel((0, 0))
-    assert first == (50, 50, 50)  # index 0 first
+    assert first == (50, 50, 50)
 
 
 def test_img_gen_failed_job_raises(patched):
@@ -244,7 +238,7 @@ def test_img_gen_queue_full_raises(patched):
 def test_img_gen_cancel_posts_cancel_and_raises(patched):
     popen = _FakePopen()
     cancel = threading.Event()
-    cancel.set()  # already cancelled before the first poll
+    cancel.set()
     client = _FakeClient(
         post = lambda url, json: _Resp(202, {"id": "jobC"}),
         get = lambda url: _Resp(
@@ -261,7 +255,7 @@ def test_img_gen_detects_server_death(patched):
     popen = _FakePopen()
 
     def _die_get(url):
-        popen._exit = 137  # the process died between submit and poll
+        popen._exit = 137
         return _Resp(200, {"status": "generating"})
 
     s = _server_with(
@@ -271,17 +265,15 @@ def test_img_gen_detects_server_death(patched):
         s.img_gen({"prompt": "x"})
 
 
-# ── stdout routing + stop ──────────────────────────────────────────────────────
 
 
 def test_drain_routes_lines_to_step_listener_and_tail(patched):
     s = SdCppServer("/x/sd-server")
     seen = []
     s._step_listener = seen.append
-    # exit_code set so stdout ends after the scripted lines (a live fake would block).
     s._drain_stdout(_FakePopen(lines = ["sampling 1/8", "", "sampling 8/8", "done"], exit_code = 0))
     assert "sampling 1/8" in seen and "sampling 8/8" in seen
-    assert "" not in seen  # blank lines skipped
+    assert "" not in seen
     assert s._tail[-1] == "done"
 
 
@@ -294,8 +286,8 @@ def test_stop_is_idempotent_and_terminates(patched):
     s.stop()
     assert popen.terminated is True
     assert s.is_alive() is False
-    assert client.closed is True  # stop() releases the pooled HTTP client
-    s.stop()  # second call must not raise
+    assert client.closed is True
+    s.stop()
 
 
 def test_img_gen_submit_error_raises(patched):
@@ -335,11 +327,10 @@ def test_img_gen_rejected_after_stop(patched):
         s.img_gen({"prompt": "x"})
 
 
-# ── cancellation + defensive parsing (review follow-ups) ───────────────────────
 
 
 def test_img_gen_cancelled_before_submit_reports_cancellation(patched):
-    # The server was stopped for a cancel/unload before submit; with the cancel event set this is a cancellation (409), not a "not running" 500.
+    # The server was stopped for a cancel before submit, so with the event set this is a 409, not a 500.
     popen = _FakePopen()
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
     s = _server_with(popen, _FakeClient(get = lambda url: _Resp(200, {})))
@@ -352,20 +343,19 @@ def test_img_gen_cancelled_before_submit_reports_cancellation(patched):
 
 
 def test_img_gen_abandons_when_cancel_not_honored(patched):
-    # A best-effort cancel the server ignores must not pin this call (and the generate lock) until natural completion: it raises after the grace window.
+    # A best-effort cancel the server ignores must not pin this call, and the generate lock, until natural completion.
     patched.setattr(srv, "_CANCEL_GRACE_S", 0.0)
     popen = _FakePopen()
     cancel = threading.Event()
     cancel.set()
     client = _FakeClient(
         post = lambda url, json: _Resp(202, {"id": "jobG"}),
-        get = lambda url: _Resp(200, {"status": "generating"}),  # never terminal
+        get = lambda url: _Resp(200, {"status": "generating"}),
     )
     s = _server_with(popen, client)
     with pytest.raises(SdCppCancelled):
         s.img_gen({"prompt": "x"}, cancel_event = cancel, poll_interval = 0.01)
-    # And the process is stopped, not left running the abandoned job: sd-server does not interrupt an in-flight job, so a server
-    # that ignored the cancel would burn a core (or the GPU) to completion and hold its job slot against the next request.
+    # sd-server does not interrupt an in-flight job, so an ignored cancel burns a core and holds the slot.
     assert not s.is_alive()
 
 
@@ -390,14 +380,14 @@ def test_img_gen_non_dict_status_json_raises(patched):
 
 
 def test_decode_images_tolerates_unexpected_shapes():
-    # A misbehaving/older server can return non-dict result/images/items, so _decode_images must raise a clean "no images" rather than an AttributeError.
+    # An older server can return non-dict result/images, so _decode_images must raise a clean "no images".
     for job in ({"result": ["x"]}, {"result": {"images": "nope"}}, {"result": {"images": [1, 2]}}):
         with pytest.raises(RuntimeError, match = "no images"):
             SdCppServer._decode_images(job)
 
 
 def test_start_aborted_by_concurrent_stop(patched):
-    # A stop() during the readiness wait must abort start() promptly, without waiting out the startup timeout, and surface as a cancellation.
+    # A stop() during the readiness wait must abort start() promptly and surface as a cancellation.
     popen = _FakePopen(lines = ["loading model"])
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
 
@@ -431,7 +421,6 @@ def test_diagnostic_tail_keeps_the_reason_not_just_the_backtrace():
 
     assert "unsupported op 'SOME_OP'" in tail
     assert "fatal error" in tail
-    # Still ends with recent context, so a failure with no marked line is not left empty.
     assert "ggml_print_backtrace" in tail
 
 
@@ -448,8 +437,7 @@ def test_diagnostic_tail_is_bounded():
 
 
 def test_readiness_refuses_a_port_held_by_another_process(patched):
-    # _find_free_port picks an ephemeral port, closes the socket, and sd-server binds it only after loading the model, which takes minutes.
-    # Another process can take it in that window, and llama.cpp's server also answers /v1/models 200, so readiness would pass on a stranger.
+    # _find_free_port closes the socket before sd-server binds it, and llama.cpp also answers /v1/models 200.
     import types
 
     popen = _FakePopen(lines = ["loading model"])
@@ -462,7 +450,7 @@ def test_readiness_refuses_a_port_held_by_another_process(patched):
             types.SimpleNamespace(
                 laddr = types.SimpleNamespace(port = s.port),
                 status = "LISTEN",
-                pid = popen.pid + 1000,  # somebody else
+                pid = popen.pid + 1000,
             )
         ],
         Process = lambda pid: types.SimpleNamespace(parent = lambda: None),
@@ -484,7 +472,6 @@ def test_readiness_accepts_our_own_child_and_its_descendants(patched):
             )
         ]
 
-    # The spawned pid itself.
     patched.setitem(
         __import__("sys").modules,
         "psutil",
@@ -496,7 +483,6 @@ def test_readiness_accepts_our_own_child_and_its_descendants(patched):
     )
     assert s._port_is_ours() is True
 
-    # A grandchild (wrapper script / shell) still counts as ours.
     child_pid = popen.pid + 7
 
     def _process(pid):

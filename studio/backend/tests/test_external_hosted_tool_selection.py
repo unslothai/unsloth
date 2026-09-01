@@ -121,7 +121,6 @@ def _clean_policy():
     reset_tool_policy()
 
 
-# ── the helper ───────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -164,7 +163,6 @@ def test_an_absent_or_malformed_selection_is_not_a_crash():
     assert hosted_only_tools("openai", [None, 3, "image_generation"]) == ["image_generation"]
 
 
-# ── the route ────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("provider_type", ["openai", "gemini"])
@@ -185,9 +183,8 @@ def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
         monkeypatch,
         "openai",
         ["search_knowledge_base", "image_generation"],
-        # The route drops the RAG tool without a scope, and no scope means no
-        # loop at all, so the automatic-RAG turn has to carry one to be the case
-        # this is about.
+        # The route drops the RAG tool without a scope, and no scope means no loop at all, so the
+        # automatic-RAG turn has to carry one to be the case this is about.
         rag_scope = {"kb_id": "kb-1"},
     )
     assert transport._request_kwargs["enabled_tools"] == ["image_generation"]

@@ -73,23 +73,19 @@ def _job_status(conn, doc_id):
 
 
 def test_completed_doc_keeps_chunks_when_its_job_is_orphaned(rag_conn):
-    # Worker finished the document but crashed before retiring the job row.
     _add_doc(rag_conn, "kb_a", "done", "completed", ["alpha bravo", "charlie delta"])
     _orphan_job(rag_conn, "done", "kb_a")
 
     assert rag_db.reconcile_orphaned_ingestion_jobs() == 1
 
-    # Document stays completed with all chunks; dedup still finds it.
     assert store.get_document(rag_conn, "done")["status"] == "completed"
     assert _chunk_count(rag_conn, "done") == 2
     assert store.document_by_hash(rag_conn, "kb_a", "done") == "done"
-    # The orphaned job is reconciled to completed (not failed), so the UI's getJob
-    # fallback doesn't flag a searchable document as a failed ingestion.
+    # Orphaned jobs reconcile to completed, not failed, so a searchable document is not flagged as a failed ingestion.
     assert _job_status(rag_conn, "done") == "completed"
 
 
 def test_in_flight_doc_is_failed_and_its_chunks_dropped(rag_conn):
-    # Partial chunks committed, document never marked terminal -> genuine orphan.
     _add_doc(rag_conn, "kb_a", "partial", "processing", ["alpha bravo"])
     _orphan_job(rag_conn, "partial", "kb_a")
 
@@ -97,14 +93,11 @@ def test_in_flight_doc_is_failed_and_its_chunks_dropped(rag_conn):
 
     assert store.get_document(rag_conn, "partial")["status"] == "failed"
     assert _chunk_count(rag_conn, "partial") == 0
-    # Failed doc is re-ingestible (not deduped).
     assert store.document_by_hash(rag_conn, "kb_a", "partial") is None
 
 
 def test_already_failed_doc_has_its_chunks_dropped(rag_conn):
-    # Worker committed chunks then marked the doc 'failed', but crashed before
-    # retiring the job row. Reconcile won't re-flip the doc (already failed), but
-    # its chunks must still be purged so they aren't retrievable/citable.
+    # Doc already 'failed' is not re-flipped, but its chunks must still be purged so they aren't retrievable.
     _add_doc(rag_conn, "kb_a", "failed_doc", "failed", ["alpha bravo"])
     _orphan_job(rag_conn, "failed_doc", "kb_a")
 
@@ -147,9 +140,7 @@ def test_live_foreign_lease_is_preserved_then_reconciled_after_expiry(rag_conn):
 
 
 def test_cancelled_job_is_terminal_and_survives_a_restart(rag_conn):
-    # The worker cancelled itself because the document was deleted mid-ingestion.
-    # A restart must leave that verdict alone: rewriting it to 'failed' reports a
-    # deliberate cancellation to the UI's getJob fallback as an indexing failure.
+    # A self-cancelled worker's verdict must survive restart; 'failed' misreports a deliberate cancel.
     _add_doc(rag_conn, "kb_a", "cancelled_doc", "processing", ["alpha bravo"])
     _orphan_job(rag_conn, "cancelled_doc", "kb_a", status = "cancelled")
 
