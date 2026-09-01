@@ -2758,6 +2758,27 @@ def _pick_dspark(candidates: list[str]) -> Optional[str]:
     return files[0] if files else None
 
 
+_MTP_SHARD_SUFFIX_RE = re.compile(r"-[0-9]{5}-of-[0-9]{5}$")
+
+
+def _is_published_mtp_drafter_name(path: str) -> bool:
+    """Does *path*'s BASENAME name a published MTP head?
+
+    ``_is_mtp_only_drafter_path`` accepts anything under a directory called
+    ``MTP/``, which is right for excluding companions from variant menus and far
+    too broad for choosing what to launch: an mmproj, an imatrix or a stray weight
+    copy parked there would be handed to ``--model-draft``. Same rule the local
+    scan applies in ``detect_mtp_file`` -- ``mtp-<model>`` or the older
+    ``<model>-MTP`` -- with the shard suffix stripped first, since a split copy of
+    the old scheme is ``<model>-Q8_0-MTP-00001-of-00002.gguf``, whose stem does not
+    end in ``-mtp``."""
+    lower = Path(path).name.lower()
+    if not lower.endswith(".gguf"):
+        return False
+    stem = _MTP_SHARD_SUFFIX_RE.sub("", Path(lower).stem)
+    return lower.startswith("mtp-") or stem.endswith("-mtp")
+
+
 def _pick_mtp(candidates: list[str], *, allow_nested: bool = True) -> Optional[str]:
     """The MTP drafter a listing offers, or None. Module level for the same reason
     ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
@@ -2766,32 +2787,45 @@ def _pick_mtp(candidates: list[str], *, allow_nested: bool = True) -> Optional[s
     ``allow_nested=False`` restricts the answer to a root mirror, which is what
     every architecture but qwen4exp gets -- see ``_pick_mtp_root_only``."""
     from hub.utils.gguf import drop_shadowed_appledouble_names
+    from utils.models.drafters import split_listing_is_complete
     from utils.models.drafters.preference import mtp_preference_key
+
+    names = drop_shadowed_appledouble_names(list(candidates))
+
+    def _launchable(name: str) -> bool:
+        # Settled before ranking, not after, exactly as detect_mtp_file settles it
+        # at collection: llama.cpp resolves the sibling shards from the first one's
+        # directory, so half a set is unusable, and _download_companion_gguf answers
+        # None to it rather than fetching. Ranked first and rejected afterwards, an
+        # incomplete set would shadow a complete lower-ranked head and disable
+        # speculation with a usable one sitting right there.
+        return split_listing_is_complete(names, name)
 
     # Root first, so a repo mirroring one head at the root (Gemma 4) still resolves to it
     # rather than to a subdir copy, which would sort ahead. The mtp- prefix also excludes
     # AppleDouble shadows ("._mtp-x.gguf"), so this bucket needs no filtering of its own.
     mtp_files = sorted(
         f
-        for f in candidates
-        if f.lower().endswith(".gguf") and "/" not in f and Path(f).name.lower().startswith("mtp-")
+        for f in names
+        if f.lower().endswith(".gguf")
+        and "/" not in f
+        and Path(f).name.lower().startswith("mtp-")
+        and _launchable(f)
     )
     if mtp_files:
         return mtp_files[0]
 
-    # No root mirror: fall back to the MTP/ folder, which is the only place
-    # Qwen3.8-Flash-Next publishes its heads. This is the policy
+    # No root mirror, or none of them complete: fall back to the MTP/ folder, which
+    # is the only place Qwen3.8-Flash-Next publishes its heads. This is the policy
     # _cached_repo_mtp_drafter already applies to the offline cache, so without it a
     # user holding a cached copy gets speculation and a fresh install does not.
-    # Matched by drafter kind rather than by prefix, since the copies are not named
-    # alike across repos, which means AppleDouble shadows have to be dropped here.
     if not allow_nested:
         return None
     nested = sorted(
         (
             name
-            for name in drop_shadowed_appledouble_names(list(candidates))
-            if name.lower().endswith(".gguf") and "/" in name and _is_mtp_only_drafter_path(name)
+            for name in names
+            if "/" in name and _is_published_mtp_drafter_name(name) and _launchable(name)
         ),
         key = mtp_preference_key,
     )
@@ -13958,13 +13992,22 @@ class LlamaCppBackend:
     ) -> Optional[str]:
         """A drafter already in this repo's local HF cache, reused offline when a
         fresh copy can't be fetched. Prefers a repo-root ``mtp-*.gguf`` across all
-        cached snapshots; else an existing ``MTP/`` copy (any precision -- the
-        target verifies every drafted token). None if none is cached.
+        cached snapshots; else an existing ``MTP/`` copy. None if none is cached.
+
+        Ranked with the same keys ``_pick_mtp`` uses, or offline and online disagree
+        about the same cache: lexical order put ``mtp-Qwen3.8-Flash-Next-BF16.gguf``
+        first, so a cached user got the 7.77 GB head that measures slowest while a
+        fresh install downloaded the 2.79 GB shared Q8_0 one, which is the split
+        this change exists to close.
 
         ``allow_nested=False`` drops the ``MTP/`` half, so a non-qwen4exp target
         resolves the same way offline as online (``_pick_mtp_root_only``)."""
         try:
-            from utils.models.model_config import _iter_hf_cache_snapshots
+            from utils.models.drafters.preference import mtp_preference_key
+            from utils.models.model_config import (
+                _drafter_split_is_complete,
+                _iter_hf_cache_snapshots,
+            )
 
             roots: list[Path] = []
             subdirs: list[Path] = []
@@ -13974,15 +14017,30 @@ class LlamaCppBackend:
                 else _iter_hf_cache_snapshots(hf_repo, cache_dir)
             )
             for snap in snapshots:  # newest first
-                for f in sorted(_gguf_snapshot_files(snap)):
-                    # MTP only: a DSpark drafter needs --spec-type draft-dspark,
-                    # so it must never be launched as an MTP one.
-                    if _is_mtp_only_drafter_path(f):
-                        (roots if "/" not in f else subdirs).append(snap / f)
+                snap_roots: list[str] = []
+                snap_subdirs: list[str] = []
+                for f in _gguf_snapshot_files(snap):
+                    # MTP only: a DSpark drafter needs --spec-type draft-dspark, so
+                    # it must never be launched as an MTP one. The nested tier needs
+                    # a published drafter NAME as well, since everything under MTP/
+                    # classifies as one and an mmproj or imatrix parked there would
+                    # otherwise be handed to --model-draft.
+                    if "/" not in f:
+                        if _is_mtp_only_drafter_path(f):
+                            snap_roots.append(f)
+                    elif _is_mtp_only_drafter_path(f) and _is_published_mtp_drafter_name(f):
+                        snap_subdirs.append(f)
+                # Root lexical, nested by preference: the two tiers exactly as
+                # _pick_mtp orders them.
+                roots.extend(snap / f for f in sorted(snap_roots))
+                subdirs.extend(snap / f for f in sorted(snap_subdirs, key = mtp_preference_key))
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.
             for cand in (roots + subdirs if allow_nested else roots):
-                if cand.is_file():
+                # Half a split set is not a drafter, and offline there is no fetch
+                # to complete it -- the same whole-set rule _download_companion_gguf
+                # applies to its own cache hit.
+                if cand.is_file() and _drafter_split_is_complete(cand):
                     return str(cand)
         except Exception as e:
             logger.debug("Cached MTP drafter lookup failed for %s: %s", hf_repo, e)

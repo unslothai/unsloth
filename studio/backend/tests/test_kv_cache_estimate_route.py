@@ -360,6 +360,66 @@ class TestDrafterDiscoveryMatchesTheLoader:
         got, _ = models_routes._resolve_mtp_drafter(str(main))
         assert got == str(companion)
 
+    def test_a_non_drafter_parked_under_mtp_is_not_launched(self, tmp_path):
+        """_is_mtp_only_drafter_path accepts everything under MTP/ by design, to
+        keep companions out of variant menus. Too broad for choosing what to
+        launch: detect_mtp_file says so in as many words, and an mmproj or an
+        imatrix would be handed to --model-draft."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        _write_gguf(snap / "MTP" / "mmproj-BF16.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "imatrix_unsloth.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "Qwen3.8-Flash-Next-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, size = models_routes._resolve_mtp_drafter(str(main))
+        assert got is None, f"would launch a non-drafter as the draft model: {got} ({size} bytes)"
+
+    def test_the_older_mtp_suffix_naming_still_resolves(self, tmp_path):
+        """Gemma 4 published <model>-MTP.gguf before the mtp- prefix; the local
+        scan still accepts it, so the hub path must too."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        old = _write_gguf(snap / "MTP" / "model-Q8_0-MTP.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(old)
+
+    def test_an_incomplete_nested_split_does_not_shadow_a_complete_head(self, tmp_path):
+        """llama.cpp resolves the sibling shards from the first one's directory, so
+        half a set is unusable and _download_companion_gguf answers None to it.
+        Ranked first and rejected afterwards, it would disable speculation with a
+        usable lower-ranked head sitting right there -- which is why the local scan
+        settles launchability at collection rather than at emission."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        _write_gguf(snap / "MTP" / "mtp-model-Q8_0-00001-of-00002.gguf", _MLA_NO_HEAD)
+        complete = _write_gguf(snap / "MTP" / "mtp-model-Q4_K_M.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(complete)
+
+    def test_a_complete_nested_split_is_still_chosen(self, tmp_path):
+        """The filter drops incomplete sets, not split sets."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        first = _write_gguf(snap / "MTP" / "mtp-model-Q8_0-00001-of-00002.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "mtp-model-Q8_0-00002-of-00002.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "mtp-model-Q4_K_M.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(first)
+
+    def test_an_incomplete_root_split_falls_through_to_the_nested_tier(self, tmp_path):
+        """The root tier returns early, so an incomplete root set used to hide a
+        usable nested head and leave the load with no drafter at all."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        _write_gguf(snap / "mtp-model-Q8_0-00001-of-00002.gguf", _MLA_NO_HEAD)
+        nested = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(nested)
+
     def test_root_companion_wins_over_a_nested_copy(self, tmp_path):
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD)

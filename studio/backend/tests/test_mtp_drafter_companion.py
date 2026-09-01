@@ -1440,6 +1440,57 @@ def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
     assert found is not None and found.endswith("mtp-model.gguf")
 
 
+def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monkeypatch):
+    """Offline reuse must name the file the online picker names.
+
+    Lexical order put mtp-Qwen3.8-Flash-Next-BF16.gguf first, so a cached user got
+    the 7.77 GB head that measures slowest while a fresh install downloaded the
+    2.79 GB shared Q8_0 one -- the download/reuse split this path exists to close.
+    """
+    import core.inference.llama_cpp as llama_cpp_module
+
+    published = [
+        f"MTP/mtp-Qwen3.8-Flash-Next-{tier}.gguf"
+        for tier in ("BF16", "Q4_K_M", "Q8_0", "shared-BF16", "shared-Q4_K_M", "shared-Q8_0")
+    ]
+    snap = tmp_path / "snap"
+    for rel in [*published, "UD-IQ1_S/model.gguf"]:
+        (snap / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snap / rel).write_bytes(b"x")
+
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+
+    found = backend._cached_repo_mtp_drafter("unsloth/Qwen3.8-Flash-Next-GGUF")
+    assert found is not None
+    assert Path(found).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", (
+        f"offline reuse picked {Path(found).name}; the online picker takes "
+        f"{llama_cpp_module._pick_mtp(published)}"
+    )
+    # Same listing, same answer, whichever path reaches it first.
+    assert Path(found).name == Path(llama_cpp_module._pick_mtp(published)).name
+
+
+def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monkeypatch):
+    """Everything under MTP/ classifies as an mtp drafter, which is right for
+    excluding companions from menus and wrong for choosing what to launch: an
+    mmproj or an imatrix would be handed to --model-draft."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    snap = tmp_path / "snap"
+    for rel in ("MTP/mmproj-BF16.gguf", "MTP/imatrix_unsloth.gguf", "model-Q4_K_M.gguf"):
+        (snap / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snap / rel).write_bytes(b"x")
+
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+    assert backend._cached_repo_mtp_drafter("some/repo") is None
+
+
 def test_cached_dspark_lookup_prefers_q8_and_excludes_dflash(tmp_path, monkeypatch):
     import core.inference.llama_cpp as llama_cpp_module
 
