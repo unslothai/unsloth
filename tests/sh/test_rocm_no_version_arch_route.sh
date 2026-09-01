@@ -120,8 +120,7 @@ assert_lacks() {
 
 _MOCK_DIR=$(mktemp -d)
 
-# $1 = gfx arch amd-smi should name. No ROCm version field: that is the whole point
-# of the reported host, and it is what `amd-smi static --asic` looks like there.
+# $1 = gfx arch. Emitting NO ROCm version field is the fixture, not an oversight.
 reset_host() {
     rm -rf "$_MOCK_DIR" "$_FAKE_ROCM_DIR/.info" "$_FAKE_ROCM_DIR/bin"
     _MOCK_DIR=$(mktemp -d)
@@ -145,10 +144,7 @@ MOCK
     chmod +x "$_FAKE_ROCM_DIR/bin/hipconfig"
 }
 
-# Renders one line PER package argument, in order, like real rpm: the version for a
-# hit and "package X is not installed" on stdout for a miss. install.sh asks about
-# all three names in one query (so a wedged rpm costs one timeout, not three), so a
-# mock that answered only its last argument would hide which name actually matched.
+# install.sh queries all three package names in ONE rpm call, so the mock answers per argument: one that answered only the last would hide which name matched.
 add_rpm_package() {
     printf '%s\n' "$1" > "$_MOCK_DIR/.rpm-pkg"
     printf '%s\n' "$2" > "$_MOCK_DIR/.rpm-ver"
@@ -222,9 +218,7 @@ _BASE="https://download.pytorch.org/whl"
 
 echo "=== test_rocm_no_version_arch_route ==="
 
-# The index stays */cpu here on purpose: get_torch_index_url runs in a command
-# substitution and cannot set TORCH_INDEX_URL, so it defers and the reroute (parent
-# shell, covered by the gate assertions below) installs the per-arch wheels.
+# cpu is expected: get_torch_index_url runs in a command substitution, so it cannot set TORCH_INDEX_URL and defers to the parent-shell reroute.
 reset_host gfx1201
 assert_eq "no version + mapped arch still returns cpu from the function" \
     "$_BASE/cpu" "$(run_index)"
@@ -248,8 +242,7 @@ add_rocm_bin_hipconfig "6.4.43483-0"
 assert_eq "supported version still picks the versioned leaf" \
     "$_BASE/rocm6.4" "$(run_index)"
 
-# gfx906 (MI50) is served only through a generic rocmX.Y leaf, so with no version
-# there is nothing to route to and CPU is correct.
+# gfx906 has no per-arch index, only the generic rocmX.Y leaves, so without a version there is nothing to route to.
 reset_host gfx906
 assert_eq "unmapped arch with no version stays cpu" "$_BASE/cpu" "$(run_index)"
 _w=$(run_warnings)
@@ -277,20 +270,13 @@ _w=$(run_warnings)
 assert_contains "an existing ROCm tree is acknowledged" "so ROCm is likely installed" "$_w"
 assert_lacks "an existing ROCm tree is not called missing" "Install the ROCm/HIP SDK" "$_w"
 
-# The gate is top-level installer code, not a function, so this file can only assert
-# on its text. Be clear about what that is worth: a grep for the gate's own variable
-# names is a wiring check, and it keeps passing if the gate is wired but always
-# decides "no". The behaviour -- a Fedora gfx1201 host actually arriving at
-# repo.amd.com/rocm/whl/gfx120X-all/ -- is asserted in the sibling file
-# test_rocm_no_version_arch_route_e2e.sh, which splices the top-level block out and
-# RUNS it. Anything here that reads like a routing claim is checked for real there.
+# Top-level installer code, so this grep proves wiring, not behaviour: it passes even if the gate always decides "no".
+# The routing itself is asserted in test_rocm_no_version_arch_route_e2e.sh, which splices that block out and RUNS it.
 _gate=$(grep -c '_amd_no_rocm_version_reroute' "$INSTALL_SH")
 assert_eq "install.sh wires the no-version reroute state" "yes" \
     "$([ "$_gate" -ge 4 ] && echo yes || echo "no ($_gate refs)")"
 
-# rocminfo/amd-smi enumerate in kernel order, so an APU can be listed ahead of the
-# discrete card the user actually wants wheels for. Taking the first token would put
-# gfx1151 wheels on a 9070 XT.
+# Probes enumerate in kernel order, so taking the first token would put APU gfx1151 wheels on a 9070 XT listed behind it.
 assert_eq "duplicate agents agree on a family"     "gfx120X-all" "$(run_family 'gfx1201
 gfx1201')"
 assert_eq "two cards in one family agree on it"     "gfx120X-all" "$(run_family 'gfx1201
@@ -301,9 +287,7 @@ assert_eq "an unmappable agent rejects the whole host"     "REJECTED" "$(run_fam
 gfx906')"
 assert_eq "an empty probe is rejected" "REJECTED" "$(run_family '')"
 
-# The concrete arch names ONE card, and setup.sh takes it over its own visibility-aware
-# pick, so it is only answered when there is nothing to choose between. gfx1200 beside
-# gfx1201 share a family and are still two different cards.
+# setup.sh takes this concrete arch over its own visibility-aware pick, so it may only answer when there is one card to name.
 assert_eq "duplicate agents are one device and name it"     "gfx1201" "$(run_sole_arch 'gfx1201
 gfx1201')"
 assert_eq "two cards in one family name neither"     "REJECTED" "$(run_sole_arch 'gfx1201
@@ -325,17 +309,13 @@ assert_contains "same-family pair names the family, not a card" "gfx120X-all" "$
 assert_eq "the export is guarded on a single named card" "yes"     "$(grep -q 'export UNSLOTH_ROCM_GFX_ARCH="\$_linux_inferred_gfx"' "$INSTALL_SH" &&        grep -c 'if \[ -n "\$_linux_inferred_gfx" \]; then' "$INSTALL_SH" >/dev/null &&        echo yes || echo no)"
 assert_eq "the torch constraint is chosen off the family" "yes"     "$(grep -q 'gfx120X-all|gfx1151|gfx1150|gfx1152)' "$INSTALL_SH" && echo yes || echo no)"
 
-# UNSLOTH_ROCM_GFX_ARCH is often copied straight out of HIP, which reports
-# gfx1201:sramecc+:xnack- -- the arch plus two feature flags. The index case table has
-# no arm for that string. get_torch_index_url strips it and promises per-arch wheels,
-# so anything downstream that does not strip it leaves the host on CPU with a warning
-# that says otherwise.
+# HIP reports gfx1201:sramecc+:xnack-, which no arm of the index case table matches; get_torch_index_url strips the suffix
+# and then promises per-arch wheels, so anything downstream that does not strip it strands the host on CPU.
 assert_eq "a gcnArchName suffix normalises to the bare arch" "gfx1201"     "$(run_sole_arch 'gfx1201:sramecc+:xnack-')"
 assert_eq "the suffixed arch would not map on its own" "REJECTED"     "$(PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _amd_arch_index_family_for_gfx 'gfx1201:sramecc+:xnack-' || echo REJECTED" 2>/dev/null)"
 assert_eq "the override reroute normalises before the case table" "yes"     "$(grep -q '_linux_inferred_gfx=\$(_amd_sole_index_arch "\$_linux_inferred_gfx")' "$INSTALL_SH" && echo yes || echo no)"
 
-# The EXIT trap rm -rf's it. Inherited from the environment and never overwritten (an
-# early exit during argument validation), that is an rm -rf on a path the caller chose.
+# The EXIT trap rm -rf's the memo path, so one inherited from the environment and never overwritten is an rm -rf on a caller-chosen path.
 _reset_block=$(sed -n '/^# Clear inherited cleanup targets before installing traps\./,/^trap _on_install_exit EXIT/p' "$INSTALL_SH")
 assert_contains "the memo dir is cleared before the traps" '_ROCM_TAG_MEMO_DIR=""' "$_reset_block"
 assert_contains "the memo path is cleared before the traps" '_ROCM_TAG_MEMO=""' "$_reset_block"

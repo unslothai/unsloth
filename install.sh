@@ -3313,18 +3313,13 @@ _amd_gpu_present_via_pci() {
     return 1
 }
 
-# Map a gfx arch to the AMD pip index family (mirrors install.ps1 $archFamilyMap).
-# Distinct gfx arches from a multi-line probe. rocminfo names each agent twice, so a
-# single-GPU host reads "gfx1201\ngfx1201" and that is one device, not two.
+# rocminfo names each agent twice, so "gfx1201\ngfx1201" is one device, not two.
 _amd_probe_arches() {
     printf '%s\n' "$1" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' | awk 'NF' | sort -u
 }
 
-# The index family is a property of the whole host: the wheels have to work on every AMD GPU
-# in the box, so every agent must land in the same family before anything reroutes. An APU
-# beside a discrete card does not, and routing on whichever the kernel enumerated first would
-# put gfx1151 wheels on a 9070 XT. No agreement, no reroute; CPU wheels are useless on such
-# a host but they are not wrong, and UNSLOTH_ROCM_GFX_ARCH still names the card.
+# The wheels must work on every AMD GPU in the box, so every agent has to land in the same
+# family: routing on whichever the kernel enumerated first puts gfx1151 wheels on a 9070 XT.
 _amd_agreed_index_family() {
     _aif_family=""
     for _aif_a in $(_amd_probe_arches "$1"); do
@@ -3336,11 +3331,8 @@ _amd_agreed_index_family() {
     printf '%s\n' "$_aif_family"
 }
 
-# The concrete arch is a property of ONE device, and gfx1200 beside gfx1201 agree on
-# gfx120X-all while still being different cards. setup.sh takes UNSLOTH_ROCM_GFX_ARCH as
-# authoritative over its own visibility-aware selection (studio/setup.sh, the env-override
-# arm), so exporting an arbitrary member of an agreed family would overrule a correct
-# downstream choice with a coin flip. Answer only when there is nothing to choose between.
+# setup.sh takes UNSLOTH_ROCM_GFX_ARCH over its own visibility-aware selection, so naming an
+# arbitrary member of an agreed family (gfx1200 beside gfx1201) overrules a correct choice.
 _amd_sole_index_arch() {
     _sia=$(_amd_probe_arches "$1")
     [ -n "$_sia" ] || return 1
@@ -3349,6 +3341,7 @@ _amd_sole_index_arch() {
     printf '%s\n' "$_sia"
 }
 
+# Map a gfx arch to the AMD pip index family (mirrors install.ps1 $archFamilyMap).
 _amd_arch_index_family_for_gfx() {
     case "$1" in
         gfx1201|gfx1200) echo gfx120X-all ;;
@@ -3708,9 +3701,8 @@ _rocm_tag_from_version_file() {
     awk -F. '{print "rocm"$1"."$2; exit}' /opt/rocm/.info/version || return 0
 }
 
-# Install line for the package manager this host actually has. Naming pacman
-# unconditionally told the unslothai#8731 reporter to run it on an immutable Fedora
-# image, where it does not exist and rpm-ostree would have cost a reboot.
+# Naming pacman unconditionally told the unslothai#8731 reporter to run it on an
+# immutable Fedora image, where it does not exist.
 _rocm_sdk_install_hint() {
     if command -v pacman >/dev/null 2>&1; then
         echo "sudo pacman -S rocm-hip-sdk"
@@ -3726,8 +3718,8 @@ _rocm_sdk_install_hint() {
 }
 
 _rocm_tag_from_hipconfig() {
-    # Fedora and friends ship hipconfig under /opt/rocm without putting it on PATH,
-    # so a PATH-only lookup misses a ROCm install that is right there (unslothai#8731).
+    # Fedora ships hipconfig under /opt/rocm but not on PATH, so a PATH-only lookup
+    # misses a ROCm install that is right there (unslothai#8731).
     _rt_hipconfig=""
     if command -v hipconfig >/dev/null 2>&1; then
         _rt_hipconfig=hipconfig
@@ -3769,13 +3761,10 @@ _rocm_tag_from_rpm() {
     # against a running dnf (rhbz#2463435). A version probe must not hang the
     # installer, and a timed-out probe is just a source that declined to answer.
     # _run_bounded no-ops where `timeout` is absent, so this adds no dependency.
-    # rocm-core is the AMD-repo package name. Fedora builds ROCm itself and ships no
-    # such package, so an rpm host with a working /opt/rocm answered nothing at all
-    # and the whole version detection came up empty (unslothai#8731). Ask about
-    # Fedora's names in the SAME query rather than looping: the wedged-rpm cases this
-    # probe is bounded for would otherwise cost the timeout once per name. rpm prints
-    # "package X is not installed" on stdout for a miss, so take the first line that
-    # actually starts with a digit; argument order keeps rocm-core's precedence.
+    # Fedora builds ROCm itself and ships no rocm-core, so an rpm host with a working
+    # /opt/rocm answered nothing (unslothai#8731). All names in ONE query, since looping
+    # would pay the timeout above once per name; rpm reports misses on stdout, so take
+    # the first line starting with a digit and let argument order rank the names.
     _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core rocm-runtime rocm-hip 2>/dev/null \
         | awk '/^[0-9]/{print; exit}') || return 0
     [ -n "$_rt_ver" ] || return 0
@@ -3808,6 +3797,8 @@ _highest_rocm_tag() {
 # compatible +/- 2 releases, the normalisation below can only emit a leaf PyTorch
 # publishes, the one source that can report a tree that is not installed is
 # filtered above, and any disagreement is named on stderr for the install log.
+
+# Path of the cross-subshell answer cache; set by the parent shell, empty when unused.
 _ROCM_TAG_MEMO=""
 
 _detect_rocm_version_tag() {
@@ -3981,10 +3972,8 @@ get_torch_index_url() {
         # fresh-install case: the GPU is real, but with no ROCm userspace the
         # correct PyTorch build can't be selected. Warn with an actionable fix
         # rather than silently installing CPU PyTorch.
-        # The version is only needed to choose between the generic rocmX.Y leaves.
-        # When the arch maps to a dedicated repo.amd.com/rocm/whl/gfx* index,
-        # _amd_arch_index_family_for_gfx has the answer from the arch alone, so an
-        # unreadable version is not a reason to fall back to CPU (unslothai#8731).
+        # The version only picks between the generic rocmX.Y leaves, so an arch with its
+        # own repo.amd.com/rocm/whl/gfx* index does not need one (unslothai#8731).
         _amd_gfx_family=$(_amd_agreed_index_family "$_amd_gfx_probe") || _amd_gfx_family=""
         if [ -n "$_amd_gfx_family" ]; then
             _amd_gfx_first=$(_amd_sole_index_arch "$_amd_gfx_probe") || _amd_gfx_first=""
@@ -3997,8 +3986,8 @@ get_torch_index_url() {
         fi
         echo "[WARN] AMD GPU detected, but no ROCm version could be read to select the matching GPU PyTorch build -- falling back to CPU-only PyTorch." >&2
         if [ -d "${ROCM_PATH:-/opt/rocm}" ]; then
-            # Saying "no ROCm install was found" on a host with /opt/rocm sent the
-            # unslothai#8731 reporter off to install a package he already had.
+            # "No ROCm install was found" sent the unslothai#8731 reporter off to
+            # install a package he already had.
             echo "[WARN] ${ROCM_PATH:-/opt/rocm} exists, so ROCm is likely installed but not reporting a version this installer can read." >&2
             echo "[WARN] Pin the wheels and re-run: UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4   (a PyTorch wheel leaf: rocm6.0-6.4, rocm7.0-7.2)" >&2
         else
@@ -4562,13 +4551,9 @@ if [ -n "$_ti_url_trim" ] || [ -n "$_ti_family_trim" ]; then
 fi
 [ "$_torch_index_pinned" = true ] || _maybe_bootstrap_rocm_wsl || true
 
-# Shared by get_torch_index_url and the runtime-less reroute below, so it has to be created
-# HERE: get_torch_index_url runs in a command substitution and anything the subshell creates
-# dies with it, while a file it writes survives. mktemp -d rather than a $$-derived name --
-# TMPDIR defaults to a world-writable /tmp, so a predictable path can be pre-created as a
-# symlink by any local user, which would both feed the probe a chosen ROCm version and
-# redirect the write. mktemp gives a 0700 directory nobody else can enter, and the file
-# inside only exists once a real answer has been computed.
+# Created here, not inside get_torch_index_url: that runs in a command substitution, so only
+# a file outlives it. mktemp -d, never a $$-derived name -- a predictable path under a
+# world-writable /tmp can be pre-created as a symlink, feeding the probe a chosen version.
 _ROCM_TAG_MEMO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-rocm.XXXXXX" 2>/dev/null) \
     && _ROCM_TAG_MEMO="$_ROCM_TAG_MEMO_DIR/tag" || _ROCM_TAG_MEMO=""
 
@@ -4582,12 +4567,10 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # env-independent KFD topology while rocminfo/amd-smi can't read its arch
 # (KFD-only host, unslothai#7314 -- before the KFD detection fix these hosts
 # reached this reroute via the false branch, so the empty-probe condition
-# preserves that routing). A */cpu index chosen WITH a readable gfx and a readable
-# but UNSUPPORTED ROCm version is a deliberate fallback -- rerouting it would
-# contradict that decision, and stays excluded because the shared probe returns its
-# gfx. An UNREADABLE version is not a decision at all, just a detection miss, so it
-# gets its own way in below (unslothai#8731). An explicit UNSLOTH_ROCM_GFX_ARCH
-# override stays authoritative either way.
+# preserves that routing). A */cpu index chosen WITH a readable gfx and a readable but
+# UNSUPPORTED ROCm version is a deliberate fallback, and stays excluded because the shared
+# probe returns its gfx. An UNREADABLE version is only a detection miss, so it gets its own
+# way in below (unslothai#8731). UNSLOTH_ROCM_GFX_ARCH stays authoritative either way.
 
 _amd_no_rocm_version_reroute=false
 _amd_probed_gfx_first=""
@@ -4620,19 +4603,14 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
     case "$TORCH_INDEX_URL" in
         */cpu)
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
-            # It hands an explicit UNSLOTH_ROCM_GFX_ARCH back verbatim, and HIP's
-            # gcnArchName carries feature flags: gfx1201:sramecc+:xnack-. The index case
-            # table has no arm for that, so the suffix quietly cost the reroute while
-            # get_torch_index_url, which strips it, had already told the user per-arch
-            # wheels were coming. Normalise through the same helper so the two agree.
+            # Inference hands an explicit override back verbatim, and HIP's gcnArchName
+            # carries feature flags (gfx1201:sramecc+:xnack-) the index table has no arm
+            # for, so the suffix silently cost the reroute. Normalise as the caller did.
             _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
                 || _linux_inferred_gfx=""
-            # The no-version host reached this reroute BECAUSE rocminfo/amd-smi read
-            # its arch, and that reading is what the decision was made on, so it is
-            # what gets routed on. Marketing-name inference is a lookup table over
-            # lspci and can name a different card on a mixed APU + discrete host --
-            # taking its answer here would install arch-specific wheels for a GPU the
-            # decision never looked at, and export that arch to setup.sh as well.
+            # Route on the arch the probe READ, not on lspci marketing-name inference:
+            # the two disagree on a mixed APU + discrete host, and inference's answer
+            # would install wheels for a GPU the reroute decision never looked at.
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"
             fi
@@ -4658,8 +4636,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     if [ -n "$_linux_inferred_gfx" ]; then
                         export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
                     fi
-                    # Off the family, not the arch: a family never straddles this
-                    # boundary, so it holds even when no single card was named.
+                    # Off the family, not the arch: no family straddles this boundary.
                     case "$_amd_family" in
                         gfx120X-all|gfx1151|gfx1150|gfx1152)
                             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"

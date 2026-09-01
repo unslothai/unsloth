@@ -1,18 +1,10 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# End-to-end routing assertions for the no-readable-version AMD reroute (issue #8731).
-# Why this file exists, next to test_rocm_no_version_arch_route.sh: the reroute is
-# TOP-LEVEL code in install.sh, not a function. get_torch_index_url runs inside a
-# command substitution and cannot assign TORCH_INDEX_URL, so it deliberately returns
-# */cpu and defers; the reroute that follows is what actually rewrites the index.
-# A harness that sources functions with `sed -n '/^name()/,/^}/p'` therefore never
-# executes the decision, and an assertion that greps install.sh for the reroute's
-# own variable names passes just as happily when the reroute is deleted.
-# The splice deliberately runs PAST the reroute to the close of the whole index
-# decision region: two further top-level blocks (the Strix gfx115x reroute and the
-# gfx906 pin) can still rewrite TORCH_INDEX_URL, so stopping at the reroute would
-# assert an index that is not the one the installer ends up with.
+# End-to-end routing assertions for the no-readable-version AMD reroute (issue #8731). Separate from
+# test_rocm_no_version_arch_route.sh because the reroute is TOP-LEVEL code: get_torch_index_url returns
+# */cpu and defers, so sourcing functions never runs the decision and grepping for its variable names
+# passes with the reroute deleted. The splice runs PAST it: Strix gfx115x and gfx906 still rewrite it.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -25,16 +17,12 @@ FAIL=0
 _ROOT=$(mktemp -d)
 cleanup() { rm -rf "$_ROOT"; }
 trap cleanup EXIT
-# The spliced block calls mktemp -d itself (the ROCm tag memo) and its cleanup trap
-# is not part of the splice, so keep those under $_ROOT rather than in the real TMPDIR.
+# The spliced block runs its own mktemp -d (the ROCm tag memo) without a cleanup trap, so keep it under $_ROOT.
 TMPDIR="$_ROOT/tmp"
 export TMPDIR
 mkdir -p "$TMPDIR"
 
-# Every absolute host path the spliced code probes is rewritten into $_FAKE. This
-# box may well have a real GPU of either vendor; without the rewrite a CI runner
-# with an NVIDIA driver would send every AMD scenario down the CUDA path and the
-# suite would pass while measuring nothing. The pre-flight below proves it took.
+# Host paths are redirected into $_FAKE, or a real GPU on this box gets measured and the suite passes regardless.
 _FAKE="$_ROOT/fake"
 _F_ROCM="$_FAKE/opt-rocm"
 _F_PROCNV="$_FAKE/proc-driver-nvidia"
@@ -75,10 +63,7 @@ _BLOCK="$_ROOT/block.sh"
 for _fn in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{[[:space:]]*$' "$INSTALL_SH" \
              | sed 's/().*//' | sort -u); do
     sed -n "/^$_fn()[[:space:]]*{[[:space:]]*\$/,/^}\$/p" "$INSTALL_SH" > "$_ROOT/.one"
-    # A function whose body contains a heredoc with a bare `}` line gets truncated by
-    # the range extraction and would be injected as a syntax error. Drop those rather
-    # than poison the whole file; the required-function check below is what proves
-    # none of them were on the reroute path.
+    # A heredoc with a bare `}` truncates this extraction into a syntax error; the check below covers the loss.
     if bash -n "$_ROOT/.one" 2>/dev/null; then
         cat "$_ROOT/.one" >> "$_ROOT/funcs.raw"
         echo "" >> "$_ROOT/funcs.raw"
@@ -353,8 +338,7 @@ fedora_no_version_host gfx1100
 assert_eq "gfx1100 with no readable version routes to its own family" \
     "$_AMD/gfx110X-all/" "$(run_index)"
 
-# gfx906 (MI50) is served only through a generic rocmX.Y leaf, so there is nothing
-# to reroute to and CPU torch is the correct answer.
+# gfx906 (MI50) is served only through a generic rocmX.Y leaf, so there is nothing to reroute to.
 fedora_no_version_host gfx906
 assert_eq "gfx906 with no readable version stays on cpu" "$_BASE/cpu" "$(run_index)"
 
@@ -366,8 +350,7 @@ fedora_no_version_host gfx1201 gfx1036
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "gfx1201 beside gfx1036 stays on cpu" "$_BASE/cpu" "$(run_index)"
 
-# The wheels are right for both, so the index moves. UNSLOTH_ROCM_GFX_ARCH must stay
-# unset: setup.sh makes a visibility-aware pick that naming one at random overrules.
+# UNSLOTH_ROCM_GFX_ARCH must stay unset: setup.sh makes a visibility-aware pick that naming a card overrules.
 fedora_no_version_host gfx1200 gfx1201
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "a same-family pair routes to the shared family" \
@@ -394,9 +377,7 @@ assert_eq "a GPU-less host with stale ROCm packages stays on cpu" \
 fedora_no_version_host gfx1201
 assert_eq "the same host on aarch64 does not reroute" "$_BASE/cpu" "$(run_index aarch64)"
 
-# install.sh is #!/bin/sh. bash is what CI runs these files with, so the block above
-# proves nothing about dash, where an accidental bashism in the reroute would only
-# surface on a Debian/Ubuntu host. Re-run the decision under /bin/sh as well.
+# install.sh is #!/bin/sh but CI runs these files with bash, so a bashism would surface only on a dash host.
 _SH_REAL=$(command -v sh 2>/dev/null || true)
 if [ -n "$_SH_REAL" ]; then
     _RUN_SHELL="$_SH_REAL"

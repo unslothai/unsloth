@@ -436,11 +436,8 @@ assert_eq "the named override reaches this path -> rocm6.4" "$_BASE/rocm6.4" "$_
 # ── 9. Every source missing: warn, do not die ───────────────────────────────
 # rocminfo alone, a fresh AMD host with no ROCm userspace. Under set -e the whole
 # detection must still succeed.
-# gfx1100 has its own repo.amd.com index, so since unslothai#8731 an unreadable
-# version no longer settles for CPU here: the arch alone picks the wheels and the
-# function defers to the reroute. The "no ROCm install" wording it used to print is
-# now reserved for an arch with no per-arch index -- see
-# tests/sh/test_rocm_no_version_arch_route.sh, which covers both halves.
+# gfx1100 has its own repo.amd.com index, so since unslothai#8731 an unreadable version
+# routes on the arch rather than settling for CPU.
 reset_sources
 assert_eq "no version source at all -> cpu" "$_BASE/cpu" "$(run_index)"
 assert_eq "no version source at all -> exit 0 under set -e" "0" "$(run_status_under_set_e)"
