@@ -32,6 +32,43 @@ from utils.workspace_context import current_workspace_subject
 
 logger = get_logger(__name__)
 
+# Keys a Data Designer seed source reads a local file from.
+_RECIPE_PATH_KEYS = ("path", "paths")
+
+
+def _reject_uncontained_recipe_paths(recipe: Any) -> None:
+    """Refuse a recipe naming a local file outside the caller's own roots.
+
+    The recipe is an arbitrary dict forwarded to the worker unchanged, and the
+    local and unstructured seed sources open whatever ``path``/``paths`` they
+    carry. Binding the worker to a workspace scopes its OUTPUT; it does nothing
+    about what the recipe tells it to read.
+
+    Walked recursively rather than matched against the seed-source schema, which
+    lives in a third-party package and can grow a new source in any release. The
+    check only ever refuses, and a value that names nothing on disk is left alone
+    by the containment helper, so an ordinary string field called "path" is not
+    affected.
+    """
+    from routes.inference import _reject_uncontained_local_path
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in _RECIPE_PATH_KEYS:
+                    if isinstance(value, str):
+                        _reject_uncontained_local_path(value, "build datasets from")
+                    elif isinstance(value, (list, tuple)):
+                        for item in value:
+                            if isinstance(item, str):
+                                _reject_uncontained_local_path(item, "build datasets from")
+                _walk(value)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                _walk(item)
+
+    _walk(recipe)
+
 
 _CTX = mp.get_context("spawn")
 
@@ -190,6 +227,11 @@ class JobManager:
             from utils.paths import recipe_datasets_root
 
             run_payload["_artifact_root"] = str(recipe_datasets_root())
+            # The artifact root only confines what the worker WRITES. The recipe
+            # itself is forwarded verbatim, and its seed sources open the paths
+            # they name, so an absolute path was a read of another account's file
+            # straight into the generated dataset.
+            _reject_uncontained_recipe_paths(recipe)
             from utils.native_path_leases import (
                 native_path_secret_removed_for_child_start,
                 run_without_native_path_secret,

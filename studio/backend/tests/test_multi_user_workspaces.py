@@ -1968,3 +1968,91 @@ def test_remote_code_training_and_export_are_owner_only():
     assert "_reject_remote_code_from_a_managed_account(request.trust_remote_code)" in start
     load = inspect.getsource(export_routes.load_checkpoint)
     assert "_reject_remote_code_from_a_managed_account(request.trust_remote_code)" in load
+
+
+def test_controlnets_are_per_account_like_the_diffusion_loras(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from core.inference import diffusion_controlnet, diffusion_lora
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    seen = {}
+    for subject in ("unsloth", "alice"):
+        token = _bind(subject)
+        try:
+            seen[subject] = diffusion_controlnet.controlnets_dir().resolve()
+            # The sibling catalog moved to the workspace root in this branch; this
+            # one was left behind, so the owner's local weights were in every
+            # account's picker.
+            assert seen[subject].parent.parent == diffusion_lora.loras_dir().parent.parent
+        finally:
+            reset_workspace_subject(token)
+    assert seen["unsloth"] != seen["alice"]
+    assert seen["unsloth"] == (studio_root() / "controlnets" / "diffusion").resolve()
+
+
+def test_media_and_export_loads_refuse_paths_outside_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import inspect
+
+    from routes import export as export_routes
+    from routes import inference as inference_routes
+    from routes import video as video_routes
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    # The text load path got containment through _resolve_model_identifier_for_request;
+    # these three never went near it and their validators accept any local path.
+    assert '_reject_uncontained_local_path(request.model_path, "load")' in inspect.getsource(
+        inference_routes.load_diffusion_model_gated
+    )
+    assert '_reject_uncontained_local_path(request.model_path, "load")' in inspect.getsource(
+        video_routes.load_video_model_gated
+    )
+    assert '_reject_uncontained_local_path(request.checkpoint_path, "export")' in inspect.getsource(
+        export_routes.load_checkpoint
+    )
+
+
+def test_a_recipe_cannot_seed_from_another_accounts_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from fastapi import HTTPException
+    from core.data_recipe.jobs.manager import _reject_uncontained_recipe_paths
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    outside = tmp_path / "owner-private.jsonl"
+    outside.write_text("secret", encoding = "utf-8")
+
+    token = _bind("alice")
+    try:
+        mine = workspace_root() / "datasets"
+        mine.mkdir(parents = True, exist_ok = True)
+        ours = mine / "seed.jsonl"
+        ours.write_text("mine", encoding = "utf-8")
+
+        # Nested, because the artifact root only confines what the worker writes
+        # and the recipe itself is forwarded verbatim.
+        with pytest.raises(HTTPException) as excinfo:
+            _reject_uncontained_recipe_paths(
+                {"columns": [{"seed": {"source": {"type": "local", "path": str(outside)}}}]}
+            )
+        assert excinfo.value.status_code == 403
+        with pytest.raises(HTTPException):
+            _reject_uncontained_recipe_paths({"seed": {"paths": [str(ours), str(outside)]}})
+        _reject_uncontained_recipe_paths({"seed": {"paths": [str(ours)]}})
+        # A string field named "path" that is not a file on disk is untouched.
+        _reject_uncontained_recipe_paths({"path": "some/relative/thing"})
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_embedding_model_setting_cannot_name_another_workspace():
+    import inspect
+
+    from routes import settings as settings_routes
+
+    src = inspect.getsource(settings_routes.update_embedding_model)
+    # Caching the choice per workspace stopped it reaching another account's RAG;
+    # it did not stop the choice itself naming a path the loader then opens.
+    assert '_reject_uncontained_local_path(model, "use embedding models from")' in src

@@ -2687,6 +2687,13 @@ def update_embedding_model(
             event = "settings.update_embedding_model_failed",
             log = logger,
         ) from exc
+    # Caching this per workspace stopped one account's choice reaching another's
+    # RAG; it did not stop the choice itself naming a path. An existing absolute
+    # directory is accepted here and later deserialized by SentenceTransformer or
+    # the llama embedding backend, so the same containment inference applies.
+    from routes.inference import _reject_uncontained_local_path
+
+    _reject_uncontained_local_path(model, "use embedding models from")
     hf_token = (payload.hf_token or "").strip() or None
     from utils.utils import hf_env_offline
 

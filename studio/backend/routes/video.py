@@ -259,6 +259,12 @@ async def load_video_model_gated(
     )
     from utils.native_path_leases import redact_native_paths
 
+    from routes.inference import _reject_uncontained_local_path
+
+    # Same containment the text load path applies. The video validator accepts
+    # any existing local path, so without this an absolute path loaded another
+    # account's private checkpoint.
+    _reject_uncontained_local_path(request.model_path, "load")
     backend = get_video_backend()
     try:
         # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load agree; a bad kind raises here, so a 400.

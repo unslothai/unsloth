@@ -89,9 +89,17 @@ async def load_checkpoint(
         # Same rule as /inference/load and the training start: the export worker
         # runs as the same OS user, and the consent scan is not an isolation
         # boundary, because the caller approves the fingerprint it reports.
-        from routes.inference import _reject_remote_code_from_a_managed_account
+        from routes.inference import (
+            _reject_remote_code_from_a_managed_account,
+            _reject_uncontained_local_path,
+        )
 
         _reject_remote_code_from_a_managed_account(request.trust_remote_code)
+        # And the path itself: load_checkpoint opens and deserializes whatever it
+        # is given, so an absolute path was a read of another account's private
+        # checkpoint, exportable and pushable from there. Before ownership is
+        # assigned and before the worker spawns.
+        _reject_uncontained_local_path(request.checkpoint_path, "export")
         await _ensure_export_supported()
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take

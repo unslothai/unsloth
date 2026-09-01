@@ -32514,6 +32514,10 @@ async def load_diffusion_model_gated(
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
+    # The text load path gets this through _resolve_model_identifier_for_request;
+    # the media ones never went near it, and their validators accept any existing
+    # local path, so an absolute path here deserialized another account's weights.
+    _reject_uncontained_local_path(request.model_path, "load")
     backend = get_diffusion_backend()
     try:
         # Resolve the load kind once (gguf / single_file / pipeline) so validation, engine selection and the load agree. A bad kind raises here, so a 400.
