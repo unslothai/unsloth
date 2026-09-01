@@ -2966,7 +2966,61 @@ class TestFitOffRetryDropsTheLock:
         assert resynced == ["--load-mode", "mmap+mlock", "--cache-type-v", "f16", "--temp", "0.7"]
         assert _contains_subsequence(normalized, resynced)
 
-    def test_the_resync_is_a_no_op_when_nothing_moved(self):
+    def test_a_dropped_tensor_split_keeps_the_policy_block_findable(self):
+        """The other half of the same fault. A user's --tensor-split survives the
+        policy into the block, and every site that narrows the device pool drops it
+        from argv by value, so the block stops matching. main was immune because it
+        anchored on _mem_managed alone; the whole-block replace is what needs this."""
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _contains_subsequence,
+            _resynced_after_flag_drop,
+        )
+
+        settings = (True, False)
+        original = ["--tensor-split", "0.5,0.5", "--temp", "0.7"]
+        managed, extras = apply_model_memory_policy(
+            original,
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            model_memory_settings = settings,
+        )
+        assert extras == original, "the policy leaves placement flags alone"
+        block = [*managed, *extras]
+        cmd = ["llama-server", "-m", "m.gguf", "--fit", "on", *block]
+
+        gated = LlamaCppBackend._without_tensor_split(cmd)
+        assert gated is not None
+        assert not _contains_subsequence(gated, block), "the stale block is the bug"
+
+        resynced = _resynced_after_flag_drop(block, LlamaCppBackend._without_tensor_split(block))
+        assert resynced == ["--load-mode", "mmap+mlock", "--temp", "0.7"]
+        assert _contains_subsequence(gated, resynced)
+
+    def test_every_placement_flag_drop_resyncs_the_policy_block(self):
+        """Source check, so a new narrowing site cannot be added without one. Each
+        of these rebinds cmd to a copy with placement flags removed, and the block
+        has to lose exactly the same ones."""
+        import inspect
+        import re
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        capture = src.index("_mem_policy_argv = [")
+        sites = [
+            m
+            for m in re.finditer(
+                r"^\s*cmd = (_cpu_cmd|_gated_cmd|_no_tensor_mode|_arch_retry_cmd)$",
+                src,
+                re.MULTILINE,
+            )
+            if m.start() > capture
+        ]
+        assert len(sites) == 5, [m.group(1) for m in sites]
+        for m in sites:
+            window = src[m.end() : m.end() + 220]
+            assert "_drop_from_policy_argv(" in window, m.group(1)
         from core.inference.llama_cpp import _resynced_policy_argv
 
         block = ["--load-mode", "mmap+mlock"]

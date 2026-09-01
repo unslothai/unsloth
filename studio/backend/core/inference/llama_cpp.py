@@ -4988,6 +4988,14 @@ def _contains_subsequence(tokens: List[str], run: List[str]) -> bool:
     return any(tokens[i : i + len(run)] == run for i in range(len(tokens) - len(run) + 1))
 
 
+def _resynced_after_flag_drop(block: List[str], dropped: Optional[List[str]]) -> List[str]:
+    """``block`` after the same flag removal the argv just took.
+
+    ``dropped`` is what the removal helper returned for the block itself: None
+    when it carried none of those flags, which leaves it as it was."""
+    return block if dropped is None else dropped
+
+
 def _resynced_policy_argv(before: List[str], after: List[str], block: List[str]) -> List[str]:
     """``block`` re-read from ``after`` at the offset it held in ``before``.
 
@@ -22105,6 +22113,18 @@ class LlamaCppBackend:
                     *(str(arg) for arg in _emit_extra_args),
                 ]
 
+                def _drop_from_policy_argv(names: Collection[str]) -> None:
+                    """Keep the block in step with a placement flag the argv just lost.
+
+                    A user's own --tensor-split / --split-mode sits INSIDE it, and every
+                    site that narrows the device pool drops those by value. The --fit off
+                    retry then searches for a block that is no longer on argv, and the
+                    replace it does is a silent no-op."""
+                    nonlocal _mem_policy_argv
+                    _mem_policy_argv = _resynced_after_flag_drop(
+                        _mem_policy_argv, self._without_flags(_mem_policy_argv, names)
+                    )
+
                 # Last so it wins: the drafter CPU pin on a virtualised Metal device
                 # is a correctness fix, not a preference, and llama.cpp is last-wins.
                 if _pv_draft_cpu_pin:
@@ -22488,6 +22508,7 @@ class LlamaCppBackend:
                             "flags, which abort a server with no visible device."
                         )
                         cmd = _cpu_cmd
+                        _drop_from_policy_argv(("--split-mode", "-sm", "--tensor-split", "-ts"))
                         # Recorded, or the next Apply reads the normalized server as a
                         # different one and rebuilds a multi-GB model every time.
                         if self._tensor_parallel:
@@ -22536,6 +22557,7 @@ class LlamaCppBackend:
                                 "has no kernels for some of them."
                             )
                             cmd = _gated_cmd
+                            _drop_from_policy_argv(("--tensor-split", "-ts"))
                             # The argv lost the ratio but the request still carries
                             # it and the next Apply re-sends it verbatim. Record it, or
                             # the duplicate-load check reads the normalized server as a
@@ -22553,6 +22575,7 @@ class LlamaCppBackend:
                             _no_tensor_mode = self._without_flags(cmd, ("--split-mode", "-sm"))
                             if _no_tensor_mode is not None:
                                 cmd = _no_tensor_mode
+                                _drop_from_policy_argv(("--split-mode", "-sm"))
                             self._arch_gate_dropped_tensor_parallel = True
                             self._tensor_parallel = False
                             logger.info(
@@ -23607,6 +23630,7 @@ class LlamaCppBackend:
                                 "devices and the narrowed set re-indexes them."
                             )
                             cmd = _arch_retry_cmd
+                            _drop_from_policy_argv(("--tensor-split", "-ts"))
                             # No ratio record, unlike the proactive gate: _tensor_split
                             # is non-None only in manual mode, which leaves gpu_indices
                             # None, and this arm needs it truthy.
@@ -23618,6 +23642,7 @@ class LlamaCppBackend:
                             _no_tensor_mode = self._without_flags(cmd, ("--split-mode", "-sm"))
                             if _no_tensor_mode is not None:
                                 cmd = _no_tensor_mode
+                                _drop_from_policy_argv(("--split-mode", "-sm"))
                             self._arch_gate_dropped_tensor_parallel = True
                             self._tensor_parallel = False
                             logger.info(
