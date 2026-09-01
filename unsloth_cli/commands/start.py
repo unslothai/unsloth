@@ -600,10 +600,8 @@ class LoadOptions(NamedTuple):
     load_in_4bit: bool = True
     tensor_parallel: bool = False
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
-    # Names the user actually typed. A value alone cannot say it: --context-length 0,
-    # --load-in-4bit and --no-tensor-parallel all equal the declared default, yet each
-    # is a reset the server has to be told about. Appended last so the five positional
-    # constructions in the agent commands keep working.
+    # Names the user actually typed: --context-length 0 equals the declared default yet
+    # is a reset the server must hear. Appended last to keep positional callers working.
     supplied: frozenset = frozenset()
 
     def overrides(self) -> frozenset:
@@ -619,8 +617,7 @@ class LoadOptions(NamedTuple):
             )
             if getattr(self, name) != default
         }
-        # Internal callers build LoadOptions directly and never populate `supplied`,
-        # so a non-default value still counts on its own.
+        # Internal callers never populate `supplied`, so a non-default value counts too.
         return frozenset(differing) | frozenset(self.supplied)
 
 
@@ -636,14 +633,9 @@ _LOAD_OPTION_PARAMS = (
 def _supplied_load_params(ctx) -> frozenset:
     """Which load knobs Click saw on the command line.
 
-    The context has to be passed in: Typer invokes a command callback with no active
-    Click context, so click.get_current_context() answers None here even mid-command
-    (verified on click 8.0 through 8.5). Every agent command already declares
-    `ctx: typer.Context`, which Typer fills in explicitly.
-
-    Anything unaskable -- a direct call, a stub context in a test -- yields the empty
-    set, and `overrides()` falls back to comparing values, which is the pre-existing
-    behaviour.
+    The context must be PASSED IN: Typer invokes callbacks with no active click context,
+    so click.get_current_context() is None. Unaskable -> empty set, and `overrides()`
+    falls back to comparing values.
     """
     getter = getattr(ctx, "get_parameter_source", None)
     if getter is None:
@@ -654,11 +646,8 @@ def _supplied_load_params(ctx) -> frozenset:
             source = getter(name)
         except Exception:
             continue
-        # By member NAME, not by identity or ordering. Typer vendors its own copy of
-        # click, so the context hands back typer._click's ParameterSource, a different
-        # enum class from click.core's -- an `is` test against either never matches.
-        # Ordering is no good either: click 8.3 made it a reordered IntEnum. The name
-        # has been stable since the enum was introduced in click 8.0.
+        # By member NAME, not identity or ordering: Typer vendors its own click, so this
+        # is typer._click's ParameterSource, and click 8.3 reordered the IntEnum.
         if getattr(source, "name", None) == "COMMANDLINE":
             supplied.add(name)
     return frozenset(supplied)
@@ -1722,11 +1711,8 @@ def _model_id_matches(
 
 
 def _inference_status(base: str, key: str) -> dict:
-    """The resident model's runtime state, or {} when the server won't say.
-
-    An older server has no such endpoint; callers must read an empty answer as "cannot
-    prove anything", never as "nothing is set".
-    """
+    """Runtime state of the resident model. {} means "cannot prove anything" (older
+    server), never "nothing is set"."""
     try:
         return _http_json("GET", f"{base}/api/inference/status", key)
     except Exception:
@@ -1734,13 +1720,10 @@ def _inference_status(base: str, key: str) -> dict:
 
 
 def _resident_load_target(models: list, status: dict, allow_casefold: bool):
-    """(identifier to post, id the model is advertised as) for the running model.
+    """(identifier to post, id it is advertised as) for the running model.
 
-    /v1/models only ever shows public_model_id, which reduces a local GGUF to its
-    basename. The load endpoint's _same_loaded_identifier compares a resident local
-    path exactly, so posting that basename cannot dedupe against the resident and the
-    server would instead try to resolve it as a new model. The status endpoint reports
-    the identifier the loader actually holds, so it decides.
+    /v1/models shows only the sanitized basename while _same_loaded_identifier compares
+    resident paths exactly, so the load must carry the identifier status reports.
     """
     active_id = status.get("active_model")
     entry = None
@@ -1755,10 +1738,8 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             None,
         )
     if entry is None and not active_id:
-        # Older server with no status at all: order is a guess at which entry is the
-        # chat model, but it is the only signal left. When status DID name a model,
-        # trust that name over the list even if /v1/models has not caught up, or a
-        # speech model listed first would be announced as the one being reconfigured.
+        # Only when status names nothing. If it DID name a model, trust it over a
+        # lagging /v1/models, or a speech model listed first would be reported.
         entry = next((m for m in models if m.get("loaded") is not False), None)
     public_id = active_id or (entry or {}).get("id")
     if not public_id:
@@ -1766,8 +1747,8 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
     identifier = status.get("model_identifier")
     if identifier:
         return identifier, public_id
-    # A native path lease deliberately redacts the internal path. Only a hub id can be
-    # posted back as-is; inventing a path from the basename would address the wrong file.
+    # A native path lease redacts the internal path; inventing one from the basename
+    # would address the wrong file, so only a hub id can be posted back.
     if _is_hub_model_id(public_id):
         return public_id, public_id
     _fail(
@@ -1777,11 +1758,8 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
 
 
 def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset) -> bool:
-    """Whether applying these settings to the resident can restart it.
-
-    Unproven equality counts as a difference: an older server omits these fields, and
-    silently restarting a shared server is worse than one spurious warning.
-    """
+    """Whether applying these settings can restart the resident. Unproven equality
+    counts as a difference: a silent restart is worse than a spurious warning."""
     if not status:
         return True
     for name in overrides:
@@ -1792,8 +1770,7 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
             ):
                 return True
         elif name == "max_seq_length":
-            # The requested context, not the resolved one: llama.cpp clamps n_ctx at fit
-            # time, so the resolved value cannot show that two requests were equivalent.
+            # Requested, not resolved: llama.cpp clamps n_ctx at fit time.
             resident = status.get("requested_context_length")
             if resident is None or int(resident) != int(load.max_seq_length):
                 return True
@@ -1831,17 +1808,15 @@ def _resolve_model(
     # the same command still attaches without evicting the first.
     overrides = load.overrides()
     load_has_overrides = bool(overrides)
-    # Set only on the inferred-attach path, where `requested` is the resident's internal
-    # identifier: it is the id to show the user and to match the load response against,
-    # since `requested` may be a server filesystem path.
+    # Inferred-attach path only: `requested` becomes the resident's internal identifier
+    # (possibly a server path), so this is the id to show and to match on.
     attach_public_id = None
     status_snapshot = None
     if requested is None and load_has_overrides and infer_resident:
         status_snapshot = _inference_status(base, key)
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
-        # preload_check deliberately survives: it is the only gate that runs before the
-        # load evicts the shared model (_require_gguf_for_codex runs after _connect
-        # returns), so an inferred target has to clear it exactly like a named one.
+        # preload_check deliberately survives: it is the only gate before the load evicts
+        # the shared model (_require_gguf_for_codex runs after _connect returns).
     # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
     # matching one would skip /api/inference/load and leave the agent pointed at a
     # model that is not resident, so only attach to an entry that is actually loaded.
@@ -1917,9 +1892,8 @@ def _resolve_model(
         active_id = active.get("id") if active else None
         announced_switch = False
         if attach_public_id is not None:
-            # An inferred attach never switches model, so the id comparison below would
-            # both misreport it as a switch and print the server's path. It can still
-            # restart the shared runtime, which is what the user has to be told.
+            # An inferred attach never switches model, so the comparison below would
+            # misreport a switch and print the server's path.
             if _load_settings_differ(status_snapshot, load, overrides):
                 typer.echo(f"Applying new load settings to {attach_public_id}.")
                 typer.echo("This unloads the current model for every attached session.")
@@ -1949,8 +1923,7 @@ def _resolve_model(
                 announced_switch = True
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged. Membership decides, not
-        # truthiness: --context-length 0 and --no-tensor-parallel are resets whose
-        # values equal the defaults, and the server has to hear them to undo a setting.
+        # truthiness: a reset like --context-length 0 equals the default yet must be sent.
         payload = {"model_path": requested}
         if "gguf_variant" in overrides and load.gguf_variant:
             payload["gguf_variant"] = load.gguf_variant
@@ -1981,10 +1954,8 @@ def _resolve_model(
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
         # through to models[0] and connect to a different loaded model.
-        # attach_public_id is the id the server itself advertises. Our _public_model_id
-        # only strips a basename, while the server's also maps an HF cache path to its
-        # repo id, so for a hub GGUF loaded from the cache these two disagree and the
-        # match below would miss a load that in fact succeeded.
+        # attach_public_id: our _public_model_id only strips a basename, while the
+        # server also maps an HF cache path to its repo id, so the two can disagree.
         wanted = {requested, _public_model_id(requested), attach_public_id} - {None}
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
@@ -4051,8 +4022,8 @@ def _connect(
             None if server is not None else model,
             load,
             preload_check = None if server is not None else preload_check,
-            # That server was started FROM these knobs, so they are already in effect.
-            # Inferring a target from them here would reload what was just loaded.
+            # That server was started FROM these knobs, so inferring a target here would
+            # reload what was just loaded.
             infer_resident = server is None,
         )
     except BaseException:

@@ -48,10 +48,8 @@ export function resolveCtxPinSeed(options: {
   /** ``status.requested_context_length``; undefined on a backend that omits the field. */
   incoming: number | null | undefined;
   /**
-   * ``status.is_gguf``: only a GGUF load carries an n_ctx. A non-GGUF status does
-   * now report ``requested_context_length`` (the CLI needs it to tell an attach
-   * that changes the context from one that does not), so this flag, not the
-   * presence of ``incoming``, is what keeps that value out of the pin control.
+   * ``status.is_gguf``. A non-GGUF status now reports ``requested_context_length``
+   * too, so this flag, not the presence of ``incoming``, keeps it out of the pin.
    */
   isGguf: boolean;
   /** No load of this tab's own is in flight (``!modelLoading``). */

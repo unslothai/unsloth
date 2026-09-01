@@ -16,13 +16,8 @@ RESIDENT = {"id": "unsloth/Qwen3-8B", "loaded": True}
 
 
 class FakeServer:
-    """A /v1/models + /api/inference/status pair that answers as the real server does.
-
-    /v1/models advertises the sanitized public id (public_model_id strips a directory
-    and the .gguf suffix), while /api/inference/status reports the identifier the load
-    endpoint actually dedupes against. Keeping the two distinct is the whole point:
-    a resident loaded by path is reachable only through the status field.
-    """
+    """/v1/models advertises the sanitized public id; only the status identifier is
+    what the load endpoint dedupes against."""
 
     def __init__(self, models, status):
         self.models = models
@@ -48,7 +43,6 @@ class FakeServer:
 
     def load(self, base, key, requested, load, payload):
         self.loads.append(payload)
-        # The server registers what it loaded, so the post-load catalog match finds it.
         public = start_cli._public_model_id(requested) or requested
         if not any(m.get("id") == public for m in self.models):
             self.models.append({"id": public, "loaded": True})
@@ -108,7 +102,7 @@ def test_bare_attach_does_not_load(loads):
 
 
 def test_bare_attach_does_not_query_status(monkeypatch):
-    """Attaching with no knobs stays a pure read of /v1/models."""
+    """A bare attach stays a pure read of /v1/models."""
     server = FakeServer(
         [dict(RESIDENT)],
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
@@ -122,13 +116,8 @@ def test_bare_attach_does_not_query_status(monkeypatch):
 
 
 def test_path_loaded_resident_is_reloaded_by_its_real_path(monkeypatch):
-    """/v1/models shows the basename; the load must carry the path status reports.
-
-    _same_loaded_identifier compares a resident local path with os.path.normcase
-    equality, so posting "Foo-Q4_K_M" can never dedupe against
-    /srv/models/Foo-Q4_K_M.gguf -- and the server would try to resolve the basename
-    as a brand new model.
-    """
+    """_same_loaded_identifier compares resident paths exactly, so the load must carry
+    the identifier from status; a basename would resolve as a brand new model."""
     path = "/srv/models/Foo-Q4_K_M.gguf"
     server = FakeServer(
         [{"id": "Foo-Q4_K_M", "loaded": True}],
@@ -144,17 +133,12 @@ def test_path_loaded_resident_is_reloaded_by_its_real_path(monkeypatch):
     entry = start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert server.loads == [{"model_path": path, "max_seq_length": 32768}]
-    # The agent is still pointed at the public id, never the server's filesystem path.
     assert entry["id"] == "Foo-Q4_K_M"
 
 
 def test_inferred_target_still_runs_the_preload_check(monkeypatch):
-    """Codex's pre-eviction GGUF gate is the only check that runs before the load.
-
-    _require_gguf_for_codex runs after _connect returns, i.e. after the resident model
-    has already been evicted for every attached session, so dropping the preload check
-    turns a rejected launch into a destructive one.
-    """
+    """preload_check is the only gate before the load; _require_gguf_for_codex runs
+    after _connect returns, i.e. after the shared model is already evicted."""
     server = FakeServer(
         [dict(RESIDENT)],
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
@@ -181,7 +165,7 @@ def test_inferred_target_still_runs_the_preload_check(monkeypatch):
 
 
 def test_inferred_reload_warns_that_it_unloads_for_every_session(monkeypatch, capsys):
-    """A changed context restarts llama-server for everyone; say so before doing it."""
+    """A changed context restarts llama-server for every attached session."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -200,7 +184,7 @@ def test_inferred_reload_warns_that_it_unloads_for_every_session(monkeypatch, ca
 
 
 def test_active_model_decides_the_resident_not_list_order(monkeypatch):
-    """Cached, speech and chat entries coexist; list order does not name the resident."""
+    """Cached, speech and chat entries coexist; order does not name the resident."""
     server = FakeServer(
         [
             {"id": "unsloth/whisper-large", "loaded": True},
@@ -215,7 +199,7 @@ def test_active_model_decides_the_resident_not_list_order(monkeypatch):
 
 
 def test_unreloadable_resident_fails_before_loading(monkeypatch):
-    """A native lease-backed load redacts model_identifier; guessing the basename is wrong."""
+    """A native lease redacts model_identifier; guessing the basename is wrong."""
     server = FakeServer(
         [{"id": "Foo-Q4_K_M", "loaded": True}],
         {"is_gguf": True, "active_model": "Foo-Q4_K_M", "model_identifier": None},
@@ -257,13 +241,7 @@ def test_explicit_flags_matching_defaults_still_reload(monkeypatch):
 
 
 def test_hf_cache_resident_matches_the_advertised_repo_id(monkeypatch):
-    """The server maps a cache path to its repo id; our basename helper does not.
-
-    /v1/models advertises `unsloth/Qwen3-8B-GGUF` for a snapshot under
-    models--unsloth--Qwen3-8B-GGUF, while stripping the basename would give
-    `qwen3-8b-Q4_K_M`. Matching on that alone would report a successful load as
-    "Unsloth didn't report it as loaded".
-    """
+    """The server maps a cache path to its repo id; our basename helper does not."""
     cache_path = (
         "/home/u/.cache/huggingface/hub/models--unsloth--Qwen3-8B-GGUF"
         "/snapshots/abc123/qwen3-8b-Q4_K_M.gguf"
@@ -302,11 +280,7 @@ def test_status_names_the_resident_even_when_the_catalog_lags(monkeypatch):
 
 
 def test_a_freshly_started_server_is_not_reloaded(monkeypatch):
-    """_connect passes requested=None after auto-starting a server FROM these knobs.
-
-    They are already in effect there, so inferring a target would reload the model
-    the CLI just finished loading.
-    """
+    """_connect passes requested=None after auto-starting a server FROM these knobs."""
     server = FakeServer(
         [dict(RESIDENT)],
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
@@ -337,16 +311,9 @@ def test_omitted_default_flags_are_not_forwarded(monkeypatch):
 
 
 class TestExplicitFlagsThroughTheRealCli:
-    """`supplied` must be populated by an actual command invocation.
-
-    This is not covered by calling _resolve_model directly. Typer vendors its own
-    copy of click, so the context hands back a typer._click ParameterSource, a
-    different enum class from click.core's -- an identity test against either
-    silently matches nothing and every explicit-default flag is lost with no error.
-    Typer also invokes the callback with no ACTIVE click context, so reading the
-    context globally instead of taking the command's own `ctx` fails the same
-    silent way. Both regressions look exactly like a bare attach.
-    """
+    """Typer vendors its own click (so a ParameterSource identity test matches nothing)
+    and invokes callbacks with no active click context (so reading it globally fails
+    too). Both regressions silently look like a bare attach."""
 
     @staticmethod
     def _load_for(argv):
@@ -378,8 +345,7 @@ class TestExplicitFlagsThroughTheRealCli:
     def test_flags_equal_to_their_default_are_recorded(self, flag, expected):
         load = self._load_for(["codex", "--no-launch", *flag])
         assert load is not None, "the command never reached _connect"
-        # The value matches the declared default, so only `supplied` can carry the
-        # user's intent; overrides() has nothing else to go on.
+        # Value equals the declared default, so only `supplied` carries the intent.
         assert expected in load.supplied
         assert expected in load.overrides()
 

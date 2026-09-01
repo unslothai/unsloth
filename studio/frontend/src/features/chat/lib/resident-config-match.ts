@@ -286,9 +286,8 @@ const SETTING_CHECKS: SettingCheck[] = [
     // cross-model GGUF pick and as the resident context when re-picking the same one.
     // Reading null as "no opinion" against a status echoing either number was a reload.
     pinned: () => true,
-    // A GGUF invocation field. A safetensors or MLX status now reports one too, so the
-    // general non-GGUF rule below is what keeps this check off those models -- it is
-    // load-bearing, not just a guard against reading an absent value as 0.
+    // A safetensors or MLX status now reports this too, so the general non-GGUF rule
+    // below is load-bearing: it is what keeps this check off those models.
     agrees: (c, s, standing) =>
       standing.resolveContextLength(c.customContextLength ?? null) ===
       (s.requested_context_length ?? 0),
