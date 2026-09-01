@@ -26,6 +26,8 @@ from weakref import WeakKeyDictionary
 
 from loggers import get_logger
 
+from core.inference import mcp_images
+
 logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
@@ -1418,7 +1420,7 @@ def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
         _probe_cooloff_until.pop(server_id, None)
 
 
-MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
+MCP_IMAGES_SENTINEL = mcp_images.SENTINEL
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
 
 
@@ -1552,7 +1554,7 @@ def _flatten_result(result: Any) -> str:
         notes = []
         if images:
             n = len(images)
-            notes.append(f"{n} image{'s' if n > 1 else ''} attached; displayed to the user")
+            notes.append(f"{n} image{'s' if n > 1 else ''} returned")
         if omitted:
             notes.append(f"{omitted} image{'s' if omitted > 1 else ''} omitted (too large)")
         note = f"[{'; '.join(notes)}]"

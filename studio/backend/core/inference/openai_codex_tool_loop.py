@@ -36,6 +36,8 @@ class CodexRunContext:
     response_format: dict[str, Any] | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
+    supports_vision: bool = False
+    promoted_image_parts: tuple = ()
 
 
 @dataclass(frozen = True)
@@ -107,6 +109,8 @@ def stream_codex_with_studio_tools(
             model = run.model,
             tool_choice = run.tool_choice,
             continue_final_message = run.continue_final_message,
+            supports_vision = run.supports_vision,
+            promoted_image_parts = run.promoted_image_parts,
         ),
         policy = ToolLoopPolicy(
             tools = policy.tools,

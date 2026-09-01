@@ -3482,3 +3482,32 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
             f"{rel} never rechecks the latch after adopting, so a spawn that raced it "
             "is left outside a sweep that has already finished"
         )
+
+
+def test_the_adapter_path_accepts_the_same_images_kwarg_as_the_locked_one():
+    """The tool loop hands both paths one common_kwargs. Without `images` on the
+    dispatched path an adapter-controlled vision chat raises TypeError before it
+    generates, and the markers left in the conversation have no pixels behind."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    dispatched = inspect.signature(InferenceOrchestrator._generate_dispatched).parameters
+    locked = inspect.signature(InferenceOrchestrator._generate_inner).parameters
+
+    assert "images" in locked
+    assert "images" in dispatched, (
+        "generate_with_adapter_control forwards **common_kwargs straight into "
+        "_generate_dispatched, so a missing `images` is an immediate TypeError"
+    )
+
+
+def test_the_adapter_path_forwards_images_to_the_worker_command():
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    body = inspect.getsource(InferenceOrchestrator._generate_dispatched)
+    assert (
+        "images_b64 = images" in body
+    ), "_build_generate_cmd carries the list to the worker as images_b64"
