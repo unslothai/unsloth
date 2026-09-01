@@ -76,9 +76,18 @@ def workspace_key(subject: str | None = None) -> str:
     The short readable prefix helps operators identify a workspace while the
     digest prevents two differently-spelled usernames from collapsing onto the
     same directory after sanitisation.
+
+    Dots are folded away rather than kept. Usernames may legally contain them
+    (``^[a-z0-9][a-z0-9._-]*$``), but Windows resolves a reserved device name
+    followed by any extension back to the device: ``con.txt`` would key to
+    ``con.txt-<digest>``, whose base name is ``con``, and Windows refuses to
+    create it. With no dot the key is a single component ending in the digest,
+    which can never equal a device name. Distinct usernames still get distinct
+    keys because the digest hashes the original value, so ``a.b`` and ``a-b``
+    share a readable prefix but not a key.
     """
     value = subject or current_workspace_subject()
-    readable = re.sub(r"[^a-z0-9._-]+", "-", value.casefold()).strip("-.")
+    readable = re.sub(r"[^a-z0-9_-]+", "-", value.casefold()).strip("-")
     readable = (readable or "user")[:32]
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
     return f"{readable}-{digest}"
