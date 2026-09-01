@@ -156,7 +156,10 @@ class _FakeBackend(video_module.VideoBackend):
             "defaults": _defaults(),
         }
 
-    def load_progress(self):
+    def load_progress(self, subject = None):
+        # Scoped: the payload names the repo being pulled, which for a private
+        # local path is the loading account's own directory.
+        assert subject == "unsloth"
         return {
             "phase": "ready" if self.loaded else None,
             "downloaded_bytes": 0,

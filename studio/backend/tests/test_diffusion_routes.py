@@ -102,7 +102,10 @@ class _FakeBackend:
             "memory_mode": kwargs.get("memory_mode") or "auto",
         }
 
-    def load_progress(self):
+    def load_progress(self, subject = None):
+        # Scoped: the payload names the repo being pulled, which for a private
+        # local path is the loading account's own directory.
+        assert subject == "unsloth"
         return {
             "phase": "ready" if self.loaded else None,
             "bytes_downloaded": 0,

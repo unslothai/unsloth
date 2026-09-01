@@ -2307,9 +2307,17 @@ class DiffusionBackend:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(text)
 
-    def load_progress(self) -> dict[str, Any]:
-        """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
+    def load_progress(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """Phase + downloaded/total bytes for the in-flight load (cache-scan based).
+
+        ``subject`` hides a load another account started: the payload names the
+        repo it is pulling, which for a private local path is that account's own
+        directory. None keeps the unfiltered view the engine's own probes need.
+        """
         loading = self._loading
+        if loading is not None and subject is not None and loading.subject != subject:
+            # Answered as "nothing loading", the same shape an idle engine gives.
+            return _progress("ready" if self._state is not None else None)
         if loading is not None and loading.error:
             return _progress("error", error = loading.error)
         if loading is None:

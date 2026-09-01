@@ -32,6 +32,7 @@ from utils.paths import (
 )
 from utils.paths.storage_roots import cache_root
 from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
     current_workspace_subject,
     reset_workspace_subject,
     set_workspace_subject,
@@ -2583,3 +2584,87 @@ def test_a_retirement_during_schema_creation_is_not_undone_by_the_add():
     assert cache == {"/workspaces/alice/studio.db"}
     schema_cache.forget_all()
     assert cache == set()
+
+
+def test_a_privately_loaded_media_model_is_not_generated_with_by_others(
+    tmp_path, monkeypatch
+):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+
+    token = _bind("alice")
+    try:
+        private = workspace_root() / "models" / "secret-model"
+        private.mkdir(parents = True, exist_ok = True)
+        alice_status = {"loaded": True, "repo_id": str(private)}
+        # Her own model: nothing to refuse.
+        inference_routes._reject_foreign_private_resident_model(alice_status, "image")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # Resident, and Bob names no model at all: the load-time containment check
+        # is long past, so without this he generates with her weights and reads the
+        # path back out of the recipe.
+        with pytest.raises(HTTPException) as exc:
+            inference_routes._reject_foreign_private_resident_model(alice_status, "image")
+        assert exc.value.status_code == 403
+        # A Hub repo id is not a path and stays shared, which is the design.
+        inference_routes._reject_foreign_private_resident_model(
+            {"loaded": True, "repo_id": "black-forest-labs/FLUX.1-dev"}, "image"
+        )
+        inference_routes._reject_foreign_private_resident_model({"loaded": False}, "image")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_shared_model_cache_stays_shared_between_accounts(tmp_path, monkeypatch):
+    from routes import inference as inference_routes
+    from utils.paths.storage_roots import cache_root
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+
+    # The legacy owner's workspace_root() IS studio_root(), and cache_root() sits
+    # inside it, so a plain "under the workspace" test would call every shared
+    # model the owner's private one and stop every other account generating.
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        cached = cache_root() / "models--org--model"
+        cached.mkdir(parents = True, exist_ok = True)
+        shared_status = {"loaded": True, "repo_id": str(cached)}
+    finally:
+        reset_workspace_subject(token)
+
+    for subject in (LEGACY_WORKSPACE_SUBJECT, "alice", "bob"):
+        token = _bind(subject)
+        try:
+            inference_routes._reject_foreign_private_resident_model(shared_status, "image")
+        finally:
+            reset_workspace_subject(token)
+
+
+def test_load_progress_hides_another_accounts_download():
+    import threading as _threading
+
+    from core.inference.diffusion import DiffusionBackend, _LoadingState
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    backend._lock = _threading.RLock()
+    backend._state = None
+    backend._loading = _LoadingState(
+        repo_id = "/workspaces/alice-abc/models/secret",
+        base_repo = "/workspaces/alice-abc/models/secret",
+        expected_bytes = 4_000_000_000,
+        subject = "alice",
+    )
+
+    # The payload names the repo being pulled, which for a private path is the
+    # other account's own directory.
+    assert backend.load_progress("bob")["phase"] is None
+    assert backend.load_progress("alice")["phase"] is not None
+    # The engine's own probes keep the unfiltered view.
+    assert backend.load_progress()["phase"] is not None

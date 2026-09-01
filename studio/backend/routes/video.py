@@ -388,7 +388,9 @@ async def load_video_model_gated(
 @router.get("/video/load-progress", response_model = VideoLoadProgressResponse)
 async def video_load_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    return VideoLoadProgressResponse(**get_video_backend().load_progress())
+    return VideoLoadProgressResponse(
+        **get_video_backend().load_progress(current_workspace_subject())
+    )
 
 
 @router.post("/video/generate", response_model = VideoGenerateResponse)
@@ -473,6 +475,11 @@ async def generate_video(
         raise HTTPException(status_code = 400, detail = str(exc))
 
     backend = get_video_backend()
+    from routes.inference import _reject_foreign_private_resident_model
+
+    # Names no model either: the resident one is whatever the last load left, and
+    # that may have come out of another account's own files.
+    _reject_foreign_private_resident_model(backend.status(), "video")
     # The request bounds on VideoGenerateRequest are a coarse outer guard; the real rule is the LOADED
     # family's (its presets and frame lattice), and begin_generate applies it under the same lock that
     # reserves the state the job will run against, so a load committing concurrently cannot leave the

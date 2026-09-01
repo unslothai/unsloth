@@ -6762,6 +6762,60 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
     )
 
 
+def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
+    """Refuse generation on a model another account loaded from a private path.
+
+    One media engine serves the whole install, which is deliberate: weights and
+    the shared cache are install-wide in this design, and a Hub model one account
+    loads is meant to stay resident for whoever asks next. A model loaded from an
+    account's OWN workspace, outputs or exports is not that. Without this, the
+    load-time containment check was the only guard, and it does nothing once the
+    weights are resident: the next account could generate with them without ever
+    naming a model, and read the private path back out of the gallery recipe.
+
+    Decided against the CALLER's roots rather than by recording an owner, so the
+    answer stays right across a restart and needs nothing threaded through the
+    engines. The shared cache is tested first and on its own: the legacy owner's
+    workspace_root() is studio_root() and cache_root() sits inside it, so a plain
+    "under the workspace" test would call every shared model that account's
+    private one and stop everybody else generating with it.
+    """
+    repo_id = (status or {}).get("repo_id")
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        return
+    candidate = repo_id.strip()
+    try:
+        if not Path(os.path.expanduser(candidate)).exists():
+            # A Hub repo id, not a path: shared by design.
+            return
+    except OSError:
+        return
+
+    from routes.models import _is_sizable_local_path
+    from utils.paths.storage_roots import cache_root
+
+    def _lexical(value: str) -> str:
+        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+
+    try:
+        resolved = _lexical(candidate)
+        shared = _lexical(str(cache_root()))
+    except (OSError, RuntimeError, ValueError):
+        return
+    if resolved == shared or resolved.startswith(shared + os.sep):
+        return
+    if _is_sizable_local_path(candidate):
+        # Inside this caller's own roots, so it is this caller's model.
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            f"The resident {media} model was loaded from another account's files. "
+            "Load your own model first."
+        ),
+    )
+
+
 def _reject_remote_code_from_a_managed_account(trust_remote_code: Any) -> None:
     """Only the installation owner may run a repository's own Python.
 
@@ -32812,6 +32866,9 @@ async def generate_diffusion_image(
     )
 
     backend = get_active_diffusion_engine()
+    # This route names no model: it runs whatever is resident, so the load-time
+    # containment check is not enough on its own.
+    _reject_foreign_private_resident_model(backend.status(), "image")
     try:
         result = await asyncio.to_thread(
             backend.generate,
@@ -33252,7 +33309,9 @@ async def diffusion_inference_info(current_subject: str = Depends(get_current_su
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
 async def diffusion_load_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    return DiffusionLoadProgressResponse(**get_active_diffusion_engine().load_progress())
+    return DiffusionLoadProgressResponse(
+        **get_active_diffusion_engine().load_progress(current_workspace_subject())
+    )
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
@@ -33462,6 +33521,7 @@ async def _generate_openai_images(
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
+    _reject_foreign_private_resident_model(backend.status(), "image")
     from core.inference.diffusion_memory import ImageActivationShortfallError
     from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
