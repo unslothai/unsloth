@@ -155,8 +155,7 @@ def _balanced(expr: str) -> bool:
 _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
 # A whole leaf that is nothing but the equality, in either operand order.
 _LEAF_MAIN = re.compile(
-    r"github\.ref\s*==\s*['\"]refs/heads/main['\"]"
-    r"|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
+    r"github\.ref\s*==\s*['\"]refs/heads/main['\"]|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
 )
 
 
@@ -521,8 +520,7 @@ def test_every_setup_python_step_still_pins_an_interpreter():
         f"{name}:{jid}"
         for name, jid, job in _jobs()
         for step in job.get("steps") or []
-        if "setup-python" in _uses(step)
-        and not (step.get("with") or {}).get("python-version")
+        if "setup-python" in _uses(step) and not (step.get("with") or {}).get("python-version")
     ]
     assert not offenders, f"setup-python without an explicit python-version: {offenders}"
 
@@ -729,6 +727,7 @@ def _uses(step):
     """
     return str(step.get("uses", "")).casefold()
 
+
 def _matrix_rows(job) -> list[dict]:
     """One substitution map per job the matrix can actually produce.
 
@@ -749,8 +748,9 @@ def _matrix_rows(job) -> list[dict]:
         return [{}]
     include = [r for r in (matrix.get("include") or []) if isinstance(r, dict)]
     exclude = [r for r in (matrix.get("exclude") or []) if isinstance(r, dict)]
-    base_keys = [k for k, v in matrix.items() if k not in ("include", "exclude")
-                 and isinstance(v, list)]
+    base_keys = [
+        k for k, v in matrix.items() if k not in ("include", "exclude") and isinstance(v, list)
+    ]
 
     combos = [{}]
     for k in base_keys:
@@ -759,9 +759,8 @@ def _matrix_rows(job) -> list[dict]:
     # Exclude first, and it is processed before include, so include can add a
     # combination back. A partial exclude drops every row agreeing on the keys it names.
     def excluded(combo):
-        return any(
-            all(str(combo.get(k)) == str(v) for k, v in ex.items()) for ex in exclude
-        )
+        return any(all(str(combo.get(k)) == str(v) for k, v in ex.items()) for ex in exclude)
+
     combos = [c for c in combos if not excluded(c)]
 
     rows, matched = [], set()
