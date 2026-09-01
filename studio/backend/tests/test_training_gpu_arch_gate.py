@@ -98,8 +98,7 @@ def _no_device_ordinal(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _detection_is_declared_not_detected(monkeypatch):
-    """Keeps ``detect_hardware()`` from latching IS_ROCM off the fake AMD torch
-    for the rest of the pytest process."""
+    """Keeps detect_hardware() from latching IS_ROCM off the fake AMD torch session-wide."""
     monkeypatch.setattr(_hw_module, "DEVICE", DeviceType.CUDA)
     monkeypatch.setattr(_hw_module, "IS_ROCM", _hw_module.IS_ROCM)
 
@@ -128,8 +127,7 @@ class TestTheReportedHost:
 
 
 class TestHsaOverrideKeepsWorking:
-    """The override makes a device PRESENT a supported arch; comparing real
-    silicon instead would break every user of it."""
+    """The override makes a device PRESENT a supported arch; reading silicon breaks it."""
 
     def test_a_spoofed_device_is_kept(self, monkeypatch, no_mask):
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1100")]))
@@ -149,8 +147,7 @@ class TestArchSpellings:
 
 
 class TestFailsOpen:
-    """Uncertainty keeps the pre-gate selection: guessing wrong sends a working
-    machine to CPU, which is worse than the bug it fixes."""
+    """Uncertainty keeps the pre-gate selection: a working machine on CPU is worse."""
 
     def test_a_cuda_wheel_is_inert(self, monkeypatch, no_mask):
         # PTX JIT covers archs not listed, so filtering on NVIDIA drops working cards.
@@ -161,7 +158,6 @@ class TestFailsOpen:
         assert rocm_gpu_ids_without_torch_kernels() == set()
 
     def test_an_amd_sdk_wheel_still_gates(self, monkeypatch, no_mask):
-        # version.hip unset but "rocm" in __version__: must not read as CUDA.
         _install(
             monkeypatch,
             _fake_torch([_props("gfx1101"), _props("gfx1036")], vendor = "amd_sdk"),
@@ -236,9 +232,7 @@ class TestFailsOpen:
         ids = ["no_arch_attribute", "properties_raise"],
     )
     def test_an_unreadable_device_is_not_an_all_uncovered_host(self, monkeypatch, no_mask, second):
-        # One rejected device out of one READ device is not "every GPU": the
-        # unread one is still selectable, so nothing forces CPU and the
-        # known-uncovered GPU 0 must stay out (#8792).
+        # The unread device is still selectable, so this is not "every GPU" (#8792).
         _install(monkeypatch, _fake_torch([_props("gfx1036"), second]))
         assert rocm_gpu_ids_without_torch_kernels() == {0}
 
@@ -258,9 +252,7 @@ class TestFailsOpen:
         assert rocm_gpu_ids_without_torch_kernels() == set()
 
     def test_stacked_rocr_and_cuda_masks_renumber_the_map_away(self, monkeypatch, no_mask):
-        # ROCr leaves [phys2, phys0, phys1] and CUDA keeps ROCr-relative 1 and 2,
-        # so torch ordinal 1 is phys1, but the spec sees only ROCr and reports
-        # [2, 0, 1]: ordinal 1 would be excluded under physical 0's name.
+        # Ordinal 1 is phys1, but the spec sees only ROCr and would name it physical 0.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", True)
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,0,1")
@@ -291,8 +283,7 @@ class TestIdSpace:
         assert rocm_gpu_ids_without_torch_kernels() == {3}
 
     def test_windows_ignores_a_stray_rocr_mask(self, monkeypatch):
-        # Windows HIP has no ROCr layer, so reading this mask as the ordinal ->
-        # physical map excludes a card that does not exist.
+        # Windows HIP has no ROCr layer, so reading this mask excludes a nonexistent card.
         self._rocr_only(monkeypatch, "win32")
         assert rocm_gpu_ids_without_torch_kernels() == {1}
 
@@ -303,14 +294,11 @@ class TestIdSpace:
 
 
 class TestTheOrdinalToIdMapMustBeTotal:
-    """torch.cuda.device_count() freezes at the first torch.cuda call, but the
-    visible spec re-reads the env, so the two disagree once a mask is applied
-    after torch has woken up. Naming the overflow ordinals into the physical
-    namespace collides with real ids and drops a card the wheel does cover."""
+    """device_count() freezes at torch init while the visible spec re-reads the env, so
+    naming an overflow ordinal into the physical namespace collides with a real id."""
 
     def test_more_ordinals_than_ids_gates_nothing(self, monkeypatch, no_mask):
-        # ordinal 0 is physical 2 (covered); ordinal 2 has no id, and reusing it
-        # as a physical id would drop physical 2, the good card.
+        # Ordinal 2 has no id; reusing it as one would drop physical 2, the good card.
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,0")
         _install(
             monkeypatch,
@@ -322,8 +310,7 @@ class TestTheOrdinalToIdMapMustBeTotal:
         assert rocm_gpu_ids_without_torch_kernels() == set()
 
     def test_the_selector_keeps_the_covered_card(self, monkeypatch, no_mask):
-        # The regression this guards: an empty list is not "inherit", it is
-        # "no GPU", so the run silently drops to CPU.
+        # The regression this guards: an empty list is "no GPU", not "inherit".
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,0")
         _install(
             monkeypatch,
@@ -347,16 +334,14 @@ class TestTheOrdinalToIdMapMustBeTotal:
         assert gpu_ids == [2]
 
     def test_amd_smi_undercounting_still_gates(self, monkeypatch, no_mask):
-        # No mask, so ordinal is physical id and the short list is only amd-smi
-        # missing the iGPU. Bailing out here would disable the fix on the very
-        # host #8792 reports.
+        # No mask, so the short list is only amd-smi missing the iGPU; bailing out here
+        # would disable the fix on the very host #8792 reports.
         monkeypatch.setattr(_hw_module, "get_physical_gpu_count", lambda: 1)
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
         assert rocm_gpu_ids_without_torch_kernels() == {1}
 
     def test_an_id_named_twice_still_trips_the_all_uncovered_guard(self, monkeypatch, no_mask):
-        # Both ordinals are physical 0, so the deduplicated set holds one id
-        # against two rejected devices and reads as a partial drop.
+        # Both ordinals are physical 0, so a deduplicated set would read as a partial drop.
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,0")
         _install(
             monkeypatch,
@@ -438,8 +423,7 @@ class TestSelectorWiring:
 
 
 class TestThePinLandsOnTheKeptCard:
-    """``apply_gpu_ids`` leaves an inherited ROCr mask in place and HIP indexes
-    the agents ROCr left, so a physical id written through selects another card."""
+    """HIP indexes the agents an inherited ROCr mask left, so a raw physical id misses."""
 
     def _rocr(
         self,
@@ -457,8 +441,7 @@ class TestThePinLandsOnTheKeptCard:
         os.environ["ROCR_VISIBLE_DEVICES"] = mask
 
     def test_a_reordered_mask_pins_the_covered_card(self, monkeypatch):
-        # Physical id 1 written verbatim picks ROCr agent 1, which IS physical 0:
-        # the card the gate just excluded.
+        # Physical id 1 verbatim picks ROCr agent 1, physical 0: the card just excluded.
         with patch.dict(os.environ):
             self._rocr(monkeypatch, "1,0")
             assert rocm_gpu_ids_without_torch_kernels() == {0}
@@ -492,9 +475,8 @@ class TestThePinLandsOnTheKeptCard:
             assert os.environ["HIP_VISIBLE_DEVICES"] == "1"
 
     def test_an_inherited_cuda_mask_is_already_relative(self, monkeypatch):
-        # rocclr reads CUDA_VISIBLE_DEVICES when HIP_VISIBLE_DEVICES is empty, so
-        # the parent already indexed the ROCr agents once: translating again
-        # writes "0", which is ROCr agent 0 -- physical 1, the card the parent hid.
+        # rocclr already read this as the HIP mask, so translating again writes "0":
+        # ROCr agent 0, physical 1, the card the parent hid.
         with patch.dict(os.environ):
             self._rocr(monkeypatch, "1,0")
             os.environ["CUDA_VISIBLE_DEVICES"] = "1"
@@ -527,8 +509,7 @@ class TestThePinLandsOnTheKeptCard:
             assert "HIP_VISIBLE_DEVICES" not in os.environ
 
     def test_a_stale_rocr_var_on_nvidia_does_not_move_the_pin(self, monkeypatch):
-        # Reading the var's presence as "this is ROCm" writes CUDA="0": the
-        # worker trains on NVIDIA GPU 0 while the caller asked for GPU 1.
+        # Reading the var's presence as "this is ROCm" writes CUDA="0", not GPU 1.
         with patch.dict(os.environ):
             monkeypatch.setattr(sys, "platform", "linux")
             monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", False)

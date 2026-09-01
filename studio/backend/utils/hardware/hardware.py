@@ -4296,10 +4296,10 @@ _CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
 def rocm_gpu_ids_without_torch_kernels() -> set[int]:
     """PHYSICAL ids of visible ROCm GPUs the installed torch wheel has no kernels for.
 
-    Compares what the device PRESENTS against what the wheel was BUILT for, so
-    ``HSA_OVERRIDE_GFX_VERSION`` keeps working (#7624). Fails open; one unreadable
-    device is skipped rather than voiding the probe, which would restore the
-    known-uncovered cards and re-break #8792."""
+    Compares what the device PRESENTS, not its silicon, so ``HSA_OVERRIDE_GFX_VERSION``
+    keeps working (#7624). Every uncertainty fails OPEN, the opposite of the bf16 gate;
+    one unreadable device is skipped, not treated as voiding the probe, which would
+    restore the known-uncovered card and re-break #8792."""
     try:
         import torch
 
@@ -4319,8 +4319,7 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
             )
             if token
         ]
-        # All or nothing: a generic code object covers devices no exact token
-        # names, so the concrete subset alone drops a card the build runs.
+        # A generic code object covers devices no exact token names; a partial read drops a card.
         unknown = sorted(t for t in tokens if not _CONCRETE_GFX_ARCH.match(t))
         if unknown:
             logger.debug("torch arch list carries non-concrete tokens %s; not gating", unknown)
@@ -4329,8 +4328,7 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
             return set()
         supported = set(tokens)
 
-        # The visible spec reads neither renumbering: under ROCR="1,0" + CUDA="1"
-        # it says [1,0] but torch ordinal 0 is physical 0, inverting the map.
+        # Under ROCR="1,0" + CUDA="1" the spec reports [1,0] but ordinal 0 is physical 0.
         if _rocm_device_ordinal_active() or _rocm_visibility_masks_are_stacked():
             logger.debug("Skipping torch arch gate: torch ordinals are renumbered by a mask")
             return set()
@@ -4343,17 +4341,14 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
 
         device_count = torch.cuda.device_count()
         if device_count > len(physical_ids):
-            # Unmasked, ordinal IS physical id, and the short list only means
-            # amd-smi undercounted (it routinely misses the iGPU that #8792 is
-            # about), so extending it keeps the gate working on that host.
+            # Unmasked, so ordinal IS physical id and a short list is only amd-smi missing
+            # the iGPU #8792 is about: EXTEND, or the gate dies on the reported host.
             if visible_spec["raw"] is None:
                 physical_ids = list(range(device_count))
             else:
-                # A real mask, and device_count disagrees with it: torch counts
-                # devices through amdsmi before init, which ignores the HIP layer
-                # and can report more than the mask leaves. Naming the overflow
-                # into the physical namespace collides with ids that belong to
-                # other ordinals and drops a card the wheel does cover.
+                # A real mask that device_count disagrees with: _device_count_amdsmi runs
+                # before init and cannot see the HIP layer. Naming the overflow into the
+                # physical namespace collides with ids other ordinals own.
                 logger.debug(
                     "Skipping torch arch gate: %s torch devices but mask %r names %s ids",
                     device_count,
@@ -4385,10 +4380,9 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
                 unsupported.add(physical_ids[ordinal])
 
         # Dropping every device would leave the caller no GPU and silently force CPU.
-        # Counted in ordinals, not ids: a mask may name one id twice, and the
-        # deduplicated set then reads as fewer devices than were actually rejected.
-        # A device whose arch never read is still selectable, so it is not
-        # "every device": bailing out then hands the known-uncovered card back.
+        # Ordinals, not ids: a mask may name one id twice and the deduplicated set then
+        # reads as fewer devices than were rejected. And readable == device_count, because
+        # an unread device is still selectable, so this is not "every device".
         if readable and readable == device_count and unsupported_ordinals >= readable:
             logger.warning(
                 "The installed PyTorch build has no kernels for any GPU on this host "
@@ -4454,8 +4448,7 @@ def auto_select_gpu_ids(
         metadata["selected_gpu_ids"] = None
         return None, metadata
 
-    # Dropped before the free-memory rank AND every fallback below, which return
-    # the whole visible set and would reintroduce the iGPU.
+    # Before the free-memory rank AND every fallback, which return the whole visible set.
     _uncovered = rocm_gpu_ids_without_torch_kernels()
     if _uncovered:
         logger.warning(
@@ -4952,20 +4945,19 @@ def get_visible_gpu_count() -> int:
 
 
 def _rocr_relative_visibility(value: str) -> Optional[str]:
-    """``value`` (physical ids) re-expressed as ordinals into the ROCr-filtered
-    agent list, or None when it does not apply.
+    """``value`` (physical ids) as ordinals into the ROCr-filtered agent list, else None.
 
-    HIP indexes what ROCr left: under ``ROCR_VISIBLE_DEVICES=1,0`` a HIP mask of
-    "1" is physical GPU 0. Clearing the ROCr mask instead would re-expose the
-    agents it hides, which HSA can crash on merely enumerating."""
+    HIP indexes what ROCr left: under ``ROCR_VISIBLE_DEVICES=1,0`` a HIP mask of "1" is
+    physical GPU 0. Clearing the ROCr mask instead would re-expose the agents it hides,
+    which HSA can crash on merely enumerating."""
     if sys.platform == "win32" or "HIP_VISIBLE_DEVICES" in os.environ:
         return None
     rocr = os.environ.get("ROCR_VISIBLE_DEVICES")
     if rocr is None:
         return None
-    # An inherited CUDA mask is a HIP-layer mask too (rocclr reads it when
-    # HIP_VISIBLE_DEVICES is empty), so the ids already went through it once and
-    # translating them again escapes the parent's restriction.
+    # rocclr reads CUDA_VISIBLE_DEVICES as the HIP-layer mask when HIP_VISIBLE_DEVICES is
+    # empty (rocclr/device/rocm/rocdevice.cpp:391), so the ids already went through it
+    # once and translating again resolves to a GPU the parent deliberately hid.
     if _rocm_visibility_masks_are_stacked():
         return None
     try:
@@ -5051,8 +5043,7 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         logger.info("Applied gpu_ids: ZE_AFFINITY_MASK='%s'", value)
         return
 
-    # From the BUILD, not the env-var inference the HIP mirror below uses: a
-    # stale ROCR var on an NVIDIA node would move a CUDA pin to the wrong card.
+    # From the BUILD: a stale ROCR var on an NVIDIA node would move a CUDA pin elsewhere.
     _rocm_build = IS_ROCM
     if not _rocm_build:
         try:
@@ -5074,16 +5065,14 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
             value = _relative
 
     os.environ["CUDA_VISIBLE_DEVICES"] = value
-    # Wider than the build check above on purpose: writing HIP on an NVIDIA host
-    # is inert, where a missed mirror strands a ROCm worker.
+    # Wider than the build check: writing HIP on NVIDIA is inert, a missed mirror is not.
     _inherits_rocm_visibility = (
         "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
     )
     _is_rocm = _rocm_build or _inherits_rocm_visibility
     if _is_rocm:
         os.environ["HIP_VISIBLE_DEVICES"] = value
-        # ROCR_VISIBLE_DEVICES stays inherited: narrowing it in step with HIP
-        # stacks the masks and made torch.cuda.is_available() False in the worker.
+        # ROCR stays inherited: narrowing it too made torch.cuda.is_available() False.
     _visible_gpu_count = None
     if _is_rocm:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm)", value)
