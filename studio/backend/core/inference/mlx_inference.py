@@ -1021,16 +1021,14 @@ def _kv_prefix_coverage(cache):
     """Tokens the whole cache holds, or None when no entry can attest to it.
 
     A recurrent entry has no offset: it holds fixed-size state, not a token
-    sequence. An attention sibling attests for it, because state that cannot be
-    rewound is only ever served at the prefix it was built from. Nothing
-    attesting leaves the cache unverifiable, which is what keeps mamba/rwkv out.
+    sequence. An attention sibling attests for it, since unrewindable state only
+    ever serves the prefix it was built from. Nothing attesting keeps mamba out.
     """
     covered = None
     for entry in _flatten_kv_entries(cache):
         offset = getattr(entry, "offset", None)
         if offset is None:
-            # Upstream trims once every entry says it can, so only state that
-            # cannot be rewound may be attested for.
+            # Upstream trims once all entries agree, so only unrewindable counts.
             if getattr(entry, "is_trimmable", lambda: False)():
                 return None
             continue
