@@ -39,6 +39,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from core.inference.tools import (  # noqa: E402
     _check_code_safety,
+    _expand_brace_projections,
     _find_sensitive_paths,
 )
 
@@ -2704,3 +2705,106 @@ class TestCurrentHeadReviewRegressions:
     def test_benign_file_url_allowed(self):
         code = "import urllib.request\nurllib.request.urlopen('file:///tmp/data.txt').read()"
         assert not _is_blocked(code), "benign file URL blocked"
+
+    def test_definition_default_uses_enclosing_binding(self):
+        code = "path = '/etc/shadow'\ndef f(path=open(path).read()): pass"
+        assert _is_blocked(code), "definition-time default sensitive read leaked"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import aiohttp\n"
+                "s: aiohttp.ClientSession = aiohttp.ClientSession()\n"
+                "s.get('http://169.254.169.254/latest')"
+            ),
+            (
+                "import urllib.request\n"
+                "r: urllib.request.Request = "
+                "urllib.request.Request('http://169.254.169.254/latest')\n"
+                "urllib.request.urlopen(r)"
+            ),
+            (
+                "import aiohttp\n"
+                "(s := aiohttp.ClientSession())\n"
+                "s.get('http://169.254.169.254/latest')"
+            ),
+        ],
+    )
+    def test_annotated_and_named_network_bindings_blocked(self, code):
+        assert _is_blocked(code), "non-Assign network constructor binding leaked"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import urllib3\np = urllib3.PoolManager()\n"
+                "p.request('GET', 'http://169.254.169.254/latest')"
+            ),
+            (
+                "import aiohttp\ns = aiohttp.ClientSession()\n"
+                "s.request('GET', 'http://169.254.169.254/latest')"
+            ),
+        ],
+    )
+    def test_method_first_client_metadata_urls_blocked(self, code):
+        assert _is_blocked(code), "method-first client metadata URL leaked"
+
+    def test_method_first_client_trusted_url_allowed(self):
+        code = (
+            "import urllib3\np = urllib3.PoolManager()\np.request('GET', 'https://google.com/')"
+        )
+        assert not _is_blocked(code), "trusted method-first client URL blocked"
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "Path('/etc/placeholder').with_name('shadow').read_text()",
+            "Path('/etc/placeholder.txt').with_stem('shadow').read_text()",
+            "Path('/etc/shadow.txt').with_suffix('').read_bytes()",
+        ],
+    )
+    def test_pathlib_name_rewrites_blocked(self, expression):
+        assert _is_blocked(
+            f"from pathlib import Path\n{expression}"
+        ), f"pathlib filename rewrite leaked: {expression}"
+
+    def test_pathlib_benign_name_rewrite_allowed(self):
+        code = "from pathlib import Path\nPath('docs/x').with_name('guide.md').read_text()"
+        assert not _is_blocked(code), "benign pathlib filename rewrite blocked"
+
+    def test_brace_projection_limit_is_hard(self):
+        alternatives = ",".join(f"item{i}" for i in range(1500))
+        projections = _expand_brace_projections(f"x={{{alternatives}}}y", limit = 1024)
+        assert len(projections) <= 1024
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            r"printf '%s\n' 'cp -r ~/.ssh /tmp/out'",
+            "echo cp ~/.ssh",
+        ],
+    )
+    def test_printed_directory_copy_text_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), f"printed copy command blocked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\ngetattr(os, 'system')('cat /etc/shadow')",
+            "import builtins\ngetattr(builtins, 'open')('/etc/shadow').read()",
+            "import requests\ngetattr(requests, 'get')('http://169.254.169.254/latest')",
+        ],
+    )
+    def test_literal_getattr_callables_blocked(self, code):
+        assert _is_blocked(code), "literal getattr callable bypassed policy"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            r"cat /etc/sha\dow",
+            r"cat C:\Users\alice\.ssh\id_rsa",
+        ],
+    )
+    def test_posix_escapes_and_windows_separators_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"backslash path projection leaked: {cmd!r}"

@@ -1651,7 +1651,7 @@ _BASH_SENSITIVE_DIR_NAMES = (
     r"\.password-store",
 )
 _BASH_DIR_EXFIL_RE = re.compile(
-    r"\b(?:"
+    r"(?:^|[;&|()\n]\s*)(?:(?:command|env)\s+)?(?:"
     + "|".join(re.escape(c) for c in _BASH_DIR_EXFIL_COMMANDS)
     + r")\b[^;&|\n]*?"
     + r"(?:"
@@ -1925,11 +1925,10 @@ def _expand_brace_projections(text: str, limit: int = 1024) -> set[str]:
     credentials}`` -- evaded the per-alternative inner break, since the
     bypass adds 63 dummies plus the sensitive name in one brace group).
 
-    Now expands ALL alternatives of the current brace in one inner
-    pass so partially-applied state never blocks a sensitive name from
-    being projected. The outer ``limit`` only stops the queue between
-    brace groups, keeping the DOS bound while removing the off-by-one
-    that capped the first brace at ``limit - 1`` alternatives."""
+    The root-specific brace regexes in ``_find_sensitive_paths`` scan
+    unmaterialized alternatives for protected names, so this enumerator can
+    enforce its size bound even inside one very large group without reopening
+    the last-alternative bypass."""
     out = {text}
     if "{" not in text and "[" not in text:
         return out
@@ -1942,6 +1941,8 @@ def _expand_brace_projections(text: str, limit: int = 1024) -> set[str]:
         brace = _BRACE_EXPANSION_RE.search(cur)
         if brace:
             for alt in brace.group(1).split(","):
+                if len(out) >= limit:
+                    break
                 nxt = cur[: brace.start()] + alt + cur[brace.end() :]
                 if nxt not in out:
                     out.add(nxt)
@@ -1994,22 +1995,30 @@ def _find_sensitive_paths(command: str) -> set[str]:
     if not command:
         return set()
 
-    def _path_scan_tokens(text: str) -> list[str]:
-        # Always use POSIX shlex for the dequote reconstruction regardless of
-        # host OS: the threat model is shell-quote splicing, which is POSIX
-        # syntax. Pre-normalise Windows separators so shlex does not consume
-        # them as escapes.
-        normalized_text = text.replace("\\", "/") if "\\" in text else text
-        try:
-            lexer = shlex.shlex(
-                normalized_text,
-                posix = True,
-                punctuation_chars = ";&|()`",
-            )
-            lexer.whitespace_split = True
-            return list(lexer)
-        except ValueError:
-            return normalized_text.split()
+    def _path_scan_token_streams(text: str) -> list[list[str]]:
+        # POSIX escaping and Windows path separators give backslash opposite
+        # meanings. Preserve both deterministic projections: raw POSIX shlex
+        # removes escapes (``sha\dow`` -> ``shadow``), while the normalized
+        # source keeps ``C:\Users\...`` visible as ``C:/Users/...``.
+        sources = [text]
+        normalized = text.replace("\\", "/") if "\\" in text else text
+        if normalized != text:
+            sources.append(normalized)
+        streams: list[list[str]] = []
+        for source in sources:
+            try:
+                lexer = shlex.shlex(
+                    source,
+                    posix = True,
+                    punctuation_chars = ";&|()`",
+                )
+                lexer.whitespace_split = True
+                tokens = list(lexer)
+            except ValueError:
+                tokens = source.split()
+            if tokens not in streams:
+                streams.append(tokens)
+        return streams
 
     # Each helper only adds a deterministic projection of the original shell
     # text. Combining them catches ordinary parameter expansion and ANSI-C
@@ -2030,22 +2039,22 @@ def _find_sensitive_paths(command: str) -> set[str]:
         raw_targets.add(seed)
         normalized_seed = seed.replace("\\", "/") if "\\" in seed else seed
         raw_targets.add(normalized_seed)
-        projected_tokens = _path_scan_tokens(seed)
-        if not projected_tokens:
-            continue
-        raw_targets.add(" ".join(projected_tokens))
-        # Preserve the surrounding command when normalising an operand so the
-        # directory-copy policy still sees both the exfil verb and its source.
-        for index, token in enumerate(projected_tokens):
-            for variant in _expand_token_normalisations(token):
-                if variant == token:
-                    continue
-                rebuilt = list(projected_tokens)
-                rebuilt[index] = variant
-                raw_targets.add(" ".join(rebuilt))
+        for projected_tokens in _path_scan_token_streams(seed):
+            if not projected_tokens:
+                continue
+            raw_targets.add(" ".join(projected_tokens))
+            # Preserve the surrounding command when normalising an operand so
+            # the directory-copy policy still sees both the verb and source.
+            for index, token in enumerate(projected_tokens):
+                for variant in _expand_token_normalisations(token):
+                    if variant == token:
+                        continue
+                    rebuilt = list(projected_tokens)
+                    rebuilt[index] = variant
+                    raw_targets.add(" ".join(rebuilt))
 
     # Keep the original token stream for nested-shell recursion below.
-    tokens = _path_scan_tokens(command)
+    token_streams = _path_scan_token_streams(command)
 
     # Cross-product the projections so the regexes see every shape:
     # raw / backslash-normalised / shlex-dequoted x with-and-without
@@ -2104,26 +2113,29 @@ def _find_sensitive_paths(command: str) -> set[str]:
     # ``cmd /c type %USERPROFILE%\.aws\credentials`` both surface.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     _SHELLS_WIN = {"cmd", "cmd.exe"}
-    for i, token in enumerate(tokens):
-        tok_lower = token.lower()
-        is_unix_c = tok_lower == "-c" or (
-            tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
-        )
-        is_win_c = tok_lower == "/c"
-        if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
-            continue
-        for j in range(i - 1, -1, -1):
-            prev = tokens[j]
-            if prev.startswith("-"):
+    for tokens in token_streams:
+        for i, token in enumerate(tokens):
+            tok_lower = token.lower()
+            is_unix_c = tok_lower == "-c" or (
+                tok_lower.startswith("-")
+                and tok_lower.endswith("c")
+                and not tok_lower.startswith("--")
+            )
+            is_win_c = tok_lower == "/c"
+            if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
                 continue
-            if is_win_c and prev.startswith("/") and len(prev) <= 3:
-                continue
-            prev_base = os.path.basename(prev).lower()
-            if is_unix_c and prev_base in _SHELLS:
-                found |= _find_sensitive_paths(tokens[i + 1])
-            elif is_win_c and prev_base in _SHELLS_WIN:
-                found |= _find_sensitive_paths(tokens[i + 1])
-            break
+            for j in range(i - 1, -1, -1):
+                prev = tokens[j]
+                if prev.startswith("-"):
+                    continue
+                if is_win_c and prev.startswith("/") and len(prev) <= 3:
+                    continue
+                prev_base = os.path.basename(prev).lower()
+                if is_unix_c and prev_base in _SHELLS:
+                    found |= _find_sensitive_paths(tokens[i + 1])
+                elif is_win_c and prev_base in _SHELLS_WIN:
+                    found |= _find_sensitive_paths(tokens[i + 1])
+                break
     return found
 
 
@@ -14756,6 +14768,31 @@ def _check_signal_escape_patterns(code: str):
                 return _extract_pathlib_target(
                     node.func.value, path_aliases, pathlib_aliases, _depth + 1
                 )
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _PATH_NAME_REWRITES:
+                base = _extract_pathlib_target(
+                    node.func.value,
+                    path_aliases,
+                    pathlib_aliases,
+                    _depth + 1,
+                )
+                if base is None or not node.args:
+                    return None
+                arg = _extract_string_from_node(node.args[0], _depth + 1)
+                if arg is None:
+                    return None
+                slash = max(base.rfind("/"), base.rfind("\\"))
+                head = base[: slash + 1] if slash >= 0 else ""
+                name = base[slash + 1 :] if slash >= 0 else base
+                dot = name.rfind(".")
+                stem = name[:dot] if dot > 0 else name
+                suffix = name[dot:] if dot > 0 else ""
+                if node.func.attr == "with_name":
+                    name = arg
+                elif node.func.attr == "with_stem":
+                    name = arg + suffix
+                else:
+                    name = stem + arg
+                return head + name
             if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
                 base = _extract_pathlib_target(
                     node.func.value, path_aliases, pathlib_aliases, _depth + 1
@@ -14856,13 +14893,21 @@ def _check_signal_escape_patterns(code: str):
             for name, value in vars(visitor).items()
             if isinstance(value, (dict, set))
         }
+        # Defaults, decorators, annotations, bases, and class keywords are
+        # evaluated by the enclosing scope before local parameters exist.
+        for child in _definition_time_children(node):
+            visitor.visit(child)
         for name in _local_scope_binding_names(node):
             string_bindings.pop(name, None)
             string_bindings_all.pop(name, None)
         _run_alias_prepass(node)
         _run_string_binding_prepass(node)
         try:
-            visitor.generic_visit(node)
+            if isinstance(node, ast.Lambda):
+                visitor.visit(node.body)
+            else:
+                for child in node.body:
+                    visitor.visit(child)
         finally:
             string_bindings.clear()
             string_bindings.update(saved_bindings)
@@ -14889,6 +14934,20 @@ def _check_signal_escape_patterns(code: str):
                 current.clear()
                 current.update(saved)
 
+    def _literal_getattr_target(node: ast.AST) -> "tuple[ast.AST, str] | None":
+        """Return ``(receiver, attribute)`` for a literal two-arg getattr."""
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+        ):
+            return None
+        attr = _extract_string_literal(node.args[1])
+        if attr is None or not attr.isidentifier():
+            return None
+        return node.args[0], attr
+
     def _eval_exec_call_name(func, builtins_aliases):
         """Match ``eval`` / ``exec`` invocations including:
 
@@ -14913,6 +14972,15 @@ def _check_signal_escape_patterns(code: str):
             and func.value.id in builtins_aliases
         ):
             return func.attr
+        getattr_target = _literal_getattr_target(func)
+        if getattr_target is not None:
+            receiver, attr = getattr_target
+            if (
+                attr in ("eval", "exec")
+                and isinstance(receiver, ast.Name)
+                and receiver.id in builtins_aliases
+            ):
+                return attr
         return None
 
     def _resolve_dynamic_module_name(node):
@@ -15267,6 +15335,19 @@ def _check_signal_escape_patterns(code: str):
             elif isinstance(func, ast.Name):
                 # from-import aliases: from os import system; system(...)
                 shell_func = self.shell_exec_aliases.get(func.id)
+            else:
+                getattr_target = _literal_getattr_target(func)
+                if getattr_target is not None:
+                    receiver, attr = getattr_target
+                    if isinstance(receiver, ast.Name):
+                        if receiver.id in self.os_aliases:
+                            shell_func = f"os.{attr}"
+                        elif receiver.id in self.subprocess_aliases:
+                            shell_func = f"subprocess.{attr}"
+                    else:
+                        dyn = self._resolve_dynamic_module(receiver)
+                        if dyn in ("os", "subprocess"):
+                            shell_func = f"{dyn}.{attr}"
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 # Expand **kwargs dicts to inspect their keys.
@@ -15918,6 +15999,12 @@ def _check_signal_escape_patterns(code: str):
             self.request_url_bindings: dict[str, str] = {}
 
         def _canonical_network_callable(self, func: ast.AST) -> str:
+            getattr_target = _literal_getattr_target(func)
+            if getattr_target is not None:
+                receiver, attr = getattr_target
+                return self._canonical_network_callable(
+                    ast.Attribute(value = receiver, attr = attr, ctx = ast.Load())
+                )
             if isinstance(func, ast.Name):
                 return self.network_call_aliases.get(func.id, func.id)
             if not isinstance(func, ast.Attribute):
@@ -15989,6 +16076,36 @@ def _check_signal_escape_patterns(code: str):
                         self.network_module_aliases[alias.asname or alias.name] = canonical
             self.generic_visit(node)
 
+        def _record_constructed_binding(self, targets, value):
+            if not isinstance(value, ast.Call):
+                return
+            constructor = self._canonical_network_callable(value.func)
+            instance_module = None
+            if constructor == "requests.Session":
+                instance_module = "requests"
+            elif constructor in ("httpx.Client", "httpx.AsyncClient"):
+                instance_module = "httpx"
+            elif constructor == "urllib3.PoolManager":
+                instance_module = "urllib3"
+            elif constructor == "aiohttp.ClientSession":
+                instance_module = "aiohttp.ClientSession"
+            if instance_module:
+                for tgt in targets:
+                    if isinstance(tgt, ast.Name):
+                        self.network_instance_aliases[tgt.id] = instance_module
+            if constructor == "urllib.request.Request":
+                request_url = self._extract_url_literal(value.args[0]) if value.args else None
+                if request_url is None:
+                    for kw in value.keywords or []:
+                        if kw.arg in ("url", "full_url"):
+                            request_url = self._extract_url_literal(kw.value)
+                            if request_url is not None:
+                                break
+                if request_url is not None:
+                    for tgt in targets:
+                        if isinstance(tgt, ast.Name):
+                            self.request_url_bindings[tgt.id] = request_url
+
         def visit_Assign(self, node):
             # Module rebinding: ``import pathlib; pl = pathlib``,
             # ``import shutil; sh = shutil`` (and the equivalent for
@@ -16049,35 +16166,16 @@ def _check_signal_escape_patterns(code: str):
                     for tgt in node.targets:
                         if isinstance(tgt, ast.Name):
                             eval_exec_aliases[tgt.id] = attr
-            if isinstance(node.value, ast.Call):
-                constructor = self._canonical_network_callable(node.value.func)
-                instance_module = None
-                if constructor == "requests.Session":
-                    instance_module = "requests"
-                elif constructor in ("httpx.Client", "httpx.AsyncClient"):
-                    instance_module = "httpx"
-                elif constructor == "urllib3.PoolManager":
-                    instance_module = "urllib3"
-                elif constructor == "aiohttp.ClientSession":
-                    instance_module = "aiohttp.ClientSession"
-                if instance_module:
-                    for tgt in node.targets:
-                        if isinstance(tgt, ast.Name):
-                            self.network_instance_aliases[tgt.id] = instance_module
-                if constructor == "urllib.request.Request":
-                    request_url = (
-                        self._extract_url_literal(node.value.args[0]) if node.value.args else None
-                    )
-                    if request_url is None:
-                        for kw in node.value.keywords or []:
-                            if kw.arg in ("url", "full_url"):
-                                request_url = self._extract_url_literal(kw.value)
-                                if request_url is not None:
-                                    break
-                    if request_url is not None:
-                        for tgt in node.targets:
-                            if isinstance(tgt, ast.Name):
-                                self.request_url_bindings[tgt.id] = request_url
+            self._record_constructed_binding(node.targets, node.value)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            if node.value is not None:
+                self._record_constructed_binding([node.target], node.value)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node):
+            self._record_constructed_binding([node.target], node.value)
             self.generic_visit(node)
 
         def visit_FunctionDef(self, node):
@@ -16236,7 +16334,12 @@ def _check_signal_escape_patterns(code: str):
                     "http.client.HTTPConnection",
                     "http.client.HTTPSConnection",
                 )
-                _URL_SECOND_FQ = ("requests.request", "httpx.request")
+                _URL_SECOND_FQ = (
+                    "requests.request",
+                    "httpx.request",
+                    "urllib3.request",
+                    "aiohttp.ClientSession.request",
+                )
 
                 host_arg = None
                 url_arg = None
