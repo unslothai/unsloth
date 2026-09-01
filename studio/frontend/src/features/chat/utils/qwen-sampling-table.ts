@@ -26,6 +26,8 @@ export type QwenThinkingParams = {
 // string or runs into -, _, / or \.
 const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[-_/\\])/;
 
+const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
+
 /**
  * The bare model id, with any external wrapper removed.
  *
@@ -35,7 +37,25 @@ const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[-_/\\])/;
  * reject, dropping the presence bump for every external Qwen.
  */
 function bareModelId(checkpoint: string): string {
-  return parseExternalModelId(checkpoint)?.modelId ?? checkpoint;
+  const external = parseExternalModelId(checkpoint)?.modelId;
+  if (external !== undefined) {
+    return external;
+  }
+  // An Ollama row keeps its opaque inventory reference all the way into
+  // inference status (_public_model_identifier), and the manifest path is
+  // quoted with safe='', so every separator arrives as %2F. Undecoded, the
+  // family segment sits between an alphanumeric "f" and a "%", and the
+  // boundary match below drops the presence bump for every Ollama Qwen.
+  if (checkpoint.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) {
+    const ref = checkpoint.slice(OLLAMA_MANIFEST_REF_PREFIX.length);
+    try {
+      return decodeURIComponent(ref);
+    } catch {
+      // A malformed escape is not a reason to lose the whole checkpoint.
+      return ref;
+    }
+  }
+  return checkpoint;
 }
 
 /** Resolve the sampling table shared by model load and the Think toggle. */

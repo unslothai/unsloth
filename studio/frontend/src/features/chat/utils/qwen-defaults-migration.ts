@@ -3,6 +3,7 @@
 
 import type { PersistedChatSettings } from "../api/chat-settings-api";
 import type { PersistedInferenceParams } from "../types/runtime";
+import { normalizeModelIdentity } from "../../hub/lib/model-identity";
 import { resolveQwenThinkingParams } from "./qwen-sampling-table";
 
 const LEGACY_QWEN_DEFAULTS = {
@@ -133,10 +134,14 @@ function migrateStoredModelDefaults(
   // Prefer an exact key when legacy storage holds two spellings; otherwise
   // normalize the sole case-insensitive match to the checkpoint spelling,
   // which is how replay indexes the map.
+  // normalizeModelIdentity, not toLowerCase: it folds case for repository ids
+  // and case-insensitive path forms while preserving it for POSIX paths, which
+  // can name two different files differing only by case.
+  const activeIdentity = normalizeModelIdentity(activeCheckpoint);
   const activeStoredId =
     storedEntries.find(([modelId]) => modelId === activeCheckpoint)?.[0] ??
     storedEntries.find(
-      ([modelId]) => modelId.toLowerCase() === activeCheckpoint.toLowerCase(),
+      ([modelId]) => normalizeModelIdentity(modelId) === activeIdentity,
     )?.[0];
   for (const [modelId, entry] of storedEntries) {
     const isActiveCheckpoint = modelId === activeStoredId;

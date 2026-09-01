@@ -340,3 +340,44 @@ test("is idempotent after the legacy snapshot has been upgraded", () => {
   assert.equal(second.patch, null);
   assert.deepEqual(second.migratedModelIds, []);
 });
+
+test("an Ollama manifest reference is decoded before the family is matched", () => {
+  // The inventory ref keeps its quote(safe='') encoding all the way into
+  // inference status, so every separator arrives as %2F.
+  const ref = `ollama-manifest:${encodeURIComponent(
+    "/home/u/.ollama/manifests/registry.ollama.ai/library/qwen3.8/latest",
+  )}`;
+  assert.equal(isPresenceBumpQwen(ref), true);
+  assert.equal(
+    isPresenceBumpQwen(
+      `ollama-manifest:${encodeURIComponent(
+        "/home/u/.ollama/manifests/registry.ollama.ai/library/qwen3/latest",
+      )}`,
+    ),
+    false,
+  );
+  // A malformed escape must not lose the checkpoint entirely.
+  assert.equal(isPresenceBumpQwen("ollama-manifest:%E0%A4%A/qwen3.8/latest"), true);
+});
+
+test("POSIX paths differing only by case are not the same model", () => {
+  const active = "/home/u/Models/qwen3.8-27b";
+  const other = "/home/u/models/qwen3.8-27b";
+  const settings = settingsFor(other);
+
+  const migrated = migrateLegacyQwenDefaults(settings, active, true);
+
+  // The other path is a different file on a case-sensitive filesystem, so its
+  // row must not be moved under the active checkpoint.
+  assert.deepEqual(migrated.migratedModelIds, []);
+  assert.equal(migrated.patch, null);
+});
+
+test("a Windows path still folds case", () => {
+  const active = "C:\\Models\\qwen3.8-27b";
+  const settings = settingsFor("c:\\models\\qwen3.8-27b");
+
+  const migrated = migrateLegacyQwenDefaults(settings, active, true);
+
+  assert.deepEqual(migrated.migratedModelIds, [active]);
+});

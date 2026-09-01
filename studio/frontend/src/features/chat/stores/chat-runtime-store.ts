@@ -341,6 +341,12 @@ function loadLastExternalCheckpoint(): string | null {
   }
 }
 
+// The external pick restored from localStorage is this browser's stale
+// selection, not a model anything adopted this session. Chat settings are
+// installation-wide, so it must not claim a global snapshot another browser
+// may have written for a different model.
+let restoredExternalCheckpoint: string | null = null;
+
 function saveLastExternalCheckpoint(value: string | null): void {
   if (typeof window === "undefined") return;
   try {
@@ -4133,6 +4139,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // useChatModelRuntime and intentionally NOT persisted here.
   params: (() => {
     const persistedExternal = loadLastExternalCheckpoint();
+    restoredExternalCheckpoint = persistedExternal;
     return persistedExternal
       ? { ...DEFAULT_INFERENCE_PARAMS, checkpoint: persistedExternal }
       : DEFAULT_INFERENCE_PARAMS;
@@ -4349,7 +4356,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // global-only legacy snapshot.
         const globalBelongsToActiveCheckpoint =
           modelLoadedBeforeHydration !== checkpoint &&
-          modelLeftBeforeHydration === null;
+          modelLeftBeforeHydration === null &&
+          restoredExternalCheckpoint !== checkpoint;
         const remembersPerModel = qwenMigrationRemembersPerModel(
           settings,
           get(),
