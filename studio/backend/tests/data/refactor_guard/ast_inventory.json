@@ -1687,6 +1687,11 @@
         "kind": "def",
         "signature": "text: str, enabled_tool_names: Optional[set]"
       },
+      "blocked_gemma_chain_may_continue": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
+      },
       "continue_after_length_message": {
         "decorators": [],
         "kind": "def",
@@ -1716,6 +1721,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "stripped: str, enabled_tool_names"
+      },
+      "leading_blocked_bare_json_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
       },
       "parse_tool_calls_from_text": {
         "decorators": [],

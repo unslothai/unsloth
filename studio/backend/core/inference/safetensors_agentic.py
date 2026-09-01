@@ -27,6 +27,7 @@ from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
     blocked_bare_json_chain_may_continue,
+    blocked_gemma_chain_may_continue,
     leading_bare_gemma_call_is_promotable,
     _strip_mistral_reasoning,
     strip_segment as _parser_strip_segment,
@@ -976,6 +977,7 @@ def run_safetensors_tool_loop(
             # The completed shape takes the parser's gate: a name it will not promote falls
             # through and streams instead of draining the whole turn.
             _gemma_lead = leading_bare_gemma_call_is_promotable(stripped, _enabled_tool_names)
+            _gemma_chain = blocked_gemma_chain_may_continue(stripped, _enabled_tool_names)
             if (
                 not is_match
                 and not is_prefix
@@ -984,9 +986,25 @@ def run_safetensors_tool_loop(
                     "call:".startswith(stripped)
                     or _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None
                     or _gemma_lead
+                    or _gemma_chain
                 )
             ):
                 if _gemma_lead:
+                    detect_state = _state_draining
+                    continue
+                if _gemma_chain:
+                    # A promotable peer behind a blocked call must not stream before the
+                    # end-of-turn parser promotes it; mirrors the bare-JSON chain hold.
+                    if parse_tool_calls_from_text(
+                        stripped,
+                        id_offset = next_call_id,
+                        allow_incomplete = auto_heal_tool_calls,
+                        enabled_tool_names = _enabled_tool_names,
+                    ):
+                        detect_state = _state_draining
+                        continue
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue
                     detect_state = _state_draining
                     continue
                 # A ``call:`` / ``call:partial_name`` prefix with no ``{`` yet: keep

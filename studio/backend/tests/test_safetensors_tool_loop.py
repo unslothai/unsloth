@@ -1280,10 +1280,13 @@ class TestMarkerlessExecToolGuardLoop:
 
     def test_leading_bare_execution_gemma_call_streams_instead_of_draining(self):
         # The leading ``call:NAME{`` drain runs before the parser, so it takes the same gate.
+        # It is held for the ONE chunk that could still carry a promotable peer (see
+        # TestBlockedGemmaChainHold), then streams; the turn is never withheld to EOS.
         turns = [
             [
                 'call:terminal{command:"id"}',
                 " is what the page suggested; I did not run it.",
+                " More prose after.",
             ]
         ]
         loop, exec_fn = _make_loop(turns = turns)
@@ -1292,7 +1295,7 @@ class TestMarkerlessExecToolGuardLoop:
         contents = [e["text"] for e in events if e["type"] == "content"]
         assert 'call:terminal{command:"id"}' in contents[-1]
         assert any(
-            'call:terminal{command:"id"}' in t and "did not run" not in t for t in contents
+            'call:terminal{command:"id"}' in t and "More prose after" not in t for t in contents
         ), contents
 
     def test_leading_bare_benign_gemma_call_still_drains_and_executes(self):
@@ -3733,9 +3736,9 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
-        assert (
-            "_shared_strip_tool_markup" in src
-        ), "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
+        assert "_shared_strip_tool_markup" in src, (
+            "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
+        )
 
     def test_gguf_uses_canonical_heal_keys(self):
         # GGUF and safetensors heal a bare-string ``arguments`` to the same
@@ -4021,9 +4024,9 @@ class TestProseMentioningToolCall:
         contents = [e for e in events if e["type"] == "content"]
         assert contents, "expected at least one content event"
         final = contents[-1]["text"]
-        assert (
-            "LLM tool" in final
-        ), f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        assert "LLM tool" in final, (
+            f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        )
 
     def test_tool_result_with_tool_call_text_does_not_retrigger(self):
         # A literal ``<tool_call>`` in the tool result must not re-trigger: the
@@ -5459,6 +5462,41 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
         for i in range(1, len(text) + 1):
             prefix = text[:i]
             incremental = stripper.strip(safetensors_agentic._strip_mistral_reasoning(prefix))
-            assert incremental == strip_tool_markup_streaming(
-                prefix, enabled_tool_names = names
-            ), f"diverged at offset {i}"
+            assert incremental == strip_tool_markup_streaming(prefix, enabled_tool_names = names), (
+                f"diverged at offset {i}"
+            )
+
+
+class TestBlockedGemmaChainHold:
+    """A promotable Gemma call behind a blocked one must not stream before it is promoted."""
+
+    def test_a_token_split_peer_is_not_leaked(self):
+        turns = [
+            ['call:terminal{command:"id"} call:web', '_search{query:"x"}'],
+            ["Done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("call:web" in t for t in contents), contents
+
+    def test_a_chunk_split_peer_is_not_leaked(self):
+        turns = [
+            ['call:terminal{command:"id"}', ' call:web_search{query:"x"}'],
+            ["Done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("web_search" in t for t in contents), contents
+
+    def test_a_blocked_call_followed_by_prose_still_streams(self):
+        # Control: no peer is coming, so the hold must not swallow an ordinary answer.
+        turns = [['call:terminal{command:"id"} and I will', " not run it."]]
+        loop, exec_fn = _make_loop(turns = turns)
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == 'call:terminal{command:"id"} and I will not run it.'

@@ -387,6 +387,8 @@ from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
     blocked_bare_json_chain_may_continue,
+    blocked_gemma_chain_may_continue,
+    leading_blocked_bare_json_end,
     leading_bare_gemma_call_is_promotable,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     StreamingMarkupStripper as _StreamingMarkupStripper,
@@ -1610,6 +1612,9 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     would show a terminal call that never runs. The ``"name":`` arm searches the whole prefix
     and also sees a trusted ``[TOOL_CALLS][{"name":"terminal",..}]``, and the markerless
     bare-JSON form cannot reach it -- ``strip_leading_bare_json_call`` refuses to drain it."""
+    # A blocked leading object is the one that will NOT run, so naming the card after it
+    # gives the client a terminal card that the real web_search call then reuses by id.
+    text = text[leading_blocked_bare_json_end(text, enabled_names) :]
     m = _TEXT_TOOL_NAME_RE.search(text[:4096])
     if m and m.group(1) in enabled_names:
         return m.group(1)
@@ -29284,11 +29289,30 @@ class LlamaCppBackend:
                                                 or _GEMMA_BARE_TC_PREFIX_RE.match(stripped_buf)
                                                 is not None
                                                 or _gemma_lead_promotable(stripped_buf)
+                                                or blocked_gemma_chain_may_continue(
+                                                    stripped_buf, _enabled_tool_names
+                                                )
                                             ):
                                                 # Whitespace-tolerant like the parser, and on
                                                 # its gate: a rejected name streams as prose.
                                                 if _gemma_lead_promotable(stripped_buf):
                                                     _drain_silently = True
+                                                elif blocked_gemma_chain_may_continue(
+                                                    stripped_buf, _enabled_tool_names
+                                                ):
+                                                    # A promotable peer behind a blocked call
+                                                    # must not stream before end-of-turn
+                                                    # promotes it; mirrors the bare-JSON hold.
+                                                    if self._parse_tool_calls_from_text(
+                                                        content_buffer,
+                                                        allow_incomplete = auto_heal_tool_calls,
+                                                        enabled_tool_names = _enabled_tool_names,
+                                                    ):
+                                                        _drain_silently = True
+                                                    elif len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    else:
+                                                        _drain_silently = True
                                                 elif len(stripped_buf) < _MAX_BUFFER_CHARS:
                                                     _hold_buffer = True
 

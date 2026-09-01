@@ -658,3 +658,50 @@ def test_the_transformers_vision_streamer_preserves_tool_tokens():
     assert "preserve_tool_tokens=_preserve_tool_tokens" in body
     assert "preserves_think_close=_preserve_tool_tokens" in body
     assert "_preserve_tool_tokens = bool(tools)" in body
+
+
+def test_a_promotable_gemma_peer_behind_a_blocked_call_is_held():
+    """Bare Gemma syntax is not in ``TOOL_XML_SIGNALS``.
+
+    So without a hold the peer's serialization streams to the client and is only promoted at
+    end of turn, too late to retract. Sibling of the bare-JSON chain hold.
+    """
+    from core.inference.tool_call_parser import blocked_gemma_chain_may_continue as may_continue
+
+    blocked = 'call:terminal{command:"id"}'
+    assert may_continue(f"{blocked} call:web_search{{q:1}}", EXEC_ENABLED) is True
+    assert may_continue(f"{blocked} call:web", EXEC_ENABLED) is True  # name still typing
+    assert may_continue(f"{blocked} call:", EXEC_ENABLED) is True
+    assert may_continue(blocked, EXEC_ENABLED) is True  # a peer may still arrive
+    assert may_continue('call:terminal{command:"i', EXEC_ENABLED) is True  # body still arriving
+    # A run of blocked calls keeps looking for the peer behind them.
+    assert may_continue("call:terminal{a:1} call:python{b:2} call:web_search{q:3}", EXEC_ENABLED)
+    # Settled prose, a disabled peer, or a promotable leading call are all somebody else's job.
+    assert may_continue(f"{blocked} and prose", EXEC_ENABLED) is False
+    assert may_continue("call:terminal{a:1} call:nope{b:2}", EXEC_ENABLED) is False
+    assert may_continue("call:web_search{q:1}", EXEC_ENABLED) is False
+    assert may_continue("hello world", EXEC_ENABLED) is False
+
+
+def test_the_provisional_card_skips_a_blocked_leading_object():
+    """``_sniff_text_tool_name`` scans the whole drained prefix for ``"name"``.
+
+    On a blocked-first chain that is the object that will NOT run, so the card opens as
+    ``terminal`` with ``call_0`` and the real ``web_search`` call then reuses that id.
+    """
+    from core.inference.llama_cpp import _sniff_text_tool_name
+    from core.inference.tool_call_parser import leading_blocked_bare_json_end
+
+    pad = "x" * 260
+    chain = (
+        f'{{"name": "terminal", "parameters": {{"command": "{pad}"}}}};'
+        '{"name": "web_search", "parameters": {"query": "x"}}'
+    )
+    assert _sniff_text_tool_name(chain, EXEC_ENABLED) == "web_search"
+    calls = parse_tool_calls_from_text(chain, enabled_tool_names = EXEC_ENABLED)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    # A benign leading object is not skipped, and neither is a non-call one.
+    assert (
+        leading_blocked_bare_json_end('{"name": "web_search", "parameters": {}}', EXEC_ENABLED) == 0
+    )
+    assert leading_blocked_bare_json_end('{"answer": 1}', EXEC_ENABLED) == 0

@@ -2846,6 +2846,53 @@ def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional
     return isinstance(peer, dict) and _bare_json_call_shaped(peer)
 
 
+def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
+    """Whether a leading guarded ``call:NAME{..}`` may still be followed by a promotable peer.
+
+    Sibling of ``blocked_bare_json_chain_may_continue``. Bare Gemma syntax is not in
+    ``TOOL_XML_SIGNALS``, so without this the peer's serialization streams to the client and
+    is then promoted at end of turn, too late to retract.
+    """
+    probe = text.lstrip()
+    m = _GEMMA_BARE_TC_RE.match(probe)
+    if m is None or not _markerless_blocked_execution(m.group(1), enabled_tool_names):
+        return False
+    while True:
+        end = _gemma_body_brace_end(probe, m.end() - 1)
+        if end is None:
+            return True  # body still arriving
+        probe = probe[end + 1 :].lstrip()
+        if not probe:
+            return True  # a peer may still arrive
+        m = _GEMMA_BARE_TC_RE.match(probe)
+        if m is None:
+            # A peer whose name is still being typed (``call``, ``call:web``) has to keep the
+            # buffer private; both are ``$``-anchored, so ordinary prose does not match.
+            return "call:".startswith(probe) or _GEMMA_BARE_TC_PREFIX_RE.match(probe) is not None
+        if _markerless_promotable(m.group(1), enabled_tool_names):
+            return True  # this peer WILL be promoted; it must not stream first
+        if not _markerless_blocked_execution(m.group(1), enabled_tool_names):
+            return False  # a disabled name is prose
+
+
+def leading_blocked_bare_json_end(text: str, enabled_tool_names: Optional[set]) -> int:
+    """Offset just past a leading guarded bare-JSON call, or 0.
+
+    The provisional-card sniff searches the whole drained prefix for ``"name"``, so on a
+    blocked-first chain it names the card after the object that will NOT run.
+    """
+    probe = strip_llama3_leading_sentinels(text.lstrip())
+    if not probe.startswith("{"):
+        return 0
+    end = _balanced_brace_end(probe, 0)
+    if end is None:
+        return 0
+    name = _top_level_bare_json_name(probe)
+    if not _markerless_blocked_execution(name, enabled_tool_names):
+        return 0
+    return len(text) - len(probe) + end + 1
+
+
 def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:
     """Like ``_balanced_brace_end`` but skips ``<|"|>`` strings and matches {}/[] symmetrically."""
     if brace_pos >= len(text) or text[brace_pos] != "{":
