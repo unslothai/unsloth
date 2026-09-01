@@ -420,7 +420,19 @@ def test_the_host_pinned_cache_is_keyed_on_file_identity(backend, tmp_path):
     assert backend._host_pinned_weight_items(str(path)) == (("token_embd.weight", 8 * 16 * 4),)
 
 
-def test_advanced_spec_drafter_does_not_inherit_the_main_cpu_device():
+def test_a_separate_drafter_never_inherits_the_main_cpu_device():
+    """Only a draft-only flag takes the drafter off the GPU.
+
+    llama.cpp replaces the main device list with the draft one for any separate
+    drafter (``result.devices = params_spec.devices``,
+    common_base_params_to_speculative), and an unset draft list means every device.
+    The main pin reaches the drafter only where Studio copies it, which
+    _emit_dspark never does and _emit_dflash and _emit_mtp do only when they emit a
+    sidecar of their own -- so reading it here under-counted a drafter that was
+    really on a GPU. The drafter is charged unless a draft-only flag says otherwise;
+    the cost is an over-charge where the pin is real, which loses context rather
+    than failing a launch.
+    """
     from core.inference import llama_cpp
 
     advanced = [
@@ -436,7 +448,16 @@ def test_advanced_spec_drafter_does_not_inherit_the_main_cpu_device():
     assert llama_cpp._extra_args_effective_draft_device_pin(advanced) is None
 
     generated = ["--model-draft", "draft.gguf", "--device", "none"]
-    assert llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}) is True
+    assert llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}) is False
+    # The draft-only flags still own it, in either spelling.
+    for pin in (
+        ["--spec-draft-device", "none"],
+        ["--spec-draft-device", "cpu"],
+        ["--spec-draft-ngl", "0"],
+    ):
+        assert llama_cpp._extra_args_draft_offloaded_to_cpu(
+            ["--model-draft", "draft.gguf", *pin], {}
+        ) is True
 
 
 def test_the_budget_sizes_from_what_lands_in_vram(backend, tied_gguf):
@@ -928,15 +949,12 @@ def _spec_flags(monkeypatch, tmp_path: Path, mode: str, sidecar: str) -> "list[s
     )
 
 
-def test_only_the_emitters_that_pin_the_drafter_lend_it_the_main_device(monkeypatch, tmp_path):
-    """DSpark is the emitter that appends no --spec-draft-device.
+def test_the_emitters_do_not_agree_on_pinning_the_drafter(monkeypatch, tmp_path):
+    """DSpark appends no --spec-draft-device; DFlash does.
 
-    llama.cpp hands a separate drafter ``params.speculative.draft.devices`` in place
-    of the main list (common_base_params_to_speculative), and an unset draft list
-    means every device. So a main ``--device none`` reaches the DSpark sidecar only
-    if Studio copies it, and _emit_dspark does not: the sidecar still lands on a GPU.
-    Dropping its ~11 GB from the reserve is the under-count that picks a context the
-    card cannot hold.
+    That asymmetry is why a main ``--device none`` is not readable as the drafter's
+    placement: under DSpark the sidecar stays on a GPU, and dropping its ~11 GB from
+    the reserve picks a context the card cannot hold.
     """
     from core.inference import llama_cpp
 
@@ -946,119 +964,64 @@ def test_only_the_emitters_that_pin_the_drafter_lend_it_the_main_device(monkeypa
     dflash = _spec_flags(monkeypatch, tmp_path, "dflash", "dflash_draft_path")
     assert dflash[dflash.index("--spec-draft-device") + 1] == "none"
 
-    generated = ["--model-draft", "draft.gguf", "--device", "none"]
-    assert llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}) is True
-    assert llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}, dspark_drafter = True) is False
-    # An explicit draft pin still owns the drafter, DSpark included.
-    explicit = ["--model-draft", "draft.gguf", "--spec-draft-device", "none"]
-    assert llama_cpp._extra_args_draft_offloaded_to_cpu(explicit, {}, dspark_drafter = True) is True
+    # Which is why no consumer may read the main device as the drafter's placement:
+    # the two emitters differ, and _emit_mtp copies it only inside its own sidecar
+    # branch, so the arguments alone cannot say whether the pin reaches the drafter.
     assert (
         llama_cpp._extra_args_draft_offloaded_to_cpu(
-            ["--spec-draft-ngl", "0"], {}, dspark_drafter = True
+            ["--model-draft", "draft.gguf", "--device", "none"], {}
         )
-        is True
+        is False
     )
 
 
-def test_the_load_mode_fit_charges_host_pinned_embeddings_to_ram(backend, monkeypatch):
-    """`--load-mode none` turns the embeddings into an anonymous allocation.
+def test_a_host_only_load_is_not_charged_the_tied_duplicate(backend, mib_embd_pair):
+    """The duplicate exists only where its layer lands in another buffer type.
 
-    Under mmap they are file-backed (CPU_Mapped on a real load), so an oversized
-    host share pages in. `none` allocates them, and llama.cpp pins the input layer
-    to the CPU whatever the device is, so free VRAM can never pay for them. Left on
-    the GPU-eligible side of the fit they turn a load host RAM cannot hold into a
-    `none` the OS kills.
-
-    8 GiB into a 24 GiB card with 4 GiB of RAM: a fit, until 6 GiB of it is host
-    resident.
+    llama.cpp re-creates the tied output in the buffer-type context its layer
+    resolves to and returns the ORIGINAL tensor when that is the one token_embd
+    already sits in (llama-model-loader.cpp:1437-1443). A load that reaches no card
+    puts both in the single CPU context, so nothing extra is allocated and charging
+    it would warn about RAM the load does not need -- and force a fitting no-mmap
+    load onto the slower pageable path.
     """
-    from utils import hardware
+    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
 
-    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    tied, _untied = mib_embd_pair
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    argv = ["llama-server", "-m", str(tied)]
+    avail_mib = 20 * 1024 + _HOST_RAM_HEADROOM_MIB
 
-    class _Host:
-        _fits_without_paging = backend._fits_without_paging
-        _FIT_LOAD_MODE = backend._FIT_LOAD_MODE
-
-        def _available_system_memory_mib(self):
-            return 4 * 1024
-
-        def _amd_apu_wants_unified_memory(self, gpu_indices = None):
-            return False
-
-    def _mode(model_size, host_only):
-        return backend._fit_derived_load_mode(
-            _Host(),
-            model_size = model_size,
-            host_only_bytes = host_only,
-            gpus = [(0, 24 * 1024)],
-            avail_mib = 4 * 1024,
+    assert (
+        instance._launch_host_shortfall_message(
+            argv, [], child_has_no_gpu = True, avail_mib = avail_mib
         )
-
-    gib = 1024**3
-    assert _mode(8 * gib, 0) == backend._FIT_LOAD_MODE
-    # Same footprint, split so the pinned share is the part VRAM may not pay for.
-    assert _mode(2 * gib, 6 * gib) is None
-
-
-def test_load_model_hands_the_fit_the_pinned_floor_not_the_discount(backend):
-    """`_host_pinned` is the VRAM discount and is zero on a shared or unclassified
-    device; the CPU pin on the input layer is not conditional on either. The fit has
-    to see the floor, and see it moved out of the weight terms rather than added, so
-    the footprint total does not change with the split."""
-    import inspect
-
-    compact = "".join(inspect.getsource(backend.load_model).split())
-    assert "_fit_extra_host_pinned=max(0,_host_pinned_floor-_host_pinned)" in compact
-    assert "_fit_extra_draft_pinned=max(0,_draft_host_pinned_floor-_draft_host_pinned)" in compact
-    assert "_fit_model_size=max(0,_fit_model_size-_fit_extra_host_pinned)" in compact
-    assert "mtp_bytes=max(0,_mtp_bytes(effective_ctx)-_fit_extra_draft_pinned)" in compact
+        is None
+    ), "a host-only load allocates no second matrix"
+    # The same weights against a card: the duplicate is real there, and the VRAM it
+    # takes is VRAM the file's own weights do not get.
     assert (
-        "host_only_bytes=((_cpu_draft_fit_bytesor0)+_host_pinned+_fit_extra_host_pinned"
-        "+_draft_host_pinned+_fit_extra_draft_pinned)" in compact
+        instance._launch_host_shortfall_message(
+            argv, [(0, 0)], avail_mib = avail_mib
+        )
+        is not None
     )
 
 
-def test_an_unreadable_vulkan_type_is_unclassified_for_the_candidate_search_too(backend):
-    """The global term and the per-candidate one must refuse the same device.
-
-    `_shared_memory` withholds the discount for a row whose type could not be read,
-    but the Vulkan branch built `_shared_gpu_ids` from `total <= 0` alone and left
-    `_unclassified_gpu_ids` empty. An unreadable row still reports a heap, so it fell
-    through both and `_candidate_targets_proved_discrete` handed the discount straight
-    back to the device the global term had just refused.
-    """
-    import inspect
-
-    compact = "".join(inspect.getsource(backend.load_model).split())
-    assert (
-        '_unclassified_gpu_ids={int(row["index"])forrowin(_vulkan_probe_rowsor())'
-        'ifnotrow.get("type_known",True)}' in compact
-    )
-    # And the set the candidate gate tests is the union of the two.
-    assert "_candidate_ids&(_shared_gpu_ids|_unclassified_gpu_ids)" in compact
-
-
-def test_the_arch_crash_refit_follows_the_restored_bytes_not_the_apu(backend):
-    """`_apply_candidate_discounts(_remaining)` restores the same bytes whether the
-    remaining device is a known APU or merely unclassified. Gating the only context
-    re-fit on the APU question left the unclassified retry running the crashed
-    selection's context against the larger footprint."""
-    import inspect
-
-    compact = "".join(inspect.getsource(backend.load_model).split())
-    assert "if(notexplicit_ctxand_retry_restored_discount>0" in compact
-    assert "if(_retry_wants_unifiedandnotexplicit_ctx" not in compact
-
-
-def test_the_paravirtual_drop_does_not_believe_a_dspark_drafter_is_on_cpu(backend):
-    """A virtualised Metal device corrupts whatever runs on it, so the guard drops a
-    drafter it cannot pin. Reading a main CPU device as the DSpark drafter's placement
-    would excuse the drop and leave it running there."""
-    import inspect
-
-    compact = "".join(inspect.getsource(backend.load_model).split())
-    assert (
-        "andnot_extra_args_draft_offloaded_to_cpu(extra_args,"
-        'dspark_drafter=_spec_canon=="dspark"))' in compact
-    )
+def test_a_cpu_pinned_drafter_is_not_charged_the_tied_duplicate(backend, mib_embd_pair):
+    """-ngld 0 puts the whole drafter in the one CPU buffer-type context, so its tied
+    output is the same reuse case as a host-only target: a tied drafter and an untied
+    one of the same size cost the same host RAM."""
+    tied, untied = mib_embd_pair
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 8 * 1024**3
+    # The draft KV needs metadata a synthetic GGUF has no room for; the term under
+    # test is the weights, so hold it flat rather than abstain.
+    instance._mtp_draft_kv_bytes = lambda *_a, **_kw: 0
+    priced = [
+        instance._cpu_resident_draft_bytes(4096, drafter_path = str(path))
+        for path in (tied, untied)
+    ]
+    assert None not in priced
+    assert priced[0] == priced[1], "the tied drafter is charged a duplicate it never allocates"

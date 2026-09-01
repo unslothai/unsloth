@@ -4912,23 +4912,23 @@ def _sidecar_adapter_bytes(extra_args: Optional[Iterable[str]]) -> Optional[int]
 
 
 def _extra_args_draft_offloaded_to_cpu(
-    extra_args: Optional[Iterable[str]],
-    env: Optional[Mapping[str, str]] = None,
-    *,
-    dspark_drafter: bool = False,
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
     """True if the SEPARATE draft model is on CPU (so the budget must not charge
-    its weights+KV): --spec-draft-ngl 0, a draft device naming only cpu/none, or
-    a main CPU device Studio copies into its generated draft flags; else the
-    LLAMA_ARG_N_GPU_LAYERS_DRAFT env the child honors (device flags have no env).
-    An embedded MTP head follows the main -ngl, so these draft-only flags don't move
-    it. Last-wins, so only each flag's final value counts.
+    its weights+KV): --spec-draft-ngl 0, or --spec-draft-device naming only
+    cpu/none, else the LLAMA_ARG_N_GPU_LAYERS_DRAFT env the child honors (the
+    device flag has no env). An embedded MTP head follows the main -ngl, so these
+    draft-only flags don't move it. Last-wins, so only each flag's final value counts.
 
-    ``dspark_drafter`` drops that inheritance: _emit_dspark appends no
-    --spec-draft-device (unlike _emit_dflash and _emit_mtp), and llama.cpp gives a
-    separate drafter the draft device list rather than the main one
-    (``result.devices = params_spec.devices``, common_base_params_to_speculative),
-    unset meaning every device. So the sidecar lands on a GPU anyway.
+    A main ``--device`` is deliberately NOT read here. llama.cpp replaces the main
+    device list with the draft one for any separate drafter (``result.devices =
+    params_spec.devices``, common_base_params_to_speculative), unset meaning every
+    device, so the main pin reaches the drafter only where Studio copies it -- which
+    _emit_dspark never does, and _emit_dflash and _emit_mtp do only when they emit a
+    sidecar of their own. Inheriting it unconditionally made every consumer here
+    under-count a drafter that was really on a GPU, so the drafter is charged unless
+    a draft-only flag says otherwise. The cost is an over-charge where the pin is
+    real, which loses context rather than failing a launch.
 
     A count BETWEEN 0 and the drafter's block count is a split, not an offload; see
     ``_draft_is_split_across_host``."""
@@ -4940,8 +4940,6 @@ def _extra_args_draft_offloaded_to_cpu(
         except (TypeError, ValueError):
             pass
     last_dev = _extra_args_draft_device(extra_args)
-    if last_dev is None and not dspark_drafter and not _extra_args_set_spec_type(extra_args):
-        last_dev = _extra_args_main_device(extra_args)
     if last_dev is not None:
         devs = [d.strip().lower() for d in last_dev.split(",") if d.strip()]
         if devs and all(d in ("cpu", "none") for d in devs):
@@ -10471,9 +10469,15 @@ class LlamaCppBackend:
         # vouch for cannot be told from a host that has no gpu at all
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
-        # The one weight the mmap premise above does not cover: built from token_embd,
-        # not read from the file, so it cannot page back to disk.
-        model_bytes += self._tied_output_bytes(model_path)
+        # Only where the load reaches a card. llama.cpp re-creates the tied output in
+        # the buffer-type context its layer resolves to, and returns the ORIGINAL
+        # tensor when that is the one token_embd already sits in
+        # (llama-model-loader.cpp:1437-1443), so a host-only load allocates nothing
+        # extra. With a GPU the output layer is on the card, the duplicate is a real
+        # second matrix there, and the VRAM it takes is VRAM the file's own weights
+        # do not get -- which is spill, so it belongs in this figure.
+        if gpus:
+            model_bytes += self._tied_output_bytes(model_path)
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
@@ -12422,9 +12426,11 @@ class LlamaCppBackend:
         if not drafter_path:
             return 0
         try:
-            weights = self._get_gguf_size_bytes(drafter_path) + self._tied_output_bytes(
-                drafter_path
-            )
+            # No tied-output charge: this drafter is CPU-pinned by definition, so its
+            # input and output layers resolve to the one CPU buffer-type context and
+            # llama.cpp hands back the original token_embd rather than allocating a
+            # second matrix (llama-model-loader.cpp:1437-1443).
+            weights = self._get_gguf_size_bytes(drafter_path)
         except Exception:
             weights = 0
         if weights <= 0:
@@ -19597,7 +19603,6 @@ class LlamaCppBackend:
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(
                         _draft_placement_extras,
                         env = _draft_placement_env,
-                        dspark_drafter = _mtp_effective == "dspark",
                     )
                     # Kept for the load-mode fit, which the nulling below would leave
                     # short a whole draft GGUF: dropping the drafter from the VRAM budget
@@ -22438,12 +22443,7 @@ class LlamaCppBackend:
                         _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
                         or (launch_mtp_draft_path and not _extra_args_set_spec_type(extra_args))
                     )
-                    # DSpark's block appends no --spec-draft-device, so a main CPU
-                    # device does not move that drafter and cannot excuse the drop:
-                    # it would keep running on the device whose output is corrupt.
-                    and not _extra_args_draft_offloaded_to_cpu(
-                        extra_args, dspark_drafter = _spec_canon == "dspark"
-                    )
+                    and not _extra_args_draft_offloaded_to_cpu(extra_args)
                 )
                 if _pv_draft_unpinnable:
                     logger.warning(

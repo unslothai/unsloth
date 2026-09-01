@@ -9510,27 +9510,14 @@ def _estimate_gguf_required_gb(
         # launches, Unsloth's included, so none of them belongs in a VRAM budget. An
         # embedded head ignores draft-only flags and is inside the weights anyway.
         _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ)
-        # The DSpark sidecar does not follow a main CPU device: its block appends no
-        # --spec-draft-device, and llama.cpp gives a separate drafter the draft list
-        # rather than the main one, unset meaning every device.
-        _dspark_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(
-            llama_extra_args, env = os.environ, dspark_drafter = True
-        )
-        # Which of the two readings describes the block that will run. Extras owning
-        # --spec-type emit nothing, and the helper skips the inheritance there anyway.
-        _dspark_block = _spec_mode == "dspark" or (
-            _spec_mode == "auto" and bool(getattr(config, "gguf_dspark_file", None))
-        )
         _forced_dspark = bool(
             (_spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {}))
             and not _extras_own_drafter
-            and not _dspark_pinned_to_cpu
+            and not _draft_pinned_to_cpu
         )
         # Auto loads the sidecar whenever the model has one, so size it there too
         # or the guard admits a load 11 GB larger than it estimated.
-        _auto_dspark = (
-            _spec_mode == "auto" and not _extras_own_drafter and not _dspark_pinned_to_cpu
-        )
+        _auto_dspark = _spec_mode == "auto" and not _extras_own_drafter and not _draft_pinned_to_cpu
         _dspark_capable = True
         if _forced_dspark or _auto_dspark:
             # Gate on the same answer the loader uses: _download_dspark skips the
@@ -9590,8 +9577,7 @@ def _estimate_gguf_required_gb(
         # that fits. Auto is different: it falls through to the MTP branch, and keeps
         # its charge.
         _charge_no_drafter = (
-            # ... except a DSpark sidecar the pin never reaches.
-            (_draft_pinned_to_cpu and not dspark_requested)
+            _draft_pinned_to_cpu
             or _extras_own_drafter
             or (_forced_dspark and not _dspark_capable)
             or (_forced_dflash and not _dflash_capable)
@@ -9722,10 +9708,7 @@ def _estimate_gguf_required_gb(
         # A host-memory drafter competes for RAM, not the training job's VRAM. Charging
         # it is the wrong resource, not a safe over-estimate, and 409s a load that takes
         # no drafter VRAM at all.
-        # The extras' own --model-draft replaces the sidecar's path, not its
-        # placement, so under DSpark it is on the GPU too.
-        _extras_draft_pinned = _dspark_pinned_to_cpu if _dspark_block else _draft_pinned_to_cpu
-        if _extras_draft_pinned:
+        if _draft_pinned_to_cpu:
             _extras_bytes = 0
         elif _extras_draft and Path(_extras_draft).is_file():
             if _same_file_key(str(_extras_draft)) not in _sized_keys:

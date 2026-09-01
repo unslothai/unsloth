@@ -1479,13 +1479,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(main_cpu_gb, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(draft_cpu_gb, 2000 / (1024**3), places = 9)
 
-    def test_an_extras_drafter_under_dspark_is_not_uncharged_by_a_main_cpu_device(self):
-        """The extras' own --model-draft replaces the sidecar's path, not its placement.
+    def test_an_extras_drafter_is_not_uncharged_by_a_main_cpu_device(self):
+        """A main ``--device none`` is not the separate drafter's placement.
 
-        Studio still emits ``--spec-type draft-dspark`` and no --spec-draft-device, so
-        the drafter the child loads is on the GPU and belongs in a guard that protects
-        a resident training job. Under DFlash or MTP the emitted block does copy the
-        main device, and there the pin really does take it off the GPU.
+        llama.cpp gives a separate drafter the DRAFT device list, unset meaning every
+        device, so the pin reaches it only where Studio copies it -- never under
+        DSpark, and under DFlash or MTP only when they emit a sidecar of their own,
+        which a bare extras ``--model-draft`` does not make them do. The guard
+        protects a resident training job, so the drafter stays charged; the
+        draft-only pin still takes it off.
         """
         import tempfile
 
@@ -1503,20 +1505,28 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 gguf_hf_repo = None,
                 gguf_variant = None,
             )
-            extras = ["--model-draft", str(extras_draft), "--device", "none"]
+            draft = ["--model-draft", str(extras_draft)]
             with (
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
                 patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
                 self._dspark_capable(),
             ):
-                dspark_gb = self.route._estimate_gguf_required_gb(
-                    cfg, speculative_type = "dspark", llama_extra_args = extras
+                charged = {
+                    mode: self.route._estimate_gguf_required_gb(
+                        cfg,
+                        speculative_type = mode,
+                        llama_extra_args = draft + ["--device", "none"],
+                    )
+                    for mode in ("dspark", "mtp")
+                }
+                pinned = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dspark",
+                    llama_extra_args = draft + ["--spec-draft-device", "none"],
                 )
-                mtp_gb = self.route._estimate_gguf_required_gb(
-                    cfg, speculative_type = "mtp", llama_extra_args = extras
-                )
-        self.assertAlmostEqual(dspark_gb, 6000 / (1024**3), places = 9)
-        self.assertAlmostEqual(mtp_gb, 2000 / (1024**3), places = 9)
+        for mode, gb in charged.items():
+            self.assertAlmostEqual(gb, 6000 / (1024**3), places = 9, msg = mode)
+        self.assertAlmostEqual(pinned, 2000 / (1024**3), places = 9)
 
     def test_forced_dspark_on_an_incapable_binary_charges_no_drafter_at_all(self):
         """The loader's DSpark branch falls back to --spec-default, which loads no
