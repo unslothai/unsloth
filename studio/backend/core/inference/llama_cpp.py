@@ -4980,6 +4980,28 @@ def _replace_subsequence(tokens: List[str], run: List[str], replacement: List[st
     return list(tokens)
 
 
+def _contains_subsequence(tokens: List[str], run: List[str]) -> bool:
+    """Whether ``_replace_subsequence`` would find ``run``. Its miss is a silent
+    no-op, so a caller that also records placement state has to ask first."""
+    if not run:
+        return False
+    return any(tokens[i : i + len(run)] == run for i in range(len(tokens) - len(run) + 1))
+
+
+def _resynced_policy_argv(before: List[str], after: List[str], block: List[str]) -> List[str]:
+    """``block`` re-read from ``after`` at the offset it held in ``before``.
+
+    For a normalization pass that rewrites tokens in place without resizing: a
+    value it changes inside the block would otherwise leave the block
+    unfindable, and the retry that searches for it by value silently no-ops."""
+    if not block or len(before) != len(after):
+        return block
+    for i in range(len(before) - len(block) + 1):
+        if before[i : i + len(block)] == block:
+            return after[i : i + len(block)]
+    return block
+
+
 def _subsequence_index(tokens: List[str], run: List[str], hint: int) -> int:
     """Where ``run`` sits in ``tokens``, given it was appended at ``hint``.
 
@@ -22124,6 +22146,7 @@ class LlamaCppBackend:
                 # logged is what launches; length is preserved, so _spec_start
                 # still indexes the same tokens.
                 if _flash_attn_known_off:
+                    _pre_v_reset = cmd
                     cmd = self._reset_quantized_v_cache(
                         cmd,
                         "this build has no --flash-attn",
@@ -22134,6 +22157,11 @@ class LlamaCppBackend:
                         # Unsloth never rewrites LLAMA_ARG_SPEC_DRAFT_MODEL.
                         draft_mla = self._draft_kv_symmetry(cmd),
                     )
+                    # A -ctv the user typed sits INSIDE the policy block, and the
+                    # reset rewrites its value, so the block the --fit off retry
+                    # searches for by value would no longer be on argv. Re-read it
+                    # from the same offset; this rewrites in place, never resizes.
+                    _mem_policy_argv = _resynced_policy_argv(_pre_v_reset, cmd, _mem_policy_argv)
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
@@ -23034,7 +23062,16 @@ class LlamaCppBackend:
                                     # still applies, as on the initial build. Dropped there,
                                     # nothing ever satisfies "keep resident" and every load
                                     # rebuilds the same child.
-                                    if not resolve_effective_memory_state(
+                                    if not _contains_subsequence(run_cmd, _mem_policy_argv):
+                                        # Nothing to rewrite, so the child keeps the lock;
+                                        # recording it as dropped would describe an argv
+                                        # that never launched.
+                                        logger.info(
+                                            "Model Memory: the policy block is no longer on "
+                                            "the argv, so the --fit off retry keeps the "
+                                            "page-lock it was built with."
+                                        )
+                                    elif not resolve_effective_memory_state(
                                         [*_retry_load_mode, *_retry_extras],
                                         _fit_load_mode_env_view,
                                     )[1]:

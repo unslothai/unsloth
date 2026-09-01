@@ -2941,6 +2941,61 @@ class TestFitOffRetryDropsTheLock:
         assert dropped == (False, False)
         assert memory_state_satisfies_settings(dropped, True, False) is True
 
+    def test_a_normalized_v_cache_keeps_the_policy_block_findable(self):
+        """A hand-typed -ctv sits INSIDE the policy block, and the flash-attn-off
+        reset rewrites its value after the block was captured. Left alone, the
+        retry searches for a block that is no longer on argv, _replace_subsequence
+        no-ops, and the launch keeps a lock the arm just recorded as dropped."""
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _contains_subsequence,
+            _resynced_policy_argv,
+        )
+
+        managed = ["--load-mode", "mmap+mlock"]
+        extras = ["--cache-type-v", "q8_0", "--temp", "0.7"]
+        block = [*managed, *extras]
+        cmd = ["llama-server", "-m", "m.gguf", "-ngl", "-1", "--fit", "on", *block]
+
+        normalized = LlamaCppBackend._reset_quantized_v_cache(cmd, "no flash-attn")
+        assert len(normalized) == len(cmd), "the reset must rewrite in place"
+        assert normalized[-3] == "f16"
+        assert not _contains_subsequence(normalized, block), "the stale block is the bug"
+
+        resynced = _resynced_policy_argv(cmd, normalized, block)
+        assert resynced == ["--load-mode", "mmap+mlock", "--cache-type-v", "f16", "--temp", "0.7"]
+        assert _contains_subsequence(normalized, resynced)
+
+    def test_the_resync_is_a_no_op_when_nothing_moved(self):
+        from core.inference.llama_cpp import _resynced_policy_argv
+
+        block = ["--load-mode", "mmap+mlock"]
+        cmd = ["llama-server", *block, "--temp", "0.7"]
+        assert _resynced_policy_argv(cmd, cmd, block) == block
+        # A resize is not the contract this helper is for, so it declines.
+        assert _resynced_policy_argv(cmd, [*cmd, "--x"], block) == block
+        assert _resynced_policy_argv(cmd, cmd, []) == []
+
+    def test_the_launch_will_not_record_a_drop_it_could_not_make(self):
+        """Source check: the arm asks whether the block is still on argv before
+        it touches run_cmd or the placement markers."""
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
+        assert branch != -1
+        end = src.find("return False", branch)
+        tail = src[branch:end]
+        guard = tail.find("_contains_subsequence(run_cmd, _mem_policy_argv)")
+        assert guard != -1, "the retry no longer checks that the block is present"
+        assert guard < tail.find("_replace_subsequence("), "the check must come first"
+        assert guard < tail.find("_mem_host_resident = False")
+        # And the block is kept in step with the one normalization that rewrites it.
+        assert "_resynced_policy_argv(" in src
+        assert "_pre_v_reset = cmd" in src
+
     def test_the_retry_restores_stripped_hand_typed_extras(self):
         from core.inference.llama_cpp import _replace_subsequence
 
