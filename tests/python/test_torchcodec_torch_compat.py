@@ -1391,25 +1391,38 @@ def test_notebook_validator_evaluates_environment_markers():
     assert nv._requirement_applies("torch==2.12.0; nonsense !!", environment)
 
     for skipped in (
-        '!pip install "torch>=2.12; python_version < \'3.10\'"',
-        '!pip install "torch==2.12.0; python_version < \'3.10\'"',
+        "!pip install \"torch>=2.12; python_version < '3.10'\"",
+        "!pip install \"torch==2.12.0; python_version < '3.10'\"",
         "!pip install 'torch==2.12.0; sys_platform == \"win32\"'",
     ):
-        assert nv.rule_inst_004_torchcodec_torch(
-            skipped, COLAB_TORCH211, "nb.ipynb", 0
-        ) == [], skipped
+        assert (
+            nv.rule_inst_004_torchcodec_torch(skipped, COLAB_TORCH211, "nb.ipynb", 0) == []
+        ), skipped
 
     # A marker that holds is replayed, and so is one with no environment to judge it against.
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch==2.12.0; python_version >= \'3.10\'"', COLAB_TORCH211, "nb.ipynb", 0
-    )) == 1
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                "!pip install \"torch==2.12.0; python_version >= '3.10'\"",
+                COLAB_TORCH211,
+                "nb.ipynb",
+                0,
+            )
+        )
+        == 1
+    )
     assert nv._marker_environment({}) is None
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        '!pip install --no-deps "torch==2.12.1; python_version < \'3.10\'" "torchcodec==0.11.1"',
-        {},
-        "nb.ipynb",
-        0,
-    )) == 1
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                '!pip install --no-deps "torch==2.12.1; python_version < \'3.10\'" "torchcodec==0.11.1"',
+                {},
+                "nb.ipynb",
+                0,
+            )
+        )
+        == 1
+    )
 
 
 def test_notebook_validator_expands_bundled_short_flags():
@@ -1428,9 +1441,14 @@ def test_notebook_validator_expands_bundled_short_flags():
         assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], flag
 
     # A quiet flag on its own does not re-resolve anything.
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch==2.12.0" -q torchcodec', COLAB_TORCH211, "nb.ipynb", 0
-    )) == 1
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                '!pip install "torch==2.12.0" -q torchcodec', COLAB_TORCH211, "nb.ipynb", 0
+            )
+        )
+        == 1
+    )
 
 
 def test_notebook_validator_reads_a_range_as_one_window():

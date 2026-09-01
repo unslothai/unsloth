@@ -138,7 +138,6 @@ def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
         return True
     try:
         from packaging.markers import Marker
-
         return bool(Marker(marker_text).evaluate(environment))
     except Exception:
         return True
@@ -1004,9 +1003,7 @@ def _forces_resolution(flags: set[str]) -> bool:
     if flags & _RESOLVE_ANYWAY_LONG:
         return True
     return any(
-        not flag.startswith("--")
-        and flag.startswith("-")
-        and set(flag[1:]) & _RESOLVE_ANYWAY_SHORT
+        not flag.startswith("--") and flag.startswith("-") and set(flag[1:]) & _RESOLVE_ANYWAY_SHORT
         for flag in flags
     )
 
@@ -1158,9 +1155,7 @@ def rule_inst_004_torchcodec_torch(
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
     environment = _marker_environment(colab)
-    torch_v, torch_exact = _effective_version(
-        install_cell, "torch", res.get("torch"), environment
-    )
+    torch_v, torch_exact = _effective_version(install_cell, "torch", res.get("torch"), environment)
     codec_v, codec_exact = _effective_version(
         install_cell, "torchcodec", res.get("torchcodec"), environment
     )
