@@ -16,7 +16,7 @@ import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.video as video_module
 import core.inference.video_gallery as gallery_module
 import routes.video as video_routes
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import get_current_subject
 from core.inference.video_families import VIDEO_CANCELLED_MSG
 from routes.video import (
     _format_seconds,
@@ -127,8 +127,6 @@ def client(backend):
     app.include_router(openai_router, prefix = "/api/inference")
     app.include_router(video_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # The boundary dependency reads a bearer this fixture does not send.
-    app.dependency_overrides[authenticated_via_api_key] = lambda: True
     return TestClient(app)
 
 

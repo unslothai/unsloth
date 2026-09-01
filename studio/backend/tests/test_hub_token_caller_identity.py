@@ -10,6 +10,8 @@ and a child env inherits what it was never granted. ``is`` throughout: ``False =
 """
 
 import hashlib
+from pathlib import Path
+from typing import Optional
 
 import pytest
 from fastapi import FastAPI
@@ -260,3 +262,33 @@ def test_the_request_dependency_keeps_the_caller_boundary(hf_token, allow_ambien
     assert resolved == expected
     if expected in (None, False):
         assert resolved is expected
+
+
+def test_the_media_load_models_still_reject_the_sentinel():
+    """Why /v1/images/generations, /v1/videos and /video/generate keep the old dependency.
+
+    All three reach maybe_auto_switch_media_model, whose _start_load builds a
+    DiffusionLoadRequest / VideoLoadRequest. Both declare ``hf_token: Optional[str]``, so the
+    sentinel is a ValidationError that kills the switch. Threading HfTokenArg through the load
+    path means auditing ~30 `request.hf_token` consumers in routes/inference.py, which is a
+    change of its own; until then those routes stay on get_hf_token and this test says so.
+    """
+    import pydantic
+    from models.inference import DiffusionLoadRequest, VideoLoadRequest
+
+    for model in (DiffusionLoadRequest, VideoLoadRequest):
+        assert model.model_fields["hf_token"].annotation == Optional[str]
+        with pytest.raises(pydantic.ValidationError):
+            model(model_path = "org/repo", hf_token = False)
+
+
+@pytest.mark.parametrize(
+    "route_line, expected",
+    [("audio/stt/download", True), ("audio/stt/validate", True)],
+)
+def test_the_stt_routes_keep_the_caller_boundary(route_line, expected):
+    """The STT pair is converted: it downloads a whole repo and has no pydantic sink."""
+    source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
+    marker = source.index(f'"/{route_line}"')
+    signature = source[marker : marker + 400]
+    assert ("Depends(get_request_hf_token)" in signature) is expected

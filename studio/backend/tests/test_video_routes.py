@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.video as video_module
 import core.inference.video_gallery as gallery_module
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import get_current_subject
 from core.inference.video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
@@ -246,8 +246,6 @@ def client(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(video_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # The boundary dependency reads a bearer this fixture does not send.
-    app.dependency_overrides[authenticated_via_api_key] = lambda: True
     return TestClient(app)
 
 
