@@ -20745,6 +20745,17 @@ async def produce_openai_chat_completions(
                 _preempt_loop = None
 
             def _gguf_recost(conversation) -> None:
+                # A round boundary is also a safe point, so tell the preemptor what this
+                # run now holds before it decides who should stop.
+                try:
+                    _res = _gguf_admission_hold["reservation"]
+                    _lease = _res.lease_nowait() if _res is not None else None
+                    if _lease is not None:
+                        get_preemption_controller(
+                            str(getattr(llama_backend, "base_url", "llama-server"))
+                        ).note_tokens(completion_id, int(_lease.tokens or 0))
+                except Exception:
+                    pass
                 _openai_llama_admission_recost(
                     _gguf_admission_hold["reservation"],
                     conversation,
@@ -20851,6 +20862,11 @@ async def produce_openai_chat_completions(
                 # Hand the rounds their reservation now it exists; no round can have run
                 # before this, since the generator is not iterated until admission returns.
                 _gguf_admission_hold["reservation"] = reservation
+                # The controller was planning against the opening charge forever: nothing
+                # reported growth, so `committed` never moved after admission and a chat
+                # that had doubled in size still looked like its first round. _gguf_recost
+                # already runs at the top of every round with the live conversation, so
+                # the live figure is threaded through it.
                 _gguf_preempt_policy_hold.bind(
                     _openai_llama_preemption_arm(
                         request = request,

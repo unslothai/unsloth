@@ -26897,6 +26897,7 @@ class LlamaCppBackend:
                     and preempt_event.is_set()
                     and not (user_cancel is not None and user_cancel.is_set())
                 ):
+                    logger.info("llama preemption stream-interrupted: raising from iter")
                     raise _preemption.LlamaStreamPreempted
                 return
             try:
@@ -27071,6 +27072,7 @@ class LlamaCppBackend:
         def _raise_interrupt():
             if cancel_event is not None and cancel_event.is_set():
                 raise _LlamaStreamCancelled
+            logger.info("llama preemption stream-interrupted: raising from _raise_interrupt")
             raise _preemption.LlamaStreamPreempted
 
         _interrupt = _interrupt_event(cancel_event, preempt_event)
@@ -30726,6 +30728,7 @@ class LlamaCppBackend:
             except _LlamaStreamCancelled:
                 return
             except _preemption.LlamaStreamPreempted:
+                logger.info("llama preemption caught: entering pause/resume handshake")
                 # Paused to free KV, not abandoned. Everything that makes this
                 # recoverable is still alive in this frame -- the controller's
                 # one-shot ledger, the conversation, the client's open SSE response
