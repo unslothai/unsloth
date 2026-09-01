@@ -59,7 +59,12 @@ import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
 import { buildModelVramMap } from "@/lib/vram";
 import type { ModelType, TrainingMethod } from "@/types/training";
-import { ArrowDown01Icon, ChipIcon } from "@hugeicons/core-free-icons";
+import {
+  ChipIcon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronDownIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -789,8 +794,7 @@ export function TrainModelSelector({
               {display ?? t("studio.modelPicker.selectModel")}
             </span>
           </span>
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
+          <ChevronDownIcon
             strokeWidth={1.25}
             className="size-3.5 shrink-0 text-muted-foreground"
           />
