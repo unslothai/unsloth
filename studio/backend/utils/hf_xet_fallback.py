@@ -978,7 +978,7 @@ def hf_hub_download_with_xet_fallback(
                 )
                 if isinstance(elsewhere, str) and Path(elsewhere).is_file():
                     cache_dir = None
-        except Exception:  # noqa: BLE001 — a cache we cannot read just keeps the live root
+        except Exception:  # noqa: BLE001 - a cache we cannot read just keeps the live root
             pass
     if local_files_only:
         # Straight to huggingface_hub after the root switch, which is what lets an offline caller reach a file under the

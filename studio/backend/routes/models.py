@@ -2940,7 +2940,7 @@ def _scan_loras_sync(
             )
         )
 
-    # Scan exported models (merged, LoRA, base — skips GGUF)
+    # Scan exported models (merged, LoRA, base - skips GGUF)
     exported = scan_exported_models(exports_dir = resolved_exports_dir)
     for display_name, model_path, export_type, base_model in exported:
         lora_list.append(

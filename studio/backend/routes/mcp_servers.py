@@ -359,7 +359,7 @@ async def refresh_mcp_server_tools(
             timeout = probe_timeout(server["url"], use_oauth),
             use_oauth = use_oauth,
         )
-    except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
+    except Exception as exc:  # noqa: BLE001 - surface transport+timeout errors to UI
         logger.error(
             "mcp_servers.refresh_failed",
             server_id = server_id,

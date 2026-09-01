@@ -47,7 +47,7 @@ DEFAULT_TARGET_MODULES = [
 ATTENTION_TARGET_MODULES = {"q_proj", "k_proj", "v_proj", "o_proj"}
 MLP_TARGET_MODULES = {"gate_proj", "up_proj", "down_proj"}
 
-# Empirically calibrated bytes/param — see VRAM_ESTIMATION.md for rationale.
+# Empirically calibrated bytes/param - see VRAM_ESTIMATION.md for rationale.
 OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
     "adamw_8bit": 4,
     "paged_adamw_8bit": 4,
@@ -58,7 +58,7 @@ OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
     "sgd": 4,
 }
 
-# (full_ft_multiplier, lora_multiplier) — fraction of num_layers.
+# (full_ft_multiplier, lora_multiplier) - fraction of num_layers.
 # LoRA: frozen layers skip activation storage, but ~1 is in flight during backprop.
 GC_LAYER_MULTIPLIERS = {
     "none": (None, None),

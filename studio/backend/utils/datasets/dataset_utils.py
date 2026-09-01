@@ -121,7 +121,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         }
 
     if is_audio:
-        # Audio dataset — require manual mapping only when columns aren't auto-detected
+        # Audio dataset - require manual mapping only when columns aren't auto-detected
         detected_audio = multimodal_info.get("detected_audio_column")
         detected_text = multimodal_info.get("detected_text_column")
         needs_mapping = not detected_audio or not detected_text
@@ -156,7 +156,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 **audio_fields,
             }
         else:
-            # Heuristic failed — user must map manually (or use AI Assist)
+            # Heuristic failed - user must map manually (or use AI Assist)
             return {
                 "requires_manual_mapping": True,
                 "detected_format": "unknown",

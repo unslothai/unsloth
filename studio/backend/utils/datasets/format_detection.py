@@ -810,15 +810,15 @@ def detect_vlm_dataset_structure(dataset):
         """Probe whether an image candidate is reachable (True unless definitely broken)."""
         import os
 
-        # PIL / dict — already loaded.
+        # PIL / dict - already loaded.
         if not isinstance(sample_value, str):
             return True
 
-        # Local file — check it exists.
+        # Local file - check it exists.
         if not sample_value.startswith(("http://", "https://")):
             return os.path.exists(sample_value)
 
-        # URL — quick HEAD with short timeout.
+        # URL - quick HEAD with short timeout.
         try:
             import urllib.request
 
@@ -857,17 +857,17 @@ def detect_vlm_dataset_structure(dataset):
 
         candidates.sort(key = lambda x: x[1], reverse = True)
 
-        # Single candidate or top is PIL/dict — no probing needed.
+        # Single candidate or top is PIL/dict - no probing needed.
         if len(candidates) == 1 or candidates[0][1] >= 75:
             return candidates[0][0]
 
-        # Multiple string candidates — probe for one that works.
+        # Multiple string candidates - probe for one that works.
         for col, score in candidates:
             sample_value = sample[col]
             if _probe_image_candidate(col, sample_value):
                 return col
 
-        # None probed OK — return highest-scored; conversion may still resolve it.
+        # None probed OK - return highest-scored; conversion may still resolve it.
         return candidates[0][0]
 
     def find_text_column():
@@ -890,7 +890,7 @@ def detect_vlm_dataset_structure(dataset):
                     and len(sample_value) > 0
                     and isinstance(sample_value[0], str)
                 ):
-                    # List of strings (e.g. captions) — lower priority than plain str.
+                    # List of strings (e.g. captions) - lower priority than plain str.
                     priority = min(len(sample_value[0]), 1000) // 2
                     candidates.append((col, priority))
 
