@@ -1532,9 +1532,12 @@ def test_git_allowlist_resolves_dot_segments_and_matches_exactly():
     subdirectory in the fragment, so the match is exact."""
     nv = _load_notebook_validator_module()
 
-    assert nv._git_source_repository(
-        "git+https://github.com/unslothai/unsloth/../../attacker/repo.git"
-    ) == "github.com/attacker/repo"
+    assert (
+        nv._git_source_repository(
+            "git+https://github.com/unslothai/unsloth/../../attacker/repo.git"
+        )
+        == "github.com/attacker/repo"
+    )
     assert not nv._git_source_is_allowed(
         "git+https://github.com/unslothai/unsloth/../../attacker/repo.git"
     )
@@ -1575,12 +1578,12 @@ def test_no_deps_rules_skip_a_requirement_pip_skips(monkeypatch):
     )
     colab = {"transformers": "5.0.0", "tokenizers": "0.22.2"}
 
-    skipped = '!pip install --no-deps "transformers==5.5.0; python_version < \'3.10\'"'
+    skipped = "!pip install --no-deps \"transformers==5.5.0; python_version < '3.10'\""
     assert nv.rule_inst_002_no_deps_transitive(skipped, colab, "nb.ipynb", 0) == []
     assert nv.rule_inst_005_transformers_tokenizers(skipped, colab, "nb.ipynb", 0) == []
 
     for applied in (
-        '!pip install --no-deps "transformers==5.5.0; python_version >= \'3.10\'"',
+        "!pip install --no-deps \"transformers==5.5.0; python_version >= '3.10'\"",
         '!pip install --no-deps "transformers==5.5.0"',
     ):
         assert nv.rule_inst_002_no_deps_transitive(applied, colab, "nb.ipynb", 0), applied
