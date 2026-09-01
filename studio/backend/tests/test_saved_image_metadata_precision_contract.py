@@ -455,8 +455,7 @@ def engaged_client(monkeypatch, tmp_path):
     # production. Both persistence paths reach the same gallery, so both are exercised here.
     app.include_router(openai_router, prefix = "/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # These routes resolve their Hub token through the API-key boundary, whose
-    # dependency reads the bearer this fixture does not send.
+    # The boundary dependency reads a bearer this fixture does not send.
     app.dependency_overrides[authenticated_via_api_key] = lambda: True
     return TestClient(app), backend, saved
 

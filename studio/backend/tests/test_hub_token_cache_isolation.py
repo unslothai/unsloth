@@ -3,18 +3,11 @@
 
 """A per-token cache is only a boundary if the two callers hash to different tokens.
 
-Studio's Hub metadata caches are keyed by ``token_fingerprint``, which folded every falsy
-token into ``""``. Once ``hf_token_arg`` began returning ``False`` for an API-key caller
-that identity became shared with ``None`` -- a UI session that may use the backend's
-ambient credential -- so the caches leaked in both directions:
-
-* a UI session warms a private repo's size and blob hashes under the operator's token,
-  and an API key denied that token reads them straight back out;
-* an API key's anonymous 403 writes a negative entry that blanks the UI's next lookup.
-
-The dataset cache is the sharpest case because it already carries the defence explicitly
--- ``not restricted or cached_fp == token_fp`` -- which the collision turned into
-``"" == ""``. These tests drive the real cache, not the fingerprint in isolation.
+``token_fingerprint`` folded every falsy token into ``""``, so ``False`` shared an identity
+with ``None`` and the caches leaked both ways: a UI session's private-repo metadata read
+back by an API key, and an API key's 403 blanking the UI's next lookup. The dataset cache
+is sharpest -- its own ``not restricted or cached_fp == token_fp`` guard became ``"" == ""``.
+These drive the real cache, not the fingerprint in isolation.
 """
 
 import asyncio
@@ -75,13 +68,11 @@ def test_a_ui_session_private_dataset_is_not_served_to_an_anonymous_caller(monke
     calls: list = []
     _stub_dataset_info(monkeypatch, private = True, calls = calls)
 
-    # The UI session holds an explicit token and warms the cache for a private dataset.
     size, hashes = dataset_downloads.get_dataset_snapshot_metadata_cached(
         "org/private-set", "hf_operator_token"
     )
     assert size == 4096 and "sha-private" in hashes
 
-    # The API-key caller is forced anonymous. It must NOT read that entry back.
     anon_size, anon_hashes = dataset_downloads.get_dataset_snapshot_metadata_cached(
         "org/private-set", False
     )
@@ -90,18 +81,11 @@ def test_a_ui_session_private_dataset_is_not_served_to_an_anonymous_caller(monke
         "the anonymous caller was served a private dataset's size and blob hashes "
         "out of the cache the UI session filled"
     )
-    # And it genuinely tried anonymously rather than being answered from the cache.
     assert calls[-1] is False
 
 
 def test_an_ambient_ui_entry_is_not_served_to_an_anonymous_caller(monkeypatch):
-    """The same leak with the ambient credential rather than an explicit one.
-
-    ``None`` is what a UI session resolves to on an install whose HF_TOKEN lives in the
-    environment, and it is the value this PR is careful to keep working. Before the fix
-    it and ``False`` shared one cache identity, so this is the exact disclosure the
-    boundary exists to prevent.
-    """
+    """``None`` (ambient install) and ``False`` shared one identity: the exact disclosure."""
     calls: list = []
 
     def _api(*_args, **kwargs):
@@ -109,8 +93,7 @@ def test_an_ambient_ui_entry_is_not_served_to_an_anonymous_caller(monkeypatch):
         calls.append(token)
 
         def _dataset_info(repo_id, **_kw):
-            # `None` reaches the Hub with the process's ambient HF_TOKEN and succeeds;
-            # `False` sends no credential at all and is refused.
+            # `None` carries the ambient HF_TOKEN and succeeds; `False` sends none.
             if token is False:
                 raise RuntimeError("401 Unauthorized")
             return SimpleNamespace(
@@ -144,14 +127,11 @@ def test_an_anonymous_denial_does_not_blank_a_later_ui_lookup(monkeypatch):
     calls: list = []
     _stub_dataset_info(monkeypatch, private = True, calls = calls)
 
-    # The API key probes first and is refused. That writes a negative entry.
     refused = dataset_downloads.get_dataset_snapshot_metadata_cached(
         "org/private-set", False
     )
     assert refused == (0, frozenset())
 
-    # The UI session, which does have the credential, must still get a real answer
-    # rather than reading the API key's 403 back out of the shared negative slot.
     size, hashes = dataset_downloads.get_dataset_snapshot_metadata_cached(
         "org/private-set", "hf_operator_token"
     )
@@ -177,25 +157,16 @@ def test_the_same_caller_still_gets_a_cache_hit(monkeypatch):
     assert len(calls) == 1, "the second identical lookup should have been a cache hit"
 
 
-# --- in-flight deduplication ---------------------------------------------------------
-
-
 def test_concurrent_callers_of_different_credentials_do_not_share_one_scan():
-    """The in-flight key is not TTL-bounded: two concurrent requests join one task.
-
-    A UI scan started under the ambient token and an API-key scan forced anonymous used
-    to produce the same key, so whichever arrived first decided the answer for both.
-    """
+    """Not TTL-bounded: whichever credential started the shared task decided both answers."""
     computed: list = []
 
     def _key(token):
-        # The same shape as the real in-flight key, with the token identity in it.
         return ("org/repo", False, False, "", token_fingerprint(token), "cache")
 
     async def _drive():
         def _compute(token):
-            # Run in a worker thread by _shared_variants_scan, so this is sync. The sleep
-            # holds the task in flight long enough for the second caller to try to join.
+            # Sync: _shared_variants_scan runs it in a thread. The sleep holds it in flight.
             computed.append(token)
             time.sleep(0.05)
             return f"result-for-{token}"

@@ -342,9 +342,8 @@ def inspect_seed_dataset(
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
-    # Derived from the caller, like every other Hub-reaching route. Hardcoding False here
-    # would take the ambient fallback away from a UI session too, so an install whose
-    # Hugging Face token lives in the environment would lose gated seed inspection.
+    # From the caller, like every other Hub-reaching route: a hardcoded False would take
+    # the ambient fallback from UI sessions too.
     token = hf_token_arg(
         _normalize_optional_text(payload.hf_token),
         allow_ambient_token = allow_ambient_token,

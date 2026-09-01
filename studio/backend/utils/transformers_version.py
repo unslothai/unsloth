@@ -675,8 +675,7 @@ def _token_cache_key(model_name: str, hf_token: HfTokenArg) -> tuple[str, str | 
     """Cache key that keeps authenticated and unauthenticated reads separate, so an
     unauthenticated miss on a gated/private repo never poisons a later authed lookup.
 
-    A caller forced anonymous is its own credential, distinct from one that may still
-    fall back to the backend's ambient token, so it takes its own slot too.
+    Forced-anonymous is its own credential, so it takes its own slot too.
     """
     import hashlib
 
@@ -1513,8 +1512,7 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     (auth/network/offline/spawn) so the caller fails safe and does not cache.
     """
     env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-    # The probe relies on the implicit HF_TOKEN env, so the credential is granted or
-    # scrubbed here rather than passed as an argument.
+    # The probe reads the implicit HF_TOKEN env, so grant or scrub here, not via argv.
     apply_token_to_child_env(env, hf_token)
     if _env_offline():
         env["HF_HUB_OFFLINE"] = "1"

@@ -325,8 +325,7 @@ def client(backend, monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(video_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # These routes resolve their Hub token through the API-key boundary, whose
-    # dependency reads the bearer this fixture does not send.
+    # The boundary dependency reads a bearer this fixture does not send.
     app.dependency_overrides[authenticated_via_api_key] = lambda: True
     return TestClient(app)
 

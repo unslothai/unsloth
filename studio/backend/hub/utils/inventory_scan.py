@@ -449,10 +449,8 @@ def token_fingerprint(hf_token: HfTokenArg) -> str:
     fetched value back to a different token (a private/gated repo's
     metadata is only valid for the credential that fetched it).
 
-    A caller forced anonymous is a different credential from one that may fall
-    back to the backend's ambient token, so it takes its own identity. Folding
-    both into ``""`` would let a UI session's private-repo metadata be served to
-    an API key, and let an API key's anonymous 403 blank the UI's result.
+    A forced-anonymous caller is a different credential from one that may still fall
+    back to the ambient token, so it takes its own identity.
     """
     if is_anonymous(hf_token):
         return ANONYMOUS_CACHE_IDENTITY

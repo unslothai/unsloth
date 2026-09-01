@@ -1132,17 +1132,14 @@ export function useChatModelRuntime() {
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
-        // The progress pollers below need the prepared token, so preparation moved out
-        // of performLoad's GGUF-metadata branch. Keep it off loads that cannot reach the
-        // Hub, though: prepareHfTokenForUse validates over the network and can raise a
-        // blocking dialog, and a stale token in Settings must not gate a local-path or
-        // cached-LoRA load that never asks the Hub for anything.
+        // Hoisted out of performLoad's GGUF branch for the progress pollers, but kept off
+        // loads that never reach the Hub: it validates over the network and can block on a
+        // dialog, and a stale Settings token must not gate a local or cached-LoRA load.
         const mayReachHub = !isLocal && nativePathToken == null;
         if (mayReachHub) {
           const preparedToken = await prepareHfTokenForUse(hfToken);
           if (!preparedToken.proceed) {
-            // This throw lands in the outer catch, which renders the error banner. The
-            // load toast does not exist yet, so the cancellation says so on its own.
+            // Lands in the outer catch (banner only); no load toast exists yet.
             toast.error("Model load cancelled.");
             throw new Error("Model load cancelled.");
           }

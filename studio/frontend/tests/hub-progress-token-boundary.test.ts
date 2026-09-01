@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Hub progress routes resolve their token per caller: a request that carries no
-// X-Unsloth-HF-Token is anonymous for an API key and ambient for a UI session. These
-// assert on the request the browser actually emits, not on the shape of the source, so
-// they still fail if the header is dropped, blanked, or eaten by authFetch's own merge.
+// Assert on the request the browser emits, not the shape of the source: these still fail
+// if the header is dropped, blanked, or eaten by authFetch's own merge.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -20,7 +18,6 @@ type AuthApi = {
 const read = (relativePath: string): string =>
   readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
-/** Drive the real authFetch against a stubbed fetch and return the emitted headers. */
 async function emittedHeaders(init?: RequestInit): Promise<Headers> {
   const originalFetch = globalThis.fetch;
   let received = new Headers();
@@ -54,8 +51,7 @@ test("a progress request with a token carries it, alongside the session credenti
   const headers = await emittedHeaders({ headers: hubTokenHeader("hf_secret") });
 
   assert.equal(headers.get("X-Unsloth-HF-Token"), "hf_secret");
-  // The regression that would silently unauthenticate every converted route: authFetch
-  // seeds its Headers from init, so a caller passing `headers` must not displace these.
+  // authFetch seeds Headers from init: a caller passing `headers` must not displace these.
   assert.equal(headers.get("Authorization"), "Bearer access-token");
   assert.ok(headers.get("X-Unsloth-Timezone"));
 });
@@ -64,8 +60,7 @@ test("a tokenless progress request omits the header rather than blanking it", as
   for (const token of [null, undefined, ""]) {
     const headers = await emittedHeaders({ headers: hubTokenHeader(token) });
 
-    // An empty-string header is NOT equivalent: get_hf_token would read it as a present
-    // header, and the backend could no longer tell "no token" from "empty token".
+    // An empty-string header is not equivalent: the backend reads it as present.
     assert.equal(
       headers.has("X-Unsloth-HF-Token"),
       false,
@@ -89,9 +84,7 @@ test("hubTokenHeader never leaks the token anywhere but its own header", async (
 });
 
 test("the progress callers accept and forward a request-scoped token", () => {
-  // A wiring check, deliberately whitespace-insensitive: the behavioral tests above
-  // cover the transport, but nothing there proves these three callers thread a token
-  // through at all rather than always sending none.
+  // Whitespace-insensitive: the transport tests cannot prove these callers send one.
   const api = read("../src/features/chat/api/chat-api.ts");
   for (const name of [
     "getGgufDownloadProgress",
@@ -112,9 +105,7 @@ test("the progress callers accept and forward a request-scoped token", () => {
 });
 
 test("a local load is not gated behind Hub token preparation", () => {
-  // prepareHfTokenForUse validates over the network and can raise a blocking dialog, so
-  // hoisting it for the progress pollers must not put it in front of a load that never
-  // reaches the Hub.
+  // prepareHfTokenForUse validates over the network and can block on a dialog.
   const chatRuntime = read(
     "../src/features/chat/hooks/use-chat-model-runtime.ts",
   );

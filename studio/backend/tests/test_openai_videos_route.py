@@ -127,9 +127,7 @@ def client(backend):
     app.include_router(openai_router, prefix = "/api/inference")
     app.include_router(video_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # The OpenAI-compatible surface is the programmatic one, so its Hub reads resolve
-    # through the API-key boundary. Overridden alongside get_current_subject because
-    # the real dependency reads the bearer these fixtures do not send.
+    # The boundary dependency reads a bearer this fixture does not send.
     app.dependency_overrides[authenticated_via_api_key] = lambda: True
     return TestClient(app)
 

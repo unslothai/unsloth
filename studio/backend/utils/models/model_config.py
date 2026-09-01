@@ -553,9 +553,8 @@ def load_model_config(
     revision_kwargs = {"revision": revision} if revision is not None else {}
 
     if is_anonymous(token):
-        # Forced anonymous. `False` is falsy, so without this it would fall past both
-        # explicit branches to the "default auth" call below and pick the backend's
-        # ambient token back up -- the exact credential this caller is denied.
+        # `False` is falsy: without this it falls past both branches to the default-auth
+        # call below and picks the ambient token back up.
         use_auth = False
 
     if token:
@@ -907,9 +906,7 @@ def _is_vision_model_subprocess(
     or None for transient failures (timeouts, subprocess errors), which are not
     cached so they can be retried.
     """
-    # `False` collapses to "" here, which the child reads back as "no token" and would
-    # then satisfy from the inherited ambient env. The env below is what actually
-    # enforces the boundary; this argv slot only carries an explicit token.
+    # Only an explicit token travels in argv; the env below enforces the boundary.
     token_arg = hf_token if isinstance(hf_token, str) else ""
 
     # Latest-only architectures need the latest sidecar for AutoConfig; other tiers keep 5.5.
@@ -982,12 +979,10 @@ def _is_vision_model_subprocess(
 
 
 def _token_fingerprint(token: HfTokenArg) -> Optional[str]:
-    """SHA256 digest of the token for use as a cache key (avoids storing the
-    raw bearer token in process memory).
+    """SHA256 digest of the token as a cache key (never the raw bearer in memory).
 
-    The forced-anonymous sentinel takes an identity of its own. It is not ``None``:
-    sharing that slot would serve a caller denied the ambient token a result fetched
-    with it. It is also not a digest, since ``False`` has no bytes to hash.
+    The sentinel takes its own identity: sharing ``None``'s slot would serve a caller
+    denied the ambient token a result fetched with it.
     """
     if is_anonymous(token):
         return ANONYMOUS_CACHE_IDENTITY

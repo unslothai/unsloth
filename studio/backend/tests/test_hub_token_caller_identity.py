@@ -1,26 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A caller forced anonymous is a credential of its own, not the absence of one.
+"""The forced-anonymous sentinel is a credential of its own, not the absence of one.
 
-``hf_token_arg`` resolves a Hub token to three values, not two: an explicit token, ``None``
-for a UI session that may fall back to the backend's ambient ``HF_TOKEN``, and ``False`` for
-an API key that may not. Everything downstream predates the third value and was written for
-``Optional[str]``, so the ways it goes wrong are specific:
-
-* a truthiness test (``if token:``) treats ``False`` as "no token" and reaches for the
-  ambient credential anyway, which is the boundary inverted rather than enforced;
-* an identity test (``if token is None:``) sends ``False`` to ``.encode()`` and 500s;
-* a cache fingerprint that folds both into one identity lets a UI session's private-repo
-  metadata be read back by an API key, and lets an API key's anonymous 403 blank the UI;
-* a child process seeded from ``os.environ`` inherits the ambient token unless it is
-  scrubbed, so declining to *set* one is not the same as denying one.
-
-These pin all four. ``is`` comparisons throughout: ``False == 0 == ""`` under ``==``.
+``hf_token_arg`` returns three values where everything downstream expects ``Optional[str]``,
+so ``False`` breaks four ways: a truthiness test reaches for the ambient token anyway, an
+identity test hits ``.encode()`` on a bool, a shared cache fingerprint crosses the boundary,
+and a child env inherits what it was never granted. ``is`` throughout: ``False == 0 == ""``.
 """
 
 import hashlib
-
 
 import pytest
 from fastapi import FastAPI
@@ -50,9 +39,6 @@ def _models_client(via_api_key: bool) -> TestClient:
     return TestClient(app, raise_server_exceptions = False)
 
 
-# --- the sentinel itself -------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "hf_token, allow_ambient, expected",
     [
@@ -77,15 +63,11 @@ def test_only_the_sentinel_reads_as_anonymous():
 
 
 def test_normalizing_a_token_does_not_launder_the_sentinel():
-    # `(hf_token or "").strip() or None` predates the sentinel and turns "stay anonymous"
-    # into "use the backend's credential", which is the one answer that must never happen.
+    # `(hf_token or "").strip() or None` turns "stay anonymous" into "use the backend's".
     assert normalize_token(False) is False
     assert normalize_token(None) is None
     assert normalize_token("  tok  ") == "tok"
     assert normalize_token("") is None
-
-
-# --- cache identity ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -107,12 +89,10 @@ def test_every_fingerprint_separates_anonymous_from_ambient(fingerprint, absent)
         "an anonymous caller sharing the ambient cache slot reads back metadata "
         "fetched with the operator's credential"
     )
-    # And neither may collide with a real token's digest.
     assert fingerprint("hf_realtoken") not in (anonymous, ambient)
 
 
 def test_the_anonymous_identity_cannot_collide_with_a_token_digest():
-    # Non-hex by construction, so no token can ever hash to it.
     assert not all(character in "0123456789abcdef" for character in ANONYMOUS_CACHE_IDENTITY)
 
 
@@ -129,13 +109,9 @@ def test_config_metadata_cache_keys_separate_anonymous_from_ambient():
 
 
 def test_capability_fingerprint_does_not_raise_on_the_sentinel():
-    # The regression that made /check-vision and /config 500 for every API-key caller:
-    # `if token is None` let False through to `.encode()`.
+    # `if token is None` let False through to `.encode()`: /check-vision and /config 500d.
     assert capability_fingerprint(False) == ANONYMOUS_CACHE_IDENTITY
     assert hashlib.sha256(b"x").hexdigest() != capability_fingerprint(False)
-
-
-# --- child process credentials -------------------------------------------------------
 
 
 def _child_env(hf_token):
@@ -160,8 +136,7 @@ def test_an_anonymous_probe_child_cannot_inherit_the_ambient_token():
 
 
 def test_a_ui_session_probe_child_keeps_the_ambient_token():
-    # The half of the boundary that is not a security property but a regression risk:
-    # scrubbing here would break gated repos on installs whose token is in the env.
+    # Scrubbing here would break gated repos on installs whose token is in the env.
     env = _child_env(None)
 
     assert env["HF_TOKEN"] == "ambient-operator-token"
@@ -174,9 +149,6 @@ def test_an_explicit_token_replaces_the_ambient_one_in_the_child():
     assert env["HF_TOKEN"] == "hf_caller_token"
     # An inherited "1" would 401 a gated repo the caller does have access to.
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"
-
-
-# --- routes --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("via_api_key", [True, False])
@@ -201,15 +173,12 @@ def test_capability_routes_answer_both_callers_without_a_server_error(monkeypatc
 @pytest.mark.parametrize(
     "header, query, expected",
     [
-        # Neither explicit token: the caller's sentinel must survive the `or` chain. An
-        # `or` that ended on the query value would turn False into None here.
+        # An `or` chain ending on the query value would turn False into None here.
         (False, None, False),
         (None, None, None),
         (False, "", False),
-        # Precedence is header-over-query, as it was before the route was converted.
         ("header-token", "query-token", "header-token"),
         ("header-token", None, "header-token"),
-        # The legacy query parameter still works as a fallback.
         (None, "query-token", "query-token"),
         (False, "query-token", "query-token"),
         ("  header-token  ", None, "header-token"),
@@ -274,9 +243,6 @@ def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):
             headers = {"Authorization": "Bearer token"},
         )
         assert seen["token"] == "caller-token"
-
-
-# --- the dependency ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

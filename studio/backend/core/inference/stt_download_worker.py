@@ -59,11 +59,8 @@ def spawn_download(
     # Parallel Range chunks leave sparse partials a resumed sequential writer
     # cannot reuse, which defeats the point of cancelling.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    # Replace the inherited credentials only when the caller supplied one. With no token
-    # (``None``) leave the ambient login alone: the parent plans the download with it, so
-    # scrubbing there would fail gated repos that used to work. A caller forced anonymous
-    # (``False``) is the one case that must be scrubbed, since the child would otherwise
-    # inherit the operator's credential and download a repo it only had to name.
+    # `None` keeps the ambient login (the parent planned the download with it); `False`
+    # must be scrubbed, or the child downloads a repo the caller only had to name.
     apply_token_to_child_env(env, hf_token)
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
