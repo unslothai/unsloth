@@ -135,6 +135,7 @@ def _lines() -> tuple[list[str], callable]:
 
 
 # ── the fixture itself, before it is trusted to prove anything ──────
+
 def test_the_fixture_marker_matches_the_seeder_exactly(browser):
     """If these two ever drift, every gate below passes or fails for the wrong reason.
 
@@ -191,6 +192,7 @@ def test_thread_total_reads_the_published_setsize_and_falls_back_to_the_count(br
 
 
 # ── what the gate must ADMIT ────────────────────────────────────────
+
 def test_full_mount_is_admitted_in_full_mode(browser):
     page = _page(browser, "full")
     got, log = _lines()
@@ -451,6 +453,7 @@ def test_windowed_mode_also_admits_a_thread_short_enough_to_mount_whole(browser)
 
 
 # ── what the gate must REFUSE ───────────────────────────────────────
+
 def test_a_half_mounted_thread_is_refused_in_full_mode(browser):
     """The original failure, reproduced: mounting, not finished, and not admitted."""
     page = _page(browser, "mounting")
@@ -664,6 +667,7 @@ def test_a_thread_that_lost_its_head_passes_readiness_and_fails_completeness(bro
 
 
 # ── the decision function, without a browser ────────────────────────
+
 def test_evaluate_never_reports_a_mode_inapplicable_condition_as_a_pass():
     """`None` is not `True`, and the difference is the whole design of the two modes."""
     probe = {
@@ -767,6 +771,7 @@ def test_evaluate_does_not_waive_malformed_ordinals_for_a_fully_mounted_thread()
 
 
 # ── the coverage verdict, without a browser ─────────────────────────
+
 def test_ordinal_coverage_never_reports_a_gap_in_the_gesture_as_data_loss():
     """NOT MEASURED and MISSING are different answers, and the difference is the whole probe.
 
@@ -871,6 +876,7 @@ def test_evaluate_cannot_settle_on_a_single_sample():
 
 
 # ── the viewport itself, asserted rather than inferred ────────────────────────
+
 def test_a_windowed_thread_with_no_viewport_is_refused(browser):
     """REGRESSION. Every other windowed condition degrades to a pass when the scroller is gone.
 

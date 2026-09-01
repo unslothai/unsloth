@@ -203,6 +203,7 @@ class _Handler(BaseHTTPRequestHandler):
         return self.server.state  # type: ignore[attr-defined]
 
     # ── plumbing ────────────────────────────────────────────────────
+
     def _json(self, code: int, body: dict) -> None:
         raw = json.dumps(body).encode("utf-8")
         self.send_response(code)
@@ -287,6 +288,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": {"message": f"no route {path}"}})
 
     # ── the stream ──────────────────────────────────────────────────
+
     def _stream(self, body: dict) -> None:
         script = self.state.get_script()
         with self.state.lock:
@@ -505,6 +507,7 @@ class Pacer:
             self._thread.join(timeout = 5)
 
     # ── driver-side control ─────────────────────────────────────────
+
     def load(
         self,
         reasoning: str,

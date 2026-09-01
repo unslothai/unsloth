@@ -326,6 +326,7 @@ class Unit:
 
 
 # ── generation ──────────────────────────────────────────────────────
+
 def _expression(rng: random.Random, salt: str, terms: int) -> str:
     """One LaTeX expression body, unique to `salt`.
 
@@ -639,6 +640,7 @@ def units_for_chars(total_chars: int, seed: int = CORPUS_SEED) -> list[Unit]:
 
 
 # ── freezing and loading ────────────────────────────────────────────
+
 def freeze(
     max_chars: int = SHIPPED_CHARS_BUDGET,
     seed: int = CORPUS_SEED,
@@ -795,6 +797,7 @@ class Corpus:
 
 
 # ── rungs ───────────────────────────────────────────────────────────
+
 RUNGS: dict[str, int] = {
     "1K": 1_000,
     "10K": 10_000,

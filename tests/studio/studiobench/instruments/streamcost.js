@@ -282,7 +282,6 @@
       // tail of a frame cut inside its JSON body was counted in the denominator and charged to
       // nothing, biasing `stream_delta_cost_ms_per_kchar` DOWNWARD as fragmentation rises. A stale
       // `lastSseAt` also lets `replyChars` call the stream idle for a window still carrying it.
-      // stream has gone idle and return `null` for a window still carrying it.
       const continuesFrame = st.pending.length > 0;
       if (looksSse || continuesFrame) noteSse();
       // `looksSse || pending`, not just `looksSse`: THE SECOND HALF OF A SPLIT FRAME CONTAINS NO
@@ -402,7 +401,6 @@
     // THE DENOMINATOR, read off the wire. O(1), called at window open and close so the growth is
     // the difference. Cumulative since page load and monotonic, so unlike the DOM reading it
     // replaces there is no "the reply shrank, so it is a different message" case.
-    // ever go up.
     // The two things that can make `wireChars` short by an unknown amount, at the counter's O(1)
     // cost. `forId` names the decoder to answer about, because the buffer and the flush must
     // belong to the SAME decoder: the one pending at the open can complete its carried frame

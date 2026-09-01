@@ -359,7 +359,6 @@ def build_bridge(
         rungs = tuple(rungs),
     )
 
-    # anchor validation, on our own app code, both sides named
     # ---- anchor validation, on our own app code, both sides named ----------
     dev_all = vectors_from_snapshots(dev_snapshots, "dev", url_filter = anchor_url_filter)
     prod_all = vectors_from_snapshots(prod_snapshots, "prod", url_filter = anchor_url_filter)
@@ -420,7 +419,6 @@ def build_bridge(
         )
         return bridge
 
-    # the actual matching, restricted to react-dom
     # ---- the actual matching, restricted to react-dom ----------------------
     dev_react = vectors_from_snapshots(dev_snapshots, "dev", url_filter = react_url_filter)
     prod_react = vectors_from_snapshots(prod_snapshots, "prod", url_filter = react_url_filter)

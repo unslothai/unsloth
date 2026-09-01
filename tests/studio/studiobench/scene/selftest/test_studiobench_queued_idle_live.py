@@ -215,6 +215,7 @@ def _reading(cap: dict) -> dict:
 
 
 # ── the two states the instrument has to tell apart ──────────────────
+
 def test_a_waiting_queue_is_not_read_as_a_blind_probe(page):
     """THE REGRESSION. Same button, same empty in-flight list, opposite meanings."""
     idle = _capture(page, QUEUED_IDLE)
@@ -272,6 +273,7 @@ def test_what_reading_the_queue_surface_gives_up(page):
 
 
 # ── the fixtures are the app's markup, not the test's ────────────────
+
 def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     """The fixtures above are hand-written, so they can drift into asserting themselves.
 
@@ -298,6 +300,7 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
 #: the streamed message nor the composer, which makes it readable on a pair whose stream could not
 #: be placed.
 # ── what the blind-probe refusal may NOT take out with it ────────────
+
 _MENU = '<div role="menu"><div class="item">Rename</div></div>'
 _MENU_CHANGED = '<div role="menu"><div class="item">Rename thread</div></div>'
 #:The composer of a thread that is NOT generating. `_STOP_BUTTON` is the same composer generating.

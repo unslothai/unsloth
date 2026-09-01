@@ -144,6 +144,7 @@ def _blind_calibration():
 
 
 # ---------------------------------------------------------------------------------------
+
 def test_a_planned_batch_covers_both_routes_and_the_calibration_arms():
     planned = plan_batch()
     keys = {cell.key for cell in planned}
@@ -169,6 +170,7 @@ def test_no_scene_durations_at_all_is_a_refusal_not_a_pass():
 
 
 # ---------------------------------------------------------------------------------------
+
 def test_a_quotable_batch_renders_steps_interactions_and_verdicts():
     result = judge_batch(
         rung_tokens = 100_000,
@@ -290,6 +292,7 @@ def test_a_batch_with_a_dose_fit_an_armpack_refusal_and_a_recovery_renders_all_t
 
 
 # ---------------------------------------------------------------------------------------
+
 def test_harness_rows_assemble_and_their_attested_zeros_survive(tmp_path: Path):
     path = tmp_path / "payload.jsonl"
     writer = PayloadWriter(path)

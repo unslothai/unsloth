@@ -238,6 +238,7 @@ class Session:
     cell: Optional[Cell] = None
 
     # ── windows ─────────────────────────────────────────────────────
+
     @contextlib.contextmanager
     def window(
         self,
@@ -428,6 +429,7 @@ class CellRunner:
         return row
 
     # ── the cell ────────────────────────────────────────────────────
+
     def _run_inner(self, cell: Cell, plan: RungPlan, row: dict) -> None:
         s = self.session
         page = s.ctx.page

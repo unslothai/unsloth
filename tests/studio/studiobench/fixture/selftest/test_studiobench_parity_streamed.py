@@ -230,6 +230,7 @@ STREAM_POINTS = (12, 24, 48, 81)
 
 
 # ── 1. the reproduction, both cases ──────────────────────────────────
+
 def test_the_same_document_at_two_points_in_one_stream_moves_the_raw_digest():
     """CASE ONE: the drift is real, and it is not the comparison layer inventing it.
 
@@ -279,6 +280,7 @@ def test_a_real_difference_survives_the_streamed_message_drifting_at_the_same_ti
 
 
 # ── 2. the null score ────────────────────────────────────────────────
+
 def null_battery(*, streaming_fields: bool) -> list[dict]:
     """Every ordered pair of stream points: one build, one document, two moments."""
     arms = {n: streaming_arm(n, streaming_fields = streaming_fields) for n in STREAM_POINTS}
@@ -506,6 +508,7 @@ def test_the_mutant_score_is_unchanged_by_the_streaming_fields():
 
 
 # ── 4. what the fix gives up, pinned rather than left implicit ───────
+
 def test_reordering_the_streamed_message_past_a_sibling_is_refused_not_passed():
     """THE SECOND COST, and the one that had to be found by a mutant rather than by reading.
 
@@ -591,6 +594,7 @@ def test_a_message_that_vanished_is_never_excused_by_being_in_flight():
 
 
 # ── 5. the positive control on the streaming probe itself ────────────
+
 def test_a_running_reply_the_probe_could_not_place_refuses_the_pair():
     """A scan that can return zero needs a control, and this one can.
 
@@ -820,6 +824,7 @@ def test_an_old_payload_without_the_streaming_fields_is_scored_as_it_always_was(
 
 
 # ── 6. the elision itself, at the level of the shipped signature ─────
+
 def test_eliding_a_subtree_keeps_its_presence_its_position_and_its_role():
     got = run_js(
         {

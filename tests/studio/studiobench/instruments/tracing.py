@@ -45,6 +45,7 @@ from ..analysis import CellFailure
 
 # L0 is the only level headline numbers may come from: nothing is attached beyond the renderer's own metrics counters.
 # --------------------------------------------------------------------- ladder
+
 L0 = "L0"
 # L1 adds the timeline trace (task boundaries, frames, layout, user timing). No CPU profiler,
 # so no stacks and no naming, but the cheapest level giving a real task tree.
@@ -237,6 +238,7 @@ class TraceCapture:
         self._subscribed = False
 
     # ------------------------------------------------------------------ driving
+
     def _subscribe(self) -> None:
         if self._subscribed:
             return
@@ -630,6 +632,7 @@ class TracingInstrument:
         self._save_traces = True
 
     # ---------------------------------------------------------------- lifecycle
+
     def attach(self, ctx: Any) -> None:
         self.ctx = ctx
 
@@ -742,6 +745,7 @@ class TracingInstrument:
             self.capture = None
 
     # ------------------------------------------------------------------ helpers
+
     def _wait(self, ms: float) -> None:
         page = getattr(self.ctx, "page", None)
         if page is not None:

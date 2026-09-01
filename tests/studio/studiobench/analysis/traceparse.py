@@ -183,9 +183,9 @@ class Trace:
         with open(p, "r", encoding = "utf-8") as fh:
             return cls.from_json_text(fh.read())
 
-    # threads
 
     # ---------------------------------------------------------------- threads
+
     def thread_name(self, pid: int, tid: int) -> str:
         return self._thread_names.get((pid, tid), "")
 
@@ -222,9 +222,9 @@ class Trace:
         pid, tid = self.profiled_thread()
         return self.thread(pid, tid)
 
-    # joins
 
     # ------------------------------------------------------------------ joins
+
     def run_tasks(self, thread: Thread | None = None) -> list[Task]:
         """Top-level `RunTask` events on a thread, outermost only."""
         th = thread if thread is not None else self.renderer_main()

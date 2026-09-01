@@ -167,6 +167,7 @@ def _rows(state):
 
 
 # ── the sides a failed setup leaves behind ──────────────────────────────────────────────────
+
 def test_the_base_studio_is_stopped_when_the_treatment_install_fails(studio):
     """The reported leak: the base is up and serving while the treatment's clone and build run."""
 
@@ -243,6 +244,7 @@ def test_a_run_that_reaches_its_cells_stops_the_studios_once_at_the_end(studio):
 
 
 # ── which server the treatment was ──────────────────────────────────────────────────────────
+
 def test_an_attached_ab_records_the_treatment_url_it_measured(studio):
     args = _args(
         studio,
@@ -351,6 +353,7 @@ def test_the_same_treatment_studio_still_resumes(studio):
 
 
 # ── whether the probe ran before the film ───────────────────────────────────────────────────
+
 def test_a_run_records_whether_the_click_probe_ran(studio):
     """REGRESSION, and the recording half of the identity axis.
 

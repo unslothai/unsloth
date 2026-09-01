@@ -35,6 +35,7 @@ from .schema import Measure
 
 # (action name, timing key). Anything not listed here comes from the window frame recorder.
 # ── where each scored metric actually lives in the payload ──────────────────────────────────
+
 ACTION_SOURCES: Mapping[str, tuple[str, str]] = {
     "keystroke_p95_ms": ("keystroke", "p95_ms"),
     "menu_open_ms": ("message_menu", "open_ms"),
@@ -664,6 +665,7 @@ def measures_by_cell(
 
 
 # ── was there an instrument in the shot ──────────────────────────────
+
 def probe_scripts(records: Sequence[Mapping[str, Any]]) -> list[str]:
     """Every external init script this payload records, in order, without duplicates.
 

@@ -76,6 +76,7 @@ def _arm(
 
 
 # ---------------------------------------------------------------------------------------
+
 def test_an_exact_arm_that_drifts_is_voided_not_quoted():
     outcome = judge(
         _arm(),
@@ -203,6 +204,7 @@ def test_an_equivalent_arm_must_declare_its_diff_and_an_exact_one_may_not():
 
 
 # ---------------------------------------------------------------------------------------
+
 def test_a_step_removing_two_mechanisms_must_admit_it_is_fused():
     with pytest.raises(LadderError):
         Step(
@@ -387,6 +389,7 @@ def test_required_rungs_covers_both_routes():
 
 
 # ---------------------------------------------------------------------------------------
+
 def test_a_batch_without_calibration_arms_is_refused_before_it_runs():
     with pytest.raises(CalibrationMissing) as caught:
         assert_batch_includes_calibration(["A", "B", "C"])
@@ -486,6 +489,7 @@ def test_a_batch_with_no_null_reading_has_no_noise_floor():
 
 
 # ---------------------------------------------------------------------------------------
+
 def _dose_points(
     per_child_ms: float,
     intercept: float = 0.0,
@@ -549,6 +553,7 @@ def test_two_points_do_not_make_a_line():
 
 
 # ---------------------------------------------------------------------------------------
+
 def _write_armpack(
     root: Path,
     digest: str,
@@ -611,6 +616,7 @@ def test_a_matching_armpack_resolves(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------------------
+
 def test_full_recovery_is_occupancy():
     result = classify_recovery(
         baseline = Measure.read(2.0, "ms/update"),
@@ -669,6 +675,7 @@ def test_worse_after_delete_points_at_the_delete_path():
 
 
 # ---------------------------------------------------------------------------------------
+
 def test_only_requested_preboot_arms_are_installed():
     config = json.loads(config_init_script(["A", "D"]).split("=", 1)[1].strip().rstrip(";"))
     assert config["preboot"] == ["D"]

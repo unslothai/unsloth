@@ -27,7 +27,6 @@
 // DELIBERATELY KEPT: tag structure, data-slot, data-state, data-role, aria-hidden, hidden,
 // disabled, the class list and all text. A perf change that quietly flips a reasoning pane's
 // data-state is the exact defect this catches.
-// exact defect this is meant to catch.
 
 (() => {
   if (window.__sb && window.__sb.parity) return;
@@ -277,7 +276,6 @@
       // stamp stayed at the old ordinal, the row's content was digested under a position it no longer
       // held, and the message it now showed was never reported visible. Re-reading is bounded: the full
       // scan runs once and every other call walks only what a mutation added.
-      // most once per batch.
       const had = el.__sbOrdinal;
       el.__sbOrdinal = ord;
       if (typeof had === "number" && had !== ord) {
@@ -430,8 +428,6 @@
           // parity reported a wall of differences for a DOM shape the gate permits. NOT normalised in the
           // whole-document digest, which only runs where neither arm windows, so the exclusion is passed in
           // by this caller. A windowed arm publishing a WRONG ordinal is covered by the readiness gate.
-          // See `dom.runStateControl` and `analysis/parity.generation_disagrees`.
-          // `dom.generating` is the reading; `analysis/parity.compare` refuses to fold it into a pass.
           const sig = signature(el, VIRTUALIZATION_ATTRS);
           if (Object.prototype.hasOwnProperty.call(byOrdinal, String(ord))) {
             ordinal_collisions += 1;
@@ -557,6 +553,7 @@
         const running = Boolean(dom.isRunning && dom.isRunning());
         // The narrower reading, needed by the positive control below: `isRunning()` is true whenever the
         // composer refuses a fresh send, including a prompt queued on an IDLE thread.
+        // `dom.generating` is the reading; `analysis/parity.compare` refuses to fold it into a pass.
         const generating = dom.generating ? Boolean(dom.generating()) : running;
         // Whether the app still publishes the status contract at all: a hook that is GONE is a blind
         // instrument, while one present with nothing running is an ordinary settled thread.
@@ -640,6 +637,7 @@
           // The composer's run-state slot as a token, so the comparison layer can tell a scaffold that
           // differs because the arms were at different points in one turn from one that differs because
           // something rendered differently.
+          // See `dom.runStateControl` and `analysis/parity.generation_disagrees`.
           composer_control: dom.runStateControl ? dom.runStateControl() : null,
           messages,
           overlays,

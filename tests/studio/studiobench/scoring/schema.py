@@ -225,6 +225,7 @@ class Measure:
         )
 
     # -- rendering ----------------------------------------------------------------------
+
     def display(self) -> str:
         if not self.attempted:
             return f"not attempted ({self.note})"
@@ -366,6 +367,7 @@ def check_exclusion_reasons(cells: Iterable[ExcludedCell]) -> None:
 
 
 # ---------------------------------------------------------------------------------------
+
 def _is_measure(node: Any) -> bool:
     return isinstance(node, Mapping) and node.get("kind") == MEASURE_KIND
 

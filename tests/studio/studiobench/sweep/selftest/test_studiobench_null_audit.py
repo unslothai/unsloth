@@ -35,6 +35,7 @@ WORKFLOW = REPO_ROOT / ".github/workflows/studiobench-ui-parity.yml"
 
 
 # ── building a null-control payload ──────────────────────────────────
+
 def action_row(cid: str, action: str, digest: str | None) -> dict:
     """One action row. `digest=None` records a capture that FAILED, which is blind, not stable."""
     if digest is None:
@@ -86,6 +87,7 @@ def two_reps(action: str, base: str, treat: str) -> list[tuple]:
 
 
 # ── the pair that matters: a quiet null control is a GOOD one ─────────
+
 def test_a_null_control_that_decided_everything_and_found_nothing_passes(tmp_path):
     # Every action reached two observations and none differed: the best null control obtainable,
     # whose measured unstable set is empty BECAUSE there was nothing to measure. Requiring a
@@ -136,6 +138,7 @@ def test_the_two_empty_measured_sets_are_told_apart(tmp_path):
 
 
 # ── a null control that DID find instability still passes ────────────
+
 def test_a_noisy_null_control_is_decided_and_reports_what_differed(tmp_path):
     null = null_run(
         tmp_path,
@@ -154,6 +157,7 @@ def test_a_noisy_null_control_is_decided_and_reports_what_differed(tmp_path):
 
 
 # ── blind is not decided, and an excuse is a named hole ──────────────
+
 def test_an_action_that_never_captured_is_undecided_not_stable(tmp_path):
     # A failed capture is blind, and `derive_unstable` refuses to count it: an action derived as
     # stable from pairs that never rendered would be trusted forever on nothing. So it must read
@@ -194,6 +198,7 @@ def test_a_payload_with_no_parity_data_is_not_a_decided_null(tmp_path):
 
 
 # ── the CLI surface the workflow actually calls ──────────────────────
+
 def test_the_cli_audits_a_quiet_null_as_a_pass(tmp_path, capsys):
     null_run(tmp_path, "cli", two_reps("settings", "SAME", "SAME"))
     rc = U.main(["--audit-null", str(tmp_path / "cli")])
@@ -214,6 +219,7 @@ def test_the_cli_audits_a_single_repetition_as_a_failure(tmp_path, capsys):
 
 
 # ── the CI job must use the audit, not grep the tool's prose ─────────
+
 def test_the_parity_workflow_audits_the_null_with_the_tool(tmp_path):
     # Twice now a guard written as a regex over this tool's printed prose has been wrong: a real
     # payload spells its rung `r100K` where a fixture spells it `100K`, and the literal
@@ -226,6 +232,7 @@ def test_the_parity_workflow_audits_the_null_with_the_tool(tmp_path):
 
 
 # ── a difference that did not repeat is not a change to the build ────
+
 def test_a_difference_in_one_repetition_of_two_is_not_counted(tmp_path):
     mine = null_run(
         tmp_path,
@@ -279,6 +286,7 @@ def test_one_repetition_seen_twice_is_not_two_observations(tmp_path):
 
 
 # ── a cell that never completed: dropped on the null, kept on the result ──
+
 def cell_rows(rows: list[dict], cid: str, completed: bool) -> None:
     if completed:
         rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
@@ -342,6 +350,7 @@ def test_a_payload_with_no_cell_rows_says_it_could_not_check(tmp_path, capsys):
 
 
 # ── two corpora must not pool into one decision ──────────────────────
+
 def corpus_run(tmp_path: Path, name: str, corpus: str, rep: str) -> Path:
     rows: list[dict] = [{"row_type": "run_meta", "tier": "fast", "corpus_hash": corpus}]
     for arm in ("base", "treatment"):
@@ -381,6 +390,7 @@ def test_a_payload_predating_corpus_hashes_is_not_refused(tmp_path):
 
 
 # ── a missed slot costs coverage, not correctness ────────────────────
+
 def not_run_row(cid: str, action: str) -> dict:
     row = action_row(cid, action, "SAME")
     row["ran"] = False
@@ -422,6 +432,7 @@ def test_a_run_that_compared_almost_nothing_does_not_pass(tmp_path, capsys):
 
 
 # ── the null need only decide what the result compared ───────────────
+
 def test_the_audit_ignores_an_action_the_result_never_compared(tmp_path):
     # `copy_markdown` is undecided in the null and nothing on the result turns on its verdict, so
     # demanding one turns machine speed into a red build. The result DOES need an excuse for
@@ -456,6 +467,7 @@ def test_the_audit_still_fails_on_an_action_the_result_did_compare(tmp_path):
 
 
 # ── a null control from another film or another thread is not an excuse ──
+
 def test_a_null_from_another_tier_is_refused_rather_than_applied(tmp_path):
     assert U.cross_side_mismatch({"standard"}, {"fast"}, {"c1"}, {"c1"}).startswith(
         "the null control was recorded at tier"
@@ -488,6 +500,7 @@ def test_the_refusal_exits_two_not_one_through_the_cli(tmp_path, monkeypatch, ca
 
 
 # ── an action that ran on one arm and not the other ──────────────────
+
 def one_sided_payload(
     tmp_path: Path,
     name: str,
@@ -575,6 +588,7 @@ def test_both_arms_missing_the_same_action_is_coverage_and_not_a_verdict(tmp_pat
 
 
 # ── the audit's scope: what an excuse would actually move ─────────────
+
 def test_an_undecided_action_the_result_only_matched_does_not_fail_the_audit(tmp_path):
     # THE CI FAILURE THIS FIXES: the null lost one arm's slot on `settings` and cannot decide it,
     # while the result MATCHED on `settings` in both repetitions, so the null was never going to
@@ -696,6 +710,7 @@ def test_a_difference_at_one_rung_does_not_demand_the_null_decide_another(tmp_pa
 
 
 # ── the completion guard has to answer about the attempt it is guarding ──
+
 def test_an_interrupted_retry_does_not_inherit_the_completion_it_superseded(tmp_path):
     """A superseded attempt's `cell` row must not admit the dead retry's action rows.
 
@@ -788,6 +803,7 @@ def test_a_quiet_null_still_passes_the_audit_under_a_forced_mode(tmp_path, capsy
 
 
 # ── an exemption measured on another machine is not an exemption here ──
+
 def _arm_payload(tmp_path: Path, name: str, regress: str | None, self_race: str | None) -> Path:
     """One arm's payload. `regress` differs base-vs-head in BOTH reps; `self_race` differs base
     against ITSELF in both reps, which is what makes an action look unstable."""
@@ -915,6 +931,7 @@ def test_the_verdict_confines_the_imported_set_when_driven_through_main(tmp_path
 
 
 # ── an action that ran and failed its own assertion ──────────────────
+
 def _expect_payload(
     tmp_path: Path,
     name: str,
@@ -1008,6 +1025,7 @@ def test_an_assertion_that_failed_in_one_repetition_of_two_is_not_counted(tmp_pa
 
 
 # ── two repetitions that blame OPPOSITE arms are not one finding ─────
+
 def _reversing_expect_payload(tmp_path: Path, name: str, action: str) -> Path:
     """`action` fails its assertion on TREATMENT in rep0 and on BASE in rep1."""
     rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
@@ -1085,6 +1103,7 @@ def test_one_arm_only_that_swaps_arms_between_repetitions_is_not_corroborated(tm
 
 
 # ── an action the null never measured at all ─────────────────────────
+
 def _scope_payload(tmp_path: Path, name: str, actions: tuple[str, ...]) -> Path:
     """Every listed action differs between the arms in both repetitions. Others are absent."""
     rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
@@ -1153,6 +1172,7 @@ def test_an_action_outside_the_scope_is_not_required_to_exist(tmp_path):
 
 
 # ── digest instability does not exempt being unable to run ───────────
+
 def test_a_broken_control_is_not_excused_because_its_digest_varies(tmp_path, capsys):
     """The exemption that covered nine of the sixteen scheduled actions.
 
@@ -1190,6 +1210,7 @@ def test_every_racy_execution_entry_states_its_mechanism():
 
 
 # ── the scope is what the VERDICT turns on, not what merely happened ──
+
 def test_a_racy_execution_action_is_not_put_in_the_audit_scope(tmp_path):
     """`report` does not count it, so no excuse can move it and the null owes it nothing.
 

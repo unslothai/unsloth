@@ -211,6 +211,7 @@ class _ThreadPage:
             self.step += 1
 
     # ── phases ──────────────────────────────────────────────────────
+
     def _route(self, target: str) -> None:
         if "New chat" in target or "new=" in target:
             self.phase = "gone"
@@ -237,6 +238,7 @@ def _ctx(
 
 
 # ── defect one: the fallback is declined, not detected ──────────────
+
 def test_a_refused_reopen_leaves_the_thread_where_it_found_it():
     """THE COLLATERAL DAMAGE, asserted as damage rather than as a row.
 
@@ -318,6 +320,7 @@ def test_a_substituted_navigation_on_the_way_back_repairs_the_scene_but_is_not_t
 
 
 # ── defect two: a declared total is not a finished rebuild ──────────
+
 def test_the_scripted_rebuild_declares_its_total_before_it_has_built_anything():
     """WITHOUT THIS THE TEST BELOW PROVES NOTHING. If the first frame did not already publish
     `aria-setsize = 18`, the old condition would have waited too and both would pass."""
@@ -421,6 +424,7 @@ def test_a_thread_whose_end_cannot_be_identified_is_refused_before_it_is_touched
 #: hit at the centre. Scaled down here; what is asserted is that the timings do not contain it, at
 #: whatever size.
 # ── defect three: the harness's own retry, billed to the rebuild ────
+
 RETRY_MS = 400
 
 
