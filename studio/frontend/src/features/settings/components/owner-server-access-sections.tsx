@@ -11,6 +11,11 @@ import { KeylessApiAccessSection } from "./keyless-api-access-section";
 import { LanAccessSection } from "./lan-access-section";
 import { RemoteAccessSection } from "./remote-access-section";
 
+// The role cannot change without a new sign-in, and both the API Keys and the
+// Remote & LAN tab mount this. Remembering it keeps a tab switch from refetching,
+// and keeps the panel's first paint synchronous after the first answer.
+let rememberedIsAdmin: boolean | null = null;
+
 export function OwnerServerAccessSections({
   onSettingsChange,
 }: {
@@ -20,38 +25,32 @@ export function OwnerServerAccessSections({
     exposure: KeylessApiAccessExposure | null;
   }) => void;
 }) {
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(rememberedIsAdmin);
 
   useEffect(() => {
+    if (rememberedIsAdmin !== null) return;
     let cancelled = false;
     fetchCurrentAccount()
       .then((account) => {
+        rememberedIsAdmin = account.is_admin;
         if (!cancelled) setIsAdmin(account.is_admin);
       })
-      .catch((cause: unknown) => {
-        if (!cancelled) {
-          setError(
-            cause instanceof Error ? cause.message : "Failed to load account role",
-          );
-        }
+      .catch(() => {
+        // Deliberately not surfaced. A role lookup that fails must not take the
+        // whole panel down with it: this component only decides what to draw,
+        // and every route behind these controls is independently gated by
+        // _require_install_admin, so drawing them is not an escalation.
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  if (error) {
-    return (
-      <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">
-        {error}
-      </div>
-    );
-  }
-  if (isAdmin === null) {
-    return <div className="h-28 animate-pulse rounded-xl bg-muted/40" />;
-  }
-  if (!isAdmin) {
+  // Draw for the owner until told otherwise, rather than holding a skeleton on
+  // every first paint. The single-account install is the overwhelmingly common
+  // case and this panel is presentation only, so showing the controls a moment
+  // early (or when the role is unknown) grants a managed account nothing.
+  if (isAdmin === false) {
     return (
       <div className="rounded-xl border bg-card p-4 text-sm">
         Only the installation owner can change Remote, LAN, or keyless server access.
