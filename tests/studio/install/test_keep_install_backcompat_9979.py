@@ -4,24 +4,74 @@
 """Back-compat for the kept-install path against every marker shape that has shipped.
 
 ``UNSLOTH_PREBUILT_INFO.json`` is append-only across twelve shapes with no version field
-and no migration, so an absent key is the normal case for anything installed before the
-release that added it. The existing keep-path tests drive ``install_prebuilt`` with a
-hand-built two-key marker; these call the deciders directly with the shapes real installs
-carry.
+and no migration, so an absent key is normal for anything older. These call the deciders
+directly with the shapes real installs carry, rather than driving ``install_prebuilt``
+with a hand-built two-key marker. Platforms are simulated through ``HostInfo``: that
+covers the path decisions and payload tables, not macOS dyld.
 
-Platforms are simulated through ``HostInfo`` as the rest of this suite does. That covers
-the path decisions and payload tables, not the Windows loader or macOS dyld.
+Run natively on Windows too (the parity workflow's windows-latest row), where the loader
+answers for real: ``_binary_image_runs`` sees an actual ``ERROR_BAD_EXE_FORMAT`` instead of
+a stubbed ``run_capture``. Two things stay POSIX-only there and are skipped rather than
+weakened: ``os.chmod`` cannot clear an execute bit Windows does not have, and
+``os.access(X_OK)`` is true for any file that exists.
 """
 
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+WINDOWS_HOST = os.name == "nt"
+# os.access(path, os.X_OK) answers "does this exist" on Windows, so the executable=False
+# trees below are indistinguishable from healthy ones there.
+SKIP_X_OK = pytest.mark.skipif(
+    WINDOWS_HOST,
+    reason = "os.access(X_OK) is always true on Windows, so the guard is POSIX only",
+)
+
+
+def _windows_runnable_stub() -> bytes | None:
+    """Bytes of a real .exe that still starts after being copied somewhere else.
+
+    The keep path execs what it finds, so a Windows row needs a genuine PE. Copying
+    python.exe alone loses python3xx.dll and dies 0xC0000135, hence a System32 tool
+    whose imports are all KnownDLLs. Verified by running the copy, not assumed: an
+    unverifiable stub skips the module instead of reporting the loader's refusal as
+    a back-compat failure.
+    """
+    for name in ("where.exe", "hostname.exe"):
+        source = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / name
+        if not source.is_file():
+            continue
+        with tempfile.TemporaryDirectory() as probe_dir:
+            copy = Path(probe_dir) / "llama-server.exe"
+            try:
+                shutil.copyfile(source, copy)
+                probe = subprocess.run([str(copy)], capture_output = True, timeout = 30)
+            except Exception:
+                continue
+            # A loader failure returns rather than raises, so an unchecked run would
+            # accept the very missing-DLL image this is picking a candidate to avoid,
+            # and every healthy fixture after it would inherit it.
+            if probe.returncode >= 0xC0000000:
+                continue
+        return source.read_bytes()
+    return None
+
+
+RUNNABLE_STUB = _windows_runnable_stub() if WINDOWS_HOST else None
+if WINDOWS_HOST and RUNNABLE_STUB is None:
+    pytest.skip(
+        "no self-contained System32 .exe to stand in for llama-server",
+        allow_module_level = True,
+    )
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -89,7 +139,6 @@ _BACKEND_PAYLOAD = {
     ("windows", "rocm"): ["ggml-hip.dll"],
     ("windows", "vulkan"): ["ggml-vulkan.dll"],
 }
-# Only a published bundle owes the visual server.
 _PUBLISHED_PAYLOAD = {
     "linux": ["llama-diffusion-gemma-visual-server"],
     "windows": ["llama-diffusion-gemma-visual-server.exe"],
@@ -115,11 +164,9 @@ def build_install(
     cudart = False,
     visual_server = True,
 ):
-    """Write an install tree. ``marker`` is the literal object to serialise.
-
-    ``marker="default"`` writes a minimal current-shape marker; ``marker=None`` writes no
-    marker file at all (a source build); a ``str`` is written verbatim (corrupt markers).
-    """
+    """Write an install tree. ``marker`` is the literal object to serialise: ``"default"``
+    writes a minimal current-shape marker, ``None`` writes no marker file at all (a source
+    build), and a ``str`` is written verbatim (corrupt markers)."""
     install_dir = tmp_path / "llama.cpp"
     platform = _platform_of(host)
     runtime_dir = (
@@ -141,9 +188,12 @@ def build_install(
             if path.parent != install_dir
             else (runnable if runnable_root is None else runnable_root)
         )
-        # A real runnable stub: the keep path execs these, and an empty file that kept
-        # its mode bits is the ENOEXEC case.
-        path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
+        # The keep path execs these. The not-ok file has to be a bad image: ENOEXEC on
+        # POSIX, a non-PE on Windows, where an empty file is a valid do-nothing program.
+        if WINDOWS_HOST:
+            path.write_bytes(RUNNABLE_STUB if ok else b"not a PE image\n")
+        else:
+            path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
         os.chmod(path, 0o755 if executable else 0o644)
     (install_dir / "convert_hf_to_gguf.py").write_text("", encoding = "utf-8")
     (install_dir / "gguf-py").mkdir()
@@ -172,8 +222,7 @@ def build_install(
     return install_dir
 
 
-# The twelve marker shapes, oldest first, as write_prebuilt_metadata wrote them,
-# trimmed to the keys the keep path reads.
+# The shipped marker shapes, oldest first, trimmed to the keys the keep path reads.
 
 S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
     "requested_tag": "b6099",
@@ -258,11 +307,8 @@ ALL_SHAPES = [
 
 @pytest.mark.parametrize(("name", "marker", "backend"), ALL_SHAPES, ids = [s[0] for s in ALL_SHAPES])
 def test_every_shipped_marker_shape_keeps_a_complete_linux_install(tmp_path, name, marker, backend):
-    """Kept whatever release wrote the marker.
-
-    S1-S8 have no ``backend`` key, so it comes back out of the asset name; S1's upstream
-    CPU asset names none either and must fail open.
-    """
+    """Kept whatever release wrote the marker. S1-S8 have no ``backend`` key, so it comes back
+    out of the asset name; S1's upstream CPU asset names none either and must fail open."""
     install_dir = build_install(tmp_path, marker = marker, payload_backend = backend)
     assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True
     assert ILP._existing_install_runs(install_dir, LINUX) is True
@@ -282,11 +328,8 @@ def test_no_shipped_marker_shape_is_kept_once_its_backend_payload_is_gutted(
 
 
 def test_a_pre_runtime_asset_windows_cuda_install_is_not_asked_for_the_cudart_trio(tmp_path):
-    """S11 and older cannot record a pairing, so demanding one would loop forever.
-
-    Every Windows CUDA install today predates ``runtime_asset``, and would be rejected on
-    every run if the trio were required of a marker that cannot say it was paired.
-    """
+    """S11 and older cannot record a pairing, so demanding one would loop forever: every
+    Windows CUDA install today predates ``runtime_asset`` and would be rejected on every run."""
     install_dir = build_install(
         tmp_path,
         host = WINDOWS,
@@ -319,11 +362,8 @@ def test_a_paired_windows_cuda_install_still_owes_its_cudart_trio(tmp_path):
 
 
 def test_a_source_build_is_never_kept_because_it_has_no_marker(tmp_path):
-    """The keep path is for prebuilts only.
-
-    ``confirm_install_tree`` requires the marker, so a source build never reaches the
-    payload check and falls through to the source-build fallback as before.
-    """
+    """The keep path is for prebuilts only: ``confirm_install_tree`` requires the marker, so a
+    source build never reaches the payload check and falls through to the fallback as before."""
     install_dir = build_install(tmp_path, marker = None, payload_backend = "cuda")
     assert (install_dir / "llama-server").exists()
     assert not (install_dir / "UNSLOTH_PREBUILT_INFO.json").exists()
@@ -347,11 +387,9 @@ def test_a_source_build_is_never_kept_because_it_has_no_marker(tmp_path):
     ],
 )
 def test_a_corrupt_marker_is_still_kept_but_owes_the_whole_platform_payload(tmp_path, corrupt):
-    """An unreadable marker cannot name a backend, so it owes every kind's shared set.
-
-    The asymmetry with the test above: present-but-unreadable still satisfies
-    ``confirm_install_tree``, so the tree stays eligible and is judged on what is on disk.
-    """
+    """An unreadable marker cannot name a backend, so it owes every kind's shared set. Unlike a
+    missing one it still satisfies ``confirm_install_tree``, so the tree stays eligible and is
+    judged on what is on disk."""
     install_dir = build_install(tmp_path, marker = corrupt, payload_backend = "cuda")
     assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True
     assert ILP._existing_install_runs(install_dir, LINUX) is True
@@ -370,12 +408,9 @@ def test_a_marker_from_a_newer_unsloth_is_ignored_key_by_key(tmp_path):
 
 
 def test_a_backend_this_unsloth_does_not_know_falls_back_to_the_asset_name(tmp_path):
-    """An unrecognised ``backend`` is not the end of the derivation.
-
-    ``marker_backend`` tries the recorded backend, then the install kind, then the asset
-    name, so a backend this build has never heard of is still held to what the asset name
-    says. Asserted both ways so the fallback order is pinned.
-    """
+    """An unrecognised ``backend`` is not the end of the derivation: ``marker_backend`` tries
+    the recorded backend, then the install kind, then the asset name. Asserted both ways so the
+    fallback order is pinned."""
     named = {**S12, "backend": "sycl"}  # asset is ...linux-x64-cuda12.tar.gz
     assert ILP.marker_backend(named) == "cuda"
 
@@ -396,10 +431,8 @@ def test_a_backend_no_source_can_name_falls_open_to_the_shared_payload(tmp_path)
 
 
 def test_the_macos_keep_path_requires_the_dylibs(tmp_path):
-    """macOS reaches the same decider and owes its own shared payload.
-
-    Simulated through ``HostInfo``: this covers the path and the payload table, not dyld.
-    """
+    """macOS reaches the same decider and owes its own shared payload. Simulated through
+    ``HostInfo``: this covers the path and the payload table, not dyld."""
     install_dir = build_install(tmp_path / "ok", host = MACOS, marker = S12)
     assert ILP._kept_install_payload_is_healthy(install_dir, MACOS) is True
 
@@ -409,11 +442,9 @@ def test_the_macos_keep_path_requires_the_dylibs(tmp_path):
 
 
 def test_a_legacy_published_vulkan_install_without_the_visual_server_is_refused(tmp_path):
-    """``source`` has been recorded since the first shape, so this reaches old installs.
-
-    A published Vulkan install predating ``ensure_diffusion_visual_server`` is held to a
-    file it never had. The one case where an old install is rebuilt rather than kept.
-    """
+    """``source`` has been recorded since the first shape, so this reaches old installs: a
+    published Vulkan install predating ``ensure_diffusion_visual_server`` is held to a file it
+    never had. The one case where an old install is rebuilt rather than kept."""
     install_dir = build_install(
         tmp_path,
         marker = S6 | {"source": "published"},
@@ -461,6 +492,7 @@ def test_a_windows_loader_failure_is_rejected_even_though_it_exits_zero_ish(tmp_
     assert ILP._existing_install_runs(install_dir, WINDOWS) is False
 
 
+@SKIP_X_OK
 def test_a_non_executable_tree_fails_the_same_gate_setup_sh_uses(tmp_path):
     """setup.sh reuses on ``[ -x build/bin/llama-server ]``; the keep path must agree."""
     install_dir = build_install(
@@ -501,14 +533,6 @@ def test_the_stored_backend_choice_reads_the_same_from_every_shape(tmp_path, mar
     install_dir = build_install(tmp_path, marker = marker)
     assert ILP.persisted_backend_request(install_dir) == expected
 
-
-# ---------------------------------------------------------------------------
-# The [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only] product, through the
-# same two deciders. Hosts are simulated by HostInfo, which is what the deciders
-# branch on, so these prove the payload tables and the platform-prefix filtering,
-# not the Windows loader or macOS dyld. WSL gets its own row because "WSL is just
-# Linux here" is the claim worth pinning.
-# ---------------------------------------------------------------------------
 
 ARM64_LINUX = _host(machine = "aarch64", is_x86_64 = False, is_arm64 = True)
 MACOS_X64 = _host(
@@ -555,7 +579,6 @@ WINDOWS_ROCM = _host(
     rocm_gfx_target = "gfx1151",
 )
 
-# (id, host, marker backend, the payload the tree must carry to be kept)
 MATRIX = [
     ("linux-nvidia", LINUX_NVIDIA, "cuda", "cuda"),
     ("linux-arm64-nvidia", ARM64_LINUX, "cuda", "cuda"),
@@ -627,11 +650,9 @@ def test_a_gutted_install_is_refused_in_every_os_and_accelerator_cell(
 def test_an_accelerator_install_missing_its_own_backend_library_is_refused(
     tmp_path, cell, host, backend
 ):
-    """The shared payload alone must not be enough for a CUDA/ROCm/Vulkan tree.
-
-    The partial-extraction case: everything generic is present and only the accelerator
-    library is gone, so the binaries start and fail once a model loads.
-    """
+    """The shared payload alone must not be enough for a CUDA/ROCm/Vulkan tree. The partial
+    extraction case: everything generic is present and only the accelerator library is gone, so
+    the binaries start and fail once a model loads."""
     marker = {**S12, "backend": backend, "asset": f"app-b1-{cell}.tar.gz"}
     install_dir = build_install(
         tmp_path,
@@ -643,11 +664,8 @@ def test_an_accelerator_install_missing_its_own_backend_library_is_refused(
 
 
 def test_wsl_is_treated_exactly_like_linux_by_the_keep_path(tmp_path):
-    """Pin the assumption rather than leaving it implicit.
-
-    ``HostInfo`` has no WSL flag and the WSL2 ROCDXG handling is upstream of here, so a
-    WSL install is judged by the Linux tables.
-    """
+    """Pin the assumption rather than leaving it implicit: ``HostInfo`` has no WSL flag and the
+    WSL2 ROCDXG handling is upstream of here, so a WSL install is judged by the Linux tables."""
     marker = {**S12, "backend": "rocm", "asset": "app-b1-linux-x64-rocm-gfx1151.tar.gz"}
     for host in (LINUX_ROCM, WSL_ROCM):
         ok = build_install(
@@ -667,11 +685,9 @@ def test_wsl_is_treated_exactly_like_linux_by_the_keep_path(tmp_path):
 
 
 def test_a_marker_naming_another_platforms_backend_falls_open(tmp_path):
-    """A tree carried between machines must not be judged by the wrong table.
-
-    "metal" on a Linux host filters to no linux kind, so the decider falls back to every
-    kind this platform has rather than refusing a payload that is actually complete.
-    """
+    """A tree carried between machines must not be judged by the wrong table: "metal" on a Linux
+    host filters to no linux kind, so the decider falls back to every kind this platform has
+    rather than refusing a payload that is actually complete."""
     marker = {**S12, "backend": "metal", "asset": "app-b1-macos-arm64.tar.gz"}
     install_dir = build_install(tmp_path, host = LINUX, marker = marker, payload_backend = None)
     assert ILP.marker_backend(marker) == "metal"
@@ -679,11 +695,9 @@ def test_a_marker_naming_another_platforms_backend_falls_open(tmp_path):
 
 
 def test_an_install_whose_keys_were_backfilled_onto_an_old_marker_is_kept(tmp_path):
-    """Real markers are not the clean shapes: ``sync_marker_selection`` grafts.
-
-    An install made at S2 and reused since carries an S2 base with later keys grafted on,
-    which is where a reader would expect the shapes to disagree.
-    """
+    """Real markers are not the clean shapes: ``sync_marker_selection`` grafts, so an install
+    made at S2 and reused since carries an S2 base with later keys added, which is where a
+    reader would expect the shapes to disagree."""
     grafted = {
         **S2,
         "backend": "cuda",
@@ -695,10 +709,6 @@ def test_an_install_whose_keys_were_backfilled_onto_an_old_marker_is_kept(tmp_pa
     install_dir = build_install(tmp_path, marker = grafted, payload_backend = "cuda")
     assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True
     assert ILP._existing_install_runs(install_dir, LINUX) is True
-
-
-# Forwards compatibility through install_prebuilt, so the exit code the setup
-# scripts branch on is what is under test.
 
 
 def _transient_listing_failure(monkeypatch, host = LINUX):
@@ -714,11 +724,9 @@ def _transient_listing_failure(monkeypatch, host = LINUX):
 
 
 def test_a_marker_from_a_newer_unsloth_refuses_rather_than_keeping(tmp_path, monkeypatch):
-    """A backend choice this build cannot read must stop the install, not be kept.
-
+    """A backend choice this build cannot read must stop the install, not be kept:
     ``effective_backend_request`` raises ``UnknownBackendRequest`` and the handler exits
-    ``EXIT_ERROR`` before the keep branch runs. That ordering was unasserted.
-    """
+    ``EXIT_ERROR`` before the keep branch runs. That ordering was unasserted."""
     _transient_listing_failure(monkeypatch)
     install_dir = build_install(
         tmp_path,
@@ -728,7 +736,6 @@ def test_a_marker_from_a_newer_unsloth_refuses_rather_than_keeping(tmp_path, mon
     with pytest.raises(SystemExit) as caught:
         ILP.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
     assert caught.value.code == ILP.EXIT_ERROR
-    # And the install is left alone for a newer Unsloth to find.
     assert (install_dir / "llama-server").exists()
 
 
@@ -747,11 +754,9 @@ def test_a_transient_failure_keeps_each_shipped_shape_and_returns_exit_zero(tmp_
 
 
 def test_a_transient_failure_still_falls_back_when_the_tree_is_not_runnable(tmp_path, monkeypatch):
-    """The other half: a broken tree must still reach the source-build fallback.
-
-    Exit 2 is what tells setup.sh it may build from source; swallowing it would leave a
-    user with a half-deleted install told everything was fine.
-    """
+    """The other half: a broken tree must still reach the source-build fallback. Exit 2 is what
+    tells setup.sh it may build from source; swallowing it would leave a user with a
+    half-deleted install told everything was fine."""
     _transient_listing_failure(monkeypatch)
     install_dir = build_install(tmp_path, marker = S12, payload_backend = None)
     with pytest.raises(SystemExit) as caught:

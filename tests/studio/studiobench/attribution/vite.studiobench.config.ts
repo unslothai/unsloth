@@ -30,7 +30,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 
-const FRONTEND_ROOT = path.resolve(__dirname, "../studio/frontend");
+const FRONTEND_ROOT = path.resolve(__dirname, "../../../../studio/frontend");
 
 // The plugins are resolved from the FRONTEND package, not from this directory,
 // and that is not a stylistic preference. Vite bundles a `--config` file with
@@ -38,8 +38,8 @@ const FRONTEND_ROOT = path.resolve(__dirname, "../studio/frontend");
 // path.dirname(fileName)`) and then loads the bundle under the config file's
 // own path: CJS via `module._compile(code, <config path>)`, ESM via a temp file
 // in the nearest ancestor `node_modules`, of which this directory has none. So
-// Node starts its `node_modules` walk at `attribution/` and climbs to the
-// repository root, and NEITHER has a `node_modules` -- only
+// Node starts its `node_modules` walk here and climbs to the repository root,
+// and NOTHING on that path has a `node_modules` -- only
 // `studio/frontend/node_modules` does. Written with plain top-level imports
 // this config could not be loaded from any working directory, by any `vite`
 // binary: `Cannot find module '@tailwindcss/vite'`, and the same for the React
@@ -183,7 +183,7 @@ export default defineConfig({
         // Marks the bundle so the harness can prove it is measuring the
         // attribution build and not a stale shipping dist left in the
         // directory handed to `unsloth studio --frontend`. Read by
-        // `analysis/bridge_build.py:assert_attribution_build`.
+        // `../analysis/bridge_build.py:assert_attribution_build`.
         //
         // This is a BANNER and not a `define`, and the difference is not
         // cosmetic. `define` performs identifier SUBSTITUTION in source: it
