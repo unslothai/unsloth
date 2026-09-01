@@ -606,13 +606,9 @@ export function UsageExamples({
     (s) => s.activeNativePathToken,
   );
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
-  // null when these fields do not describe the model the snippet names. They all start
-  // null, so before /api/inference/status lands they are indistinguishable from a real
-  // non-GGUF model; acting on that guess re-steered a GGUF session to opencode for good
-  // and cleared a saved preference on the way. An external selection is the other case:
-  // use-chat-model-runtime deliberately stops applying local status while one is active,
-  // so the fields freeze while useExampleModelName keeps naming the resident model from
-  // /v1/models, and the two can drift apart with no way back.
+  // null when these fields do not describe the model the snippet names: before status
+  // lands they all read like a non-GGUF model, and under an external selection
+  // use-chat-model-runtime stops updating them while the snippet still follows /v1/models.
   const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const storeIsGguf: boolean | null =
     !activeCheckpoint || isExternalModelId(activeCheckpoint)
@@ -621,25 +617,16 @@ export function UsageExamples({
         activeNativePathToken != null ||
         ggufContextLength != null;
 
-  // Those fields are filled by useChatModelRuntime, which only the chat and hub pages
-  // mount, and local checkpoints are deliberately not persisted (chat-runtime-store:
-  // "re-derived from the backend in useChatModelRuntime"). This dialog opens from any
-  // route -- the API Monitor page has its own button into this very panel -- so off
-  // those two pages the store answers "unknown" forever and the gate never runs.
-  // Ask the server the question the CLI gate asks instead: is_gguf on
-  // /api/inference/status is the same field _require_gguf_for_agent reads, and it
-  // describes the resident model, which is the model these snippets name.
-  // What the store currently claims to describe. The answer below is tagged with it, so
-  // a switch made here invalidates the previous answer instead of outliving it.
-  // JSON rather than a delimiter: every one of these can be a path or a repo id, so
-  // there is no separator that is guaranteed not to appear inside one of them.
+  // Only the chat and hub pages mount useChatModelRuntime, and local checkpoints are not
+  // persisted, so off those routes the store never answers and the server has to. Tags the
+  // answer below, so a switch made here invalidates it. JSON because each part can be a
+  // path or a repo id, leaving no separator safe to assume absent.
   const storeModelKey = JSON.stringify([
     activeCheckpoint,
     activeGgufVariant,
     activeNativePathToken,
   ]);
-  // Hoisted above the compatibility derivation below, which has to check the verdict
-  // against the very model these snippets name.
+  // Above the derivation below, which checks the verdict against the model named here.
   const keylessBase =
     !(useTunnel && cloudflareUrl) &&
     keylessBaseEligible(base, keylessScope, keylessExposure);
@@ -650,11 +637,8 @@ export function UsageExamples({
     resident: string | null;
     isGguf: boolean | null;
   } | null>(null);
-  // Polled on the catalog's own cadence, because nothing else here would notice a swap:
-  // useChatModelRuntime re-reads status on mount, on model-list changes and on tab focus,
-  // never on a timer, so an API request or a CLI load that switches the resident model
-  // while this tab stays focused leaves the store describing the model that left, while
-  // useExampleModelName's own poll renames the snippet after the new one.
+  // useChatModelRuntime re-reads status on mount, on model-list changes and on focus,
+  // never on a timer, so only this poll notices a swap made while the tab stays focused.
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | null = null;
@@ -663,11 +647,8 @@ export function UsageExamples({
       void getInferenceStatus()
         .then((status) => {
           if (cancelled) return false;
-          // Two silences, both read as unknown, the same way the CLI gate reads them.
-          // Absent is a server that does not report the field. Present but naming no
-          // model is InferenceStatusResponse's False default on an idle server, which
-          // says nothing about a model that is not there; taking it as a verdict cleared
-          // a saved Claude preference for a server that simply had nothing loaded.
+          // Two silences, both unknown, as the CLI gate reads them: a server that does
+          // not report the field, and is_gguf's False default with no model named.
           const resident =
             status.active_model ?? status.model_identifier ?? null;
           const answer = statusGgufVerdict(resident, status.is_gguf);
@@ -694,20 +675,9 @@ export function UsageExamples({
     };
   }, [storeModelKey]);
 
-  // The server wins whenever its answer still describes what the store describes, since
-  // only the server sees a swap this tab did not make. A switch made here changes the key
-  // first, which drops the stale answer back to unknown and leaves the freshly updated
-  // store answering until the refetch lands.
-  // This poll and useExampleModelName's catalog poll run on separate timers, so between
-  // the two a swap made elsewhere can be visible to one and not the other. Requiring the
-  // status to name the model the snippet names closes that window: for up to a poll the
-  // panel would otherwise pair a new safetensors model with the previous GGUF verdict and
-  // go on offering a Claude command the CLI refuses. Nothing named means nothing to
-  // contradict, and the quant suffix is not part of the identity.
-  // /api/inference/status reports backend.active_model_name raw, while /v1/models passes
-  // it through public_model_id, so a locally loaded path arrives as "/models/foo" on one
-  // side and "foo" on the other. Collapse it the same way the backend does, or the two
-  // never match for a path-loaded model and the verdict is discarded for good.
+  // status reports active_model_name raw while /v1/models publishes public_model_id(...),
+  // so collapse it the same way or a path-loaded model never matches and the verdict is
+  // dropped for good. A stale key means the switch was made here, and the store is fresher.
   const isGguf: boolean | null = compatibilityFromSources(
     storeIsGguf,
     statusAnswer !== null && statusAnswer.key === storeModelKey

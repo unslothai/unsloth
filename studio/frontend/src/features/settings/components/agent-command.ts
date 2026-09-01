@@ -130,7 +130,7 @@ export function buildAgentShellCommands(
 }
 
 // Codex (/v1/responses) and Claude Code (/v1/messages) are llama-server only; the rest use
-// /v1/chat/completions, which serves safetensors and MLX.
+// /v1/chat/completions, which also serves safetensors and MLX.
 export const GGUF_ONLY_AGENTS: readonly string[] = ["codex", "claude"];
 
 export function agentRunsOnActiveModel(
@@ -178,13 +178,9 @@ export function pickCompatibleAgent(
     : fallbackAgent(isGguf, offered);
 }
 
-// Where the panel's "is the resident model a GGUF" answer comes from, and in which order.
-// The server wins: only it sees a switch made from another tab, the CLI or an API request
-// that auto-switched, and the chat runtime store re-reads status on mount, on model-list
-// changes and on tab focus, never on a timer. The store is the fallback, for the routes
-// that never mount that hook at all and for the moment after a switch made here, before
-// the server has been re-asked about it. null from both means unknown, which is not false
-// and must not gate anything.
+// The server wins: only it sees a swap this tab did not make. The store covers the routes
+// that never mount useChatModelRuntime, and the moment after a switch made here. null from
+// both is unknown, which is not false and gates nothing.
 export function resolveGgufCompatibility(
   fromStore: boolean | null,
   fromServer: boolean | null,
@@ -192,10 +188,8 @@ export function resolveGgufCompatibility(
   return fromServer ?? fromStore;
 }
 
-// What /api/inference/status is actually saying about the resident model. is_gguf carries
-// a False default on InferenceStatusResponse, so a server holding nothing answers false
-// while naming no model; that is the default, not a verdict, and reading it as one cleared
-// a saved preference on an idle server. Only a status that names what it holds decides.
+// is_gguf carries a False default, so an idle server answers false while naming no model.
+// Only a status that names what it holds is a verdict.
 export function statusGgufVerdict(
   resident: string | null | undefined,
   isGguf: boolean | null | undefined,
@@ -212,11 +206,9 @@ export function sameBaseModelId(a: string, b: string): boolean {
   );
 }
 
-// Whether a status verdict still describes the model the snippets name. The status poll
-// and the catalog poll run on separate timers, so a swap made elsewhere reaches one before
-// the other; without this the panel pairs a newly named safetensors model with the
-// previous GGUF verdict for up to a poll. Neither side naming anything is not a
-// contradiction, so it does not invalidate the verdict.
+// The status and catalog polls run on separate timers, so a swap reaches one first; without
+// this the panel pairs a newly named model with the previous verdict. Neither side naming
+// anything is silence, not a contradiction.
 export function verdictDescribesModel(
   resident: string | null | undefined,
   named: string | null | undefined,
@@ -231,12 +223,9 @@ export interface StatusAnswer {
   isGguf: boolean | null;
 }
 
-// The panel's single compatibility rule. `status` is null when the last answer is not
-// about the store state now on screen. A status that names a different model than the
-// snippets name leaves the question unknown rather than falling back to the store: the
-// store cannot break that tie, since a swap made from the CLI or another tab is exactly
-// what it does not see, and deciding from it kept a Claude command on screen for a model
-// that had already been replaced.
+// The panel's single compatibility rule; `status` is null when the last answer is not about
+// the store state on screen. Disagreeing polls leave the question unknown rather than
+// falling back to the store, which is blind to the very swap that caused the disagreement.
 export function compatibilityFromSources(
   fromStore: boolean | null,
   status: StatusAnswer | null,

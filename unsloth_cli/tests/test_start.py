@@ -8148,11 +8148,9 @@ def test_claude_command_preflights_before_starting_a_server(fake_studio, monkeyp
 def test_a_rejected_model_never_offers_to_install_the_agent(
     monkeypatch, tmp_path, subcommand, label
 ):
-    # No fake_studio here: that fixture stubs _require_agent_for_launch to a no-op, and
-    # that call is exactly what these two tests are about. Neither reaches a server.
-    # _install_agent prompts and then runs a remote installer. Ordering it before a gate
-    # that can refuse outright made a user fetch a third-party tool for a run that was
-    # already decided, so the refusal has to come first.
+    # No fake_studio: it stubs _require_agent_for_launch to a no-op, which is the call
+    # under test here. _install_agent runs a remote installer, so the refusal must come
+    # first. Neither test reaches a server.
     _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: None)
@@ -8390,9 +8388,8 @@ def test_require_gguf_still_rejects_a_definite_no(monkeypatch, capsys, agent, la
     ],
 )
 def test_require_gguf_treats_an_idle_server_as_unknown(monkeypatch, body):
-    # InferenceStatusResponse gives is_gguf a False default, so a server with nothing
-    # resident answers False and names no model. Reading that as "not GGUF" refuses a
-    # perfectly good GGUF that simply has not been loaded yet.
+    # is_gguf's False default means an idle server answers False and names no model;
+    # reading that as "not GGUF" refuses a good GGUF that is merely not loaded yet.
     monkeypatch.setattr(start, "_http_json", lambda *a, **k: body)
     start._require_gguf_for_agent(
         start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/gemma-3-4b-it-GGUF"

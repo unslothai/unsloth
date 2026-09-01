@@ -2466,10 +2466,8 @@ def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: st
     # current server always sends it. Absent means "not that endpoint", never "non-GGUF".
     if is_gguf is None or is_gguf:
         return
-    # is_gguf carries a False default on InferenceStatusResponse, so a server holding
-    # nothing answers False while naming no model at all. That is the default speaking,
-    # not a verdict, and the request that follows will get the server's own
-    # "No GGUF model loaded" if it really has none.
+    # is_gguf carries a False default, so an idle server answers False while naming no
+    # model. The request that follows gets the server's own "No GGUF model loaded" anyway.
     if not (status.get("active_model") or status.get("model_identifier")):
         return
     _fail_agent_needs_gguf(agent, model_id)
@@ -4563,8 +4561,8 @@ def claude(
         if os.name == "nt"
         else "curl -fsSL https://claude.ai/install.sh | bash"
     )
-    # Before the install prompt: this can refuse outright, and _install_agent runs a
-    # remote installer, so asking first makes a user fetch a tool this run cannot use.
+    # Before the install prompt: _install_agent runs a remote installer, and this can
+    # refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("claude", install_hint, launch)
     base, key, entry = _connect(
@@ -4693,8 +4691,8 @@ def codex(
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     install_hint = _npm_install_hint("@openai/codex")
-    # Before the install prompt: this can refuse outright, and _install_agent runs a
-    # remote installer, so asking first makes a user fetch a tool this run cannot use.
+    # Before the install prompt: _install_agent runs a remote installer, and this can
+    # refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("codex", install_hint, launch)
     base, key, entry = _connect(
