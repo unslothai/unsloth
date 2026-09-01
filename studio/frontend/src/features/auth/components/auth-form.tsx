@@ -12,6 +12,11 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
 import { refreshSession } from "../api";
+import {
+  deadlineFromStatus,
+  formatCountdown,
+  hasExpired,
+} from "../bootstrap-deadline";
 
 // Bootstrap credentials injected into index.html by the backend (only present
 // while default admin must_change_password is true)
@@ -40,17 +45,6 @@ type AuthStatusResponse = {
   /** Null or absent when the launch is not time-boxed. */
   bootstrap_deadline_seconds?: number | null;
 };
-
-/** Coarse on purpose: the deadline is an hour, so ticking seconds would be noise
- * everywhere except the last minute. */
-function formatCountdown(remainingMs: number): string {
-  const totalSeconds = Math.max(0, Math.round(remainingMs / 1000));
-  if (totalSeconds < 60) {
-    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
-  }
-  const minutes = Math.round(totalSeconds / 60);
-  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
-}
 
 type TokenResponse = {
   access_token: string;
@@ -130,9 +124,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           setInitialized(result.initialized);
           setRequiresPasswordChange(result.requires_password_change);
           setDeadlineAt(
-            typeof result.bootstrap_deadline_seconds === "number"
-              ? Date.now() + result.bootstrap_deadline_seconds * 1000
-              : null,
+            deadlineFromStatus(result.bootstrap_deadline_seconds, Date.now()),
           );
 
           // Server truth wins; keep localStorage in sync both ways.
@@ -364,9 +356,19 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           read the countdown aloud on every tick. */}
       {deadlineAt !== null && (
         <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-600">
-          This instance is reachable on the network and still uses its default
-          password, so it shuts down in {formatCountdown(deadlineAt - nowMs)}.
-          Setting a password here keeps it running.
+          {hasExpired(deadlineAt - nowMs) ? (
+            <>
+              This instance is shutting down: it was reachable on the network
+              and its default password was never changed.
+            </>
+          ) : (
+            <>
+              This instance is reachable on the network and still uses its
+              default password, so it shuts down in{" "}
+              {formatCountdown(deadlineAt - nowMs)}. Setting a password here
+              keeps it running.
+            </>
+          )}
         </p>
       )}
       <form className="space-y-5" onSubmit={handleSubmit}>
