@@ -982,6 +982,48 @@ def test_clear_legacy_cache_truncates_and_verifies_when_unlink_fails(monkeypatch
     assert cache.stat().st_size == 0
 
 
+def test_clear_legacy_cache_does_not_claim_uncheckable_path_is_absent(monkeypatch):
+    # Python 3.14 Path.exists() returns False for inaccessible paths. If unlink
+    # and stat both fail, that False is not proof that the plaintext file is gone.
+    _seed_admin(must_change_password = False)
+    colab._store_colab_login_credentials("unsloth", "legacy-plaintext-password")
+    cache = colab._colab_login_credentials_path()
+    original = cache.read_text(encoding = "utf-8")
+    cache_type = type(cache)
+    real_unlink = cache_type.unlink
+    real_exists = cache_type.exists
+    real_stat = cache_type.stat
+    real_write_text = cache_type.write_text
+
+    def _unlink(self, *args, **kwargs):
+        if self == cache:
+            raise PermissionError("unlink denied")
+        return real_unlink(self, *args, **kwargs)
+
+    def _exists(self):
+        if self == cache:
+            return False
+        return real_exists(self)
+
+    def _stat(self, *args, **kwargs):
+        if self == cache:
+            raise PermissionError("stat denied")
+        return real_stat(self, *args, **kwargs)
+
+    def _write_text(self, *args, **kwargs):
+        if self == cache:
+            raise PermissionError("truncate denied")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(cache_type, "unlink", _unlink)
+    monkeypatch.setattr(cache_type, "exists", _exists)
+    monkeypatch.setattr(cache_type, "stat", _stat)
+    monkeypatch.setattr(cache_type, "write_text", _write_text)
+
+    assert colab._clear_colab_login_credentials() is False
+    assert cache.read_text(encoding = "utf-8") == original
+
+
 def test_upgrade_rerun_refuses_tunnel_when_live_cache_cannot_be_cleared(monkeypatch):
     admin = _seed_admin(must_change_password = True)
     existing = "existing-colab-password-purge-failure"

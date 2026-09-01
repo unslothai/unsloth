@@ -129,17 +129,28 @@ def _clear_colab_login_credentials() -> bool:
     except OSError as e:
         logger.info(f"Could not delete Colab login credentials ({e}); clearing the file.")
     try:
-        if not path.exists():
-            return True
-    except OSError:
-        pass
+        path.stat()
+    except FileNotFoundError:
+        return True
+    except OSError as e:
+        # Path.exists() suppresses all OSError subclasses on Python 3.14, so a
+        # False result cannot distinguish an absent file from an inaccessible
+        # live credential. Try to clear it, then verify with stat() below.
+        logger.info(
+            f"Could not verify Colab login credentials were deleted ({e}); clearing the file."
+        )
     try:
         path.write_text("", encoding = "utf-8")
     except OSError as e:
         logger.warning(f"Could not delete or clear Colab login credentials ({e}).")
         return False
     try:
-        return path.is_file() and path.stat().st_size == 0
+        if path.stat().st_size == 0:
+            return True
+        logger.warning("Could not clear Colab login credentials: plaintext remains on disk.")
+        return False
+    except FileNotFoundError:
+        return True
     except OSError as e:
         logger.warning(f"Could not verify Colab login credentials were cleared ({e}).")
         return False
