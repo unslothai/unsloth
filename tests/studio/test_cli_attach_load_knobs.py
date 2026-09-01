@@ -699,3 +699,155 @@ def test_a_gguf_resident_is_sent_no_precision_flag(monkeypatch):
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert "load_in_4bit" not in server.loads[0]
+
+
+def _gguf_status(**extra):
+    base = {
+        "is_gguf": True,
+        "active_model": RESIDENT["id"],
+        "model_identifier": RESIDENT["id"],
+        "gguf_variant": "Q4_K_M",
+        "requested_context_length": 8192,
+    }
+    base.update(extra)
+    return base
+
+
+def test_changing_one_knob_keeps_the_custom_context(monkeypatch):
+    """max_seq_length defaults to 0, which the intent copies into n_ctx."""
+    server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(tensor_parallel = True, supplied = frozenset({"tensor_parallel"})),
+    )
+
+    assert server.loads[0]["max_seq_length"] == 8192
+
+
+def test_remote_code_resident_is_refused_before_the_load(monkeypatch):
+    """The payload cannot carry the consent, and the worker dies before the retry."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "requires_trust_remote_code": True,
+        },
+    ).install(monkeypatch)
+
+    with pytest.raises(typer.Exit):
+        start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads == []
+
+
+def test_tensor_parallel_does_not_restart_a_non_gguf_resident(monkeypatch, capsys):
+    """The standard load never forwards it, so a restart would apply nothing."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "tensor_parallel": False,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(tensor_parallel = True, supplied = frozenset({"tensor_parallel"})),
+    )
+
+    assert "force_reload" not in server.loads[0]
+    assert "unloads the current model" not in capsys.readouterr().out
+
+
+def test_a_differently_spelled_quant_still_counts_as_a_change(monkeypatch, capsys):
+    """Q4KM really reloads on the server, so stripping separators under-warns."""
+    server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(gguf_variant = "Q4KM"))
+
+    assert server.loads[0]["force_reload"] is True
+    assert "unloads the current model" in capsys.readouterr().out
+
+
+def test_manual_mode_keeps_a_pinned_layer_count(monkeypatch, capsys):
+    """gpu_layers = -1 means "pick them", which would discard the pinned placement."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        _gguf_status(gpu_memory_mode = "manual", gpu_layers = 20),
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(
+            gpu_memory_mode = "manual", supplied = frozenset({"gpu_memory_mode"})
+        ),
+    )
+
+    assert server.loads[0]["gpu_layers"] == 20
+    assert "unloads the current model" in capsys.readouterr().out
+
+
+def test_switching_into_manual_still_asks_for_automatic_layers(monkeypatch):
+    server = FakeServer(
+        [dict(RESIDENT)], _gguf_status(gpu_memory_mode = "auto")
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(
+            gpu_memory_mode = "manual", supplied = frozenset({"gpu_memory_mode"})
+        ),
+    )
+
+    assert server.loads[0]["gpu_layers"] == -1
+
+
+def test_arch_gated_tensor_request_is_not_restarted(monkeypatch):
+    """status says false because the gate normalized it, not because it was not asked."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        _gguf_status(tensor_parallel = False, tensor_parallel_dropped_by_arch_gate = True),
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(tensor_parallel = True, supplied = frozenset({"tensor_parallel"})),
+    )
+
+    assert "force_reload" not in server.loads[0]
+
+
+def test_paravirtual_placement_is_not_restarted(monkeypatch):
+    """Every placement request normalizes to the same runtime on such a host."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        _gguf_status(gpu_memory_mode = "manual", gpu_placement_paravirtual = True),
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(
+            gpu_memory_mode = "auto", supplied = frozenset({"gpu_memory_mode"})
+        ),
+    )
+
+    assert "force_reload" not in server.loads[0]

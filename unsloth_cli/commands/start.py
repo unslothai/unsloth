@@ -1783,6 +1783,9 @@ _RESIDENT_RUNTIME_FIELDS = {
     # LoadRequest defaults this to True, so omitting it would reload a full-precision
     # model in 4-bit. Null on GGUF, which has no such setting, and nulls are dropped.
     "load_in_4bit": "load_in_4bit",
+    # Same trap: max_seq_length defaults to 0, which _gguf_request_intent copies into
+    # n_ctx, so changing another knob would reset a custom context to automatic.
+    "requested_context_length": "max_seq_length",
     "requested_gpu_ids": "gpu_ids",
     "requested_parallel_slots": "n_parallel",
     "requested_n_batch": "n_batch",
@@ -1823,9 +1826,12 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
     for name in overrides:
         if name == "gguf_variant":
             resident = status.get("gguf_variant") if status.get("is_gguf") else None
-            if not resident or _normalized_variant(resident) != _normalized_variant(
+            # Casefold, not _normalized_variant, which strips separators: a mistyped Q4KM
+            # would read as equal here yet still really reload on the server. The preload
+            # gate below already compares this way, and the two have to agree.
+            if not resident or str(resident).strip().lower() != str(
                 load.gguf_variant
-            ):
+            ).strip().lower():
                 return True
         elif name == "max_seq_length":
             # Requested, not resolved: llama.cpp clamps n_ctx at fit time.
@@ -1841,10 +1847,32 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
             if resident is None or bool(resident) != bool(load.load_in_4bit):
                 return True
         elif name == "tensor_parallel":
+            # llama.cpp only. The standard load never forwards it, so a restart would
+            # apply nothing; the backend comparator treats it as GGUF-only for the
+            # same reason.
+            if not status.get("is_gguf"):
+                continue
+            # The architecture gate can normalize a tensor request to layer mode and say
+            # so. Reporting false there is the request already applied, not a difference,
+            # and the backend dedupes exactly this state.
+            if load.tensor_parallel and status.get("tensor_parallel_dropped_by_arch_gate"):
+                continue
             if bool(status.get("tensor_parallel")) != bool(load.tensor_parallel):
                 return True
         elif name == "gpu_memory_mode":
+            if not status.get("is_gguf"):
+                continue
+            # A paravirtual host pins every placement request to the same runtime, so the
+            # raw mode it reports cannot tell two requests apart. The frontend resident
+            # comparator skips placement on this flag for the same reason.
+            if status.get("gpu_placement_paravirtual"):
+                continue
             if status.get("gpu_memory_mode") != load.gpu_memory_mode:
+                return True
+            # Manual carries an implicit gpu_layers = -1 in the payload below, so the
+            # modes matching is not enough: a resident pinned to a layer count would be
+            # reset to automatic with no warning.
+            if load.gpu_memory_mode == "manual" and status.get("gpu_layers") not in (None, -1):
                 return True
     return False
 
@@ -2020,8 +2048,25 @@ def _resolve_model(
             payload["tensor_parallel"] = load.tensor_parallel
         if "gpu_memory_mode" in overrides and load.gpu_memory_mode is not None:
             payload["gpu_memory_mode"] = load.gpu_memory_mode
-            if load.gpu_memory_mode == "manual":
+            # -1 means "pick the layers", which is right when the user is switching INTO
+            # manual, but on an inferred attach to a resident already in manual it would
+            # throw away the layer count it was pinned to. Leave it for the round-trip.
+            already_manual = (
+                attach_public_id is not None
+                and status_snapshot.get("gpu_memory_mode") == "manual"
+            )
+            if load.gpu_memory_mode == "manual" and not already_manual:
                 payload["gpu_layers"] = -1
+        if attach_public_id is not None and status_snapshot.get("requires_trust_remote_code"):
+            # The reload cannot reproduce the consent: the payload has no
+            # trust_remote_code and no approval fingerprint, and the standard backend
+            # tears the worker down BEFORE the replacement is accepted, so a rejected
+            # custom-code load leaves nothing resident. Refuse while the model is still
+            # serving; naming it with --model goes through the normal consent path.
+            _fail(
+                f"'{attach_public_id}' was loaded with trust_remote_code, which an attach "
+                "cannot re-authorize. Re-run with --model naming it to apply these settings."
+            )
         if attach_public_id is not None:
             # An inferred reload is a full load, not a PATCH: _gguf_request_intent copies
             # every defaulted LoadRequest field into the new intent, so a knob we leave out
