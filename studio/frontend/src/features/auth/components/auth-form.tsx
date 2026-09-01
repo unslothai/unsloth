@@ -120,8 +120,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         if (!canceled) {
           setInitialized(result.initialized);
           setRequiresPasswordChange(result.requires_password_change);
+          // One clock sample for both: nowMs is otherwise still the mount time
+          // until the first tick, which adds the request duration to the figure
+          // and renders a 0 from the server as "shuts down in 0 seconds".
+          const sampledNow = Date.now();
+          setNowMs(sampledNow);
           setDeadlineAt(
-            deadlineFromStatus(result.bootstrap_deadline_seconds, Date.now()),
+            deadlineFromStatus(result.bootstrap_deadline_seconds, sampledNow),
           );
 
           // Server truth wins; keep localStorage in sync both ways.

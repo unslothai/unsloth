@@ -70,3 +70,18 @@ test("the boundary between the two messages is one tick wide", () => {
     "0 must select the shutting-down copy, not the countdown",
   );
 });
+
+test("the deadline and the clock it is compared against must be one sample", () => {
+  // A request that takes 30ms turns a server 0 back into a positive remainder,
+  // which selects the countdown copy and prints "shuts down in 0 seconds".
+  const mounted = 1_000_000;
+  const responded = mounted + 30;
+  const stale = deadlineFromStatus(0, responded);
+  assert.ok(stale !== null);
+  assert.equal(hasExpired(stale - mounted), false);
+  assert.equal(formatCountdown(stale - mounted), "0 seconds");
+
+  const sampled = deadlineFromStatus(0, responded);
+  assert.ok(sampled !== null);
+  assert.equal(hasExpired(sampled - responded), true);
+});
