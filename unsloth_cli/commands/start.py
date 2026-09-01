@@ -665,12 +665,7 @@ def _supplied_load_params(ctx) -> frozenset:
 
 
 def _load_options(
-    ctx,
-    gguf_variant,
-    max_seq_length,
-    load_in_4bit,
-    tensor_parallel,
-    gpu_memory_mode,
+    ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
 ) -> LoadOptions:
     """Build LoadOptions for an agent command, recording what was typed."""
     return LoadOptions(
@@ -1843,9 +1838,7 @@ def _resolve_model(
     status_snapshot = None
     if requested is None and load_has_overrides and infer_resident:
         status_snapshot = _inference_status(base, key)
-        requested, attach_public_id = _resident_load_target(
-            models, status_snapshot, allow_casefold
-        )
+        requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
         # preload_check deliberately survives: it is the only gate that runs before the
         # load evicts the shared model (_require_gguf_for_codex runs after _connect
         # returns), so an inferred target has to clear it exactly like a named one.
@@ -4728,7 +4721,9 @@ def claude(
     base, key, entry = _connect(
         api_key,
         model,
-        _load_options(ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -4849,7 +4844,9 @@ def codex(
     base, key, entry = _connect(
         api_key,
         model,
-        _load_options(ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         preload_check = _attach_gguf_check_for_codex,
@@ -4959,7 +4956,9 @@ def openclaw(
     base, key, entry = _connect(
         api_key,
         model,
-        _load_options(ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -5049,7 +5048,9 @@ def opencode(
     base, key, entry = _connect(
         api_key,
         model,
-        _load_options(ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -5234,7 +5235,9 @@ def hermes(
     base, key, entry = _connect(
         api_key,
         model,
-        _load_options(ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -5299,7 +5302,9 @@ def pi(
     base, key, entry = _connect(
         api_key,
         model,
-        _load_options(ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(

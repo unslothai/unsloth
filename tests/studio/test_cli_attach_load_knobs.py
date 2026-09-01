@@ -30,7 +30,15 @@ class FakeServer:
         self.loads = []
         self.requests = []
 
-    def http_json(self, method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        self,
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         self.requests.append((method, url))
         if url.endswith("/v1/models"):
             return {"data": [dict(m) for m in self.models]}
@@ -133,9 +141,7 @@ def test_path_loaded_resident_is_reloaded_by_its_real_path(monkeypatch):
         },
     ).install(monkeypatch)
 
-    entry = start_cli._resolve_model(
-        BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768)
-    )
+    entry = start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert server.loads == [{"model_path": path, "max_seq_length": 32768}]
     # The agent is still pointed at the public id, never the server's filesystem path.
@@ -154,7 +160,12 @@ def test_inferred_target_still_runs_the_preload_check(monkeypatch):
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
     ).install(monkeypatch)
 
-    def gate(base, key, model, variant = None):
+    def gate(
+        base,
+        key,
+        model,
+        variant = None,
+    ):
         raise typer.Exit(code = 1)
 
     with pytest.raises(typer.Exit):
@@ -182,9 +193,7 @@ def test_inferred_reload_warns_that_it_unloads_for_every_session(monkeypatch, ca
         },
     ).install(monkeypatch)
 
-    start_cli._resolve_model(
-        BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768)
-    )
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert len(server.loads) == 1
     assert "unloads the current model for every attached session" in capsys.readouterr().out
@@ -200,9 +209,7 @@ def test_active_model_decides_the_resident_not_list_order(monkeypatch):
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
     ).install(monkeypatch)
 
-    start_cli._resolve_model(
-        BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768)
-    )
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert server.loads == [{"model_path": RESIDENT["id"], "max_seq_length": 32768}]
 
@@ -215,9 +222,7 @@ def test_unreloadable_resident_fails_before_loading(monkeypatch):
     ).install(monkeypatch)
 
     with pytest.raises(typer.Exit):
-        start_cli._resolve_model(
-            BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768)
-        )
+        start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert server.loads == []
 
@@ -273,9 +278,7 @@ def test_hf_cache_resident_matches_the_advertised_repo_id(monkeypatch):
         },
     ).install(monkeypatch)
 
-    entry = start_cli._resolve_model(
-        BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768)
-    )
+    entry = start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert server.loads == [{"model_path": cache_path, "max_seq_length": 32768}]
     assert entry["id"] == "unsloth/Qwen3-8B-GGUF"
@@ -292,9 +295,7 @@ def test_status_names_the_resident_even_when_the_catalog_lags(monkeypatch):
         },
     ).install(monkeypatch)
 
-    entry = start_cli._resolve_model(
-        BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768)
-    )
+    entry = start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert server.loads == [{"model_path": RESIDENT["id"], "max_seq_length": 32768}]
     assert entry["id"] == RESIDENT["id"]

@@ -141,6 +141,4 @@ def test_gguf_only_knobs_never_block_reuse(field, value):
     transformers load. Rejecting or reloading on them would break the ordinary
     non-GGUF model pick, which is the common case.
     """
-    assert inference_route._non_gguf_runtime_settings_match(
-        _loaded(), _Request(**{field: value})
-    )
+    assert inference_route._non_gguf_runtime_settings_match(_loaded(), _Request(**{field: value}))
