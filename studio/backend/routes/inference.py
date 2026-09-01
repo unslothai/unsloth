@@ -9510,14 +9510,23 @@ def _estimate_gguf_required_gb(
         # launches, Unsloth's included, so none of them belongs in a VRAM budget. An
         # embedded head ignores draft-only flags and is inside the weights anyway.
         _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ)
+        # The DSpark sidecar does not follow a main CPU device: its generated block
+        # appends no --spec-draft-device, and llama.cpp gives a separate drafter the
+        # draft device list rather than the main one, so an unset list is every device.
+        # Only the explicit draft flags take it off the GPU.
+        _dspark_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(
+            llama_extra_args, env = os.environ, dspark_drafter = True
+        )
         _forced_dspark = bool(
             (_spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {}))
             and not _extras_own_drafter
-            and not _draft_pinned_to_cpu
+            and not _dspark_pinned_to_cpu
         )
         # Auto loads the sidecar whenever the model has one, so size it there too
         # or the guard admits a load 11 GB larger than it estimated.
-        _auto_dspark = _spec_mode == "auto" and not _extras_own_drafter and not _draft_pinned_to_cpu
+        _auto_dspark = (
+            _spec_mode == "auto" and not _extras_own_drafter and not _dspark_pinned_to_cpu
+        )
         _dspark_capable = True
         if _forced_dspark or _auto_dspark:
             # Gate on the same answer the loader uses: _download_dspark skips the
@@ -9577,7 +9586,9 @@ def _estimate_gguf_required_gb(
         # that fits. Auto is different: it falls through to the MTP branch, and keeps
         # its charge.
         _charge_no_drafter = (
-            _draft_pinned_to_cpu
+            # ... except a DSpark sidecar the pin never reaches, which the branch
+            # below then charges alone.
+            (_draft_pinned_to_cpu and not dspark_requested)
             or _extras_own_drafter
             or (_forced_dspark and not _dspark_capable)
             or (_forced_dflash and not _dflash_capable)

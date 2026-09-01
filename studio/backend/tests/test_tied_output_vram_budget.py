@@ -901,3 +901,72 @@ def test_the_host_shortfall_prices_the_tied_duplicate(backend, mib_embd_pair):
 
     assert priced(tied) is not None, "the tied duplicate is missing from the host floor"
     assert priced(untied) is None, "a model shipping its own output must not be charged twice"
+
+
+def _spec_flags(monkeypatch, tmp_path: Path, mode: str, sidecar: str) -> "list[str]":
+    """The flag list _build_speculative_flags emits for one sidecar mode."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    caps = {
+        "found": True,
+        "mtp_token": "draft-mtp",
+        "supports_mtp": True,
+        "supports_dspark": True,
+        "supports_dflash": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: caps),
+    )
+    backend = LlamaCppBackend()
+    backend._nextn_predict_layers = None
+    path = str(tmp_path / f"{mode}.gguf")
+    return backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = ["--device", "none"],
+        model_identifier = "org/model",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        **{sidecar: path},
+        draft_device = "none",
+    )
+
+
+def test_only_the_emitters_that_pin_the_drafter_lend_it_the_main_device(monkeypatch, tmp_path):
+    """DSpark is the emitter that appends no --spec-draft-device.
+
+    llama.cpp hands a separate drafter ``params.speculative.draft.devices`` in place
+    of the main list (common_base_params_to_speculative), and an unset draft list
+    means every device. So a main ``--device none`` reaches the DSpark sidecar only
+    if Studio copies it, and _emit_dspark does not: the sidecar still lands on a GPU.
+    Dropping its ~11 GB from the reserve is the under-count that picks a context the
+    card cannot hold.
+    """
+    from core.inference import llama_cpp
+
+    assert "--spec-draft-device" not in _spec_flags(
+        monkeypatch, tmp_path, "dspark", "dspark_draft_path"
+    )
+    dflash = _spec_flags(monkeypatch, tmp_path, "dflash", "dflash_draft_path")
+    assert dflash[dflash.index("--spec-draft-device") + 1] == "none"
+
+    generated = ["--model-draft", "draft.gguf", "--device", "none"]
+    assert llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}) is True
+    assert (
+        llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}, dspark_drafter = True) is False
+    )
+    # An explicit draft pin still owns the drafter, DSpark included.
+    explicit = ["--model-draft", "draft.gguf", "--spec-draft-device", "none"]
+    assert (
+        llama_cpp._extra_args_draft_offloaded_to_cpu(explicit, {}, dspark_drafter = True) is True
+    )
+    assert (
+        llama_cpp._extra_args_draft_offloaded_to_cpu(
+            ["--spec-draft-ngl", "0"], {}, dspark_drafter = True
+        )
+        is True
+    )

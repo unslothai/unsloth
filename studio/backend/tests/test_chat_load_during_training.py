@@ -1436,6 +1436,49 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
 
+    def test_a_main_cpu_device_does_not_uncharge_the_dspark_sidecar(self):
+        """A main ``--device none`` never reaches the DSpark sidecar.
+
+        Its generated block appends no --spec-draft-device (_emit_dspark, unlike
+        _emit_dflash and _emit_mtp), and llama.cpp gives a separate drafter the draft
+        device list in place of the main one -- unset meaning every device -- so the
+        sidecar still lands on a GPU. Dropping its bytes here would admit a load that
+        much larger than the guard estimated. The explicit draft pin does own it.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dspark-model-Q8_0.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+                self._dspark_capable(),
+            ):
+                main_cpu_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dspark",
+                    llama_extra_args = ["--device", "none"],
+                )
+                draft_cpu_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dspark",
+                    llama_extra_args = ["--spec-draft-device", "none"],
+                )
+        self.assertAlmostEqual(main_cpu_gb, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(draft_cpu_gb, 2000 / (1024**3), places = 9)
+
     def test_forced_dspark_on_an_incapable_binary_charges_no_drafter_at_all(self):
         """The loader's DSpark branch falls back to --spec-default, which loads no
         drafter, so charging the MTP one would refuse a load that fits. Auto is

@@ -4912,7 +4912,10 @@ def _sidecar_adapter_bytes(extra_args: Optional[Iterable[str]]) -> Optional[int]
 
 
 def _extra_args_draft_offloaded_to_cpu(
-    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    dspark_drafter: bool = False,
 ) -> bool:
     """True if the SEPARATE draft model is on CPU (so the budget must not charge
     its weights+KV): --spec-draft-ngl 0, a draft device naming only cpu/none, or
@@ -4920,6 +4923,14 @@ def _extra_args_draft_offloaded_to_cpu(
     LLAMA_ARG_N_GPU_LAYERS_DRAFT env the child honors (device flags have no env).
     An embedded MTP head follows the main -ngl, so these draft-only flags don't move
     it. Last-wins, so only each flag's final value counts.
+
+    ``dspark_drafter`` drops that main-device inheritance, because DSpark is the one
+    generated block that appends no --spec-draft-device (_emit_dspark, against
+    _emit_dflash and _emit_mtp which do). llama.cpp then replaces the main device
+    list with the draft one for any separate drafter -- ``result.devices =
+    params_spec.devices`` in common_base_params_to_speculative -- and an unset draft
+    list means every device, so the sidecar lands on a GPU that a main ``--device
+    none`` had already talked the budget out of reserving.
 
     A count BETWEEN 0 and the drafter's block count is a split, not an offload; see
     ``_draft_is_split_across_host``."""
@@ -4931,7 +4942,7 @@ def _extra_args_draft_offloaded_to_cpu(
         except (TypeError, ValueError):
             pass
     last_dev = _extra_args_draft_device(extra_args)
-    if last_dev is None and not _extra_args_set_spec_type(extra_args):
+    if last_dev is None and not dspark_drafter and not _extra_args_set_spec_type(extra_args):
         last_dev = _extra_args_main_device(extra_args)
     if last_dev is not None:
         devs = [d.strip().lower() for d in last_dev.split(",") if d.strip()]
@@ -19644,6 +19655,7 @@ class LlamaCppBackend:
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(
                         _draft_placement_extras,
                         env = _draft_placement_env,
+                        dspark_drafter = _mtp_effective == "dspark",
                     )
                     # Kept for the load-mode fit, which the nulling below would leave
                     # short a whole draft GGUF: dropping the drafter from the VRAM budget
