@@ -1479,6 +1479,7 @@ _HOME_RELATIVE_SENSITIVE = (
 )
 _ABSOLUTE_SENSITIVE = (
     r"/etc/shadow",
+    r"/etc/gshadow",
     r"/etc/sudoers",
     r"/etc/ssh/ssh_host_[^\s'\"]+",
     # Linux process-state surfaces. ``thread-self`` and ``task/<tid>``
@@ -1639,6 +1640,18 @@ _BASH_DIR_EXFIL_COMMANDS = (
     "scp",
     "sftp",
 )
+_BASH_DIR_EXFIL_WRAPPERS = (
+    "command",
+    "env",
+    "exec",
+    "time",
+    "nohup",
+    "nice",
+    "setsid",
+    "stdbuf",
+    "timeout",
+    "ionice",
+)
 _BASH_FIND_CONTENT_READERS = (
     "cat",
     "head",
@@ -1664,7 +1677,9 @@ _BASH_SENSITIVE_DIR_NAMES = (
     r"\.password-store",
 )
 _BASH_DIR_EXFIL_RE = re.compile(
-    r"(?:^|[;&|()\n]\s*)(?:(?:command|env)\s+)?(?:"
+    r"(?:^|[;&|()\n]\s*)(?:(?:"
+    + "|".join(re.escape(c) for c in _BASH_DIR_EXFIL_WRAPPERS)
+    + r")\b(?:\s+(?:--?[^\s;&|]+|[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+|\d+(?:\.\d+)?s?))*\s+)*(?:"
     + "|".join(re.escape(c) for c in _BASH_DIR_EXFIL_COMMANDS)
     + r")\b[^;&|\n]*?"
     + r"(?:"
@@ -14048,6 +14063,10 @@ def _check_signal_escape_patterns(code: str):
             "warnings": [],
         }
 
+    _parent_by_node = {
+        child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
+    }
+
     signal_tampering = []
     exception_catching = []
     shell_escapes = []
@@ -14155,6 +14174,7 @@ def _check_signal_escape_patterns(code: str):
         "copy2",
         "copytree",
         "move",
+        "make_archive",
     )
 
     # ``pathlib`` alias tracking for the pre-pass pathlib resolver.
@@ -14264,6 +14284,7 @@ def _check_signal_escape_patterns(code: str):
     _PREPASS_SENSITIVE_PREFIXES = (
         "/etc/passwd",
         "/etc/shadow",
+        "/etc/gshadow",
         "/etc/sudoers",
         "/etc/ssh/",
     )
@@ -14598,6 +14619,18 @@ def _check_signal_escape_patterns(code: str):
           string when later referenced by the file-read or shutil gate.
         """
         for _assign in _walk_lexical_scope(subtree):
+            # A literal iterable binds each candidate to the loop target.
+            # Record all statically known strings; the binding recorder keeps
+            # the sensitive candidate when safe and sensitive values coexist.
+            if isinstance(_assign, (ast.For, ast.AsyncFor)) and isinstance(
+                _assign.target, ast.Name
+            ):
+                if isinstance(_assign.iter, (ast.List, ast.Tuple, ast.Set)):
+                    for _elt in _assign.iter.elts:
+                        _val = _extract_string_from_node(_elt)
+                        if _val is not None:
+                            _record_string_binding(_assign.target.id, _val)
+                continue
             # Walrus (``p := '/etc/shadow'``) is an expression that
             # binds, not an Assign. Handle it here so a walrus inside
             # an eval / exec payload (or any expression context) is
@@ -15604,6 +15637,7 @@ def _check_signal_escape_patterns(code: str):
         "requests.delete",
         "requests.patch",
         "requests.head",
+        "requests.options",
         "requests.request",
         "requests.Session",
         "http.client.HTTPConnection",
@@ -15613,7 +15647,9 @@ def _check_signal_escape_patterns(code: str):
         "httpx.put",
         "httpx.patch",
         "httpx.delete",
+        "httpx.options",
         "httpx.request",
+        "httpx.stream",
         "httpx.Client",
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
@@ -15633,7 +15669,6 @@ def _check_signal_escape_patterns(code: str):
             "read_stata",
             "read_xml",
             "read_fwf",
-            "read_sql",
             "fromfile",
             "loadtxt",
             "genfromtxt",
@@ -15804,6 +15839,7 @@ def _check_signal_escape_patterns(code: str):
     _SENSITIVE_FILE_PREFIXES = (
         "/etc/passwd",
         "/etc/shadow",
+        "/etc/gshadow",
         "/etc/sudoers",
         "/etc/ssh/",
     )
@@ -16272,6 +16308,33 @@ def _check_signal_escape_patterns(code: str):
             # ``io`` / ``codecs``). Mirrors ``SignalEscapeVisitor.visit_Assign``
             # so the file-read / shutil-copy / pathlib gates see the
             # bound alias the same way they see the import-time alias.
+            unconditional = isinstance(
+                _parent_by_node.get(node),
+                (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            )
+            if unconditional:
+                for tgt in node.targets:
+                    if not isinstance(tgt, ast.Name):
+                        continue
+                    if isinstance(node.value, ast.Name) and node.value.id == tgt.id:
+                        continue
+                    self.pathlib_aliases.discard(tgt.id)
+                    self.builtins_aliases.discard(tgt.id)
+                    self.path_aliases.discard(tgt.id)
+                    self.file_reader_aliases.discard(tgt.id)
+                    for bindings in (
+                        self.file_reader_module_aliases,
+                        self.file_copy_aliases,
+                        self.network_module_aliases,
+                        self.network_call_aliases,
+                        self.network_instance_aliases,
+                        self.request_url_bindings,
+                        bare_shutil_copy_aliases,
+                        eval_exec_aliases,
+                    ):
+                        bindings.pop(tgt.id, None)
+                    shutil_module_aliases.discard(tgt.id)
+
             if isinstance(node.value, ast.Name):
                 src = node.value.id
                 for tgt in node.targets:
@@ -16301,6 +16364,8 @@ def _check_signal_escape_patterns(code: str):
                         self.request_url_bindings[tgt.id] = self.request_url_bindings[src]
                     if src in eval_exec_aliases:
                         eval_exec_aliases[tgt.id] = eval_exec_aliases[src]
+                    elif src in ("eval", "exec"):
+                        eval_exec_aliases[tgt.id] = src
             # Method rebinding inside the file-read surface:
             # ``r = pl.Path`` so a later ``r('/etc/shadow').read_text()``
             # flows through the pathlib resolver. The receiver alias
@@ -16318,6 +16383,10 @@ def _check_signal_escape_patterns(code: str):
                     for tgt in node.targets:
                         if isinstance(tgt, ast.Name):
                             self.network_call_aliases[tgt.id] = canonical
+                if canonical in ("io.open", "io.FileIO", "codecs.open", "os.open"):
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.file_reader_aliases.add(tgt.id)
                 if attr in _DATAFRAME_READER_NAMES:
                     for tgt in node.targets:
                         if isinstance(tgt, ast.Name):
@@ -16501,7 +16570,9 @@ def _check_signal_escape_patterns(code: str):
                 _URL_SECOND_FQ = (
                     "requests.request",
                     "httpx.request",
+                    "httpx.stream",
                     "urllib3.request",
+                    "urllib3.urlopen",
                     "aiohttp.ClientSession.request",
                 )
 
@@ -16617,7 +16688,7 @@ def _check_signal_escape_patterns(code: str):
             # ``open()`` but still read an arbitrary path. Treat them
             # as the same gate so ``io.FileIO('/etc/shadow').read()`` is
             # blocked alongside ``open('/etc/shadow')``.
-            _EXPLICIT_FILE_READERS = ("io.FileIO", "codecs.open")
+            _EXPLICIT_FILE_READERS = ("io.open", "io.FileIO", "codecs.open", "os.open")
             # Third-party file-reader method names that any reasonable
             # ``pandas``/``numpy`` alias exposes (``pd.read_csv`` /
             # ``pandas.read_csv`` / ``np.fromfile`` / ``numpy.loadtxt``).
@@ -16753,6 +16824,7 @@ def _check_signal_escape_patterns(code: str):
                     "shutil.copy2",
                     "shutil.copytree",
                     "shutil.move",
+                    "shutil.make_archive",
                 }
             )
             file_copy_fq = None
@@ -16777,26 +16849,30 @@ def _check_signal_escape_patterns(code: str):
                 # description so aliased and from-import bypasses surface
                 # with the same identity as the literal form.
                 fq = file_copy_fq
-                src_lit = None
-                if node.args:
+                source_nodes = []
+                if file_copy_fq == "shutil.make_archive":
+                    if len(node.args) > 2:
+                        source_nodes.append(node.args[2])
+                    source_nodes.extend(
+                        kw.value
+                        for kw in node.keywords or []
+                        if kw.arg in ("root_dir", "base_dir")
+                    )
+                elif node.args:
+                    source_nodes.append(node.args[0])
+                else:
+                    source_nodes.extend(
+                        kw.value for kw in node.keywords or [] if kw.arg in ("src", "source")
+                    )
+
+                for source_node in source_nodes:
                     src_lit = _extract_pathlib_target(
-                        node.args[0], self.path_aliases, self.pathlib_aliases
+                        source_node, self.path_aliases, self.pathlib_aliases
                     )
                     if src_lit is None:
-                        src_lit = _extract_string_from_node(node.args[0])
-                if src_lit is None:
-                    for kw in node.keywords or []:
-                        if kw.arg in ("src", "source"):
-                            src_lit = _extract_pathlib_target(
-                                kw.value,
-                                self.path_aliases,
-                                self.pathlib_aliases,
-                            )
-                            if src_lit is None:
-                                src_lit = _extract_string_from_node(kw.value)
-                            if src_lit is not None:
-                                break
-                if src_lit:
+                        src_lit = _extract_string_from_node(source_node)
+                    if not src_lit:
+                        continue
                     candidates = {src_lit}
                     if "\\" in src_lit:
                         candidates.add(src_lit.replace("\\", "/"))
@@ -16833,6 +16909,7 @@ def _check_signal_escape_patterns(code: str):
                                 ),
                             }
                         )
+                        break
             self.generic_visit(node)
 
     NetworkAndIoVisitor().visit(tree)

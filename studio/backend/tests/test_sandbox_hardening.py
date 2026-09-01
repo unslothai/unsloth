@@ -2965,3 +2965,118 @@ class TestCurrentHeadReviewRegressions:
     def test_imported_dataframe_reader_benign_path_allowed(self):
         code = "from pandas import read_csv\nread_csv('data.csv')"
         assert not _is_blocked(code), "bare dataframe reader benign path blocked"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import httpx\n"
+                "with httpx.Client().stream("
+                "'GET', 'http://169.254.169.254/latest') as response:\n pass"
+            ),
+            (
+                "import urllib3\n"
+                "urllib3.PoolManager().urlopen("
+                "'GET', 'http://169.254.169.254/latest')"
+            ),
+        ],
+    )
+    def test_additional_method_first_metadata_urls_blocked(self, code):
+        assert _is_blocked(code), "method-first metadata URL bypassed policy"
+
+    def test_unconditional_network_alias_rebinding_clears_stale_identity(self):
+        code = (
+            "import requests as client\n"
+            "class LocalClient:\n"
+            " def get(self, url): return url\n"
+            "client = LocalClient()\n"
+            "client.get('https://private.example')"
+        )
+        assert not _is_blocked(code), "stale import alias caused a false positive"
+
+    def test_conditional_network_alias_rebinding_remains_conservative(self):
+        code = (
+            "import requests as client\n"
+            "if condition:\n client = local_client\n"
+            "client.get('http://169.254.169.254/latest')"
+        )
+        assert _is_blocked(code), "conditional alias rebinding bypassed metadata policy"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io\nreader = io.open\nreader('/etc/shadow').read()",
+            "import codecs\nreader = codecs.open\nreader('/etc/shadow').read()",
+            "import os\nreader = os.open\nreader('/etc/shadow', os.O_RDONLY)",
+        ],
+    )
+    def test_assigned_stdlib_file_readers_blocked(self, code):
+        assert _is_blocked(code), "assigned stdlib reader bypassed sensitive-file policy"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "nice cp -r /root/.ssh /tmp/out",
+            "nohup tar czf /tmp/keys.tar /root/.ssh",
+            "env MODE=copy cp -r /root/.ssh /tmp/out",
+        ],
+    )
+    def test_wrapped_directory_exfiltration_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"wrapped directory copy leaked: {cmd!r}"
+
+    def test_wrapped_project_directory_copy_allowed(self):
+        assert not _find_sensitive_paths("nice cp -r ./project/.ssh /tmp/out")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import shutil\nshutil.make_archive('/tmp/keys', 'zip', '/root/.ssh')",
+            (
+                "from shutil import make_archive as archive\n"
+                "archive('/tmp/keys', 'zip', root_dir='/root/.ssh')"
+            ),
+            (
+                "import shutil\n"
+                "shutil.make_archive('/tmp/keys', 'zip', root_dir='./project', "
+                "base_dir='/root/.ssh')"
+            ),
+        ],
+    )
+    def test_make_archive_sensitive_roots_blocked(self, code):
+        assert _is_blocked(code), "shutil.make_archive exposed a sensitive root"
+
+    def test_make_archive_project_root_allowed(self):
+        code = "import shutil\nshutil.make_archive('/tmp/project', 'zip', './project')"
+        assert not _is_blocked(code), "benign archive root blocked"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests\nrequests.Session().options('http://169.254.169.254/latest')",
+            "import httpx\nhttpx.Client().options('http://169.254.169.254/latest')",
+        ],
+    )
+    def test_client_options_metadata_urls_blocked(self, code):
+        assert _is_blocked(code), "OPTIONS request bypassed metadata policy"
+
+    def test_client_options_trusted_url_allowed(self):
+        code = "import requests\nrequests.Session().options('https://google.com/')"
+        assert not _is_blocked(code), "trusted OPTIONS request blocked"
+
+    def test_literal_loop_binding_sensitive_read_blocked(self):
+        code = "for path in ['./safe.txt', '/etc/shadow']:\n open(path).read()"
+        assert _is_blocked(code), "literal loop binding bypassed sensitive-file policy"
+
+    def test_literal_loop_binding_benign_read_allowed(self):
+        code = "for path in ['./a.txt', './b.txt']:\n open(path).read()"
+        assert not _is_blocked(code), "benign literal loop binding blocked"
+
+    def test_gshadow_read_blocked(self):
+        assert _is_blocked("open('/etc/gshadow').read()")
+
+    def test_read_sql_query_text_is_not_treated_as_a_path(self):
+        code = (
+            "import pandas as pd\n"
+            "pd.read_sql(\"SELECT * FROM files WHERE path = '/etc/shadow'\", connection)"
+        )
+        assert not _is_blocked(code), "SQL query text was misclassified as a file path"
