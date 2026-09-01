@@ -39,6 +39,7 @@ import threading
 
 from utils.workspace_context import (
     LEGACY_WORKSPACE_SUBJECT,
+    ForeignWorkspaceActiveError,
     current_workspace_subject,
     run_in_workspace,
 )
@@ -6351,7 +6352,22 @@ class VideoBackend:
             del state
             clear_gpu_cache()
 
-    def unload(self) -> dict[str, Any]:
+    def unload(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """Free the pipeline, cancelling whatever is running.
+
+        ``subject`` refuses a teardown that would end another account's live
+        generation. None is the engine's own path (the GPU arbiter, a superseding
+        load, process exit), which must be able to tear down whatever is running.
+        Scoping cancel_generate alone was not enough: unload signals the same
+        cancellation event, so the authenticated unload route was still a way for
+        any account to end somebody else's run.
+        """
+        if subject is not None:
+            with self._lock:
+                if self._generate_job_active and self._gen_subject != subject:
+                    raise ForeignWorkspaceActiveError(
+                        "Another account is generating a video right now."
+                    )
         with self._lock:
             self._load_token += 1
             self._cancel_event.set()

@@ -1019,6 +1019,57 @@ def username_is_retired(username: str) -> bool:
     return True
 
 
+def _workspace_jobs_active(username: str) -> bool:
+    """Whether anything is still running under this account's workspace.
+
+    Quiescing signals; it does not wait. A worker still unwinding stays bound to
+    the same subject, so its next studio_db_path() recreates the original
+    pathname. If the name were released meanwhile, the owner could recreate it
+    and the dead account's worker would write into the replacement's workspace.
+    So the tombstone is held until nothing is running, and the retry that already
+    exists on the create path releases it once the workers are gone.
+
+    Fails CLOSED: a subsystem that cannot be asked counts as busy, because the
+    cost of guessing wrong is one account name staying reserved a while longer,
+    against a live worker writing into somebody else's files.
+    """
+    def _training_active() -> bool:
+        from core.training.training import get_training_backend
+        backend = get_training_backend()
+        return bool(backend.is_training_active() and backend.owns_workspace(username))
+
+    def _diffusion_active() -> bool:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+        service = get_diffusion_training_service()
+        return bool(service.is_active() and service.owns_workspace(username))
+
+    def _export_active() -> bool:
+        from core.export import get_export_backend
+        orchestrator = get_export_backend()
+        return bool(orchestrator.is_export_active() and orchestrator.owns_workspace(username))
+
+    def _generations_active() -> bool:
+        from state import active_generations
+        return bool(active_generations.active_thread_ids(username))
+
+    from utils.workspace_context import run_in_workspace
+
+    for what, probe in (
+        ("training", _training_active),
+        ("diffusion training", _diffusion_active),
+        ("export", _export_active),
+        ("chat generations", _generations_active),
+    ):
+        try:
+            if run_in_workspace(username, probe):
+                logger.info("Holding %s reserved: %s still running", username, what)
+                return True
+        except Exception:  # noqa: BLE001 - unanswerable means busy; see the docstring
+            logger.warning("Could not check %s for %s", what, username, exc_info = True)
+            return True
+    return False
+
+
 def _retire_workspace_directory(username: str) -> bool:
     """Move a deleted account's directories aside so a recreated name cannot inherit them.
 
@@ -1049,7 +1100,10 @@ def _retire_workspace_directory(username: str) -> bool:
     from storage import schema_cache
 
     schema_cache.forget_all()
-    return retired_all
+    # Moving the files is not enough on its own: a worker still bound to this
+    # subject recreates the pathname on its next lookup, and a namesake created
+    # in between would then be sharing a workspace with a deleted account's job.
+    return retired_all and not _workspace_jobs_active(username)
 
 
 def _quiesce_workspace_jobs(username: str) -> None:

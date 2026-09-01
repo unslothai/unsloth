@@ -51,6 +51,7 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils import signed_media_links
 from utils.workspace_context import (
+    ForeignWorkspaceActiveError,
     LEGACY_WORKSPACE_SUBJECT,
     current_workspace_subject,
     reset_workspace_subject,
@@ -33165,7 +33166,14 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
     from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from core.inference.gpu_arbiter import release_if, DIFFUSION
 
-    status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
+    # Scoped: unload signals the same cancellation event the cancel route does, so
+    # without the subject this stayed a way for any account to end another's run.
+    try:
+        status_dict = await asyncio.to_thread(
+            get_active_diffusion_engine().unload, current_workspace_subject()
+        )
+    except ForeignWorkspaceActiveError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
     # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
     engine = get_active_diffusion_engine()

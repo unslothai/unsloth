@@ -103,3 +103,12 @@ def known_workspace_subjects() -> list[str]:
     subjects = {LEGACY_WORKSPACE_SUBJECT}
     subjects.update(account["username"] for account in list_users())
     return sorted(subjects)
+
+
+class ForeignWorkspaceActiveError(RuntimeError):
+    """A shared singleton is busy with work that belongs to another account.
+
+    Raised where refusing is the only honest answer, because the resource is one
+    per install and the caller cannot be shown what is on it. The routes turn it
+    into a 409.
+    """

@@ -86,6 +86,12 @@ async def load_checkpoint(
     a clear error instead of tearing down the user's other running workloads.
     """
     try:
+        # Same rule as /inference/load and the training start: the export worker
+        # runs as the same OS user, and the consent scan is not an isolation
+        # boundary, because the caller approves the fingerprint it reports.
+        from routes.inference import _reject_remote_code_from_a_managed_account
+
+        _reject_remote_code_from_a_managed_account(request.trust_remote_code)
         await _ensure_export_supported()
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take

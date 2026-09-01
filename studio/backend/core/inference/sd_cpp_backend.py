@@ -89,7 +89,11 @@ from core.inference.sd_cpp_engine import (
 from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
-from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    ForeignWorkspaceActiveError,
+    current_workspace_subject,
+)
 
 logger = get_logger(__name__)
 
@@ -2712,7 +2716,15 @@ class SdCppDiffusionBackend:
 
     # ── Unload / status ──────────────────────────────────────────────────────
 
-    def unload(self) -> dict[str, Any]:
+    def unload(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """Free the model, cancelling whatever is running. See DiffusionBackend.unload."""
+        if subject is not None:
+            with self._lock:
+                gen = self._gen
+                if gen is not None and gen.subject != subject:
+                    raise ForeignWorkspaceActiveError(
+                        "Another account is generating an image right now."
+                    )
         with self._lock:
             # Under the lock: begin_load rebinds this attribute, so an unlocked read could set an event the current load no longer watches.
             self._cancel_event.set()

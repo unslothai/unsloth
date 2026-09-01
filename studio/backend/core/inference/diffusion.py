@@ -37,7 +37,11 @@ from core._torchao_stub import (
 )
 from loggers import get_logger
 from utils.hardware import clear_gpu_cache
-from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    ForeignWorkspaceActiveError,
+    current_workspace_subject,
+)
 
 from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
@@ -6401,7 +6405,27 @@ class DiffusionBackend:
                 cancel.set()
             return True
 
-    def unload(self) -> dict[str, Any]:
+    def _refuse_foreign_teardown(self, subject: Optional[str]) -> None:
+        if subject is None:
+            return
+        with self._generation_cancel_lock:
+            gen = self._gen
+            if gen is not None and gen.subject != subject:
+                raise ForeignWorkspaceActiveError(
+                    "Another account is generating an image right now."
+                )
+
+    def unload(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """Free the pipeline, cancelling whatever is running.
+
+        ``subject`` refuses a teardown that would end another account's live
+        generation. None is the engine's own path (the GPU arbiter, a superseding
+        load, process exit), which must be able to tear down whatever is running.
+        Scoping cancel_generate alone was not enough: unload signals the same
+        cancellation event, so the authenticated unload route was still a way for
+        any account to end somebody else's run.
+        """
+        self._refuse_foreign_teardown(subject)
         with self._lock:
             # Abort an in-flight (lock-free) download so unload returns promptly. Under the lock, like video.py: begin_load
             # rebinds this attribute, so an unlocked read could set an event the current load no longer watches.

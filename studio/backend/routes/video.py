@@ -59,6 +59,7 @@ from utils.api_errors import openai_error_body
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
 from utils import signed_media_links
 from utils.workspace_context import (
+    ForeignWorkspaceActiveError,
     LEGACY_WORKSPACE_SUBJECT,
     current_workspace_subject,
     reset_workspace_subject,
@@ -544,7 +545,12 @@ async def unload_video_model(current_subject: str = Depends(get_current_subject)
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
-    status_dict = await asyncio.to_thread(backend.unload)
+    # Scoped for the same reason as the image unload: this signals the active
+    # generation's cancel event, whoever started it.
+    try:
+        status_dict = await asyncio.to_thread(backend.unload, current_workspace_subject())
+    except ForeignWorkspaceActiveError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC (release_if). Mirrors images.
     await asyncio.to_thread(
         release_if,

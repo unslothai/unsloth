@@ -412,6 +412,19 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
     return all(len(parts) == family[3] for family, parts in families.items())
 
 
+def _reject_remote_code_from_a_managed_account(trust_remote_code) -> None:
+    """Only the installation owner may run a repository's own Python.
+
+    The same rule /inference/load applies. Containment cannot help: a Hub repo id
+    is not a path, and the consent scan is not an isolation boundary either,
+    because the caller approves the fingerprint it reports. The worker runs as
+    the same OS user as everything else, so repository code reaches every
+    account's files whatever the path routing says.
+    """
+    from routes.inference import _reject_remote_code_from_a_managed_account as _reject
+    _reject(trust_remote_code)
+
+
 def _reject_uncontained_training_path(model_path: Optional[str]) -> None:
     """A managed account may only train from weights inside its own roots.
 
@@ -1208,6 +1221,9 @@ async def start_training(
     start_task: Optional[asyncio.Task[bool]] = None
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
+        # Before anything is reserved or torn down. The worker runs as the same OS
+        # user, so repository code it loads reaches every account's files.
+        _reject_remote_code_from_a_managed_account(request.trust_remote_code)
         backend = get_training_backend()
         if await asyncio.to_thread(backend.is_training_active) and not _training_workspace_owned(
             backend, current_subject

@@ -1887,3 +1887,84 @@ def test_a_managed_accounts_preview_prompts_are_filed_under_their_own_name():
     # process-global API monitor.
     assert "subject = current_workspace_subject()" in src
     assert "DEFAULT_ADMIN_USERNAME" not in src
+
+
+def test_unloading_the_image_engine_cannot_end_another_accounts_generation():
+    from core.inference.diffusion import DiffusionBackend, _GenState
+    from utils.workspace_context import ForeignWorkspaceActiveError
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    backend._lock = threading.RLock()
+    backend._generation_cancel_lock = threading.RLock()
+    backend._gen = _GenState(total_steps = 20, step = 7, subject = "alice")
+    cancel = threading.Event()
+    backend._active_generate_cancel = cancel
+
+    # Scoping cancel_generate alone left this open: unload signals the same event,
+    # so the authenticated unload route was still a way to end somebody else's run.
+    with pytest.raises(ForeignWorkspaceActiveError):
+        backend._refuse_foreign_teardown("bob")
+    assert not cancel.is_set()
+    backend._refuse_foreign_teardown("alice")
+    # The engine's own teardown path passes nothing and must never be refused.
+    backend._refuse_foreign_teardown(None)
+
+
+def test_unloading_the_video_backend_cannot_end_another_accounts_generation():
+    from core.inference.video import VideoBackend
+    from utils.workspace_context import ForeignWorkspaceActiveError
+
+    backend = VideoBackend.__new__(VideoBackend)
+    backend._lock = threading.RLock()
+    backend._generate_job_active = True
+    backend._gen_subject = "alice"
+
+    with pytest.raises(ForeignWorkspaceActiveError):
+        backend.unload("bob")
+    # Nothing running means nothing to protect, whoever asks.
+    backend._generate_job_active = False
+    assert backend._gen_subject == "alice"
+
+
+def test_a_name_stays_reserved_while_its_jobs_are_still_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _auth_db(tmp_path, monkeypatch)
+    auth_storage.create_managed_user("casey")
+    for root in auth_storage._subject_owned_roots("casey"):
+        root.mkdir(parents = True, exist_ok = True)
+    # Quiescing signals; it does not wait. A worker still unwinding stays bound to
+    # the subject, so releasing the name lets a namesake share its workspace.
+    monkeypatch.setattr(auth_storage, "_quiesce_workspace_jobs", lambda username: None)
+    monkeypatch.setattr(auth_storage, "_workspace_jobs_active", lambda username: True)
+    auth_storage.delete_managed_user("casey")
+    assert auth_storage.username_is_retired("casey") is True
+
+    monkeypatch.setattr(auth_storage, "_workspace_jobs_active", lambda username: False)
+    # Once the worker is gone the existing retry on the create path releases it.
+    assert auth_storage.username_is_retired("casey") is False
+
+
+def test_workspace_jobs_active_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _auth_db(tmp_path, monkeypatch)
+    import core.training.training as training_module
+
+    def _boom():
+        raise RuntimeError("subsystem unavailable")
+
+    monkeypatch.setattr(training_module, "get_training_backend", _boom)
+    # One name reserved a while longer beats a live worker writing into the files
+    # of whoever registers that name next.
+    assert auth_storage._workspace_jobs_active("casey") is True
+
+
+def test_remote_code_training_and_export_are_owner_only():
+    import inspect
+
+    from routes import export as export_routes
+    from routes import training as training_routes
+
+    start = inspect.getsource(training_routes.start_training)
+    assert "_reject_remote_code_from_a_managed_account(request.trust_remote_code)" in start
+    load = inspect.getsource(export_routes.load_checkpoint)
+    assert "_reject_remote_code_from_a_managed_account(request.trust_remote_code)" in load

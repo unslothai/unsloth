@@ -160,7 +160,10 @@ class _FakeBackend:
         cancel.set()
         return True
 
-    def unload(self):
+    def unload(self, subject = None):
+        # subject: the route scopes teardown to the caller's workspace, so it
+        # cannot end a generation another account started. Both real engines
+        # take it.
         self.loaded = False
         return _unloaded_status()
 
@@ -358,13 +361,13 @@ def test_unload_keeps_ownership_when_a_model_is_still_resident(client, monkeypat
 
     # Simulate a concurrent load having re-loaded: unload leaves the engine resident.
     backend.loaded = True
-    monkeypatch.setattr(backend, "unload", lambda: {**_unloaded_status(), "loaded": True})
+    monkeypatch.setattr(backend, "unload", lambda subject = None: {**_unloaded_status(), "loaded": True})
     r = client.post("/api/inference/images/unload")
     assert r.status_code == 200
     assert gpu_arbiter.current_owner() == gpu_arbiter.DIFFUSION  # ownership retained
 
     # The normal case (nothing resident after unload) still releases ownership.
-    monkeypatch.setattr(backend, "unload", lambda: {**_unloaded_status(), "loaded": False})
+    monkeypatch.setattr(backend, "unload", lambda subject = None: {**_unloaded_status(), "loaded": False})
     backend.loaded = False
     r = client.post("/api/inference/images/unload")
     assert r.status_code == 200
@@ -409,7 +412,7 @@ def test_unload_keeps_ownership_when_a_load_is_in_flight(client, monkeypatch):
 
     backend.loaded = False
     backend.loading = ("unsloth/z-image-turbo",)
-    monkeypatch.setattr(backend, "unload", lambda: {**_unloaded_status(), "loaded": False})
+    monkeypatch.setattr(backend, "unload", lambda subject = None: {**_unloaded_status(), "loaded": False})
     r = client.post("/api/inference/images/unload")
     assert r.status_code == 200
     assert gpu_arbiter.current_owner() == gpu_arbiter.DIFFUSION  # ownership retained for the load

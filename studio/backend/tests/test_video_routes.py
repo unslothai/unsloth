@@ -192,7 +192,10 @@ class _FakeBackend(video_module.VideoBackend):
             "guidance": 4.0 if kwargs.get("guidance") is None else kwargs.get("guidance"),
         }
 
-    def unload(self):
+    def unload(self, subject = None):
+        # subject: the route scopes teardown to the caller's workspace, so it
+        # cannot end a generation another account started. Both real engines
+        # take it.
         self.loaded = False
         return _unloaded_status()
 
