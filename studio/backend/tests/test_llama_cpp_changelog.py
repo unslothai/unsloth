@@ -320,6 +320,26 @@ def test_a_noncumulative_repo_is_never_compared(monkeypatch):
     )
 
 
+def test_a_case_variant_of_the_official_repo_is_still_official(monkeypatch):
+    # --published-repo UnslothAI/llama.cpp resolves to the same repository on
+    # GitHub and the installer persists that spelling, so a case-sensitive policy
+    # check would label the official repo custom and withhold the comparison.
+    releases = {"old": {"body": OLD_BODY}, "new": {"body": LATEST_BODY}}
+    monkeypatch.setattr(
+        changes,
+        "_release_for_tag",
+        lambda _repo, tag, *, force_refresh = False: releases.get(tag),
+    )
+
+    result = changes.changelog_for_update("UnslothAI/Llama.cpp", "old", "new")
+
+    assert result is not None
+    assert [item["summary"] for item in result["changes"]] == [
+        "model: add GLM-5-Next (GLM-5.3-Flash)",
+        "MTP for Qwen3.8-Flash-Next",
+    ]
+
+
 def test_a_bodyless_target_is_transient_not_permanent(monkeypatch):
     # Only the installed side can be permanently uncomparable. The target is the
     # newest release, so a missing body is a publishing gap that may be filled in,

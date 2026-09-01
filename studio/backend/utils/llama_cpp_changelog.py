@@ -64,6 +64,13 @@ def _valid_repo(repo: str) -> bool:
     return not any(_DOT_SEGMENT.fullmatch(part) for part in repo.split("/"))
 
 
+def _is_cumulative_repo(repo: str) -> bool:
+    """Case-folded: GitHub owner/name is case-insensitive and --published-repo
+    persists whatever spelling was typed, so ``UnslothAI/llama.cpp`` is the same
+    official repository and must not be labelled a custom one."""
+    return repo.casefold() == CUMULATIVE_NOTES_REPO.casefold()
+
+
 def _fetch_release(
     repo: str,
     tag: str,
@@ -235,7 +242,7 @@ def unavailable_reason(repo: str, installed_tag: str, latest_tag: str) -> str:
     """
     if not _valid_repo(repo) or not installed_tag or not latest_tag:
         return "release_notes_unavailable"
-    if repo != CUMULATIVE_NOTES_REPO:
+    if not _is_cumulative_repo(repo):
         return "notes_not_comparable"
     # Both lookups are memoized, so this re-read costs nothing on the path that
     # has just performed them.
@@ -265,7 +272,7 @@ def changelog_for_update(
     """
     if not repo or not installed_tag or not latest_tag or installed_tag == latest_tag:
         return None
-    if repo != CUMULATIVE_NOTES_REPO:
+    if not _is_cumulative_repo(repo):
         return None
     installed = _release_for_tag(repo, installed_tag, force_refresh = force_refresh)
     latest = _release_for_tag(repo, latest_tag, force_refresh = force_refresh)
