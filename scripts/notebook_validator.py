@@ -393,22 +393,24 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     rather than dropped: it can still run, and the rules that must see every install path
     (R-INST-001 and the git+ ban above all) have to keep seeing it. Only the effective-version
     replay skips them. The tail ends at an `&&` or a `;`, since the lists are left-associative
-    and `(A || B) && C` runs C when A succeeded. Which list an operator belongs to is its group
-    depth: the `&&` in `A || (B && C)` is the group's and leaves the tail alone, the one in
-    `(A || B && C)` is the same list's and ends it. An unquoted `#` that starts a word comments
-    out the rest of the line, so scanning stops.
+    and `(A || B) && C` runs C when A succeeded. Each group keeps its own tail, and a command
+    is conditional when any level above it is in one: the `&&` in `A || (B && C)` ends the
+    group's tail and leaves the outer one, the one in `(A || B && C)` ends the only tail there
+    is. An unquoted `#` that starts a word comments out the rest of the line, so scanning
+    stops.
     """
     out: list[tuple[str, bool]] = []
     buf: list[str] = []
     quote = ""
-    conditional = False  # inside the conditional tail of an and-or list
-    depth = 0  # open ( or { : an operator inside a group does not end the enclosing list
-    tail_depth = 0  # the depth the `||` that opened the tail sat at
+    # One flag per open group, plus the base list. A command is conditional when any level
+    # above it is in a fallback tail, so an inner list cannot clear an outer one.
+    tails = [False]
+    buf_conditional = False
     i = 0
 
     def flush() -> None:
         nonlocal buf
-        out.append(("".join(buf), conditional))
+        out.append(("".join(buf), buf_conditional))
         buf = []
 
     while i < len(line):
@@ -430,27 +432,27 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             break  # a control operator ends a word, so `;#` starts a comment too
         elif line.startswith("||", i):
             flush()
-            conditional = True
-            tail_depth = depth
+            tails[-1] = True
+            buf_conditional = True
             i += 2
         elif line.startswith("&&", i):
             flush()
-            if depth == tail_depth:
-                # Left-associative: (A || B) && C runs C when A succeeded. It has to be the
-                # same list though, which is what the depth says: the `&&` in A || (B && C)
-                # is the group's, the one in (A || B && C) is the list's.
-                conditional = False
+            # Left-associative: (A || B) && C runs C when A succeeded. Only this list's tail
+            # ends here, so an enclosing fallback still covers what follows.
+            tails[-1] = False
+            buf_conditional = any(tails)
             i += 2
         elif ch == ";":
             flush()
-            if depth == tail_depth:
-                conditional = False
+            tails[-1] = False
+            buf_conditional = any(tails)
             i += 1
         else:
             if ch in "({":
-                depth += 1
-            elif ch in ")}":
-                depth = max(0, depth - 1)
+                tails.append(False)
+            elif ch in ")}" and len(tails) > 1:
+                tails.pop()
+            buf_conditional = any(tails)
             buf.append(ch)
             i += 1
     flush()
@@ -957,6 +959,11 @@ def _effective_version(
         if inv.action == "uninstall":
             current = None  # removed; a later install can put it back
             continue
+        if not pins and not replaced_unnamed and inv.flags & {"--upgrade", "-U"}:
+            # A bare name with --upgrade takes the newest release. Nothing here names it, and
+            # unlike a plain install it does not leave what is there alone.
+            current, exact_known = None, True
+            continue
         if replaced_unnamed:
             current, exact_known = None, True
             continue
@@ -975,7 +982,9 @@ def _effective_version(
             # `>V` is not satisfied by V itself, so equality still forces a move.
             or (exclusive_floor and cmp_versions(floor, current) == 0)
         ):
-            if landing is not None:
+            if cap is not None:
+                current, exact_known = cap, True  # `<=V` allows V, so V is what pip picks
+            elif landing is not None:
                 current, exact_known = landing, True  # the window pins the minor
             elif exclusive_floor:
                 current, exact_known = None, True  # nothing names where it went

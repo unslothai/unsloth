@@ -1177,6 +1177,65 @@ def test_notebook_validator_keeps_a_minor_a_narrow_exclusion_cannot_remove():
     )
 
 
+def test_notebook_validator_keeps_an_outer_fallback_across_a_nested_or():
+    """Each group keeps its own tail, so an inner `||` cannot hand the outer one back. A
+    command is conditional when any level above it is in a fallback."""
+    nv = _load_notebook_validator_module()
+
+    nested = (
+        '!pip install foo || (pip install bar || pip install baz && '
+        'pip install "torch==2.12.0")'
+    )
+    assert [flag for _, flag in nv._split_chained(nested)] == [False, True, True, True]
+    assert nv.rule_inst_004_torchcodec_torch(nested, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # The grouped head list still ends its own tail at the `&&`.
+    same_list = '!(pip install foo || pip install bar && pip install "torch==2.12.0")'
+    assert [flag for _, flag in nv._split_chained(same_list)] == [False, True, False]
+    assert len(
+        nv.rule_inst_004_torchcodec_torch(same_list, COLAB_TORCH211, "nb.ipynb", 0)
+    ) == 1
+
+
+def test_notebook_validator_lands_an_upward_move_on_an_inclusive_cap():
+    """`<=V` allows V, so V is what pip picks, whichever side the version moves from."""
+    nv = _load_notebook_validator_module()
+
+    # 0.7 upward into a window that spans minors: the cap names where it stops.
+    spanning = '!pip install "torchcodec==0.7.0"\n!pip install "torchcodec>=0.8,<=0.10.0"'
+    findings = nv.rule_inst_004_torchcodec_torch(spanning, COLAB_TORCH211, "nb.ipynb", 0)
+    assert len(findings) == 1
+    assert "torchcodec==0.10.0" in findings[0].message
+
+    # An open floor has no cap to land on and stays a floor, which the ABI remedy needs.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch==2.12.0" "torchcodec>=0.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
+
+
+def test_notebook_validator_will_not_keep_a_version_through_an_upgrade():
+    """A bare name with `--upgrade` takes the newest release, so the installed version is not
+    what the cell ends on. Without the flag pip leaves a satisfied requirement alone."""
+    nv = _load_notebook_validator_module()
+
+    for flag in ("--upgrade", "-U"):
+        cell = f'!pip install {flag} "torch==2.12.0" torchcodec'
+        assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], flag
+
+    # No flag: the requirement is already satisfied, so 0.11 stays and is reported.
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch==2.12.0" torchcodec', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
+
+    # A bound still bounds it, upgrade or not.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install --upgrade "torch==2.12.0" "torchcodec>=0.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        '!pip install --upgrade "torch==2.11.0" "torchcodec==0.10.0"', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
