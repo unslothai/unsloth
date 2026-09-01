@@ -577,7 +577,7 @@ def test_a_folded_system_turn_is_wrapped_as_content_parts():
             {"role": "user", "content": "what is this"},
         ],
         system_prompt = "",
-        structured_system_content = True,
+        structured_content = True,
     )
     assert out[0]["content"] == [{"type": "text", "text": "SENTINEL_RULE"}]
     # The caller's dict is not mutated.
@@ -731,7 +731,7 @@ def test_image_tool_support_is_classified_from_the_processor_template():
     assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
 
 
-def test_mlx_selects_structured_system_content_for_a_processor_render():
+def test_mlx_selects_structured_content_for_a_processor_render():
     """A processor template expects every content field to be a list of parts, so a bare
     system string raises there and _render_vlm_prompt refuses its no-system retry once
     tools were asked for. The nested-tokenizer fallback still wants plain strings, so the
@@ -770,7 +770,7 @@ def test_mlx_selects_structured_system_content_for_a_processor_render():
     finally:
         mlx.messages_with_attached_image = original
 
-    assert seen.get("structured_system_content") is True
+    assert seen.get("structured_content") is True
 
 
 def test_a_named_processor_template_is_classified_without_tool_use():
@@ -885,3 +885,27 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
     assert not isinstance(later["content"], list) or not any(
         p.get("type") == "image" for p in later["content"]
     )
+
+
+def test_a_tool_loop_replay_is_wrapped_for_a_part_based_processor():
+    """A processor template that expects parts expects them on EVERY message. An
+    image-plus-tools follow-up replays assistant and role="tool" turns, and leaving those
+    as bare strings fails the template while it iterates them. Both backends re-raise
+    rather than drop tool history, so the valid request became a 500 (#10092)."""
+    from core.inference.chat_template_helpers import messages_with_attached_image
+
+    out = messages_with_attached_image(
+        [
+            {"role": "system", "content": "SENTINEL_RULE"},
+            {"role": "user", "content": "what is in this"},
+            {"role": "assistant", "content": "ASSISTANT_TEXT"},
+            {"role": "tool", "content": "TOOL_RESULT"},
+        ],
+        structured_content = True,
+    )
+    by_role = {m["role"]: m["content"] for m in out}
+    assert by_role["assistant"] == [{"type": "text", "text": "ASSISTANT_TEXT"}]
+    assert by_role["tool"] == [{"type": "text", "text": "TOOL_RESULT"}]
+    assert by_role["system"] == [{"type": "text", "text": "SENTINEL_RULE"}]
+    # The image still lands on the user turn, as parts.
+    assert any(p.get("type") == "image" for p in by_role["user"])

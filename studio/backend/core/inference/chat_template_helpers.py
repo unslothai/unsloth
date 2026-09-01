@@ -3056,7 +3056,7 @@ def messages_with_attached_image(
     messages: list,
     system_prompt: str = "",
     fallback_user_text: str = "",
-    structured_system_content: bool = False,
+    structured_content: bool = False,
 ) -> list:
     """The conversation to render for a turn that carries an attached image.
 
@@ -3071,7 +3071,7 @@ def messages_with_attached_image(
     along with its content list, because the caller still reads those dicts after
     generation and a retry re-renders the same list.
 
-    *structured_system_content* wraps the system text in a content part list. The
+    *structured_content* wraps the system text in a content part list. The
     transformers path renders through the processor, whose template expects parts, while
     MLX may render through the nested text tokenizer, whose template expects a string.
 
@@ -3081,22 +3081,17 @@ def messages_with_attached_image(
     invent a question keeps refusing it.
     """
     conversation = list(messages or [])
-    if structured_system_content:
-        # Wrap the instruction turns ALREADY in the conversation too, not just the one
-        # inserted below. The client-tools route folds its system text into messages[0] and
-        # clears system_prompt, so on that path nothing is inserted here and a processor
-        # whose template expects content parts raised on the bare string, after which the
-        # no-system retry served the turn with the caller's instructions gone. The old
-        # collapse always wrapped what it built, so leaving these as strings regressed it
-        # (#10092).
+    if structured_content:
+        # Wrap the turns ALREADY in the conversation too, not just the one inserted below.
+        # A processor template that expects parts expects them on EVERY message, so an
+        # image-plus-tools follow-up replaying assistant and role="tool" turns as bare
+        # strings fails while the template iterates them, and both backends re-raise rather
+        # than drop tool history, turning a valid request into a 500. Restricting this to
+        # system/developer covered only the folded instruction the client-tools route puts
+        # in messages[0] (#10092).
         conversation = [
             {**m, "content": [{"type": "text", "text": m["content"]}]}
-            if (
-                isinstance(m, dict)
-                and m.get("role") in ("system", "developer")
-                and isinstance(m.get("content"), str)
-                and m["content"]
-            )
+            if (isinstance(m, dict) and isinstance(m.get("content"), str) and m["content"])
             else m
             for m in conversation
         ]
@@ -3107,7 +3102,7 @@ def messages_with_attached_image(
                 "role": "system",
                 "content": (
                     [{"type": "text", "text": system_prompt}]
-                    if structured_system_content
+                    if structured_content
                     else system_prompt
                 ),
             },

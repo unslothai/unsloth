@@ -1354,7 +1354,7 @@ class InferenceBackend:
                     messages,
                     system_prompt = system_prompt,
                     fallback_user_text = user_message,
-                    structured_system_content = True,
+                    structured_content = True,
                 )
 
                 # The conversation the LAST render actually used. render_advertising_tools

@@ -2138,7 +2138,7 @@ class MLXInferenceBackend:
             full_messages = messages_with_attached_image(
                 messages,
                 system_prompt = system_prompt,
-                structured_system_content = _renders_via_processor,
+                structured_content = _renders_via_processor,
             )
         else:
             full_messages = self._with_system_prompt(messages, system_prompt)
