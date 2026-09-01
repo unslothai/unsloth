@@ -34,6 +34,7 @@ from utils.workspace_context import (
     current_workspace_subject,
     reset_workspace_subject,
     set_workspace_subject,
+    workspace_key,
     workspace_thread,
 )
 
@@ -946,3 +947,110 @@ def test_the_openai_model_catalog_cache_is_per_workspace():
     finally:
         _CATALOG_CACHE["subject"] = None
         _CATALOG_CACHE["at"] = 0.0
+
+
+def test_active_generations_are_named_and_cancellable_only_by_their_own_account():
+    from state import active_generations
+
+    active_generations.reset_for_tests()
+    alice_event, bob_event = threading.Event(), threading.Event()
+    token = _bind("alice")
+    try:
+        alice = active_generations.ActiveGeneration(alice_event, thread_id = "shared-thread")
+        alice.__enter__()
+    finally:
+        reset_workspace_subject(token)
+    token = _bind("bob")
+    try:
+        bob = active_generations.ActiveGeneration(bob_event, thread_id = "shared-thread")
+        bob.__enter__()
+        assert [e["thread_id"] for e in active_generations.snapshot("bob")] == ["shared-thread"]
+        assert active_generations.active_thread_ids("alice") == ["shared-thread"]
+        # Bob presenting Alice's conversation id must not stop her generation.
+        assert active_generations.cancel_thread("shared-thread", "bob") == 1
+        assert bob_event.is_set() and not alice_event.is_set()
+    finally:
+        bob.__exit__()
+        token2 = _bind("alice")
+        try:
+            alice.__exit__()
+        finally:
+            reset_workspace_subject(token2)
+        reset_workspace_subject(token)
+        active_generations.reset_for_tests()
+
+
+def test_cancel_registry_keys_do_not_collide_across_accounts():
+    from routes.inference import _scoped_cancel_key
+
+    keys = {}
+    for subject in ("alice", "bob"):
+        token = _bind(subject)
+        try:
+            keys[subject] = _scoped_cancel_key("session-1")
+        finally:
+            reset_workspace_subject(token)
+    assert keys["alice"] != keys["bob"]
+
+
+def test_a_managed_password_change_keeps_the_owner_desktop_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth" / "auth.db")
+    monkeypatch.setattr(
+        auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / "auth" / ".bootstrap_password"
+    )
+    auth_storage.create_initial_user(
+        "unsloth", "owner-password", secrets.token_urlsafe(64), is_admin = True
+    )
+    setup_code = auth_storage.create_managed_user("casey")["setup_code"]
+    raw_secret = auth_storage.create_desktop_secret()
+
+    # A managed account completing setup from a browser: is_desktop is false there.
+    assert auth_storage.update_password("casey", "casey-permanent-pw") is not None
+    assert auth_storage.validate_desktop_secret(raw_secret) == "unsloth"
+
+    # The owner's own browser change still revokes it.
+    assert auth_storage.update_password("unsloth", "owner-new-pw") is not None
+    assert auth_storage.validate_desktop_secret(raw_secret) is None
+
+
+def test_seed_upload_roots_follow_the_authenticated_workspace():
+    import routes.data_recipe.seed as seed_routes
+
+    roots = {}
+    for subject in ("unsloth", "alice"):
+        token = _bind(subject)
+        try:
+            roots[subject] = seed_routes._unstructured_upload_root()
+        finally:
+            reset_workspace_subject(token)
+    assert roots["unsloth"] != roots["alice"]
+    assert workspace_key("alice") in str(roots["alice"])
+
+
+def test_deleting_an_account_retires_its_projects_and_sandbox_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sandboxes"))
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth" / "auth.db")
+    monkeypatch.setattr(
+        auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / "auth" / ".bootstrap_password"
+    )
+    auth_storage.create_initial_user(
+        "unsloth", "owner-password", secrets.token_urlsafe(64), is_admin = True
+    )
+    auth_storage.create_managed_user("casey")
+
+    roots = auth_storage._subject_owned_roots("casey")
+    assert len(roots) == 3
+    for root in roots:
+        root.mkdir(parents = True, exist_ok = True)
+        (root / "private.txt").write_text("casey", encoding = "utf-8")
+
+    auth_storage.delete_managed_user("casey")
+    auth_storage.create_managed_user("casey")
+    for root in auth_storage._subject_owned_roots("casey"):
+        assert not (root / "private.txt").exists()

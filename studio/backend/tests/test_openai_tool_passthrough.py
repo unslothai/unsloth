@@ -4175,7 +4175,7 @@ class TestGgufVisionToolRouting:
                 current_subject = "test",
             )
             iterator = response.body_iterator
-            assert cancel_id in inf_mod._CANCEL_REGISTRY
+            assert inf_mod._scoped_cancel_key(cancel_id) in inf_mod._CANCEL_REGISTRY
             await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
             aclose = getattr(iterator, "aclose", None)
             assert aclose is not None
@@ -5021,10 +5021,10 @@ class TestGgufVisionToolRouting:
             )
             try:
                 for _ in range(50):
-                    if cancel_id in inf_mod._CANCEL_REGISTRY:
+                    if inf_mod._scoped_cancel_key(cancel_id) in inf_mod._CANCEL_REGISTRY:
                         break
                     await asyncio.sleep(0.01)
-                assert cancel_id in inf_mod._CANCEL_REGISTRY
+                assert inf_mod._scoped_cancel_key(cancel_id) in inf_mod._CANCEL_REGISTRY
                 assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
                 with pytest.raises(HTTPException) as exc:
                     await asyncio.wait_for(task, timeout = 0.5)
@@ -6298,7 +6298,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
-            assert cancel_id in inf_mod._CANCEL_REGISTRY
+            assert inf_mod._scoped_cancel_key(cancel_id) in inf_mod._CANCEL_REGISTRY
 
             gate.set()
             chunks = [
@@ -6367,7 +6367,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 )
             )
             await asyncio.wait_for(entered.wait(), timeout = 5.0)
-            assert cancel_id in inf_mod._CANCEL_REGISTRY
+            assert inf_mod._scoped_cancel_key(cancel_id) in inf_mod._CANCEL_REGISTRY
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -6435,7 +6435,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
-            assert cancel_id in inf_mod._CANCEL_REGISTRY
+            assert inf_mod._scoped_cancel_key(cancel_id) in inf_mod._CANCEL_REGISTRY
 
             gate.set()
             await asyncio.wait_for(returned.wait(), timeout = 5.0)
@@ -7886,7 +7886,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             first = await anext(iterator)
             assert "hello" in first
-            assert cancel_id in inf_mod._CANCEL_REGISTRY
+            assert inf_mod._scoped_cancel_key(cancel_id) in inf_mod._CANCEL_REGISTRY
 
             pending = asyncio.create_task(anext(iterator))
             await asyncio.sleep(0)
@@ -8035,7 +8035,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
                 assert chunk == ": admission-wait\n\n"
-                assert cancel_id in inf_mod._CANCEL_REGISTRY
+                assert inf_mod._scoped_cancel_key(cancel_id) in inf_mod._CANCEL_REGISTRY
 
                 blocker.release()
                 # The lease is announced before handover, so drain that marker first.
@@ -8794,7 +8794,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 )
             )
             await asyncio.wait_for(client.started.wait(), 5.0)
-            assert cancel_id in inf_mod._CANCEL_REGISTRY
+            assert inf_mod._scoped_cancel_key(cancel_id) in inf_mod._CANCEL_REGISTRY
             assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
 
             with pytest.raises(asyncio.CancelledError):

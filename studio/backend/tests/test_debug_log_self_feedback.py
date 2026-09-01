@@ -64,6 +64,7 @@ def client():
     app = FastAPI()
     app.include_router(settings_route.router, prefix = "/api/settings")
     app.dependency_overrides[settings_route.get_current_subject] = lambda: "admin"
+    app.dependency_overrides[settings_route.require_install_admin] = lambda: "admin"
     app.dependency_overrides[settings_route._require_ui_session] = lambda: None
     app.add_middleware(LoggingMiddleware)
     return TestClient(app, raise_server_exceptions = False)

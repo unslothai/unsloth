@@ -3944,6 +3944,13 @@ _PENDING_CANCELS: dict[str, float] = {}
 _PENDING_CANCEL_TTL_S = 30.0
 
 
+def _scoped_cancel_key(key):
+    """Cancel keys are client-chosen (session_id, completion_id, cancel_id), so two
+    accounts can present the same one. Prefixing the workspace keeps a guessed or
+    observed id from stopping another account's generation."""
+    return f"{current_workspace_subject()}\x00{key}" if key else key
+
+
 def _prune_pending(now: float) -> None:
     for k in [k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S]:
         _PENDING_CANCELS.pop(k, None)
@@ -3967,7 +3974,7 @@ class _TrackedCancel:
         kind = "chat",
     ):
         self.event = event
-        self.keys = tuple(k for k in keys if k)
+        self.keys = tuple(_scoped_cancel_key(k) for k in keys if k)
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
         self._active = active_generations.ActiveGeneration(
@@ -4026,7 +4033,7 @@ def _cancel_by_keys(keys) -> int:
     with _CANCEL_LOCK:
         _prune_pending(time.monotonic())
         for k in keys:
-            bucket = _CANCEL_REGISTRY.get(k)
+            bucket = _CANCEL_REGISTRY.get(_scoped_cancel_key(k))
             if bucket:
                 events.update(bucket)
     for ev in events:
@@ -4041,11 +4048,12 @@ def _cancel_by_cancel_id_or_stash(cancel_id: str) -> int:
     events: set[threading.Event] = set()
     with _CANCEL_LOCK:
         _prune_pending(now)
-        bucket = _CANCEL_REGISTRY.get(cancel_id)
+        scoped = _scoped_cancel_key(cancel_id)
+        bucket = _CANCEL_REGISTRY.get(scoped)
         if bucket:
             events.update(bucket)
         else:
-            _PENDING_CANCELS[cancel_id] = now
+            _PENDING_CANCELS[scoped] = now
     for ev in events:
         ev.set()
     return len(events)
@@ -12613,7 +12621,9 @@ def _raise_or_cancel_active_generations(
     if not active_generations.count():
         return 0
     if not force:
-        thread_ids = active_generations.active_thread_ids()
+        # The count stays install-wide because the swap really would stop them all,
+        # but only the caller's own conversations are named back to them.
+        thread_ids = active_generations.active_thread_ids(current_workspace_subject())
         running = active_generations.count()
         raise HTTPException(
             status_code = 409,
@@ -12826,7 +12836,9 @@ async def get_active_generations(
     slot count actually in use, which the VRAM fit may have cut below the
     requested --parallel; chats beyond it queue rather than fail.
     """
-    entries = active_generations.snapshot()
+    # Caller's workspace only: the entries carry conversation and run ids that the
+    # cancel routes accept, so an install-wide snapshot hands them to every account.
+    entries = active_generations.snapshot(current_workspace_subject())
     # A tracker's model can be a native local path (the legacy stream records active_model_name
     # verbatim); redact here, the one place that serialises it.
     for _entry in entries:
@@ -12840,7 +12852,7 @@ async def get_active_generations(
     return {
         "active": entries,
         "count": len(entries),
-        "thread_ids": active_generations.active_thread_ids(),
+        "thread_ids": active_generations.active_thread_ids(current_workspace_subject()),
         "parallel_slots": max(1, int(slots)),
     }
 
@@ -18681,7 +18693,9 @@ async def _proxy_to_external_provider(
             include_api_key = bool(studio_tool_payloads),
         )
         cancel_event = threading.Event()
-        cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
+        cancel_keys = tuple(
+            _scoped_cancel_key(key) for key in (payload.cancel_id, payload.session_id) if key
+        )
 
         async def _codex_stream():
             current_access_token = access_token
@@ -18749,7 +18763,9 @@ async def _proxy_to_external_provider(
                 _prune_pending(now)
                 for key in cancel_keys:
                     _CANCEL_REGISTRY.setdefault(key, set()).add(cancel_event)
-                if payload.cancel_id and _PENDING_CANCELS.pop(payload.cancel_id, None) is not None:
+                if payload.cancel_id and _PENDING_CANCELS.pop(
+                    _scoped_cancel_key(payload.cancel_id), None
+                ) is not None:
                     should_cancel = True
             if should_cancel:
                 cancel_event.set()
@@ -18991,7 +19007,9 @@ async def _proxy_to_external_provider(
             chat_messages = _append_to_system_message(chat_messages, _external_nudge)
 
     cancel_event = threading.Event()
-    cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
+    cancel_keys = tuple(
+        _scoped_cancel_key(key) for key in (payload.cancel_id, payload.session_id) if key
+    )
 
     async def _watch_disconnect() -> None:
         # A tool loop can sit for minutes inside execute_tool with no SSE line
