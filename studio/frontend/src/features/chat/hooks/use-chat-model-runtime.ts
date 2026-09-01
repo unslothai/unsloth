@@ -32,7 +32,10 @@ import {
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
+import {
+  isOllamaLinkPath,
+  modelDisplayName,
+} from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
 import {
@@ -65,6 +68,7 @@ import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
   loadedGpuMemoryFields,
+  noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
@@ -106,7 +110,7 @@ import {
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
-import { resolveQwenThinkingParams } from "../utils/qwen-params";
+import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
@@ -544,6 +548,10 @@ async function syncInferenceStatusToStore(options?: {
         applyActiveModelStatusToStore(statusRes, {
           previousCheckpoint: selectedCheckpoint,
           previousGgufVariant,
+          // With no prior selection this is Studio discovering the server's
+          // resident model, so its global-only snapshot belongs to this
+          // checkpoint and is safe to migrate.
+          adoptingExistingServerModel: selectedCheckpoint === "",
         });
         // setModels(listRes...) above used catalog data, which omits audio
         // capability. Re-apply live status so attach gates survive a refresh.
@@ -1250,10 +1258,29 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      let hfToken = useChatRuntimeStore.getState().hfToken || null;
       const postLoadRefresh = { needed: false };
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
+        // Hoisted out of performLoad's GGUF branch for the progress pollers, but kept off
+        // loads that never reach the Hub: it validates over the network and can block on a
+        // dialog, and a stale Settings token must not gate a local or cached-LoRA load.
+        // An Ollama row's id is an opaque `ollama-manifest:` reference rather than a
+        // path, so isLocalModelPath does not recognise it even though the backend
+        // materialises the load entirely from the local Ollama store.
+        const mayReachHub =
+          !isLocal && !isOllamaLinkPath(modelId) && nativePathToken == null;
+        if (mayReachHub) {
+          const preparedToken = await prepareHfTokenForUse(hfToken);
+          if (!preparedToken.proceed) {
+            // Lands in the outer catch (banner only); no load toast exists yet.
+            toast.error("Model load cancelled.");
+            throw new Error("Model load cancelled.");
+          }
+          hfToken = preparedToken.token;
+        }
+
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
@@ -1294,17 +1321,11 @@ export function useChatModelRuntime() {
             // header with 401 even for a public repo, so sending the raw stored
             // token here would abort the load before the existing "continue
             // anonymously / replace token" recovery flow could run.
-            const preparedToken = await prepareHfTokenForUse(
-              useChatRuntimeStore.getState().hfToken || null,
-            );
-            if (!preparedToken.proceed) {
-              throw new Error("Model load cancelled.");
-            }
             isDiffusion = (
               await fetchGgufStagedMetadata({
                 model_path: loadPath,
                 gguf_variant: ggufVariant ?? null,
-                hf_token: preparedToken.token,
+                hf_token: hfToken,
                 nativePathToken: nativePathToken ?? null,
               })
             ).isDiffusion;
@@ -1371,7 +1392,10 @@ export function useChatModelRuntime() {
               )
             : (previousPin ??
               unpinnedLoadContext(false, previousIsMlx, previousMaxSeqLength));
-          const hfToken = stateBeforeUnload.hfToken || null;
+          // main's `const hfToken = stateBeforeUnload.hfToken` is deliberately not
+          // carried over: this branch prepares the credential once in the enclosing
+          // scope, and re-reading the raw stored token here would shadow it and undo
+          // the preparation for every load below.
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathExpiresAtMs =
@@ -2091,6 +2115,9 @@ export function useChatModelRuntime() {
                 ? nativePathExpiresAtMs
                 : null,
             });
+            // fromLoad: this browser performed the load, so the mode it chose
+            // outranks a persisted toggle describing the previous model.
+            noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             // Unlock attach menus for capabilities the catalog entry lacked.
             syncModelCapabilities(modelId, loadResponse);
             // Qwen3-family: apply thinking-mode-specific params after load.
@@ -2394,8 +2421,13 @@ export function useChatModelRuntime() {
           try {
             const prog =
               ggufVariant && expectedBytes > 0
-                ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
-                : await getDownloadProgress(modelId);
+                ? await getGgufDownloadProgress(
+                    modelId,
+                    ggufVariant,
+                    expectedBytes,
+                    hfToken,
+                  )
+                : await getDownloadProgress(modelId, hfToken);
             if (!loadingModelRef.current) return;
 
             if (prog.progress > 0 && prog.progress < 1) {

@@ -144,3 +144,10 @@ test("the mount observer adopts only a settled model", () => {
   assert.match(wait, /await getInferenceStatus\(poll\.signal\)/);
   assert.match(wait, /\} finally \{\s*poll\.dispose\(\);\s*\}/);
 });
+
+test("normal startup status adoption owns the resident model's globals", () => {
+  assert.match(
+    SYNC,
+    /adoptingExistingServerModel: selectedCheckpoint === ""/,
+  );
+});

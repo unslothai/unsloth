@@ -30,6 +30,55 @@ def _source_path(relative_path: str) -> Path:
 
 
 ADAPTER = _source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
+# Inlined for real, not stubbed: waitForSettledServerStatus raises this gate so an ordinary
+# refresh cannot publish a mid-replacement status as the pick underneath it.
+WAIT_GATE = _source_path("studio/frontend/src/features/chat/lib/server-model-wait.ts")
+
+
+def _wait_gate_source() -> str:
+    """The gate module with its two ponyfill imports dropped; PONYFILLS supplies those."""
+    gate = "\n".join(
+        line
+        for line in WAIT_GATE.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith(("import ", "  disposableTimeoutSignal,", "  pollSignal,",
+                                "  type PollSignal,", '} from "@/features/hub'))
+    ).replace(": PollSignal", "")
+    assert "export function beginServerModelWait(" in gate
+    return gate
+
+
+# Short so no scenario waits out the real 30s cap; the shipped value is asserted in
+# tests/studio/test_chat_mount_cli_load_adoption.py.
+PONYFILLS = """
+export function disposableTimeoutSignal(_ms: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+    1200,
+  );
+  return { signal: controller.signal, dispose: () => clearTimeout(timer) };
+}
+export function pollSignal(parent: AbortSignal, ms: number) {
+  const timeout = disposableTimeoutSignal(ms);
+  const controller = new AbortController();
+  const abort = (reason: unknown) => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
+  const onParent = () => abort(parent.reason);
+  const onTimeout = () => abort(timeout.signal.reason);
+  parent.addEventListener("abort", onParent, { once: true });
+  timeout.signal.addEventListener("abort", onTimeout, { once: true });
+  if (parent.aborted) onParent();
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      parent.removeEventListener("abort", onParent);
+      timeout.signal.removeEventListener("abort", onTimeout);
+      timeout.dispose();
+    },
+  };
+}
+"""
 TEMP = WORKDIR / "temp" / "chat_autoload_failure_gate"
 DEFAULT_MODEL = "unsloth/gemma-4-E2B-it-GGUF"
 GEMMA_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
@@ -819,6 +868,7 @@ def _build_harness(run_dir: Path):
     # not count as a use.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
+    preamble = PREAMBLE + PONYFILLS + _wait_gate_source()
     missing = sorted(
         name
         for name in imported
@@ -826,7 +876,7 @@ def _build_harness(run_dir: Path):
         and not re.search(
             rf"^(?:export\s+)?(?:async\s+)?"
             rf"(?:function\s+|const\s+|let\s+|var\s+|class\s+){re.escape(name)}\b",
-            PREAMBLE,
+            preamble,
             re.M,
         )
     )
@@ -837,7 +887,7 @@ def _build_harness(run_dir: Path):
     )
     (run_dir / "harness.ts").write_text(
         "// @ts-nocheck\n"
-        + PREAMBLE
+        + preamble
         + "\n"
         + body
         + "\nexport { autoLoadSmallestModel, resolveQueuedEmptyLocalModel };\n"
