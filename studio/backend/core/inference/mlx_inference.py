@@ -11,7 +11,7 @@ import re
 import sys
 import threading
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import (
@@ -179,6 +179,25 @@ class _ForwardRecord:
 _RECORDING_CLASSES = {}
 
 
+def _prompt_wide_position_ids(args, kwargs):
+    """Whether ``position_ids`` spans more than the chunk being fed.
+
+    For a resumed cache mlx-vlm primes mRoPE positions for the whole prompt
+    and hands them to every chunk. The model's own primed state carries the
+    same positions sliced at the cache offset, and not every family slices
+    the kwarg the same way (glm4v feeds it through as is), so a prompt-wide
+    kwarg is withheld and the model's state used instead.
+    """
+    shape = getattr(kwargs.get("position_ids"), "shape", None)
+    if not shape:
+        return False
+    chunk = kwargs.get("inputs", args[0] if args else None)
+    chunk_shape = getattr(chunk, "shape", None) or getattr(
+        kwargs.get("inputs_embeds"), "shape", None
+    )
+    return bool(chunk_shape) and len(chunk_shape) > 1 and shape[-1] != chunk_shape[1]
+
+
 def _recording_class(base):
     """``base`` with a forward that counts itself and copies the cache on cue."""
     cls = _RECORDING_CLASSES.get(base)
@@ -191,6 +210,8 @@ def _recording_class(base):
         record = self.__dict__.get("_studio_forward_record")
         if record is not None and record.withhold_per_layer_inputs:
             kwargs.pop("per_layer_inputs", None)
+        if record is not None and _prompt_wide_position_ids(args, kwargs):
+            kwargs.pop("position_ids")
         output = base.__call__(self, *args, **kwargs)
         if record is not None:
             record.forwards += 1
@@ -1807,6 +1828,9 @@ class MLXInferenceBackend:
 
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
+        self._vlm_snapshot_store = None
+        self._vlm_snapshot_store_unavailable = False
+        self._vlm_is_diffusion_model = None
 
     def _prompt_cache(self):
         if self._prompt_cache_history is not None or self._prompt_cache_unavailable:
@@ -1836,6 +1860,68 @@ class MLXInferenceBackend:
     def _clear_prompt_cache(self):
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
+        self._vlm_snapshot_store = None
+        self._vlm_snapshot_store_unavailable = False
+        self._vlm_is_diffusion_model = None
+
+    def _release_vlm_snapshots(self):
+        store = getattr(self, "_vlm_snapshot_store", None)
+        if store is not None:
+            store.clear()
+
+    def _vlm_prompt_cache_store(self):
+        """The loaded model's store, or None; shares the text path's budget."""
+        if self._vlm_snapshot_store is not None or self._vlm_snapshot_store_unavailable:
+            return self._vlm_snapshot_store
+        max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+        if max_bytes <= 0:
+            self._vlm_snapshot_store_unavailable = True
+            logger.info("MLX VLM prompt cache disabled by budget")
+            return None
+        # Reuse needs a dispatcher that primes mRoPE state for a resumed cache,
+        # reports what it reused, and routes diffusion models itself; mlx-vlm
+        # gained all three together with the cached_tokens field.
+        try:
+            from mlx_vlm.generate import GenerationResult
+            from mlx_vlm.generate.diffusion import is_diffusion_model
+            if not hasattr(GenerationResult, "cached_tokens"):
+                raise ImportError("GenerationResult has no cached_tokens")
+        except ImportError as exc:
+            self._vlm_snapshot_store_unavailable = True
+            logger.info(
+                "MLX VLM prompt cache needs a newer mlx-vlm (%s); prefilling every request", exc
+            )
+            return None
+        self._vlm_is_diffusion_model = is_diffusion_model
+        self._vlm_snapshot_store = VLMPromptSnapshotStore(max_bytes)
+        logger.info("MLX VLM prompt cache: %.2f GB budget", max_bytes / 1e9)
+        return self._vlm_snapshot_store
+
+    def _vlm_prompt_cache_session(self, adapter_state):
+        """A session for one text-only request, or None to prefill as before."""
+        store = self._vlm_prompt_cache_store()
+        if store is None or self._vlm_is_diffusion_model(self._model):
+            # Diffusion generation never consults the prefix hook.
+            return None
+        try:
+            from mlx_vlm.models.cache import make_prompt_cache
+
+            language_model = getattr(self._model, "language_model", self._model)
+            window = self._kv_cache_window
+            # Base-vs-LoRA compare must not serve one side's KV to the other.
+            key = f"{self.active_model_name}|{adapter_state!r}"
+            return VLMPromptCacheSession(
+                store,
+                key,
+                language_model,
+                lambda: make_prompt_cache(language_model, max_kv_size = window),
+            )
+        except Exception as exc:
+            # A layout that cannot be built once cannot be built later.
+            self._vlm_snapshot_store = None
+            self._vlm_snapshot_store_unavailable = True
+            logger.info("MLX VLM prompt cache unavailable (%s); prefilling every request", exc)
+            return None
 
     def _prepare_prompt_cache(self, prompt, adapter_state):
         history = self._prompt_cache()
@@ -2079,6 +2165,8 @@ class MLXInferenceBackend:
             else:
                 load_kwargs["tensor_group"] = distributed_group
 
+        # Freed before the replacement weights are allocated, for headroom.
+        self._clear_prompt_cache()
         model, tokenizer_or_processor = FastMLXModel.from_pretrained(
             model_name,
             **load_kwargs,
@@ -2964,6 +3052,19 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
+        # The store keys text-only prompts; an image request gets its headroom
+        # instead. A served snapshot is unquantized where a cold kv_bits cache
+        # would already be quantized, so those requests prefill in full.
+        session = None
+        if not images and not vlm_kwargs.get("kv_bits"):
+            session = self._vlm_prompt_cache_session(_adapter_state)
+        if session is not None:
+            vlm_kwargs["prompt_cache"] = session.cache
+            vlm_kwargs["prompt_cache_state"] = session
+            # Reused and unreused turns must prefill on the same grid to match.
+            vlm_kwargs["prefill_step_size"] = VLM_PROMPT_CACHE_PREFILL_STEP
+        session_scope = session if session is not None else nullcontext()
+
         def _stream_vlm_snapshots():
             nonlocal stopped
             sampled = ""
@@ -2971,7 +3072,15 @@ class MLXInferenceBackend:
             # Hold the generation lock AND the request-scoped adapter state for the
             # whole stream so Base-vs-LoRA compare mode honors use_adapter and the
             # wrapper tree is restored on completion, cancellation, or close.
-            with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+            with (
+                self._generation_lock,
+                _temporary_mlx_adapter_state(self._model, _adapter_state),
+                session_scope,
+            ):
+                if images:
+                    # Under the lock, or a text turn still finishing could
+                    # refill the store before this request runs.
+                    self._release_vlm_snapshots()
                 final_response = None
                 try:
                     # Emit any prefilled <think> block before the first token so the
@@ -3007,16 +3116,35 @@ class MLXInferenceBackend:
                     if sequences and not stopped and released < len(sampled):
                         yield prefill + sampled
                 finally:
+                    cached_n = 0
+                    if session is not None:
+                        # Not from mlx-vlm's after-generation hook, which a stop
+                        # sequence or a cancel never reaches.
+                        try:
+                            session.finish()
+                        except Exception as exc:
+                            logger.debug("MLX VLM prompt cache: snapshot not stored (%s)", exc)
+                        # What mlx-vlm reused, not what it was offered: it may
+                        # decline the offer and prefill from zero.
+                        cached_n = int(getattr(final_response, "cached_tokens", 0) or 0)
                     # mlx_vlm exposes the same stats fields as mlx_lm, minus a
                     # finish reason, so that one is derived.
                     if final_response is not None:
                         tokenizer = getattr(self._processor, "tokenizer", self._processor)
                         stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
+                        # mlx-vlm counts the reused prefix in prompt_tokens and
+                        # rates the whole prompt against the prefill it ran.
+                        prompt_n = int(getattr(final_response, "prompt_tokens", 0) or 0)
+                        prefilled_n = max(prompt_n - cached_n, 0)
+                        prompt_tps = float(getattr(final_response, "prompt_tps", 0.0) or 0.0)
+                        if cached_n and prompt_n:
+                            prompt_tps *= prefilled_n / prompt_n
                         self.last_generation_stats = _build_generation_stats(
-                            getattr(final_response, "prompt_tokens", 0),
-                            getattr(final_response, "prompt_tps", 0.0),
+                            prefilled_n,
+                            prompt_tps,
                             getattr(final_response, "generation_tokens", 0),
                             getattr(final_response, "generation_tps", 0.0),
+                            cached_n,
                             finish_reason = _mlx_finish_reason(
                                 final_response,
                                 stop_ids,
@@ -3099,6 +3227,10 @@ class MLXInferenceBackend:
         # Hold the adapter state for the whole stream, as text and vision do,
         # so Base-vs-LoRA compare doesn't run the adapter on both sides.
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
+            # Media: nothing held serves this request, and the tower gets the
+            # headroom. Under the lock, or a text turn still finishing could
+            # refill the store before this request runs.
+            self._release_vlm_snapshots()
             final_response = None
             try:
                 for response in vlm_stream(

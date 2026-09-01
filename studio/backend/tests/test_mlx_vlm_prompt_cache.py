@@ -468,6 +468,30 @@ def test_session_stores_nothing_before_a_prompt_is_seen(fake_mx):
     assert session.cache[0].offset == 0
 
 
+def test_recording_forward_withholds_only_prompt_wide_position_ids(fake_mx):
+    language_model = FakeLanguageModel()
+    shaped = types.SimpleNamespace
+    with RecordingForward(language_model):
+        language_model(shaped(shape = (1, 256)), cache = [], position_ids = shaped(shape = (3, 1, 900)))
+        language_model(shaped(shape = (1, 256)), cache = [], position_ids = shaped(shape = (3, 1, 256)))
+        # Ids without a shape: the embeddings say how long the chunk is.
+        language_model(
+            inputs = [1, 2, 3, 4, 5],
+            inputs_embeds = shaped(shape = (1, 5, 8)),
+            cache = [],
+            position_ids = shaped(shape = (1, 5)),
+        )
+        language_model(
+            inputs = [1, 2, 3, 4, 5],
+            inputs_embeds = shaped(shape = (1, 5, 8)),
+            cache = [],
+            position_ids = shaped(shape = (3, 1, 900)),
+        )
+        language_model([1, 2], cache = [], position_ids = None)
+    kept = ["position_ids" in kw for kw in language_model.seen_kwargs]
+    assert kept == [False, True, True, False, True]
+
+
 def test_session_withholds_per_layer_inputs_for_the_whole_request(fake_mx):
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     language_model = FakeLanguageModel()

@@ -4094,3 +4094,421 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     guard = body.index("async with mcp_server_snapshot_guard():")
     snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+# --- VLM prompt snapshots -------------------------------------------------------
+
+
+class _SnapshotArray:
+    def __init__(self, rows):
+        self.rows = list(rows)
+
+    def __add__(self, _other):
+        return _SnapshotArray(self.rows)
+
+    @property
+    def nbytes(self):
+        return 4 * len(self.rows)
+
+
+class _SnapshotKV:
+    def __init__(self):
+        self.keys = _SnapshotArray([])
+        self.offset = 0
+
+    @property
+    def state(self):
+        return self.keys
+
+    def advance(self, tokens):
+        self.keys = _SnapshotArray(self.keys.rows + list(tokens))
+        self.offset += len(tokens)
+
+
+class _SnapshotLanguageModel:
+    def __call__(
+        self,
+        inputs,
+        cache = None,
+        **_kwargs,
+    ):
+        for entry in cache:
+            entry.advance(inputs)
+        return object()
+
+
+def _install_fake_vlm_runtime(
+    monkeypatch,
+    calls,
+    *,
+    prompt_ids,
+    cache_factory = None,
+):
+    """mlx_vlm whose stream_generate drives prompt_cache_state the way dispatch does.
+
+    ``prompt_ids`` also carries knobs: ``decline`` (dispatch refuses the offered
+    prefix), ``diffusion`` (the model object that routes to diffusion), and
+    ``legacy`` (a result type without ``cached_tokens``).
+    """
+    # Extends the fake _install_fake_mlx put in place; the real package is
+    # never touched.
+    mlx_core = sys.modules.get("mlx.core")
+    if not isinstance(getattr(mlx_core, "metal", None), _DummyMetal):
+        mlx_core = types.ModuleType("mlx.core")
+        mlx_pkg = types.ModuleType("mlx")
+        mlx_pkg.core = mlx_core
+        monkeypatch.setitem(sys.modules, "mlx", mlx_pkg)
+        monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    monkeypatch.setattr(mlx_core, "array", _SnapshotArray, raising = False)
+    monkeypatch.setattr(mlx_core, "eval", lambda _arrays: None, raising = False)
+
+    def _stream(
+        model,
+        _processor,
+        _prompt,
+        _images = None,
+        **kwargs,
+    ):
+        calls.append(kwargs)
+        ids = list(prompt_ids["ids"])
+        state = kwargs.get("prompt_cache_state")
+        cache = kwargs.get("prompt_cache")
+        cached = 0
+        if state is not None:
+            cached = state.find_prefix_length(ids)
+            # dispatch installs the served cache only once it accepts the
+            # offer; declined, it prefills the fresh prompt_cache from 0.
+            if prompt_ids.get("decline"):
+                cached = 0
+            else:
+                cache = state.cache
+        if cache is not None:
+            step = kwargs.get("prefill_step_size") or len(ids)
+            pos = cached
+            while len(ids) - pos > 1:
+                take = min(step, len(ids) - pos - 1)
+                model.language_model(ids[pos : pos + take], cache = cache)
+                pos += take
+            model.language_model(ids[-1:], cache = cache)
+        response = SimpleNamespace(
+            text = "ok",
+            prompt_tokens = len(ids),
+            cached_tokens = cached,
+            prompt_tps = 100.0,
+            generation_tokens = 1,
+            generation_tps = 10.0,
+        )
+        if prompt_ids.get("legacy"):
+            del response.cached_tokens
+        yield response
+
+    cache_module = types.ModuleType("mlx_vlm.models.cache")
+    cache_module.make_prompt_cache = cache_factory or (
+        lambda _lm, max_kv_size = None: [_SnapshotKV(), _SnapshotKV()]
+    )
+    models_pkg = types.ModuleType("mlx_vlm.models")
+    models_pkg.cache = cache_module
+    generate_pkg = types.ModuleType("mlx_vlm.generate")
+    fields = {} if prompt_ids.get("legacy") else {"cached_tokens": 0}
+    generate_pkg.GenerationResult = type("GenerationResult", (), fields)
+    diffusion_module = types.ModuleType("mlx_vlm.generate.diffusion")
+    # Asked about the loaded model, as dispatch would be.
+    diffusion_module.is_diffusion_model = lambda model: model is prompt_ids.get("diffusion")
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = _stream
+    mlx_vlm.models = models_pkg
+    mlx_vlm.generate = generate_pkg
+    mlx_vlm.prompt_utils = SimpleNamespace(MODEL_CONFIG = {}, apply_chat_template = None)
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models", models_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", cache_module)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", generate_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.diffusion", diffusion_module)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "prompt",
+    )
+
+
+def _snapshot_backend(monkeypatch):
+    from core.inference import mlx_inference
+
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", str(10**9))
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(
+        config = {"model_type": "fake"},
+        language_model = _SnapshotLanguageModel(),
+    )
+    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    backend._is_vlm = True
+    backend.active_model_name = "vlm"
+    return backend
+
+
+_VLM_ARGS = (0, 1, 0, 0, 1, 1, None)
+
+
+def _text_turn(n):
+    return [{"role": "user", "content": "x" * n}]
+
+
+def test_mlx_vlm_text_request_reuses_the_prompt_snapshot(monkeypatch):
+    calls, prompt_ids = [], {"ids": list(range(700))}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    from core.inference.mlx_inference import VLMPromptCacheSession
+
+    assert list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS)) == ["ok"]
+    first = calls[-1]
+    assert first["prefill_step_size"] == 256
+    assert isinstance(first["prompt_cache_state"], VLMPromptCacheSession)
+    assert first["prompt_cache"] is first["prompt_cache_state"].cache
+    store = backend._vlm_snapshot_store
+    assert len(store) == 1 and store.nbytes == 2 * 4 * 512
+    usage = backend.last_generation_stats["usage"]
+    assert usage["prompt_tokens"] == 700
+    assert usage["prompt_tokens_details"]["cached_tokens"] == 0
+    # The model is left as it was found.
+    assert type(backend._model.language_model) is _SnapshotLanguageModel
+
+    prompt_ids["ids"] = list(range(700)) + [1] * 100
+    assert list(backend._generate_vlm(_text_turn(2), None, *_VLM_ARGS)) == ["ok"]
+    second = calls[-1]
+    assert second["prompt_cache_state"].reused_tokens == 512
+    # Served from a copy: the stored snapshot still holds 512 rows.
+    assert second["prompt_cache_state"].cache[0].offset == 800
+    assert len(store) == 2
+    stats = backend.last_generation_stats
+    assert stats["usage"]["prompt_tokens"] == 800
+    assert stats["usage"]["prompt_tokens_details"]["cached_tokens"] == 512
+    # Prefilled 288 of 800 at mlx-vlm's whole-prompt rate.
+    assert stats["timings"]["prompt_n"] == 288
+    assert stats["timings"]["prompt_per_second"] == pytest.approx(100.0 * 288 / 800)
+
+
+def test_mlx_vlm_snapshot_store_is_keyed_by_adapter_state(monkeypatch):
+    calls, prompt_ids = [], {"ids": list(range(700))}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._temporary_mlx_adapter_state",
+        lambda _model, _state: contextlib.nullcontext(),
+    )
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS, _adapter_state = True))
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS, _adapter_state = False))
+    assert calls[-1]["prompt_cache_state"].reused_tokens == 0
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS, _adapter_state = True))
+    assert calls[-1]["prompt_cache_state"].reused_tokens == 512
+
+
+def test_mlx_vlm_media_and_quantized_kv_requests_prefill_without_the_store(monkeypatch):
+    calls, prompt_ids = [], {"ids": list(range(700))}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    store = backend._vlm_snapshot_store
+    assert len(store) == 1
+
+    backend._kv_quant = {"kv_bits": 4}
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert "prompt_cache_state" not in calls[-1] and "prefill_step_size" not in calls[-1]
+    assert len(store) == 1
+    backend._kv_quant = {"kv_bits": None}
+
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._render_registered_vlm_prompt", lambda *_a, **_k: "p"
+    )
+    image_turn = [{"role": "user", "content": [{"type": "image"}]}]
+    list(backend._generate_vlm(image_turn, object(), *_VLM_ARGS))
+    assert "prompt_cache_state" not in calls[-1] and "prefill_step_size" not in calls[-1]
+    # An image request gives the vision pass the headroom the store held.
+    assert len(store) == 0 and backend._vlm_snapshot_store is store
+
+
+def test_mlx_vlm_stats_count_the_prefix_mlx_vlm_reused_not_the_one_offered(monkeypatch):
+    calls, prompt_ids = [], {"ids": list(range(700))}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+
+    prompt_ids["decline"] = True
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert calls[-1]["prompt_cache_state"].reused_tokens == 512
+    usage = backend.last_generation_stats["usage"]
+    assert usage["prompt_tokens_details"]["cached_tokens"] == 0
+    assert usage["prompt_tokens"] == 700
+    assert backend.last_generation_stats["timings"]["prompt_per_second"] == 100.0
+
+
+def test_mlx_vlm_snapshot_store_needs_a_dispatcher_that_reports_reuse(monkeypatch):
+    calls, prompt_ids = [], {"ids": list(range(700)), "legacy": True}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    assert list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS)) == ["ok"]
+    assert "prompt_cache_state" not in calls[-1] and "prefill_step_size" not in calls[-1]
+    assert backend._vlm_snapshot_store is None and backend._vlm_snapshot_store_unavailable
+    assert backend.last_generation_stats["usage"]["prompt_tokens"] == 700
+
+
+def test_mlx_vlm_diffusion_models_prefill_without_the_store(monkeypatch):
+    calls, prompt_ids = [], {"ids": list(range(700))}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    prompt_ids["diffusion"] = backend._model
+    assert list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS)) == ["ok"]
+    assert not {"prompt_cache", "prompt_cache_state", "prefill_step_size"} & set(calls[-1])
+    # Per model, not a store failure: the store stays usable.
+    assert backend._vlm_snapshot_store is not None and not backend._vlm_snapshot_store_unavailable
+
+
+@pytest.mark.parametrize("media", ["image", "audio"])
+def test_mlx_vlm_media_requests_release_snapshots_only_under_the_generation_lock(
+    monkeypatch, media
+):
+    import threading
+
+    calls, prompt_ids = [], {"ids": list(range(700))}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    store = backend._vlm_snapshot_store
+    assert len(store) == 1
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._render_registered_vlm_prompt",
+        lambda *_a, **_k: "p",
+    )
+    if media == "image":
+        request = lambda: list(  # noqa: E731
+            backend._generate_vlm(
+                [{"role": "user", "content": [{"type": "image"}]}], object(), *_VLM_ARGS
+            )
+        )
+    else:
+        backend.models = {"vlm": {"audio_type": "audio_vlm"}}
+        request = lambda: list(  # noqa: E731
+            backend.generate_audio_input_response(
+                messages = [{"role": "user", "content": "hi"}],
+                system_prompt = "",
+                audio_array = [0.0],
+                max_new_tokens = 8,
+                use_adapter = None,
+            )
+        )
+
+    # A text turn still holds the lock: it may yet store its snapshot, so the
+    # release has to wait for it rather than run ahead of it.
+    lock, reached = backend._generation_lock, threading.Event()
+
+    class _Gate:
+        def __enter__(self):
+            reached.set()
+            return lock.__enter__()
+
+        def __exit__(self, *exc):
+            return lock.__exit__(*exc)
+
+    backend._generation_lock = _Gate()
+    lock.acquire()
+    try:
+        worker = threading.Thread(target = request, daemon = True)
+        worker.start()
+        assert reached.wait(5)
+        held_while_waiting = len(store)
+    finally:
+        lock.release()
+    worker.join(5)
+    assert held_while_waiting == 1
+    assert not worker.is_alive() and len(store) == 0
+
+
+def test_mlx_vlm_snapshot_store_disables_itself_when_the_cache_cannot_be_built(monkeypatch):
+    calls, prompt_ids = [], {"ids": list(range(700))}
+
+    def _broken(_lm, max_kv_size = None):
+        raise RuntimeError("no cache for this model")
+
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids, cache_factory = _broken)
+    backend = _snapshot_backend(monkeypatch)
+    assert list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS)) == ["ok"]
+    assert "prompt_cache_state" not in calls[-1] and "prefill_step_size" not in calls[-1]
+    assert backend._vlm_snapshot_store is None and backend._vlm_snapshot_store_unavailable
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert "prompt_cache_state" not in calls[-1]
+
+
+def test_mlx_vlm_snapshot_store_honors_a_zero_budget_and_the_kv_window(monkeypatch):
+    calls, prompt_ids, seen = [], {"ids": list(range(700))}, []
+
+    def _factory(_lm, max_kv_size = None):
+        seen.append(max_kv_size)
+        return [_SnapshotKV()]
+
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids, cache_factory = _factory)
+    backend = _snapshot_backend(monkeypatch)
+    backend._kv_cache_window = 4096
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert seen == [4096]
+
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "0")
+    backend._clear_prompt_cache()
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert "prompt_cache_state" not in calls[-1]
+    assert backend._vlm_snapshot_store is None and backend._vlm_snapshot_store_unavailable
+
+
+def test_mlx_vlm_snapshots_are_released_on_unload_reload_and_audio(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    calls, prompt_ids = [], {"ids": list(range(700))}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    store = backend._vlm_snapshot_store
+    assert len(store) == 1
+
+    held_during_load = []
+
+    class _FastMLXModel:
+        @staticmethod
+        def from_pretrained(*_args, **_kwargs):
+            held_during_load.append(backend._vlm_snapshot_store)
+            model = SimpleNamespace(
+                config = {"model_type": "fake"},
+                language_model = _SnapshotLanguageModel(),
+            )
+            return model, _DummyProcessor()
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _FastMLXModel
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", types.ModuleType("unsloth_zoo.mlx"))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    config = SimpleNamespace(identifier = "vlm", is_vision = True, is_lora = False)
+    assert backend.load_model(config, max_seq_length = 4096, load_in_4bit = False)
+    # Dropped before the replacement weights are allocated, not after.
+    assert held_during_load == [None] and backend._vlm_snapshot_store is None
+
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert backend._vlm_snapshot_store is not store
+    assert len(backend._vlm_snapshot_store) == 1
+
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_images = 0, num_audios = 0: "P<audio>",
+    )
+    backend.models = {"vlm": {"audio_type": "audio_vlm"}}
+    list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "hi"}],
+            system_prompt = "",
+            audio_array = [0.0],
+            max_new_tokens = 8,
+            use_adapter = None,
+        )
+    )
+    assert len(backend._vlm_snapshot_store) == 0
+    backend.unload_model("vlm")
+    assert backend._vlm_snapshot_store is None
