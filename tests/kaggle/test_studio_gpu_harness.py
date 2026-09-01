@@ -2223,8 +2223,18 @@ def test_the_gate_is_told_how_many_kernels_this_leg_actually_pushes():
     import re
 
     text = WORKFLOW.read_text(encoding = "utf-8")
-    gate = text.split("gate.py", 1)[1].split("\n\n", 1)[0]
-    assert re.search(r"^\s+--kernels 1 \\\s*$", gate, re.MULTILINE), gate
+    # EVERY invocation, found by the command rather than by splitting on the
+    # first literal "gate.py" in the file: prose above the jobs mentions the
+    # script by path, and there are now two calls -- the gate and the recheck
+    # that re-asks with the account slot in hand. Both push one kernel, so both
+    # have to say so, and a recheck left at the default of two would stand the
+    # job down for a slot it does not need.
+    invocations = re.findall(
+        r"kaggle_t4_ci/gate\.py \\\n.*?(?=\n\s*\n|\Z)", text, re.DOTALL
+    )
+    assert invocations, "the workflow never runs the gate"
+    for invocation in invocations:
+        assert re.search(r"^\s+--kernels 1 \\?\s*$", invocation, re.MULTILINE), invocation
     assert "--expect 1" in text
 
 
