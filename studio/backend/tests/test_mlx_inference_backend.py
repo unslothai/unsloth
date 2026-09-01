@@ -3802,3 +3802,49 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
     assert (
         _apply_compaction_nudge("", backend.tools) in backend.system
     ), "the count omitted the compaction nudge the completion appends"
+
+
+def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):
+    """`_wants_current_date` is false for an API-key request, so the plain call withholds
+    the date. The tool-loop completion reapplies it with include_api_key, so a count that
+    did not would be short exactly that line for those completions."""
+    from starlette.datastructures import Headers
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    keyed = SimpleNamespace(
+        headers = Headers({"authorization": "Bearer sk-unsloth-test"}),
+        query_params = {},
+        cookies = {},
+    )
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        request = keyed,
+        enabled_tools = ["web_search"],
+        messages = [{"role": "user", "content": "hi"}],
+    )
+    from routes.inference import current_date_prompt_line
+
+    line = current_date_prompt_line(request = keyed)
+    assert line, "the harness must produce a date line"
+    assert line in backend.system, (
+        f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
+    )
+
+
+def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
+    """The caller drops a count whose model differs from the checkpoint it captured, so an
+    auto-switched model that loaded from a resolved path must still answer as the repo id."""
+    from routes import inference as route
+
+    backend = _RenderRecordingBackend()
+    monkeypatch.setattr(
+        route, "_orchestrator_public_model_id", lambda _b: "org/advertised-repo-id"
+    )
+    served = _count_route(
+        monkeypatch, backend, messages = [{"role": "user", "content": "hello"}]
+    )
+    assert json.loads(served.body)["model"] == "org/advertised-repo-id"

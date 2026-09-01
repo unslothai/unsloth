@@ -27183,6 +27183,13 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         # The safetensors completion appends this too. No `checkpoint_fitted`: only the
         # llama.cpp path fits that way, so neither this count nor its completion resets.
         _nudge = _apply_compaction_nudge(_nudge, _tools_to_use)
+        # The tool-loop completion reapplies the date with include_api_key, which is the
+        # one case an API-key request still gets it. The plain call above withholds it,
+        # so without this the count is short exactly that line for these completions.
+        if request is not None:
+            system_prompt = _apply_current_date_prompt(
+                system_prompt, request, include_api_key = True,
+            )
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
         _auto_heal = (
@@ -27236,7 +27243,13 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    return JSONResponse(content = {"input_tokens": int(count), "model": model or active})
+    # The advertised id, not the resident path: an auto-switch loads from a resolved
+    # snapshot while publishing the repo id, and the caller drops a count whose model
+    # does not match the checkpoint it captured.
+    return JSONResponse(content = {
+        "input_tokens": int(count),
+        "model": _orchestrator_public_model_id(backend) or model or active,
+    })
 
 
 @router.post("/chat/count_tokens")

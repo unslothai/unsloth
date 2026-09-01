@@ -77,6 +77,8 @@ type LocalModelSelection = {
   /** The context that model's own load asked for, for a selection captured to be
    *  restored. Absent for a recipe's own target, which pins nothing. */
   requestedContextLength?: number | null;
+  /** Whether MLX served it. Only there is a positive request above unambiguous. */
+  isMlx?: boolean;
 };
 
 type LocalModelLoadPlan =
@@ -224,13 +226,18 @@ function localSelectionMatchesActive(input: {
   );
 }
 
-/** A context request, with the auto sentinel and "unset" collapsed onto null.
+/** A context request, read only where it means something.
  *
- *  Only a positive value is a pin; 0 is the wire form of Auto, so it must compare equal
- *  to a selection that asked for nothing rather than forcing a reload every run.
+ *  An unpinned MLX load sends 0, so a positive value there is a pin. llama.cpp is
+ *  ambiguous: a same-model reload echoes the resolved n_ctx while the control is still
+ *  Auto (see resolve-ctx-pin-seed.ts), so reading that as a pin would reload the model
+ *  on every run and then re-pin an Auto-sized one. 0 is Auto on both.
  */
-function contextIntent(value: number | null | undefined): number | null {
-  return typeof value === "number" && value > 0 ? value : null;
+function contextIntent(
+  value: number | null | undefined,
+  isMlx: boolean | null | undefined,
+): number | null {
+  return isMlx && typeof value === "number" && value > 0 ? value : null;
 }
 
 async function isLocalModelAlreadyLoaded(
@@ -251,9 +258,11 @@ async function isLocalModelAlreadyLoaded(
     }
     // Same checkpoint, different context intent is still a different load: a recipe that
     // asked for nothing must not inherit whatever window Chat pinned.
+    // The resident backend decides, since both values describe the load that is running.
+    const residentIsMlx = status.is_mlx ?? false;
     return (
-      contextIntent(requestedContextLength) ===
-      contextIntent(status.requested_context_length)
+      contextIntent(requestedContextLength, residentIsMlx) ===
+      contextIntent(status.requested_context_length, residentIsMlx)
     );
   } catch {
     // Fall through to load attempt; the backend will re-error if needed.
@@ -352,6 +361,7 @@ async function getActiveLocalModelSelection(): Promise<LocalModelSelection | nul
       ggufVariant: status.gguf_variant?.trim() ?? "",
       aliases: ["previous Chat model"],
       requestedContextLength: status.requested_context_length ?? null,
+      isMlx: status.is_mlx ?? false,
     };
   } catch {
     return null;
@@ -377,6 +387,7 @@ async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocal
         ggufVariant: status.gguf_variant?.trim() ?? "",
         aliases: ["previous Chat model"],
         requestedContextLength: status.requested_context_length ?? null,
+      isMlx: status.is_mlx ?? false,
       },
       unrestorableLabel: null,
     };
@@ -393,8 +404,8 @@ function isSameLocalModelSelection(
     left &&
       left.target.toLowerCase() === right.target.toLowerCase() &&
       left.ggufVariant === right.ggufVariant &&
-      contextIntent(left.requestedContextLength) ===
-        contextIntent(right.requestedContextLength),
+      contextIntent(left.requestedContextLength, left.isMlx) ===
+        contextIntent(right.requestedContextLength, right.isMlx),
   );
 }
 
