@@ -229,6 +229,8 @@ _emit() {
     _package=$1
     _status=$2
     _ver=$3
+    # Status is "<want> <error-flag> <status>": removed but not purged reads
+    # "deinstall ok config-files".
     case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
     _out=$(printf '%s' "$_fmt" | sed \
         -e "s|\${Package}|$_package|g" \
