@@ -339,7 +339,7 @@ test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // on the same model, or the reload would send 0 and llama.cpp's --fit-off
   // branch would take that as the NATIVE context. That is the app protecting the
   // load, not the user choosing a length, so the pin is captured BEFORE it.
-  const capture = RUNTIME.indexOf("const explicitCtxPin = loadCustomContextLength;");
+  const capture = RUNTIME.indexOf("const explicitCtxPin = loadRequestContextPin(");
   const clamp = RUNTIME.indexOf("loadCustomContextLength = loadContextLength;");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
@@ -355,7 +355,13 @@ test("the three in-app writers pin what the user asked for, not what they sent",
   // only when there is one, and the current context otherwise.
   assert.match(
     RUNTIME,
-    /const keepCustomCtx = resolveExplicitCtxPin\(\s*\n\s*loadResponse\.is_gguf \|\|\s*\n\s*isServedByMlx\([^)]*\)\s*\n\s*\? explicitCtxPin\s*\n\s*: null,\s*\n\s*\);/,
+    /const keepCustomCtx = resolveExplicitCtxPin\(\s*\n\s*loadResponse\.is_gguf \|\| targetIsMlx \? explicitCtxPin : null,\s*\n\s*\);/,
+  );
+  // And the captured pin is the one the request was built from, including the pre-move
+  // field a legacy MLX record still holds it in.
+  assert.match(
+    RUNTIME,
+    /const explicitCtxPin = loadRequestContextPin\(\s*\n\s*loadCustomContextLength,\s*\n\s*targetIsMlx,\s*\n\s*pinnedMaxSeqLength,\s*\n\s*\);/,
   );
   assert.match(
     RUNTIME,

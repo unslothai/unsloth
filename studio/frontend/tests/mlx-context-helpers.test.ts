@@ -28,6 +28,7 @@ const {
   capturedContextLength,
   loadedContextForParams,
   resolveLoadMaxSeqLength,
+  loadRequestContextPin,
   localMaxTokensCeiling,
   replayMaxTokensCap,
   resolveExplicitCtxPin,
@@ -246,4 +247,29 @@ test("a cap never lands below the Max Tokens control's own minimum", () => {
   assert.equal(replayMaxTokensCap(undefined), undefined);
   // The same floor the displayed ceiling already used, so the pair cannot disagree.
   assert.equal(replayMaxTokensCap(32), localMaxTokensCeiling(32, 32));
+});
+
+test("a load keeps the pin it was built from, wherever the record held it", () => {
+  // resolveLoadMaxSeqLength takes the pre-move field for an unpinned MLX target, so the
+  // completed load has to pin the same number or the UI shows Auto for a pinned runtime.
+  assert.equal(loadRequestContextPin(null, true, 8192), 8192);
+  assert.equal(loadRequestContextPin(32768, true, 8192), 32768, "the live field leads");
+  // llama.cpp's maxSeqLength is not a context pin, so only MLX admits it.
+  assert.equal(loadRequestContextPin(null, false, 8192), null);
+  assert.equal(loadRequestContextPin(null, true, null), null);
+  // The request the two agree on: same input, same number.
+  assert.equal(
+    loadRequestContextPin(null, true, 8192),
+    resolveLoadMaxSeqLength({
+      modelId: "org/mlx-model",
+      isGguf: false,
+      customContextLength: null,
+      loadedContextLength: null,
+      currentCheckpoint: "",
+      isMlx: true,
+      pinnedMaxSeqLength: 8192,
+      defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
+      presetSource: "custom",
+    }),
+  );
 });

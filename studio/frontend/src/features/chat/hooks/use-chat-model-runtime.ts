@@ -93,6 +93,7 @@ import {
   unpinnedLoadContext,
   resolveLoadMaxSeqLength,
   resolveExplicitCtxPin,
+  loadRequestContextPin,
   replayMaxTokensCap,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
@@ -1644,7 +1645,16 @@ export function useChatModelRuntime() {
             // the wire, is what the completed load pins: several send rules put a
             // positive n_ctx on the wire with the control on Auto, and a pin read
             // back out of one of those is a number the user never chose.
-            const explicitCtxPin = loadCustomContextLength;
+            const targetIsMlx = isServedByMlx(
+              isGguf,
+              platform.deviceType,
+              platform.chatOnlyReason,
+            );
+            const explicitCtxPin = loadRequestContextPin(
+              loadCustomContextLength,
+              targetIsMlx,
+              pinnedMaxSeqLength,
+            );
             // Pinning layers on the SAME model keeps the currently resolved
             // context: with no explicit pin, a manual+pinned reload would send 0,
             // which the backend's --fit off branch treats as the NATIVE context --
@@ -1670,7 +1680,7 @@ export function useChatModelRuntime() {
               loadedContextLength: loadContextLength,
               currentCheckpoint,
               activeGgufVariant: loadActiveGgufVariant,
-              isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+              isMlx: targetIsMlx,
               pinnedMaxSeqLength,
               defaultMaxSeqLength: unpinnedDefaultRequest(
                   previousIsMlx,
@@ -1855,10 +1865,7 @@ export function useChatModelRuntime() {
             // stays Auto whatever n_ctx the send rules resolved for it. MLX pins the
             // same way, so it is admitted here rather than cleared as a non-GGUF.
             const keepCustomCtx = resolveExplicitCtxPin(
-              loadResponse.is_gguf ||
-                isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason)
-                ? explicitCtxPin
-                : null,
+              loadResponse.is_gguf || targetIsMlx ? explicitCtxPin : null,
             );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";

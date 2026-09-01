@@ -1125,10 +1125,17 @@ def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
     nobody measured."""
     load_paths = ("chat/hooks/use-chat-model-runtime.ts", "chat/api/chat-adapter.ts")
     derived_backend = r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\)"
+    # A name bound to that same call counts, so hoisting one out of three call sites is
+    # not a literal creeping in; the binding itself is checked below.
+    hoisted = r"isMlx: (\w+),"
+    hoist_source = r"const {name} = isServedByMlx\(\s*\w+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\);"
     for name in load_paths:
         src = _read(f"features/{name}")
         calls = src.count("resolveLoadMaxSeqLength({") + src.count("retainedContextPin({")
         derived = len(re.findall(derived_backend, src))
+        for bound in set(re.findall(hoisted, src)):
+            if re.search(hoist_source.format(name = re.escape(bound)), src):
+                derived += src.count(f"isMlx: {bound},")
         assert derived >= calls, (name, derived, calls)
     for name in (*load_paths, "chat/lib/apply-inference-status-to-store.ts"):
         src = _read(f"features/{name}")

@@ -458,15 +458,16 @@ def test_context_triple_reported_per_cell(os_key, vendor, requested, spoof_cell,
 def test_only_the_mlx_backend_resolves_a_native_window():
     """The asymmetry the matrix above turns on, stated once and directly.
 
-    ``runtime_context_length`` -- every non-MLX local backend's entire context answer --
-    cannot produce a native length, because it reads the served one and has nowhere else
-    to look. So "withheld on eleven cells" is a property of the resolver, not of the
-    eleven fixtures.
+    Only the MLX load resolves a triple. ``core/inference/inference.py`` publishes
+    ``context_length`` and nothing else, whatever ``runtime_context_length`` itself can
+    read, so "withheld on eleven cells" is a property of the serving path rather than of
+    the eleven fixtures. Asserted on the published entry, not on the helper's own answer,
+    which reads a declared window as well as the attached one.
     """
-    assert runtime_context_length(_MLX_MODEL, 0) is None
     assert runtime_context_length(_MLX_MODEL, 8192) == 8192
     served, native, ceiling = MLXInferenceBackend._resolve_context_lengths(None, _MLX_MODEL, 0)
     assert (served, native, ceiling) == (131072, 131072, 131072)
+    assert set(_model_info_for(False, 0)) == {"is_mlx", "context_length"}
 
 
 # ======================================================================================

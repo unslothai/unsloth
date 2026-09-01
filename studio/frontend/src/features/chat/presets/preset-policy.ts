@@ -365,6 +365,21 @@ export function resolveLoadMaxSeqLength({
   return unpinnedLoadContext(isGgufLoad, isMlx, defaultMaxSeqLength);
 }
 
+/** The user's own context pin behind a load request, or null where the request is not one.
+ *
+ *  A record written before the MLX pin moved fields carries it in `maxSeqLength`, which is
+ *  the value `resolveLoadMaxSeqLength` builds the request from, so the completed load has
+ *  to pin the same number or the UI reads a pinned runtime as Auto. llama.cpp's
+ *  `maxSeqLength` is not a context pin, so only MLX admits it.
+ */
+export function loadRequestContextPin(
+  customContextLength: number | null,
+  isMlx: boolean | null | undefined,
+  pinnedMaxSeqLength: number | null,
+): number | null {
+  return customContextLength ?? (isMlx ? pinnedMaxSeqLength : null);
+}
+
 /** The context pin to keep for a model that has just loaded, or null if it has none.
  *
  *  They pin for different reasons: llama.cpp's matters only under manual memory with
