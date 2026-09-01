@@ -100,6 +100,20 @@ def test_loaded_repo_ids_includes_native_companions():
     assert b.loaded_repo_ids() == ()
 
 
+def test_native_status_preserves_the_logical_picker_identity():
+    import dataclasses
+
+    b = _loaded_backend()
+    b._state = dataclasses.replace(
+        b._state,
+        repo_id = "/cache/models--unsloth--Z-Image-Turbo-GGUF/snapshots/abc",
+        display_repo_id = "unsloth/Z-Image-Turbo-GGUF",
+    )
+    status = b.status()
+    assert status["repo_id"].endswith("/snapshots/abc")
+    assert status["display_repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+
+
 def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():
     # A local *klein-9B*.gguf carries the variant keyword only in the basename, so loaded_repo_ids() must include the filename or the guard protects the wrong repo.
     b = SdCppDiffusionBackend(engine = _FakeEngine())

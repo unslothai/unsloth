@@ -726,6 +726,17 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     assert fam.name == "ltx-2"
 
 
+def test_validate_modular_family_requires_modular_manifest(tmp_path):
+    backend = VideoBackend()
+    root = tmp_path / "opaque-h3"
+    root.mkdir()
+    (root / "model_index.json").write_text("{}")
+    with pytest.raises(ValueError, match = "modular_model_index.json"):
+        backend.validate_load_request(str(root), family_override = "minimax-h3")
+    (root / "modular_model_index.json").write_text("{}")
+    assert backend.validate_load_request(str(root), family_override = "minimax-h3").name == "minimax-h3"
+
+
 def test_validate_rejects_local_file_picked_as_pipeline(tmp_path):
     backend = VideoBackend()
     # A local FILE sent as a pipeline is not a diffusers directory, so gate on .exists() (not .is_dir()) to catch files too.
@@ -5898,6 +5909,7 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
         torch = torch,
         fam = fam,
         repo_id = "MiniMaxAI/MiniMax-H3",
+        display_repo_id = "MiniMaxAI/MiniMax-H3",
         base = fam.base_repo,
         kind = "pipeline",
         dtype = torch.bfloat16,
@@ -5911,6 +5923,7 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
     assert "workflow" not in seen["from_pretrained"]
     assert seen["load_components"]["workflow"] == "fl2va"
     assert status["supports_keyframes"] is True
+    assert status["display_repo_id"] == "MiniMaxAI/MiniMax-H3"
     assert status["defaults"]["canvas_short_edge"] == 768
 
 

@@ -1288,7 +1288,7 @@ class VideoBackend:
             root = Path(repo_id).expanduser()
             # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
             indexes = (
-                ("model_index.json", "modular_model_index.json")
+                ("modular_model_index.json",)
                 if fam.modular_workflow
                 else ("model_index.json",)
             )
@@ -3572,6 +3572,7 @@ class VideoBackend:
                 fam = fam,
                 target = target,
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 base = base,
                 kind = kind,
                 dtype = dtype,
@@ -4310,6 +4311,7 @@ class VideoBackend:
         torch: Any,
         fam: VideoFamily,
         repo_id: str,
+        display_repo_id: Optional[str] = None,
         base: str,
         kind: str,
         dtype: Any,

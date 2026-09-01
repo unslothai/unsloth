@@ -113,6 +113,28 @@ test("a modular-only root requires a modular-capable video family", () => {
   );
 });
 
+test("a modular-only family rejects a conventional pipeline root", () => {
+  const conventional = row("diffusers_pipeline");
+  assert.equal(
+    isFamilyOverrideLocalCandidate(
+      conventional,
+      "minimax-h3",
+      "video",
+      ["minimax-h3"],
+    ),
+    false,
+  );
+  assert.equal(
+    localArtifactPassesOverrideGate(
+      conventional,
+      "minimax-h3",
+      "video",
+      ["minimax-h3"],
+    ),
+    false,
+  );
+});
+
 test("family options follow the backend registry and deduplicate names", () => {
   assert.deepEqual(familyOverrideOptions(["z-image", "z-image", "flux.1"]), [
     ["auto", "Auto (detect)"],

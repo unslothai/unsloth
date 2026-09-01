@@ -865,6 +865,8 @@ class _SdState:
     family: DiffusionFamily
     device: str
     files: SdCppModelFiles
+    # Logical picker identity when repo_id is a local cache path. Never used for loading.
+    display_repo_id: Optional[str] = None
     vae_format: Optional[str] = None
     native_speed: str = "off"
     offload_flags: tuple[str, ...] = ()
@@ -1223,7 +1225,7 @@ class SdCppDiffusionBackend:
         self,
         repo_id: str,
         *,
-        # Diffusers-only display metadata, accepted for the route's uniform engine call.
+        # Logical picker identity when repo_id is a local cache path.
         display_repo_id: Optional[str] = None,
         # Same name, position and default as DiffusionBackend.begin_load: the route calls whichever
         # engine was activated through ONE call site and passes this unconditionally, so an engine
@@ -1262,6 +1264,9 @@ class SdCppDiffusionBackend:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
+        display_repo_id = (
+            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
+        ) or None
         # Same fallback the diffusers and video backends take: the route ranks the selection and
         # passes the winner, but a direct caller (an MCP client, a test, a plugin) hands over
         # gpu_ids alone, and without this the native engine is the one engine that would drop the
@@ -1344,6 +1349,7 @@ class SdCppDiffusionBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base = base,
@@ -1365,6 +1371,7 @@ class SdCppDiffusionBackend:
         self,
         *,
         repo_id: str,
+        display_repo_id: Optional[str] = None,
         gguf_filename: str,
         base: str,
         fam: DiffusionFamily,
@@ -1720,6 +1727,7 @@ class SdCppDiffusionBackend:
                 )
                 state = _SdState(
                     repo_id = repo_id,
+                    display_repo_id = display_repo_id,
                     base_repo = base,
                     family = fam,
                     device = device,
@@ -2765,6 +2773,7 @@ class SdCppDiffusionBackend:
             return {
                 "loaded": False,
                 "repo_id": None,
+                "display_repo_id": None,
                 "family": None,
                 "base_repo": None,
                 "device": None,
@@ -2793,6 +2802,7 @@ class SdCppDiffusionBackend:
         return {
             "loaded": True,
             "repo_id": state.repo_id,
+            "display_repo_id": state.display_repo_id,
             "family": state.family.name,
             "base_repo": state.base_repo,
             "device": state.device,

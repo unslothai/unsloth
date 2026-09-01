@@ -30,7 +30,7 @@ export function isFamilyOverrideLocalCandidate(
       ),
   );
   const manifestIsLoadable =
-    model.artifact_kind === "diffusers_pipeline" ||
+    (model.artifact_kind === "diffusers_pipeline" && !familySupportsModular) ||
     (mediaKind === "video" &&
       model.artifact_kind === "diffusers_modular_pipeline" &&
       familySupportsModular);
