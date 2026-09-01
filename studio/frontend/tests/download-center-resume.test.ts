@@ -55,6 +55,11 @@ const STATE = read(
 test("a failed or cancelled row offers Resume in Downloads", () => {
   assert.match(PANEL, /aria-label="Resume download"/);
   assert.match(PANEL, /resumeRequestFromJob/);
+  assert.match(PANEL, /inventoryKind: job\.inventoryKind/);
+  assert.match(
+    PANEL,
+    /const resumable = !job\.external && RESUMABLE_STATES\.has\(job\.state\)/,
+  );
   assert.match(PANEL, /downloadManager\s*\.requestStart/);
   // Playwright and AppImage cancel/retry smokes wait on this exact copy.
   assert.match(PANEL, /Cancelled\. Partial files kept\./);
@@ -159,6 +164,14 @@ test("an idle transfer with files on disk becomes a resumable error, not gone", 
   );
   assert.doesNotMatch(POLL, /scheduleRemoval\(key, ERROR_LINGER_MS\)/);
   assert.doesNotMatch(POLL, /scheduleRemoval\(key, CANCELLED_LINGER_MS\)/);
+});
+
+test("a measured missing idle target is removed instead of offered for resume", () => {
+  assert.match(
+    POLL,
+    /idleProbeVerdict\(\s*progressResp\.downloaded_bytes,\s*progressResp\.cache_path,\s*progressResp\.target_present,\s*progressResp\.cache_measured,\s*\) === "gone"/,
+  );
+  assert.match(POLL, /finalize\(key, "gone"\)/);
 });
 
 test("storage writes failed jobs through the shared persistence predicate", () => {

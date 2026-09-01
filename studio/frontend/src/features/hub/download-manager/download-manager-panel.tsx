@@ -110,6 +110,9 @@ function resumeRequestFromJob(job: ManagedDownload): DownloadRequest {
     repoId: job.repoId,
     variant: job.variant,
     expectedBytes: job.expectedBytes,
+    ...(job.inventoryKind !== undefined
+      ? { inventoryKind: job.inventoryKind }
+      : {}),
     ...(scopeId ? { scopeId } : {}),
     ...(job.scopedFiles && job.scopedFiles.length > 0
       ? { files: job.scopedFiles }
@@ -157,7 +160,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
   );
   if (!job) return null;
   const active = job.state === "running" || job.state === "cancelling";
-  const resumable = RESUMABLE_STATES.has(job.state);
+  const resumable = !job.external && RESUMABLE_STATES.has(job.state);
   const terminal =
     job.state === "complete" ||
     job.state === "cancelled" ||
