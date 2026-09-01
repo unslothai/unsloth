@@ -1323,3 +1323,59 @@ def test_a_delete_that_cannot_retire_leaves_the_name_reserved_from_the_start(
         ).fetchone() is None
     finally:
         conn.close()
+
+
+def test_a_managed_account_cannot_load_a_model_by_absolute_host_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from fastapi import HTTPException
+    from routes.inference import _reject_uncontained_local_path
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    outside = tmp_path / "owner-private.gguf"
+    outside.write_bytes(b"weights")
+
+    token = _bind("alice")
+    try:
+        mine = workspace_root() / "models"
+        mine.mkdir(parents = True, exist_ok = True)
+        private = mine / "alice.gguf"
+        private.write_bytes(b"weights")
+        with pytest.raises(HTTPException) as excinfo:
+            _reject_uncontained_local_path(str(outside), "load")
+        assert excinfo.value.status_code == 403
+        # Its own file, and a hub repo id, both still pass.
+        _reject_uncontained_local_path(str(private), "load")
+        _reject_uncontained_local_path("unsloth/gemma-3-270m", "load")
+    finally:
+        reset_workspace_subject(token)
+
+    # The owner keeps absolute paths: that is the single-user behaviour.
+    token = _bind("unsloth")
+    try:
+        _reject_uncontained_local_path(str(outside), "load")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_diffusion_lora_catalog_is_per_account():
+    from core.inference import diffusion_lora
+
+    dirs = {}
+    for subject in ("unsloth", "alice"):
+        token = _bind(subject)
+        try:
+            dirs[subject] = diffusion_lora.loras_dir()
+        finally:
+            reset_workspace_subject(token)
+    assert dirs["unsloth"] != dirs["alice"]
+    assert dirs["unsloth"] == studio_root() / "loras" / "diffusion"
+    assert workspace_key("alice") in str(dirs["alice"])
+
+
+def test_a_new_recipe_job_drops_the_previous_accounts_event_subscribers():
+    from core.data_recipe.jobs import manager
+
+    src = inspect.getsource(manager)
+    start = src.index("self._events.clear()")
+    assert "self._subs.clear()" in src[start : start + 400]
