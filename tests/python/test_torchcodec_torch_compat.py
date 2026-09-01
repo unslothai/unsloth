@@ -1325,9 +1325,12 @@ def test_git_ban_reads_the_arguments_shlex_produced():
     )
 
     # The allowlist still applies to the joined argument.
-    assert nv.rule_inst_001_git_plus(
-        '!pip install "git+"https://github.com/unslothai/unsloth-zoo.git', "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_001_git_plus(
+            '!pip install "git+"https://github.com/unslothai/unsloth-zoo.git', "nb.ipynb", 0
+        )
+        == []
+    )
 
 
 def test_notebook_validator_keeps_a_pip_call_used_as_a_test():
@@ -1340,9 +1343,7 @@ def test_notebook_validator_keeps_a_pip_call_used_as_a_test():
         '!pip install foo; if pip install "torch==2.9.0"; then true; fi',
         '!while pip install "torch==2.9.0"; do true; done',
     ):
-        assert len(
-            nv.rule_inst_004_torchcodec_torch(cell, older, "nb.ipynb", 0)
-        ) == 1, cell
+        assert len(nv.rule_inst_004_torchcodec_torch(cell, older, "nb.ipynb", 0)) == 1, cell
 
     # The bodies stay conditional.
     for cell in (
