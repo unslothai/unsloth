@@ -143,7 +143,7 @@ def test_reachable_is_true_off_win32(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(
         _msvc_env,
-        "_triton_finds_crt_headers",
+        "_triton_include_dirs",
         lambda: (_ for _ in ()).throw(AssertionError("probed off win32")),
     )
     assert _msvc_env.crt_headers_reachable() is True
@@ -327,10 +327,39 @@ def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch
     monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
     monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: True)
     # Left real, this asks the runner's own Visual Studio and answers for the wrong machine.
-    monkeypatch.setattr(_msvc_env, "_triton_finds_crt_headers", lambda: False)
+    monkeypatch.setattr(_msvc_env, "_triton_include_dirs", lambda: [])
     assert _msvc_env._needs_msvc_headers() is True
     assert _msvc_env.crt_headers_reachable() is False
 
+
+
+def test_a_split_toolchain_is_judged_over_the_union(tmp_path, monkeypatch):
+    """clang-cl reads INCLUDE as system include paths and Triton passes its dirs as /I, so the
+    compile sees both. Judging each source alone gates a machine whose halves are split across
+    them, which is the false positive that costs a user a working torch.compile."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    vc = tmp_path / "vc"
+    vc.mkdir()
+    (vc / "vcruntime.h").write_text("/* stub */")
+    ucrt = tmp_path / "ucrt"
+    ucrt.mkdir()
+    (ucrt / "stdlib.h").write_text("/* stub */")
+    monkeypatch.setenv("INCLUDE", str(vc))
+    _fake_triton(monkeypatch, [str(ucrt)])
+    assert _msvc_env._have_crt_headers() is False
+    assert _msvc_env._triton_finds_crt_headers() is False
+    assert _msvc_env.crt_headers_reachable() is True
+
+
+def test_the_union_still_gates_when_neither_half_is_there(tmp_path, monkeypatch):
+    """The other direction: a union that is still incomplete must gate, or #7595 is unprevented."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    ucrt = tmp_path / "ucrt"
+    ucrt.mkdir()
+    (ucrt / "stdlib.h").write_text("/* stub */")
+    monkeypatch.setenv("INCLUDE", str(tmp_path / "empty"))
+    _fake_triton(monkeypatch, [str(ucrt)])
+    assert _msvc_env.crt_headers_reachable() is False
 
 def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
     import sysconfig

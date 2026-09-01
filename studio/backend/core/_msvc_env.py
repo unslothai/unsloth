@@ -28,7 +28,7 @@ def _have_crt_headers() -> bool:
     return _headers_complete(os.environ.get("INCLUDE", "").split(os.pathsep))
 
 
-def _triton_finds_crt_headers() -> bool | None:
+def _triton_include_dirs() -> list | None:
     """None means the search could not be run, which is not the same as running and finding nothing.
     Only the latter may gate: `find_msvc_winsdk` is private, so a rename or a changed return arity
     would otherwise read as "no headers" and disable torch.compile on a machine with Visual Studio."""
@@ -38,7 +38,12 @@ def _triton_finds_crt_headers() -> bool | None:
     except Exception:  # noqa: BLE001
         logger.debug("Triton's MSVC/WinSDK discovery is unavailable", exc_info = True)
         return None
-    return _headers_complete(inc_dirs)
+    return list(inc_dirs)
+
+
+def _triton_finds_crt_headers() -> bool | None:
+    dirs = _triton_include_dirs()
+    return None if dirs is None else _headers_complete(dirs)
 
 
 def _triton_is_triton_windows() -> bool:
@@ -129,11 +134,18 @@ def crt_headers_reachable() -> bool:
         return True
     if not _needs_msvc_headers():
         return True
-    if _have_crt_headers():
+    env_dirs = os.environ.get("INCLUDE", "").split(os.pathsep)
+    if _headers_complete(env_dirs):
         return True
     # INCLUDE is a positive signal only: unset is the normal case (Studio is not launched from a
     # Developer Command Prompt), so only Triton's own search coming back empty may gate.
-    return _triton_finds_crt_headers() is not False
+    triton_dirs = _triton_include_dirs()
+    if triton_dirs is None:
+        return True
+    # Judged over the UNION, because that is what the compile sees: clang-cl reads INCLUDE as
+    # system include paths and Triton passes its own dirs as /I. Judging each alone rejects a
+    # split toolchain (VC toolset on INCLUDE, SDK discovered by Triton) that compiles fine.
+    return _headers_complete(triton_dirs + env_dirs)
 
 
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
