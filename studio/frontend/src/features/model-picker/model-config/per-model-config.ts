@@ -1319,6 +1319,49 @@ export function deletePerModelConfig(
   return writeMap(map);
 }
 
+/**
+ * The stored record an override key names, or null when this browser holds none.
+ *
+ * Read out of the map rather than parsed. The key joins the id and the variant with a colon,
+ * and a variant can name a directory ("distilled/model-Q6_K") while the id is a path, so the
+ * join cannot be split back apart: a colon is legal in a POSIX filename, and the backend's own
+ * resolver refuses one for that reason. A record knows its own two halves, so the key is tested
+ * against them instead, which is exact wherever a parse has to guess.
+ */
+export function findModelOverrideKeyOwner(
+  overrideKey: string,
+): { modelId: string; ggufVariant: string | null } | null {
+  const key = overrideKey.trim();
+  const foldedKey = normalizeModelIdentity(key);
+  for (const storageKey of Object.keys(readMap())) {
+    const modelId = modelIdFromStorageKey(storageKey);
+    if (!modelId) {
+      continue;
+    }
+    // Already lowercased by modelStorageKey, which is why only the tail folds below.
+    const variant = normalizeGgufVariantIdentity(
+      ggufVariantFromStorageKey(storageKey),
+    );
+    if (!variant) {
+      if (foldedKey === normalizeModelIdentity(modelId)) {
+        return { modelId, ggufVariant: null };
+      }
+      continue;
+    }
+    const cut = key.length - variant.length - 1;
+    if (
+      cut > 0 &&
+      key[cut] === ":" &&
+      key.slice(cut + 1).toLowerCase() === variant &&
+      normalizeModelIdentity(key.slice(0, cut)) ===
+        normalizeModelIdentity(modelId)
+    ) {
+      return { modelId, ggufVariant: variant };
+    }
+  }
+  return null;
+}
+
 /** Stored ids naming the same cached quant as *modelId* under its other spelling. */
 function cachedRepoAliasModelIds(
   modelId: string,

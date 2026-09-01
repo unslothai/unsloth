@@ -12,7 +12,10 @@ import {
   fetchModelOverrides,
   putModelOverride,
 } from "@/features/model-picker/api/model-overrides";
-import { deletePerModelConfigAliases } from "@/features/model-picker/model-config/per-model-config";
+import {
+  deletePerModelConfigAliases,
+  findModelOverrideKeyOwner,
+} from "@/features/model-picker/model-config/per-model-config";
 import { Trash2 } from "lucide-react";
 import {
   type ReactElement,
@@ -144,6 +147,10 @@ export function SavedModelSettingsPanel(): ReactElement {
             putModelOverride(modelId, ggufVariant, null),
           removeLocal: (modelId, ggufVariant) =>
             deletePerModelConfigAliases(modelId, ggufVariant),
+          resolveLocal: (key) => {
+            const owner = findModelOverrideKeyOwner(key);
+            return owner ? [owner.modelId, owner.ggufVariant] : null;
+          },
           reload: load,
           onError: (message) => {
             toast.error(message);

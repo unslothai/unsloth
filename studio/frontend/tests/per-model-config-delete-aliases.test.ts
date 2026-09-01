@@ -17,6 +17,7 @@ const { store } = installLocalStorageFake();
 
 const {
   deletePerModelConfigAliases,
+  findModelOverrideKeyOwner,
   listPerModelConfigs,
   resolveInitialConfig,
   savePerModelConfig,
@@ -168,4 +169,47 @@ test("forgetting a bare row does not reach into the model's quants", () => {
   assert.equal(deletePerModelConfigAliases(REPO_ID, null), true);
 
   assert.equal(resolveInitialConfig(REPO_ID, QUANT).remembered, true);
+});
+
+// A key joins the id and the variant with a colon, so a path that meets a directory-qualified
+// variant cannot be split back apart: a colon is legal in a POSIX filename. The record knows.
+test("a directory-qualified variant under a path resolves to its stored record", () => {
+  store.clear();
+  savePerModelConfig(
+    "/home/u/models/repo",
+    "distilled/model-Q6_K",
+    config(32768),
+  );
+
+  assert.deepEqual(
+    findModelOverrideKeyOwner("/home/u/models/repo:distilled/model-Q6_K"),
+    { modelId: "/home/u/models/repo", ggufVariant: "distilled/model-q6_k" },
+  );
+});
+
+test("the server row's casing still finds the lowercased record", () => {
+  store.clear();
+  savePerModelConfig(REPO_ID, QUANT, config(32768));
+
+  assert.deepEqual(findModelOverrideKeyOwner(`${REPO_ID}:q4_k_m`), {
+    modelId: REPO_ID.toLowerCase(),
+    ggufVariant: "q4_k_m",
+  });
+});
+
+test("a key this browser has no record for resolves to nothing", () => {
+  store.clear();
+  savePerModelConfig(REPO_ID, QUANT, config(32768));
+
+  assert.equal(findModelOverrideKeyOwner("unsloth/Other-GGUF:Q8_0"), null);
+});
+
+test("a bare key resolves to the record with no variant", () => {
+  store.clear();
+  savePerModelConfig(REPO_ID, null, config(4096));
+
+  assert.deepEqual(findModelOverrideKeyOwner(REPO_ID), {
+    modelId: REPO_ID.toLowerCase(),
+    ggufVariant: null,
+  });
 });

@@ -7,6 +7,10 @@ export type ForgetModelOverrideDeps = {
   removeRemote: (modelId: string, ggufVariant: string | null) => Promise<void>;
   /** False when a record was left behind, as deletePerModelConfig reports it. */
   removeLocal: (modelId: string, ggufVariant: string | null) => boolean;
+  /** The stored record this key names, when the browser holds one. */
+  resolveLocal: (
+    overrideKey: string,
+  ) => readonly [string, string | null] | null;
   reload: () => Promise<void>;
   onError: (message: string) => void;
 };
@@ -28,10 +32,17 @@ export async function forgetModelOverride(
     );
     return;
   }
+  // The stored record when the browser has one, because the key's own split is a guess
+  // wherever a path meets a directory-qualified variant. The remote call above keeps the
+  // parsed halves: they rejoin to the exact key the server holds, casing included.
+  const [localId, localVariant] = deps.resolveLocal(overrideKey) ?? [
+    modelId,
+    ggufVariant,
+  ];
   // Reported rather than swallowed: the picker would still apply that copy, and the
   // model's next save mirrors it back to the server the row was just removed from.
   // The list is refetched either way, because the server entry is gone.
-  if (!deps.removeLocal(modelId, ggufVariant)) {
+  if (!deps.removeLocal(localId, localVariant)) {
     deps.onError(FORGET_MODEL_OVERRIDE_LOCAL_FAILED);
   }
   await deps.reload();

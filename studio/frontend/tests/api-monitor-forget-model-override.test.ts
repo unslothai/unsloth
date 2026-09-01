@@ -25,6 +25,7 @@ type Trace = {
 function trace(
   remote: () => Promise<void> = () => Promise.resolve(),
   local = true,
+  stored: readonly [string, string | null] | null = null,
 ): Trace {
   const state: Trace = {
     removedRemote: [],
@@ -40,6 +41,7 @@ function trace(
         state.removedLocal.push([modelId, ggufVariant]);
         return local;
       },
+      resolveLocal: () => stored,
       reload: () => {
         state.reloads += 1;
         return Promise.resolve();
@@ -144,5 +146,37 @@ test("a colon inside a local path is part of the name, not a separator", async (
 
   assert.deepEqual(state.removedRemote, [
     ["/home/u/models/foo:bar/baz.gguf", null],
+  ]);
+});
+
+// The browser knows its own two halves; the key's colon does not say which one it is when a
+// path meets a directory-qualified variant, and a guess sends the cleanup at nothing.
+test("the stored record wins over the key's own split", async () => {
+  const state = trace(() => Promise.resolve(), true, [
+    "/home/u/models/repo",
+    "distilled/model-q6_k",
+  ]);
+
+  await forgetModelOverride(
+    "/home/u/models/repo:distilled/model-Q6_K",
+    state.deps,
+  );
+
+  // The remote call keeps the parsed halves: they rejoin to the key the server holds.
+  assert.deepEqual(state.removedRemote, [
+    ["/home/u/models/repo:distilled/model-Q6_K", null],
+  ]);
+  assert.deepEqual(state.removedLocal, [
+    ["/home/u/models/repo", "distilled/model-q6_k"],
+  ]);
+});
+
+test("with nothing stored the parsed halves are used", async () => {
+  const state = trace();
+
+  await forgetModelOverride(PATH_KEY, state.deps);
+
+  assert.deepEqual(state.removedLocal, [
+    ["/home/santiago/Temp-GGUF/qwen38/UD-IQ3_XXS", "UD-IQ3_XXS"],
   ]);
 });
