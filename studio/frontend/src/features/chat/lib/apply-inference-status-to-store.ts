@@ -24,6 +24,7 @@ import {
   loadOptionalBool,
   loadedGpuMemoryFields,
   normalizeSpeculativeType,
+  noteLoadedModelReasoningMode,
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
@@ -33,7 +34,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelRow } from "../types/runtime";
-import { resolveQwenThinkingParams } from "../utils/qwen-params";
+import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
@@ -142,6 +143,11 @@ export type ApplyInferenceStatusOptions = {
    * status -- without it a variant-only switch underneath the tab reads as
    * steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
+  /** Seed settings while the caller holds the model-loading lease. */
+  seedLoadParams?: boolean;
+  /** This status belongs to the model already resident when Studio started,
+   * so the persisted global sampling snapshot belongs to this checkpoint. */
+  adoptingExistingServerModel?: boolean;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -177,6 +183,8 @@ export function applyActiveModelStatusToStore(
       {
         fromModelDefaults: true,
         maxTokensCap: replayMaxTokensCap(status.context_length),
+        migrateOwnedGlobalQwenDefaults:
+          options.adoptingExistingServerModel === true,
       },
     );
   }
@@ -217,7 +225,7 @@ export function applyActiveModelStatusToStore(
       : status.chat_template;
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
-  const seedLoadParams = !prevState.modelLoading;
+  const seedLoadParams = options.seedLoadParams ?? !prevState.modelLoading;
   // A model/variant change underneath this tab. The controls in the store belong
   // to the model that just left, so they are reseeded here the way every other
   // load param at this site already is: the echo cannot stand in, since a new
@@ -684,6 +692,11 @@ export function applyActiveModelStatusToStore(
     useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
   }
 
+  noteLoadedModelReasoningMode(
+    checkpointId,
+    reasoningAlwaysOn || useChatRuntimeStore.getState().reasoningEnabled,
+  );
+
   // Every status merge carries the base family recommendation, including the
   // refresh immediately after performLoad. Layer the active Qwen mode over it
   // so that refresh cannot undo performLoad's thinking table. This also covers
@@ -701,33 +714,46 @@ export function applyActiveModelStatusToStore(
         {
           fromModelDefaults: true,
           maxTokensCap: replayMaxTokensCap(status.context_length),
+          migrateOwnedGlobalQwenDefaults:
+            options.adoptingExistingServerModel === true,
         },
       );
     }
   }
 }
 
-/**
- * Adopt the model already loaded on the inference server (e.g. via
- * ``unsloth studio run -m``) into the chat UI checkpoint without
- * triggering a new /api/inference/load.
- */
-export async function tryAdoptServerActiveModel(): Promise<boolean> {
+/** Adopt a server-loaded model without issuing another inference load. */
+export async function tryAdoptServerActiveModel(options?: {
+  /** Ignore modelLoading because the caller owns that lease. */
+  allowWhileModelLoading?: boolean;
+  /** A status the caller already read, so the send path does not fetch twice. */
+  status?: InferenceStatusResponse;
+}): Promise<boolean> {
   const store = useChatRuntimeStore.getState();
   if (store.params.checkpoint) {
     return true;
   }
-
-  let status: InferenceStatusResponse;
-  try {
-    status = await getInferenceStatus();
-  } catch {
-    // Status endpoint unavailable: fall back to the normal auto-load path.
+  if (store.modelLoading && !options?.allowWhileModelLoading) {
     return false;
+  }
+  let status: InferenceStatusResponse;
+  if (options?.status) {
+    status = options.status;
+  } else {
+    try {
+      status = await getInferenceStatus();
+    } catch {
+      // Status endpoint unavailable: fall back to the normal auto-load path.
+      return false;
+    }
   }
   // Not something chat can adopt; the sweep below picks a real chat model, which evicts
   // it exactly as an image load would.
-  if (!status.active_model || isSpeechOnlyStatus(status)) {
+  if (
+    !status.active_model ||
+    (status.loading?.length ?? 0) > 0 ||
+    isSpeechOnlyStatus(status)
+  ) {
     return false;
   }
 
@@ -736,16 +762,22 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
     return false;
   }
 
-  // Re-check after the await: keep a checkpoint the user picked meanwhile.
-  const previousCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
-  if (previousCheckpoint) {
-    return true;
+  // Preserve concurrent changes unless this caller owns the load lease.
+  const latest = useChatRuntimeStore.getState();
+  const previousCheckpoint = latest.params.checkpoint;
+  if (
+    previousCheckpoint ||
+    (latest.modelLoading && !options?.allowWhileModelLoading)
+  ) {
+    return !!previousCheckpoint;
   }
-  const previousGgufVariant = useChatRuntimeStore.getState().activeGgufVariant;
+  const previousGgufVariant = latest.activeGgufVariant;
   store.setCheckpoint(checkpointId, status.gguf_variant);
   applyActiveModelStatusToStore(status, {
     previousCheckpoint,
     previousGgufVariant,
+    seedLoadParams: options?.allowWhileModelLoading,
+    adoptingExistingServerModel: true,
   });
   return true;
 }

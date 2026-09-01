@@ -690,8 +690,15 @@ def _walk_from(by_id: dict, parent_of: dict, leaf) -> list[dict]:
     return chain
 
 
-def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> Optional[str]:
-    """Which stored leaf the REQUEST is on, by matching its text. None when nothing does.
+def _branch_seed(
+    messages: list[dict],
+    by_id: dict,
+    parent_of: dict,
+    branch,
+    *,
+    require_unique: bool = False,
+) -> Optional[str]:
+    """Which stored endpoint the REQUEST proves by matching text. None when no row matches.
 
     The newest stored row is not the branch the request is on. Switching to a sibling,
     continuing there and switching back leaves the abandoned branch holding the greatest
@@ -707,19 +714,28 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
     """
     if not branch:
         return None
+
     # A LIST, in order, not a set: sets lose repetition and ordering, so an abandoned
     # sibling with the same distinct texts tied with the request's own branch and, being
     # newer, won. A multiset fixes the repeat case but not the reordered one, so this
     # scores an in-order run. System and developer messages are excluded: Unsloth's
     # prepended chat and project instructions are not part of the stored chain.
+    def _key(message):
+        """What a message matches ON. Role-blind let a rewound, unstored "Continue." match
+        an ABANDONED assistant reply of the same text and adopt its boundary."""
+        text = _normalise_cased(_probe_text(message))
+        if not text:
+            return None
+        return (str(message.get("role") or ""), text) if require_unique else text
+
     wanted = [
-        text
-        for text in (
-            _normalise_cased(_probe_text(message))
+        key
+        for key in (
+            _key(message)
             for message in _as_wire(branch)
             if str(message.get("role") or "") not in ("system", "developer")
         )
-        if text
+        if key
     ]
     if not wanted:
         return None
@@ -736,8 +752,13 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
         key = lambda identifier: order.get(identifier, -1),
         reverse = True,
     )
+    if require_unique and len(leaves) > _BRANCH_SEED_MAX_LEAVES:
+        # A capped search cannot prove that an unvisited sibling does not tie the winner.
+        return None
     best = None
+    best_matched = None
     best_score = 0
+    best_tied = False
     # Rendered once per STORED ROW, not per leaf: `_as_wire` expands a row the same way
     # whichever chain it is walked in.
     rendered: dict = {}
@@ -745,9 +766,9 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
     def _texts_of(record: dict) -> list:
         identifier = record.get("id")
         if identifier is None:
-            return [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
+            return [_key(m) for m in _as_wire([record])]
         if identifier not in rendered:
-            rendered[identifier] = [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
+            rendered[identifier] = [_key(m) for m in _as_wire([record])]
         return rendered[identifier]
 
     for leaf in leaves[:_BRANCH_SEED_MAX_LEAVES]:
@@ -756,24 +777,39 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
         # neither side is a subsequence of the other.
         cursor = 0
         score = 0
+        last_matched = None
         for record in _walk_from(by_id, parent_of, leaf):
-            for text in _texts_of(record):
-                spots = where.get(text) if text else None
+            for key in _texts_of(record):
+                spots = where.get(key) if key else None
                 if not spots:
                     continue
                 index = bisect.bisect_left(spots, cursor)
                 if index < len(spots):
                     cursor = spots[index] + 1
                     score += 1
+                    last_matched = record.get("id")
         if score > best_score:
             best, best_score = leaf, score
-        if best_score >= len(wanted):
+            best_matched = last_matched
+            best_tied = False
+        elif require_unique and score == best_score and score > 0:
+            # Tied on the SAME endpoint is not ambiguity: two retries fork past the proof.
+            best_tied = best_tied or last_matched != best_matched
+        if best_score >= len(wanted) and not require_unique:
             # Every message the request carries is on this chain; nothing can beat it.
             break
+    if require_unique:
+        return None if best_tied else best_matched
     return best
 
 
-def _active_chain(messages: list[dict], branch = None) -> list[dict]:
+def _active_chain(
+    messages: list[dict],
+    branch = None,
+    *,
+    fallback: bool = True,
+    require_unique: bool = False,
+) -> list[dict]:
     """The rows on ONE branch, oldest first, rather than the whole stored DAG.
 
     `list_chat_messages` is an unfiltered SELECT ordered by time, but a thread is a tree:
@@ -789,26 +825,62 @@ def _active_chain(messages: list[dict], branch = None) -> list[dict]:
     Walked newest leaf back to root, the same shape the frontend's `orderBySelectedBranch`
     uses to decide what the model is actually shown. `parent_id` is missing on rows written
     before that column, so the previous row stands in for it, which is exactly a flat list
-    when nothing branches.
+    when nothing branches. ``fallback=False`` lets callers decline when the request cannot
+    seed a chain instead of silently reading the newest stored sibling. ``require_unique``
+    likewise declines when indistinguishable leaves tie for the best branch match and trims
+    the winner after the last stored row the request actually matched.
     """
     if not messages:
         return []
     by_id: dict = {}
     parent_of: dict = {}
+    # Rows whose parent is storage order rather than a real link. The root's absent parent
+    # is not synthesized: nothing stood in for it.
+    synthesized: set = set()
     previous = None
     for message in messages:
         identifier = message.get("id")
         if identifier is None:
             continue
         by_id[identifier] = message
-        parent_of[identifier] = message.get("parentId") or message.get("parent_id") or previous
+        parent = message.get("parentId") or message.get("parent_id")
+        # A row that CARRIES the column and holds null is a root the client meant, as
+        # editing the first prompt makes. Only a row written before the column exists has
+        # nothing to say, and there storage order stands in. Under the legacy path the
+        # stand-in is unconditional, as it always was: `_transcript_positions` numbers
+        # turns off this chain, and rooting a null there renumbers the whole archive.
+        stated = require_unique and ("parentId" in message or "parent_id" in message)
+        if parent is None and previous is not None and not stated:
+            synthesized.add(identifier)
+            parent = previous
+        parent_of[identifier] = parent
         previous = identifier
     if not by_id:
-        return list(messages)
+        return list(messages) if fallback else []
+    if require_unique and synthesized:
+        # Storage order is not ancestry. Where it strung INDISTINGUISHABLE rows into one
+        # chain it made the abandoned twin an ancestor of the live one, and the greedy trim
+        # stopped on the twin, replaying ITS deeper boundary instead of the safe vote
+        # across them. The twins need not be adjacent: the abandoned branch's own
+        # continuation sits between them. Threads the text can still tell apart are left
+        # alone, since declining on every invented link would refuse legacy ancestry that
+        # storage order does recover.
+        seen: set = set()
+        for message in messages:
+            if message.get("id") is None:
+                continue
+            key = (message.get("role"), _normalise_cased(_probe_text(message)))
+            if key[1] and key in seen:
+                return []
+            seen.add(key)
     # The request's own branch when it can be found, the newest row when it cannot: empty
     # positions empty every seat and send every turn to MAX + 1, which is worse than
     # reading the wrong branch.
-    seed = _branch_seed(messages, by_id, parent_of, branch) or messages[-1].get("id")
+    seed = _branch_seed(messages, by_id, parent_of, branch, require_unique = require_unique)
+    if seed is None:
+        if not fallback:
+            return []
+        seed = messages[-1].get("id")
     return _walk_from(by_id, parent_of, seed) or list(messages)
 
 
