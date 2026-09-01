@@ -198,7 +198,18 @@ for v in UNSLOTH_HOME UNSLOTH_PORTABLE UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYT
     esac
 done
 
-# ── 12. The uninstaller reads the master root back out of studio.conf ──
+# ── 12. The PATH warning does not fire on our own portable shim ──
+# The old symlink shared a realpath with the venv entry point; a wrapper script
+# resolves to itself, so the "another 'unsloth' wins on PATH" check saw the shim
+# as a foreign install and told the user to avoid the very path the installer
+# had just recommended. Observed on a real --root install before the fix.
+path_warn_block="$(sed -n "/^# Warn if another 'unsloth' wins on PATH/,/^fi\$/p" "$INSTALL")"
+case "$path_warn_block" in
+    *'_shim_real'*) printf '  PASS  %s\n' "PATH warning knows about the portable shim" ;;
+    *) printf '  FAIL  %s\n' "PATH warning knows about the portable shim"; fails=$((fails+1)) ;;
+esac
+
+# ── 13. The uninstaller reads the master root back out of studio.conf ──
 # The venv is at <root>/studio, so the uninstaller's three-dirname walk lands on
 # the Studio root and would leave <root>/{bin,cache,llama.cpp,node} behind.
 UNINSTALL="$HERE/../../scripts/uninstall.sh"
