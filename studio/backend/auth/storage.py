@@ -1033,6 +1033,7 @@ def _workspace_jobs_active(username: str) -> bool:
     cost of guessing wrong is one account name staying reserved a while longer,
     against a live worker writing into somebody else's files.
     """
+
     def _training_active() -> bool:
         from core.training.training import get_training_backend
         backend = get_training_backend()
