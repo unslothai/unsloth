@@ -6295,8 +6295,6 @@ export function createOpenAIStreamAdapter(
                               : {}),
                             context_length: ragScopeContextLength({
                               isExternalRequest,
-                              loadedCustomContextLength:
-                                runtime.loadedCustomContextLength,
                               loadedContextLength: runtime.loadedContextLength,
                               maxSeqLength: params.maxSeqLength,
                             }),
@@ -6520,8 +6518,6 @@ export function createOpenAIStreamAdapter(
                             : {}),
                           context_length: ragScopeContextLength({
                             isExternalRequest,
-                            loadedCustomContextLength:
-                              runtime.loadedCustomContextLength,
                             loadedContextLength: runtime.loadedContextLength,
                             maxSeqLength: params.maxSeqLength,
                           }),
