@@ -21,6 +21,7 @@ from hub.utils.hf_tokens import (
     HfTokenArg,
     apply_token_to_child_env,
     is_anonymous,
+    normalize_token,
 )
 from utils.utils import without_hf_auth
 from utils.training_runs import (
@@ -1387,7 +1388,9 @@ def _detect_audio_from_tokenizer(
             if local_path.is_dir():
                 roots.append(local_path)
         else:
-            repo_dir = get_cache_path(model_name)
+            # Read before any network branch, and it never authorizes, so an anonymous
+            # caller would get a cached private repo's audio tokens whether online or not.
+            repo_dir = None if is_anonymous(hf_token) else get_cache_path(model_name)
             if repo_dir is not None and repo_dir.is_dir():
                 snapshots_dir = repo_dir / "snapshots"
                 if snapshots_dir.is_dir() and revision is None:
@@ -3186,6 +3189,10 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     except Exception as e:
         # Timeout or transient network error: fall back to the local cache marker, don't hard-fail.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
+        if is_anonymous(hf_token):
+            # The anonymous 404 for a private repo arrives here too, and the marker read
+            # never authorizes, so falling back would answer the question anyway.
+            return False
         is_emb = _embedding_marker_in_hf_cache(model_name)
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
@@ -3521,7 +3528,7 @@ def get_base_model_from_lora_identifier(
     if hf_file_definitely_absent(
         identifier,
         "adapter_config.json",
-        token = hf_token if hf_token else None,
+        token = normalize_token(hf_token),
     ):
         return None
 
@@ -3531,7 +3538,7 @@ def get_base_model_from_lora_identifier(
             cfg_path = hf_hub_download(
                 identifier,
                 "adapter_config.json",
-                token = hf_token if hf_token else None,
+                token = normalize_token(hf_token),
                 cache_dir = active_hf_hub_cache(),
             )
         except (EntryNotFoundError, RepositoryNotFoundError):

@@ -62,6 +62,7 @@ function load(
   calls: { n: number },
   tokenStore = tokenStoreStub(),
   gate: Gate | null = null,
+  gates: Gate[] | null = null,
 ): ConfirmToken {
   const noopStore = {
     getState: () => ({
@@ -86,8 +87,11 @@ function load(
       "./api": {
         validateHfToken: async () => {
           calls.n += 1;
-          if (gate) {
-            await gate.promise;
+          // A per-call gate when a queue is supplied, so one request can settle while
+          // another is still pending; otherwise the single shared gate, or none.
+          const own = gates ? gates[calls.n - 1] : gate;
+          if (own) {
+            await own.promise;
           }
           return { status, retryAfterSeconds: null };
         },
@@ -227,4 +231,30 @@ test("replacing the token that was already stored drops its window", async () =>
 
   await mod.prepareHfTokenForUse("hf_old");
   assert.equal(calls.n, 2, "the superseded credential kept its window");
+});
+
+
+test("a replacement request is not evicted by the old one settling", async () => {
+  // forget() drops the in-flight entry, a new preparation takes the slot, and the old
+  // promise's finally must not then delete that live replacement.
+  // "unavailable" is never cached, so sharing is observable purely through the count.
+  const calls = { n: 0 };
+  const gates = [makeGate(), makeGate(), makeGate()];
+  const mod = load("unavailable", calls, tokenStoreStub(), null, gates);
+
+  const stale = mod.prepareHfTokenForUse("hf_a");
+  mod.forgetHfTokenValidation("hf_a");
+
+  const replacement = mod.prepareHfTokenForUse("hf_a");
+  assert.equal(calls.n, 2, "the replacement did not start its own request");
+
+  // Only the first settles; the replacement is still in flight.
+  gates[0].open();
+  await stale;
+
+  const shared = mod.prepareHfTokenForUse("hf_a");
+  assert.equal(calls.n, 2, "the settling request evicted its live replacement");
+
+  gates[1].open();
+  await Promise.all([replacement, shared]);
 });

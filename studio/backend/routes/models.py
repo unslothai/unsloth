@@ -2489,9 +2489,12 @@ async def get_model_config(
                 model_type = derive_model_type(is_vision, audio_type, is_embedding),
                 base_model = base_model,
                 max_position_embeddings = max_position_embeddings,
+                # Keyed on what the target actually is, not on the flag: an anonymous
+                # caller is sent back to the bare repo id above, and sizing that as a
+                # relative path returns None, losing the size for public models too.
                 model_size_bytes = (
                     _get_snapshot_model_size_bytes(inspection_target)
-                    if prefer_local_cache
+                    if prefer_local_cache and inspection_target != model_name
                     else _get_model_size_bytes(model_name, hf_token)
                 ),
             )

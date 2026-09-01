@@ -73,7 +73,12 @@ function validateOncePerBurst(token: string): Promise<HfTokenValidationResult> {
       return result;
     })
     .finally(() => {
-      inFlight.delete(token);
+      // Only if it is still ours: forgetHfTokenValidation can drop this entry and a new
+      // preparation can take the slot before this one settles, and an unconditional
+      // delete would evict that live replacement and send the next caller to the network.
+      if (inFlight.get(token) === request) {
+        inFlight.delete(token);
+      }
     });
   inFlight.set(token, request);
   return request;

@@ -758,3 +758,90 @@ def test_an_anonymous_seed_preview_is_refused_while_offline(monkeypatch):
         asyncio.run(seed_routes.inspect_seed_dataset(payload, allow_ambient_token = False))
 
     assert excinfo.value.status_code == 404
+
+
+@pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
+def test_the_lora_resolver_does_not_launder_the_sentinel(monkeypatch, hf_token):
+    """`hf_token if hf_token else None` turned the sentinel back into ambient access."""
+    import utils.models.model_config as model_config_module
+
+    seen = {}
+
+    def _absent(
+        _identifier,
+        _filename,
+        token = None,
+    ):
+        seen["token"] = token
+        return True
+
+    monkeypatch.setattr("utils.hf_probe.hf_file_definitely_absent", _absent, raising = False)
+
+    model_config_module.get_base_model_from_lora_identifier(
+        "org/private-adapter", hf_token = hf_token
+    )
+
+    if is_anonymous(hf_token):
+        assert seen["token"] is False, "the scan pipeline restored the ambient token"
+    else:
+        assert seen["token"] == (hf_token or None)
+
+
+@pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
+def test_the_audio_tokenizer_probe_does_not_read_the_cache_anonymously(monkeypatch, hf_token):
+    """The cache root is walked before any network branch, online as well as offline."""
+    import utils.models.model_config as model_config_module
+
+    reads = {"n": 0}
+
+    def _cache_path(_name):
+        reads["n"] += 1
+        return None
+
+    monkeypatch.setattr(model_config_module, "get_cache_path", _cache_path)
+    monkeypatch.setattr(model_config_module, "is_local_path", lambda _n: False)
+
+    try:
+        model_config_module._detect_audio_from_tokenizer("org/private", hf_token = hf_token)
+    except Exception:
+        pass
+
+    if is_anonymous(hf_token):
+        assert reads["n"] == 0, "the anonymous caller walked the hub cache"
+    else:
+        assert reads["n"] > 0, "the authorized caller lost its cache fast path"
+
+
+def test_the_embedding_transient_fallback_is_denied_to_an_anonymous_caller(monkeypatch):
+    """The anonymous 404 for a private repo lands in the same except branch."""
+    import utils.models.model_config as model_config_module
+
+    monkeypatch.setattr(model_config_module, "is_local_path", lambda _n: False)
+    monkeypatch.setattr("utils.utils.hf_env_offline", lambda: False, raising = False)
+    monkeypatch.setattr(model_config_module, "_embedding_detection_cache", {})
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("404")
+
+    monkeypatch.setattr(model_config_module, "model_info", _boom, raising = False)
+
+    def _marker(_name):
+        raise AssertionError("the anonymous caller read the embedding cache marker")
+
+    monkeypatch.setattr(model_config_module, "_embedding_marker_in_hf_cache", _marker)
+
+    assert model_config_module.is_embedding_model("org/private", hf_token = False) is False
+
+
+def test_a_public_model_keeps_its_size_when_the_cache_is_bypassed():
+    """The anonymous short-circuit returns the bare repo id, which is not a path.
+
+    Sizing it as one returns None, so public models lost model_size_bytes entirely.
+    """
+    import inspect
+
+    source = inspect.getsource(models_routes.get_model_config)
+
+    assert "inspection_target != model_name" in source, (
+        "snapshot sizing is still chosen from the flag rather than the target"
+    )
