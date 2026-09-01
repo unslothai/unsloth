@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Regeneration must reuse the existing user message by id. assistant-ui Reload
- * starts a run under that user parent; it must not insert a cloned user sibling.
- * Content-equal user ids are still distinct branches and must not be inferred as
- * deletes on autosave (stale-tab / intentional identical prompts).
- */
+/** Regeneration reuses its user id; equal-content user ids remain distinct branches. */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";

@@ -116,10 +116,8 @@ export async function syncExportedRepositoryToBackend(
 ): Promise<void> {
   // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and
   // this used to make every save pay for the same GET /threads/{id} twice.
-  // Message id is identity. Identical text under the same parent can still be
-  // two live branches (or a stale tab's view of one). Inferring deletes from
-  // content would mark a persisted id for removal without an authoritative
-  // version, so the payload is forwarded as exported.
+  // Equal content can belong to distinct message ids, so forward only explicit
+  // delete intent rather than inferring it from content.
   const records = exp.messages.map(({ message, parentId }) =>
     exportedItemToRecord(remoteId, parentId, message),
   );

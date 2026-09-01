@@ -3662,12 +3662,7 @@ def upsert_chat_message(
 
 
 def _unique_messages_by_id(messages: list[dict]) -> list[dict]:
-    """Keep one record per message id. Last occurrence wins.
-
-    A repeated id is a payload defect, not a sibling to collapse: identity is the
-    id, so the later copy replaces the earlier one instead of remapping the id onto
-    itself and dropping the row.
-    """
+    """Keep one record per message id, in first-seen order; the last copy wins."""
     by_id: dict[str, dict] = {}
     order: list[str] = []
     for message in messages:
