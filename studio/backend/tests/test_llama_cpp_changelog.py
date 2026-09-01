@@ -159,8 +159,7 @@ def test_cpp_identifiers_keep_literal_underscores():
 
 
 def test_repo_with_a_dot_segment_never_reaches_github(monkeypatch):
-    # "." is inside the repo character class, so "owner/.." matched the shape check
-    # and would have walked out of /repos/ on any normalizing proxy.
+    # "." is in the repo character class, so "owner/.." passed the shape check.
     called = False
 
     def fail(*_args, **_kwargs):
@@ -175,8 +174,7 @@ def test_repo_with_a_dot_segment_never_reaches_github(monkeypatch):
 
 
 def test_pull_and_issue_urls_share_one_identity_namespace():
-    # GitHub numbers issues and pull requests from the same sequence, so the same
-    # reference written three ways must match itself.
+    # One number space, so the same reference written three ways must match itself.
     from_pull = changes._identities(
         "Fix a crash ([ggml-org/llama.cpp#900](https://github.com/ggml-org/llama.cpp/pull/900))"
     )
@@ -274,8 +272,7 @@ def test_release_page_url_is_github_or_nothing():
 
 
 def test_unavailable_reason_separates_permanent_from_transient(monkeypatch):
-    # A release that predates the bullet format can never be compared, so the
-    # banner must not offer a Retry for it.
+    # Predating the bullet format is permanent, so the banner offers no Retry.
     releases = {
         "prose": {"body": "Automated Unsloth llama.cpp prebuild for upstream b9000."},
         "itemised": {"body": OLD_BODY},
@@ -297,10 +294,9 @@ def test_unavailable_reason_separates_permanent_from_transient(monkeypatch):
 
 
 def test_a_noncumulative_repo_is_never_compared(monkeypatch):
-    # --published-repo can point the install at upstream, whose notes are
-    # per-release. Diffing two of them omits every release in between: on real
-    # data, b10721 -> b10734 reported 5 "changes" (commit-message lines and an
-    # attestation URL) and dropped 324 bullets from the 9 releases between them.
+    # Measured on real upstream releases: b10721 -> b10734 reported 5 "changes"
+    # (commit-message lines and an attestation URL) and dropped the 324 bullets in
+    # the 9 releases between them, because per-release notes are not cumulative.
     upstream = {
         "b10721": {"body": "<details open>\n\n- webgpu : avoid a crash (#28045)\n"},
         "b10734": {"body": "<details open>\n\n- metal : enable Metal 4.0 (#27461)\n"},
@@ -312,8 +308,7 @@ def test_a_noncumulative_repo_is_never_compared(monkeypatch):
     )
 
     assert changes.changelog_for_update("ggml-org/llama.cpp", "b10721", "b10734") is None
-    # Permanent: that repository will never publish cumulative notes, so the
-    # banner must not offer a Retry.
+    # Permanent: that repo will never publish cumulative notes, so no Retry.
     assert (
         changes.unavailable_reason("ggml-org/llama.cpp", "b10721", "b10734")
         == "notes_not_comparable"
@@ -321,9 +316,8 @@ def test_a_noncumulative_repo_is_never_compared(monkeypatch):
 
 
 def test_a_case_variant_of_the_official_repo_is_still_official(monkeypatch):
-    # --published-repo UnslothAI/llama.cpp resolves to the same repository on
-    # GitHub and the installer persists that spelling, so a case-sensitive policy
-    # check would label the official repo custom and withhold the comparison.
+    # GitHub resolves this to the same repository and the installer persists the
+    # spelling, so a case-sensitive check would label the official repo custom.
     releases = {"old": {"body": OLD_BODY}, "new": {"body": LATEST_BODY}}
     monkeypatch.setattr(
         changes,
@@ -341,9 +335,8 @@ def test_a_case_variant_of_the_official_repo_is_still_official(monkeypatch):
 
 
 def test_a_bodyless_target_is_transient_not_permanent(monkeypatch):
-    # Only the installed side can be permanently uncomparable. The target is the
-    # newest release, so a missing body is a publishing gap that may be filled in,
-    # and the banner must keep offering Retry for it.
+    # The target is the newest release, so a missing body is a publishing gap that
+    # may be filled in: keep the Retry.
     releases = {"itemised": {"body": OLD_BODY}, "bodyless": {}}
     monkeypatch.setattr(
         changes,

@@ -18,9 +18,8 @@ import type { MouseEvent, ReactElement, ReactNode } from "react";
 const LINK_CLASS =
   "font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70";
 
-// A bare target="_blank" has nowhere to go in the Tauri webview, which creates no
-// window of its own. openLink() hands the URL to the system browser there and
-// falls back to window.open on the web, matching MarkdownPreview.
+// target="_blank" has nowhere to go in the Tauri webview; openLink() hands the URL
+// to the system browser and falls back to window.open, matching MarkdownPreview.
 function handleExternalClick(event: MouseEvent<HTMLAnchorElement>): void {
   if (openLink(event.currentTarget.href)) {
     event.preventDefault();
@@ -123,8 +122,7 @@ export function LlamaUpdateChangelogPanel({
                     <span>
                       {" ("}
                       {change.links.map((link, linkIndex) => (
-                        // A bullet can cite the same URL twice under different
-                        // labels, so the URL alone is not a unique key.
+                        // A bullet can cite one URL twice under different labels.
                         <span key={`${linkIndex}-${link.url}`}>
                           {linkIndex > 0 ? ", " : ""}
                           <a

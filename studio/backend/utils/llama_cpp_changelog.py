@@ -29,22 +29,16 @@ from utils.prebuilt.freshness_flow import (
 logger = structlog.get_logger(__name__)
 
 MAX_CHANGES = 50
-# The only repository whose notes this module can read. Its bodies are generated
-# (cumulative, one bullet per carried PR); --published-repo can point an install
-# at upstream or a mirror, whose per-release notes are a different document. On
-# ggml-org/llama.cpp, b10721 -> b10734 reported 5 "changes" -- commit-message
-# lines and an attestation URL -- and dropped 324 bullets from the 9 releases in
-# between, because a per-release body says nothing about what is still carried.
+# The only repo whose notes this module can read: generated, cumulative, one
+# bullet per carried PR. --published-repo can point elsewhere, and a per-release
+# body says nothing about what is still carried.
 CUMULATIVE_NOTES_REPO = "unslothai/llama.cpp"
-# 4 MiB. A release body is a few KB; the cap only stops an unbounded read if the
-# far side ever stops behaving like the GitHub API.
+# A release body is a few KB; the cap only bounds a far side that misbehaves.
 MAX_RELEASE_BYTES = 4 * 1024 * 1024
-# A forced retry bypasses the memos, so without a floor a user holding down the
-# banner's Retry button issues two uncached GitHub calls per click.
+# Without a floor, a held-down Retry is two uncached GitHub calls per click.
 FORCE_REFRESH_MIN_INTERVAL_SECONDS = 30.0
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-# "." and ".." are valid under _REPO because "." is in the class above, and
-# "owner/.." would walk out of /repos/ on any normalizing proxy.
+# "." is in _REPO's class, so "owner/.." walks out of /repos/ on a normalizing proxy.
 _DOT_SEGMENT = re.compile(r"^\.+$")
 _BULLET = re.compile(r"^ {0,3}[-*+]\s+(.+?)\s*$")
 _LINK = re.compile(r"\[([^\]]+)]\((https://github\.com/[^\s)]+)\)")
@@ -66,8 +60,7 @@ def _valid_repo(repo: str) -> bool:
 
 def _is_cumulative_repo(repo: str) -> bool:
     """Case-folded: GitHub owner/name is case-insensitive and --published-repo
-    persists whatever spelling was typed, so ``UnslothAI/llama.cpp`` is the same
-    official repository and must not be labelled a custom one."""
+    persists whatever spelling was typed."""
     return repo.casefold() == CUMULATIVE_NOTES_REPO.casefold()
 
 
@@ -107,8 +100,7 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
     )
     try:
         with urllib.request.urlopen(request, timeout = timeout) as response:
-            # Bounded: read one byte past the cap so an oversized body is rejected
-            # rather than buffered in full.
+            # One byte past the cap: reject an oversized body without buffering it.
             raw = response.read(MAX_RELEASE_BYTES + 1)
         if len(raw) > MAX_RELEASE_BYTES:
             logger.debug("llama changelog release too large", repo = repo, tag = tag)
@@ -118,8 +110,7 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
         urllib.error.URLError,
         urllib.error.HTTPError,
         OSError,
-        # IncompleteRead on a truncated response is an HTTPException, NOT an
-        # OSError, so without this a mid-read cut escapes to any direct caller.
+        # A truncated read raises HTTPException, which is not an OSError.
         http.client.HTTPException,
         UnicodeDecodeError,
         json.JSONDecodeError,
@@ -141,7 +132,6 @@ def _release_for_tag(
     # to extend the TTL. freshness_flow uses wall time because it persists to disk.
     now = time.monotonic()
     if force_refresh:
-        # Honour the bypass, but not faster than once per key per interval.
         forced_at = _release_forced_at.get(key)
         if forced_at is not None and now - forced_at < FORCE_REFRESH_MIN_INTERVAL_SECONDS:
             force_refresh = False
@@ -152,17 +142,15 @@ def _release_for_tag(
         cached = _release_memo.get(key)
         fresh = cached is not None and now - cached[0] < RELEASE_CACHE_TTL_SECONDS
         if failed_at is not None and now - failed_at < RELEASE_FAILURE_CACHE_TTL_SECONDS:
-            # Suppress the retry, but an entry past its TTL is still expired: do
-            # not let a recent failure resurrect a stale body as if it were fresh.
+            # Suppress the retry, but never resurrect an entry past its TTL.
             return cached[1] if fresh else None
         if fresh:
             return cached[1]
     release = _fetch_release(repo, tag)
     if release is None:
         _release_failed_at[key] = time.monotonic()
-        # Fall back to the last good body only while it is still within its TTL.
-        # An exact release that has become unreachable must not keep answering
-        # from an expired entry, or the panel presents a stale comparison as matched.
+        # Last-good fallback only within the TTL, or an unreachable release keeps
+        # answering stale and the panel presents that as matched.
         cached = _release_memo.get(key)
         if cached and time.monotonic() - cached[0] < RELEASE_CACHE_TTL_SECONDS:
             return cached[1]
@@ -181,9 +169,8 @@ def _plain_text(markdown: str) -> str:
 
 def _entry(markdown: str) -> dict:
     # Metadata starts at " ([", so a title keeps its parens: GLM-5-Next (GLM-5.3-Flash).
-    # rfind, not find: the generator always appends metadata as the final
-    # parenthesised group, and a PR title may itself contain " ([" -- with find,
-    # "vulkan: handle ([a],[b]) tuples ([#5](...))" renders as "vulkan: handle".
+    # rfind, not find: metadata is the LAST parenthesised group, and a title may
+    # contain " ([" -- "vulkan: handle ([a],[b]) tuples ([#5](...))".
     metadata_at = markdown.rfind(" ([")
     summary_markdown = markdown[:metadata_at] if metadata_at >= 0 else markdown
     links = []
@@ -199,10 +186,8 @@ def _identities(markdown: str) -> set[str]:
     """Stable aliases for one carried change: a patch migrated to an Unsloth carry
     PR links that PR but still says ``ggml-org#24423``, and both must match."""
     identities = set()
-    # One namespace for all three notations. GitHub issues and pull requests share
-    # a repository's number space, so ``/issues/900``, ``/pull/900`` and the textual
-    # ``repo#900`` always denote the same object; giving them separate prefixes can
-    # only produce false negatives, never avoid a false positive.
+    # One namespace: GitHub numbers issues and PRs together, so ``/issues/900``,
+    # ``/pull/900`` and ``repo#900`` are the same object. Separate prefixes only miss.
     for _label, url in _LINK.findall(markdown):
         match = _PR_URL.match(url) or _ISSUE_URL.match(url)
         if match:
@@ -234,26 +219,20 @@ def release_page_url(repo: str, tag: str) -> Optional[str]:
 def unavailable_reason(repo: str, installed_tag: str, latest_tag: str) -> str:
     """Why a comparison could not be made, for a caller holding ``None``.
 
-    ``notes_not_itemised`` and ``notes_not_comparable`` are permanent -- the
-    release predates the bullet format, or the install tracks a repository whose
-    notes are not cumulative -- while ``release_notes_unavailable`` is a fetch
-    that may succeed later. The banner uses this to decide whether offering Retry
-    is honest.
+    ``notes_not_itemised`` (predates the bullet format) and
+    ``notes_not_comparable`` (non-cumulative repo) are permanent;
+    ``release_notes_unavailable`` may succeed later, so it keeps its Retry.
     """
     if not _valid_repo(repo) or not installed_tag or not latest_tag:
         return "release_notes_unavailable"
     if not _is_cumulative_repo(repo):
         return "notes_not_comparable"
-    # Both lookups are memoized, so this re-read costs nothing on the path that
-    # has just performed them.
+    # Memoized, so this re-read costs nothing after the comparison's own lookups.
     installed = _release_for_tag(repo, installed_tag)
     if installed is None:
         return "release_notes_unavailable"
-    # Only the INSTALLED side can be permanently uncomparable: it is a release
-    # that shipped before the bullet format and will never gain one. A target
-    # without a usable body is the newest release, so it is a publishing gap that
-    # may be filled in -- calling that permanent would withhold a Retry that
-    # could actually succeed.
+    # Only the INSTALLED side is permanent: it shipped before the bullet format and
+    # will never gain one. A bad target is the newest release, so it may yet be fixed.
     if not _bullets(installed.get("body")):
         return "notes_not_itemised"
     return "release_notes_unavailable"
@@ -284,10 +263,8 @@ def changelog_for_update(
     installed_bullets = _bullets(installed.get("body"))
     if not installed_bullets:
         return None
-    # A prose-only target legitimately means "this build carries nothing", since
-    # the target is always the newest release. A MISSING or blank body is not the
-    # same statement: it carries no information at all, and answering "no new
-    # changes" would claim a comparison that never happened.
+    # A prose-only target says "carries nothing"; a missing or blank one says
+    # nothing at all, and "no new changes" would claim a comparison never made.
     latest_body = latest.get("body")
     if not isinstance(latest_body, str) or not latest_body.strip():
         return None
@@ -301,8 +278,7 @@ def changelog_for_update(
             continue
         parsed = _entry(item)
         if not parsed["summary"]:
-            # Claim nothing on behalf of a bullet that is never shown; updating
-            # `seen` here would let it suppress a later bullet for the same PR.
+            # A bullet that is never shown must not suppress a later one via `seen`.
             continue
         seen.update(identities)
         new_items.append(parsed)

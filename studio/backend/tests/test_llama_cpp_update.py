@@ -1290,9 +1290,8 @@ def test_update_changelog_retry_keeps_the_banner_target(monkeypatch, tmp_path):
 
 
 def test_update_changelog_answers_the_pair_the_caller_asked_about(monkeypatch, tmp_path):
-    # Another Studio surface's forced status check advances the process-wide
-    # latest-release memo. Without honouring the caller's pair the panel answers
-    # about a target its own banner has not adopted, which it rejects.
+    # Another surface's forced status check advances the process-wide memo, so
+    # without the caller's pair the panel answers about a target it rejects.
     binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(
@@ -1333,8 +1332,7 @@ def test_update_changelog_answers_the_pair_the_caller_asked_about(monkeypatch, t
 
 
 def test_update_changelog_ignores_a_pair_from_a_different_install(monkeypatch, tmp_path):
-    # The tree was swapped underneath the caller, so its pair is meaningless.
-    # Answer with the server's own view and let the frontend re-key on it.
+    # The tree was swapped underneath the caller: answer with the server's view.
     binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(

@@ -415,17 +415,14 @@ def get_update_changelog(
     empty["latest_tag"] = latest
     if not freshness.get("behind") or not installed_full or not latest:
         return empty
-    # Answer about the pair the caller is displaying, not whatever the shared
-    # latest-release memo now holds. Any other Studio surface's forced status
-    # check advances that memo process-wide, and the frontend rejects a response
-    # whose tags differ from the ones it asked about -- leaving an error whose
-    # Retry rereads the same memo and fails the same way, until that surface's
-    # own hourly recheck. Only honoured while the install itself still matches.
+    # Answer about the caller's pair, not whatever the shared latest-release memo
+    # now holds: any other surface's forced status check advances it process-wide,
+    # and the frontend rejects a mismatched answer, Retry included. Only while the
+    # install still matches.
     if latest_tag and installed_tag and installed_tag == empty["installed_tag"]:
         latest = latest_tag
         empty["latest_tag"] = latest
-    # Offer the release page even when the comparison fails. Most installs predate
-    # the itemised body, and the notes are readable on GitHub in every one of them.
+    # Offer the release page even when the comparison fails; GitHub can still show it.
     empty["release_url"] = release_page_url(repo, latest)
     try:
         result = changelog_for_update(

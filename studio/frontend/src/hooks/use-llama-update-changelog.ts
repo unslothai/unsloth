@@ -25,9 +25,8 @@ interface LlamaUpdateChangelog {
   error: string | null;
 }
 
-// "unavailable" is a definitive answer, not a failure to get one: this pair of
-// releases cannot be compared and never will be, so the panel must not offer a
-// Retry that re-runs two GitHub lookups to reach the same conclusion.
+// "unavailable" is a definitive answer, not a failure to get one: this pair can
+// never be compared, so a Retry would spend two lookups on the same conclusion.
 export type LlamaUpdateChangelogState =
   | "idle"
   | "loading"
@@ -35,9 +34,7 @@ export type LlamaUpdateChangelogState =
   | "unavailable"
   | "error";
 
-// notes_not_itemised: the installed release predates the itemised body format.
-// notes_not_comparable: --published-repo points the install at a repository whose
-// notes are per-release rather than cumulative, so there is nothing to diff.
+// Predates the itemised body format; tracks a repo with per-release notes.
 const PERMANENT_ERRORS = new Set([
   "notes_not_itemised",
   "notes_not_comparable",
@@ -119,10 +116,9 @@ export function useLlamaUpdateChangelog({
       const requestId = requestIdRef.current;
       setState("loading");
       setChangelog(null);
-      // Name the pair being displayed. Another Studio surface's forced status
-      // check advances the backend's shared latest-release memo, and without
-      // this the answer would be about a target this banner has not adopted --
-      // which the check below then rejects, for up to an hour.
+      // Name the pair being displayed: another surface's forced status check
+      // advances the backend's shared memo, and the check below rejects the
+      // answer that would come back about a target this banner has not adopted.
       const query = new URLSearchParams();
       query.set("installed_tag", installedTag);
       query.set("latest_tag", latestTag);
