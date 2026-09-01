@@ -19,7 +19,6 @@ Whichever ran first would win.
 
 from __future__ import annotations
 
-import argparse
 import base64
 import importlib.util
 import io
@@ -994,11 +993,28 @@ def test_the_gate_and_launcher_are_the_shared_ones():
 # ------------------------------------------------------------------ report
 
 
+_PASSING = [{"label": "studio-gpu", "passed": True, "assertions": []}]
+_FAILING = [{"label": "studio-gpu", "passed": False, "failures": ["x"], "assertions": []}]
+# A training leg from the merged kernel. Not this reporter's payload.
+_LEG = [{"label": "control", "passed": False, "steps": []}]
+
+
 @pytest.mark.parametrize(
-    ("verdict", "expected_exit"),
-    [("pass", 0), ("partial", 0), ("infra", 0), ("fail", 1)],
+    ("verdict", "reports", "expected_exit"),
+    [
+        ("pass", _PASSING, 0),
+        ("partial", [], 0),
+        ("infra", [], 0),
+        ("fail", _FAILING, 1),
+        # The kernel verdict is the WHOLE kernel's, and since --with-studio
+        # that kernel also carries four training legs. A leg failing must not
+        # print "Studio GPU smoke: FAIL" over a passing Studio payload and send
+        # someone to read the wrong half: the T4 reporter is what turns that
+        # red, in the same job, from the same evidence directory.
+        ("fail", _PASSING + _LEG, 0),
+    ],
 )
-def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, expected_exit):
+def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, reports, expected_exit):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "launch_result.json").write_text(
@@ -1008,7 +1024,7 @@ def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, expe
                 "reason": "test",
                 "slug": "u/s",
                 "kernel_state": "COMPLETE",
-                "reports": [],
+                "reports": reports,
             }
         )
     )
@@ -1225,11 +1241,22 @@ def _load_payload():
 
 
 def _session(module, tmp_path, **overrides):
-    args = argparse.Namespace(
-        repo_root = str(tmp_path / "repo"),
-        studio_home = str(tmp_path / "home"),
-        **overrides,
+    # Built from the REAL parser rather than a hand-listed Namespace. A
+    # hand-listed one carries exactly the attributes someone remembered, so
+    # every new flag breaks these tests with an AttributeError that says
+    # nothing about the flag -- which is what --studio-password did.
+    args = module.parse_args(
+        [
+            "--outdir",
+            str(tmp_path / "out"),
+            "--repo-root",
+            str(tmp_path / "repo"),
+            "--studio-home",
+            str(tmp_path / "home"),
+        ]
     )
+    for key, value in overrides.items():
+        setattr(args, key, value)
     session = module.Payload.__new__(module.Payload)
     session.repo_root = Path(args.repo_root)
     session.studio_home = Path(args.studio_home)
@@ -2334,3 +2361,80 @@ def test_the_kaggle_client_is_new_enough_to_read_the_only_credential_we_have():
     assert pins, "no pinned kaggle client in the workflow"
     assert len(set(pins)) == 1, f"jobs disagree on the kaggle client: {pins}"
     assert packaging_version.Version(pins[0]) >= packaging_version.Version("2.2.0"), pins[0]
+
+
+def test_no_studio_assertion_is_wired_to_a_constant_branch():
+    """A repo-wide version of the guard that caught five vacuous guards at once.
+
+    Every rule in the Studio payload was, at some point, protected by a test
+    that asserted "the failure message appears in the source". That is
+    satisfied by `if False:` sitting above an untouched message, so disabling a
+    rule outright left its test green. Five mutations survived that way in one
+    sitting.
+
+    A constant test in an `assert_*` method means a branch that can never be
+    taken, or one always taken. Neither is something a check has any business
+    doing, and this catches it for every assertion at once rather than one test
+    at a time.
+    """
+    import ast
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "tests"
+        / "kaggle"
+        / "studio_gpu"
+        / "run_studio_gpu.py"
+    ).read_text(encoding = "utf-8")
+    offenders = []
+    for func in ast.walk(ast.parse(src)):
+        if not (isinstance(func, ast.FunctionDef) and func.name.startswith("assert_")):
+            continue
+        for node in ast.walk(func):
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Constant):
+                offenders.append(f"{func.name}: if {ast.unparse(node.test)}")
+    assert offenders == [], f"assertions wired to a constant: {offenders}"
+
+
+def test_every_assertion_carries_its_own_wall_clock():
+    """Studio is the longest payload in the kernel and had no breakdown.
+
+    On unsloth-probe-full-concurrent-417238 `studio_test` ran 1487.5s -- the
+    single largest item on the critical path -- and the report carried 19
+    assertions with no timing on any of them, so "where does Studio's time go"
+    could only be answered by buying another session.
+
+    Driven rather than grepped: a rule that only checked for a `time.time()`
+    call passes on a payload that computes the number and drops it.
+    """
+    import importlib.util
+    import types
+
+    payload = PAYLOAD_DIR / "run_studio_gpu.py"
+    spec = importlib.util.spec_from_file_location("_studio_payload_timing", payload)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    runner = types.SimpleNamespace(
+        assertions = [],
+        failures = [],
+        started = module.time.time() - 5.0,
+        record = None,
+    )
+    record = module.Payload.record.__get__(runner, module.Payload)
+    module.log = lambda *a, **k: None
+    record("first", True, {})
+    record("second", True, {"failures": []})
+
+    names = [a["name"] for a in runner.assertions]
+    assert names == ["first", "second"]
+    # The first entry measures from process start, which is the setup before
+    # any assertion -- 5s here -- and is exactly the slice that would otherwise
+    # be invisible.
+    assert runner.assertions[0]["seconds_since_previous"] >= 5.0
+    # The second measures from the first, not from the start, or every entry
+    # would read as the whole run so far and the breakdown would be useless.
+    assert runner.assertions[1]["seconds_since_previous"] < 1.0
+    # And an absolute position, so a reader can line the report up against the
+    # driver's own interval for the payload.
+    assert runner.assertions[1]["at_seconds"] >= runner.assertions[0]["at_seconds"]

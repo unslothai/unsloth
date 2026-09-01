@@ -25,6 +25,23 @@
 # session. Longest first, because the longest leg is what sets the makespan and
 # a greedy schedule cannot balance around one it picks up last.
 #
+# A FIFTH payload rides the same kernel and is not on that queue: the Studio GPU
+# smoke, packed in by --with-studio and split into two halves. Its install --
+# clone, pip, a Playwright browser -- takes no card at all and runs from t=0
+# beside the training legs, so it finishes at ~400s inside a 646.3s card queue
+# and costs nothing. Its GPU half then waits for the queue to DRAIN and takes
+# both cards, because Studio loads a model and serves it rather than sharing a
+# card with a training run. Measured makespan 763.3s against 646.3s without it.
+#
+# The install half is a gate as well as a lane: if it fails, the GPU half is
+# skipped rather than run against a Studio that is not there, and the skip is
+# reported rather than silent.
+#
+# This does NOT replace kaggle-t4-studio-gpu-ci.yml, whose paths filter and
+# budget are untouched. A studio/** change still gets a dedicated run there;
+# this is the same payload answering for the events THIS workflow already
+# triggered on.
+#
 # This was two kernels of two, one leg per T4, and the reason it is one kernel
 # is NOT quota: a session bills its wall clock once rather than per card, so the
 # two shapes cost within a few percent of each other. It is that two kernels
@@ -132,15 +149,31 @@
 #   rest. Per-leg durations measured on run 32607621452: gptoss 384.1s, frontier
 #   312.2s, canary 265.3s, control 262.2s. Packed longest-first across two cards
 #   that is 384.1 + 262.2 = 646.3s on one card against 312.2 + 265.3 = 577.5s on
-#   the other, so one kernel of four legs measures ~0.18 h:
+#   the other, so one kernel of four legs measures ~0.18 h.
+#
+#   The Studio payload rides the same kernel (--with-studio below) and adds
+#   ~117s to that, not the ~0.75 h it costs standalone. Its install is CPU work
+#   -- clone, pip, a Playwright browser download -- so it runs on a lane of its
+#   own from t=0, finishes at ~400s against a 646.3s card queue, and is
+#   therefore FULLY hidden. What is left is its GPU half at ~200s, which starts
+#   once both cards are free. 646.3 + 117 = 763.3s, or ~0.21 h:
 #     one kernel, four legs                        0.18 h
+#     + the Studio payload, install hidden        +0.03 h
 #     TOTAL, expected                             ~0.25 h  (rounded up)
 #   The two-kernel shape this replaced measured 0.10 h + 0.13 h = 0.23 h, so
 #   consolidating is roughly quota-neutral; the gain is the freed session, not
-#   the hours. The 0.25 h envelope is DELIBERATELY not lowered to match the new
-#   measurement. Every figure below is derived from it, the real cost moved
-#   DOWN so it remains an upper bound, and re-deriving a whole budget to book a
-#   0.05 h saving would be a lot of arithmetic to make the reserve thinner.
+#   the hours. The 0.25 h envelope is unchanged and still an
+#   upper bound: 0.21 h measured against it. Every figure below is derived from
+#   that envelope, so leaving it alone is what keeps the sampling rate, the
+#   expected spend and the reserve below true without re-deriving all of them.
+#
+#   Note what packing Studio in does NOT do: it does not widen the paths filter
+#   below. Studio's own thirteen paths stay on kaggle-t4-studio-gpu-ci.yml,
+#   which still runs standalone for a studio/** change and still owns the 35h
+#   share. The payload here is EXTRA coverage on events this workflow already
+#   answered -- an unsloth/** change now also says whether Studio still
+#   installs and serves on a T4 -- bought for 0.03 h because the install had
+#   nothing to contend with.
 #
 #   SAMPLING RATE, solved at the pessimistic end of the eligible range and
 #   targeting 9h rather than the full 15, so a busy week does not spend the
@@ -249,8 +282,23 @@ on:
       - '.github/scripts/kaggle_t4_ci/**'
       - '.github/workflows/kaggle-t4-notebook-ci.yml'
       - 'pyproject.toml'
+  # NIGHTLY, for the legs that cannot be per-PR. The GRPO leg is the whole
+  # reason this trigger exists: measured over nine T4 sessions it hits an
+  # intermittent illegal memory access in vLLM's standby sleep on Turing in
+  # FOUR of them. A 44% red in front of every PR, for a race no reader can act
+  # on, is how a check gets switched off; at nightly cadence a clean run still
+  # arrives most days and a red one costs nobody a merge.
+  #
+  # 03:17 rather than 03:00: every scheduled workflow on GitHub asks for the
+  # hour mark, and this one has no reason to join that queue.
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
+      legs:
+        description: 'Comma-separated leg names to run instead of the wired KERNELS set. Empty means the wired set. The nightly uses this to run grpo, which is deliberately not per-PR'
+        type: string
+        default: ''
       force:
         description: 'Bypass the sampling gate (quota and concurrency still apply)'
         type: boolean
@@ -267,6 +315,19 @@ on:
         description: 'unslothai/unsloth ref to install and test'
         type: string
         default: ''
+      slot:
+        description: 'Which of the accounts two Kaggle session slots to occupy. Two dispatches naming different slots run side by side; anything else takes slot 1'
+        type: choice
+        options: ['1', '2']
+        default: '1'
+      shared_wheels:
+        description: 'Build unsloth and unsloth_zoo once up front and install every leg from the wheel, instead of each leg resolving the git spec itself'
+        type: boolean
+        default: false
+      studio_concurrent:
+        description: 'Let the Studio GPU half share a card with a small leg instead of waiting for the queue to drain. ON by default: it takes about 1100s off the critical path, at the cost of Studio seeing one T4 rather than two. Set false to get the both-cards coverage back on a run that can afford the wall clock'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -278,8 +339,18 @@ permissions:
 # result. Superseded runs that have not STARTED are still discarded (GitHub
 # keeps only the most recent pending run per group), which is where the saving
 # was anyway; only a run already spending is left alone.
+#
+# The slot belongs in THIS group too, not only in the job's. GitHub keeps at
+# most one PENDING run per group and DISCARDS the older one when a newer run
+# queues, so two dispatches on the same ref that were meant to hold Kaggle's
+# two session slots at once instead cancel each other before either starts.
+# That is not hypothetical: it killed run 32674255736, and a later A/B had to
+# be run serially because a single push into this group would have discarded
+# the pending arm. The job-level group carries the slot as well, and it is the
+# one that actually serialises same-slot work; this one only has to stop
+# distinct slots being collapsed into a single queue position.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.slot || '1' }}
   cancel-in-progress: false
 
 jobs:
@@ -385,7 +456,7 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
             --percent 15 \
-            --force '${{ inputs.force || 'false' }}' \
+            --force '${{ inputs.force || (github.event_name == 'schedule' && 'true' || 'false') }}' \
             --labels "$PR_LABELS" \
             --label-name kaggle-t4-ci \
             --event-action "$EVENT_ACTION" \
@@ -473,7 +544,22 @@ jobs:
     # x one kernel is exactly Kaggle's 2-session cap, with no headroom, so the
     # capacity handling on the push path is load bearing rather than defensive.
     concurrency:
-      group: kaggle-t4-account-notebook
+      # SLOTTED, because one group cannot express "at most two".
+      #
+      # A Kaggle account allows 2 concurrent GPU sessions and this job takes
+      # one, so the cap has to be 2 and GitHub concurrency only offers 1 per
+      # group. A single group therefore serialised everything -- and worse than
+      # serialised: only ONE run may be PENDING in a group, so a second queued
+      # run CANCELS the first rather than queueing behind it. That is what
+      # killed run 32674255736, and it makes an A/B impossible to run at all.
+      #
+      # Two slots, chosen explicitly by the dispatcher, is the whole mechanism.
+      # It is bounded by construction (the input offers 1 or 2 and nothing
+      # else), so the account can never be asked for a third session, and two
+      # dispatches that name different slots genuinely run side by side.
+      # Everything that is not a dispatch has an empty input and lands in slot
+      # 1, which is exactly the old behaviour for pushes and pull requests.
+      group: kaggle-t4-account-notebook-${{ inputs.slot || '1' }}
       cancel-in-progress: false
     steps:
       # FIRST, ahead of even the audit hardening, and it is an `echo` so there
@@ -563,7 +649,14 @@ jobs:
       - name: Test the harness
         run: |
           python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install --quiet pytest transformers peft
+          # Every third-party module tests/kaggle/test_*.py imports without a
+          # pytest.importorskip guard. pillow and pyyaml arrived transitively
+          # until now, which is luck rather than a dependency, and datasets did
+          # not arrive at all: run 32925226213 ran 803 of 805 tests and reported
+          # success on the step, because two vision-dataset guards raised
+          # ModuleNotFoundError. test_harness_dependencies.py keeps this line and
+          # that import set in agreement.
+          python -m pip install --quiet pytest transformers peft datasets pillow pyyaml
           python -c "import torch, sys; sys.exit(None if torch.version.cuda is None else 'torch %s is built for CUDA %s: the CPU-index install was skipped as already satisfied' % (torch.__version__, torch.version.cuda))"
           python -m pytest tests/kaggle -q
 
@@ -735,6 +828,29 @@ jobs:
         id: build
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
         env:
+          # On the nightly this is 'grpo,multi_gpu'; on every other trigger it
+          # is empty and the wired set runs. `github.event.inputs` is null on a
+          # schedule, so the default has to come from the fallback rather than
+          # from the input's own default.
+          #
+          # multi_gpu joined grpo here after the ab3 A/B: it PASSES, but it
+          # costs makespan (+172.4s and +39.7s on two same-commit pairs, B
+          # slower 2 of 2), and the brief for it was multi-GPU coverage at no
+          # wall-clock cost. The two legs also serialise cleanly rather than
+          # contending: grpo declares 13.8GB and admits no co-tenant, and
+          # multi_gpu reserves on every card, so neither ever starts beside the
+          # other.
+          #
+          # latest_compile joined them once unsloth-zoo #1103 merged, and NOT
+          # the per-PR kernel its UNWIRED note promised. The note predates the
+          # only number that decides it: the leg's own DONE record is 1323.0s
+          # (unsloth-probe-lcleg-tmpdir-ac53ca) and at 12.73GB peak it admits
+          # no co-tenant, so it needs a card to itself for 22 minutes. The
+          # per-PR kernel's only slack is gpu1's 776.3s idle block while Studio
+          # holds gpu0, which is not half enough, so wiring it there would add
+          # roughly 580s to a 2101.8s makespan. It serialises here for the same
+          # reason it does not fit there.
+          LEG_LIST: ${{ inputs.legs || (github.event_name == 'schedule' && 'grpo,multi_gpu,latest_compile' || '') }}
           SKIP_BAND: ${{ inputs.skip_reference_band }}
           # The VALIDATED, normalised count from the step above, not the raw
           # dispatch string. check_steps.parse_steps accepts "+10", "010" and
@@ -760,14 +876,57 @@ jobs:
             SKIP='--skip-reference'
             echo "::warning title=Reference band check skipped::this run is $MAX_STEPS steps and the committed reference was captured at $REF_STEPS, which are not comparable. The band check is off for this run; everything else the control leg asserts still applies."
           fi
+          # Empty unless asked for. build_kernel defaults AFTER_GPU_CONCURRENT
+          # to False, so an unset input and a missing flag agree -- but they
+          # agreed silently once before, on run 32674263571, where the flag
+          # existed in the CLI and nothing here passed it: the "variant" ran the
+          # control's schedule and the A/B compared a configuration against
+          # itself. test_the_workflow_can_actually_reach_studio_concurrent is
+          # what stops that recurring.
+          # Off unless asked for. Measured on run 32689629906 the wheels helped
+          # the leg that runs ALONE (gpt-oss install 191.2s -> 152.6s) and cost
+          # the three that run CONCURRENTLY (149-163s -> 319-334s). That run
+          # changed the caches at the same time, so neither effect is
+          # attributable yet, which is why this is a flag rather than a
+          # decision.
+          SHARED_WHEELS=''
+          if [ "${{ inputs.shared_wheels }}" = "true" ]; then
+            SHARED_WHEELS='--shared-wheels'
+          fi
+          # Default ON, and `inputs` is null on push and on a schedule, so the
+          # fallback rather than the input default is what decides those. The
+          # measurement behind it: Studio's GPU half is ~1100s and it used to
+          # start only once every leg had freed both cards, on top of a
+          # ~1200s leg phase. Sharing a card moves it alongside instead.
+          STUDIO_CONCURRENT='--studio-concurrent'
+          if [ "${{ inputs.studio_concurrent }}" = "false" ]; then
+            STUDIO_CONCURRENT=''
+          fi
+          if [ -n "$STUDIO_CONCURRENT" ]; then
+            echo "::notice title=Studio shares a card::the Studio GPU half is pinned to one T4 beside a small leg, so this run does NOT cover Studio's own choice between two cards. The report records tensor_split_over_two_cards=false rather than claiming it."
+          fi
+          # A leg list REPLACES --all-kernels rather than filtering it: the
+          # kernel plan and the payload count both come out of the same call,
+          # so a filter applied afterwards would leave the launcher expecting
+          # payloads that were never built.
+          if [ -n "$LEG_LIST" ]; then
+            KERNEL_SELECT="--legs $LEG_LIST"
+            echo "::notice title=Leg override::running $LEG_LIST instead of the wired set"
+          else
+            KERNEL_SELECT="--all-kernels"
+          fi
           python .github/scripts/kaggle_t4_ci/build_kernel.py \
             --payload-dir tests/kaggle/t4_smoke \
             --out kernel \
-            --all-kernels \
+            $KERNEL_SELECT \
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
             --zoo-ref '${{ steps.pins.outputs.zoo_ref }}' \
             --smoke-args "--max-steps $MAX_STEPS" \
-            --per-run-timeout 3300 \
+            --with-studio \
+            --studio-args "--max-steps 8" \
+            --per-run-timeout 3900 \
+            $STUDIO_CONCURRENT \
+            $SHARED_WHEELS \
             $SKIP
 
       # kernel-timeout-sec is passed to Kaggle at push time as a BACKSTOP, not
@@ -857,6 +1016,21 @@ jobs:
             --poll-every 60 \
             --deadline-epoch "$(( JOB_START_EPOCH + JOB_TIMEOUT_MINUTES * 60 ))"
 
+      # The launcher collects executed notebooks and the kernel log and nothing
+      # else, deliberately. The Studio payload therefore encodes its
+      # screenshots and logs into its own cell output; this puts them back.
+      # Lifted from kaggle-t4-studio-gpu-ci.yml along with the payload itself.
+      #
+      # It is safe on a run that carried no Studio payload: the collector finds
+      # no encoded evidence and writes nothing.
+      - name: Unpack the Playwright evidence
+        if: always() && steps.recheck.outputs.should_run == 'true'
+        continue-on-error: true
+        run: |
+          python .github/scripts/kaggle_studio_ci/collect_evidence.py \
+            --evidence kaggle_evidence \
+            --outdir studio_evidence
+
       # always(): the evidence is most valuable when something went wrong, and
       # the executed notebooks are kilobytes.
       #
@@ -881,6 +1055,7 @@ jobs:
           name: kaggle-t4-evidence
           path: |
             kaggle_evidence/**
+            studio_evidence/**
             kernel*.ipynb
           # 14 rather than the repo's usual 7: this job runs on a minority of
           # commits, so two consecutive samples can be a fortnight apart, and
@@ -905,4 +1080,18 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/report.py \
             --evidence kaggle_evidence \
-            --expect '${{ steps.build.outputs.payloads || 4 }}'
+            --expect '${{ steps.build.outputs.legs || 4 }}'
+
+      # Two reporters over ONE evidence directory, each rendering the labels it
+      # owns: the four training legs above, the Studio assertions here. They
+      # are not merged because the two payload shapes are not comparable -- a
+      # per-step metric trace against a list of assertions -- and a single
+      # renderer over both produces a training leg made of question marks.
+      #
+      # Its exit code is the same contract as the T4 reporter's: red only for a
+      # payload that ran and failed its assertions.
+      - name: Report Studio
+        if: always() && steps.recheck.outputs.should_run == 'true'
+        run: |
+          python .github/scripts/kaggle_studio_ci/report.py \
+            --evidence kaggle_evidence

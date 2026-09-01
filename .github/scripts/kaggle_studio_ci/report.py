@@ -141,9 +141,46 @@ def render(report: dict) -> list[str]:
     return lines
 
 
+# The label this payload reports under. Duplicated in kaggle_t4_ci/report.py;
+# see the note there for why it is not shared.
+STUDIO_LABEL = "studio-gpu"
+
+
+def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: int):
+    """This reporter's verdict over ITS OWN payloads, not the kernel's.
+
+    The launcher writes one verdict for the whole kernel, and since
+    --with-studio that kernel holds two unrelated experiments. Reading the
+    kernel verdict here means a failing training leg prints "Studio GPU smoke: FAIL"
+    above a section listing zero failures, and a failing Studio payload prints
+    the same over four green legs. Both are the misleading-red twin of the
+    green tick that tested nothing, and both would send someone to read the
+    wrong payload.
+
+    So the verdict is recomputed from the filtered reports. The kernel reason
+    is kept only when the two agree; otherwise it describes the other half.
+
+    `infra` is deliberately not synthesised: with nothing of ours back, the
+    kernel-level reason (quota, concurrency cap, a push that was throttled) is
+    the only account of why, and it applies to every payload equally.
+    """
+    if not reports:
+        return (kernel_verdict if kernel_verdict == "infra" else "partial"), kernel_reason
+    failing = [r for r in reports if not r.get("passed")]
+    if failing:
+        return "fail", f"{len(failing)} of {len(reports)} payload(s) failed their assertions"
+    if len(reports) < expect:
+        return "partial", f"only {len(reports)} of {expect} payload(s) reported back"
+    return "pass", f"all {len(reports)} payload(s) passed"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--evidence", required = True)
+    # One, always: the payload's two notebooks are halves of one experiment and
+    # produce exactly one `studio-gpu` report between them. See the count note
+    # in kaggle_t4_ci/build_kernel.py's --all-kernels tail.
+    ap.add_argument("--expect", type = int, default = 1)
     args = ap.parse_args()
 
     evidence = Path(args.evidence)
@@ -161,6 +198,15 @@ def main() -> int:
     verdict = result.get("verdict", "infra")
     reason = result.get("reason", "")
     reports = result.get("reports", [])
+
+    # This payload can share a kernel with the T4 notebook legs (see
+    # kaggle_t4_ci/build_kernel.py --with-studio), and every payload in that
+    # kernel reports through the same prefix. The legs are a different shape --
+    # a per-step metric trace rather than assertions -- so rendering them here
+    # would produce Studio sections describing training runs. Each reporter
+    # owns its own labels.
+    reports = [r for r in reports if r.get("label") == STUDIO_LABEL]
+    verdict, reason = own_verdict(verdict, reason, reports, args.expect)
 
     header = {
         "pass": "### Unsloth GPU smoke: PASS",

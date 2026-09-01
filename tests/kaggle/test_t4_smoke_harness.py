@@ -1544,7 +1544,23 @@ def test_every_setting_the_child_needs_is_forwarded_to_it():
 
 # ------------------------------------------------------------ kernel build
 
-LEG_NAMES = ("control", "canary", "gptoss", "grpo")
+LEG_NAMES = (
+    "control",
+    "canary",
+    "gptoss",
+    "grpo",
+    "default",
+    # Unpinned by design (all_cards), so its generated cells differ from every
+    # other leg's: the visible-GPU assertion in the preamble compares against 2.
+    "multi_gpu",
+    "latest_compile",
+    "vision_fla_compile",
+    # Retired in favour of vision_fla_compile and kept buildable: an unwired
+    # leg is unwired because of its install or an open question, not because
+    # the payload rots, and a retirement that stops building is one nobody can
+    # reverse in the hour they need it.
+    "frontier",
+)
 
 
 def _build(
@@ -1740,7 +1756,7 @@ def test_every_leg_carries_the_version_recorder(tmp_path):
 
     assert "versions.py" in COMMON_FILES
     for name in LEGS:
-        payload = _payload_notebooks(_build(tmp_path / name, name))[f"t4_{name}.ipynb"]
+        payload = _payload_notebooks(_build(tmp_path / name, name))[f"t4_{LEGS[name].name}.ipynb"]
         assert "versions.py" in _cell(payload, 0)
         assert "versions.flatten_versions" in _cell(payload, 2)
 
@@ -1757,7 +1773,7 @@ def test_every_registered_leg_is_either_carried_or_explicitly_unwired():
 
     carried = [name for kernel in KERNELS for name in kernel]
     assert len(carried) == len(set(carried)), carried
-    assert sorted(carried) + sorted(UNWIRED) == sorted(LEGS), (
+    assert sorted(carried + list(UNWIRED)) == sorted(LEGS), (
         sorted(carried),
         sorted(UNWIRED),
         sorted(LEGS),
@@ -1810,10 +1826,12 @@ def test_generated_cells_compile(tmp_path):
             for index, cell in enumerate(nb["cells"]):
                 compile("".join(cell["source"]), f"{path}/{name}#cell{index}", "exec")
                 seen += 1
-    # 5 builds x (3 driver cells + 4 payload cells), asserted so a refactor that
-    # stops reaching the payloads cannot leave this test passing while compiling
-    # nothing that matters.
-    assert seen == 5 * 7, seen
+    # One build per leg in LEG_NAMES x (3 driver cells + 4 payload cells),
+    # asserted so a refactor that stops reaching the payloads cannot leave this
+    # test passing while compiling nothing that matters. Derived from LEG_NAMES
+    # rather than hardcoded: the literal 5 silently meant "every leg" only for
+    # as long as nobody added one.
+    assert seen == (len(LEG_NAMES) + 1) * 7, seen
 
 
 def _undefined_names(source: str, already_bound: set) -> tuple:
@@ -2139,9 +2157,21 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(tmp_path):
         "training_evidence.py",
         "run_t4_smoke.py",
         "determinism.py",
+        "gguf_export.py",
+        "naive_trl_compare.py",
+        "kernel_provenance.py",
         "pins/control.txt",
         "references/t4_qwen2.5-0.5b.json",
     }, sorted(files)
+    # Cross-checked against the registry as well as the literal above. The
+    # literal is what makes an accidental addition visible in a diff; the
+    # registry check is what stops the two drifting, which is how a leg ends up
+    # shipping a file no test knows about.
+    from legs import LEGS
+
+    leg = LEGS["control"]
+    declared = set(leg.files) | ({f"references/{leg.reference}"} if leg.reference else set())
+    assert set(files) == declared, sorted(declared)
     for name, data in files.items():
         assert gzip.decompress(base64.b64decode(data)) == (SMOKE_DIR / name).read_bytes(), name
 
@@ -2279,6 +2309,99 @@ def test_the_grpo_leg_names_its_attention_backend():
     assert LEGS["grpo"].env.get("VLLM_ATTENTION_BACKEND") == "TRITON_ATTN"
 
 
+def test_the_grpo_leg_disables_flashinfer_at_the_only_layer_that_holds():
+    """Two Kaggle probes died four rungs each on the same flashinfer link, one
+    of them WITH `VLLM_USE_FLASHINFER_SAMPLER=0` already set, because that is
+    not the layer the decision is made at. unsloth_zoo's patch_vllm assigns
+    both vLLM env vars itself during model load:
+
+        vllm_utils.py:2494  VLLM_ATTENTION_BACKEND      = "FLASHINFER"
+        vllm_utils.py:2502  VLLM_USE_FLASHINFER_SAMPLER = "1"
+
+    each behind `elif Version(vllm_version) >= Version("0.11.0")`, which this
+    leg's 0.19.1 pin satisfies. Its guard checks only that nvcc and ninja are
+    present, and on Kaggle both are - the missing piece is the driver stub the
+    compiled objects link against, which that check does not look at. So the
+    two settings above are overwritten before vLLM ever reads them.
+
+    UNSLOTH_VLLM_NO_FLASHINFER is read at vllm_utils.py:2449, ahead of every
+    assignment, and is the only one of the three that survives. Losing it puts
+    the leg straight back on a link that cannot succeed on this image."""
+    from legs import LEGS
+    assert LEGS["grpo"].env.get("UNSLOTH_VLLM_NO_FLASHINFER") == "1"
+
+
+def test_the_grpo_leg_removes_flashinfer_and_the_removal_reaches_the_payload(tmp_path):
+    """The env vars were necessary and NOT sufficient, established over four
+    Kaggle ladder probes:
+
+        r1  nothing set                       4/4 rungs fail, cached_ops/sampling
+        r2  VLLM_USE_FLASHINFER_SAMPLER=0     identical failure
+        r3  UNSLOTH_VLLM_NO_FLASHINFER=1      sampling build gone; now fails in
+                                              cached_ops/batch_prefill_with_kv_cache_...
+        r4  uninstall flashinfer              PASSES on the first rung, 11.30 GB
+
+    r3 is the one that proves the remaining gap: the sampler build genuinely
+    stopped, and the failure moved to ATTENTION, which is chosen by
+    VLLM_ATTENTION_BACKEND -- already TRITON_ATTN and confirmed inherited by the
+    rung child -- and which vLLM offers no prefill-specific opt-out for. There
+    was no variable left to set, which is why the package goes instead.
+
+    THE SHIPPED LEG FAILS DIFFERENTLY, and that is the reason this guard is
+    worth keeping rather than a historical note. Removing the uninstall from the
+    leg (unsloth-probe-grpo-noun-05777b, nothing else changed) does NOT
+    reproduce the link error at all -- the leg carries a libcuda shim
+    (run_grpo_t4.py:597, /usr/local/cuda/compat/libcuda.so, since #8440) that
+    the probes lacked. It fails instead with
+
+        AcceleratorError: CUDA error: an illegal memory access was encountered
+
+    which is verbatim the intermittent crash UNWIRED["grpo"] documents from
+    kernels unsloth-t4-ci-70a2f4eb and -c98f14be. With the uninstall the crash
+    has not recurred.
+
+    State the strength honestly: that crash is documented at roughly two failures
+    in three, so a handful of clean runs is suggestive and not proof, and this
+    guard asserts only that the uninstall is PRESENT and REACHES the payload --
+    which removing it demonstrably breaks. It does not claim to have identified
+    the crash's cause.
+
+    Asserted through the BUILT payload rather than off the dataclass: a field
+    nothing emits is a setting that reads like coverage and does nothing, and
+    that is the exact failure mode this file exists to catch.
+    """
+    from legs import LEGS
+
+    assert set(LEGS["grpo"].uninstall) >= {"flashinfer-python", "flashinfer-cubin"}
+    payload = _payload_notebooks(_build(tmp_path / "g", "grpo"))["t4_grpo.ipynb"]
+    install_cell = _cell(payload, 1)
+    assert "flashinfer-python" in install_cell
+    assert "uninstall" in install_cell
+
+
+def test_a_leg_with_nothing_to_uninstall_does_not_run_pip_uninstall(tmp_path):
+    """The counterpart, so the emission is conditional rather than always-on:
+    an unconditional `pip uninstall -y` with an empty list is a per-leg
+    subprocess that can only cost time."""
+    from legs import LEGS
+
+    assert LEGS["control"].uninstall == ()
+    payload = _payload_notebooks(_build(tmp_path / "c", "control"))["t4_control.ipynb"]
+    assert "flashinfer" not in _cell(payload, 1)
+
+
+def test_the_grpo_leg_asks_for_the_utilization_both_platforms_measured(tmp_path):
+    """0.95 is measured, not requested-and-hoped. Colab (torch 2.11.0) peaked at
+    11.76 GB and Kaggle (torch 2.10.0) at 11.30 GB, both on the FIRST rung of a
+    0.95/0.8/0.6/0.5 ladder and both surviving three sleep/wake cycles, roughly
+    3 GB under a 14.56 GB card. The 0.5 that used to be here came from Qwen3-4B
+    probes and was never measured for the 0.6B this leg trains."""
+    from legs import LEGS
+
+    args = LEGS["grpo"].args
+    assert args[args.index("--gpu-memory-utilization") + 1] == "0.95"
+
+
 def test_the_grpo_leg_no_longer_carries_xformers():
     """Its vLLM backend is gone at this version, so it would be a package
     nothing selects, resolved against a torch it has opinions about."""
@@ -2305,13 +2428,74 @@ def test_nothing_is_both_wired_and_unwired():
     assert not (wired & set(UNWIRED)), sorted(wired & set(UNWIRED))
 
 
-def test_an_unwired_note_says_what_is_unknown():
+def test_an_unwired_note_says_what_is_unknown_or_what_replaced_it():
     """An unwired leg whose note reads as settled is a leg someone wires without
-    running it. Vacuous while UNWIRED is empty, and correctly so: it has
-    something to check the moment a leg goes back in."""
-    from legs import UNWIRED
+    running it.
+
+    THREE reasons a leg is not wired, and they are not the same thing.
+
+    A leg with an open question says STILL UNKNOWN and names it.
+
+    A leg that was REPLACED has nothing unknown about it at all -- frontier is
+    retired because vision_fla_compile asserts everything it did and more --
+    and forcing that note to claim an open question would be a lie in the file
+    that exists to stop lies of exactly that kind.
+
+    A leg that was MEASURED AND REJECTED is the third, added when multi_gpu hit
+    it: the leg passes on hardware and was still held out, because an A/B
+    showed it costing wall clock and breaking another leg. Nothing about it is
+    unknown and nothing replaced it, so the first two categories would both be
+    false. What that note owes the reader instead is the way back in, so it
+    must say WHAT WOULD UNBLOCK IT -- otherwise "rejected" reads as permanent
+    and the measurement behind it is never revisited.
+
+    A leg that is UNDER RE-MEASUREMENT is the fourth, and it exists because a
+    rejection can turn out to rest on a defect somewhere else. multi_gpu was
+    rejected partly for breaking the Default leg; that break was this driver
+    building the leg on the wrong python and installing pyarrow where dill
+    pickles it by value, and it is fixed. Leaving the note reading REJECTED
+    would keep a withdrawn measurement standing as a finding, which is the
+    failure this file exists to catch, and forcing it to read STILL UNKNOWN
+    would throw away everything that IS known. Such a note owes the reader the
+    run that will settle it, by name, so the answer is collectable rather than
+    perpetually pending.
+
+    So the rule is: say which of the four it is, name the superseding leg if it
+    was superseded, name the unblock condition if it was rejected, and name the
+    deciding run if it is being re-measured. A bare note passes none of them.
+    """
+    from legs import LEGS, UNWIRED
     for name, note in UNWIRED.items():
-        assert "STILL UNKNOWN" in note, f"{name} note does not say what is open"
+        if "SUPERSEDED" in note:
+            named = [other for other in LEGS if other != name and other in note]
+            assert named, (
+                f"{name} says it was superseded and does not name what by; a "
+                f"retirement nobody can trace is a deletion with extra steps"
+            )
+            continue
+        if "MEASURED AND REJECTED" in note:
+            assert "WHAT WOULD UNBLOCK IT" in note, (
+                f"{name} says it was measured and rejected without saying what "
+                f"would change that; a rejection with no way back is a deletion "
+                f"that keeps costing a reader the time to re-derive it"
+            )
+            continue
+        if "UNDER RE-MEASUREMENT" in note:
+            assert "WHAT WOULD UNBLOCK IT" in note, (
+                f"{name} says it is being re-measured without saying what would "
+                f"settle it, which is a rejection with the deadline removed"
+            )
+            # The deciding run has to be NAMED. "we will re-run it" is how a
+            # measurement stays pending for a year.
+            assert re.search(r"\b(ab\d+|unsloth-probe-[a-z0-9-]+)\b", note), (
+                f"{name} is under re-measurement and names no run that will "
+                f"decide it, so nobody can go and read the answer"
+            )
+            continue
+        assert "STILL UNKNOWN" in note, (
+            f"{name} note says none of: what is open, what replaced it, or "
+            f"what would unblock it"
+        )
 
 
 def test_grpo_stays_unwired_while_the_illegal_memory_access_is_open():
@@ -2359,12 +2543,21 @@ def test_the_grpo_leg_keeps_the_config_that_actually_fit():
     unsloth_zoo/gradient_checkpointing.py:1013, peaking at 15.97GB in 16-bit and
     19.25GB in 4-bit. The set below passed on kernel unsloth-t4-ci-53efcc4e at
     13.60GB with reward_std 0.707 at step 2, so restoring any of them to the
-    notebook's value is a session that OOMs, and it fails here instead."""
+    notebook's value is a session that OOMs, and it fails here instead.
+
+    UTILIZATION IS THE ONE EXCEPTION, raised 0.5 -> 0.95 on measurement. Those
+    probes trained **Qwen3-4B**; this leg trains Qwen3-0.6B, where the
+    activation budget is a different problem entirely. A 0.95/0.8/0.6/0.5 ladder
+    stopped at the FIRST rung on both platforms - Colab peak reserved 11.76GB,
+    Kaggle 11.30GB, three sleep/wake cycles each - roughly 3GB under the card.
+    The other three values are unchanged and still carry the 4B evidence, which
+    is why they are asserted together with this one rather than relaxed with
+    it."""
     from legs import LEGS
 
     args = LEGS["grpo"].args
     for flag, value in (
-        ("--gpu-memory-utilization", "0.5"),
+        ("--gpu-memory-utilization", "0.95"),
         ("--max-seq-length", "1024"),
         ("--num-generations", "2"),
         ("--lora-rank", "16"),
@@ -3097,6 +3290,12 @@ def test_an_alternate_spelling_of_the_step_count_keeps_the_reference_band(tmp_pa
         source, _, name = inner.rpartition(".")
         if source == "steps.stepcount.outputs":
             return validated.get(name, "")
+        # A dispatch-only or event-only expression. On the pull_request event
+        # this test models, `inputs` is null and the schedule branch is false,
+        # so GitHub substitutes the empty string -- which is what the leg-list
+        # override reads as, and is the shape that must keep --all-kernels.
+        if inner.startswith("inputs.") or inner.startswith("github."):
+            return ""
         raise AssertionError(
             f"the build step takes {key} from {expr}. The step count it builds with, "
             f"and the reference count it compares against, have to be the ones the "
@@ -3236,11 +3435,33 @@ def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
 # ----------------------------------------------------------------- report
 
 
+_TWO_LEGS = [
+    {"label": "control", "passed": True, "steps": []},
+    {"label": "canary", "passed": True, "steps": []},
+]
+_A_FAILING_LEG = [
+    {"label": "control", "passed": False, "failures": ["x"], "steps": []},
+    {"label": "canary", "passed": True, "steps": []},
+]
+# The Studio payload from the merged kernel. Not this reporter's.
+_STUDIO = [{"label": "studio-gpu", "passed": False, "failures": ["x"], "assertions": []}]
+
+
 @pytest.mark.parametrize(
-    ("verdict", "expected_exit"),
-    [("pass", 0), ("partial", 0), ("infra", 0), ("fail", 1)],
+    ("verdict", "reports", "expected_exit"),
+    [
+        ("pass", _TWO_LEGS, 0),
+        ("partial", [], 0),
+        ("infra", [], 0),
+        ("fail", _A_FAILING_LEG, 1),
+        # Since --with-studio the kernel verdict covers a payload this reporter
+        # does not own, so a failing Studio run must not print "Kaggle T4
+        # smoke: FAIL" over two green legs. kaggle_studio_ci/report.py turns
+        # that red, in the same job, from the same evidence directory.
+        ("fail", _TWO_LEGS + _STUDIO, 0),
+    ],
 )
-def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, expected_exit):
+def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, reports, expected_exit):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "launch_result.json").write_text(
@@ -3250,7 +3471,7 @@ def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, expe
                 "reason": "test",
                 "slug": "u/s",
                 "kernel_state": "COMPLETE",
-                "reports": [],
+                "reports": reports,
             }
         )
     )
@@ -4258,36 +4479,41 @@ def test_the_frontier_leg_does_not_carry_the_zoo_requirement():
         )
 
 
-def test_the_frontier_leg_rides_in_the_one_kernel_rather_than_opening_a_session():
-    """frontier must never be the reason a second Kaggle session is opened.
+def test_frontier_is_retired_in_favour_of_the_leg_that_supersedes_it():
+    """frontier no longer runs, and this used to assert that it did.
 
-    This used to read "the seat that costs nothing", on the basis that a
-    session bills its wall clock once rather than per card, so the second
-    kernel's idle T4 carried frontier for free. That is still true about
-    BILLING and is no longer the binding constraint. The account allows two
-    concurrent GPU sessions; two kernels took both, and
-    kaggle-t4-studio-gpu-ci.yml runs on the same account, so the notebook leg
-    locked Unsloth out for as long as it ran. Everything now packs into one
-    kernel and frontier queues behind the legs ahead of it.
+    The property it pinned was "there is one kernel and frontier is in it",
+    which mattered when frontier was the cheapest way to cover a
+    latest-everything stack. `vision_fla_compile` covers that stack on a bigger
+    model AND asserts the vendored FLA kernels, the Turing attention choice, a
+    real vision training run, the merged vision export, a Q8_0 GGUF with its
+    mmproj sidecar and inference on the exported file. Everything frontier
+    proved is a subset.
 
-    So the property worth pinning is no longer "frontier shares a full kernel"
-    -- that assertion passes just as happily on a two-session layout -- but
-    "there is one kernel and frontier is in it".
-
-    It has passed on real hardware in both layouts: transformers 5.15.0 /
-    trl 1.9.2 paired, and transformers 5.15.1 / trl 1.10.0 on run 32607621452,
-    ten steps, canary emitted, two fresh processes agreeing bitwise.
+    Rewritten rather than deleted, because the thing worth guarding now is that
+    the retirement was DELIBERATE: a leg that quietly falls out of KERNELS with
+    no entry anywhere is indistinguishable from one dropped by a bad merge.
     """
-    sys.path.insert(0, str(CI_DIR))
-    import legs
+    from legs import KERNELS, UNWIRED
 
-    wired = [kernel for kernel in legs.KERNELS if "frontier" in kernel]
-    assert len(wired) == 1, f"frontier appears in {len(wired)} kernels, expected 1"
-    assert len(legs.KERNELS) == 1, (
-        f"{len(legs.KERNELS)} kernels means {len(legs.KERNELS)} concurrent Kaggle "
-        "sessions, and the account only has two. Unsloth needs one of them."
+    assert "frontier" not in {name for kernel in KERNELS for name in kernel}, (
+        "frontier is back in the wired set; if that is intended, this test and "
+        "its UNWIRED note both need rewriting rather than deleting"
     )
-    assert "frontier" not in legs.UNWIRED
+    assert "frontier" in UNWIRED, (
+        "frontier is in neither KERNELS nor UNWIRED, which is what a leg "
+        "dropped by accident looks like"
+    )
+    assert (
+        "SUPERSEDED" in UNWIRED["frontier"]
+    ), "the note must say it was replaced, not that it is broken"
+    assert "vision_fla_compile" in UNWIRED["frontier"], "and by what"
+    # And the leg it names is really carrying the load.
+    assert "vision_fla_compile" in {name for kernel in KERNELS for name in kernel}
+
+    # There is still exactly ONE kernel, which is the half of the old
+    # assertion that was never about frontier.
+    assert len(KERNELS) == 1, KERNELS
 
 
 def test_the_pinned_kaggle_client_carries_the_calls_this_workflow_makes():
