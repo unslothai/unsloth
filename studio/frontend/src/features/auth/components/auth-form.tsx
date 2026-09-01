@@ -163,6 +163,15 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 navigate({ to: getPostAuthRoute() });
                 return;
               }
+              // The failed refresh cleared local storage, but the flag was read
+              // before it ran. Recompute, or a revoked session leaves the login
+              // form disabled with nothing left to recompute it and the user
+              // cannot enter their replacement setup code without a reload.
+              if (!canceled) {
+                setRequiresPasswordChange(
+                  result.requires_password_change || mustChangePassword(),
+                );
+              }
             }
             if (hasAuthToken()) {
               if (!canceled) setStatusLoading(false);

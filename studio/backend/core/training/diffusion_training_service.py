@@ -535,8 +535,16 @@ class DiffusionTrainingService:
         a mutation is open, so neither waits on the other (a start must never block on a
         minutes-long dataset import).
         """
+        from utils.workspace_context import current_workspace_subject
+
         with self._lock:
-            if self._reserved or (self._proc is not None and self._proc.is_alive()):
+            active = self._reserved or (self._proc is not None and self._proc.is_alive())
+            # Only the run's own workspace is interlocked. The dataset roots are per
+            # account, so another account's images cannot change what this run reads,
+            # and blocking them would disable dataset preparation for hours.
+            owner = self._active_workspace_subject
+            mine = owner is None or owner == current_workspace_subject()
+            if active and mine:
                 raise TrainingActiveError(
                     "Training images cannot be changed while diffusion training is active. "
                     "Stop the run before uploading, importing, editing captions, or deleting images."
