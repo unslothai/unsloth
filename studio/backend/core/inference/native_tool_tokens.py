@@ -164,6 +164,20 @@ def decode_with_native_tool_tokens(
     )
 
 
+def decoder_preserves_token(
+    tokenizer,
+    token: str,
+    preserved_tokens = (),
+) -> bool:
+    """Whether a ``NativeToolTokenDecoder`` over ``tokenizer`` would really keep ``token``."""
+    if tokenizer is None:
+        return False
+    try:
+        return NativeToolTokenDecoder(tokenizer, preserved_tokens = preserved_tokens).preserves(token)
+    except Exception:  # noqa: BLE001 -- an unusable tokenizer keeps the fail-closed answer
+        return False
+
+
 class NativeToolTokenDecoder:
     """Tokenizer proxy used by ``TextIteratorStreamer`` on tool-enabled turns."""
 
@@ -175,6 +189,24 @@ class NativeToolTokenDecoder:
     ):
         self._tokenizer = tokenizer
         self._special_ids, self._tool_ids = _special_token_sets(tokenizer, preserved_tokens)
+
+    def preserves(self, token: str) -> bool:
+        """Whether this decoder actually keeps ``token``.
+
+        Not the same as "it is in the allowlist": a tokenizer that exposes no usable
+        ``all_special_ids`` sends every decode back through ``skip_special_tokens=True``,
+        which drops the token regardless. Callers that re-emit a matching opener have to ask
+        the decoder, not the policy.
+        """
+        if not self._special_ids:
+            return False
+        for token_id in self._tool_ids:
+            try:
+                if self._tokenizer.convert_ids_to_tokens(token_id) == token:
+                    return True
+            except Exception:  # noqa: BLE001 -- third-party tokenizer adapters vary
+                continue
+        return False
 
     def decode(self, token_ids, **_decode_kwargs) -> str:
         return _decode_with_token_sets(

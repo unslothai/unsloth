@@ -705,3 +705,80 @@ def test_the_provisional_card_skips_a_blocked_leading_object():
         leading_blocked_bare_json_end('{"name": "web_search", "parameters": {}}', EXEC_ENABLED) == 0
     )
     assert leading_blocked_bare_json_end('{"answer": 1}', EXEC_ENABLED) == 0
+
+
+def test_every_leading_blocked_object_is_skipped_before_the_sniff():
+    # A chain of guarded calls ahead of the promotable one: skipping only the first names the
+    # card after the second, which will not run either.
+    from core.inference.llama_cpp import _sniff_text_tool_name
+
+    pad = "x" * 140
+    chain = (
+        f'{{"name":"terminal","parameters":{{"a":"{pad}"}}}};'
+        f'{{"name":"python","parameters":{{"b":"{pad}"}}}};'
+        '{"name":"web_search","parameters":{"query":"x"}}'
+    )
+    assert _sniff_text_tool_name(chain, EXEC_ENABLED) == "web_search"
+    calls = parse_tool_calls_from_text(chain, enabled_tool_names = EXEC_ENABLED)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+def test_a_disabled_closed_peer_ends_the_blocked_chain():
+    # `_parse_llama3_bare_json` stops at a disabled name, so nothing after it can be promoted;
+    # holding the response private to EOS buys nothing.
+    from core.inference.tool_call_parser import blocked_bare_json_chain_may_continue
+
+    blocked = '{"name":"terminal","arguments":{}}'
+    assert (
+        blocked_bare_json_chain_may_continue(
+            f'{blocked}; {{"name":"nope","arguments":{{}}}}', EXEC_ENABLED
+        )
+        is False
+    )
+    # A promotable or blocked peer still extends it.
+    for peer in ('{"name":"web_search","parameters":{}}', '{"name":"python","arguments":{}}'):
+        assert blocked_bare_json_chain_may_continue(f"{blocked}; {peer}", EXEC_ENABLED) is True
+
+
+class _NoSpecialIds:
+    """Exposes ``all_special_tokens`` but no usable ids, like a lightweight custom tokenizer."""
+
+    all_special_tokens = ["<think>", "</think>"]
+
+    def decode(
+        self,
+        token_ids,
+        skip_special_tokens = False,
+        **_kwargs,
+    ):
+        return ""
+
+
+class _WithThinkId:
+    _IDS = {1: "</think>", 2: "<eos>"}
+    all_special_ids = tuple(_IDS)
+
+    def convert_ids_to_tokens(self, token_id):
+        return self._IDS[token_id]
+
+    def decode(
+        self,
+        token_ids,
+        skip_special_tokens = False,
+        **_kwargs,
+    ):
+        return "".join(self._IDS.get(i, "") for i in token_ids)
+
+
+def test_the_think_prefill_flag_asks_the_decoder_not_the_policy():
+    """``NativeToolTokenDecoder`` falls back to ``skip_special_tokens=True`` with no usable ids.
+
+    Deriving the re-emit from ``preserve_tool_tokens`` alone then puts the opener back while
+    the closer is still dropped, leaving the answer inside an unterminated thinking block.
+    """
+    from core.inference.native_tool_tokens import decoder_preserves_token
+
+    assert decoder_preserves_token(_NoSpecialIds(), "</think>") is False
+    assert decoder_preserves_token(_WithThinkId(), "</think>") is True
+    assert decoder_preserves_token(_WithThinkId(), "<eos>") is False  # not a tool control
+    assert decoder_preserves_token(None, "</think>") is False

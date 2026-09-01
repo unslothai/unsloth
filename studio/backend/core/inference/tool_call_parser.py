@@ -2837,13 +2837,19 @@ def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional
     peer_end = _balanced_brace_end(suffix, 0)
     if peer_end is None:
         return True  # still arriving; it may yet close as a call
-    # A peer that has CLOSED settles the question. Only a call-shaped one can extend the
-    # chain, so ``{"answer":1}`` ends it here instead of holding the turn to EOS.
+    # A peer that has CLOSED settles the question. Only a call-shaped one whose NAME the
+    # chain scan would accept can extend it: ``{"answer":1}`` ends it, and so does a
+    # disabled name, which stops ``_parse_llama3_bare_json`` outright.
     try:
         peer = json.loads(suffix[: peer_end + 1])
     except (json.JSONDecodeError, ValueError):
         return False
-    return isinstance(peer, dict) and _bare_json_call_shaped(peer)
+    if not isinstance(peer, dict) or not _bare_json_call_shaped(peer):
+        return False
+    peer_name = peer.get("name") or peer.get("function") or ""
+    return _markerless_promotable(peer_name, enabled_tool_names) or _markerless_blocked_execution(
+        peer_name, enabled_tool_names
+    )
 
 
 def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
@@ -2881,16 +2887,23 @@ def leading_blocked_bare_json_end(text: str, enabled_tool_names: Optional[set]) 
     The provisional-card sniff searches the whole drained prefix for ``"name"``, so on a
     blocked-first chain it names the card after the object that will NOT run.
     """
-    probe = strip_llama3_leading_sentinels(text.lstrip())
-    if not probe.startswith("{"):
-        return 0
-    end = _balanced_brace_end(probe, 0)
-    if end is None:
-        return 0
-    name = _top_level_bare_json_name(probe)
-    if not _markerless_blocked_execution(name, enabled_tool_names):
-        return 0
-    return len(text) - len(probe) + end + 1
+    consumed = 0
+    rest = text
+    while True:
+        probe = strip_llama3_leading_sentinels(rest.lstrip())
+        if consumed:
+            probe = probe.lstrip(" \t\n\r;")
+        if not probe.startswith("{"):
+            return consumed
+        end = _balanced_brace_end(probe, 0)
+        if end is None:
+            return consumed
+        if not _markerless_blocked_execution(_top_level_bare_json_name(probe), enabled_tool_names):
+            return consumed
+        # Every consecutive blocked object, not just the first: the card must be named
+        # after the peer that will actually run.
+        consumed = len(text) - len(probe) + end + 1
+        rest = probe[end + 1 :]
 
 
 def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:

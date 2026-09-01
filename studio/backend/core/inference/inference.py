@@ -48,7 +48,11 @@ from core.inference.generation_timing import (
     build_generation_timings,
     with_prefill_boundary_processor,
 )
-from core.inference.native_tool_tokens import NativeToolTokenDecoder, reasoning_control_tokens
+from core.inference.native_tool_tokens import (
+    NativeToolTokenDecoder,
+    decoder_preserves_token,
+    reasoning_control_tokens,
+)
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -1506,7 +1510,10 @@ class InferenceBackend:
             think_prefix = detect_think_prefill(
                 prompt_text,
                 getattr(raw_tokenizer, "all_special_tokens", None),
-                preserves_think_close = _preserve_tool_tokens,
+                # Ask the decoder, not the policy: with no usable all_special_ids it falls
+                # back to skip_special_tokens=True and drops the closer anyway.
+                preserves_think_close = _preserve_tool_tokens
+                and decoder_preserves_token(raw_tokenizer, "</think>"),
             )
             import threading
 
@@ -2016,8 +2023,10 @@ class InferenceBackend:
                     getattr(tokenizer, "all_special_tokens", None),
                     # Both streamers below keep </think> when they decode through
                     # NativeToolTokenDecoder, so the opener has to be re-emitted.
-                    preserves_think_close = preserve_tool_tokens
-                    or reasoning_channel_markers is not None,
+                    preserves_think_close = (
+                        preserve_tool_tokens or reasoning_channel_markers is not None
+                    )
+                    and decoder_preserves_token(tokenizer, "</think>"),
                 )
             )
 

@@ -12,7 +12,11 @@ import threading
 from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
-from core.inference.native_tool_tokens import NativeToolTokenDecoder, reasoning_control_tokens
+from core.inference.native_tool_tokens import (
+    NativeToolTokenDecoder,
+    decoder_preserves_token,
+    reasoning_control_tokens,
+)
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
     runtime_context_length,
@@ -2272,7 +2276,10 @@ class MLXInferenceBackend:
             getattr(self._tokenizer, "all_special_tokens", None),
             # Matches the native_token_decoder condition below: when it runs, </think>
             # survives, so the prefilled opener has to be re-emitted with it.
-            preserves_think_close = bool(tools) or reasoning_channel_markers is not None,
+            preserves_think_close = (bool(tools) or reasoning_channel_markers is not None)
+            and decoder_preserves_token(
+                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+            ),
         )
         if seed is None:
             sampler = make_sampler(
@@ -2617,7 +2624,8 @@ class MLXInferenceBackend:
         prefill = detect_think_prefill(
             prompt,
             getattr(chat_target, "all_special_tokens", None),
-            preserves_think_close = bool(tools) and bool(self._tokenizer),
+            preserves_think_close = bool(tools)
+            and decoder_preserves_token(self._tokenizer, "</think>"),
         )
         vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))
         # Matched on the sampled text, for the reason _generate_text gives.
