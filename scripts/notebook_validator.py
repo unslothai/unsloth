@@ -681,33 +681,29 @@ def _git_source_is_allowed(source: str) -> bool:
 
 
 def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
-    """Whole lines, not parsed commands.
+    """Every pip command on the line, conditional ones included.
 
     The question is whether the cell can reach a `git+` source at all, so the answer must not
-    depend on how a line splits into commands: a fallback, a `(...)` group, an `if ...; then`
-    body, anything the splitter does not turn into a recognisable pip command would otherwise
-    hide one. A line counts when any part of it parses as a pip install.
+    depend on how the line splits: a fallback, a `(...)` group and an `if ...; then` body are
+    all reachable, and `unconditional_pip_invocations` would drop them. It does depend on the
+    command being pip: a `git+` in an `echo` beside an install installs nothing, and a `git+`
+    in a comment is documentation, which `_split_chained` has already dropped.
 
-    The commands rather than the raw line, because `_split_chained` drops a shell comment and
-    a comment naming a prohibited source is documentation, not an install.
+    Each source is read twice over, from the command text and from the arguments shlex made
+    of it: `"git+"https://...` is one argument to pip and two words to a text scan, and a
+    source inside a construct only one of them can read still has to be seen.
     """
     findings: list[Finding] = []
     for line_no, line in _glue_line_continuations(install_cell):
-        commands = [command for command, _ in _split_chained(line)]
-        parsed = [parse_pip_line(command, line_no) for command in commands]
-        if not any(inv is not None for inv in parsed) and PIP_LINE_RE.match(line) is None:
-            continue
+        sources: list[str] = []
+        for command, _ in _split_chained(line):
+            inv = parse_pip_line(command, line_no)
+            if inv is None:
+                continue
+            sources += _GIT_SOURCE_RE.findall(command)
+            sources += [arg for arg in inv.packages if arg.startswith("git+")]
         # Per source, not per line: one allowlisted repository beside a prohibited one must
-        # not clear the whole line. Both the command text and the arguments shlex produced
-        # from it: `"git+"https://...` is one argument to pip and two words to a text scan.
-        sources = [source for command in commands for source in _GIT_SOURCE_RE.findall(command)]
-        sources += [
-            argument
-            for inv in parsed
-            if inv is not None
-            for argument in inv.packages
-            if argument.startswith("git+")
-        ]
+        # not clear the whole line.
         if not sources or all(_git_source_is_allowed(source) for source in sources):
             continue
         findings.append(

