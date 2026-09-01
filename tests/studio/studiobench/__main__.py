@@ -653,8 +653,9 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
             _log(f"  {injection_problem}")
             return 2
         # ONE HOME CANNOT HOLD TWO BUILDS: `install_studio` derives the checkout from the home, so two
-        # arms sharing one serve whichever build was installed last and the A/B compares a build with
-        # itself. Measured: two runs of the same pair, equal within each and 3.6x apart between them.
+        # arms sharing a home share one checkout: the second install overwrites the first and both
+        # arms then serve whichever build was installed last, so the A/B compares a build with itself.
+        # Measured: two runs of the same pair, equal within each and 3.6x apart between them.
         # The pair read 716 ms and 718 ms within one run.
         if not args.attach and args.home:
             _log(
