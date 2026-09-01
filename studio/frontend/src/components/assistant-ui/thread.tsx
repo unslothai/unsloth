@@ -8074,10 +8074,12 @@ const AssistantActionBar: FC = () => {
                   // whole-chat save runs.
                   // Stripped: a project source is retrieved back into context, so
                   // saved tokens would teach the model ids that resolve to nothing.
-                  const text = stripSearchImageTokens(
-                    replySourceMarkdown(
-                      aui.message().getState().content,
-                      toolResultModelText,
+                  const text = scrubOpenAICitationMarkers(
+                    stripSearchImageTokens(
+                      replySourceMarkdown(
+                        aui.message().getState().content,
+                        toolResultModelText,
+                      ),
                     ),
                   );
                   if (!text.trim()) {

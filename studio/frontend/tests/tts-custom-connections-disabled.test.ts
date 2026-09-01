@@ -113,6 +113,9 @@ function load(
         },
       },
       "@/lib/toast": { toast: { error: () => {} } },
+      "@/components/assistant-ui/openai-citation-scrub": {
+        scrubOpenAICitationMarkers: (text: string) => text,
+      },
     },
   );
   return {

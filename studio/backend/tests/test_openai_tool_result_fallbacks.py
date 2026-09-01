@@ -976,3 +976,43 @@ def test_a_bundled_empty_output_is_not_a_report_when_the_stream_is_cut(monkeypat
     ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
     assert len(ends) == 1
     assert ends[0]["result"] == "(response truncated before the command reported)"
+
+
+def test_action_sources_survive_alongside_results(monkeypatch):
+    # Both fields are requested together and they do not agree: action.sources
+    # lists pages the search consulted, which the ranked results need not
+    # include, so taking only one drops the rest.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_both",
+                "action": {
+                    "type": "search",
+                    "query": "tigers",
+                    "sources": [
+                        {"url": "https://ranked.example"},
+                        {"url": "https://consulted.example"},
+                    ],
+                },
+                "results": [
+                    {
+                        "title": "Ranked Page",
+                        "url": "https://ranked.example",
+                        "snippet": "ranked body",
+                    }
+                ],
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
+    result = ends[0]["result"]
+    # the consulted-only page is kept
+    assert "URL: https://consulted.example" in result
+    # and the ranked one keeps the richer fields rather than being restated
+    assert "Title: Ranked Page" in result
+    assert "Snippet: ranked body" in result
+    assert result.count("URL: https://ranked.example") == 1

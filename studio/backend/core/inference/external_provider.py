@@ -474,38 +474,54 @@ def _clean_source_url(value: Any) -> str:
     return value
 
 
-def _web_search_source_records(results: Any, sources: Any) -> list[dict[str, str]]:
-    """One call's results (or its bare `action.sources`) as {url,title,snippet}.
-
-    A record recovered from `action.sources` alone has only a URL, so it titles
-    itself with one; `_merge_source_records` treats that as "no title yet".
-    """
+def _search_result_records(results: Any) -> list[dict[str, str]]:
+    """The ranked search results as {url,title,snippet}."""
     records: list[dict[str, str]] = []
-    if isinstance(results, list):
-        for result in results:
-            if not isinstance(result, dict):
-                continue
-            url = _clean_source_url(result.get("url"))
-            if not url:
-                continue
-            records.append(
-                {
-                    # Blank means missing: `Title:\s*(.+)` eats the newline and
-                    # would take the URL line as the title.
-                    "title": _one_line(result.get("title") or "") or url,
-                    "url": url,
-                    "snippet": _one_line(result.get("snippet") or result.get("text") or ""),
-                }
-            )
-    if not records and isinstance(sources, list):
-        for source in sources:
-            raw = source if isinstance(source, str) else None
-            if isinstance(source, dict):
-                raw = source.get("url")
-            url = _clean_source_url(raw)
-            if url:
-                records.append({"title": url, "url": url, "snippet": ""})
+    if not isinstance(results, list):
+        return records
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        url = _clean_source_url(result.get("url"))
+        if not url:
+            continue
+        records.append(
+            {
+                # Blank means missing: `Title:\s*(.+)` eats the newline and
+                # would take the URL line as the title.
+                "title": _one_line(result.get("title") or "") or url,
+                "url": url,
+                "snippet": _one_line(result.get("snippet") or result.get("text") or ""),
+            }
+        )
     return records
+
+
+def _action_source_records(sources: Any) -> list[dict[str, str]]:
+    """The pages the action consulted. These carry a URL and nothing else, so
+    each titles itself with its own URL and `_merge_source_records` reads that
+    as "no title yet"."""
+    records: list[dict[str, str]] = []
+    if not isinstance(sources, list):
+        return records
+    for source in sources:
+        raw = source if isinstance(source, str) else None
+        if isinstance(source, dict):
+            raw = source.get("url")
+        url = _clean_source_url(raw)
+        if url:
+            records.append({"title": url, "url": url, "snippet": ""})
+    return records
+
+
+def _web_search_source_records(results: Any, sources: Any) -> list[dict[str, str]]:
+    """One call's sources. Both fields are requested together and they do not
+    agree: `action.sources` lists pages the search consulted, which the ranked
+    `results` need not include, so taking only one drops the rest."""
+    return _merge_source_records(
+        _search_result_records(results),
+        _action_source_records(sources),
+    )
 
 
 def _merge_source_records(*groups: list[dict[str, str]]) -> list[dict[str, str]]:

@@ -9,6 +9,7 @@ import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { scrubOpenAICitationMarkers } from "@/components/assistant-ui/openai-citation-scrub";
 
 /** Voice for a stored voiceURI. "default" resolves to the voice the platform
  * marks as its default, so the "System default" choice means what it says
@@ -456,7 +457,8 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
 
   speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
     // Renderer markup: without this the reader says the token id out loud.
-    const text = stripSearchImageTokens(spokenText);
+    // A leftover citation marker reads aloud just as badly.
+    const text = scrubOpenAICitationMarkers(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 
     const handleEnd = (

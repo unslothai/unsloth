@@ -180,3 +180,34 @@ test("copying a reply does not carry citation markers to the clipboard", () => {
     /scrubOpenAICitationMarkers\(\s*stripSearchImageTokens\(aui\.message\(\)\.getCopyText\(\)\),\s*\)/,
   );
 });
+
+test("every presentation path scrubs citation markers, not just the screen", () => {
+  // MarkdownText cleans the rendered derivative only, so each consumer that
+  // turns a reply back into prose has to strip them too, next to the
+  // search-image tokens it already strips for the same reason.
+  const sites: Array<[string, RegExp]> = [
+    [
+      "../src/features/chat/adapters/studio-speech-synthesis-adapter.ts",
+      /scrubOpenAICitationMarkers\(stripSearchImageTokens\(spokenText\)\)/,
+    ],
+    [
+      "../src/features/chat/utils/conversation-markdown-export.ts",
+      /scrubOpenAICitationMarkers\(\s*stripSearchImageTokens\(renderMessage\(message\)\),\s*\)/,
+    ],
+    [
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      /scrubOpenAICitationMarkers\(\s*stripSearchImageTokens\(messageToMarkdown\(msg\)\),\s*\)/,
+    ],
+    [
+      "../src/components/assistant-ui/thread.tsx",
+      /scrubOpenAICitationMarkers\(\s*stripSearchImageTokens\(\s*replySourceMarkdown\(/,
+    ],
+  ];
+  for (const [relative, pattern] of sites) {
+    const source = readFileSync(
+      fileURLToPath(new URL(relative, import.meta.url)),
+      "utf8",
+    );
+    assert.match(source, pattern, relative);
+  }
+});

@@ -103,6 +103,7 @@ import {
 import { planChatItemSources } from "../utils/project-source-plan";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
+import { scrubOpenAICitationMarkers } from "@/components/assistant-ui/openai-citation-scrub";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -502,7 +503,9 @@ async function saveConversationAsProjectSource(
       role: String(msg.role ?? ""),
       // As the markdown exporter does: a project source is retrieved back into
       // context, so the renderer's tokens must not be saved as prose.
-      content: stripSearchImageTokens(messageToMarkdown(msg)),
+      content: scrubOpenAICitationMarkers(
+        stripSearchImageTokens(messageToMarkdown(msg)),
+      ),
     })),
   );
   if (!markdown) {
