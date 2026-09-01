@@ -71,7 +71,11 @@ from core.inference.memory_contract import (
     build_memory_estimate,
     project_estimate_memory_response,
 )
-from core.inference.stream_errors import LlamaStreamError
+from core.inference.stream_errors import (
+    KV_STARVATION_MESSAGE,
+    LlamaStreamError,
+    is_kv_starvation,
+)
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
@@ -319,6 +323,10 @@ def _friendly_upstream_error(text: str) -> str:
 
 
 def _anthropic_upstream_error(text: str) -> str:
+    # Starvation is a shared-cache capacity failure, not an oversized prompt: the right
+    # response is to retry, so it must not be reworded into "shorten the conversation".
+    if is_kv_starvation(text):
+        return KV_STARVATION_MESSAGE
     if _classify_llama_generation_error(Exception(text)):
         m = _OVERSIZE_TOKENS_RE.search(text)
         counts = f": {m.group(1)} tokens > {m.group(2)} maximum" if m else ""
@@ -1453,6 +1461,11 @@ def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
         return True if exc.context_oversize else None
     msg = str(exc)
     msg_l = msg.lower()
+    # Same reasoning as the typed branch, which only reaches errors carrying the parsed
+    # flag. Raw upstream bodies arrive here as a plain Exception, and "Context size has
+    # been exceeded" trips the substring test below while meaning the opposite.
+    if is_kv_starvation(msg):
+        return None
     if "n_ctx" in msg_l or (
         "context" in msg_l and any(t in msg_l for t in ("exceed", "length", "window", "too long"))
     ):

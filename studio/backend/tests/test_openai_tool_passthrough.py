@@ -188,6 +188,30 @@ class TestFriendlyUpstreamError:
         assert _anthropic_upstream_error("disk full") == "llama-server error: disk full"
         assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
 
+    def test_anthropic_upstream_error_keeps_kv_starvation_out_of_the_overflow_rewrite(self):
+        """llama-server says "Context size has been exceeded" when concurrent
+        generations drain the shared KV cache. Nothing about the request was too
+        long, so rewording it as an oversized prompt sends the client compacting a
+        valid conversation instead of retrying."""
+        from routes.inference import _anthropic_upstream_error, _classify_llama_generation_error
+        from core.inference.stream_errors import KV_STARVATION_MESSAGE
+
+        for raw in (
+            "Context size has been exceeded.",
+            '{"error":{"message":"Context size has been exceeded.","code":500}}',
+        ):
+            assert _anthropic_upstream_error(raw) == KV_STARVATION_MESSAGE
+            assert "too long" not in _anthropic_upstream_error(raw).lower()
+            # None keeps the upstream status: a 400 would blame the caller's request.
+            assert _classify_llama_generation_error(Exception(raw)) is None
+
+    def test_a_genuine_oversize_body_is_still_classified_as_an_overflow(self):
+        from routes.inference import _classify_llama_generation_error
+
+        assert _classify_llama_generation_error(
+            Exception("the request (214331 tokens) exceeds the available context size (131072 tokens)")
+        ) is True
+
 
 # =====================================================================
 # ChatMessage — tool role, tool_calls, optional content
