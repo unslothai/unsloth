@@ -2345,3 +2345,77 @@ def test_me_reports_this_accounts_own_password_requirement(
             client.get("/api/auth/me", headers = settled_headers).json()["must_change_password"]
             is False
         )
+
+
+def test_media_renders_and_recipe_jobs_are_quiesced_before_a_name_is_released(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import sys
+    import types
+
+    cancelled: list[str] = []
+
+    class _Engine:
+        def __init__(self, name: str, active: bool):
+            self.name = name
+            self.active = active
+
+        def generate_progress(self, subject = None):
+            assert subject == "alice"
+            return {"active": self.active}
+
+        def cancel_generate(self, subject = None):
+            assert subject == "alice"
+            cancelled.append(self.name)
+            self.active = False
+            return True
+
+    diffusion = _Engine("diffusion", True)
+    video = _Engine("video", False)
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.diffusion",
+        types.SimpleNamespace(get_diffusion_backend = lambda: diffusion),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.video",
+        types.SimpleNamespace(get_video_backend = lambda: video),
+    )
+    # Never imported in this process, so it cannot be holding a render and must
+    # not be imported just to ask.
+    monkeypatch.delitem(sys.modules, "core.inference.sd_cpp_backend", raising = False)
+
+    class _Manager:
+        def __init__(self):
+            self.alive = True
+            self.cancelled: list[str] = []
+
+        def is_active(self):
+            return self.alive
+
+        def owns_workspace(self, subject = None):
+            return subject == "alice"
+
+        def get_current_job_id(self):
+            return "recipe-1"
+
+        def cancel(self, job_id):
+            self.cancelled.append(job_id)
+            self.alive = False
+            return True
+
+    manager = _Manager()
+    monkeypatch.setitem(
+        sys.modules,
+        "core.data_recipe.jobs.manager",
+        types.SimpleNamespace(get_job_manager = lambda: manager),
+    )
+
+    assert auth_storage._workspace_jobs_active("alice") is True
+    auth_storage._quiesce_workspace_jobs("alice")
+    assert cancelled == ["diffusion"]
+    assert manager.cancelled == ["recipe-1"]
+    # Only once both are stopped may the tombstone be released, or the render
+    # persists into whoever takes the name next.
+    assert auth_storage._workspace_jobs_active("alice") is False

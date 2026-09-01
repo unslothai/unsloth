@@ -176,6 +176,18 @@ class JobManager:
         with self._lock:
             return getattr(self, "_workspace_subject", None) in {None, expected}
 
+    def is_active(self) -> bool:
+        """Whether a worker for the visible job is still able to write.
+
+        The process, not the status field: a terminated run's status is set from
+        the pump thread, so a job that has stopped reporting can still have a
+        live child holding its artifact root open.
+        """
+        with self._lock:
+            if not self._workspace_owned_locked() or self._job is None:
+                return False
+            return bool(self._proc is not None and self._proc.is_alive())
+
     def start(
         self,
         *,

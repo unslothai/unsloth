@@ -1019,6 +1019,34 @@ def username_is_retired(username: str) -> bool:
     return True
 
 
+# The media engines and their accessors, probed only where a process has already
+# imported one. A module that was never imported cannot be holding a render, and
+# importing it here would pull the whole diffusion stack into an account deletion,
+# where an optional dependency that failed to import would make the fail-closed
+# probe below hold the name reserved for good.
+_MEDIA_ENGINES = (
+    ("core.inference.diffusion", "get_diffusion_backend"),
+    ("core.inference.sd_cpp_backend", "get_sd_cpp_backend"),
+    ("core.inference.video", "get_video_backend"),
+)
+
+
+def _loaded_media_backends() -> list:
+    """Media backends already live in this process."""
+    import sys
+
+    backends = []
+    for module_name, accessor in _MEDIA_ENGINES:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        getter = getattr(module, accessor, None)
+        if getter is None:
+            continue
+        backends.append(getter())
+    return backends
+
+
 def _workspace_jobs_active(username: str) -> bool:
     """Whether anything is still running under this account's workspace.
 
@@ -1053,6 +1081,17 @@ def _workspace_jobs_active(username: str) -> bool:
         from state import active_generations
         return bool(active_generations.active_thread_ids(username))
 
+    def _media_renders_active() -> bool:
+        return any(
+            backend.generate_progress(subject = username).get("active")
+            for backend in _loaded_media_backends()
+        )
+
+    def _recipe_job_active() -> bool:
+        from core.data_recipe.jobs.manager import get_job_manager
+        manager = get_job_manager()
+        return bool(manager.is_active() and manager.owns_workspace(username))
+
     from utils.workspace_context import run_in_workspace
 
     for what, probe in (
@@ -1060,6 +1099,8 @@ def _workspace_jobs_active(username: str) -> bool:
         ("diffusion training", _diffusion_active),
         ("export", _export_active),
         ("chat generations", _generations_active),
+        ("media renders", _media_renders_active),
+        ("data recipe job", _recipe_job_active),
     ):
         try:
             if run_in_workspace(username, probe):
@@ -1148,6 +1189,27 @@ def _quiesce_workspace_jobs(username: str) -> None:
         for thread_id in active_generations.active_thread_ids(username):
             active_generations.cancel_thread(thread_id, subject = username)
 
+    def _stop_media_renders() -> None:
+        # An image or video render outlives the row the same way a training run
+        # does, and image_gallery.save() / video_gallery.save() resolve the
+        # workspace root when the render finishes, not when it started: left
+        # running, it writes the deleted account's output into whoever takes the
+        # name next.
+        for backend in _loaded_media_backends():
+            if backend.generate_progress(subject = username).get("active"):
+                backend.cancel_generate(subject = username)
+
+    def _stop_recipe_job() -> None:
+        # The spawned worker keeps the artifact root it was given, so it can
+        # recreate the retired pathname and write its dataset into a namesake.
+        from core.data_recipe.jobs.manager import get_job_manager
+        manager = get_job_manager()
+        if not manager.owns_workspace(username):
+            return
+        job_id = manager.get_current_job_id()
+        if job_id is not None:
+            manager.cancel(job_id)
+
     from utils.workspace_context import run_in_workspace
 
     for what, stop in (
@@ -1155,6 +1217,8 @@ def _quiesce_workspace_jobs(username: str) -> None:
         ("diffusion training", _stop_diffusion_training),
         ("export", _stop_export),
         ("chat generations", _stop_generations),
+        ("media renders", _stop_media_renders),
+        ("data recipe job", _stop_recipe_job),
     ):
         try:
             run_in_workspace(username, stop)
