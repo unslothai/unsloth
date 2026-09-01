@@ -1454,13 +1454,19 @@ class TrainingBackend:
         return bool(record is not None and record.state == "pending" and record.job_id == job_id)
 
     def get_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
+        """The caller's own record for this id, or None.
+
+        Scoped by the record rather than by who owns the backend: ownership only
+        transfers at start_training(), so between reserving and starting, the
+        account that reserved this id would otherwise be told it does not exist.
+        """
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            record = self._start_requests.get(start_request_id)
+            record = self._record_for_caller(self._start_requests.get(start_request_id))
             if record is not None:
                 return record
             cancelled = self._start_cancel_tombstones.get(start_request_id)
-            return cancelled[1] if cancelled is not None else None
+            return self._record_for_caller(cancelled[1]) if cancelled is not None else None
 
     def status_start_request(self) -> Optional[TrainingStartRequestRecord]:
         with self._lock:

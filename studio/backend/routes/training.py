@@ -1084,8 +1084,9 @@ async def get_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
-    if not _training_workspace_owned(backend, current_subject):
-        raise HTTPException(status_code = 404, detail = "Training start request not found")
+    # Authorized by the record, not by who owns the backend: ownership transfers
+    # only at start_training(), so a caller polling its own pending start during
+    # validation would otherwise get a 404 it can never reconcile.
     record = backend.get_start_request(start_request_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Training start request not found")
@@ -1114,7 +1115,7 @@ async def acknowledge_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
-    if not _training_workspace_owned(backend, current_subject):
+    if backend.get_start_request(start_request_id) is None:
         raise HTTPException(status_code = 404, detail = "Training start request not found")
     if not backend.acknowledge_start_request(start_request_id):
         raise HTTPException(
@@ -1138,7 +1139,7 @@ async def cancel_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
-    if not _training_workspace_owned(backend, current_subject):
+    if backend.get_start_request(start_request_id) is None:
         raise HTTPException(status_code = 404, detail = "Training start request not found")
     try:
         outcome, record = await asyncio.to_thread(
