@@ -1737,12 +1737,20 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             ),
             None,
         )
-    if entry is None and not active_id:
-        # Only when status names nothing. If it DID name a model, trust it over a
-        # lagging /v1/models, or a speech model listed first would be reported.
+    if entry is None and not status:
+        # Only when there is no status at all (older server). A status that ANSWERED with
+        # active_model null is stating there is no chat resident, and falling back to
+        # catalog order there would post a loaded speech sidecar to /api/inference/load.
         entry = next((m for m in models if m.get("loaded") is not False), None)
     public_id = active_id or (entry or {}).get("id")
     if not public_id:
+        if status:
+            # Status answered and named no chat model. Returning empty here would drop
+            # the knobs silently, which is the bug this path exists to fix.
+            _fail(
+                "No chat model is currently loaded, so there are no settings to apply. "
+                "Re-run with --model naming the model to load."
+            )
         return None, None
     identifier = status.get("model_identifier")
     if identifier:
@@ -1755,6 +1763,53 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
         f"Unsloth is serving '{public_id}' from a local path it does not expose, so these "
         "settings cannot be applied by attaching. Re-run with --model naming that path."
     )
+
+
+# /api/inference/status field -> the /api/inference/load field that reproduces it. The
+# "requested_" values are what the load was INVOKED with, which is what has to be resent;
+# the bare names are the resolved ones and would pin a value the user never chose.
+_RESIDENT_RUNTIME_FIELDS = {
+    "cache_type_kv": "cache_type_kv",
+    "chat_template_override": "chat_template_override",
+    "disable_vision": "disable_vision",
+    "gpu_memory_mode": "gpu_memory_mode",
+    "gpu_layers": "gpu_layers",
+    "n_cpu_moe": "n_cpu_moe",
+    "tensor_split": "tensor_split",
+    "tensor_parallel": "tensor_parallel",
+    "speculative_type": "speculative_type",
+    "spec_draft_n_max": "spec_draft_n_max",
+    "mlx_kv_bits": "mlx_kv_bits",
+    "requested_gpu_ids": "gpu_ids",
+    "requested_parallel_slots": "n_parallel",
+    "requested_n_batch": "n_batch",
+    "requested_n_ubatch": "n_ubatch",
+    "requested_load_mode": "load_mode",
+    "requested_ctx_checkpoints": "ctx_checkpoints",
+    "requested_cache_ram": "cache_ram",
+    "requested_spec_draft_cache_type": "spec_draft_cache_type",
+    "requested_llama_extra_args": "llama_extra_args",
+}
+
+
+def _resident_runtime_payload(status: dict, payload: dict) -> dict:
+    """The resident's own settings for knobs this load did not name.
+
+    None means "never set" for every one of these, so it is dropped rather than sent:
+    omitting a field is what lets the server inherit, while sending null would pin the
+    absence. An explicit empty list is kept, since that is a real "launch with none".
+    """
+    if not status:
+        return {}
+    carried = {}
+    for field, load_field in _RESIDENT_RUNTIME_FIELDS.items():
+        if load_field in payload:
+            continue
+        value = status.get(field)
+        if value is None:
+            continue
+        carried[load_field] = value
+    return carried
 
 
 def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset) -> bool:
@@ -1775,6 +1830,10 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
             if resident is None or int(resident) != int(load.max_seq_length):
                 return True
         elif name == "load_in_4bit":
+            # GGUF has no 4-bit setting and reports null, which would read as "differs"
+            # and warn about an unload the server is not going to perform.
+            if status.get("is_gguf"):
+                continue
             resident = status.get("load_in_4bit")
             if resident is None or bool(resident) != bool(load.load_in_4bit):
                 return True
@@ -1839,6 +1898,21 @@ def _resolve_model(
         # resident model already satisfies (a path-loaded GGUF shown as a bare basename
         # can collide with a non-GGUF unsloth/<name>).
         active = next((m for m in models if m.get("loaded") is not False), None)
+        # On the inferred path the target came from status, so catalog order can name a
+        # different entry (a speech sidecar listed first). Using it would make the
+        # survivor probe below report the wrong model as still serving.
+        if attach_public_id is not None:
+            active = next(
+                (
+                    m
+                    for m in models
+                    if _model_id_matches(
+                        m.get("id"), attach_public_id, allow_casefold = allow_casefold
+                    )
+                    and m.get("loaded") is not False
+                ),
+                None,
+            ) or {"id": attach_public_id}
         if preload_check is not None:
             # An explicit knob forces match to None so the server's disk-free dedupe can
             # answer already_loaded; gating it would reject a second session for the model
@@ -1945,6 +2019,20 @@ def _resolve_model(
             payload["gpu_memory_mode"] = load.gpu_memory_mode
             if load.gpu_memory_mode == "manual":
                 payload["gpu_layers"] = -1
+        if attach_public_id is not None:
+            # An inferred reload is a full load, not a PATCH: _gguf_request_intent copies
+            # every defaulted LoadRequest field into the new intent, so a knob we leave out
+            # is reset rather than kept. Carry the resident's own values for the ones the
+            # user did not name, or changing the context alone would drop their KV dtype,
+            # slot count, batch sizes and GPU placement.
+            payload.update(_resident_runtime_payload(status_snapshot, payload))
+            # The server cannot tell an explicit `--context-length 0` reset from the 0 that
+            # every UI load sends, so it treats 0 as "no preference" and would answer
+            # already_loaded. Say outright that this one is a reload, but only when status
+            # PROVED a difference: on an older server _load_settings_differ cannot tell,
+            # and forcing there would evict on every attach.
+            if status_snapshot and _load_settings_differ(status_snapshot, load, overrides):
+                payload["force_reload"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
         except Exception:

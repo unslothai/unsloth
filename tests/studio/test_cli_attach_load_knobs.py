@@ -68,6 +68,15 @@ def loads(monkeypatch):
     return calls
 
 
+def sent(server, index = 0):
+    """The load payload without force_reload.
+
+    Every inferred attach whose settings status PROVED to differ carries it, so the
+    tests that care assert it on its own rather than repeating it in each payload.
+    """
+    return {k: v for k, v in server.loads[index].items() if k != "force_reload"}
+
+
 def test_context_length_without_model_reloads_the_resident_model(loads):
     entry = start_cli._resolve_model(
         BASE,
@@ -132,7 +141,7 @@ def test_path_loaded_resident_is_reloaded_by_its_real_path(monkeypatch):
 
     entry = start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
-    assert server.loads == [{"model_path": path, "max_seq_length": 32768}]
+    assert sent(server) == {"model_path": path, "max_seq_length": 32768}
     assert entry["id"] == "Foo-Q4_K_M"
 
 
@@ -195,7 +204,7 @@ def test_active_model_decides_the_resident_not_list_order(monkeypatch):
 
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
-    assert server.loads == [{"model_path": RESIDENT["id"], "max_seq_length": 32768}]
+    assert sent(server) == {"model_path": RESIDENT["id"], "max_seq_length": 32768}
 
 
 def test_unreloadable_resident_fails_before_loading(monkeypatch):
@@ -235,9 +244,11 @@ def test_explicit_flags_matching_defaults_still_reload(monkeypatch):
         ),
     )
 
-    assert server.loads == [
-        {"model_path": RESIDENT["id"], "max_seq_length": 0, "tensor_parallel": False}
-    ]
+    assert sent(server) == {
+        "model_path": RESIDENT["id"],
+        "max_seq_length": 0,
+        "tensor_parallel": False,
+    }
 
 
 def test_inferred_attach_pins_the_resident_quant(monkeypatch):
@@ -265,13 +276,11 @@ def test_inferred_attach_pins_the_resident_quant(monkeypatch):
         start_cli.LoadOptions(max_seq_length = 8192, supplied = frozenset({"max_seq_length"})),
     )
 
-    assert server.loads == [
-        {
+    assert sent(server) == {
             "model_path": "unsloth/Qwen3-30B-A3B-GGUF",
             "gguf_variant": "Q8_0",
             "max_seq_length": 8192,
         }
-    ]
 
 
 def test_inferred_attach_at_the_default_context_does_not_reresolve_the_quant(monkeypatch):
@@ -297,13 +306,11 @@ def test_inferred_attach_at_the_default_context_does_not_reresolve_the_quant(mon
         start_cli.LoadOptions(max_seq_length = 0, supplied = frozenset({"max_seq_length"})),
     )
 
-    assert server.loads == [
-        {
+    assert sent(server) == {
             "model_path": "unsloth/Qwen3-30B-A3B-GGUF",
             "gguf_variant": "Q8_0",
             "max_seq_length": 0,
         }
-    ]
 
 
 def test_inferred_attach_does_not_pin_a_variant_onto_a_direct_gguf_file(monkeypatch):
@@ -322,7 +329,7 @@ def test_inferred_attach_does_not_pin_a_variant_onto_a_direct_gguf_file(monkeypa
 
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
-    assert server.loads == [{"model_path": path, "max_seq_length": 32768}]
+    assert sent(server) == {"model_path": path, "max_seq_length": 32768}
 
 
 def test_inferred_attach_to_a_non_gguf_resident_sends_no_variant(monkeypatch):
@@ -339,7 +346,7 @@ def test_inferred_attach_to_a_non_gguf_resident_sends_no_variant(monkeypatch):
 
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
-    assert server.loads == [{"model_path": RESIDENT["id"], "max_seq_length": 32768}]
+    assert sent(server) == {"model_path": RESIDENT["id"], "max_seq_length": 32768}
 
 
 def test_hf_cache_resident_matches_the_advertised_repo_id(monkeypatch):
@@ -360,7 +367,7 @@ def test_hf_cache_resident_matches_the_advertised_repo_id(monkeypatch):
 
     entry = start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
-    assert server.loads == [{"model_path": cache_path, "max_seq_length": 32768}]
+    assert sent(server) == {"model_path": cache_path, "max_seq_length": 32768}
     assert entry["id"] == "unsloth/Qwen3-8B-GGUF"
 
 
@@ -377,7 +384,7 @@ def test_status_names_the_resident_even_when_the_catalog_lags(monkeypatch):
 
     entry = start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
-    assert server.loads == [{"model_path": RESIDENT["id"], "max_seq_length": 32768}]
+    assert sent(server) == {"model_path": RESIDENT["id"], "max_seq_length": 32768}
     assert entry["id"] == RESIDENT["id"]
 
 
@@ -409,7 +416,7 @@ def test_omitted_default_flags_are_not_forwarded(monkeypatch):
 
     start_cli._resolve_model(BASE, KEY, "unsloth/Qwen3-14B", start_cli.LoadOptions())
 
-    assert server.loads == [{"model_path": "unsloth/Qwen3-14B"}]
+    assert sent(server) == {"model_path": "unsloth/Qwen3-14B"}
 
 
 class TestExplicitFlagsThroughTheRealCli:
@@ -462,3 +469,172 @@ class TestExplicitFlagsThroughTheRealCli:
         load = self._load_for([command, "--no-launch", "--context-length", "0"])
         assert load is not None, f"{command} never reached _connect"
         assert "max_seq_length" in load.supplied
+
+
+def test_inferred_reload_carries_the_resident_runtime_settings(monkeypatch):
+    """A reload is not a PATCH: unnamed knobs are reset unless we resend them."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": True,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "gguf_variant": "Q8_0",
+            "requested_context_length": 4096,
+            "cache_type_kv": "q8_0",
+            "requested_parallel_slots": 4,
+            "requested_n_batch": 1024,
+            "requested_llama_extra_args": ["--foo"],
+            "tensor_split": [0.5, 0.5],
+            # Never set, so it must be omitted rather than sent as null.
+            "requested_load_mode": None,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    sent = server.loads[0]
+    assert sent["cache_type_kv"] == "q8_0"
+    assert sent["n_parallel"] == 4
+    assert sent["n_batch"] == 1024
+    assert sent["llama_extra_args"] == ["--foo"]
+    assert sent["tensor_split"] == [0.5, 0.5]
+    assert "load_mode" not in sent
+
+
+def test_user_supplied_knobs_beat_the_resident_values(monkeypatch):
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": True,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "tensor_parallel": True,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(
+            tensor_parallel = False, supplied = frozenset({"tensor_parallel"})
+        ),
+    )
+
+    assert server.loads[0]["tensor_parallel"] is False
+
+
+def test_explicit_zero_context_forces_the_reload(monkeypatch):
+    """The server reads a bare 0 as "no preference", so say outright this is a reload."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 32768,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(max_seq_length = 0, supplied = frozenset({"max_seq_length"})),
+    )
+
+    assert server.loads[0]["max_seq_length"] == 0
+    assert server.loads[0]["force_reload"] is True
+
+
+def test_a_provable_no_op_is_not_forced(monkeypatch):
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 32768,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert "force_reload" not in server.loads[0]
+
+
+def test_an_older_server_is_never_force_reloaded(monkeypatch):
+    """_load_settings_differ cannot prove anything without status; forcing would evict."""
+    server = FakeServer([dict(RESIDENT)], {}).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert "force_reload" not in server.loads[0]
+
+
+def test_four_bit_flag_does_not_warn_about_a_gguf_resident(monkeypatch, capsys):
+    """GGUF reports load_in_4bit as null because it has none; that is not a difference."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": True,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "gguf_variant": "Q8_0",
+            "requested_context_length": 4096,
+            "load_in_4bit": None,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(load_in_4bit = True, supplied = frozenset({"load_in_4bit"})),
+    )
+
+    assert "unloads the current model" not in capsys.readouterr().out
+
+
+def test_status_reporting_no_chat_resident_does_not_pick_a_speech_sidecar(monkeypatch):
+    """active_model null is a definitive "nothing is resident", not a missing endpoint."""
+    server = FakeServer(
+        [{"id": "unsloth/whisper-large-v3", "loaded": True}],
+        {"is_gguf": False, "active_model": None, "model_identifier": None},
+    ).install(monkeypatch)
+
+    with pytest.raises(typer.Exit):
+        start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads == []
+
+
+def test_failed_inferred_load_names_the_inferred_resident(monkeypatch, capsys):
+    """Catalog order can name a speech sidecar; the survivor probe must use the target."""
+    server = FakeServer(
+        [
+            {"id": "unsloth/whisper-large-v3", "loaded": True},
+            {"id": RESIDENT["id"], "loaded": True},
+        ],
+        {
+            "is_gguf": True,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "gguf_variant": "Q8_0",
+            "requested_context_length": 4096,
+        },
+    ).install(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("load refused")
+
+    monkeypatch.setattr(start_cli, "_load_model_with_progress", boom)
+    monkeypatch.setattr(start_cli, "_model_still_loaded", lambda *a: False)
+
+    with pytest.raises(RuntimeError):
+        start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    # The chat model did NOT survive, so no reassuring message may be printed.
+    assert "Nothing was unloaded" not in capsys.readouterr().err
