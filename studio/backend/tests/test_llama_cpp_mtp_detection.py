@@ -75,6 +75,8 @@ from core.inference.llama_cpp import (
     _extra_args_set_spec_type,
     _is_mtp_model_name,
     _kv_unified_from_args,
+    _TARGET_KV_EXCLUDES_NEXTN_ARCHS,
+    _arch_has_fast_mla_mtp,
     _mla_mtp_auto_enabled,
     _swa_full_from_args_or_env,
 )
@@ -2276,6 +2278,60 @@ def test_reload_forced_mtp_bounces_auto_mla():
         )
         is False
     )
+
+
+# glm5next matches the MLA gate on metadata, but its MTP is 1.31x faster, not slower.
+_GLM5NEXT_MODEL = "unsloth/GLM-5.3-Flash-GGUF"
+
+
+def test_auto_glm5next_keeps_draft_mtp(monkeypatch):
+    backend = _mla_resolver_backend(monkeypatch)
+    backend._architecture = "glm5next"
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM5NEXT_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.spec_fallback_reason != "mla_mtp_disabled"
+
+
+def test_auto_glm5next_hyphenated_arch_still_gated(monkeypatch):
+    # The "glm5-next" port never builds the NextN graph: no spillover.
+    backend = _mla_resolver_backend(monkeypatch)
+    backend._architecture = "glm5-next"
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM5NEXT_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert _flags_dict(flags).get("--spec-type") != "draft-mtp"
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
+
+
+def test_arch_has_fast_mla_mtp_is_case_and_space_tolerant():
+    assert _arch_has_fast_mla_mtp("glm5next")
+    assert _arch_has_fast_mla_mtp("  GLM5Next  ")
+    assert not _arch_has_fast_mla_mtp("glm5-next")
+    assert not _arch_has_fast_mla_mtp("glm-dsa")
+    assert not _arch_has_fast_mla_mtp(None)
+    assert not _arch_has_fast_mla_mtp("")
+
+
+def test_glm5next_target_kv_excludes_nextn():
+    # Both ports filter il < n_layer() && !is_recr(il), so blk.45 gets no target KV.
+    assert "glm5next" in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
+    assert "glm5-next" in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
 
 
 # ── Full named-repo resolver matrix (the shipping Unsloth families) ─────

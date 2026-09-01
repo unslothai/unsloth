@@ -10,7 +10,12 @@ import { useApiMonitorOverlayStore } from "@/features/api-monitor/overlay-store"
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorResponse } from "@/features/chat/types/api";
 import { useLocale, useT } from "@/i18n";
-import { ActivityIcon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
+import {
+  ActivityIcon,
+} from "@hugeicons/core-free-icons";
+import {
+  ArrowRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactElement, useEffect, useState } from "react";
@@ -76,8 +81,7 @@ export function MonitorLink(): ReactElement {
                 })}
           </span>
         </span>
-        <HugeiconsIcon
-          icon={ArrowRight02Icon}
+        <ArrowRightIcon
           strokeWidth={1.75}
           className="ml-auto size-4 shrink-0 text-muted-foreground"
         />

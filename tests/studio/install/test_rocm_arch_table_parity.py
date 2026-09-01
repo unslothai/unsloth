@@ -383,7 +383,34 @@ def _name_tables() -> dict[str, object]:
         "install.ps1": _name_table_ps(_INSTALL_PS1),
         "studio/setup.ps1": _name_table_ps(_SETUP_PS1),
         "studio/install_python_stack.py": list(stack_mod._WIN_GPU_NAME_ARCH_TABLE),
+        # The backend carries the seventh copy: it decides whether a Windows adapter the
+        # DirectX registry did not give an AdapterFamily is one a repair could help, and
+        # answering that from a stale table would offer the repair to a card no wheel
+        # index covers (or withhold it from one that is covered).
+        "studio/backend/utils/hardware/hardware.py": _name_table_py_literal(
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py",
+            "_GPU_NAME_GFX_TABLE",
+        ),
     }
+
+
+def _name_table_py_literal(path: Path, name: str) -> list:
+    """A module-level list-of-pairs literal, read without importing the module."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    for node in tree.body:
+        targets = (
+            [node.target]
+            if isinstance(node, ast.AnnAssign)
+            else node.targets
+            if isinstance(node, ast.Assign)
+            else []
+        )
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id == name:
+                return [tuple(pair) for pair in ast.literal_eval(node.value)]
+    raise AssertionError(f"{name} not found in {path}")
 
 
 def _spoof_profiles() -> dict[str, str]:
@@ -577,6 +604,7 @@ _REGISTERED_TABLE_FILES = {
     "studio/setup.sh",
     "studio/setup.ps1",
     "studio/install_python_stack.py",
+    "studio/backend/utils/hardware/hardware.py",
     "tests/_zoo_rocm_spoof.py",
 }
 

@@ -52,7 +52,6 @@ import {
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
-import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -153,6 +152,9 @@ import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -3177,8 +3179,7 @@ export function ModelConfigPage({
               className="nav-icon-btn shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
-              <HugeiconsIcon
-                icon={ArrowLeft01Icon}
+              <ChevronLeftIcon
                 className="size-4"
                 strokeWidth={1.75}
               />

@@ -46,7 +46,8 @@ from core.inference.llama_cpp import (
 from utils.hardware import hardware as hw
 
 MiB = 1024 * 1024
-_TOTAL_BYTES = 32 * 1024**3
+GIB = 1024**3
+_TOTAL_BYTES = 32 * GIB
 
 # Concrete tokens the published ROCm manifest records for these bundles. gfx103X
 # omits the gfx1033/1035/1036 iGPUs, which is the whole of #7624: they enumerate,
@@ -2192,7 +2193,8 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert _retry, "the arch-crash retry did not fire"
-        assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)
+        # Its 32 GiB carve-out exceeds the 8 GiB host pool.
+        assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env for env in _retry)
 
     @staticmethod
     def _override_log(monkeypatch):
@@ -2921,3 +2923,126 @@ class TestTheApuRetryRecomputesThePageLock:
         # comparator fights a child it already agrees with.
         assert capture["backend"]._memory_mlock_applicable is True
         assert capture["backend"]._memory_state[0] is True  # (mlock, reserves_ram)
+
+
+class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
+    """Launch behavior for the ROCm APU carve-out gate."""
+
+    def _apu(self, monkeypatch, carve_out_bytes, ram_mib):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: ram_mib)
+        )
+        return _fake_torch(
+            [
+                _device(
+                    "gfx1151",
+                    free_mib = 47000,
+                    total_bytes = carve_out_bytes,
+                    is_integrated = 1,
+                )
+            ],
+            vendor = "amd",
+        )
+
+    def _load(
+        self,
+        tmp_path,
+        monkeypatch,
+        torch,
+        env_extra = None,
+    ):
+        return _run_auto_load(
+            monkeypatch, tmp_path, torch, None, returncode = None, env_extra = env_extra
+        )
+
+    def test_a_small_carve_out_gets_it(self, tmp_path, monkeypatch, probe_env):
+        torch = self._apu(monkeypatch, 16 * GIB, 117_000)
+        _cmd, env = self._load(tmp_path, monkeypatch, torch)[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_a_carve_out_bigger_than_host_ram_does_not(self, tmp_path, monkeypatch, probe_env):
+        torch = self._apu(monkeypatch, 64 * GIB, 58_880)
+        _cmd, env = self._load(tmp_path, monkeypatch, torch)[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_the_user_can_still_ask_for_it_on_that_host(self, tmp_path, monkeypatch, probe_env):
+        torch = self._apu(monkeypatch, 64 * GIB, 58_880)
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, torch, {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}
+        )[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_the_opt_out_still_wins_on_a_host_that_would_get_it(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        torch = self._apu(monkeypatch, 16 * GIB, 117_000)
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, torch, {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"}
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def _apu_and_dgpu(self, monkeypatch, ram_mib):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: ram_mib)
+        )
+        return _fake_torch(
+            [
+                _device("gfx1151", free_mib = 7000, total_bytes = 8 * GIB, is_integrated = 1),
+                _device("gfx1100", free_mib = 60000, total_bytes = 64 * GIB),
+            ],
+            vendor = "amd",
+        )
+
+    def test_a_discrete_card_in_the_launch_keeps_it_off(self, tmp_path, monkeypatch, probe_env):
+        torch = self._apu_and_dgpu(monkeypatch, 40_000)
+        _cmd, env = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = None,
+            intent_kwargs = {
+                "gpu_ids": (0, 1),
+                "gpu_memory_mode": "manual",
+                "gpu_layers": 1,
+            },
+        )[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0,1", "CUDA_VISIBLE_DEVICES": "0,1"}
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_the_arch_gate_narrowing_onto_the_apu_adds_it_back(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        torch = self._apu_and_dgpu(monkeypatch, 40_000)
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            ["gfx1151"],  # covers the APU, not the discrete gfx1100
+            returncode = None,
+            model_bytes = 400 * GIB,
+        )
+        _cmd, env = launches[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_the_opt_out_survives_that_narrowing(self, tmp_path, monkeypatch, probe_env):
+        torch = self._apu_and_dgpu(monkeypatch, 40_000)
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            ["gfx1151"],
+            returncode = None,
+            model_bytes = 400 * GIB,
+            env_extra = {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
+        )
+        assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env for _c, env in launches)

@@ -46,6 +46,12 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     sed -n '/^_infer_linux_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_amd_arch_index_family_for_gfx()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_probe_arches()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_agreed_index_family()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_sole_index_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -68,6 +74,10 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     sed -n '/^_detect_rocm_version_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_radeon_host_ver_not_older()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^get_radeon_wheel_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/proc/driver/nvidia|$_FAKE_PROC_NV_DIR|g" \
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
@@ -77,7 +87,8 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
 # below fail as a plain "cpu" with no hint why.
 for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
            _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
-           _detect_rocm_version_tag get_torch_index_url; do
+           _detect_rocm_version_tag get_torch_index_url get_radeon_wheel_url \
+           _radeon_host_ver_not_older; do
     if ! grep -q "^$_fn()" "$_FUNC_FILE"; then
         echo "  FAIL: install.sh no longer defines $_fn() at column 0"
         exit 1
@@ -190,48 +201,81 @@ MOCK
     chmod +x "$_MOCK_DIR/amd-smi"
 }
 
-# $1 = rocm-core version as dpkg reports it (epoch prefixes allowed, e.g. 1:6.2.4-1)
-# $2 = dpkg status word, default "installed". "config-files" is where `apt remove`
-#      without `apt purge` leaves a package: still in /var/lib/dpkg/status, still
-#      carrying its old version, and still reported by `dpkg-query -W`.
-# The mock renders the showformat string it is given rather than a bare version, so
-# these assertions test how install.sh ASKS dpkg, not just how it parses the answer.
-add_dpkg_rocm_core() {
-    printf '%s\n' "$1" > "$_MOCK_DIR/.dpkg-version"
-    printf '%s\n' "${2:-installed}" > "$_MOCK_DIR/.dpkg-status"
+add_dpkg_packages() {
+    printf '%s\n' "$@" > "$_MOCK_DIR/.dpkg-entries"
     cat > "$_MOCK_DIR/dpkg-query" <<'MOCK'
 #!/bin/sh
 _d=${0%/*}
-_ver=$(cat "$_d/.dpkg-version")
-_status=$(cat "$_d/.dpkg-status")
-# Status is "<want> <error-flag> <status>": removed but not purged reads "deinstall ok config-files".
-case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
+_entries=$(cat "$_d/.dpkg-entries")
 _fmt=''
-_found=''
+_requested=''
+_has_rocm_core=0
+_has_hsa_runtime=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -f=*)           _fmt=${1#-f=} ;;
         --showformat=*) _fmt=${1#--showformat=} ;;
         -f|--showformat) shift; _fmt=$1 ;;
         -*)             : ;;
-        rocm-core)      _found=1 ;;
+        rocm-core)
+            _requested="$_requested $1"
+            _has_rocm_core=1
+            ;;
+        libhsa-runtime64-1)
+            _requested="$_requested $1"
+            _has_hsa_runtime=1
+            ;;
     esac
     shift
 done
-[ -n "$_found" ] || exit 1
+[ "$_has_rocm_core" -eq 1 ] && [ "$_has_hsa_runtime" -eq 1 ] || exit 1
 [ -n "$_fmt" ] || _fmt='${Package}\t${Version}\n'
 # Unknown fields render empty, which is what real dpkg-query does.
-_out=$(printf '%s' "$_fmt" | sed \
-    -e "s|\${Package}|rocm-core|g" \
-    -e "s|\${Status}|$_want ok $_status|g" \
-    -e "s|\${db:Status-Status}|$_status|g" \
-    -e "s|\${db:Status-Want}|$_want|g" \
-    -e "s|\${db:Status-Eflag}|ok|g" \
-    -e "s|\${Version}|$_ver|g" \
-    -e "s|\${[^}]*}||g")
-printf "$_out"
+_emit() {
+    _package=$1
+    _status=$2
+    _ver=$3
+    # Status is "<want> <error-flag> <status>": removed but not purged reads
+    # "deinstall ok config-files".
+    case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
+    _out=$(printf '%s' "$_fmt" | sed \
+        -e "s|\${Package}|$_package|g" \
+        -e "s|\${Status}|$_want ok $_status|g" \
+        -e "s|\${db:Status-Status}|$_status|g" \
+        -e "s|\${db:Status-Want}|$_want|g" \
+        -e "s|\${db:Status-Eflag}|ok|g" \
+        -e "s|\${Version}|$_ver|g" \
+        -e "s|\${[^}]*}||g")
+    printf "$_out"
+}
+_missing=0
+for _wanted in $_requested; do
+    _found=0
+    while IFS='|' read -r _package _status _ver; do
+        [ "$_package" = "$_wanted" ] && _found=1
+    done <<EOF
+$_entries
+EOF
+    [ "$_found" -eq 1 ] || _missing=1
+done
+while IFS='|' read -r _package _status _ver; do
+    case " $_requested " in
+        *" $_package "*) _emit "$_package" "$_status" "$_ver" ;;
+    esac
+done <<EOF
+$_entries
+EOF
+exit "$_missing"
 MOCK
     chmod +x "$_MOCK_DIR/dpkg-query"
+}
+
+add_dpkg_rocm_core() {
+    add_dpkg_packages "rocm-core|${2:-installed}|$1"
+}
+
+add_dpkg_hsa_runtime() {
+    add_dpkg_packages "libhsa-runtime64-1|${2:-installed}|$1"
 }
 
 # $1 = rocm-core version as rpm reports it
@@ -242,6 +286,23 @@ for _a in "\$@"; do
     case "\$_a" in rocm-core) echo "$1"; exit 0 ;; esac
 done
 exit 1
+MOCK
+    chmod +x "$_MOCK_DIR/rpm"
+}
+
+# $1 = rocm-core version, $2 = rocm-runtime version. A partial upgrade can leave these
+# at different versions; both are AMD packages from the same repo, so neither outranks
+# the other by provenance the way rocm-core outranks the distro's libhsa-runtime64-1.
+add_rpm_split_components() {
+    cat > "$_MOCK_DIR/rpm" <<MOCK
+#!/bin/sh
+for _a in "\$@"; do
+    case "\$_a" in
+        rocm-core)    echo "$1" ;;
+        rocm-runtime) echo "$2" ;;
+    esac
+done
+exit 0
 MOCK
     chmod +x "$_MOCK_DIR/rpm"
 }
@@ -278,6 +339,12 @@ run_warnings() {
          _ARCH=x86_64; . '$_FUNC_FILE'; get_torch_index_url" 2>&1 >/dev/null | tr '\n' ' '
 }
 
+run_radeon_url() {
+    PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c \
+        'uname() { echo Linux; }; . "$1"; get_radeon_wheel_url "$2"' \
+        _ "$_FUNC_FILE" "$1" 2>/dev/null
+}
+
 # Same, under `set -e` like the real installer, reporting only the exit status:
 # with every source missing, detection must return empty AND succeed or the
 # installer dies before the actionable warning.
@@ -294,12 +361,10 @@ _BASE="https://download.pytorch.org/whl"
 echo "=== test_rocm_version_source_disagreement ==="
 
 # ── 1. The reported host ────────────────────────────────────────────────────
-# No /opt/rocm/.info/version, hipconfig from the distro's 5.7 packaging, rocm-core
-# at 6.1 in dpkg. Before the fix hipconfig answered first and this returned cpu.
 reset_sources
 add_hipconfig "5.7.31921-0"
-add_dpkg_rocm_core "1:6.1.2-1"
-assert_eq "Debian 13 hipconfig 5.7 + rocm-core 6.1 -> rocm6.1" "$_BASE/rocm6.1" "$(run_index)"
+add_dpkg_hsa_runtime "1:6.1.2-1"
+assert_eq "Debian 13 hipconfig 5.7 + HSA runtime 6.1 -> rocm6.1" "$_BASE/rocm6.1" "$(run_index)"
 _warn=$(run_warnings)
 case "$_warn" in
     *"require ROCm 6.0+"*) assert_eq "the same host emits no 6.0+ gate warning" "" "$_warn" ;;
@@ -308,6 +373,30 @@ esac
 # The breadcrumb that makes a wrong-HIGH reading diagnosable from an install log.
 assert_contains "disagreeing sources are named" "sources disagree (rocm5.7 rocm6.1)" "$_warn"
 assert_contains "the winning reading is named" "using the highest, rocm6.1" "$_warn"
+assert_eq "Radeon URL uses resolved Debian rocm6.1, not hipconfig 5.7" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.1/" "$(run_radeon_url rocm6.1)"
+
+# rocm-core wins even when HSA reads higher, and HSA is emitted first, so position cannot pass this.
+reset_sources
+add_dpkg_packages \
+    "libhsa-runtime64-1|installed|6.4.3+dfsg-4" \
+    "rocm-core|installed|1:6.1.2-2"
+assert_eq "installed rocm-core outranks a HIGHER distro HSA reading -> rocm6.1" \
+    "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "and the outranked HSA reading is not named as a disagreement" "" "$(run_warnings)"
+
+reset_sources
+add_dpkg_packages \
+    "libhsa-runtime64-1|installed|5.7.1-2build1" \
+    "rocm-core|installed|7.2.1.70201-81~24.04"
+assert_eq "Ubuntu + AMD repo resolves rocm7.2" "$_BASE/rocm7.2" "$(run_index)"
+assert_eq "Ubuntu + AMD repo warns about nothing" "" "$(run_warnings)"
+
+reset_sources
+add_hipconfig "5.7.31921-0"
+add_dpkg_hsa_runtime "1:6.1.2-1"
+assert_eq "no rocm-core, so the installed HSA runtime still votes -> rocm6.1" \
+    "$_BASE/rocm6.1" "$(run_index)"
 
 # 2. Same shape from /opt/rocm/.info/version. This one already worked by position,
 #    so it is here to pin that the rewrite did not lose it.
@@ -350,6 +439,13 @@ add_dpkg_rocm_core "1:7.0.0-1" config-files
 assert_eq "config-files rocm-core 7.0 on a 6.1 host -> rocm6.1, not rocm7.0" \
     "$_BASE/rocm6.1" "$(run_index)"
 assert_eq "the dead dpkg entry is not even named as a disagreement" "" "$(run_warnings)"
+
+reset_sources
+add_hipconfig "6.1.40093-0"
+add_dpkg_hsa_runtime "1:7.0.0-1" config-files
+assert_eq "config-files HSA runtime 7.0 on a 6.1 host -> rocm6.1, not rocm7.0" \
+    "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "the dead HSA entry is not named as a disagreement" "" "$(run_warnings)"
 
 # 5c. The live entry still has to win, or the fix for the reported bug is gone.
 #     This is what makes 5b non-vacuous: only the dpkg status word differs.
@@ -430,14 +526,15 @@ assert_eq "the named override reaches this path -> rocm6.4" "$_BASE/rocm6.4" "$_
 # ── 9. Every source missing: warn, do not die ───────────────────────────────
 # rocminfo alone, a fresh AMD host with no ROCm userspace. Under set -e the whole
 # detection must still succeed.
+# gfx1100 has its own repo.amd.com index, so since unslothai#8731 an unreadable version
+# routes on the arch rather than settling for CPU.
 reset_sources
 assert_eq "no version source at all -> cpu" "$_BASE/cpu" "$(run_index)"
 assert_eq "no version source at all -> exit 0 under set -e" "0" "$(run_status_under_set_e)"
 _warn=$(run_warnings)
-assert_contains "no-version host still reaches its actionable warning" \
-    "no ROCm/HIP install was found" "$_warn"
-assert_contains "no-version warning still lists the detection sources" \
-    "Minimum required for version detection" "$_warn"
+assert_contains "no-version host still reaches an actionable warning" \
+    "routing to AMD per-arch wheels" "$_warn"
+assert_contains "no-version warning names the arch it routed on" "gfx1100" "$_warn"
 
 # 10. Sources present but every one of them unparseable: same contract.
 reset_sources
@@ -446,8 +543,8 @@ add_hipconfig "unknown"
 add_version_file "not-a-version"
 assert_eq "unparseable sources -> cpu" "$_BASE/cpu" "$(run_index)"
 assert_eq "unparseable sources -> exit 0 under set -e" "0" "$(run_status_under_set_e)"
-assert_contains "unparseable sources reach the no-version warning" \
-    "no ROCm/HIP install was found" "$(run_warnings)"
+assert_contains "unparseable sources are treated as no version at all" \
+    "routing to AMD per-arch wheels" "$(run_warnings)"
 
 # 11. A source reporting major 0 is garbage, not a version below every other.
 reset_sources
@@ -520,6 +617,44 @@ else
     assert_eq "the rpm probe is bounded, not left to block the installer" \
         "under 20s" "$((_t1 - _t0))s (outer bound fired)"
 fi
+
+# A stale rocm-core beside a newer runtime must not decide the host's version. Ranking
+# the names by argument order read this box as ROCm 5.7 and sent a supported runtime to
+# CPU wheels, which is the failure #8731 is about, reached by a different route.
+reset_sources
+add_rpm_split_components "5.7.1" "6.4.1"
+assert_eq "a stale rocm-core beside a newer rocm-runtime resolves to the newer" \
+    "$_BASE/rocm6.4" "$(run_index)"
+reset_sources
+add_rpm_split_components "6.4.1" "5.7.1"
+assert_eq "and the ordering is by version, not by which name was queried first" \
+    "$_BASE/rocm6.4" "$(run_index)"
+
+reset_sources
+add_version_file "6.5.0-1"
+assert_eq "a ROCm 6.5 host clipped to the rocm6.4 leaf still gets rocm-rel-6.5.0" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.5.0/" "$(run_radeon_url rocm6.4)"
+
+reset_sources
+add_version_file "7.3.1-1"
+assert_eq "a ROCm 7.3 host capped to the rocm7.2 leaf still gets rocm-rel-7.3.1" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.3.1/" "$(run_radeon_url rocm7.2)"
+
+# the caller only falls back x.y.z -> x.y, so a leaf-derived x.y never reaches an x.y.z-only directory
+reset_sources
+add_version_file "7.2.1-98"
+assert_eq "a matching-family host still contributes its patch level" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1/" "$(run_radeon_url rocm7.2)"
+
+reset_sources
+add_hipconfig "5.7.31921-0"
+assert_eq "an older host probe never overrides the resolved leaf" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.1/" "$(run_radeon_url rocm6.1)"
+
+reset_sources
+assert_eq "with no readable host source the leaf is used verbatim" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/" "$(run_radeon_url rocm6.4)"
+assert_eq "no host source and no leaf yields no Radeon URL" "" "$(run_radeon_url '')"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

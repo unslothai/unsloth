@@ -1464,9 +1464,19 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     requested_context_length: Optional[int] = Field(
         None,
         description = (
-            "The n_ctx the active GGUF load was invoked with (0 = Auto). Lets the "
-            "UI re-seed a Manual + Auto-layers context pin on hydration, where "
-            "context_length only exposes the resolved value. None for non-GGUF."
+            "The max_seq_length the active load was invoked with (0 = Auto). Lets the "
+            "UI re-seed a Manual + Auto-layers context pin on hydration, and lets a CLI "
+            "attach tell a no-op from a reload, where context_length only exposes the "
+            "resolved value. None when the running model predates this field."
+        ),
+    )
+    load_in_4bit: Optional[bool] = Field(
+        None,
+        description = (
+            "The 4-bit setting the active non-GGUF load was REQUESTED with, not the "
+            "value it resolved to: LoRA and the latest-transformers tier rewrite it, so "
+            "only the requested value can be compared against a later request. None for "
+            "GGUF, which does not use it."
         ),
     )
     llama_cpp_supports_mtp: bool = Field(
@@ -2832,6 +2842,27 @@ class ResponsesFunctionCallOutputInputItem(BaseModel):
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
 
+class ResponsesCustomToolCallInputItem(BaseModel):
+    """A prior assistant custom_tool_call replayed by a Responses client."""
+
+    type: Literal["custom_tool_call"]
+    id: Optional[str] = None
+    call_id: str
+    name: str
+    input: str = Field(..., description = "Raw freeform input the model produced.")
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ResponsesCustomToolCallOutputInputItem(BaseModel):
+    """A client result for a prior custom_tool_call."""
+
+    type: Literal["custom_tool_call_output"]
+    id: Optional[str] = None
+    call_id: str
+    output: Union[str, list]
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
 class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
@@ -2861,6 +2892,10 @@ def _responses_input_item_discriminator(v: Any) -> str:
         return "function_call"
     if t == "function_call_output":
         return "function_call_output"
+    if t == "custom_tool_call":
+        return "custom_tool_call"
+    if t == "custom_tool_call_output":
+        return "custom_tool_call_output"
     if r is not None or t == "message":
         return "message"
     return "unknown"
@@ -2871,6 +2906,8 @@ ResponsesInputItem = Annotated[
         Annotated[ResponsesInputMessage, Tag("message")],
         Annotated[ResponsesFunctionCallInputItem, Tag("function_call")],
         Annotated[ResponsesFunctionCallOutputInputItem, Tag("function_call_output")],
+        Annotated[ResponsesCustomToolCallInputItem, Tag("custom_tool_call")],
+        Annotated[ResponsesCustomToolCallOutputInputItem, Tag("custom_tool_call_output")],
         Annotated[ResponsesUnknownInputItem, Tag("unknown")],
     ],
     Discriminator(_responses_input_item_discriminator),
@@ -2902,17 +2939,23 @@ class ResponsesRequest(BaseModel):
     instructions: Optional[str] = Field(None, description = "System / developer instructions")
     temperature: Optional[float] = Field(None, ge = 0.0, le = 2.0)
     top_p: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    seed: Optional[int] = Field(
+        None,
+        ge = -(2**63),
+        le = 2**64 - 1,
+        description = "[x-unsloth] Best-effort deterministic sampling seed.",
+    )
     max_output_tokens: Optional[int] = Field(None, ge = 1)
     stream: bool = Field(False, description = "Whether to stream the response via SSE")
 
     # OpenAI function-calling fields, forwarded via the Chat Completions
     # pass-through. Plain list so built-in tool shapes round-trip without
-    # validation errors; the translator forwards only ``type=="function"`` entries.
+    # validation errors; the translator forwards functions and Codex apply_patch.
     tools: Optional[list[dict]] = Field(
         None,
         description = (
-            "Responses-shape function tool definitions. Entries with "
-            '`type="function"` are translated to the Chat Completions nested '
+            "Responses-shape tool definitions. Function tools and Codex's "
+            "custom `apply_patch` are translated to the Chat Completions nested "
             "shape before being forwarded to llama-server; other tool types "
             "(built-in web_search, file_search, mcp, ...) are accepted for SDK "
             "compatibility but ignored on the llama-server passthrough."
@@ -2991,10 +3034,22 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
+class ResponsesOutputCustomToolCall(BaseModel):
+    """A freeform custom-tool call returned by the Responses API."""
+
+    type: Literal["custom_tool_call"] = "custom_tool_call"
+    id: str = Field(default_factory = lambda: f"ctc_{uuid.uuid4().hex[:12]}")
+    call_id: str
+    name: str
+    input: str
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+
 ResponsesOutputItem = Union[
     ResponsesOutputMessage,
     ResponsesOutputReasoning,
     ResponsesOutputFunctionCall,
+    ResponsesOutputCustomToolCall,
 ]
 
 
@@ -3226,6 +3281,9 @@ class AnthropicThinkingConfig(BaseModel):
     model_config = {"extra": "allow"}
 
 
+_ANTHROPIC_EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "max", "xhigh"})
+
+
 class AnthropicMessagesRequest(BaseModel):
     model: str = "default"
     max_tokens: Optional[int] = None
@@ -3237,6 +3295,12 @@ class AnthropicMessagesRequest(BaseModel):
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
+    seed: Optional[int] = Field(
+        None,
+        ge = -(2**63),
+        le = 2**64 - 1,
+        description = "[x-unsloth] Best-effort deterministic sampling seed.",
+    )
     stop_sequences: Optional[list[str]] = None
     metadata: Optional[dict] = None
     # [x-unsloth] extensions mirroring the OpenAI endpoint convenience fields
@@ -3262,6 +3326,9 @@ class AnthropicMessagesRequest(BaseModel):
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
     ] = None
     preserve_thinking: Optional[bool] = None
+    # Anthropic's current spelling of the effort dial. Claude Code sends the tier
+    # here, never in reasoning_effort, so without this the level is dropped.
+    output_config: Optional[dict] = None
     session_id: Optional[str] = None
     thread_id: Optional[str] = Field(
         None,
@@ -3285,6 +3352,22 @@ class AnthropicMessagesRequest(BaseModel):
         description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
+
+    @model_validator(mode = "after")
+    def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
+        if self.reasoning_effort is not None or not isinstance(self.output_config, dict):
+            return self
+        # Only once thinking is already on. `reasoning_effort` is the x-unsloth
+        # override that deliberately outranks `thinking` (a named level means
+        # "think"), but Claude Code sends output_config.effort on EVERY request,
+        # including with thinking off -- adopting it there would re-enable
+        # thinking the caller switched off and pin the level the user never set.
+        if self.resolved_enable_thinking() is not True:
+            return self
+        effort = self.output_config.get("effort")
+        if isinstance(effort, str) and effort in _ANTHROPIC_EFFORT_LEVELS:
+            self.reasoning_effort = effort
+        return self
 
     def resolved_enable_thinking(self) -> Optional[bool]:
         """Effective on/off, preferring the x-unsloth field over `thinking`."""
@@ -4236,6 +4319,11 @@ class AudioGalleryItem(BaseModel):
     sample_rate: int
     duration_s: float
     created_at: str
+    archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
+
+
+class AudioGalleryFlagsPatch(BaseModel):
+    archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the clip")
 
 
 class AudioGalleryListResponse(BaseModel):

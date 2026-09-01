@@ -13,8 +13,8 @@ from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
 from core.inference.chat_template_helpers import (
-    ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
+    make_reasoning_normalizer,
     markup_for_tokenizer,
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
@@ -1018,11 +1018,20 @@ def _flatten_kv_entries(cache):
 
 
 def _kv_prefix_coverage(cache):
+    """Tokens the whole cache holds, or None when no entry can attest to it.
+
+    A recurrent entry has no offset: it holds fixed-size state, not a token
+    sequence. An attention sibling attests for it, since unrewindable state only
+    ever serves the prefix it was built from. Nothing attesting keeps mamba out.
+    """
     covered = None
     for entry in _flatten_kv_entries(cache):
         offset = getattr(entry, "offset", None)
         if offset is None:
-            return None
+            # Upstream trims once all entries agree, so only unrewindable counts.
+            if getattr(entry, "is_trimmable", lambda: False)():
+                return None
+            continue
         if getattr(entry, "start_position", 0):
             return None
         window = getattr(entry, "max_size", None)
@@ -1944,8 +1953,8 @@ class MLXInferenceBackend:
         preserve_native_channels = reasoning_channel_markers is not None
         token_ids = []
         normalizer = (
-            ReasoningChannelNormalizer(
-                *reasoning_channel_markers,
+            make_reasoning_normalizer(
+                reasoning_channel_markers,
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
@@ -2391,7 +2400,7 @@ class MLXInferenceBackend:
 
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)
-        normalizer = ReasoningChannelNormalizer(*markers) if markers is not None else None
+        normalizer = make_reasoning_normalizer(markers) if markers is not None else None
         # Matched on the sampled deltas, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         sampled = ""

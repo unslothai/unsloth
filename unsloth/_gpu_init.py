@@ -189,6 +189,7 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+from .device_type import arch_lacks_bf16, hip_visible_archs
 
 # Fix other issues
 from .import_fixes import (
@@ -346,7 +347,18 @@ elif DEVICE_TYPE == "cuda":
         torch.cuda.is_bf16_supported = is_bf16_supported
     del major_version, minor_version
 elif DEVICE_TYPE == "hip":
-    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
+    old_is_bf16_supported = torch.cuda.is_bf16_supported
+
+    # SUPPORTS_BFLOAT16 is process-wide, so one gfx10 in the visible set must disable it for all.
+    SUPPORTS_BFLOAT16 = (
+        not any(arch_lacks_bf16(arch) for arch in hip_visible_archs()) and old_is_bf16_supported()
+    )
+
+    def is_bf16_supported(*args, **kwargs):
+        return SUPPORTS_BFLOAT16
+
+    torch.cuda.is_bf16_supported = is_bf16_supported
+    del old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
