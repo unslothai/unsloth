@@ -8103,7 +8103,11 @@ def test_gguf_agents_name_themselves_and_their_own_subcommand(monkeypatch, capsy
 
 
 def test_require_gguf_for_agent_reads_the_servers_status(monkeypatch, capsys):
-    monkeypatch.setattr(start, "_http_json", lambda *a, **k: {"is_gguf": False})
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {"is_gguf": False, "active_model": "unsloth/gemma-3-4b-it"},
+    )
     with pytest.raises(typer.Exit):
         start._require_gguf_for_agent(
             start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/gemma-3-4b-it"
@@ -8377,6 +8381,38 @@ def test_require_gguf_still_rejects_a_definite_no(monkeypatch, capsys, agent, la
         f"{label} needs a GGUF model served by llama-server, "
         "but unsloth/gemma-3-4b-it is not one."
     )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"is_gguf": False},
+        {"is_gguf": False, "active_model": None},
+        {"is_gguf": False, "active_model": None, "model_identifier": None},
+    ],
+)
+def test_require_gguf_treats_an_idle_server_as_unknown(monkeypatch, body):
+    # InferenceStatusResponse gives is_gguf a False default, so a server with nothing
+    # resident answers False and names no model. Reading that as "not GGUF" refuses a
+    # perfectly good GGUF that simply has not been loaded yet.
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: body)
+    start._require_gguf_for_agent(
+        start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/gemma-3-4b-it-GGUF"
+    )
+
+
+def test_require_gguf_still_rejects_a_named_non_gguf_model(monkeypatch, capsys):
+    # The tolerance above must not reach a server that does name what it is holding.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {"is_gguf": False, "model_identifier": "unsloth/gemma-3-4b-it"},
+    )
+    with pytest.raises(typer.Exit):
+        start._require_gguf_for_agent(
+            start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/gemma-3-4b-it"
+        )
+    assert "Claude Code needs a GGUF model" in capsys.readouterr().err
 
 
 def test_require_gguf_does_not_swallow_a_real_exit(monkeypatch):

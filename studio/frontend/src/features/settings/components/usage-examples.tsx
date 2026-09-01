@@ -50,6 +50,7 @@ import {
   psSingle,
   resolveGgufCompatibility,
   shSingle,
+  statusGgufVerdict,
 } from "./agent-command";
 import { keylessBaseEligible } from "./keyless-example-eligibility";
 
@@ -660,13 +661,17 @@ export function UsageExamples({
       void getInferenceStatus()
         .then((status) => {
           if (cancelled) return false;
-          // Absent means "this server does not report it", never "not GGUF" -- the same
-          // reading the CLI gate takes, so both refuse to guess from the same silence.
-          setStatusAnswer({
-            key: storeModelKey,
-            isGguf: status.is_gguf ?? null,
-          });
-          return status.is_gguf != null;
+          // Two silences, both read as unknown, the same way the CLI gate reads them.
+          // Absent is a server that does not report the field. Present but naming no
+          // model is InferenceStatusResponse's False default on an idle server, which
+          // says nothing about a model that is not there; taking it as a verdict cleared
+          // a saved Claude preference for a server that simply had nothing loaded.
+          const answer = statusGgufVerdict(
+            status.active_model ?? status.model_identifier,
+            status.is_gguf,
+          );
+          setStatusAnswer({ key: storeModelKey, isGguf: answer });
+          return answer !== null;
         })
         .catch(() => {
           // Keep the last answer: a failed probe is no evidence about the model.

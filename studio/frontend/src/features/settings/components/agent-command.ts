@@ -188,3 +188,15 @@ export function resolveGgufCompatibility(
 ): boolean | null {
   return fromServer ?? fromStore;
 }
+
+// What /api/inference/status is actually saying about the resident model. is_gguf carries
+// a False default on InferenceStatusResponse, so a server holding nothing answers false
+// while naming no model; that is the default, not a verdict, and reading it as one cleared
+// a saved preference on an idle server. Only a status that names what it holds decides.
+export function statusGgufVerdict(
+  resident: string | null | undefined,
+  isGguf: boolean | null | undefined,
+): boolean | null {
+  if (resident == null) return null;
+  return isGguf ?? null;
+}

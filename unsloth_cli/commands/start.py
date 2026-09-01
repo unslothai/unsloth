@@ -2466,6 +2466,12 @@ def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: st
     # current server always sends it. Absent means "not that endpoint", never "non-GGUF".
     if is_gguf is None or is_gguf:
         return
+    # is_gguf carries a False default on InferenceStatusResponse, so a server holding
+    # nothing answers False while naming no model at all. That is the default speaking,
+    # not a verdict, and the request that follows will get the server's own
+    # "No GGUF model loaded" if it really has none.
+    if not (status.get("active_model") or status.get("model_identifier")):
+        return
     _fail_agent_needs_gguf(agent, model_id)
 
 

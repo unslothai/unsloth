@@ -12,6 +12,7 @@ import {
   fallbackAgent,
   pickCompatibleAgent,
   resolveGgufCompatibility,
+  statusGgufVerdict,
 } from "../src/features/settings/components/agent-command.ts";
 
 // DEFAULT_AGENTS in usage-examples.tsx = CODING_AGENTS minus HIDDEN_AGENTS ("pi").
@@ -296,4 +297,22 @@ test("a switch made in this tab is not gated on the previous model", () => {
 test("unknown from both sources stays unknown", () => {
   // A server that omits is_gguf, or a probe that failed, is not evidence of "not GGUF".
   assert.equal(resolveGgufCompatibility(null, null), null);
+});
+
+test("an idle server decides nothing about a model it is not holding", () => {
+  // InferenceStatusResponse gives is_gguf a False default and active_model is Optional,
+  // so a server with nothing resident answers false while naming no model. Reading that
+  // as "not GGUF" cleared a saved Claude preference for a model that was never there.
+  assert.equal(statusGgufVerdict(null, false), null);
+  assert.equal(statusGgufVerdict(undefined, false), null);
+  assert.equal(statusGgufVerdict(null, true), null);
+  // And an unknown verdict leaves the pick and the stored preference alone.
+  assert.equal(pickCompatibleAgent([], "claude", true, VISIBLE_AGENTS), null);
+});
+
+test("a server that names what it holds still decides", () => {
+  assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", false), false);
+  assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B-GGUF", true), true);
+  // Named, but the field is missing: an older server, so still unknown.
+  assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", undefined), null);
 });
