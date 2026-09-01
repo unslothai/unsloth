@@ -100,6 +100,11 @@ _HERMES_MIN_CONTEXT = 65536
 _DSH_PROVIDER = "unsloth"
 _DSH_ENV_KEY = "UNSLOTH_API_KEY"
 _DSH_PACKAGE = "@deepseek-ai/dsh"
+# dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it
+# would inherit a danger-full-access exported in the parent shell, and "" is not unset
+# to ??. Pin the mode in both directions instead of only setting it for --yolo.
+_DSH_SAFE_PERMISSION_MODE = "workspace-write"
+_DSH_YOLO_PERMISSION_MODE = "danger-full-access"
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
@@ -5285,6 +5290,7 @@ def dsh(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -5312,6 +5318,7 @@ def dsh(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -5327,7 +5334,8 @@ def dsh(
             "DSH_HOME": str(home),
             # dsh uploads session records once a user records /feedback.
             "DSH_TELEMETRY_DISABLED": "1",
+            "DSH_PERMISSION_MODE": (
+                _DSH_YOLO_PERMISSION_MODE if yolo else _DSH_SAFE_PERMISSION_MODE
+            ),
         }
-        if yolo:
-            env["DSH_PERMISSION_MODE"] = "danger-full-access"
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)

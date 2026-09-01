@@ -5481,10 +5481,61 @@ def test_dsh_yolo_sets_permission_mode(fake_studio):
     _assert_env_set(result.output, "DSH_PERMISSION_MODE", "danger-full-access")
 
 
-def test_dsh_without_yolo_leaves_permission_mode_unset(fake_studio):
+def test_dsh_without_yolo_pins_the_safe_permission_mode(fake_studio):
     result = CliRunner().invoke(start.start_app, ["dsh", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert "DSH_PERMISSION_MODE" not in result.output
+    _assert_env_set(result.output, "DSH_PERMISSION_MODE", "workspace-write")
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["dsh"], "workspace-write"),
+        (["dsh", "--yolo"], "danger-full-access"),
+    ],
+)
+def test_dsh_permission_mode_overrides_an_inherited_bypass(
+    argv, expected, fake_studio, monkeypatch
+):
+    # dsh reads DSH_PERMISSION_MODE with ??, so merely omitting it would let a
+    # danger-full-access exported in the parent shell survive a run without --yolo.
+    monkeypatch.setenv("DSH_PERMISSION_MODE", "danger-full-access")
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/dsh")
+    captured = _capture_launch(monkeypatch, argv)
+    assert captured["env"]["DSH_PERMISSION_MODE"] == expected
+
+
+def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
+    # --reasoning-effort is a shared server option: it must reach ServerOptions rather
+    # than pass through to `dsh web`, which does not accept it.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    captured = {}
+    fake = SimpleNamespace(pid = 1, poll = lambda: None)
+
+    def fake_start(base, model, load, server_options = None):
+        captured["server_options"] = server_options
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/dsh")
+
+    def run(command, env = None, **kwargs):
+        captured["command"] = command
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["dsh", "--model", "unsloth/gemma-4-E2B-it-GGUF", "--reasoning-effort", "high"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["server_options"].reasoning_effort == "high"
+    assert "--reasoning-effort" not in captured["command"]
 
 
 # ── WSLENV path translation + PowerShell quoting (helper units) ──
