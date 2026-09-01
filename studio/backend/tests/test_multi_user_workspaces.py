@@ -3027,3 +3027,44 @@ def test_the_openai_image_route_rechecks_on_every_attempt():
     # read after the replacement, so a private load landing in between would be
     # adopted if the check stayed outside.
     assert check in body_after_loop
+
+
+def test_deleting_an_account_closes_its_cached_mcp_sessions(monkeypatch):
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "_mcp_sessions", {}, raising = False)
+    for subject in ("alice", "bob"):
+        token = _bind(subject)
+        try:
+            mcp_client._mcp_sessions[mcp_client._session_key("https://x/mcp", None, "s1")] = (
+                object()
+            )
+        finally:
+            reset_workspace_subject(token)
+
+    # The key holds the username, which is reusable, so a session left behind is
+    # one a namesake could check out inside the idle TTL and inherit.
+    assert mcp_client.workspace_has_cached_sessions("alice") is True
+    assert mcp_client.workspace_has_cached_sessions("bob") is True
+    assert mcp_client.workspace_has_cached_sessions("carol") is False
+
+
+def test_a_managed_account_cannot_reach_a_private_mcp_address_at_connect_time():
+    from core.inference import mcp_client
+
+    # The route check happens when the row is written, which a hostname the
+    # account controls can outlive by being rebound afterwards.
+    token = _bind("alice")
+    try:
+        with pytest.raises(PermissionError):
+            mcp_client._revalidate_http_destination("http://127.0.0.1:8080/mcp")
+        # A public literal still connects.
+        mcp_client._revalidate_http_destination("https://8.8.8.8/mcp")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        mcp_client._revalidate_http_destination("http://127.0.0.1:8080/mcp")
+    finally:
+        reset_workspace_subject(token)

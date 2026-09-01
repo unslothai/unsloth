@@ -427,6 +427,41 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     return [executable, *parts[1:]]
 
 
+def _revalidate_http_destination(url: str) -> None:
+    """Re-apply the private-address policy when a connection is actually opened.
+
+    The routes check this when a row is written, which a hostname the account
+    controls can outlive: rebind the name afterwards and refresh or tool
+    execution reaches the private service anyway.
+
+    PARTIAL by construction, and worth being plain about. This closes the case of
+    a name rebound between saving the row and using it, which previously had no
+    check at all. It does NOT close the gap between this lookup and the socket:
+    the name can move again in that window. Doing that needs the resolved address
+    pinned into the connection while the Host header and TLS SNI keep naming the
+    original host, which means supplying a custom httpx transport through
+    FastMCP's httpx_client_factory.
+    """
+    from urllib.parse import urlparse
+
+    from auth.storage import subject_may_reach_private_hosts
+
+    if subject_may_reach_private_hosts():
+        return
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").rstrip(".")
+    if not hostname:
+        return
+    from core.inference.providers import _reject_non_public
+
+    try:
+        _reject_non_public(hostname, parsed.port, (parsed.scheme or "https").lower())
+    except ValueError as exc:
+        raise PermissionError(
+            f"This account cannot reach that MCP address: {exc}"
+        ) from exc
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -465,6 +500,8 @@ def _client(
                 keep_alive = False,
             )
         )
+
+    _revalidate_http_destination(url)
 
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
@@ -1150,6 +1187,19 @@ def _evict_lru_locked() -> list:
         victims.append(_mcp_sessions.pop(oldest))
         _discard_key_lock(oldest)
     return victims
+
+
+def workspace_has_cached_sessions(subject: Optional[str] = None) -> bool:
+    """Whether any cached session is still keyed to ``subject``.
+
+    Read for account deletion: the key holds the username, which is reusable, so
+    a session left behind is one a namesake could check out and inherit.
+    """
+    from utils.workspace_context import current_workspace_subject
+
+    expected = subject or current_workspace_subject()
+    with _mcp_sessions_lock:
+        return any(key[3] == expected for key in _mcp_sessions)
 
 
 def close_mcp_sessions(

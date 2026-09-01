@@ -1131,6 +1131,10 @@ def _workspace_jobs_active(username: str) -> bool:
         manager = get_job_manager()
         return bool(manager.is_active() and manager.owns_workspace(username))
 
+    def _mcp_sessions_cached() -> bool:
+        from core.inference.mcp_client import workspace_has_cached_sessions
+        return bool(workspace_has_cached_sessions(username))
+
     from utils.workspace_context import run_in_workspace
 
     for what, probe in (
@@ -1140,6 +1144,7 @@ def _workspace_jobs_active(username: str) -> bool:
         ("chat generations", _generations_active),
         ("media renders", _media_renders_active),
         ("data recipe job", _recipe_job_active),
+        ("cached MCP sessions", _mcp_sessions_cached),
     ):
         try:
             if run_in_workspace(username, probe):
@@ -1238,6 +1243,14 @@ def _quiesce_workspace_jobs(username: str) -> None:
             if backend.generate_progress(subject = username).get("active"):
                 backend.cancel_generate(subject = username)
 
+    def _close_mcp_sessions() -> None:
+        # The session key holds the username, which is reusable. An idle session
+        # left behind is one a namesake created inside the idle TTL could check
+        # out by presenting the same URL, headers and client-chosen ids, and
+        # inherit whatever browser, REPL or database state it holds.
+        from core.inference.mcp_client import close_mcp_sessions
+        close_mcp_sessions()
+
     def _stop_recipe_job() -> None:
         # The spawned worker keeps the artifact root it was given, so it can
         # recreate the retired pathname and write its dataset into a namesake.
@@ -1259,6 +1272,7 @@ def _quiesce_workspace_jobs(username: str) -> None:
         ("chat generations", _stop_generations),
         ("media renders", _stop_media_renders),
         ("data recipe job", _stop_recipe_job),
+        ("cached MCP sessions", _close_mcp_sessions),
     ):
         try:
             run_in_workspace(username, stop)
