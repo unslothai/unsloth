@@ -155,7 +155,7 @@ interface ModelSelectorProps {
   loaded?: boolean;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
-  activeGgufContextLength?: number | null;
+  activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
@@ -363,7 +363,7 @@ function ModelSelectorContent({
   value,
   activeGgufVariant,
   activeModelConfig,
-  activeGgufContextLength,
+  activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
   onSelect,
@@ -388,7 +388,7 @@ function ModelSelectorContent({
   value?: string;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
-  activeGgufContextLength?: number | null;
+  activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -587,7 +587,7 @@ function ModelSelectorContent({
               value === visibleConfigTarget.id &&
               (activeGgufVariant ?? null) ===
                 (visibleConfigTarget.ggufVariant ?? null)
-                ? (activeGgufContextLength ?? null)
+                ? (activeLoadedContextLength ?? null)
                 : null
             }
             initialConfig={
@@ -651,7 +651,7 @@ export function ModelSelector({
   defaultValue,
   activeGgufVariant,
   activeModelConfig,
-  activeGgufContextLength,
+  activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
   onValueChange,
@@ -824,7 +824,7 @@ export function ModelSelector({
         value={selected}
         activeGgufVariant={activeGgufVariant}
         activeModelConfig={activeModelConfig}
-        activeGgufContextLength={activeGgufContextLength}
+        activeLoadedContextLength={activeLoadedContextLength}
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
         onSelect={handleSelect}

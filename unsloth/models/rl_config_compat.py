@@ -35,7 +35,10 @@ import dataclasses
 import inspect
 
 __all__ = [
+    "classify_config_kwarg",
     "filter_config_init_kwargs",
+    "TRANSFORMERS_CONFIG_RENAMES",
+    "TRANSFORMERS_REMOVED_FIELD_ADVICE",
     "TRL_CONFIG_RENAMES",
     "TRL_REMOVED_FIELD_ADVICE",
 ]
@@ -75,6 +78,54 @@ TRL_REMOVED_FIELD_ADVICE = {
     "tools": "pass tools through the dataset instead",
     "use_logits_to_keep": "the DPO trainer no longer uses this setting",
     "padding_value": "this value is no longer configurable",
+}
+
+
+# Every trl config subclasses `transformers.TrainingArguments`, so transformers 5
+# removals land here too. From transformers' MIGRATION_GUIDE_V5.md, whose
+# `warmup_step` is a typo for `warmup_steps` (which does take a float).
+TRANSFORMERS_CONFIG_RENAMES = {
+    "warmup_ratio": "warmup_steps",
+    "push_to_hub_token": "hub_token",
+    "per_gpu_train_batch_size": "per_device_train_batch_size",
+    "per_gpu_eval_batch_size": "per_device_eval_batch_size",
+}
+
+
+# transformers 5 removals whose value cannot be carried across.
+TRANSFORMERS_REMOVED_FIELD_ADVICE = {
+    # Not a rename: `include_num_input_tokens_seen` is `str | bool` and normalises
+    # a bool to "no"/"all" in `__post_init__`, which the trainer's `setattr` path
+    # does not run, so a migrated `False` would read as truthy.
+    "include_tokens_per_second": ('set `include_num_input_tokens_seen = "all"` instead'),
+    # Also not a rename. `__post_init__` reads `device`, which is a cached_property,
+    # and settles `_n_gpu` with it, so assigning `use_cpu` afterwards is a no-op
+    # (measured: device stays cuda:0). Reporting it as forwarded would be a lie.
+    "no_cuda": "set `use_cpu = True` on the config you construct instead",
+    "group_by_length": 'set `train_sampling_strategy = "group_by_length"` instead',
+    "include_inputs_for_metrics": 'add "inputs" to the `include_for_metrics` list instead',
+    "tpu_metrics_debug": "use `debug` instead",
+    "push_to_hub_model_id": "set the full repository name in `hub_model_id` instead",
+    "push_to_hub_organization": "set the full repository name in `hub_model_id` instead",
+    "jit_mode_eval": "use `torch_compile` instead, torchscript is no longer recommended",
+    "torchdynamo": "use `torch_compile_backend` instead",
+    "fsdp_min_num_params": "use `fsdp_config` instead",
+    "fsdp_transformer_layer_cls_to_wrap": "use `fsdp_config` instead",
+    "fp16_backend": "transformers relies on torch.amp now, so this is no longer configurable",
+    "half_precision_backend": (
+        "transformers relies on torch.amp now, so this is no longer configurable"
+    ),
+    "fp16_opt_level": "the apex backend is gone, torch.amp is used instead",
+    "adafactor": 'pass `optim = "adafactor"` instead',
+    "save_safetensors": "safetensors is the only checkpoint format now",
+    "overwrite_output_dir": "use `resume_from_checkpoint` to control this instead",
+    "logging_dir": "set the TENSORBOARD_LOGGING_DIR environment variable instead",
+    "tpu_num_cores": "set the TPU_NUM_CORES environment variable instead",
+    "ray_scope": "set the RAY_SCOPE environment variable instead",
+    "use_mps_device": "mps is used automatically when it is detected",
+    "use_legacy_prediction_loop": "only `evaluation_loop` is used now",
+    "past_index": "this was only ever used by a few special architectures",
+    "mp_parameters": "this was a legacy SageMaker-only argument",
 }
 
 
@@ -148,9 +199,41 @@ def _field_default(config_class, name):
     return _MISSING
 
 
-def _is_untouched(config_class, name, value):
-    """True if `value` is indistinguishable from `name`'s declared default."""
-    default = _field_default(config_class, name)
+def _init_default(config_class, name):
+    """The default `config_class.__init__` gives `name`, ignoring the field list.
+
+    `Unsloth<X>Config` inherits its dataclass fields but overrides some defaults
+    in its own `__init__` signature (`rl.py` sets `per_device_train_batch_size`
+    to 4, and `warmup_steps`/`warmup_ratio` to 0.1). Reading `dataclasses.fields`
+    there returns TRL's default instead of the one the caller actually got.
+    """
+    try:
+        parameter = inspect.signature(config_class.__init__).parameters.get(name)
+    except (TypeError, ValueError):
+        return _MISSING
+    if parameter is None or parameter.default is inspect.Parameter.empty:
+        return _MISSING
+    return parameter.default
+
+
+def _is_untouched(
+    config_class,
+    name,
+    value,
+    mirrored_from = None,
+):
+    """True if `value` is indistinguishable from `name`'s declared default.
+
+    `mirrored_from` is the class whose `__init__` supplied `value`, which is not
+    `config_class` when a generated config mirrors a base class parameter under a
+    different default. Comparing against the wrong one reads a default Unsloth
+    injected as a value the caller chose, and then refuses to apply the rename.
+    """
+    default = _MISSING
+    if mirrored_from is not None:
+        default = _init_default(mirrored_from, name)
+    if default is _MISSING:
+        default = _field_default(config_class, name)
     if default is _MISSING:
         return False
     try:
@@ -159,20 +242,75 @@ def _is_untouched(config_class, name, value):
         return default is value
 
 
+def rename_value_is_unset(config_class, renamed, value):
+    """True if `value` carries no information and must not overwrite `renamed`.
+
+    The legacy spellings are `Optional` and default to `None` (`per_gpu_*_batch_size`
+    in transformers 4.x), so a wrapper mirroring an old signature forwards `None`
+    for an argument nobody set. Writing that onto a target whose own default is a
+    number replaces a working value with one the trainer cannot do arithmetic on.
+    A target that defaults to `None` itself loses nothing, so it still migrates.
+    """
+    if value is not None:
+        return False
+    default = _field_default(config_class, renamed)
+    return default is not _MISSING and default is not None
+
+
 def _default_notifier(message):
     print(message)
+
+
+def rename_source(key):
+    """Which project renamed `key`, so the message names the right changelog."""
+    return "transformers" if key in TRANSFORMERS_CONFIG_RENAMES else "TRL"
+
+
+def removal_source(key):
+    """Which project retired `key`."""
+    return "transformers" if key in TRANSFORMERS_REMOVED_FIELD_ADVICE else "TRL"
+
+
+def classify_config_kwarg(config_class, key):
+    """Verdict on `key`: accepted / rename / retired / unknown, or opaque when the
+    config declares nothing to judge by. A trailing `**kwargs` is deliberately not
+    acceptance: the generated `Unsloth<X>Config.__init__` has one, so trusting it
+    would put every retired field back to being swallowed."""
+    accepted, takes_var_keyword = _accepted_parameters(config_class)
+    if key in accepted:
+        return "accepted", key
+    if takes_var_keyword and not accepted:
+        return "opaque", None
+
+    # trl first: it can retire a name transformers still has.
+    for renames in (TRL_CONFIG_RENAMES, TRANSFORMERS_CONFIG_RENAMES):
+        renamed = renames.get(key)
+        if renamed is not None and renamed in accepted:
+            return "rename", renamed
+
+    for table in (TRL_REMOVED_FIELD_ADVICE, TRANSFORMERS_REMOVED_FIELD_ADVICE):
+        advice = table.get(key)
+        if advice is not None:
+            return "retired", advice
+
+    return "unknown", None
 
 
 def filter_config_init_kwargs(
     config_class,
     kwargs,
     notify = None,
+    mirrored_from = None,
 ):
     """Return `kwargs` reduced to what `config_class.__init__` will accept.
 
-    Renames are applied where TRL documented one; everything else the config
-    rejects is dropped. Each decision is reported through `notify` (`print` by
-    default, which shows up reliably in a notebook).
+    Renames are applied where TRL or transformers documented one; everything else
+    the config rejects is dropped. Each decision is reported through `notify`
+    (`print` by default, which shows up reliably in a notebook).
+
+    `mirrored_from` is the generated config class whose `__init__` built `kwargs`.
+    It is what tells an untouched mirrored parameter apart from a real one, so
+    omitting it only costs a rename that loses to its own target's default.
     """
     if not kwargs:
         return kwargs
@@ -193,31 +331,49 @@ def filter_config_init_kwargs(
         if key in accepted:
             continue
 
-        renamed = TRL_CONFIG_RENAMES.get(key)
-        if renamed is not None and renamed in accepted:
+        verdict, detail = classify_config_kwarg(config_class, key)
+
+        if verdict == "rename":
+            renamed = detail
             # The new name is a mirrored parameter, so it is already in the dict
             # carrying either the caller's value or the class default. Only
             # overwrite the default: an explicitly set new name wins.
             existing = kwargs.get(renamed, _MISSING)
-            if existing is _MISSING or _is_untouched(config_class, renamed, existing):
+            who = rename_source(key)
+            if rename_value_is_unset(config_class, renamed, value):
+                continue
+            if existing is _MISSING or _is_untouched(
+                config_class, renamed, existing, mirrored_from = mirrored_from
+            ):
                 forwarded[renamed] = value
+                # A mirrored parameter carries no record of whether it was passed,
+                # so a caller who set it to exactly this default cannot be told
+                # apart from one who left it alone. Say which value won instead of
+                # letting the other disappear. The trainer path knows for certain
+                # which names arrived, so it never reaches this.
+                ambiguous = existing is not _MISSING and mirrored_from is not None
                 notify(
-                    f"Unsloth: TRL renamed `{key}` to `{renamed}`. Forwarding your "
+                    f"Unsloth: {who} renamed `{key}` to `{renamed}`. Forwarding your "
                     f"value to `{renamed}` - update your code when convenient."
+                    + (
+                        f" If you also passed `{renamed}` as {existing!r}, that is its "
+                        f"default here and cannot be distinguished from leaving it "
+                        f"unset, so `{key}` was used; drop `{key}` to keep it."
+                        if ambiguous else ""
+                    )
                 )
             else:
                 notify(
-                    f"Unsloth: `{key}` was renamed to `{renamed}` by TRL and this "
+                    f"Unsloth: `{key}` was renamed to `{renamed}` by {who} and this "
                     f"{config_name} accepts only the new name. You set both, so "
                     f"`{key}` is ignored and your `{renamed}` is kept."
                 )
             continue
 
-        advice = TRL_REMOVED_FIELD_ADVICE.get(key)
-        if advice:
+        if verdict == "retired":
             notify(
-                f"Unsloth: `{key}` is not supported by the installed TRL's "
-                f"{config_name} and will be IGNORED - {advice}."
+                f"Unsloth: `{key}` is not supported by the installed "
+                f"{removal_source(key)}'s {config_name} and will be IGNORED - {detail}."
             )
         else:
             notify(
