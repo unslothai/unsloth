@@ -91,11 +91,10 @@ CHAT_ONLY_REASON: Optional[str] = None
 # had just run it. Naming the package that is missing, too old, or refusing to import
 # is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
-# The vendors whose cards established the two mismatch reasons above, empty for every other
-# reason. current_chat_only_verdict() holds a frozen mismatch while the inventory cannot
-# answer, and without this it holds it for uncertainty about a vendor that had nothing to do
-# with it: a detached AMD eGPU that sysfs now conclusively reports as gone stays "your GPU is
-# unusable" for as long as nvidia-smi is broken on a host that never had an NVIDIA card.
+# The vendors whose cards established the two mismatch reasons above, empty otherwise.
+# current_chat_only_verdict() freezes a mismatch while the inventory cannot answer; without
+# this it freezes on uncertainty about an unrelated vendor, so a detached AMD eGPU stays
+# "unusable" for as long as nvidia-smi is broken on a host that never had an NVIDIA card.
 CHAT_ONLY_MISMATCH_VENDORS: frozenset = frozenset()
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
@@ -630,10 +629,9 @@ def _linux_drm_sysfs_records(*, distinguish_failure: bool = False) -> "list[Dict
     Never raises: an unreadable or malformed file skips that card.
 
     ``distinguish_failure`` returns None when the walk could not be trusted, so the
-    inventory can mark AMD and Intel unanswered instead of publishing "no cards" for a
-    TTL. A MISSING /sys/class/drm is not a failure: a host with no DRM subsystem has
-    answered. Note the limit -- a driver that unbinds its cards leaves the directory
-    readable and empty, which nothing here can tell from a host that never had one.
+    inventory marks AMD and Intel unanswered rather than publishing "no cards" for a TTL.
+    A MISSING /sys/class/drm is an answer, not a failure. The limit: a driver that unbinds
+    its cards leaves the directory readable and empty, which reads as a host with none.
     """
     root = "/sys/class/drm"
     unreadable = False
@@ -698,14 +696,12 @@ def _carry_unanswered_vendors_forward(
 ) -> Dict[str, Any]:
     """Re-add the devices only a vendor this pass could not ask had reported.
 
-    A refresh that cannot reach nvidia-smi is not news that the cards left, but caching
-    it as the new inventory says exactly that for a whole TTL: current_chat_only_verdict()
-    holds its frozen reason on ``unknown``, while _torch_gpu_mismatch_report() reads the
-    devices and finds none, so the Resources tab says no GPU on the same response where
-    the sidebar says PyTorch cannot use one.
+    A refresh that cannot reach nvidia-smi is not news that the cards left, but caching it
+    as the new inventory says exactly that for a TTL: the Resources tab then reports no GPU
+    on the same response where the sidebar says PyTorch cannot use one.
 
-    Per vendor, and only for vendors in ``unanswered``: a vendor that answered "none" gave
-    an answer, and a card that really was removed has to be allowed to disappear.
+    Only for vendors in ``unanswered``: a vendor that answered "none" gave an answer, and a
+    card that really was removed has to be allowed to disappear.
     """
     stale_vendors = set(inventory.get("unanswered") or ())
     if not stale_vendors or not previous:
@@ -789,14 +785,13 @@ def _schedule_single_flight_refresh(
     """Run ``run`` off the caller's thread, one pass at a time.
 
     Single-flight through ``refresh_lock``, tried without waiting: a refresh already
-    running is exactly what a second caller wants, so this returns rather than queueing
-    a duplicate probe behind it. ``work_lock`` is the same lock the blocking path takes,
-    so the background pass cannot publish underneath one.
+    running is what a second caller wants, so this returns rather than queueing a
+    duplicate behind it. ``work_lock`` is the blocking path's lock, so the background
+    pass cannot publish underneath one.
 
-    ``flag`` names the module global holding the in-flight bit, which stays a real
-    global so a test can reset it. Shared by the inventory and the torch snapshot, which
-    carried identical copies of this: the duplication is not a size problem so much as a
-    standing invitation for the two to drift apart under a later fix.
+    ``flag`` names the module global holding the in-flight bit, kept a real global so a
+    test can reset it. Shared by the inventory and the torch snapshot, which carried
+    identical copies of this and would have drifted apart under a later fix.
     """
     with refresh_lock:
         if globals()[flag]:
@@ -915,11 +910,10 @@ def _vendors_masked_off(*, block_inventory: bool = False) -> set:
     for var in relevant:
         if _mask_is_emptied(var):
             masked |= _VISIBILITY_MASK_VENDORS.get(var, frozenset())
-    # HIP reads these three in order and stops at the first one SET, which is the
-    # precedence amd._first_visible_amd_gpu_id applies. So only that variable decides,
-    # and a lower-priority one naming devices says nothing: HIP_VISIBLE_DEVICES=-1 beside
-    # ROCR_VISIBLE_DEVICES=0 hides every AMD card, and reading the ROCR value there would
-    # offer a repair for a host that is masked exactly as asked.
+    # HIP reads these three in order and stops at the first one SET (the precedence
+    # amd._first_visible_amd_gpu_id applies), so only that variable decides. Reading a
+    # lower-priority one would offer a repair for a host masked exactly as asked:
+    # HIP_VISIBLE_DEVICES=-1 beside ROCR_VISIBLE_DEVICES=0 hides every AMD card.
     amd_mask = next(
         (
             var
@@ -988,12 +982,10 @@ def _torch_index_leaf(url: str) -> str:
 def _stated_torch_index_source() -> str:
     """The torch index this install was told to use, or "".
 
-    URL first, and the family ONLY when no URL is set. install.sh's
-    get_torch_index_url() returns on UNSLOTH_TORCH_INDEX_URL without ever reading
-    UNSLOTH_TORCH_INDEX_FAMILY, so when the two name different families the family is
-    not a second opinion, it is dead. Reading either as authoritative let a stale
-    ..._FAMILY=cpu beside a new ..._URL=.../cu128 suppress the CPU-wheel mismatch on a
-    host the installer had actually pointed at CUDA.
+    URL first, and the family ONLY when no URL is set: install.sh's get_torch_index_url()
+    returns on UNSLOTH_TORCH_INDEX_URL without ever reading UNSLOTH_TORCH_INDEX_FAMILY, so
+    a family that disagrees is dead, not a second opinion. Taking either let a stale
+    ..._FAMILY=cpu beside a new ..._URL=.../cu128 suppress the mismatch on a CUDA host.
     """
     url = (os.environ.get("UNSLOTH_TORCH_INDEX_URL") or "").strip()
     if url:
@@ -1019,9 +1011,8 @@ def _recorded_install_flavor() -> "tuple[str, bool]":
         return "", False
     if not isinstance(recorded, str):
         return "", False
-    # `is True`, not bool(): bool("false") is True, and a migrated or hand-edited manifest
-    # carrying the string would read as a deliberate pin. install_manifest's own reader
-    # applies the same rule; unknown provenance is not a choice.
+    # `is True`, not bool(): bool("false") is True, so a hand-edited manifest carrying the
+    # string would read as a deliberate pin. install_manifest's reader applies the same rule.
     return recorded.strip().lower(), pinned is True
 
 
@@ -1230,10 +1221,9 @@ def _is_pip_rocm_family_leaf(leaf: str) -> bool:
     """True when a lowercased leaf names a pip ROCm family: EXACTLY rocm<digits>[.<digits>]
     or gfx<digit>. install_python_stack._is_pip_rocm_family_leaf, kept in step with it.
 
-    A suffixed leaf (rocm-rel-7.2.1, gfx-mirror) starts with the same letters but is a
-    custom pin the installer routes verbatim and never treats as a ROCm choice. Reading
-    one as ROCm here waives the supported-architecture filter, so a gfx803 host that was
-    deliberately left on CPU torch gets told its own install is broken.
+    A suffixed leaf (rocm-rel-7.2.1, gfx-mirror) is a custom pin the installer routes
+    verbatim. Reading one as ROCm waives the supported-architecture filter, so a gfx803
+    host deliberately left on CPU torch gets told its own install is broken.
     """
     return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or bool(re.match(r"gfx\d", leaf))
 
@@ -1308,9 +1298,8 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
     ]
     if not candidates:
         # The DirectX registry publishes AdapterFamily only when the driver wrote one, so a
-        # supported Windows card (the reported RX 7900 XT) can arrive with no arch at all.
-        # setup.ps1 answers that from the marketing name, so answer it the same way before
-        # falling through to a probe that can only speak for Linux.
+        # supported Windows card (the reported RX 7900 XT) can arrive with no arch. setup.ps1
+        # answers that from the marketing name; the probe below can only speak for Linux.
         _named = _rocm_supported_gfx_from_gpu_name(device.get("name") or "")
         if _named:
             return True
@@ -1892,11 +1881,10 @@ def _detect_hardware_locked() -> DeviceType:
         # otherwise sends the user to the server log instead of offering the repair, and the
         # verdict refresh deliberately freezes it. From DISK, because the import is what failed.
         #
-        # Both suppressions classify_torch_build() applies before its own disk fallback, and
-        # for the same reasons: a deliberately CPU-only install is not broken, and the repair
-        # offered for it would reinstall the very wheel that was asked for. Reached directly
-        # here because classify_torch_build() goes through _has_torch(), which re-runs the
-        # import that already failed.
+        # Both suppressions classify_torch_build() applies before its own disk fallback: a
+        # deliberately CPU-only install is not broken, and the repair offered for it would
+        # reinstall the wheel that was asked for. Applied here rather than through that
+        # function, which goes via _has_torch() and would re-run the import that just failed.
         _disk_reason = None
         if not (
             _masks_hide_every_accelerator(block_inventory = True) or _expected_cpu_flavor_was_chosen()
@@ -1990,18 +1978,15 @@ def _remember_the_vendors_behind_the_mismatch(devices: list[Dict[str, Any]]) -> 
 def _uncertainty_could_hide_the_frozen_mismatch(inventory: Dict[str, Any]) -> bool:
     """Whether an inventory that could not answer might still hold the mismatched card.
 
-    Only for the vendors the mismatch actually came from. _carry_unanswered_vendors_forward
-    has already re-added the devices an unanswered vendor had reported, so reaching here
-    with nothing left means every vendor that ever named a card either answered "none" this
-    pass or was never one of them. Holding the mismatch on an unrelated vendor's broken
-    probe then asserts a GPU is present with nothing to point at: a detached AMD eGPU that
-    sysfs conclusively reports as gone would stay "your GPU is unusable" for as long as
-    nvidia-smi is broken on a host that never had an NVIDIA card.
+    Only for the vendors the mismatch came from. _carry_unanswered_vendors_forward has
+    already re-added what an unanswered vendor last reported, so nothing left here means
+    every vendor that named a card answered "none" this pass. Holding the mismatch on an
+    unrelated vendor's broken probe would then assert a GPU with nothing to point at: a
+    detached AMD eGPU staying "unusable" while nvidia-smi is broken on a host that never
+    had an NVIDIA card.
 
-    True when no vendor was recorded, which is every reason but the two mismatches, so the
-    conservative behaviour is unchanged for them. True as well for an unknown that names
-    nobody: a cold cache reads that way, and it is silent about who could not answer rather
-    than saying every vendor did.
+    True when no vendor was recorded (every reason but the two mismatches, so those are
+    unchanged), and true for an unknown that names nobody, which is how a cold cache reads.
     """
     if not CHAT_ONLY_MISMATCH_VENDORS:
         return True
@@ -2023,12 +2008,11 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
 
     Only the three inventory-sensitive verdicts are re-derived, plus the one
     detection_failed that is not really unmeasured: a torch that will not import was
-    classified from its wheel on disk at startup, and if the OS probe had also not
-    answered yet then the inventory is the ONLY thing still missing. Freezing that host
-    is the same split this function exists to close, with the repair guidance as the
-    thing it withholds. mlx_unavailable, intel_mac and a detection_failed with no
-    importable torch and no readable wheel describe things a 60 second probe cannot
-    change, and re-deriving those would fight detect_hardware() rather than follow it.
+    classified from its wheel on disk at startup, so the inventory is the only thing still
+    missing, and freezing that host is the same split this function exists to close.
+    mlx_unavailable, intel_mac and a detection_failed with no importable torch and no
+    readable wheel describe things a 60 second probe cannot change, and re-deriving those
+    would fight detect_hardware() rather than follow it.
 
     Never raises: a probe that cannot answer keeps the frozen verdict, as does an
     inventory whose uncertainty is about the vendor the frozen mismatch came from.
@@ -2059,9 +2043,9 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
             else []
         )
         if establishing:
-            # Re-record who says so. The mismatch can MOVE between vendors inside one process
-            # -- swap an AMD eGPU for an NVIDIA one -- and holding the startup answer would
-            # later freeze the verdict on a vendor a refresh has already watched disappear.
+            # Re-record who says so: the mismatch can MOVE between vendors inside one process
+            # (swap an AMD eGPU for an NVIDIA one), and the startup answer would then freeze
+            # the verdict on a vendor a later refresh has already watched disappear.
             _remember_the_vendors_behind_the_mismatch(establishing)
             return build_reason, _reported_torch_label(detail)
         if inventory.get("unknown") and _uncertainty_could_hide_the_frozen_mismatch(inventory):
@@ -2092,11 +2076,9 @@ def _gpu_present_but_unusable_message(
     if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
         return None
     installed = f" (installed {detail})" if detail else ""
-    # Both routes, always. Settings only carries the repair row inside the desktop app and
-    # only for a backend it manages: DesktopRepairControl renders nothing without a Tauri
-    # repair context, and nothing for an externally started server. A browser-hosted
-    # Studio, or a desktop attached to a server someone started from a terminal, was being
-    # sent to a control that is not on the page.
+    # Both routes, always. The repair row exists only in the desktop app and only for a
+    # backend it manages, so a browser-hosted Studio, or a desktop attached to a server
+    # someone started from a terminal, was being sent to a control that is not on the page.
     if reason == "torch_cpu_build":
         return (
             f"This host has a GPU, but the installed PyTorch is a CPU-only build{installed}, "

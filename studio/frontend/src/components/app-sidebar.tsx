@@ -588,16 +588,14 @@ const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
-// The backend refreshes its physical GPU inventory on a 60s TTL and can reclassify a host
-// without a restart: attach an eGPU to a CPU-torch machine and no_gpu becomes
-// torch_cpu_build. Nothing else re-reads the verdict. Matched to that TTL, because polling
-// faster than the backend can change its answer is pure request traffic.
+// The backend reclassifies a host without a restart on a 60s TTL: attach an eGPU to a
+// CPU-torch machine and no_gpu becomes torch_cpu_build. Nothing else re-reads the verdict.
+// Matched to that TTL, since polling faster than the answer can change is pure traffic.
 const INVENTORY_POLL_MS = 60000;
-// The backend's inventory and torch snapshots carry a 60 second TTL of their own, and the
-// health path reads them non-blocking: the first read past expiry SCHEDULES the refresh and
-// returns the stale entry, so the new answer only exists a moment later. Polling on the TTL
-// alone means the read that triggers the refresh is a whole interval away from the read that
-// consumes it, and an attached eGPU stays invisible for close to two minutes. One short
+// The health path reads those snapshots non-blocking: the first read past expiry SCHEDULES
+// the refresh and returns the stale entry, so the new answer lands a moment later. On the
+// TTL alone the read that triggers the refresh is a whole interval from the read that
+// consumes it, leaving an attached eGPU invisible for close to two minutes. One short
 // follow-up read collects it instead.
 const INVENTORY_FOLLOW_UP_MS = 4000;
 // The verdicts the inventory can still move. Everything else describes something a probe

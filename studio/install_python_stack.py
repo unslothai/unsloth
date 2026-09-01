@@ -2845,11 +2845,10 @@ def _ensure_cpu_torch() -> None:
         return  # unreadable -- the base install step handles a missing torch
     # '+xpu' too: an XPU wheel sets neither torch.version.cuda nor .hip, so without it a
     # working Intel build reads as "cpu" and the CPU pin over it does nothing. And
-    # torch.version.xpu beside it, for the build that carries no local tag at all: an
-    # untagged source, conda or private-index XPU wheel. _installed_flavor_tag_now now
-    # reads that marker, so leaving it out here made the two disagree -- the check said
-    # "still xpu" and failed the update while this predicate had already declined to
-    # reinstall anything.
+    # torch.version.xpu beside it, for the untagged source, conda or private-index XPU
+    # wheel. _installed_flavor_tag_now reads that marker, so omitting it here made the two
+    # disagree: the check said "still xpu" and failed the update while this predicate had
+    # already declined to reinstall anything.
     _ver = _version.lower()
     _is_gpu_build = (
         bool(_hip)
@@ -2991,20 +2990,18 @@ def _expected_torch_flavor_tag() -> str:
     if _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu"):
         _installed = _torch_flavor_tag(_installed_torch_version_label())
         # "cuda" names a family, not a leaf, so the wheel's own cu tag is the flavor. Without
-        # this arm a CPU pin that was REMOVED lived on: install.sh resolves cuda and installs
-        # a CUDA wheel, the manifest below still says cpu, and the healthy venv is recorded as
-        # deliberately CPU-only. A later update that swaps in a CPU wheel is then read as the
-        # install working as asked, and the backend suppresses the mismatch and its repair.
+        # this arm a REMOVED CPU pin lived on: install.sh resolves cuda and installs a CUDA
+        # wheel, the manifest still says cpu, and the healthy venv is recorded as deliberately
+        # CPU-only -- so a later update that swaps in a CPU wheel reads as working as asked.
         if _TORCH_BACKEND == "cuda":
             if _is_cuda_family_leaf(_installed):
                 return _installed
         elif _installed == _TORCH_BACKEND:
             return _TORCH_BACKEND
-    # An unknown-family pin (a corporate /simple mirror, /current) was applied verbatim,
-    # and nothing below it can name a family for this venv: the manifest describes the
-    # install the mirror replaced, and the CUDA probe would hand back the mirror's own
-    # leaf as if it were a flavor. The setup handover above still outranks this, because
-    # that one describes the index this run actually installed from.
+    # An unknown-family pin (a corporate /simple mirror, /current) was applied verbatim, and
+    # nothing below it can name a family for this venv: the manifest describes the install
+    # the mirror replaced. The setup handover above still outranks this, because it describes
+    # the index this run actually installed from.
     if _explicit_unknown_family_torch_index_url() is not None:
         return ""
     if _RECORDED_TORCH_TAG:
@@ -3086,13 +3083,11 @@ def _expected_torch_flavor_was_pinned(flavor: str = "") -> bool:
     def _names_it(family: str) -> bool:
         return True if not flavor else family == _flavor_tag_family(flavor)
 
-    # _explicit_torch_index_url() already covers both variables WITH install.sh's
-    # precedence: the URL wins outright and the family is only read when no URL was
-    # supplied. Reading the family separately after that reintroduced the precedence
-    # it exists to enforce, so an authoritative corporate /simple URL, whose leaf names
-    # no family, fell through to a stale ..._FAMILY=cpu and recorded a CPU wheel on a
-    # GPU-less host as deliberately pinned. A later eGPU on that host would then get no
-    # mismatch and no repair.
+    # _explicit_torch_index_url() already covers both variables WITH install.sh's precedence:
+    # the URL wins outright and the family is read only when no URL was supplied. Reading the
+    # family separately undid that, so an authoritative corporate /simple URL whose leaf names
+    # no family fell through to a stale ..._FAMILY=cpu and recorded a GPU-less host's CPU
+    # wheel as deliberately pinned -- and a later eGPU there would get no mismatch or repair.
     pin = _explicit_torch_index_url()
     if pin is not None and _names_it(_index_leaf_flavor_family(_torch_index_leaf(pin))):
         return True
@@ -3104,13 +3099,12 @@ def _expected_torch_flavor_was_pinned(flavor: str = "") -> bool:
         and _names_it(_TORCH_BACKEND)
     ):
         return True
-    # A record can only speak for a run that said nothing to contradict it. A GPU family
-    # asked for HERE, which settled on CPU because the GPU install failed, is the same
-    # failed-pin case the arms above refuse to call deliberate -- and reviving the old CPU
-    # provenance underneath them re-records the venv as pinned CPU anyway, so the mismatch
-    # is suppressed for good once the requested GPU works. Only families this run NAMED
-    # count: install.sh's derived backend is not a preference, and a mirror URL whose leaf
-    # names no family has contradicted nothing.
+    # A record can only speak for a run that said nothing to contradict it. A GPU family asked
+    # for HERE that settled on CPU because the GPU install failed is the same failed-pin case
+    # the arms above refuse to call deliberate, and reviving the old CPU provenance underneath
+    # them re-records the venv as pinned CPU anyway. Only families this run NAMED count:
+    # install.sh's derived backend is not a preference, and a leaf that names no family has
+    # contradicted nothing.
     if flavor and any(
         family and family != _flavor_tag_family(flavor)
         for family in _flavor_families_this_run_named()
@@ -3195,12 +3189,12 @@ def _installed_flavor_tag_now(expected: str = "") -> str:
             return _gpu_family_from_runtime_markers(_hip, _cuda)
         return tag
     if _ran:
-        # The probe ANSWERED, and the answer was that this torch does not import. That is
-        # not the ambiguity the disk fallback exists for: version.py would report the
-        # requested +cu*/+xpu tag from a half-written or DLL-less wheel, the caller would
-        # read tag == expected, and the update would write a completion manifest over a
-        # torch nothing can import. A torch that failed to import BEFORE the repair never
-        # reaches here -- the pre-repair chain returns early on it.
+        # The probe ANSWERED, and its answer is that this torch does not import -- not the
+        # ambiguity the disk fallback exists for. version.py would report the requested
+        # +cu*/+xpu tag from a half-written or DLL-less wheel, the caller would read
+        # tag == expected, and the update would write a completion manifest over a torch
+        # nothing can import. A pre-repair import failure never reaches here: that chain
+        # returns early on it.
         return _TORCH_TAG_UNIMPORTABLE
     label = _installed_torch_label_on_disk()
     return _torch_flavor_tag(label) if label else ""
@@ -3337,10 +3331,8 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
                     # Across a CUDA-major move the resident build is not merely slower:
                     # _select_torchao_spec exists because a torchao compiled for CUDA 12
                     # cannot load its cpp under cu130. Remove it, the way the xFormers arm
-                    # below removes a build made for a torch that is gone, rather than
-                    # completing the update with a package that may fail on import. A
-                    # release-only move keeps the old warning: that one really is the
-                    # slow path.
+                    # below removes a build made for a torch that is gone. A release-only
+                    # move keeps the old warning: that one really is just the slow path.
                     if _cuda_moved and _uninstall_distribution("torchao"):
                         _note(
                             f"removed the torchao built for a different CUDA major; "
