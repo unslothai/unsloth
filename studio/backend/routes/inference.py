@@ -80,6 +80,12 @@ from core.inference.orchestrator import (
     MOSS_TTS_MAX_FRAMES,
     _summed_tool_loop_stats,
 )
+from core.inference.llama_preemption import (
+    ControllerPreemptionPolicy,
+    DeferredPreemptionPolicy,
+    PreemptSignal,
+    get_preemption_controller,
+)
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -2001,6 +2007,58 @@ def _openai_llama_admission_tokens(
     # admits it alone rather than stranding it, and llama-server refuses it with a
     # message naming both counts.
     return max(1, min(budget, prompt_tokens + output_tokens))
+
+
+def _openai_llama_preemption_arm(
+    *,
+    request: Optional[Request],
+    llama_backend,
+    reservation,
+    gen_id: str,
+    signal,
+    loop = None,
+):
+    """Enrol a generation with the preemptor, and pause whoever must make room.
+
+    Returns the policy the stream side calls back on, or None when preemption cannot
+    apply. None is the pre-preemption behaviour exactly: the wire clamp still bounds
+    every request, so the fallback is safe rather than merely quiet.
+
+    Keyed on ``base_url`` like the admission queue, because both are per model load and
+    a reload takes a fresh ephemeral port.
+    """
+    if reservation is None or signal is None:
+        return None
+    lease = reservation.lease_nowait()
+    if lease is None:
+        return None
+    key = str(getattr(llama_backend, "base_url", "llama-server"))
+    controller = get_preemption_controller(key)
+    controller.configure(
+        budget = _openai_llama_admission_budget(llama_backend),
+        # Only under one shared pool can a preempted slot's cells be purged for someone
+        # else; see try_clear_idle_slots, which is gated on exactly this.
+        kv_unified = bool(getattr(llama_backend, "_kv_cache_unified", False)),
+    )
+    if not controller.active:
+        return None
+    charged = int(getattr(lease, "tokens", 0) or 0)
+    controller.register(gen_id, lease = lease, tokens = charged)
+    # Whoever has to stop so this one fits. Setting the signal is all that happens here;
+    # the victims notice at their own next safe point, which is the only place a pause
+    # is allowed to land.
+    controller.plan_preemptions(needed = charged)
+    return ControllerPreemptionPolicy(controller, gen_id, signal, loop = loop)
+
+
+def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
+    """Drop a finished generation, freeing its epoch if it held one."""
+    try:
+        key = str(getattr(llama_backend, "base_url", "llama-server"))
+        get_preemption_controller(key).unregister(gen_id)
+    except Exception:
+        # Never let bookkeeping fail a response that already succeeded.
+        pass
 
 
 def _openai_llama_admission_reserve(
@@ -20588,6 +20646,20 @@ async def produce_openai_chat_completions(
             # a reservation by the time a round can call it.
             _gguf_admission_hold: dict = {"reservation": None}
 
+            # Created before the generator is BUILT because it is passed into it, while
+            # the policy behind it resolves lazily through the controller, which does not
+            # know this generation until admission returns. Nothing can pause before then:
+            # the generator is not iterated until the reservation exists.
+            _gguf_preempt_signal = PreemptSignal()
+            _gguf_preempt_policy_hold = DeferredPreemptionPolicy()
+            # Captured on the event loop, used from the stream's worker thread. The
+            # resume has to await the queue's slot acquire, so the two are joined with
+            # run_coroutine_threadsafe rather than blocking the loop itself.
+            try:
+                _preempt_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                _preempt_loop = None
+
             def _gguf_recost(conversation) -> None:
                 _openai_llama_admission_recost(
                     _gguf_admission_hold["reservation"],
@@ -20670,6 +20742,8 @@ async def produce_openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
+                    preempt_event = _gguf_preempt_signal,
+                    preempt_policy = _gguf_preempt_policy_hold,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
@@ -20693,6 +20767,16 @@ async def produce_openai_chat_completions(
                 # Hand the rounds their reservation now it exists; no round can have run
                 # before this, since the generator is not iterated until admission returns.
                 _gguf_admission_hold["reservation"] = reservation
+                _gguf_preempt_policy_hold.bind(
+                    _openai_llama_preemption_arm(
+                        request = request,
+                        llama_backend = llama_backend,
+                        reservation = reservation,
+                        gen_id = completion_id,
+                        signal = _gguf_preempt_signal,
+                        loop = _preempt_loop,
+                    )
+                )
             except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(
                     "queue-full",

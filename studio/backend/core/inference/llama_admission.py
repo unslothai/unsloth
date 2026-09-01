@@ -437,6 +437,16 @@ class LlamaAdmissionLease:
         if stranded is not None:
             queue.release(stranded)
 
+    @property
+    def tokens(self) -> int:
+        """What this lease is currently charged, after any recost.
+
+        Read by the preemptor to size a participant and to ask how much room a new
+        arrival needs. A property rather than the raw attribute so a caller cannot get a
+        silent zero from ``getattr`` and conclude nothing needs preempting.
+        """
+        return int(self._tokens or 0)
+
     def preempt(self) -> bool:
         """Hand back BOTH the slot and the KV commitment so someone else may decode.
 
@@ -474,6 +484,18 @@ class LlamaAdmissionLease:
     @property
     def is_preempted(self) -> bool:
         return self._preempted
+
+    @property
+    def is_released(self) -> bool:
+        """Whether this lease is finished with the cache.
+
+        Lets the preemptor prune a participant whose generation ended without depending
+        on the route to say so. Release happens on many branches (normal finish, cancel,
+        disconnect, timeout, admission error), and a single missed one would leave a dead
+        conversation counted against the budget forever, which is worse than not
+        preempting at all.
+        """
+        return self._released
 
     async def resume_async(
         self,

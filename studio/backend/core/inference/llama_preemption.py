@@ -225,6 +225,44 @@ class PreemptionPolicy(Protocol):
     def on_resumed(self) -> None: ...
 
 
+class DeferredPreemptionPolicy:
+    """A policy handed to the stream before the real one can exist.
+
+    The tool-loop generator is BUILT before admission returns and only ITERATED after,
+    so the object passed in cannot yet know its lease. This forwards once bound and
+    behaves as ``NullPreemptionPolicy`` until then, which is correct rather than merely
+    convenient: nothing can pause before the generator is iterated, and an unbound
+    ``await_resume`` answering False means "finish the turn", the behaviour that predates
+    preemption.
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner = None):
+        self._inner = inner
+
+    def bind(self, policy) -> None:
+        self._inner = policy
+
+    @property
+    def bound(self) -> bool:
+        return self._inner is not None
+
+    def should_preempt(self) -> bool:
+        return False if self._inner is None else bool(self._inner.should_preempt())
+
+    def on_preempted(self, checkpoint: StreamCheckpoint) -> None:
+        if self._inner is not None:
+            self._inner.on_preempted(checkpoint)
+
+    def await_resume(self, timeout: Optional[float] = None) -> bool:
+        return False if self._inner is None else bool(self._inner.await_resume(timeout))
+
+    def on_resumed(self) -> None:
+        if self._inner is not None:
+            self._inner.on_resumed()
+
+
 class NullPreemptionPolicy:
     """Never pauses. The default, so every existing call site is unchanged."""
 
@@ -457,7 +495,27 @@ class PreemptionController:
         with self._lock:
             return self._committed_locked()
 
+    def _prune_locked(self) -> None:
+        """Drop participants whose lease is finished with the cache.
+
+        Belt and braces beside ``unregister``. A generation ends on many branches
+        (normal finish, cancel, disconnect, admission timeout, HTTP error) and a single
+        one that forgets to unregister would leave a dead conversation counted against
+        the budget for the life of the model load, which would preempt everybody
+        forever. Cheap: the registry holds at most ``capacity`` entries.
+        """
+        dead = [
+            gen_id
+            for gen_id, p in self._participants.items()
+            if p.lease is not None and getattr(p.lease, "is_released", False)
+        ]
+        for gen_id in dead:
+            del self._participants[gen_id]
+            if self._epoch_winner == gen_id:
+                self._epoch_winner = None
+
     def _committed_locked(self) -> int:
+        self._prune_locked()
         return sum(p.tokens for p in self._participants.values() if p.holds_kv)
 
     def _winner_locked(self) -> Optional[Participant]:
