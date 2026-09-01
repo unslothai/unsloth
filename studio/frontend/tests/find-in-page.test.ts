@@ -386,7 +386,11 @@ test("both spellings of every visibility option are asked for", () => {
     assert.equal(modern in options, true, `${modern} is missing`);
     assert.equal(historic in options, true, `${historic} is missing`);
     // The two names mean the same thing, so they must never disagree.
-    assert.equal(options[modern], options[historic], `${modern} != ${historic}`);
+    assert.equal(
+      options[modern],
+      options[historic],
+      `${modern} != ${historic}`,
+    );
   }
 });
 
@@ -395,9 +399,7 @@ test("an engine that honours only the historic option names still hides hidden t
   // names are unknown to it and therefore ignored.
   const legacyEngine = (style: { visibility?: string }) => ({
     checkVisibility: (options?: Record<string, unknown>) =>
-      !(
-        options?.checkVisibilityCSS === true && style.visibility === "hidden"
-      ),
+      !(options?.checkVisibilityCSS === true && style.visibility === "hidden"),
   });
   const hidden = {
     ...el("SPAN", [text("invisible")]),
@@ -477,7 +479,11 @@ function withStyles(
 function skipNode(options: {
   skipped?: boolean;
   parent?: ReturnType<typeof skipNode> | null;
-}): { nodeType: number; parentElement: Element | null; closest: (s: string) => Element | null } {
+}): {
+  nodeType: number;
+  parentElement: Element | null;
+  closest: (s: string) => Element | null;
+} {
   const node = {
     nodeType: 1,
     skipped: options.skipped ?? false,
@@ -519,7 +525,9 @@ test("the selection fallback hands the caret back to the field", async () => {
     new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
     "utf8",
   );
-  const fallback = engine.slice(engine.indexOf("export function selectRangeFallback"));
+  const fallback = engine.slice(
+    engine.indexOf("export function selectRangeFallback"),
+  );
   const body = fallback.slice(0, fallback.indexOf("\n}"));
   assert.match(body, /holdCaret\(\)/);
   assert.match(body, /releaseCaret\(/);
@@ -587,7 +595,10 @@ test("an attribute that is not the skip flag is judged from the target itself", 
   // inside skipped chrome is still chrome.
   const bar = skipNode({ skipped: true });
   const inside = skipNode({ parent: bar });
-  assert.equal(mutatesSearchableText(record(inside, "attributes", "inert")), false);
+  assert.equal(
+    mutatesSearchableText(record(inside, "attributes", "inert")),
+    false,
+  );
 });
 
 test("a display:contents wrapper that is itself invisible keeps its own text out", () => {
@@ -612,7 +623,8 @@ test("a visible display:contents wrapper is still searched", () => {
   // The other half of the same rule: the rescue has to keep working, or most of what there is to
   // search disappears with it.
   const wrapper = el("SPAN", [text("findable")]);
-  (wrapper as { checkVisibility?: () => boolean }).checkVisibility = () => false;
+  (wrapper as { checkVisibility?: () => boolean }).checkVisibility = () =>
+    false;
   withStyles(new Map([[wrapper, { display: "contents" }]]), () => {
     const index = buildTextIndex(el("DIV", [wrapper]));
     assert.equal(index.text.includes("findable"), true);
@@ -670,6 +682,103 @@ test("a numeric anchor still means what it always did", () => {
     findMatches(index, "b", 3, 10),
     findMatches(index, "b", 3, () => 10),
   );
+});
+
+test("a word matches whichever way either side spells it", () => {
+  // The same word composed and decomposed. macOS hands back decomposed filenames while a model
+  // writes composed prose, so one thread holds both, and the platform's own find matches either
+  // from either. Measured: all four pairings hit.
+  const composed = "caf\u00e9";
+  const decomposed = "cafe\u0301";
+  assert.notEqual(composed, decomposed);
+  for (const written of [composed, decomposed]) {
+    for (const typed of [composed, decomposed]) {
+      const index = buildTextIndex(
+        el("DIV", [el("P", [text(`a ${written} b`)])]),
+      );
+      const matches = findMatches(index, typed);
+      assert.equal(
+        matches.length,
+        1,
+        `text ${escape(written)} and query ${escape(typed)} did not meet`,
+      );
+      // And the offsets are the document's, not a normalized copy's: the match has to cover
+      // exactly the characters that were written, whatever length that spelling is.
+      assert.deepEqual(matches[0], { start: 2, end: 2 + written.length });
+      assert.equal(index.text.slice(matches[0].start, matches[0].end), written);
+    }
+  }
+});
+
+test("the index itself is left in the form the document wrote", () => {
+  // Normalizing it is the other way to fix the above, and it would change its length: every offset
+  // in the index stands for one character of a text node, so a shorter index misplaces them all.
+  const decomposed = "cafe\u0301";
+  const index = buildTextIndex(el("DIV", [el("P", [text(decomposed)])]));
+  assert.equal(index.text, decomposed);
+  assert.equal(index.text.length, decomposed.length);
+});
+
+test("spelling variants do not loosen whitespace inside a fence", () => {
+  // The variants share the pattern path with the flexible-whitespace one, and inside a `<pre>` the
+  // whitespace on screen is the whitespace in the node. A variant is exact; a flexed run is not.
+  const fence = el("PRE", [text("caf\u00e9   au lait")]);
+  withStyles(new Map([[fence, { whiteSpace: "pre" }]]), () => {
+    const index = buildTextIndex(el("DIV", [fence]));
+    assert.equal(findMatches(index, "caf\u00e9 au lait").length, 0);
+    assert.equal(findMatches(index, "cafe\u0301   au lait").length, 1);
+  });
+});
+
+test("an engine with no checkVisibility falls back to the computed properties", () => {
+  // `checkVisibility` landed in Safari 17.4, and WebKitGTK is already supported here: it is the
+  // engine `selectRangeFallback` exists for. The optional call answers undefined there, and read as
+  // "not false" that put every `display: none` subtree in the app back into the index.
+  for (const style of [
+    { display: "none" },
+    { visibility: "hidden" },
+    { visibility: "collapse" },
+  ]) {
+    const buried = el("DIV", [text("buried")]);
+    const root = el("DIV", [el("P", [text("visible")]), buried]);
+    withStyles(new Map([[buried, style]]), () => {
+      const index = buildTextIndex(root);
+      assert.equal(
+        index.text.includes("buried"),
+        false,
+        `${JSON.stringify(style)} leaked into the index`,
+      );
+      assert.equal(index.text.includes("visible"), true);
+    });
+  }
+});
+
+test("with no checkVisibility, a hidden boxless wrapper is still descended into", () => {
+  // Where the two mechanisms meet. `display: contents` is boxless rather than hidden, so the
+  // fallback must not skip it whole; `hidesOwnText` drops the text it holds directly, and a child
+  // that turns visibility back on is painted and still has to be found.
+  const shown = el("SPAN", [text("turned back on")]);
+  const wrapper = el("DIV", [text("the wrapper's own text"), shown]);
+  withStyles(
+    new Map([
+      [wrapper, { display: "contents", visibility: "hidden" }],
+      [shown, { visibility: "visible" }],
+    ]),
+    () => {
+      const index = buildTextIndex(el("DIV", [wrapper]));
+      assert.equal(index.text.includes("the wrapper"), false);
+      assert.equal(index.text.includes("turned back on"), true);
+    },
+  );
+});
+
+test("the fallback does not mistake a boxless wrapper for a hidden one", () => {
+  // `display: contents` is the case the whole visibility branch was written around: it has no box
+  // and is not hidden, and the shell hands a grid its children through one.
+  const wrapper = el("DIV", [el("P", [text("inside a wrapper")])]);
+  withStyles(new Map([[wrapper, { display: "contents" }]]), () => {
+    assert.equal(buildTextIndex(el("DIV", [wrapper])).text, "inside a wrapper");
+  });
 });
 
 test("two spans the CSS renders as blocks do not run together", () => {
@@ -1554,6 +1663,22 @@ test("the window is only computed when the cap bites", () => {
   );
 });
 
+test("stopping the count early does not move the window", () => {
+  // `total` is only counted to keep the window off the end of the list, and it stops as soon as it
+  // is high enough to no longer do that. A stop that came too soon would drag the window back
+  // toward the top, which is the whole thing the anchor exists to prevent.
+  const body = "q".repeat(500);
+  const index = buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  const at = 200;
+  const window = findMatches(index, "q", 50, at);
+  assert.equal(window.length, 50);
+  // Centred on the reader: 25 kept behind them, the rest ahead.
+  assert.equal(window[0].start, at - 25);
+  assert.equal(window[window.length - 1].end, at + 25);
+  // And the matches past the window, which the count stops before reaching, are really there.
+  assert.equal(findMatches(index, "q", 500, 0).length, 500);
+});
+
 test("the window stops at the ends of the list", () => {
   const body = `needle ${"q".repeat(500)}`;
   const index = buildTextIndex(el("DIV", [el("P", [text(body)])]));
@@ -1721,6 +1846,26 @@ test("the selection fallback only clears what it put there", () => {
   } finally {
     view.window = saved;
   }
+});
+
+test("the generated-image actions are out of the index too", async () => {
+  // Same shape as the badge below, and the same reason. From `sm` up the action bar over a
+  // generated image is transparent until the card is hovered, so its "Edit" was counted and walked
+  // to under a highlight nobody can see. Every place that mounts persistently transparent text has
+  // to say so, since the index cannot tell one from a message still fading in.
+  const tool = await readFile(
+    new URL(
+      "../src/components/assistant-ui/tool-ui-image-generation.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const at = tool.indexOf("sm:group-hover/generated-image:opacity-100");
+  assert.notEqual(at, -1);
+  assert.match(
+    tool.slice(Math.max(at - 700, 0), at),
+    /\{\.\.\.\{ \[FIND_SKIP_ATTRIBUTE\]: "" \}\}/,
+  );
 });
 
 test("a hover-only badge is out of the index", async () => {

@@ -20,7 +20,9 @@ deliberately rather than waited for:
     active match;
   - checkVisibility that honours only the historic option names, which is
     Chrome 105-120 and Firefox 106-121, where the modern spellings are dropped
-    silently by Web IDL and hidden text would otherwise be indexed.
+    silently by Web IDL and hidden text would otherwise be indexed;
+  - no checkVisibility at all, which is Safari below 17.4 and WebKitGTK, where
+    the call answers undefined and the computed properties have to stand in.
 
 Platform is emulated the way the app reads it, through navigator.platform and
 the user agent, because isMacPlatform() is memoised on first call.
@@ -76,6 +78,13 @@ Element.prototype.checkVisibility = function (options) {
   }
   return real.call(this, legacy);
 };
+"""
+
+# An engine with no checkVisibility at all, which is Safari below 17.4 and the
+# WebKitGTK the desktop build is handed. The optional call answers undefined
+# there, and read as "not false" it put every display: none subtree back in.
+NO_CHECK_VISIBILITY = """
+delete Element.prototype.checkVisibility;
 """
 
 failures: list[str] = []
@@ -310,18 +319,25 @@ def check_modal_gate(page, engine: str, mode: str, mod: str) -> None:
 def check_hidden_text(page, engine: str, mode: str, mod: str) -> None:
     """Text nobody can see must not be counted, however it was hidden.
 
+    `display: none` is the case an engine with no checkVisibility gets wrong,
     `visibility: hidden` is the case an engine from before the checkVisibility
     option rename gets wrong, and `display: contents` + `visibility: hidden` is
     the case where only ELEMENT children are re-checked, so a direct text child
-    slips through. Both are planted here rather than in the harness so this
+    slips through. All three are planted here rather than in the harness so this
     stays honest about what it is measuring.
     """
     page.evaluate(
         """() => {
       const scope = document.querySelector('[data-find-scope]') ?? document.body;
-      for (const id of ['probe-vis', 'probe-contents']) {
+      for (const id of ['probe-vis', 'probe-contents', 'probe-none']) {
         document.getElementById(id)?.remove();
       }
+      const gone = document.createElement('div');
+      gone.id = 'probe-none';
+      gone.style.display = 'none';
+      gone.textContent = 'zqxjkvbrmp';
+      scope.appendChild(gone);
+
       const plain = document.createElement('div');
       plain.id = 'probe-vis';
       plain.style.visibility = 'hidden';
@@ -353,8 +369,66 @@ def check_hidden_text(page, engine: str, mode: str, mod: str) -> None:
         """() => {
       document.getElementById('probe-vis')?.remove();
       document.getElementById('probe-contents')?.remove();
+      document.getElementById('probe-none')?.remove();
     }"""
     )
+
+
+def check_spelling_variants(page, engine: str, mode: str, mod: str) -> None:
+    """A word composed and a word decomposed have to find each other.
+
+    macOS hands back decomposed filenames while a model writes composed prose,
+    so one thread holds both. The index is left in the form the document wrote,
+    since normalizing it would change its length and misplace every offset, so
+    what is checked here is that the painted range still covers exactly the
+    characters that were written.
+    """
+    planted = page.evaluate(
+        """() => {
+      const scope = document.querySelector('[data-find-scope]') ?? document.body;
+      document.getElementById('probe-nfd')?.remove();
+      const row = document.createElement('div');
+      row.id = 'probe-nfd';
+      // cafe + combining acute, then " vbnmqz" to keep the query out of the prose.
+      row.textContent = 'cafe\u0301 vbnmqz';
+      scope.appendChild(row);
+      return row.textContent.normalize('NFC') !== row.textContent;
+    }"""
+    )
+    check(engine, mode, "the planted text really is decomposed", planted is True)
+    page.wait_for_timeout(500)
+    open_bar(page, mod)
+    # Typed composed, against text written decomposed.
+    page.keyboard.type("caf\u00e9 vbnmqz")
+    page.wait_for_timeout(700)
+    shown = counter(page)
+    check(
+        engine,
+        mode,
+        "a composed query finds decomposed text",
+        shown == "1/1",
+        f"counter={shown!r}",
+    )
+    # Only where there is a registry to read. On the fallback path the selection is dropped on
+    # purpose to give the caret back to the field, so there is nothing left to measure; the count
+    # above is the part that holds on every engine.
+    if page.evaluate("() => typeof CSS !== 'undefined' && !!CSS.highlights"):
+        covers = page.evaluate(
+            """() => {
+      const set = CSS.highlights.get('unsloth-find-active');
+      const range = set ? [...set][0] : null;
+      return range ? range.toString() : null;
+    }"""
+        )
+        check(
+            engine,
+            mode,
+            "the painted range covers what the document wrote",
+            covers == "cafe\u0301 vbnmqz",
+            f"painted={covers!r} (a drifted offset paints the wrong characters)",
+        )
+    close_bar(page)
+    page.evaluate("() => document.getElementById('probe-nfd')?.remove()")
 
 
 def check_skip_attribute(page, engine: str, mode: str, mod: str) -> None:
@@ -405,6 +479,7 @@ def run_page(page, engine: str, mode: str, mod: str) -> None:
         check_paint_and_teardown,
         check_modal_gate,
         check_hidden_text,
+        check_spelling_variants,
         check_skip_attribute,
     ):
         try:
@@ -453,6 +528,7 @@ def run_engine(pw, engine: str) -> None:
         for mode, script in (
             ("no-highlight-api", NO_HIGHLIGHT_API),
             ("legacy-checkVisibility", LEGACY_CHECK_VISIBILITY),
+            ("no-checkVisibility", NO_CHECK_VISIBILITY),
         ):
             context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
             context.add_init_script(

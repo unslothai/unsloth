@@ -218,22 +218,28 @@ export function skipsSubtree(element: FindElementLike): boolean {
   // modern name alone is not a fallback, it is a no-op on Chrome 105-120 and Firefox 106-121,
   // which have the method but not the rename. Those builds would report `visibility: hidden` text
   // as visible and index, count and highlight it.
-  if (
-    element.checkVisibility?.({
-      contentVisibilityAuto: false,
-      opacityProperty: false,
-      checkOpacity: false,
-      visibilityProperty: true,
-      checkVisibilityCSS: true,
-    }) !== false
-  ) {
-    return clippedAway(computedStyle(element));
+  const painted = element.checkVisibility?.({
+    contentVisibilityAuto: false,
+    opacityProperty: false,
+    checkOpacity: false,
+    visibilityProperty: true,
+    checkVisibilityCSS: true,
+  });
+  const style = computedStyle(element);
+  if (painted === false) {
+    // `display: contents` generates no box, and no box is the first thing `checkVisibility` calls
+    // invisible, so a wrapper whose children are all on screen answers false. The shell uses one
+    // (sidebar.tsx) and so does the training page (studio-page.tsx), which between them is most of
+    // what there is to search. A real box is what makes an element hidden rather than absent.
+    return style?.display !== "contents";
   }
-  // `display: contents` generates no box, and no box is the first thing `checkVisibility` calls
-  // invisible, so a wrapper whose children are all on screen answers false. The shell uses one
-  // (sidebar.tsx) and so does the training page (studio-page.tsx), which between them is most of
-  // what there is to search. A real box is what makes an element hidden rather than absent.
-  return computedStyle(element)?.display !== "contents";
+  // No `checkVisibility` to ask. It landed in Safari 17.4, and WebKitGTK is already a supported
+  // engine here -- it is the one `selectRangeFallback` exists for -- so this is a real path, and
+  // taking the visible branch on it would index every `display: none` subtree in the app. The two
+  // properties below are what the call above is asked for: `visibilityProperty` on, opacity and
+  // content-visibility off.
+  if (painted === undefined && paintsNothing(style)) return true;
+  return clippedAway(style);
 }
 
 interface ResolvedStyle {
@@ -261,6 +267,19 @@ function hidesOwnText(style: ResolvedStyle | null): boolean {
     style?.display === "contents" &&
     (style.visibility === "hidden" || style.visibility === "collapse")
   );
+}
+
+/**
+ * True when this element paints no box at all, for engines with no `checkVisibility` to ask.
+ *
+ * `display: contents` is not one of them: it is boxless rather than hidden, `hidesOwnText` covers
+ * the text it holds directly, and the walk keeps descending so a child that turns visibility back
+ * on is still found. That is what the branch above does when the API answers, so the two agree.
+ */
+function paintsNothing(style: ResolvedStyle | null): boolean {
+  if (style?.display === "none") return true;
+  if (style?.display === "contents") return false;
+  return style?.visibility === "hidden" || style?.visibility === "collapse";
 }
 
 /**
@@ -442,21 +461,46 @@ export interface FindMatch {
 const REGEX_META_PATTERN = /[.*+?^${}()|[\]\\]/g;
 
 /**
- * A pattern for a query that spans whitespace, or null when a plain scan will do.
+ * The canonically equivalent spellings of `needle`, longest first, `needle` itself always included.
+ *
+ * The same word can be composed or decomposed and look identical on screen: `café` is four code
+ * points, `café` is five. macOS hands back decomposed filenames and a model writes composed
+ * prose, so both forms turn up in one thread, and the platform's own find matches either from
+ * either. Normalizing the index would change its length, and every offset in it stands for one
+ * character of the document, so the variants go into the pattern and the document is left alone.
+ *
+ * Longest first, so where two could match at one position the fuller spelling wins.
+ */
+function canonicalVariants(needle: string): string[] {
+  const variants = [needle];
+  for (const form of ["NFC", "NFD"] as const) {
+    const variant = needle.normalize(form);
+    if (!variants.includes(variant)) variants.push(variant);
+  }
+  if (variants.length > 1) variants.sort((a, b) => b.length - a.length);
+  return variants;
+}
+
+/**
+ * A pattern for a query that spans whitespace or is spelt more than one way, or null for a plain
+ * scan.
  *
  * HTML collapses runs of whitespace, so a markdown paragraph soft-wrapped mid-sentence renders as
  * one line while its text node still holds the newline. Searching the phrase a reader can see would
  * otherwise miss it. Each run of whitespace in the query matches a run in the document; the
  * separator is not whitespace, so block boundaries stay closed.
  *
- * Single-word queries, which are most of them, keep the `indexOf` path.
+ * Single-word ASCII queries, which are most of them, keep the `indexOf` path.
  */
-function whitespacePattern(needle: string): RegExp | null {
-  if (!/\s/.test(needle)) return null;
-  const escaped = needle
-    .replace(REGEX_META_PATTERN, "\\$&")
-    .replace(/\s+/g, "\\s+");
-  return new RegExp(escaped, "g");
+function matchPattern(variants: string[], needle: string): RegExp | null {
+  if (variants.length === 1 && !/\s/.test(needle)) return null;
+  const escaped = variants.map((variant) =>
+    variant.replace(REGEX_META_PATTERN, "\\$&").replace(/\s+/g, "\\s+"),
+  );
+  return new RegExp(
+    escaped.length === 1 ? escaped[0] : `(?:${escaped.join("|")})`,
+    "g",
+  );
 }
 
 /**
@@ -476,15 +520,17 @@ function eachMatch(
   needle: string,
   visit: (start: number, end: number) => boolean,
 ): void {
-  const pattern = whitespacePattern(needle);
+  const variants = canonicalVariants(needle);
+  const pattern = matchPattern(variants, needle);
   if (pattern) {
     for (;;) {
       const hit = pattern.exec(index.text);
       if (hit === null) return;
       const end = hit.index + hit[0].length;
+      // Any spelling of the query counts as typed exactly; only flexed whitespace does not.
       if (
         touchesPreserved(index.segments, hit.index, end) &&
-        hit[0] !== needle
+        !variants.includes(hit[0])
       ) {
         pattern.lastIndex = hit.index + 1;
         continue;
@@ -551,12 +597,29 @@ export function findMatches(
 
   // Capped, so where the window sits matters. Two more passes over a string, no allocation in the
   // first: cheap next to the tens of thousands of matches this only happens for.
+  //
+  // The count stops early. `total` is only wanted to keep the window from running off the end, and
+  // once `total - limit` has reached the left edge below it can no longer pull that edge back, so
+  // every match after that point is counted for nothing. Past the anchor `before` is final, which
+  // is what makes the edge knowable there.
+  //
+  // It cannot cost the clamp: the clamp only binds when the reader is near the end, and there the
+  // true total is below the ceiling, so the walk never stops early in the first place. Measured on
+  // a 4,000,000 character index with a single-letter query, 444,444 matches, anchored halfway:
+  // 6.4ms over all of them to 3.3ms over 224,722, same window either way.
   let total = 0;
   let before = 0;
+  let enough = Number.POSITIVE_INFINITY;
   eachMatch(index, needle, (start) => {
     total += 1;
-    if (start < at) before += 1;
-    return true;
+    if (start < at) {
+      before += 1;
+      return true;
+    }
+    if (enough === Number.POSITIVE_INFINITY) {
+      enough = Math.max(before - (limit >> 1), 0) + limit;
+    }
+    return total < enough;
   });
   // Centred on the reader, then pushed back inside the list at either end.
   const start = Math.min(
