@@ -868,18 +868,6 @@ def _subject_owned_roots(username: str) -> list:
     return roots
 
 
-def _tombstone_username(username: str) -> None:
-    conn = get_connection()
-    try:
-        conn.execute(
-            "INSERT OR IGNORE INTO retired_usernames (username, created_at) VALUES (?, ?)",
-            (username, datetime.now(timezone.utc).isoformat()),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def _clear_username_tombstone(username: str) -> None:
     conn = get_connection()
     try:
@@ -962,16 +950,23 @@ def delete_managed_user(username: str) -> bool:
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.execute("DELETE FROM api_keys WHERE username = ?", (username,))
         conn.execute("DELETE FROM auth_user WHERE username = ?", (username,))
+        # In the same transaction as the delete: the row and the tombstone must
+        # never both be absent, or a create racing this one sees a free name and
+        # binds to a workspace this call is about to rename out from under it.
+        conn.execute(
+            "INSERT OR IGNORE INTO retired_usernames (username, created_at) VALUES (?, ?)",
+            (username, datetime.now(timezone.utc).isoformat()),
+        )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+    # Cleared only once every root is out of the way; a failure leaves the name
+    # reserved and the next create retries the retirement.
     if _retire_workspace_directory(username):
         _clear_username_tombstone(username)
-    else:
-        _tombstone_username(username)
     return True
 
 
