@@ -14,10 +14,9 @@ the reader uses it to reserve absolute headroom on a discrete card (parity
 with the CUDA/ROCm fit) and ignores it for an iGPU, whose "VRAM" is shared
 system RAM. ``name`` is ggml's device description (the marketing name, e.g.
 "AMD Radeon RX 9070 XT"); empty when the registry lookup fails.
-``type_known`` is ``1`` only when ggml really answered with a device type, so a
-reader can tell a device PROVED discrete from one whose type could not be read:
-``is_igpu = 0`` alone conflates the two, and a caller that must not credit an
-iGPU's shared pool as VRAM needs the difference.
+``type_known`` is ``1`` only when ggml really answered with a device type: ``is_igpu
+= 0`` alone conflates a proved dGPU with an unreadable one, and a caller that must
+not credit an iGPU's shared pool as VRAM needs that difference.
 
 Uses only the standard library so it stays runnable as a bare script.
 """
@@ -36,10 +35,9 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str],
     The Vulkan reg enumerates devices in the same order as
     ``ggml_backend_vk_get_device_memory`` (each context uses ``ctx->device =
     i``), so reg index == device ordinal. Returns all-False / empty-name on any
-    failure so the reader never over-caps a discrete card and the memory
-    readings still get through -- and the third list says which of those Falses
-    were answers rather than fallbacks, since a caller granting a
-    discrete-only credit must not read the fallback as proof of a dGPU.
+    failure so the memory readings still get through; the third list says which
+    of those Falses were answers, since a discrete-only credit must not read the
+    fallback as proof of a dGPU.
     """
     flags = [False] * count
     names = [""] * count

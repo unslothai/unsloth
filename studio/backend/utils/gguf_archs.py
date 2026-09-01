@@ -31,16 +31,11 @@ SPEECH_GGUF_ARCHS = frozenset({"llama-csm", "csm", "csm-tts", "mimi"})
 _VOCODER_MARKERS = ("--model-vocoder", "cannot be used as llm")
 
 
-# ``general.architecture`` values whose llama.cpp loader builds no vocabulary output head at
-# all. The encoder-only BERT family never produces logits (src/models/bert.cpp,
-# nomic-bert.cpp, nomic-bert-moe.cpp, jina-bert-v2.cpp, jina-bert-v3.cpp, modern-bert.cpp,
-# neo-bert.cpp, eurobert.cpp create tok_embd and no output tensor), and bitnet.cpp multiplies
-# by tok_embd in place instead of duplicating it. For these a missing ``output.weight`` is not
-# tying, so nothing extra is allocated and the VRAM budget must not charge for it.
-#
-# A blocklist and not a decoder whitelist on purpose: an unlisted architecture is charged, so a
-# new arch over-counts by one embedding matrix instead of under-counting by one, and
-# under-counting weights is what makes the context search promise VRAM the load then takes.
+# Architectures whose llama.cpp loader builds no vocabulary output head, so a missing
+# ``output.weight`` is not tying and nothing is duplicated (src/models/bert.cpp and its
+# nomic/jina/modern/neo/euro siblings create tok_embd alone; bitnet.cpp multiplies by
+# tok_embd in place). A blocklist, not a decoder allowlist: an unlisted arch is charged,
+# and over-counting by one embedding matrix is the safe direction.
 NO_VOCAB_OUTPUT_GGUF_ARCHS = frozenset(
     {
         "bert",
@@ -59,8 +54,7 @@ NO_VOCAB_OUTPUT_GGUF_ARCHS = frozenset(
 def is_no_vocab_output_gguf_architecture(architecture: Optional[str]) -> bool:
     """Whether llama.cpp gives ``general.architecture`` no vocabulary output tensor.
 
-    ``None`` and the empty string are not: an undeclared architecture is unknown, and the one
-    caller fails towards charging."""
+    None and "" are not: an undeclared arch is unknown, and the caller fails towards charging."""
     if not architecture:
         return False
     return architecture.strip().lower() in NO_VOCAB_OUTPUT_GGUF_ARCHS

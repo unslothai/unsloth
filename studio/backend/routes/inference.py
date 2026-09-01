@@ -9510,10 +9510,9 @@ def _estimate_gguf_required_gb(
         # launches, Unsloth's included, so none of them belongs in a VRAM budget. An
         # embedded head ignores draft-only flags and is inside the weights anyway.
         _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ)
-        # The DSpark sidecar does not follow a main CPU device: its generated block
-        # appends no --spec-draft-device, and llama.cpp gives a separate drafter the
-        # draft device list rather than the main one, so an unset list is every device.
-        # Only the explicit draft flags take it off the GPU.
+        # The DSpark sidecar does not follow a main CPU device: its block appends no
+        # --spec-draft-device, and llama.cpp gives a separate drafter the draft list
+        # rather than the main one, unset meaning every device.
         _dspark_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(
             llama_extra_args, env = os.environ, dspark_drafter = True
         )
@@ -9586,8 +9585,7 @@ def _estimate_gguf_required_gb(
         # that fits. Auto is different: it falls through to the MTP branch, and keeps
         # its charge.
         _charge_no_drafter = (
-            # ... except a DSpark sidecar the pin never reaches, which the branch
-            # below then charges alone.
+            # ... except a DSpark sidecar the pin never reaches.
             (_draft_pinned_to_cpu and not dspark_requested)
             or _extras_own_drafter
             or (_forced_dspark and not _dspark_capable)

@@ -4924,13 +4924,11 @@ def _extra_args_draft_offloaded_to_cpu(
     An embedded MTP head follows the main -ngl, so these draft-only flags don't move
     it. Last-wins, so only each flag's final value counts.
 
-    ``dspark_drafter`` drops that main-device inheritance, because DSpark is the one
-    generated block that appends no --spec-draft-device (_emit_dspark, against
-    _emit_dflash and _emit_mtp which do). llama.cpp then replaces the main device
-    list with the draft one for any separate drafter -- ``result.devices =
-    params_spec.devices`` in common_base_params_to_speculative -- and an unset draft
-    list means every device, so the sidecar lands on a GPU that a main ``--device
-    none`` had already talked the budget out of reserving.
+    ``dspark_drafter`` drops that inheritance: _emit_dspark appends no
+    --spec-draft-device (unlike _emit_dflash and _emit_mtp), and llama.cpp gives a
+    separate drafter the draft device list rather than the main one
+    (``result.devices = params_spec.devices``, common_base_params_to_speculative),
+    unset meaning every device. So the sidecar lands on a GPU anyway.
 
     A count BETWEEN 0 and the drafter's block count is a split, not an offload; see
     ``_draft_is_split_across_host``."""
@@ -7777,10 +7775,8 @@ class LlamaCppBackend:
     def _host_pinned_weight_bytes(model_path: str) -> int:
         """Bytes for embeddings llama.cpp keeps on the host.
 
-        ``token_embd.weight`` and ``per_layer_token_embd`` tensors remain host
-        buffers even when the model is fully offloaded. Count every declared
-        shard; unreadable or incomplete models return 0 to preserve the previous
-        conservative budget.
+        ``token_embd.weight`` and ``per_layer_token_embd`` stay host buffers even on a
+        fully offloaded model. Unreadable or incomplete returns 0, the old budget.
         """
         identity = LlamaCppBackend._gguf_load_source_identity(model_path)
         if identity is None:
@@ -7837,8 +7833,6 @@ class LlamaCppBackend:
             else ("-ot", "--override-tensor")
         )
         for i, tok in enumerate(argv):
-            # llama.cpp folds underscores in option names and accepts both
-            # ``--flag value`` and ``--flag=value``.
             base, _, inline = tok.partition("=")
             if _flag_name(base) in flags:
                 value = inline if inline else (argv[i + 1] if i + 1 < len(argv) else "")
@@ -7854,7 +7848,6 @@ class LlamaCppBackend:
         mappings = []
         for spec in values:
             for mapping in spec.split(","):
-                # llama.cpp splits each `pattern=buft` entry on the last '='.
                 pattern, sep, buft = mapping.rpartition("=")
                 if not sep or not pattern:
                     continue
@@ -7870,11 +7863,10 @@ class LlamaCppBackend:
     ) -> bool:
         """Whether a tensor override moves normally host-pinned embeddings off CPU.
 
-        llama.cpp applies arbitrary regex overrides before its CPU fallback.
-        The per-layer embedding family is open-ended, so any non-CPU mapping
-        conservatively disables the discount rather than trying to prove that
-        an arbitrary regex cannot match one of those tensors. Main-model ``-ot``
-        and draft-model ``-otd`` own separate override tables upstream.
+        The per-layer embedding family is open-ended and llama.cpp applies arbitrary
+        regexes before its CPU fallback, so any non-CPU mapping drops the discount
+        rather than proving a regex cannot match. ``-ot`` and ``-otd`` are separate
+        tables upstream.
         """
         argv = [str(a) for a in extra_args or ()]
         values: list[str] = []
@@ -7884,8 +7876,6 @@ class LlamaCppBackend:
             else ("-ot", "--override-tensor")
         )
         for i, tok in enumerate(argv):
-            # llama.cpp folds underscores in option names and accepts both
-            # ``--flag value`` and ``--flag=value``.
             base, _, inline = tok.partition("=")
             if _flag_name(base) in flags:
                 value = inline if inline else (argv[i + 1] if i + 1 < len(argv) else "")
@@ -7900,7 +7890,6 @@ class LlamaCppBackend:
             values.append(str(inherited))
         for spec in values:
             for mapping in spec.split(","):
-                # llama.cpp splits each `pattern=buft` entry on the last '='.
                 pattern, sep, buft = mapping.rpartition("=")
                 if not sep or not pattern or buft.strip().upper() == "CPU":
                     continue
@@ -7917,10 +7906,9 @@ class LlamaCppBackend:
     ) -> int:
         """Host bytes left after only provable exact-name GPU overrides.
 
-        Arbitrary regexes are not interpreted here: Python and llama.cpp regex
-        semantics need not agree, and a CPU rule could restore a tensor later.
-        Either uncertainty charges the raw floor. Exact names with only non-CPU
-        mappings are concrete and can be subtracted from enumerated tensors.
+        Regexes are not interpreted: Python and llama.cpp semantics need not agree,
+        and a later CPU rule could restore a tensor, so either uncertainty charges the
+        raw floor.
         """
         items = self._host_pinned_weight_items(model_path)
         raw = (
@@ -7964,7 +7952,6 @@ class LlamaCppBackend:
         if not m:
             return [main]
         prefix, _, num_total = m.groups()
-        # Missing declared shards fail the caller's stat pass conservatively.
         return [
             main.with_name(f"{prefix}-{index:05d}-of-{num_total}{main.suffix}")
             for index in range(1, int(num_total) + 1)
@@ -7974,33 +7961,15 @@ class LlamaCppBackend:
     def _tied_output_bytes(model_path: str) -> int:
         """Bytes llama.cpp allocates ON TOP of the file for a tied-embedding model.
 
-        A model that ties its input and output embeddings ships no
-        ``output.weight``. llama.cpp does not then reuse ``token_embd.weight``
-        in place: it re-creates the output tensor from it as
-        ``TENSOR_DUPLICATED`` (models/llama.cpp:41-45, models/qwen3.cpp:22-25,
-        models/gemma3.cpp and every other tied arch), and a second vocabulary
-        matrix really is allocated. So the run needs the file's tensors PLUS one
-        more copy of the embedding matrix, and the file size alone understates
-        it.
-
-        Measured on the shipped quants, allocated model buffers against file
-        size:
-
-            gemma-4-E2B-it UD-Q4_K_XL     3037 MiB file, 3285.89 MiB allocated
-            gemma-4-31B-it UD-Q4_K_XL    17951 MiB file, +924 MiB duplicate
-            gemma-4-26B-A4B UD-Q3_K_XL   12309 MiB file, +748 MiB duplicate
-
-        which is 4.6% to 8.7% of the file on the gemma family. Qwen3.6 and
-        Qwen3.8 ship a real ``output.weight`` and are unaffected (0 bytes).
-
-        Returns 0 rather than raising for anything unreadable, so a surprising
-        GGUF costs the old, slightly optimistic budget instead of a failed
-        launch.
+        A tied model ships no ``output.weight``, and llama.cpp does not reuse
+        ``token_embd.weight`` in place: it re-creates the output tensor from it as
+        ``TENSOR_DUPLICATED`` (models/llama.cpp:41-45, models/qwen3.cpp:22-25 and
+        every other tied arch), so a second vocabulary matrix is really allocated
+        and the file size alone under-counts. 0 rather than raising for anything
+        unreadable, so a surprising GGUF costs the old budget, not a failed launch.
         """
-        # The shard list AND the cache key, from the one function that already
-        # owns "which inodes is this load reading": device and inode, not just
-        # path, so a model rebuilt in place under its old name and size cannot
-        # serve its predecessor's answer. None on any unreadable shard.
+        # Keyed on device and inode: a model rebuilt in place under its old name and
+        # size must not serve its predecessor's answer.
         identity = LlamaCppBackend._gguf_load_source_identity(model_path)
         if identity is None:
             return 0
@@ -8012,10 +7981,8 @@ class LlamaCppBackend:
         try:
             architecture: Optional[str] = None
             embd = 0
-            # Every shard, because a split model puts token_embd in shard 1 and
-            # output.weight in the last one: reading shard 1 alone would call
-            # every large tied-or-not model tied. Shards past the first carry a
-            # three-entry KV block, so they scan in microseconds.
+            # Every shard: a split model puts token_embd in shard 1 and output.weight
+            # in the last, so shard 1 alone would call every large model tied.
             for position, entry in enumerate(identity):
                 shard_arch, has_output, shard_embd = LlamaCppBackend._gguf_scan_output_tensors(
                     entry[0]
@@ -8026,8 +7993,7 @@ class LlamaCppBackend:
                     architecture = shard_arch
                 if shard_embd:
                     embd = shard_embd
-            # An encoder-only model has no vocabulary output head at all, so its
-            # missing output.weight is not tying and nothing is duplicated.
+            # Encoder-only: no vocabulary head, so the missing output.weight is not tying.
             if is_no_vocab_output_gguf_architecture(architecture):
                 return 0
             return embd
@@ -8052,24 +8018,18 @@ class LlamaCppBackend:
     def _gguf_scan_output_tensors(path: str) -> tuple[Optional[str], bool, int]:
         """(architecture, ships output.weight, token_embd bytes) from one GGUF header.
 
-        Streams the header instead of building a ``gguf.GGUFReader``, whose
-        ``__init__`` materialises every KV value including the tokenizer
-        vocabulary. That is 12.1 s on gemma-4-E2B-it UD-Q4_K_XL and 6.2 s on the
-        240 MiB gemma-3-270m-it -- the cost tracks vocabulary size, not file size
-        -- against 30-90 ms here for a verdict that matched the reader on every
-        model measured. This runs under ``self._lock`` before llama-server is
-        spawned, so it is a stall on every load, not a background cost.
+        Streamed rather than through ``gguf.GGUFReader``, whose ``__init__``
+        materialises the tokenizer vocabulary: 12.1 s on gemma-4-E2B-it UD-Q4_K_XL
+        against 30-90 ms here, and this runs under ``self._lock`` before the spawn,
+        so it stalls every load.
         """
         from gguf.constants import GGML_QUANT_SIZES
 
         architecture: Optional[str] = None
         token_embd_bytes = 0
         alignment = 32  # GGUF's default when general.alignment is absent
-        # Set when token_embd uses a quant type this gguf package predates: its
-        # size then comes from the data layout instead. Studio runs whatever
-        # llama.cpp the user points it at, while gguf is pinned in pyproject, so
-        # the table can be older than the file. Aborting on that would put back
-        # the whole under-count this probe exists to remove.
+        # Set when token_embd uses a quant type the pinned gguf package predates: size
+        # then comes from the data layout, since aborting restores the under-count.
         unsized_at: Optional[int] = None
         with open(path, "rb") as f:
             if struct.unpack("<I", f.read(4))[0] != 0x46554747:  # b"GGUF"
@@ -8094,25 +8054,21 @@ class LlamaCppBackend:
                 ggml_type = struct.unpack("<I", f.read(4))[0]
                 offset = struct.unpack("<Q", f.read(8))[0]
                 if unsized_at is not None:
-                    # The tensors are written in the order of their info
-                    # records, each padded up to the alignment, so the next
-                    # offset bounds the previous tensor. Over by less than one
-                    # alignment unit, which is the harmless direction.
+                    # Tensors follow their info records, padded, so the next offset
+                    # bounds the previous one: over by under an alignment unit.
                     token_embd_bytes = offset - unsized_at
                     unsized_at = None
                 if name == b"output.weight":
                     return architecture, True, 0
                 if name == b"token_embd.weight":
-                    # Quantised rows are stored in blocks, so the element count
-                    # is not the byte count.
+                    # Quantised rows are stored in blocks: elements are not bytes.
                     block = GGML_QUANT_SIZES.get(ggml_type)
                     if block is None:
                         unsized_at = offset
                     else:
                         token_embd_bytes = math.prod(dims) // block[0] * block[1]
             if unsized_at is not None:
-                # token_embd was the last tensor, so the data section itself
-                # bounds it. It starts at the aligned end of the info records.
+                # Last tensor, so the data section bounds it.
                 data_start = -(-f.tell() // alignment) * alignment
                 token_embd_bytes = max(0, os.path.getsize(path) - data_start - unsized_at)
         return architecture, False, token_embd_bytes
@@ -8372,11 +8328,9 @@ class LlamaCppBackend:
     ) -> bool:
         """Classify the selected devices from one Vulkan inventory snapshot.
 
-        ``conservative_on_unknown`` also covers a row whose TYPE could not be read.
-        The probe degrades a failed registry lookup to ``is_igpu = 0`` so the memory
-        readings still get through, which reads the same as a device proved discrete;
-        a caller crediting an iGPU's shared pool as VRAM would then do it on exactly
-        the host it cannot see. ``type_known`` is the difference.
+        ``conservative_on_unknown`` also covers a row whose TYPE could not be read:
+        the probe degrades a failed registry lookup to ``is_igpu = 0``, which reads
+        the same as a proved dGPU. ``type_known`` is the difference.
         """
         rows = list(rows or ())
         if not rows:
@@ -8819,10 +8773,8 @@ class LlamaCppBackend:
         except Exception:
             return False
 
-    # Exact dGPU targets from Studio's supported AMD name table. Nearby targets
-    # are deliberately absent: gfx1103 is Phoenix/Hawk Point integrated graphics,
-    # gfx1150-1152 are unified-memory APUs, and an unknown/future arch stays
-    # conservative until either the driver or the shared classifier proves it.
+    # Neighbours are deliberately absent: gfx1103 is Phoenix integrated graphics and
+    # gfx1150-1152 are unified-memory APUs. An unknown arch stays conservative.
     _ROCM_PROVED_DISCRETE_ARCHS = frozenset(
         {
             "gfx803",
@@ -8851,9 +8803,8 @@ class LlamaCppBackend:
     def _torch_unified_memory_classification_known(gpu_indices = None) -> bool:
         """Whether every selected CUDA/ROCm device was classifiable.
 
-        The placement discount must distinguish a proved discrete device from a
-        failed property probe. The older boolean helpers intentionally collapse
-        both to False for callers that should fail open; this budget cannot.
+        The older boolean helpers collapse "proved discrete" and "probe failed" into
+        False for callers that should fail open; this discount cannot afford that.
         """
         try:
             import torch
@@ -8866,11 +8817,8 @@ class LlamaCppBackend:
             if is_rocm:
                 from core.training.worker import _rocm_classify_unified_memory
                 rocm_classifier = _rocm_classify_unified_memory
-                # HSA_OVERRIDE_GFX_VERSION changes the architecture ROCr reports so
-                # kernels built for a neighbouring target can run. That presented
-                # target is valid for compatibility gating, but says nothing about
-                # the underlying memory topology: a gfx1035 APU commonly appears as
-                # allowlisted-discrete gfx1030. Fail closed for this discount.
+                # HSA_OVERRIDE_GFX_VERSION rewrites the reported arch for kernel
+                # compatibility, not topology: a gfx1035 APU presents as gfx1030.
                 rocm_arch_overridden = bool(
                     str(os.environ.get("HSA_OVERRIDE_GFX_VERSION", "")).strip()
                 )
@@ -8893,9 +8841,8 @@ class LlamaCppBackend:
                         or (_arch or "").strip().lower()
                         not in LlamaCppBackend._ROCM_PROVED_DISCRETE_ARCHS
                     ):
-                        # ROCm exposes no reliable negative signal: older wheels
-                        # omit or zero is_integrated even for Phoenix gfx1103 APUs.
-                        # Only an exact known dGPU target makes False definitive.
+                        # No reliable negative signal: older wheels omit or zero
+                        # is_integrated even for Phoenix gfx1103 APUs.
                         return False
                 elif not (hasattr(props, "is_integrated") or hasattr(props, "integrated")):
                     return False
@@ -10054,8 +10001,7 @@ class LlamaCppBackend:
         rows: list[dict] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            # 4 columns from an older probe (no name); 5 with the name column;
-            # 6 with the type-known column.
+            # 4 from an older probe, 5 with the name, 6 with type-known.
             if len(parts) not in (4, 5, 6):
                 continue
             try:
@@ -10066,8 +10012,7 @@ class LlamaCppBackend:
                         "is_igpu": parts[2] == "1",
                         "total_mib": int(parts[3]) // (1024 * 1024),
                         "name": parts[4].strip() if len(parts) >= 5 else "",
-                        # An older probe answered every device, so its silence is
-                        # the same "no unknown state" the column exists to end.
+                        # An older probe had no unknown state to report.
                         "type_known": parts[5] == "1" if len(parts) == 6 else True,
                     }
                 )
@@ -10498,10 +10443,9 @@ class LlamaCppBackend:
         owners are released; the launch reads what is available now. ``shared_gpu_ids``
         names Vulkan iGPUs whose reported free memory overlaps the host pool. Either
         reading can hold the remaining weights, but they must never be added together.
-        ``host_only_bytes`` is the part of the model file that remains in system RAM
-        even when surplus discrete VRAM could hold the rest.
-        ``additional_host_only_bytes`` belongs to a companion allocation outside that
-        file, such as a GPU drafter's host-pinned embeddings, and is additive.
+        ``host_only_bytes`` is the part of the model file that stays in system RAM even
+        when surplus VRAM could hold the rest; ``additional_host_only_bytes`` is the
+        same for a companion allocation outside the file, and is additive.
         """
         argv = [str(a) for a in cmd or ()]
         if not argv:
@@ -10527,11 +10471,8 @@ class LlamaCppBackend:
         # vouch for cannot be told from a host that has no gpu at all
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
-        # A tied model's duplicated output matrix is the one weight the mmap premise
-        # above does not cover: it is built from token_embd rather than read from the
-        # file, so it is an anonymous allocation that cannot page back to disk. Left
-        # out, a host whose RAM is within one embedding matrix of the requirement is
-        # neither warned nor given the pageable override, and is OOM-killed instead.
+        # The one weight the mmap premise above does not cover: built from token_embd,
+        # not read from the file, so it cannot page back to disk.
         model_bytes += self._tied_output_bytes(model_path)
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
@@ -19095,14 +19036,11 @@ class LlamaCppBackend:
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
-                # Bound before the fit try because a probe failure falls through to
-                # the launch preflight. The drafter value is the GPU drafter's own
-                # embedding floor, distinct from a whole CPU-offloaded drafter.
+                # Bound before the fit try: a probe failure falls through to preflight.
                 _host_pinned = 0
                 _draft_host_pinned = 0
-                # Physical host-only floors are not the same ledger as the VRAM
-                # discounts above. A mixed shared+discrete placement may receive no
-                # discount while its embeddings still cannot move out of system RAM.
+                # Physical residency, not the discount above: a placement can earn no
+                # discount while its embeddings still cannot leave RAM.
                 _host_pinned_floor = 0
                 _draft_host_pinned_floor = 0
                 _draft_host_pinned_candidate = 0
@@ -19168,19 +19106,9 @@ class LlamaCppBackend:
                     if _user_mmproj_offload is False and launch_mmproj_path:
                         # Still in system RAM, which the APU shortfall guard prices.
                         _mmproj_pinned_bytes = self._mmproj_vram_bytes(launch_mmproj_path)
-                    # A tied-embedding model allocates one more copy of the
-                    # embedding matrix than its file contains, because llama.cpp
-                    # re-creates output.weight from token_embd as
-                    # TENSOR_DUPLICATED. Sizing from the file alone therefore
-                    # UNDER-counts, and under-counting weights is the dangerous
-                    # direction here: it leaves the search believing there is
-                    # VRAM that the load will consume, so it picks a context the
-                    # card cannot hold. 264 MiB on gemma-4-E2B UD-Q4_K_XL and
-                    # 924 MiB on gemma-4-31B UD-Q4_K_XL, against files of 3037
-                    # and 17951 MiB.
-                    # Bind the tied-output correction once, then discount embeddings
-                    # llama.cpp keeps on the host. Shared-memory devices still spend
-                    # the same pool, so they receive no discount.
+                    # Charge the tied duplicate, then discount the host-pinned
+                    # embeddings. Under-counting is the dangerous direction: the search
+                    # promises VRAM the load takes. Shared memory gets no discount.
                     weights_size = gguf_size + self._tied_output_bytes(model_path)
                     from utils.hardware import is_apple_silicon
 
@@ -19216,11 +19144,8 @@ class LlamaCppBackend:
                         env = os.environ,
                         shared_memory = False,
                     )
-                    # Discount eligibility and physical host residency answer
-                    # opposite questions under an arbitrary tensor override.
-                    # Unknown non-CPU mappings must charge both pools: they may
-                    # move embeddings into VRAM, but are not proof that every
-                    # normally host-pinned embedding left RAM.
+                    # Opposite questions under a tensor override: an unknown non-CPU
+                    # mapping may move embeddings to VRAM, but proves none left RAM.
                     _host_pinned_floor = (
                         self._host_pinned_floor_bytes(
                             model_path,
@@ -19285,8 +19210,7 @@ class LlamaCppBackend:
                                 _present,
                             )
                     # Keep the pre-filter inventory: Vulkan Auto drops integrated
-                    # siblings when a dGPU exists, but a trailing --device can still
-                    # put the child back on one of those shared heaps.
+                    # siblings, but a trailing --device can put the child back on one.
                     _visible_gpu_mem = list(_gpu_mem)
                     if is_vulkan_backend and not gpu_ids and gpu_memory_mode != "manual":
                         _gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)
@@ -19352,12 +19276,9 @@ class LlamaCppBackend:
                             _candidate_ids & (_shared_gpu_ids | _unclassified_gpu_ids)
                         ):
                             return False
-                        # Advanced Arguments are appended after the generated
-                        # Vulkan pin and llama.cpp is last-wins. Vulkan names map
-                        # exactly to probe ordinals, so a restatement is safe; a
-                        # different or unreadable pin may put the load back on a
-                        # shared device. CUDA/ROCm names cannot be mapped through
-                        # the visibility masks here, so remain conservative.
+                        # Advanced Arguments land after the generated pin, last-wins.
+                        # Vulkan names map exactly to probe ordinals, so a restatement is
+                        # safe; CUDA/ROCm names cannot be mapped through the masks here.
                         _pass_through_device = _extra_args_main_device(extra_args)
                         if _pass_through_device is not None:
                             _named_devices = {
@@ -19655,10 +19576,9 @@ class LlamaCppBackend:
                     _separate_draft_launches = bool(_mtp_draft_for_budget)
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
-                    # Classify the placement the child receives. An explicit gpu_ids
-                    # selection strips main-device flags and their env twins before launch,
-                    # so a raw main ``--device none`` cannot make a GPU drafter vanish
-                    # from this reserve. Draft-specific placement remains effective.
+                    # The placement the child receives: gpu_ids strips main-device
+                    # flags and their env twins before launch, so a raw ``--device none``
+                    # cannot delete a GPU drafter here. Draft-specific pins still count.
                     _draft_placement_extras = extra_args
                     _draft_placement_env: Mapping[str, str] = os.environ
                     if gpu_ids is not None:
@@ -20086,11 +20006,10 @@ class LlamaCppBackend:
                     def _ranked_candidate_subsets(ranked, min_count: int = 1):
                         """Mixed-ranking prefixes plus discount-eligible alternatives.
 
-                        A shared GPU can rank first, making the ordinary prefixes the
-                        shared singleton and then the mixed pair. The discrete sibling
-                        may fit alone only after its host-pinned discount is applied. An
-                        unclassified device keeps its VRAM in the ordinary prefixes but
-                        cannot enter this optimistic alternative.
+                        A shared GPU can rank first, leaving the ordinary prefixes as
+                        the shared singleton then the mixed pair, while the discrete
+                        sibling fits alone only once discounted. An unclassified device
+                        keeps its VRAM in the prefixes but stays out of this arm.
                         """
                         discountable = [
                             gpu
@@ -20142,8 +20061,7 @@ class LlamaCppBackend:
                         # and gives the drafter up only if the pin was not enough.
                         mmproj_size = 0
                         model_size = _model_weight_vram_bytes
-                        # The pin moves only the projector; the model term still
-                        # includes the tied duplicate and any valid host discount.
+                        # The pin moves only the projector, not either correction.
                         # What the startup-recovery pin reports, so a CPU-resident
                         # projector is announced whether it was predicted or salvaged;
                         # otherwise image encoding just gets mysteriously slower. After
@@ -20548,9 +20466,8 @@ class LlamaCppBackend:
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False
-                            # The final argv omits the separate drafter, so neither
-                            # its GPU placement's host-pinned floor nor a prospective
-                            # CPU replay may retain bytes for it.
+                            # No separate drafter in the final argv, so neither its
+                            # host-pinned floor nor a CPU replay may keep bytes for it.
                             _draft_host_pinned = 0
                             _draft_host_pinned_floor = 0
                             _draft_host_pinned_candidate = 0
@@ -20969,10 +20886,9 @@ class LlamaCppBackend:
                             _auto_best = None
                             for subset in _auto_subsets:
                                 n_gpus = len(subset)
-                                # The helper groups by cardinality. Once any subset of
-                                # this size fits, finish comparing its peers before
-                                # widening: a shared singleton may fit only a smaller
-                                # context than its discounted discrete sibling.
+                                # Grouped by cardinality: compare a fitting size's peers
+                                # before widening, since a shared singleton may hold less
+                                # than a discounted sibling.
                                 if _auto_best is not None and n_gpus > _auto_best[2]:
                                     break
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
@@ -21330,10 +21246,8 @@ class LlamaCppBackend:
                                 nothing_fits = _apple_nothing_fits,
                             )
 
-                    # Auto starts conservatively when any visible device has shared or
-                    # unclassified memory. Once placement selects a discrete-only subset,
-                    # adopt the host-pinned discount that the candidate-specific searches
-                    # above already used.
+                    # Auto stays conservative while any visible device is shared or
+                    # unclassified; a discrete-only selection adopts the discount.
                     _apply_candidate_discounts(gpu_indices)
 
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
@@ -21348,10 +21262,8 @@ class LlamaCppBackend:
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
-                        # Once a candidate-specific discount is applied, keep the
-                        # slot search on that exact placement. Searching the full
-                        # mixed pool with the discounted footprint could switch to
-                        # shared or unclassified memory without restoring the bytes.
+                        # Pin the slot search to that placement: the mixed pool with a
+                        # discounted footprint could move to shared memory unrestored.
                         _slot_gpus = gpus
                         if gpu_indices and (
                             _candidate_target_discount_applied
@@ -21522,9 +21434,8 @@ class LlamaCppBackend:
                                 # selection inversion #9492 removed, pointing the other way.
                                 max_available_ctx = _ceiling[0]
 
-                    # Slot reduction can make the first concrete selection. Adopt
-                    # its exact target/drafter/projector accounting before load-mode,
-                    # spill, and host-RAM checks consume the final placement.
+                    # Slot reduction can be the first concrete selection, so adopt its
+                    # accounting before load-mode, spill and host-RAM read it.
                     _apply_candidate_discounts(gpu_indices)
 
                     # Pass the final slot and micro-batch values instead of the defaults
@@ -21692,9 +21603,8 @@ class LlamaCppBackend:
                         n_ubatch = _effective_ubatch,
                         flash_attn = planned_flash_attn,
                     )
-                    # A Vulkan CPU replay moves a GPU drafter to the host too. Price
-                    # the whole drafter on that prospective placement, not only the
-                    # embedding floor discounted from its current GPU budget.
+                    # A Vulkan CPU replay moves a GPU drafter to the host too, so price
+                    # the whole drafter, not just the floor off its GPU budget.
                     _replay_draft_fit_bytes = self._cpu_resident_draft_bytes(
                         effective_ctx,
                         drafter_path = (
@@ -21803,15 +21713,10 @@ class LlamaCppBackend:
                     _fit_env_mmproj_on_host = (
                         _resolved_mmproj_offload(_fit_extras, _fit_env) is False
                     )
-                    # Embeddings llama.cpp keeps on the host, as far as the weight terms
-                    # have NOT already taken them off the GPU. `_host_pinned` is the VRAM
-                    # DISCOUNT ledger and is zero on a shared or unclassified device,
-                    # while the CPU pin on the input layer is unconditional, so the
-                    # discount alone would leave those bytes GPU-eligible here and answer
-                    # `none` for a load whose embeddings host RAM then has to hold whole
-                    # and anonymously -- an OOM where mmap would have paged. Moved from
-                    # the weight terms to the host-only one below rather than added, so
-                    # the footprint total is unchanged and only its split moves.
+                    # `_host_pinned` is the discount and is zero on a shared or
+                    # unclassified device, while the CPU pin on the input layer is not,
+                    # so it alone would answer `none` for a load whose embeddings RAM
+                    # then holds anonymously. MOVED below, not added: same total.
                     _fit_extra_host_pinned = max(0, _host_pinned_floor - _host_pinned)
                     _fit_extra_draft_pinned = max(0, _draft_host_pinned_floor - _draft_host_pinned)
                     _fit_model_size = model_size
@@ -21859,9 +21764,8 @@ class LlamaCppBackend:
                             or _cpu_draft_fit_bytes is None
                             or _draft_split_across_host
                         ),
-                        # Host-only, not pooled: -ngld 0 puts the drafter in RAM, which
-                        # free VRAM cannot pay for, and so do the host-pinned embeddings
-                        # the two floors above just moved out of the weight terms.
+                        # Host-only, not pooled: free VRAM cannot pay for a drafter
+                        # -ngld 0 puts in RAM, nor for the floors moved out above.
                         host_only_bytes = (
                             (_cpu_draft_fit_bytes or 0)
                             + _host_pinned
@@ -21947,13 +21851,10 @@ class LlamaCppBackend:
                 ):
                     gpu_indices = sorted(idx for idx, _free in _detected_gpus)
 
-                    # Auto Vulkan can leave --fit on over a mixed visible pool,
-                    # then narrow the actual child to the detected dGPU set only
-                    # here. The spill snapshot was taken before that final pin, so
-                    # make its candidate-specific discounts and reachability
-                    # describe the argv that will launch rather than the wider
-                    # discovery pool. Other backends with no final pin must retain
-                    # their shared-memory abstention.
+                    # Auto Vulkan can leave --fit on over a mixed pool and narrow the
+                    # child to the dGPU set only here, after the spill snapshot, so
+                    # re-point it at the argv that launches. Backends with no final pin
+                    # keep their shared-memory abstention.
                     if _spill_inputs is not None:
                         _apply_candidate_discounts(gpu_indices)
                         _mtp_reserve_bytes = (
@@ -22544,9 +22445,8 @@ class LlamaCppBackend:
                     # launched None would reload a healthy server on every repeat Apply.
                     _pv_suppressed_draft_path = launch_mtp_draft_path
                     launch_mtp_draft_path = None
-                    # Fit ran before this platform guard, but the final argv no longer
-                    # loads a drafter. Clear every companion ledger that host preflight,
-                    # CPU replay, or later GPU retry could otherwise carry forward.
+                    # Fit ran before this guard and the final argv loads no drafter, so
+                    # clear every ledger the preflight, replay or retry would carry on.
                     _mtp_will_engage = False
                     _draft_host_pinned = 0
                     _draft_host_pinned_floor = 0
@@ -23645,9 +23545,8 @@ class LlamaCppBackend:
                     hides a message, and hiding a message must not withdraw the rewrite
                     that makes the load possible.
                     """
-                    # None is the engaged-but-unsized CPU-drafter state. It cannot
-                    # prove an unmapped load fits RAM, so keep the demand-paging
-                    # safety valve even though no byte-precise warning is possible.
+                    # None is the engaged-but-unsized CPU drafter: it cannot prove an
+                    # unmapped load fits RAM, so keep the demand-paging valve.
                     if _cpu_draft_fit_bytes is None:
                         return True
                     if _apu_ram_oversized or _offload_msg:
@@ -24460,16 +24359,11 @@ class LlamaCppBackend:
                                 self._record_load_warning(_retry_apu_msg)
                         # host guard credited the whole pool; the respawn reaches only _remaining
                         _retry_rows = [row for row in _detected_gpus if row[0] in set(_remaining)]
-                        # The crashed discrete placement may have spent target,
-                        # drafter, or CPU-projector discounts on a larger Auto
-                        # context. Those bytes return to the same pool when the retry
-                        # lands on an APU, and _apply_candidate_discounts above has
-                        # restored each term exactly once. Re-run the subset fit with
-                        # that raw footprint. This mirrors the original Auto policy: keep a
-                        # fully-offloaded fitted context when one exists; otherwise
-                        # fall back to the useful offload context and let llama.cpp's
-                        # fitter place the load. A hand-set context remains the
-                        # caller's contract and is never silently reduced here.
+                        # The crashed placement may have spent discounts on a larger
+                        # Auto context; _apply_candidate_discounts restored each exactly
+                        # once, so re-fit on that raw footprint. Original Auto policy:
+                        # a fully-offloaded fitted context when one exists, else the
+                        # useful offload context. A hand-set context is never reduced.
                         if (
                             _retry_wants_unified
                             and not explicit_ctx
@@ -24525,10 +24419,8 @@ class LlamaCppBackend:
                                     cmd[_ctx_pos + 1] = str(_retry_ctx)
                                     effective_ctx = _retry_ctx
                                     max_available_ctx = min(max_available_ctx, _retry_ctx)
-                                    # The initial placement published these before
-                                    # the first spawn. Keep status, prompt fitting,
-                                    # and default max_tokens bound to the command the
-                                    # retry now launches rather than the crashed one.
+                                    # Published before the first spawn: rebind them to
+                                    # the retry's command, not the crashed one.
                                     self._effective_context_length = _retry_ctx
                                     self._max_context_length = _retry_ctx
                                     logger.info(
@@ -24539,9 +24431,8 @@ class LlamaCppBackend:
                                         _retry_ctx,
                                     )
                             if not _retry_fit_proved and fully_gpu_offloaded:
-                                # The first --fit is Unsloth's generated pair; any
-                                # pass-through pair is appended later and keeps its
-                                # last-wins ownership.
+                                # The first --fit is Unsloth's; a pass-through pair is
+                                # appended later and keeps last-wins ownership.
                                 _fit_pos = cmd.index("--fit") if "--fit" in cmd else -1
                                 if _fit_pos >= 0 and _fit_pos + 1 < len(cmd):
                                     cmd[_fit_pos + 1] = "on"

@@ -32,10 +32,8 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 
-# ---------------------------------------------------------------------------
-# A minimal but real GGUF, so the probe is exercised against the byte layout the
-# product reads rather than a mock that could agree with a wrong implementation.
-# ---------------------------------------------------------------------------
+# A minimal but real GGUF, so the probe meets the byte layout the product reads
+# rather than a mock that could agree with a wrong implementation.
 
 _GGUF_MAGIC = 0x46554747
 _TYPE_F32 = 0
@@ -79,8 +77,7 @@ def _write_gguf(
         data = value.encode()
         return struct.pack("<Q", len(data)) + data
 
-    # general.alignment, so the reader has a well-defined alignment and the data
-    # section starts where the tensor offsets say it does.
+    # general.alignment, so the data section starts where the offsets say.
     kv = _string("general.alignment") + struct.pack("<II", 4, 32)
     n_kv = 1
     if architecture is not None:
@@ -135,8 +132,7 @@ def test_a_tied_model_is_charged_one_more_embedding_matrix(backend, tied_gguf):
 
 
 def test_a_model_shipping_its_own_output_is_charged_nothing(backend, untied_gguf):
-    # The file already contains both tensors, so the file size covers the load
-    # and adding anything would over-count. This is the Qwen3.6 / Qwen3.8 case.
+    # Both tensors are in the file already, so adding anything over-counts.
     assert backend._tied_output_bytes(str(untied_gguf)) == 0
 
 
@@ -662,8 +658,7 @@ def test_an_hsa_override_cannot_spoof_an_apu_into_a_discrete_discount(backend, m
 
     class _Props:
         gcnArchName = "gfx1030"
-        # Older ROCm wheels omit/zero this even for the gfx1035 laptop APU that is
-        # commonly presented as gfx1030 through HSA_OVERRIDE_GFX_VERSION.
+        # Older ROCm wheels omit/zero this even for a gfx1035 laptop APU.
         is_integrated = 0
 
     class _Cuda:
@@ -714,8 +709,7 @@ def test_a_user_override_to_a_gpu_buffer_cancels_the_discount(backend):
     assert backend._override_moves_host_pinned(["-ot", "token_embd=CUDA0"], env = {}) is True
     assert backend._override_moves_host_pinned(["-ot", "embd=CUDA0"], env = {}) is True
     assert backend._override_moves_host_pinned(["-ot", r"per_.*47$=CUDA0"], env = {}) is True
-    # The family is open-ended, so even apparently unrelated device mappings
-    # fail closed instead of relying on incomplete regex representatives.
+    # The family is open-ended, so unrelated device mappings fail closed too.
     assert backend._override_moves_host_pinned(["-ot", r"^blk\.0=CUDA0"], env = {}) is True
     assert backend._override_moves_host_pinned(["-ot", r".*=CUDA0"], env = {}) is True
     assert (
@@ -827,10 +821,8 @@ def test_the_two_corrections_only_cancel_as_a_set(backend, tied_gguf_with_ple):
     truth = gguf - (embd + ple) + embd
     assert truth == gguf - ple
 
-    # Unbound, passing the class as self: the seam only reaches static helpers,
-    # and going through it rather than re-deriving the formula here is the point
-    # -- a test that recomputed the arithmetic would agree with a wrong shipped
-    # implementation.
+    # Unbound, passing the class as self: going through the seam is the point, since
+    # a test that recomputed the arithmetic would agree with a wrong implementation.
     shipped = backend._separate_drafter_weight_vram_bytes(
         backend, path, host_pinned_bytes = backend._host_pinned_weight_bytes(path)
     )
