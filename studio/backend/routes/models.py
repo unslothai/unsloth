@@ -3746,8 +3746,8 @@ def _resolve_mtp_drafter(
     loader's own ``_pick_mtp`` for an HF snapshot, and ``detect_mtp_file`` for a
     local folder, which is what ``model_config`` calls when it builds the launch.
     A bespoke scan here is how the estimate ends up pricing a different file from
-    the one llama-server opens: ``_pick_mtp`` is root-level and prefix-matched, so
-    it cannot be fooled by a directory that happens to be named ``mtp``, it finds
+    the one llama-server opens: ``_pick_mtp`` is prefix-matched, so it cannot be
+    fooled by a directory that happens to be named ``mtp``, it finds
     the snapshot-root companion when the weights sit in a quant subdirectory, it
     sorts on relative strings rather than ``Path`` objects (whose ordering is
     case-folded on Windows and not on POSIX, so two hosts really can disagree),
@@ -3756,17 +3756,24 @@ def _resolve_mtp_drafter(
     """
     try:
         from core.inference.llama_cpp import (
+            LlamaCppBackend,
             _companion_snapshot_sibling,
             _pick_mtp,
+            _pick_mtp_root_only,
             _snapshot_dir_of,
         )
 
         if _snapshot_dir_of(main_gguf_path) is not None:
-            # An HF snapshot. ``_download_mtp`` resolves through ``_pick_mtp``,
-            # which is root-level only, so the ``MTP/`` precision copies are not
-            # auto-fetched and must not be priced: charging one would report a
-            # reserve for a drafter the load will not open.
-            drafter = _companion_snapshot_sibling(main_gguf_path, _pick_mtp)
+            # An HF snapshot. ``_download_mtp`` takes the ``MTP/`` fallback only
+            # for qwen4exp with no head of its own, so the same gate applies here:
+            # pricing a nested copy for any other model reports a reserve for a
+            # drafter the load will not open.
+            pick = (
+                _pick_mtp
+                if LlamaCppBackend._gguf_path_wants_nested_mtp(main_gguf_path)
+                else _pick_mtp_root_only
+            )
+            drafter = _companion_snapshot_sibling(main_gguf_path, pick)
         else:
             # A local folder, where the load path (model_config) pairs the drafter
             # to the weight by name so a multi-model folder cannot attach a foreign
@@ -3781,8 +3788,6 @@ def _resolve_mtp_drafter(
         # the load planner sizes the drafter with _get_gguf_size_bytes, and a
         # split companion reserves every shard. Billing shard 1 alone reports a
         # fit for a launch that allocates several times as much.
-        from core.inference.llama_cpp import LlamaCppBackend
-
         return drafter, LlamaCppBackend._get_gguf_size_bytes(drafter)
     except Exception:
         return None, 0

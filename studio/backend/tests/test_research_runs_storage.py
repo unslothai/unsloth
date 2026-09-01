@@ -1780,14 +1780,14 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(
     planning = research_db.claim_next(supervisor.worker_id)
     asyncio.run(supervisor._process(planning))
     planned = research_db.get_run("run-1")
-    # Planning approves itself: arming research in the composer is the approval, so there is
-    # no second confirmation between the plan and the evidence gathering.
-    assert planned["status"] == "queued"
+    assert planned["status"] == "awaiting_approval"
     assert planned["planRevision"] == 1
     assert planned["assistantMessageId"] is None
+    assert research_db.claim_next(supervisor.worker_id) is None
 
+    assert research_db.approve("run-1", planned["planRevision"], planned["planHash"]) == "queued"
     running = research_db.claim_next(supervisor.worker_id)
-    assert running is not None  # planning released its lease; the queued run starts immediately
+    assert running is not None
     asyncio.run(supervisor._process(running))
 
     completed = research_db.get_run("run-1")

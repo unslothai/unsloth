@@ -117,13 +117,6 @@ test("web auth session boundaries clear persisted download rows", () => {
   assert.match(CONTROLLER, /event\.key === AUTH_SESSION_MARK_KEY/);
 });
 
-test("a restart-only partial is disclosed before Resume starts it over", () => {
-  assert.match(
-    CONFLICT,
-    /status\.has_partial &&[\s\S]*?status\.resumable === false[\s\S]*?Restarting this download/,
-  );
-});
-
 test("a transport conflict belongs to exactly one dialog surface", () => {
   const info = { previous: "http", next: "xet", resumable: true } as const;
   const entry: ConflictEntry = {

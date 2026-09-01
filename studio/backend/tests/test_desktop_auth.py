@@ -1038,6 +1038,109 @@ def test_update_password_clears_desktop_secret():
     assert storage.validate_desktop_secret(raw) is None
 
 
+def test_update_password_marks_credential_undelivered_in_database():
+    seed_user(must_change_password = True)
+
+    changed = storage.update_password(
+        storage.DEFAULT_ADMIN_USERNAME,
+        "generated-public-password",
+        require_must_change = True,
+        mark_credential_undelivered = True,
+    )
+
+    assert changed is not None
+    assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is True
+    conn = storage.get_connection()
+    try:
+        pending = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (storage._CREDENTIAL_UNDELIVERED_KEY,),
+        ).fetchone()
+        current = conn.execute(
+            "SELECT password_hash FROM auth_user WHERE username = ?",
+            (storage.DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert pending is not None and current is not None
+    assert pending["value"] == current["password_hash"]
+
+
+def test_ordinary_password_change_clears_pending_delivery_state():
+    seed_user(must_change_password = True)
+    assert storage.update_password(
+        storage.DEFAULT_ADMIN_USERNAME,
+        "generated-public-password",
+        require_must_change = True,
+        mark_credential_undelivered = True,
+    )
+    assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is True
+
+    assert storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "operator-chosen-password")
+
+    assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is False
+
+
+def test_pending_delivery_write_failure_rolls_back_password_rotation():
+    seed_user(must_change_password = True)
+    before = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    assert before is not None
+    conn = storage.get_connection()
+    try:
+        conn.execute(
+            f"""
+            CREATE TRIGGER fail_pending_delivery
+            BEFORE INSERT ON app_secrets
+            WHEN NEW.key = '{storage._CREDENTIAL_UNDELIVERED_KEY}'
+            BEGIN
+                SELECT RAISE(ABORT, 'pending delivery unavailable');
+            END
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(sqlite3.IntegrityError, match = "pending delivery unavailable"):
+        storage.update_password(
+            storage.DEFAULT_ADMIN_USERNAME,
+            "must-not-land",
+            require_must_change = True,
+            mark_credential_undelivered = True,
+        )
+
+    after = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    assert after is not None
+    assert after == before
+    assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is False
+
+
+def test_update_password_revokes_desktop_secret_in_the_same_transaction(monkeypatch):
+    # The desktop secret authenticates as this user WITHOUT the password, so it has
+    # to die in the SAME transaction as the rotation. It used to be revoked after
+    # the commit, on a second connection: anything that failed in between (a locked
+    # or busy database, or the bootstrap-file cleanup raising first, as simulated
+    # here) left a pre-change desktop credential live against the new password.
+    seed_user()
+    raw = storage.create_desktop_secret()
+    assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
+
+    def _boom():
+        raise OSError("auth dir is read-only")
+
+    monkeypatch.setattr(storage, "clear_bootstrap_password", _boom)
+
+    with pytest.raises(OSError):
+        storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
+
+    # The rotation committed, and the desktop secret went with it.
+    assert storage.validate_desktop_secret(raw) is None
+    salt, pwd_hash, _jwt, _must_change = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    from auth import hashing
+
+    assert hashing.verify_password("new-admin-password", salt, pwd_hash) is True
+
+
 def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
     seed_user()
     raw = storage.create_desktop_secret()
@@ -1113,3 +1216,74 @@ def test_the_router_stub_covers_every_router_main_imports():
         f"main.py imports from routes.{{{','.join(unstubbed)}}}, which this file never "
         f"registers in sys.modules, so the real package would be imported instead"
     )
+
+
+def test_update_password_discards_the_rotation_if_desktop_revocation_raises(monkeypatch):
+    """A failing desktop revoke must roll the password back, not commit half of it.
+
+    Moving clear_desktop_secret INSIDE the transaction changed this case. It used
+    to run post-commit on a second connection, so an OperationalError from a busy
+    database left the password CHANGED and a pre-change desktop credential LIVE --
+    a credential that authenticates as this user without the password, still valid
+    against the new one. Now the raise unwinds the whole transaction: old password,
+    old desktop secret, consistent either way. Fail closed beats half-applied.
+    """
+    seed_user()
+    raw = storage.create_desktop_secret()
+    assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
+    salt_before, hash_before, _jwt_before, _mc = storage.get_user_and_secret(
+        storage.DEFAULT_ADMIN_USERNAME
+    )
+
+    def _boom(conn = None):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(storage, "clear_desktop_secret", _boom)
+
+    with pytest.raises(sqlite3.OperationalError):
+        storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "should-not-land")
+
+    salt_after, hash_after, _jwt_after, _mc2 = storage.get_user_and_secret(
+        storage.DEFAULT_ADMIN_USERNAME
+    )
+    assert (salt_after, hash_after) == (
+        salt_before,
+        hash_before,
+    ), "the password was committed even though the transaction could not finish"
+    from auth import hashing
+
+    assert hashing.verify_password("should-not-land", salt_after, hash_after) is False
+    # The desktop secret is still the pre-change one, matching the un-rotated password.
+    assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
+
+
+def test_update_password_still_applies_when_desktop_secret_is_preserved(monkeypatch):
+    """preserve_desktop_secret must skip the revoke entirely, not merely tolerate it.
+
+    The desktop app authenticates WITH that secret and then sets its first
+    password; revoking it would break the auto-auth for a change the desktop
+    itself made. If the in-transaction move ever stopped honouring the flag, the
+    revoke would run and this would fail.
+    """
+    seed_user()
+    raw = storage.create_desktop_secret()
+
+    called = []
+    real = storage.clear_desktop_secret
+    monkeypatch.setattr(
+        storage,
+        "clear_desktop_secret",
+        lambda conn = None: called.append(conn) or real(conn),
+    )
+    _salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    assert (
+        storage.update_password(
+            storage.DEFAULT_ADMIN_USERNAME,
+            "desktop-chosen-password",
+            expect_password_hash = pwd_hash,
+            preserve_desktop_secret = True,
+        )
+        is not None
+    )
+    assert called == [], "clear_desktop_secret ran despite preserve_desktop_secret"
+    assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
