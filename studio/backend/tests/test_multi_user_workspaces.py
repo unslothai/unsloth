@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import secrets
 import re
 import sqlite3
@@ -1117,3 +1118,70 @@ def test_a_training_start_request_id_cannot_replay_another_accounts_outcome():
         assert backend.peek_start_request("same-id").job_id == "job-alice"
     finally:
         reset_workspace_subject(token)
+
+
+def _auth_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sandboxes"))
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth" / "auth.db")
+    monkeypatch.setattr(
+        auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / "auth" / ".bootstrap_password"
+    )
+    auth_storage.create_initial_user(
+        "unsloth", "owner-password", secrets.token_urlsafe(64), is_admin = True
+    )
+
+
+def test_a_recreated_username_gets_a_schema_not_a_missing_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _auth_db(tmp_path, monkeypatch)
+    auth_storage.create_managed_user("casey")
+    token = _bind("casey")
+    try:
+        studio_db.upsert_chat_thread(_thread("first casey"))
+        assert studio_db.list_chat_threads()
+    finally:
+        reset_workspace_subject(token)
+
+    auth_storage.delete_managed_user("casey")
+    auth_storage.create_managed_user("casey")
+    token = _bind("casey")
+    try:
+        # The path is the same, so a cached "schema ready" would raise no such table.
+        assert studio_db.list_chat_threads() == []
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_username_whose_files_could_not_be_released_cannot_be_recreated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _auth_db(tmp_path, monkeypatch)
+    auth_storage.create_managed_user("casey")
+    for root in auth_storage._subject_owned_roots("casey"):
+        root.mkdir(parents = True, exist_ok = True)
+        (root / "private.txt").write_text("casey", encoding = "utf-8")
+
+    real_rename = Path.rename
+    monkeypatch.setattr(
+        Path, "rename", lambda self, target: (_ for _ in ()).throw(OSError("locked"))
+    )
+    auth_storage.delete_managed_user("casey")
+    assert auth_storage.username_is_retired("casey")
+    with pytest.raises(ValueError, match = "could not be released"):
+        auth_storage.create_managed_user("casey")
+
+    # Once the handle goes, the retry retires the files and the name frees up.
+    monkeypatch.setattr(Path, "rename", real_rename)
+    assert not auth_storage.username_is_retired("casey")
+    auth_storage.create_managed_user("casey")
+    for root in auth_storage._subject_owned_roots("casey"):
+        assert not (root / "private.txt").exists()
+
+
+def test_streamed_tool_workers_keep_the_callers_workspace():
+    from core.inference import tool_stream_exec
+    src = inspect.getsource(tool_stream_exec.stream_tool_execution)
+    assert "run_in_workspace(bound_subject" in src
