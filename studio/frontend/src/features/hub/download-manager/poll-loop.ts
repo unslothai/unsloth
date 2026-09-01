@@ -69,13 +69,16 @@ import {
   type Terminal,
 } from "./download-manager-types";
 import {
+  RESTART_NOTICE_TITLE,
   XET_NOTICE_TITLE,
   composeNoticeDescription,
+  composeRestartNoticeDescription,
   shouldShowXetNotice,
 } from "./xet-progress-notice";
 import { reserveXetNoticeFromServer } from "@/features/settings/api/xet-notice";
 import {
   currentRoute,
+  currentStartToastSelectionEpoch,
   dismissStartToast,
   liveCallerToast,
   showCallerToast,
@@ -104,6 +107,26 @@ import {
 } from "./runtime-registry";
 import { resolveTransportMode } from "./transport-preference";
 
+function showRestartStartToast(
+  key: string,
+  xet: boolean,
+  caller: DownloadRequest["callerToast"],
+  originRoute: string,
+  originSelectionEpoch: number,
+): void {
+  showStartToast(
+    key,
+    {
+      title: RESTART_NOTICE_TITLE,
+      description: composeRestartNoticeDescription({
+        xet,
+        callerToast: caller,
+      }),
+    },
+    originRoute,
+    originSelectionEpoch,
+  );
+}
 function notify(
   job: ManagedDownload,
   event: keyof JobListeners,
@@ -585,10 +608,14 @@ export async function startJob(
     transport?: ResolvedTransport;
     cancelTransport?: ResolvedTransport | null;
     originRoute?: string;
+    originSelectionEpoch?: number;
+    restartDisclosure?: boolean;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
   const startRoute = opts.originRoute ?? currentRoute();
+  const startSelectionEpoch =
+    opts.originSelectionEpoch ?? currentStartToastSelectionEpoch();
   // Peer guard stops a FRESH start from double-starting a variant already downloading. Skipped when ADOPTING:
   // the restored own entry would look like a peer and freeze the bar, and adoptJob already guards double-polling.
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
@@ -740,9 +767,14 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
-  // One start, one toast: a cancel can land mid-flight, and neither message is true of a start that is already stopping.
+    // One accepted start, one job-owned toast. A preflight restart disclosure
+    // waits until here so rejected, attached and already-stopping starts cannot
+    // leave a claim behind for the next model selection.
     const stopping = rt.cancelRequested;
-  // Checked BEFORE reserving: a reservation is one of three for the life of the install, and spending one on a toast discarded on arrival burns all three unseen.
+    const liveOwnStart =
+      result.attached !== true && result.state === "running" && !stopping;
+    const discloseRestart = opts.restartDisclosure === true && liveOwnStart;
+    // Checked BEFORE reserving: a reservation is one of three for the life of the install, and spending one on a toast discarded on arrival burns all three unseen.
     const onOriginRoute = currentRoute() === startRoute;
     if (
       onOriginRoute &&
@@ -754,10 +786,20 @@ export async function startJob(
       })
     ) {
       void reserveXetNoticeFromServer().then(({ granted }) => {
-  // This round trip can outlive the transfer: finalize() dismisses by id before it resolves, so raising here would leave a finished or cancelled job claiming to run.
+        // This round trip can outlive the transfer: finalize() dismisses by id before it resolves, so raising here would leave a finished or cancelled job claiming to run.
         if (!isCurrent(key, epoch) || rt.cancelRequested) return;
-  // The caller's line can go stale while the notice stays true: chat moved thread, but the 0% still needs explaining.
+        // The caller's line can go stale while the transport/restart facts stay true.
         const caller = liveCallerToast(req.callerToast);
+        if (discloseRestart) {
+          showRestartStartToast(
+            key,
+            granted,
+            caller,
+            startRoute,
+            startSelectionEpoch,
+          );
+          return;
+        }
         if (granted) {
           showStartToast(
             key,
@@ -766,13 +808,25 @@ export async function startJob(
               description: composeNoticeDescription(caller),
             },
             startRoute,
+            startSelectionEpoch,
           );
           return;
         }
-        showCallerToast(key, caller, startRoute);
+        showCallerToast(key, caller, startRoute, startSelectionEpoch);
       });
     } else if (!stopping && onOriginRoute) {
-      showCallerToast(key, liveCallerToast(req.callerToast), startRoute);
+      const caller = liveCallerToast(req.callerToast);
+      if (discloseRestart) {
+        showRestartStartToast(
+          key,
+          false,
+          caller,
+          startRoute,
+          startSelectionEpoch,
+        );
+      } else {
+        showCallerToast(key, caller, startRoute, startSelectionEpoch);
+      }
     }
     // An adopted job may already have fallen back from Xet to HTTP, which keeps its original cancel marker and so its stop control.
     if (isResolvedTransport(result.cancel_transport)) {

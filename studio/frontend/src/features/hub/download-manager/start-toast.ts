@@ -25,20 +25,33 @@ export function startToastId(jobKey: string): string {
 // live, because a start can itself navigate: that toast belongs where it landed.
 const liveStartToasts = new Map<string, string>();
 
+let modelSelectionEpoch = 0;
+
 /** The route to hold a start against. Captured when the start begins, since the
  * preflight and the reservation are round trips a raise can outlive. */
 export function currentRoute(): string {
   return typeof window === "undefined" ? "" : window.location.pathname;
 }
 
+/** Captured with the route so an async preflight cannot raise after another pick. */
+export function currentStartToastSelectionEpoch(): number {
+  return modelSelectionEpoch;
+}
+
 export function showStartToast(
   jobKey: string,
   message: { title: string; description: string },
   originRoute: string = currentRoute(),
+  originSelectionEpoch: number = currentStartToastSelectionEpoch(),
 ): void {
-  // Raised late, surface gone: the route sweep has already run, so this would sit
-  // on the new page for its full 8s.
-  if (originRoute !== currentRoute()) return;
+  // Raised late, surface or model gone: the corresponding sweep already ran, so
+  // this would otherwise describe the old selection for its full 8s.
+  if (
+    originRoute !== currentRoute() ||
+    originSelectionEpoch !== currentStartToastSelectionEpoch()
+  ) {
+    return;
+  }
   liveStartToasts.set(startToastId(jobKey), originRoute);
   toast.info(message.title, {
     id: startToastId(jobKey),
@@ -63,9 +76,10 @@ export function showCallerToast(
   jobKey: string,
   message: CallerToast | undefined,
   originRoute?: string,
+  originSelectionEpoch?: number,
 ): void {
   if (!message || message.noticeOnly) return;
-  showStartToast(jobKey, message, originRoute);
+  showStartToast(jobKey, message, originRoute, originSelectionEpoch);
 }
 
 /** Drop the start toast once the transfer is over. Safe for a job that never raised
@@ -84,6 +98,16 @@ export function dismissStartToasts(): void {
   const here = currentRoute();
   for (const [id, raisedOn] of liveStartToasts) {
     if (raisedOn === here) continue;
+    liveStartToasts.delete(id);
+    toast.dismiss(id);
+  }
+}
+
+/** A model pick can change while the route stays put. Drop every prior start
+ * disclosure so it cannot describe the newly selected model. */
+export function dismissStartToastsForModelSelection(): void {
+  modelSelectionEpoch += 1;
+  for (const id of liveStartToasts.keys()) {
     liveStartToasts.delete(id);
     toast.dismiss(id);
   }
