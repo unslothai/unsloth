@@ -7473,6 +7473,36 @@ class TestRocmMiscomputingArchDemotion:
                 stack_mod._ensure_rocm_torch()  # must not raise
         assert bool(calls) is expect_install, calls
 
+    def test_a_stale_override_does_not_start_a_rocm_to_cpu_cycle(self, monkeypatch):
+        """The thrash this ordering caused: a real Deck exporting a stale
+        UNSLOTH_ROCM_GFX_ARCH=gfx1030 took the inferred-arch path, which resolves its
+        index from _infer_linux_amd_gfx_arch() and so believed the override, force-
+        installed the multi-GB gfx103X-all stack, and set _inferred_arch_installed --
+        which skips the runtime-target check below it. _ensure_cpu_torch() then saw the
+        real gfx1033 and force-reinstalled CPU torch, so every `studio update` paid for
+        both installs in turn instead of settling.
+        """
+        calls = []
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr(stack_mod, "NO_TORCH", False)
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", "")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(stack_mod, "_has_rocm_gpu", lambda: False)
+        # The real silicon, from a source the override cannot move.
+        monkeypatch.setattr(stack_mod, "_detect_amd_gfx_codes", lambda **_kw: ["gfx1033"])
+        monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", lambda: [])
+        monkeypatch.setattr(stack_mod, "pip_install", lambda *a, **k: calls.append(a))
+        monkeypatch.setattr(stack_mod, "pip_install_try", lambda *a, **k: True)
+        monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1030")
+        for _var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+            monkeypatch.delenv(_var, raising = False)
+        _probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+cpu||\n")
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = _probe):
+                stack_mod._ensure_rocm_torch()
+        assert calls == [], f"a stale override still bought the ROCm stack: {calls}"
+
     def test_probe_is_skipped_when_no_rocm_torch_is_installed(self, monkeypatch):
         """The arch probes run subprocesses; they must not run on every ordinary install."""
         monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)

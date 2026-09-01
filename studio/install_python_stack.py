@@ -1507,6 +1507,55 @@ def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     return _index_url_join(base, arch_family)
 
 
+def _physical_amd_gfx_archs() -> "list[str]":
+    """The AMD arches on this Linux host, read from sources an override cannot move.
+
+    Strongest first: the ROCm userland probes with HSA_OVERRIDE_GFX_VERSION and the
+    visible-device masks stripped, then KFD topology sysfs, then the product-name
+    inference, and only then the declared UNSLOTH_ROCM_GFX_ARCH.
+
+    The declared arch is LAST on purpose. It is a routing hint for a host whose probes
+    cannot answer, not a statement about silicon, and taking it first let a stale
+    gfx1030 on a real Van Gogh hide the arch from every check built on this. KFD sits
+    ahead of the inference for the same reason: _infer_linux_amd_gfx_arch() returns the
+    declared value before inferring anything, so behind it the kernel never answers.
+    """
+    _archs = [
+        _code.strip().lower().split(":")[0]
+        for _code in _detect_amd_gfx_codes(ignore_hsa_override = True, ignore_visible_masks = True)
+    ]
+    if not _archs:
+        _archs = [_code.strip().lower().split(":")[0] for _code in _kfd_gfx_targets()]
+    if not _archs:
+        _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0]
+        _archs = [_inferred] if _inferred else []
+    if not _archs:
+        _env_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
+        _archs = [_env_gfx] if _env_gfx else []
+    return _archs
+
+
+def _miscomputing_arch_host() -> bool:
+    """True when EVERY AMD arch this host physically has computes incorrectly under ROCm.
+
+    Every, not any, and it matters here rather than being a detail: gfx1033 is one of the
+    integrated parts _SHADOWING_INTEGRATED_GFX lists, so it can lead the enumeration on a
+    box whose real accelerator is a discrete Radeon (#7776). Declining ROCm on presence
+    alone would strand that card, which is the outcome that policy exists to prevent.
+    install.sh's gate is a presence test because it cannot resolve which device the
+    runtime picks; here the arch list IS the host, so the stronger rule is available and
+    is the one that keeps a mixed box working.
+
+    Shared with _rocm_miscomputing_host(), which adds only "and ROCm torch is already
+    installed" -- the two ask the same question about the hardware and differ in whether
+    they are deciding to withhold wheels or to replace them.
+    """
+    if IS_WINDOWS or IS_MACOS:
+        return False
+    _archs = _physical_amd_gfx_archs()
+    return bool(_archs) and all(_arch in _ROCM_MISCOMPUTING_GFX for _arch in _archs)
+
+
 def _rocm_miscomputing_host() -> bool:
     """True when every AMD GPU on this Linux host is an arch measured to compute
     incorrectly under ROCm, ROCm torch is already installed, and no explicit index pin
@@ -1549,30 +1598,7 @@ def _rocm_miscomputing_host() -> bool:
     # HSA_OVERRIDE spoof gave, through a different door. It still answers when no probe
     # can, since there the declared arch is all the host has. install.sh's "physical"
     # probe mode makes the same ordering choice.
-    _env_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
-    # ignore_hsa_override: HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh
-    # workaround and makes rocminfo report gfx1030, hiding the arch being judged.
-    # ignore_visible_masks: the question below is whether EVERY GPU on the host is
-    # bad, so it has to be asked of the whole host. A ROCR_VISIBLE_DEVICES that hides
-    # the healthy dGPU would otherwise leave gfx1033 as the only arch in the list and
-    # demote a working ROCm install to CPU. install.sh's _probe_amd_gfx_arch unsets
-    # both masks for the same reason.
-    _archs = [
-        _code.strip().lower().split(":")[0]
-        for _code in _detect_amd_gfx_codes(ignore_hsa_override = True, ignore_visible_masks = True)
-    ]
-    # KFD before the product-name inference, because that inference returns
-    # UNSLOTH_ROCM_GFX_ARCH first and would hand the declared arch back ahead of the
-    # kernel's own answer. amdkfd writes gfx_target_version from the IP-version table, so
-    # it is the last source here that no environment variable can reach.
-    if not _archs:
-        _archs = [_code.strip().lower().split(":")[0] for _code in _kfd_gfx_targets()]
-    if not _archs:
-        _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0]
-        _archs = [_inferred] if _inferred else []
-    if not _archs and _env_gfx:
-        _archs = [_env_gfx]
-    return bool(_archs) and all(_arch in _ROCM_MISCOMPUTING_GFX for _arch in _archs)
+    return _miscomputing_arch_host()
 
 
 def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
@@ -4494,6 +4520,21 @@ def _ensure_rocm_torch() -> None:
     # An explicit ROCm pin commits to ROCm wheels regardless of the visible GPU (headless / CI).
     # Mirror _ensure_cuda_torch: skip the NVIDIA/no-AMD/unreadable gates.
     _rocm_pin = _explicit_rocm_torch_index_url()
+    # Before ANY install path, including the inferred-arch one below. That path resolves
+    # its index from _infer_linux_amd_gfx_arch(), which returns a declared
+    # UNSLOTH_ROCM_GFX_ARCH first, so a stale gfx1030 on a real Van Gogh force-installed
+    # the multi-GB gfx103X-all stack and set _inferred_arch_installed, which then SKIPS
+    # the runtime-target check further down. _ensure_cpu_torch() detected the real arch
+    # afterwards and force-reinstalled CPU torch, so every `studio update` paid for both
+    # -- a ROCm-to-CPU cycle on repeat rather than a one-time repair.
+    #
+    # An explicit index pin still wins; it is the documented way to ask for ROCm anyway.
+    if _rocm_pin is None and not IS_WINDOWS and _miscomputing_arch_host():
+        _safe_print(
+            "   This host has an AMD arch measured to compute incorrectly under ROCm "
+            "(studio/ROCM_RDNA2_APU.md) -- keeping CPU torch.\n"
+        )
+        return
     _inferred_linux_gfx = (
         _infer_linux_amd_gfx_arch() if (_rocm_pin is None and not IS_WINDOWS) else None
     )
