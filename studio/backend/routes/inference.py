@@ -14001,6 +14001,12 @@ async def _load_model_impl(
         if isinstance(_resident_entry, dict):
             _resident_entry["max_seq_length_requested"] = int(request.max_seq_length or 0)
             _resident_entry["load_in_4bit_requested"] = bool(request.load_in_4bit)
+            # Placement too, or a reload for some other knob would fall back to automatic
+            # selection and could land the model on a different GPU. The parent-side
+            # orchestrator entry does not keep it, so status has nothing else to report.
+            _resident_entry["gpu_ids_requested"] = (
+                list(request.gpu_ids) if request.gpu_ids else None
+            )
 
         logger.info(
             f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
@@ -16183,6 +16189,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             # client whether re-sending the same request is a no-op or a reload.
             requested_context_length = model_info.get("max_seq_length_requested"),
             load_in_4bit = model_info.get("load_in_4bit_requested"),
+            requested_gpu_ids = model_info.get("gpu_ids_requested"),
             chat_template = chat_template,
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,

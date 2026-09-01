@@ -795,7 +795,9 @@ def test_manual_mode_keeps_a_pinned_layer_count(monkeypatch, capsys):
     )
 
     assert server.loads[0]["gpu_layers"] == 20
-    assert "unloads the current model" in capsys.readouterr().out
+    # Preserving the count makes this a real no-op, so it must NOT restart the server.
+    assert "force_reload" not in server.loads[0]
+    assert "unloads the current model" not in capsys.readouterr().out
 
 
 def test_switching_into_manual_still_asks_for_automatic_layers(monkeypatch):
@@ -978,3 +980,66 @@ def test_explicit_tensor_disable_clears_an_arch_gated_fallback(monkeypatch, caps
 
     assert server.loads[0]["force_reload"] is True
     assert "unloads the current model" in capsys.readouterr().out
+
+
+def test_switching_into_manual_is_still_a_change(monkeypatch, capsys):
+    """Only manual-to-manual is the no-op; auto-to-manual really does reload."""
+    server = FakeServer(
+        [dict(RESIDENT)], _gguf_status(gpu_memory_mode = "auto")
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(
+            gpu_memory_mode = "manual", supplied = frozenset({"gpu_memory_mode"})
+        ),
+    )
+
+    assert server.loads[0]["force_reload"] is True
+    assert "unloads the current model" in capsys.readouterr().out
+
+
+def test_no_status_and_one_loaded_model_still_works(monkeypatch):
+    """An older server with an unambiguous catalog is answerable."""
+    server = FakeServer([dict(RESIDENT)], {}).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads[0]["model_path"] == RESIDENT["id"]
+
+
+def test_no_status_and_several_loaded_models_refuses_to_guess(monkeypatch):
+    """/v1/models lists loaded speech sidecars, so order is not evidence."""
+    server = FakeServer(
+        [
+            {"id": "unsloth/whisper-large-v3", "loaded": True},
+            dict(RESIDENT),
+        ],
+        {},
+    ).install(monkeypatch)
+
+    with pytest.raises(typer.Exit):
+        start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads == []
+
+
+def test_non_gguf_gpu_selection_survives_a_reload(monkeypatch):
+    """Without this the replacement load falls back to automatic GPU selection."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "load_in_4bit": True,
+            "requested_gpu_ids": [2, 3],
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads[0]["gpu_ids"] == [2, 3]

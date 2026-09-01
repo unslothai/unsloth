@@ -1739,9 +1739,17 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
         )
     if entry is None and not status:
         # Only when there is no status at all (older server). A status that ANSWERED with
-        # active_model null is stating there is no chat resident, and falling back to
-        # catalog order there would post a loaded speech sidecar to /api/inference/load.
-        entry = next((m for m in models if m.get("loaded") is not False), None)
+        # active_model null is stating there is no chat resident.
+        # Catalog ORDER is not evidence either: /v1/models lists loaded speech sidecars
+        # too, so the first entry can be one. Answer only when the catalog is unambiguous.
+        loaded = [m for m in models if m.get("loaded") is not False]
+        if len(loaded) == 1:
+            entry = loaded[0]
+        elif loaded:
+            _fail(
+                "This Unsloth cannot say which model is serving chat, and more than one is "
+                "loaded. Re-run with --model naming the one these settings are for."
+            )
     public_id = active_id or (entry or {}).get("id")
     if not public_id:
         if status:
@@ -1878,11 +1886,9 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
                 continue
             if status.get("gpu_memory_mode") != load.gpu_memory_mode:
                 return True
-            # Manual carries an implicit gpu_layers = -1 in the payload below, so the
-            # modes matching is not enough: a resident pinned to a layer count would be
-            # reset to automatic with no warning.
-            if load.gpu_memory_mode == "manual" and status.get("gpu_layers") not in (None, -1):
-                return True
+            # Manual to manual is a real no-op: the payload only sends the implicit
+            # gpu_layers = -1 when switching INTO manual, so a resident already pinned to
+            # a layer count keeps it through the round-trip and nothing changes.
     return False
 
 

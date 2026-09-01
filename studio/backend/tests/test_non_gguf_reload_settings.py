@@ -119,3 +119,41 @@ def test_gguf_only_knobs_never_block_reuse(field, value):
     """The chat UI sends gpu_memory_mode ungated and keeps tensor_parallel across a
     model switch, so neither carries user intent for a transformers load."""
     assert inference_route._non_gguf_runtime_settings_match(_loaded(), _Request(**{field: value}))
+
+
+class TestNonGgufStatusReportsWhatTheLoadAskedFor:
+    """A CLI attach reproduces the runtime from status, so status has to carry the
+    REQUESTED values. The resolved ones are rewritten (load_in_4bit for LoRA, n_ctx by
+    the fit clamp) and placement is not kept on the parent-side orchestrator entry at
+    all, so anything the route does not stamp is simply unavailable to a client.
+    """
+
+    STAMPED = ("max_seq_length_requested", "load_in_4bit_requested", "gpu_ids_requested")
+
+    def _stamp_block(self):
+        import inspect
+        import routes.inference as ri
+
+        src = inspect.getsource(ri._load_model_impl)
+        start = src.index("_resident_entry = backend.models.get")
+        return src[start : start + 900]
+
+    @pytest.mark.parametrize("field", STAMPED)
+    def test_the_route_stamps_it_after_a_successful_load(self, field):
+        assert field in self._stamp_block(), f"{field} is never recorded on the resident"
+
+    def test_the_non_gguf_status_branch_publishes_them(self):
+        import inspect
+        import routes.inference as ri
+
+        src = inspect.getsource(ri.get_status)
+        # The GGUF branch returns first, so the last occurrence is the non-GGUF return.
+        non_gguf = src[src.rindex("Non-GGUF: classify from the loaded template") :]
+        for wire, stamped in (
+            ("requested_context_length", "max_seq_length_requested"),
+            ("load_in_4bit", "load_in_4bit_requested"),
+            ("requested_gpu_ids", "gpu_ids_requested"),
+        ):
+            assert f"{wire} = model_info.get(\"{stamped}\")" in non_gguf, (
+                f"non-GGUF status does not publish {wire}"
+            )
