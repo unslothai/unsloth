@@ -714,8 +714,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
 
 
 def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
-    # The body moved to chat_template_helpers so the transformers vision path shares it;
-    # mlx_inference no longer re-exports it (#10092).
+    # Moved to chat_template_helpers so the transformers vision path shares it (#10092).
     from core.inference.chat_template_helpers import prompt_serializes_structured_media
     from core.inference.mlx_inference import MLXInferenceBackend
 

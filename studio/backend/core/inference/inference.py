@@ -1326,30 +1326,16 @@ class InferenceBackend:
 
         # Prepare vision messages
         if image:
-            # Only a turn that carries tools or replays tool history needs the whole
-            # conversation. Without either, the render keeps the collapse to the system
-            # prompt plus the newest user text that this path has always used. Sending every
-            # prior turn instead is a large prompt-token increase on an ordinary multi-turn
-            # vision chat, nothing on this path truncates it, and that is a behaviour change
-            # for every shipped client rather than part of the client-tools fix (#10092).
-            # The history the collapse loses is a real bug, and a separate one.
+            # Ordinary vision turns keep the historic collapse; full history is unbounded.
             has_tool_history = messages_have_tool_history(messages)
-            # A system turn INSIDE messages with no separate system_prompt is the signature
-            # of the client-tools route, which folds the instruction into messages[0] and
-            # clears the argument. Keying on the catalog alone missed tool_choice="none" and
-            # a forced name matching no schema, which both arrive with tools=None and would
-            # have taken the collapse and dropped the instruction (#10092). The ordinary
-            # path always fills system_prompt and leaves no system turn here, so this cannot
-            # fire on it.
+            # Client-tools route signature: tool_choice="none" and a forced unknown name
+            # also arrive tools=None, and the catalog alone missed them (#10092).
             folded_system = not system_prompt and any(
                 isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages
             )
             if bool(tools) or has_tool_history or folded_system:
-                # Keep the whole conversation and attach the image to the turn it belongs to,
-                # the way the MLX backend does (generate_chat_response). Rebuilding from the
-                # newest user TEXT dropped the system instruction the client-tools route folds
-                # into messages[0] and the tool history a second-turn OpenAI loop replays,
-                # neither of which the model can answer the request without (#10092).
+                # Rebuilding from newest user TEXT dropped the system turn and the tool
+                # history an OpenAI tool loop replays (#10092).
                 vision_messages = messages_with_attached_image(
                     messages,
                     system_prompt = system_prompt,
@@ -1357,16 +1343,10 @@ class InferenceBackend:
                     structured_content = True,
                 )
 
-                # The conversation the LAST render actually used. render_advertising_tools
-                # runs a throwaway no-tools probe first, and a processor can reject a system
-                # turn on one catalog and accept it on the other, so a probe that fell back
-                # must not decide what the real render sends (#10092).
+                # The conversation the LAST render used, not the no-tools probe's (#10092).
                 rendered_with: dict = {"messages": vision_messages}
 
                 def _render_vision(catalog):
-                    # The shared choke point, as _generate_vlm uses: it sweeps the catalog and
-                    # the messages for control markup in the one correct order (#7066), and
-                    # peels a kwarg the processor rejects rather than failing the request.
                     rendered_with["messages"] = vision_messages
                     try:
                         rendered = self._apply_chat_template_for_generation(
@@ -1376,20 +1356,12 @@ class InferenceBackend:
                             continue_final_message = bool(continue_partial),
                         )
                     except Exception as e:  # noqa: F841 -- read by the fallback below
-                        # Dropping the system turn drops the caller's instructions, so it stays
-                        # where that is the only thing left to try: a processor that cannot
-                        # render a system role at all. With tool history in the conversation it
-                        # would also hide a tool-rendering failure behind a prompt the model
-                        # cannot answer from, which is the failure this path used to mask by
-                        # catching every exception (#10092).
                         without_system = [
                             m
                             for m in vision_messages
                             if not (isinstance(m, dict) and m.get("role") == "system")
                         ]
-                        # A previous render kept the system turn, so the role is supported
-                        # and dropping it would hide a catalog failure behind an answer that
-                        # silently ignores the caller's instructions (#10092).
+                        # Only where an unsupported system role is the last explanation.
                         if (
                             has_tool_history
                             or rendered_with.get("system_ok")
@@ -1400,9 +1372,6 @@ class InferenceBackend:
                             f"Vision processor for '{self.active_model_name}' may not support "
                             f"system messages; retrying without. Original error: {e}"
                         )
-                        # Recorded only once the retry has actually rendered, and only for
-                        # this call: a second failure re-raises with the conversation the
-                        # caller sent still intact.
                         rendered = self._apply_chat_template_for_generation(
                             processor,
                             without_system,
@@ -1412,9 +1381,7 @@ class InferenceBackend:
                         rendered_with["messages"] = without_system
                         return rendered
                     else:
-                        # A render that kept the system turn proves the role is supported, so
-                        # a later failure is the catalog's, and dropping the instructions to
-                        # paper over it would answer the wrong question (#10092).
+                        # A render that kept the system turn proves the role is supported.
                         if any(
                             isinstance(m, dict) and m.get("role") == "system"
                             for m in vision_messages
@@ -1422,15 +1389,9 @@ class InferenceBackend:
                             rendered_with["system_ok"] = True
                         return rendered
 
-                # Whether the catalog reaches the prompt is decided by comparing the two
-                # renders, as the text path decides it (render_with_native_template_fallback):
-                # a template body that merely names the ``tools`` variable can still drop the
-                # schema, and a processor taking tools= through **kwargs can swallow it.
                 input_text, tools_advertised = render_advertising_tools(_render_vision, tools)
                 vision_messages = rendered_with["messages"]
 
-                # A prompt the template did not understand is not a prompt the model can
-                # answer from, and _generate_vlm already refuses both shapes.
                 prompt_issue = vlm_prompt_issue(input_text, vision_messages)
                 if prompt_issue and has_tool_history:
                     raise RuntimeError(
@@ -1441,14 +1402,7 @@ class InferenceBackend:
                     raise RuntimeError(f"Vision chat template returned {prompt_issue}.")
 
                 if tools and not tools_advertised:
-                    # The turn is still served. There is no native-template fallback behind a
-                    # processor, since the native template of a text model cannot place the
-                    # image, and refusing would turn an answerable image question into an
-                    # error. The route authorizes healing from this processor's own template
-                    # body, mirrored into chat_template_info at load time, so a body that
-                    # cannot advertise leaves an empty catalog and healing off. What that
-                    # static read cannot see is a body that names ``tools`` and still renders
-                    # identically, which is what this warning is for (#7066).
+                    # Served anyway: refusing turns an answerable question into an error.
                     logger.warning(
                         "Vision chat template for '%s' rendered the same prompt with and "
                         "without the requested tools; serving the turn without the catalog.",
@@ -1483,8 +1437,7 @@ class InferenceBackend:
                     )
 
                 # Processor's own template skips the choke point (#7066). Rebind user_msg
-                # so the no-system retry keeps the copy. Profiled from the processor, so a
-                # vision request is gated on the loaded model exactly as the text path is.
+                # so the no-system retry keeps the copy.
                 from core.inference.chat_template_helpers import markup_for_tokenizer
 
                 vision_messages = neutralize_control_markup_in_messages(
@@ -1501,9 +1454,7 @@ class InferenceBackend:
                 try:
                     input_text = _render_collapsed_vision(vision_messages)
                 except Exception as e:
-                    # The blanket retry is kept as it was. Nothing on this branch can hide a
-                    # tool-rendering failure behind it, since the branch is only taken when
-                    # the request has no catalog and no tool history to render.
+                    # Safe here: no catalog and no tool history to hide a failure behind.
                     if system_prompt:
                         logger.warning(
                             f"Vision processor for '{self.active_model_name}' may not support "
@@ -1542,9 +1493,8 @@ class InferenceBackend:
                 protocol_source = processor,
                 # The text-only VLM fallback above did not render with the
                 # processor template, so its native markers do not describe
-                # this request's response protocol. With *tools*, matching the
-                # render: a named template selects "tool_use" for a tool-calling
-                # turn, and profiling without them reads "default" instead.
+                # this request's response protocol. Passing *tools* matches the
+                # render: a named template selects "tool_use", not "default".
                 reasoning_channel_markers = detect_reasoning_channel_markers(processor, tools = tools)
                 if image
                 else None,
@@ -2985,24 +2935,16 @@ class InferenceBackend:
             "format_type": "generic",
             "special_tokens": {},
             "template_name": None,
-            # An image turn renders through the PROCESSOR, whose template is a different
-            # file from the tokenizer's for most VLMs, and the route only ever sees this
-            # mirrored dict: the orchestrator keeps no live processor. Without the
-            # processor body here the route authorizes tool-call healing from a template
-            # the image render never selects, and promotes calls for a schema the model
-            # was never shown (#10092, #7066).
+            # An image turn renders through the PROCESSOR, a different template file for
+            # most VLMs, and this mirrored dict is all the route ever sees (#10092, #7066).
             "processor_template": None,
-            # Whether an image turn renders through an image-capable processor at all.
-            # Distinct from processor_template: a processor can handle images and still
-            # have no template of its own, in which case the render falls back to the
-            # nested tokenizer body but the image IS still placed (#10092).
+            # Distinct from processor_template: a template-less processor still places
+            # the image, falling back to the tokenizer body.
             "renders_image": False,
         }
         processor = self.models[model_name].get("processor")
-        # A vision-marked model whose stored processor cannot process images (FastVisionModel
-        # may hand back a raw tokenizer) has its image ignored and renders through the
-        # tokenizer text path instead, so mirroring a body the image render never selects
-        # would make the route profile the wrong template. Same predicate as that fallback.
+        # Same predicate as the image-ignoring fallback: FastVisionModel may return a raw
+        # tokenizer, whose body an image render never selects.
         try:
             from transformers import ProcessorMixin
             processes_images = processor is not None and (
@@ -3013,9 +2955,7 @@ class InferenceBackend:
         chat_template_info["renders_image"] = bool(processes_images)
         if processes_images:
             processor_template = getattr(processor, "chat_template", None)
-            # The named-template list form, [{"name": ..., "template": ...}], is a supported
-            # representation downstream (_selected_template_strings_from_value, model_markup);
-            # narrowing it away here would silently disable the image-turn override.
+            # Narrowing the named-template list form away disables the image-turn override.
             if isinstance(processor_template, (str, dict, list, tuple)) and processor_template:
                 chat_template_info["processor_template"] = processor_template
 

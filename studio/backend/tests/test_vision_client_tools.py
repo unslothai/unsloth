@@ -3,10 +3,8 @@
 
 """Repros for the four defects in PR #10092 (client tools on a vision turn).
 
-The PR's own tests drive the route with ``_ScriptedBackend``, whose
-``generate_chat_response`` is a full stub, so none of the new inference-layer code runs.
-These call ``_generate_vision_response`` directly against a fake processor, in the style of
-``test_control_markup_neutralize_7066.test_vision_processor_render_is_neutralized``.
+Route-level tests stub ``generate_chat_response`` entirely, so these call
+``_generate_vision_response`` directly against a fake processor instead.
 """
 
 import importlib
@@ -30,14 +28,11 @@ def _stub_if_missing(
 ):
     """Register a stub for a dep this job does not install. A real install is left alone.
 
-    Same helper and reason as test_audio_type_inconclusive.py: core.inference.inference
-    imports unsloth (and through it unsloth_zoo) at module scope, while the pytest matrix in
-    studio-backend-ci.yml installs studio.txt plus torch and transformers and stops there.
-    Unstubbed, this module fails COLLECTION and takes the whole job down.
+    Same helper and reason as test_audio_type_inconclusive.py: unstubbed, this module fails
+    COLLECTION under the studio-backend-ci.yml matrix and takes the whole job down.
 
     ``named_spec`` gives the stub a real ModuleSpec, which only torchao needs: transformers
-    probes it with importlib.util.find_spec, and that raises ValueError on ``__spec__ =
-    None`` rather than reporting the package absent.
+    probes it with find_spec, which raises ValueError on ``__spec__ = None``.
     """
     if name in sys.modules:
         return
@@ -59,9 +54,8 @@ def _stub_if_missing(
         setattr(sys.modules[parent], child, module)
 
 
-# torchao is stubbed only where it is installed but unusable against the local torch, in
-# which case transformers.quantizers imports it and poisons transformers for every later
-# module. Where it imports cleanly, as in CI, nothing here fires.
+# Fires only where torchao is installed but unusable against the local torch, in which
+# case transformers.quantizers imports it and poisons transformers for every later module.
 for _torchao in (
     "torchao",
     "torchao.prototype",
@@ -82,8 +76,7 @@ _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 import core.inference.inference as _inference  # noqa: E402,F401
 
-# Drop the stubs now that the backend module holds its own references. A stub left behind
-# outlives this module and the rest of the suite then runs against it.
+# Drop the stubs now the backend holds its own refs; one left behind outlives this module.
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 
@@ -105,8 +98,7 @@ _CHATML_WITH_TOOLS = (
     "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
 )
 
-# Replays tool turns but never reads ``tools``: renders identically with and without a
-# catalog, so nothing advertises the schema to the model.
+# Replays tool turns but never reads ``tools``: renders identically either way.
 _TOOL_ROUNDTRIP_ONLY = (
     "{% for m in messages %}<|im_start|>{{ m['role'] }}\n"
     "{% if m['role'] == 'tool' %}<tool_response>{{ m['content'] }}</tool_response>"
@@ -143,15 +135,12 @@ def _vision_probe(chat_template = _CHATML_WITH_TOOLS):
         def __init__(self):
             self.chat_template = chat_template
             self.tokenizer = Tokenizer()
-            # A real VLM processor carries one; the mirror keys off it to tell a
-            # genuine image render from the raw-tokenizer text fallback.
+            # The mirror keys off this to tell a real image render from the text fallback.
             self.image_processor = object()
 
         def apply_chat_template(self, messages, **kwargs):
             seen["messages"] = messages
             seen["tools"] = kwargs.get("tools")
-            # Mirrors the template: a body that never reads ``tools`` renders the same
-            # prompt either way, which is exactly the case the guard has to catch.
             if kwargs.get("tools") and "tools" in chat_template:
                 return "PROMPT-WITH-TOOLS"
             return "PROMPT"
@@ -202,9 +191,8 @@ def _drain(backend, **kwargs):
 
 
 def test_vision_tools_turn_keeps_the_system_message():
-    """The client-tools route folds system/developer text into ``messages[0]`` and passes
-    ``system_prompt = ""`` (routes/inference.py). Rebuilding the conversation from the
-    argument alone drops the instructions."""
+    """The client-tools route folds system text into ``messages[0]`` and passes
+    ``system_prompt = ""``, so rebuilding from the argument alone drops the instructions."""
     backend, seen = _vision_probe()
     _drain(
         backend,
@@ -307,14 +295,8 @@ def test_renders_tool_schema_is_false_when_the_template_never_reads_tools():
 
 
 def test_vision_turn_a_template_cannot_advertise_is_served_but_unauthorized():
-    """End to end on a template that renders identically with and without a catalog.
-
-    The turn is still served: nothing behind a processor could advertise the schema (the
-    native template of a text model cannot place the image), and refusing would turn an
-    answerable image question into a 500. What must not happen is the healer promoting a
-    call for a tool the prompt never carried, so the catalog the route hands ``heal_gate``
-    has to come back empty (#7066).
-    """
+    """A template that renders identically with and without a catalog still serves the
+    turn, but the catalog the route hands ``heal_gate`` comes back empty (#7066)."""
     from core.inference.chat_template_helpers import renderable_tool_catalog_for_targets
 
     backend, seen = _vision_probe(chat_template = _TOOL_ROUNDTRIP_ONLY)
@@ -331,7 +313,6 @@ def test_vision_turn_a_template_cannot_advertise_is_served_but_unauthorized():
     assert processor.apply_chat_template(turn, tools = None) == processor.apply_chat_template(
         turn, tools = [_LOOKUP]
     ), "the catalog is not advertised"
-    # Exactly what routes/inference.py profiles before building the healing allowlist.
     assert (
         renderable_tool_catalog_for_targets(
             [_LOOKUP],
@@ -350,9 +331,8 @@ def test_the_stubs_do_not_outlive_this_module():
 
 
 def test_tool_choice_none_on_an_image_turn_keeps_the_system_message():
-    """tool_choice="none" reaches the renderer as tools=None, but the route has already
-    folded the instruction into messages and cleared system_prompt, so keying the
-    history-preserving branch on the catalog alone dropped it (#10092)."""
+    """tool_choice="none" reaches the renderer as tools=None, so keying the
+    history-preserving branch on the catalog alone dropped the folded instruction (#10092)."""
     backend, seen = _vision_probe()
     _drain(
         backend,
@@ -392,7 +372,6 @@ def test_the_no_tools_probe_does_not_strip_the_system_turn_from_the_real_render(
         system_prompt = "",
         tools = [_LOOKUP],
     )
-    # The render that is actually served is the last one, and it must still carry the turn.
     assert calls[-1]["has_system"] is True
     assert "SENTINEL_RULE" in json.dumps(seen.get("messages"), ensure_ascii = False)
 
@@ -404,10 +383,8 @@ _PROCESSOR_TEMPLATE_NO_TOOLS = (
 
 
 def test_the_processor_template_is_mirrored_for_the_route_to_profile():
-    """An image turn renders through the processor, but the orchestrator keeps no live
-    processor, so the route can only profile what the worker mirrors. Without the body
-    here, healing is authorized from the tokenizer template the image render never
-    selects, and a text-form call is promoted for a schema the model never saw (#10092)."""
+    """The orchestrator keeps no live processor, so without the mirrored body healing is
+    authorized from a tokenizer template the image render never selects (#10092)."""
     backend, _seen = _vision_probe()
     info = backend.models["vision-tools"]
     info["processor"].chat_template = _PROCESSOR_TEMPLATE_NO_TOOLS
@@ -419,10 +396,8 @@ def test_the_processor_template_is_mirrored_for_the_route_to_profile():
 
 
 def test_a_processor_that_cannot_process_images_is_not_mirrored():
-    """FastVisionModel hands back a raw tokenizer for some vision-marked models, and
-    _generate_chat_response_inner then ignores the image and renders the tokenizer text
-    path. Mirroring that body as the processor body would make the route profile an image
-    render that never happens, under the stricter processor rules (#10092)."""
+    """FastVisionModel hands back a raw tokenizer for some vision-marked models, whose
+    image is ignored, so mirroring that body would profile a render that never happens."""
     backend, _seen = _vision_probe()
     info = backend.models["vision-tools"]
     del info["processor"].image_processor
@@ -434,9 +409,8 @@ def test_a_processor_that_cannot_process_images_is_not_mirrored():
 
 
 def test_the_named_template_list_form_survives_the_mirror():
-    """Hermes-style named templates ship as [{"name": ..., "template": ...}], which
-    _selected_template_strings_from_value and model_markup both accept. Discarding the
-    list at the mirror would silently drop the image-turn override for those models."""
+    """Discarding the named-template list form at the mirror would silently drop the
+    image-turn override for Hermes-style models."""
     listed = [
         {"name": "default", "template": _PROCESSOR_TEMPLATE_NO_TOOLS},
         {"name": "tool_use", "template": _CHATML_WITH_TOOLS},
@@ -473,8 +447,6 @@ def test_a_processor_body_that_cannot_advertise_empties_the_healing_catalog():
     )
     assert catalog == []
 
-    # The same call without the image override keeps authorizing from the tokenizer body,
-    # which is what a text turn on the same model must still do.
     text_catalog = renderable_tool_catalog_for_targets(
         [_LOOKUP],
         (None,),
@@ -484,9 +456,8 @@ def test_a_processor_body_that_cannot_advertise_empties_the_healing_catalog():
 
 
 def test_the_worker_forwards_the_processor_template_to_the_parent():
-    """The orchestrator keeps no live processor, so this whitelist is the ONLY way the
-    body reaches the route. Omitting the key profiles image turns from the tokenizer
-    template and re-opens exactly what the mirror exists to close (#10092)."""
+    """This whitelist is the ONLY way the body reaches the route; omitting the key
+    profiles image turns from the tokenizer template (#10092)."""
     import ast
     import pathlib
 
@@ -503,9 +474,8 @@ def test_the_worker_forwards_the_processor_template_to_the_parent():
 
 
 def test_a_replay_only_processor_body_is_not_authorized_for_healing():
-    """A mirrored processor body arrives with no live target, so the permissive
-    tokenizer rule would authorize a body that replays tool turns but never reads
-    ``tools`` and therefore never advertised them."""
+    """A mirrored processor body has no live target, so the permissive tokenizer rule
+    would authorize a body that replays tool turns but never advertises them."""
     from core.inference.chat_template_helpers import renderable_tool_catalog_for_targets
 
     catalog = renderable_tool_catalog_for_targets(
@@ -517,8 +487,7 @@ def test_a_replay_only_processor_body_is_not_authorized_for_healing():
     )
     assert catalog == []
 
-    # A tokenizer body keeps the round-trip clause: the schema came from the caller's own
-    # system prompt there, and a native template still sits behind it.
+    # A tokenizer body keeps the round-trip clause: a native template sits behind it.
     assert renderable_tool_catalog_for_targets(
         [_LOOKUP],
         (None,),
@@ -542,14 +511,12 @@ def test_the_mlx_backend_mirrors_the_processor_template_too():
 
     info = backend.models["m"]["chat_template_info"]
     assert info["processor_template"] == _PROCESSOR_TEMPLATE_NO_TOOLS
-    # The tokenizer body is still recorded separately; a text turn keeps using it.
     assert info["template"] == _CHATML_WITH_TOOLS
 
 
 def test_a_processor_body_is_not_rescued_by_the_native_tokenizer_template(monkeypatch):
-    """The native-template fallback rescues a TOKENIZER body whose active template drops
-    the schema. A processor body has no such fallback: the image render goes straight
-    through it, so a native template that reads tools must not re-authorize the catalog."""
+    """A processor body has no native-template fallback behind it, so a native template
+    that reads tools must not re-authorize the catalog."""
     from core.inference import chat_template_helpers as helpers
 
     monkeypatch.setattr(helpers, "resolve_native_chat_template", lambda *a, **k: _CHATML_WITH_TOOLS)
@@ -564,11 +531,8 @@ def test_a_processor_body_is_not_rescued_by_the_native_tokenizer_template(monkey
 
 
 def test_a_folded_system_turn_is_wrapped_as_content_parts():
-    """The client-tools route folds its instruction into messages[0] and clears
-    system_prompt, so nothing is inserted and the turn arrives as a bare string. A
-    processor whose template expects content parts raised on it, and the no-system retry
-    then served the turn with the instruction gone. The old collapse always wrapped what
-    it built (#10092)."""
+    """The folded instruction arrives as a bare string, which a parts-expecting processor
+    raised on, and the no-system retry then dropped it (#10092)."""
     from core.inference.chat_template_helpers import messages_with_attached_image
 
     out = messages_with_attached_image(
@@ -580,13 +544,11 @@ def test_a_folded_system_turn_is_wrapped_as_content_parts():
         structured_content = True,
     )
     assert out[0]["content"] == [{"type": "text", "text": "SENTINEL_RULE"}]
-    # The caller's dict is not mutated.
     assert out[0] is not None
 
 
 def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
-    """The nudge retry reruns generation over the original body plus an appended user
-    correction, with the same image. A plain reverse scan hands the marker to that
+    """A plain reverse scan hands the image marker to the nudge retry's appended
     correction, so the question that asked about the picture renders image-less (#10092)."""
     from core.inference.chat_template_helpers import (
         count_structured_images,
@@ -612,9 +574,8 @@ def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
 
 
 def test_an_mlx_processor_without_apply_chat_template_is_not_mirrored():
-    """chat_render_target falls back to the nested tokenizer when the processor cannot
-    render a chat itself, so a processor template alone does not mean the render selects
-    it. Mirroring it anyway profiles an unused body with processor semantics (#10092)."""
+    """A processor template alone does not mean the render selects it; mirroring it anyway
+    profiles an unused body with processor semantics (#10092)."""
     mlx = pytest.importorskip("core.inference.mlx_inference")
 
     class _Tok:
@@ -631,8 +592,6 @@ def test_an_mlx_processor_without_apply_chat_template_is_not_mirrored():
 
     assert backend.models["m"]["chat_template_info"]["processor_template"] is None
 
-
-# ── Route-level gates for an image turn ───────────────────────────
 
 _PNG_DATA_URL = (
     "data:image/png;base64,"
@@ -660,9 +619,8 @@ def _image_request(**kwargs):
 
 
 def test_an_image_with_explicit_enable_tools_still_passes_the_client_catalog():
-    """enable_tools claims the request for the server loop, which still refuses images.
-    Withdrawing the client catalog too answered an image-plus-tools request with prose and
-    no schemas at all (#10092)."""
+    """The server loop refuses images, so withdrawing the client catalog too answered an
+    image-plus-tools request with prose and no schemas at all (#10092)."""
     import os
     import sys
 
@@ -687,9 +645,8 @@ def test_an_image_with_explicit_enable_tools_still_passes_the_client_catalog():
 
 
 def test_image_tool_support_is_classified_from_the_processor_template():
-    """_sf_features comes from the tokenizer body. An image renders through the processor
-    body, so a VLM whose processor template advertises tools its nested tokenizer never
-    does had the catalog disabled and reached generation with no schemas (#10092)."""
+    """A VLM whose processor template advertises tools its nested tokenizer never does had
+    the catalog disabled and reached generation with no schemas (#10092)."""
     import asyncio
     import os
     import sys
@@ -711,7 +668,6 @@ def test_image_tool_support_is_classified_from_the_processor_template():
     monkeypatch = _pytest.MonkeyPatch()
     try:
         passthrough._install(monkeypatch, backend)
-        # Only the processor body advertises tools, which is the one an image renders with.
         monkeypatch.setattr(
             inf,
             "_detect_safetensors_features",
@@ -732,10 +688,8 @@ def test_image_tool_support_is_classified_from_the_processor_template():
 
 
 def test_mlx_selects_structured_content_for_a_processor_render():
-    """A processor template expects every content field to be a list of parts, so a bare
-    system string raises there and _render_vlm_prompt refuses its no-system retry once
-    tools were asked for. The nested-tokenizer fallback still wants plain strings, so the
-    choice follows whichever body chat_render_target selects (#10092)."""
+    """A processor template wants part lists and the nested-tokenizer fallback wants plain
+    strings, so the choice follows whichever body chat_render_target selects (#10092)."""
     mlx = pytest.importorskip("core.inference.mlx_inference")
 
     seen: dict = {}
@@ -774,9 +728,8 @@ def test_mlx_selects_structured_content_for_a_processor_render():
 
 
 def test_a_named_processor_template_is_classified_without_tool_use():
-    """A ProcessorMixin render does not implicitly select the "tool_use" branch the way a
-    tokenizer does. Classifying the capability gate from it advertised a catalog the
-    prompt never shows, so image tool requests still came back as prose (#10092)."""
+    """A ProcessorMixin render never implicitly selects the "tool_use" branch, so gating on
+    it advertised a catalog the prompt never shows (#10092)."""
     import asyncio
     import os
     import sys
@@ -789,7 +742,6 @@ def test_a_named_processor_template_is_classified_without_tool_use():
 
     backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
     backend.models["sf-model"]["is_vision"] = True
-    # Only the tool_use branch advertises tools, and a processor never selects it.
     backend.models["sf-model"]["chat_template_info"] = {
         "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
         "processor_template": {
@@ -802,8 +754,7 @@ def test_a_named_processor_template_is_classified_without_tool_use():
     monkeypatch = _pytest.MonkeyPatch()
     try:
         passthrough._install(monkeypatch, backend)
-        # Honour prefer_tool_use through the real selector, so the branch this gate picks
-        # is what decides. A stub that ignored the flag could not fail.
+        # Honour prefer_tool_use through the real selector; a stub ignoring it cannot fail.
         from core.inference.chat_template_helpers import (
             _selected_template_strings_from_value,
         )
@@ -833,14 +784,12 @@ def test_a_named_processor_template_is_classified_without_tool_use():
         monkeypatch.undo()
 
     assert backend.calls, "generation never ran"
-    # The default branch is what renders, and it advertises nothing.
     assert not backend.calls[0]["tools"]
 
 
 def test_a_historical_image_stays_on_the_turn_that_sent_it():
-    """_extract_content_parts takes the newest user image from anywhere in the thread while
-    the renderers attach it to the newest user turn, so an old picture was rendered as
-    though it accompanied a later, different question (#10092)."""
+    """_extract_content_parts takes the newest image from anywhere in the thread while the
+    renderers attach it to the newest user turn, moving it onto a later question (#10092)."""
     import asyncio
     import os
     import sys
@@ -854,7 +803,6 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
 
     backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
     backend.models["sf-model"]["is_vision"] = True
-    # An image-capable processor: the marker is only placed when one will render.
     backend.models["sf-model"]["chat_template_info"] = {
         "template": _CHATML_WITH_TOOLS,
         "processor_template": _CHATML_WITH_TOOLS,
@@ -895,10 +843,8 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
 
 
 def test_a_tool_loop_replay_is_wrapped_for_a_part_based_processor():
-    """A processor template that expects parts expects them on EVERY message. An
-    image-plus-tools follow-up replays assistant and role="tool" turns, and leaving those
-    as bare strings fails the template while it iterates them. Both backends re-raise
-    rather than drop tool history, so the valid request became a 500 (#10092)."""
+    """A parts-expecting processor template raises while iterating replayed assistant and
+    role="tool" turns left as bare strings, turning a valid request into a 500 (#10092)."""
     from core.inference.chat_template_helpers import messages_with_attached_image
 
     out = messages_with_attached_image(
@@ -914,15 +860,12 @@ def test_a_tool_loop_replay_is_wrapped_for_a_part_based_processor():
     assert by_role["assistant"] == [{"type": "text", "text": "ASSISTANT_TEXT"}]
     assert by_role["tool"] == [{"type": "text", "text": "TOOL_RESULT"}]
     assert by_role["system"] == [{"type": "text", "text": "SENTINEL_RULE"}]
-    # The image still lands on the user turn, as parts.
     assert any(p.get("type") == "image" for p in by_role["user"])
 
 
 def test_an_assistant_tool_call_turn_without_content_is_still_parts():
-    """A standard OpenAI assistant tool-call turn has content=None, and exclude_none drops
-    the key entirely, so the earlier non-empty-string wrap skipped it. A template that
-    iterates content raises on the missing field just as it does on a bare string, and tool
-    history disables both backends' recovery, so the request became a 500 (#10092)."""
+    """exclude_none drops content entirely from a standard assistant tool-call turn, and an
+    iterating template raises on the missing key just as on a bare string (#10092)."""
     from core.inference.chat_template_helpers import messages_with_attached_image
 
     out = messages_with_attached_image(
@@ -937,15 +880,12 @@ def test_an_assistant_tool_call_turn_without_content_is_still_parts():
     assert all(isinstance(m["content"], list) for m in out), out
     assistant = [m for m in out if m["role"] == "assistant"][0]
     assert assistant["content"] == []
-    # tool_calls survive the rewrite.
     assert assistant["tool_calls"] == [{"id": "c1", "type": "function"}]
 
 
 def test_image_reasoning_is_classified_from_the_processor_template():
-    """A processor template can carry a reasoning channel the nested tokenizer never
-    declares. Classifying only supports_tools from it left _sf_parse_think derived from the
-    tokenizer body, so the backends' normalized <think> markup was treated as visible
-    content, leaking reasoning into the answer (#10092)."""
+    """A processor template can carry a reasoning channel the tokenizer never declares, so
+    classifying only supports_tools from it leaked <think> markup into the answer (#10092)."""
     import asyncio
     import os
     import sys
@@ -969,7 +909,6 @@ def test_image_reasoning_is_classified_from_the_processor_template():
     monkeypatch = _pytest.MonkeyPatch()
     try:
         passthrough._install(monkeypatch, backend)
-        # Only the processor body declares the reasoning channel.
         monkeypatch.setattr(
             inf,
             "_detect_safetensors_features",
@@ -994,10 +933,8 @@ def test_image_reasoning_is_classified_from_the_processor_template():
 
 
 def test_the_prefill_probe_gets_the_selected_processor_body():
-    """Feature detection resolves a named collection down to one body, but the prefill
-    probe was still handed the whole collection. Its <think> guard then tests the dict's
-    keys and returns False, so a selected branch that prefills an open block is missed
-    (#10092)."""
+    """Handed the whole named collection, the prefill probe's <think> guard tests the
+    dict's keys and misses a selected branch that prefills an open block (#10092)."""
     import asyncio
     import os
     import sys
@@ -1040,16 +977,14 @@ def test_the_prefill_probe_gets_the_selected_processor_body():
     finally:
         monkeypatch.undo()
 
-    # A processor never selects tool_use, so "default" is the body that renders.
     assert seen, "the prefill probe never ran"
     assert collection["default"] in seen, seen
     assert not any(isinstance(t, dict) for t in seen), seen
 
 
 def test_no_image_marker_when_the_render_falls_back_to_the_tokenizer():
-    """A vision-marked model whose processor cannot handle images has the image ignored and
-    renders through the tokenizer's text template. Marking the owning turn keyed only on the
-    image being present, so a string-only template received part lists (#10092)."""
+    """A vision-marked model whose processor cannot handle images renders the tokenizer
+    text path, so marking the owning turn handed a string-only template part lists (#10092)."""
     import asyncio
     import os
     import sys
@@ -1061,8 +996,6 @@ def test_no_image_marker_when_the_render_falls_back_to_the_tokenizer():
 
     backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
     backend.models["sf-model"]["is_vision"] = True
-    # No processor_template: the mirror omits it when the processor cannot process images,
-    # which is exactly the raw-tokenizer text fallback.
     backend.models["sf-model"]["chat_template_info"] = {"template": _CHATML_WITH_TOOLS}
     payload = _image_request(tools = [passthrough.LOOKUP_TOOL], stream = False)
 
@@ -1080,9 +1013,8 @@ def test_no_image_marker_when_the_render_falls_back_to_the_tokenizer():
 
 
 def test_an_image_capable_processor_without_a_template_still_marks_its_turn():
-    """chat_render_target falls back to the nested tokenizer when the processor has no
-    template of its own, but the image is still placed. Keying the marker on the template
-    left a historical image attached to the newest, unrelated question (#10092)."""
+    """A processor with no template of its own still places the image, so keying the marker
+    on the template left a historical image on the newest, unrelated question (#10092)."""
     import os
     import sys
 
@@ -1094,7 +1026,6 @@ def test_an_image_capable_processor_without_a_template_still_marks_its_turn():
 
     backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
     backend.models["sf-model"]["is_vision"] = True
-    # Image-capable, but no processor body: the nested tokenizer renders it.
     backend.models["sf-model"]["chat_template_info"] = {
         "template": _CHATML_WITH_TOOLS,
         "renders_image": True,
@@ -1130,9 +1061,8 @@ def test_an_image_capable_processor_without_a_template_still_marks_its_turn():
 
 
 def test_a_catalog_render_failure_does_not_drop_the_system_turn():
-    """render_advertising_tools probes without tools first. If that render kept the system
-    turn, the role is supported, so a failure on the tools render is the catalog's and
-    dropping the instructions would answer the wrong question (#10092)."""
+    """Once the no-tools probe kept the system turn the role is supported, so a failure on
+    the tools render must not drop the caller's instructions (#10092)."""
     calls: list = []
 
     backend, seen = _vision_probe()
@@ -1156,18 +1086,15 @@ def test_a_catalog_render_failure_does_not_drop_the_system_turn():
             tools = [_LOOKUP],
         )
 
-    # It must not have retried with the system turn stripped.
     assert all(any(m.get("role") == "system" for m in attempt) for attempt in calls), calls
 
 
 def test_reasoning_is_not_rescued_from_the_tokenizer_body_on_an_image_turn():
-    """_detect_safetensors_features widens its reasoning search to the tokenizer body when
-    the given template shows none. That is right when classifying the model and wrong when
-    the caller asked about one body: the image turn would enable a native channel its own
-    renderer never selected (#10092).
+    """The reasoning search must not widen to the tokenizer body when the caller asked
+    about ONE body, or the image turn enables a channel its renderer never selected (#10092).
 
-    Deliberately does NOT stub _detect_safetensors_features: stubbing it is what made an
-    earlier version of this check pass with the fix reverted.
+    Deliberately does NOT stub _detect_safetensors_features: stubbing it made an earlier
+    version of this check pass with the fix reverted.
     """
     import routes.inference as inf
 
@@ -1177,7 +1104,6 @@ def test_reasoning_is_not_rescued_from_the_tokenizer_body_on_an_image_turn():
 
     class _Backend:
         active_model_name = "m"
-        # Only the TOKENIZER body carries the native reasoning channel.
         models = {
             "m": {
                 "chat_template_info": {
@@ -1195,15 +1121,13 @@ def test_reasoning_is_not_rescued_from_the_tokenizer_body_on_an_image_turn():
     widened = inf._detect_safetensors_features(backend, processor_body, prefer_tool_use = False)
 
     assert not features.get("supports_reasoning"), features
-    # The widened call is what the strict mode has to differ from; if this ever stops being
-    # True the test no longer proves anything.
+    # If the widened call ever stops being True the test no longer proves anything.
     assert widened.get("supports_reasoning"), widened
 
 
 def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
-    """The nudge retry attaches the image marker so the picture stays on its own turn, but
-    a vision-marked model whose processor cannot process images renders the tokenizer text
-    path. Keying that on the image alone handed a string-only template part lists (#10092)."""
+    """The nudge retry's image marker must be keyed on renders_image, not on the image
+    alone, or a text-path fallback is handed part lists (#10092)."""
     import os
     import sys
 
@@ -1228,7 +1152,6 @@ def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
 
     backend = passthrough._ScriptedBackend(responder)
     backend.models["sf-model"]["is_vision"] = True
-    # No renders_image: the image is ignored and the tokenizer text path renders.
     backend.models["sf-model"]["chat_template_info"] = {"template": _CHATML_WITH_TOOLS}
     payload = _image_request(tools = [passthrough.LOOKUP_TOOL], stream = False, nudge_tool_calls = True)
 

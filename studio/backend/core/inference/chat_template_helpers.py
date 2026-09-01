@@ -1840,12 +1840,10 @@ def _template_reads_tools(
     such a template round-trips a tool turn it never advertised, so the schema came from
     the caller's own system prompt and the catalog is authorized after all.
 
-    ``require_tools_variable`` drops that second clause for callers who need to know
-    whether THIS render will put the schema in the prompt, rather than whether the model
-    takes part in tool calling at all. Replaying a tool turn is not evidence of an
-    advertisement: a template that only round-trips renders byte-identically with and
-    without a catalog, so the healer would promote calls for tools the model never
-    saw (#7066)."""
+    ``require_tools_variable`` drops that second clause, for callers asking whether THIS
+    render puts the schema in the prompt: a template that only round-trips renders
+    byte-identically with and without a catalog, so the healer would otherwise promote
+    calls for tools the model never saw (#7066)."""
     bodies = _selected_template_strings_from_value(value, tools, prefer_tool_use = prefer_tool_use)
     if not bodies:
         # Unreadable, not proven silent. Emptying the catalog here would disable healing
@@ -1884,16 +1882,13 @@ def _renders_tool_schema(
 ) -> bool:
     """True unless the template *target* will select provably cannot advertise tools.
 
-    A processor is held to the stricter test. Its render goes straight through
-    ``apply_chat_template_for_generation`` with no native-template fallback behind it (the
-    native template of a text model cannot place the image), so what the processor's own
-    body does with ``tools`` is the whole answer. A tokenizer keeps the round-trip clause,
-    because ``renderable_tool_catalog`` still has the native template to fall back on.
+    A processor is held to the stricter test: its render has no native-template fallback
+    behind it (a text model's template cannot place the image), so what the processor's own
+    body does with ``tools`` is the whole answer.
 
     ``template_is_processor`` says the *template* is a processor body even though *target*
-    is not a processor object. Under the orchestrator the route has no live processor to
-    pass, only the body mirrored through worker IPC, so without this the mirrored body
-    would be judged by the permissive tokenizer rule (#10092)."""
+    is not: under the orchestrator the route has only the body mirrored through worker IPC,
+    which would otherwise be judged by the permissive tokenizer rule (#10092)."""
     if tools and not _accepts_tools_kwarg(target):
         return False
     value = template or getattr(target, "chat_template", None)
@@ -2002,10 +1997,7 @@ def renderable_tool_catalog(
     # (mlx_inference.py). When that default body never reads ``tools`` the schema cannot
     # reach the prompt at all, so every tool in the catalog is unadvertised and healing a
     # text-form call would promote one the model was never shown (#7066).
-    # ``template_is_processor`` counts here too: under the orchestrator the caller has only
-    # the mirrored processor BODY and passes tokenizer=None, so reading the flag during
-    # schema detection and dropping it here sent a processor body down the tokenizer's
-    # native-template rescue, which an image render never reaches (#10092).
+    # Counts here too: the orchestrator passes tokenizer=None, not a processor (#10092).
     if (template_is_processor or _is_processor(tokenizer)) and not active_renders_tools:
         return _unadvertised()
     # Resolved rather than read: render_native_template fetches it during the render, so on
@@ -3028,8 +3020,6 @@ def prompt_serializes_structured_media(prompt, messages) -> bool:
 def vlm_prompt_issue(prompt, messages) -> Optional[str]:
     """Name the way a VLM render came back unusable, else None.
 
-    An empty prompt and a prompt carrying the structured content object verbatim are both
-    templates that did not understand the image, not prompts a model can answer from.
     Shared by both backends so a defect one of them refuses stays refused by the other.
     """
     if not isinstance(prompt, str) or not prompt.strip():
@@ -3062,33 +3052,23 @@ def messages_with_attached_image(
 
     Prepends *system_prompt* as a leading system turn, then injects an ``{"type": "image"}``
     part into the LAST user turn and leaves every other turn -- assistant ``tool_calls``
-    and ``role="tool"`` results included -- exactly as the caller sent it. Rebuilding the
-    conversation from the newest user TEXT instead dropped the system instruction the
-    client-tools route folds into ``messages[0]`` and the tool history an OpenAI tool loop
-    replays from its second turn onward (#10092).
+    and ``role="tool"`` results included -- exactly as the caller sent it. Rebuilding from
+    the newest user TEXT instead dropped the folded system instruction and the tool history
+    an OpenAI tool loop replays (#10092).
 
-    Nothing the caller owns is mutated: the turn that gains the image is copied first,
-    along with its content list, because the caller still reads those dicts after
-    generation and a retry re-renders the same list.
+    Nothing the caller owns is mutated: callers still read those dicts after generation,
+    and a retry re-renders the same list.
 
-    *structured_content* wraps the system text in a content part list. The
-    transformers path renders through the processor, whose template expects parts, while
-    MLX may render through the nested text tokenizer, whose template expects a string.
+    *structured_content* wraps content in part lists, as a processor template expects; MLX
+    may render through the nested text tokenizer, whose template expects a string.
 
     *fallback_user_text* stands in for a user turn with no text of its own, and opens one
-    when the conversation has no user turn at all. Left empty, the conversation keeps
-    whatever it had: a backend that would rather refuse an image nobody asked about than
-    invent a question keeps refusing it.
+    when there is no user turn at all. Left empty, the conversation is unchanged, so a
+    backend that would rather refuse an image nobody asked about keeps refusing it.
     """
     conversation = list(messages or [])
     if structured_content:
-        # Wrap the turns ALREADY in the conversation too, not just the one inserted below.
-        # A processor template that expects parts expects them on EVERY message, so an
-        # image-plus-tools follow-up replaying assistant and role="tool" turns as bare
-        # strings fails while the template iterates them, and both backends re-raise rather
-        # than drop tool history, turning a valid request into a 500. Restricting this to
-        # system/developer covered only the folded instruction the client-tools route puts
-        # in messages[0] (#10092).
+        # EVERY message: a processor template raises on a replayed turn left as a string.
         def _as_parts(message):
             if not isinstance(message, dict):
                 return message
@@ -3097,10 +3077,7 @@ def messages_with_attached_image(
                 return message
             if isinstance(body, str) and body:
                 return {**message, "content": [{"type": "text", "text": body}]}
-            # Absent, None or empty. A standard OpenAI assistant tool-call turn loses its
-            # content key entirely to exclude_none, and a template that iterates or indexes
-            # content raises on the missing field just as it does on a bare string, so the
-            # empty list is the representation that keeps the turn renderable.
+            # exclude_none strips content from an assistant tool-call turn entirely.
             return {**message, "content": []}
 
         conversation = [_as_parts(m) for m in conversation]
@@ -3116,10 +3093,7 @@ def messages_with_attached_image(
                 ),
             },
         )
-    # The image is attached once. A nudge retry reruns generation with the same image over
-    # the original body plus an appended correction turn, and a plain reverse scan would
-    # hand the marker to that correction, leaving the question that asked about the picture
-    # image-less. A turn that already owns the attachment keeps it (#10092).
+    # Once: a reverse scan would mark a nudge retry's correction, not the question.
     if any(
         isinstance(m, dict)
         and isinstance(m.get("content"), list)
@@ -3142,8 +3116,6 @@ def messages_with_attached_image(
             break
         conversation[index] = {**message, "content": parts}
         return conversation
-    # No user turn the image could attach to. An image with nothing asked about it still
-    # has to reach the template, so open a turn rather than drop the attachment.
     if fallback_user_text:
         conversation.append(
             {
@@ -3159,15 +3131,13 @@ def render_advertising_tools(render, tools):
 
     Returns ``(prompt, advertised)``. *render* takes a catalog and returns a prompt.
 
-    Decided by comparing the two renders rather than by reading the template body, the way
-    the text path decides it (render_with_native_template_fallback): a body that merely
-    names the ``tools`` variable can still drop the schema, and a renderer taking
-    ``tools=`` through ``**kwargs`` can swallow it without ever raising.
+    Comparing the two renders rather than reading the body: a body that merely names the
+    ``tools`` variable can still drop the schema, and a renderer taking ``tools=`` through
+    ``**kwargs`` can swallow it without ever raising.
 
-    The no-tools probe runs FIRST so the prompt this turn will use is the last thing the
-    renderer produced: a probe left trailing hands anything that caches or observes the
-    render a prompt the request never used. A probe that raises answers "advertised" --
-    the render that failed is the throwaway one, and the with-tools prompt stands.
+    The no-tools probe runs FIRST so the prompt this turn uses is the last thing the
+    renderer produced, for anything that caches or observes the render. A probe that raises
+    answers "advertised": the render that failed is the throwaway one.
     """
     if not tools:
         return render(None), False
@@ -3262,19 +3232,15 @@ def render_prompt_with_boundary(
 def neutralize_for_render(tokenizer, messages: list, tools: Optional[list]):
     """Sweep the catalog and the messages for control markup, in the one correct order.
 
-    Returns ``(messages, tools, markup)``. Every render path has to do this before handing
-    anything to a template, so it lives in one place: the sweep is order dependent, and a
-    call site that re-derived it swept the messages against a profile the render would not
-    select (#7066).
+    Returns ``(messages, tools, markup)``. One place because the sweep is order dependent:
+    a call site that re-derived it swept the messages against a profile the render would
+    not select (#7066).
     """
-    # Gated on the loaded model's own markers, so text naming another family's sentinel is
-    # left alone.
+    # Gated on the loaded model's own markers, so another family's sentinel is left alone.
     markup = markup_for_tokenizer(tokenizer, tools)
     tools = neutralize_tool_descriptions(tools, None, markup)
-    # Sanitizing can empty the catalog, and an empty catalog renders with "default" rather
-    # than "tool_use". Re-profile before sweeping the messages, or they are swept against a
-    # template this request will not use and a default-only delimiter reaches the prompt
-    # raw. Order matters: the catalog is sanitized first so the selector is settled (#7066).
+    # Sanitizing can empty the catalog, which flips the selector, so re-profile first
+    # or the messages are swept against a template this request will not use (#7066).
     if bool(tools) != bool(markup and getattr(markup, "selected_with_tools", False)):
         markup = markup_for_tokenizer(tokenizer, tools)
     return neutralize_control_markup_in_messages(messages, None, markup), tools, markup

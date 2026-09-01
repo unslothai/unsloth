@@ -3348,10 +3348,7 @@ def _detect_safetensors_features(
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # The fallback widens the search to the tokenizer body and the unselected branches of a
-    # named collection. That is right when classifying the model, and wrong when the caller
-    # asked about ONE body: an image turn would enable <think> parsing for a protocol its
-    # renderer never selected and move answer text into reasoning_content (#10092).
+    # The fallback widens to the tokenizer body, wrong when ONE body was asked about.
     if not flags.get("supports_reasoning") and reasoning_fallback:
         try:
             from core.inference.chat_template_helpers import (
@@ -17948,11 +17945,9 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
     """Which user turn, counted among user turns, the selected image came from.
 
-    ``_extract_content_parts`` takes the newest user image from ANYWHERE in the thread,
-    while the renderers attach it to the newest user turn. When those differ the old
-    picture is rendered as though it accompanied the new question, so the route has to say
-    which turn owned it (#10092). Ordinal rather than index: the passthrough rebuild folds
-    system/developer turns together, so absolute positions do not survive it.
+    ``_extract_content_parts`` takes the newest user image from ANYWHERE in the thread
+    while the renderers attach it to the newest user turn (#10092). Ordinal rather than
+    index: the passthrough rebuild folds system/developer turns together.
     """
     ordinal = None
     seen = 0
@@ -22279,19 +22274,13 @@ async def produce_openai_chat_completions(
         prefer_tool_use = True,
     ):
         body = _sf_tpl if template is None else template
-        # Only forward the non-default, the same shape the vision render uses for tools=:
-        # passing it unconditionally breaks every caller and test stub that predates the
-        # parameter, and the default is what all of them already assume.
+        # Forward only the non-default: unconditional breaks stubs predating the parameter.
         _pref = {} if prefer_tool_use else {"prefer_tool_use": False}
         if template is not None:
-            # Asking about one specific body, so do not let the fallback rescue reasoning
-            # support from the tokenizer body or an unselected branch.
+            # One specific body, so no reasoning rescue from an unselected branch.
             _pref["reasoning_fallback"] = False
         features = _detect_safetensors_features(backend, body, tools = tools, **_pref)
-        # The prefill probe needs the ONE body that will render, not the named collection
-        # it came from: its <think> guard tests the collection's keys and returns False, so
-        # a selected branch that prefills an open block would be missed. Feature detection
-        # already resolves the same way (#10092).
+        # The prefill probe needs the ONE body that renders, not the collection (#10092).
         try:
             from core.inference.chat_template_helpers import (
                 _selected_template_strings_from_value,
@@ -22881,31 +22870,20 @@ async def produce_openai_chat_completions(
     # tools into the template, generate one turn, heal text-form calls (#6801).
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
-    # None under the orchestrator, which mirrors metadata rather than a live processor, so
-    # the body is read from that mirror. Resolved BEFORE the capability gate below: an
-    # image renders through the processor body, so classifying tool support from the
-    # tokenizer body would disable the catalog for a VLM whose processor template
-    # advertises tools its nested tokenizer never does (#10092).
+    # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
     _sf_image_tpl = (
         (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
         if image is not None
         else None
     )
-    # "Will an image actually be placed" is a different question from "which body renders
-    # it". An image-capable processor with no template of its own still places the image
-    # and falls back to the nested tokenizer, so keying the marker on the template alone
-    # left a historical image attached to the newest turn for those models (#10092).
+    # Differs from processor_template: a template-less processor still places the image.
     _sf_renders_image = image is not None and bool(
         (_sf_model_info.get("chat_template_info") or {}).get("renders_image")
     )
     if _sf_image_tpl is not None:
-        # Reclassify the WHOLE protocol from the body this turn renders with, not just
-        # tool support. A processor template can carry a reasoning channel the nested
-        # tokenizer never declares, and both VLM backends normalize it into <think>
-        # markup; classifying from the tokenizer body left the route treating that markup
-        # as visible content, leaking reasoning and letting the healer read it (#10092).
-        # prefer_tool_use is off because a ProcessorMixin render never implicitly selects
-        # the "tool_use" branch, the same rule _renders_tool_schema applies.
+        # The WHOLE protocol, not just tool support: a processor body can carry a reasoning
+        # channel the tokenizer never declares, whose <think> markup then leaked as visible
+        # content. prefer_tool_use is off: a processor never selects "tool_use" (#10092).
         _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
             _sf_template_tools,
             template = _sf_image_tpl,
@@ -22918,10 +22896,8 @@ async def produce_openai_chat_completions(
         # Read the resolved value, not a fresh _effective_enable_tools: the gate
         # above withdraws the launcher default for exactly these requests, and
         # recomputing here would hide that and drop the client catalog.
-        # An explicit enable_tools/mcp_enabled ask normally claims the request for the
-        # server loop, which still refuses images. Withdrawing the client catalog too
-        # would answer an image-plus-tools request with prose and no schemas at all, so
-        # once the image has ruled the server loop out the passthrough takes it (#10092).
+        # Once an image rules out the server loop the passthrough takes the request, or
+        # image-plus-tools is answered with prose and no schemas at all (#10092).
         (not _sf_tools_on or (image is not None and not _sf_use_tools))
         and not _sf_use_tools
         and not _sf_is_gptoss
@@ -22954,11 +22930,8 @@ async def produce_openai_chat_completions(
     _sf_chat_targets = (
         (_sf_mlx_target,) if _sf_hf_target is _sf_mlx_target else (_sf_mlx_target, _sf_hf_target)
     )
-    # An image turn renders through the PROCESSOR on both backends
-    # (_generate_vision_response, _generate_vlm), and its template is a different file from
-    # the tokenizer's for most VLMs: Qwen2.5-VL's processor body never mentions tools while
-    # its tokenizer body does. Authorizing healing from the tokenizer body would promote a
-    # text-form call for a schema that render never carried (#7066). The objects above are
+    # Qwen2.5-VL's processor body never mentions tools while its tokenizer body does, so
+    # healing from the tokenizer body promotes a call the render never carried (#7066).
     _sf_healing_tools = (
         # Safe under EVERY template this turn could select: when the active one drops the
         # schema the render falls back to the native template, whose profile can drop a tool
@@ -22992,15 +22965,9 @@ async def produce_openai_chat_completions(
             ),
             system_prompt,
         )
-        # The selected image may have come from an earlier user turn than the one being
-        # answered, and flattening drops the part that recorded where. Mark the owning turn
-        # so the renderers' newest-user-turn scan does not move the picture onto a later
-        # question; messages_with_attached_image leaves an attachment already in place.
-        # Gate on the mirrored processor body, not just on an image being present. A
-        # vision-marked model whose processor cannot process images has the image ignored
-        # and renders through the tokenizer's text template, and the mirror omits the body
-        # for exactly that case, so a string-only template would otherwise be handed part
-        # lists. Unknown means leave the conversation as the caller sent it (#10092).
+        # Mark the turn that owns the image so the newest-user-turn scan does not move an
+        # older picture onto a later question. Gated on _sf_renders_image, not on an image:
+        # a text-template render must not be handed part lists (#10092).
         if _sf_renders_image:
             _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
             if _sf_image_ordinal is not None:
@@ -23046,8 +23013,7 @@ async def produce_openai_chat_completions(
     # known. This standard path now has the exact schemas that will be rendered,
     # so resolve reasoning parsing again to keep empty registries, forced-tool
     # misses, and tool_choice="none" on the marker-free template branch.
-    # Same body the turn renders with: on an image turn that is the processor template,
-    # and re-resolving from the tokenizer body here would undo the reclassification above.
+    # Re-resolving from the tokenizer body here would undo the reclassification above.
     _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
         gen_kwargs.get("tools"),
         template = _sf_image_tpl,
@@ -23408,9 +23374,8 @@ async def produce_openai_chat_completions(
                             # completion count.
                             _first_stats = stats_holder.pop("stats", None)
                             try:
-                                # Mark the turn the picture belongs to before the
-                                # correction is appended, or the render's reverse scan
-                                # attaches it to the correction instead (#10092).
+                                # Mark the owning turn before the correction is appended,
+                                # or the reverse scan attaches the picture to it (#10092).
                                 _nudge_base = gen_kwargs["messages"]
                                 if _sf_renders_image:
                                     from core.inference.chat_template_helpers import (

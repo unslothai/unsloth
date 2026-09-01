@@ -16,9 +16,7 @@ from core.inference.runtime_context import (
     runtime_context_length,
 )
 from core.inference.chat_template_helpers import (
-    # Aliased to the names this module has always used. The bodies moved to the shared
-    # helper module so the transformers vision path answers "did this render work?" and
-    # "does this conversation replay tool turns?" exactly as the VLM path does (#10092).
+    # Aliased to this module's historic names; bodies moved to the shared helper (#10092).
     count_structured_images as _count_vlm_images,
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
@@ -1888,14 +1886,8 @@ class MLXInferenceBackend:
             "format_type": "generic",
             "special_tokens": {},
             "template_name": None,
-            # The body _generate_vlm renders an image turn with when the processor has its
-            # own template (chat_render_target). The route authorizes image-turn tool
-            # healing from this, and only the parent-side mirror can carry it, so leaving
-            # it out here profiles MLX image turns from the tokenizer body instead
-            # (#10092). Absent whenever the render picks the nested tokenizer instead.
+            # The body _generate_vlm renders an image turn with, not the tokenizer body.
             "processor_template": None,
-            # An image-capable processor with no template of its own still places the
-            # image; the render just falls back to the nested tokenizer body (#10092).
             "renders_image": False,
         }
         from core.inference.chat_template_helpers import (
@@ -1903,15 +1895,10 @@ class MLXInferenceBackend:
         )
 
         _proc = entry.get("processor")
-        # chat_render_target also falls back to the nested tokenizer when the processor has
-        # no apply_chat_template, so a processor template alone does not mean the render
-        # selects it. Ask the helper rather than re-deriving the rule, which is what let the
-        # two drift in #7066.
+        # A processor template alone does not mean the render selects it (#7066).
         _proc_tpl = (
             getattr(_proc, "chat_template", None) if _chat_render_target(_proc) is _proc else None
         )
-        # list/tuple is the named-template form _selected_template_strings_from_value and
-        # model_markup both accept; narrowing it away would drop the override for it.
         if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
             info["processor_template"] = _proc_tpl
         info["renders_image"] = _proc is not None and bool(getattr(self, "_is_vlm", False))
@@ -2122,16 +2109,9 @@ class MLXInferenceBackend:
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
-        # Shared with the transformers vision path (_generate_vision_response), which has
-        # to keep the same turns: it also folds the system prompt in and attaches the image
-        # to the newest user turn without touching the rest of the history (#10092). Also
-        # copies rather than mutating, so a caller reading its own message dicts after
-        # generation does not find a content list this render rewrote.
+        # Shared with the transformers vision path so both render the same turns (#10092).
         if self._is_vlm and image is not None:
-            # A processor template expects every content field to be a list of parts, so a
-            # bare system string raises there and _render_vlm_prompt refuses its no-system
-            # retry once tools were asked for. The nested-tokenizer fallback wants plain
-            # strings, so follow whichever body chat_render_target actually selects.
+            # Processor templates want part lists, the tokenizer fallback wants strings.
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
             )
