@@ -1732,6 +1732,11 @@
         "kind": "def",
         "signature": "content: str, *, id_offset: int=0, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
       },
+      "promotable_gemma_call_pos": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names, start: int=0"
+      },
       "reasoning_cap_spent_message": {
         "decorators": [],
         "kind": "def",

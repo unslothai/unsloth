@@ -390,6 +390,7 @@ from core.inference.tool_call_parser import (
     blocked_gemma_chain_may_continue,
     leading_blocked_bare_json_end,
     leading_bare_gemma_call_is_promotable,
+    promotable_gemma_call_pos,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -1594,7 +1595,9 @@ def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) 
             continue
         if sig in text:
             return True
-    return False
+    # Bare Gemma is not in ``signals`` but the parser promotes it wherever it sits, so a
+    # mid-prose one is a boundary too; otherwise its text streams before the call runs.
+    return promotable_gemma_call_pos(text, set(_gguf_active_tool_names(active_tools))) >= 0
 
 
 _TEXT_TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w.\-]+)"')

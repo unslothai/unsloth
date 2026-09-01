@@ -842,3 +842,30 @@ def test_the_attribute_form_parameter_opener_survives_decoding():
     without = full.replace('<parameter name="city">', "")
     emptied = parse_tool_calls_from_text(without, enabled_tool_names = {"get_weather"})
     assert json.loads(emptied[0]["function"]["arguments"]) == {}
+
+
+def test_a_promotable_bare_gemma_call_is_a_streaming_boundary():
+    """Bare Gemma has no ``TOOL_XML_SIGNALS`` entry, but the parser promotes it anywhere.
+
+    Without a boundary the detectors cannot see a mid-prose call, so its serialization
+    reaches the client and only then executes. The boundary is the call's own start, so the
+    prose ahead of it still streams.
+    """
+    from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
+    from core.inference.safetensors_agentic import _earliest_tool_signal
+    from core.inference.tool_call_parser import TOOL_XML_SIGNALS, promotable_gemma_call_pos
+
+    text = 'Here is some prose call:web_search{query:"x"}'
+    assert promotable_gemma_call_pos(text, EXEC_ENABLED) == text.index("call:web_search")
+    assert _earliest_tool_signal(text, TOOL_XML_SIGNALS, EXEC_TOOLS) == text.index("call:")
+    assert _gguf_has_genuine_tool_signal(text, TOOL_XML_SIGNALS, EXEC_TOOLS) is True
+
+    # A blocked or disabled name is prose and must not become a boundary.
+    for prose in (
+        'Do not run call:terminal{command:"id"}',
+        "Do not run call:nope{a:1}",
+        "I will call the tool",
+    ):
+        assert promotable_gemma_call_pos(prose, EXEC_ENABLED) == -1, prose
+        assert _earliest_tool_signal(prose, TOOL_XML_SIGNALS, EXEC_TOOLS) == -1, prose
+        assert _gguf_has_genuine_tool_signal(prose, TOOL_XML_SIGNALS, EXEC_TOOLS) is False, prose

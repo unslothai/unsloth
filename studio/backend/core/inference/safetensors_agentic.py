@@ -29,6 +29,7 @@ from core.inference.tool_call_parser import (
     blocked_bare_json_chain_may_continue,
     blocked_gemma_chain_may_continue,
     leading_bare_gemma_call_is_promotable,
+    promotable_gemma_call_pos,
     _strip_mistral_reasoning,
     strip_segment as _parser_strip_segment,
     BUDGET_EXHAUSTED_NUDGE,
@@ -222,6 +223,13 @@ def _earliest_tool_signal(
                 break
             # Bare/prose [ARGS]: skip it so a later real call in the same chunk is still found.
             from_idx = p + len("[ARGS]")
+    # Bare Gemma is not in ``signals`` but the parser promotes it wherever it sits, so a
+    # mid-prose one has to be a boundary too or its text streams before the call runs.
+    gemma = promotable_gemma_call_pos(
+        candidate, None if unrestricted else _active_tool_names(active_tools), start
+    )
+    if gemma >= 0 and (best < 0 or gemma < best):
+        best = gemma
     return best
 
 

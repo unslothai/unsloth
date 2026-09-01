@@ -2859,6 +2859,24 @@ def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional
         suffix = suffix[peer_end + 1 :].lstrip(" \t\n\r;")
 
 
+def promotable_gemma_call_pos(
+    text: str,
+    enabled_tool_names,
+    start: int = 0,
+) -> int:
+    """Offset of the first bare ``call:NAME{`` the parser would promote, or -1.
+
+    Bare Gemma has no entry in ``TOOL_XML_SIGNALS``, so without this the streaming detectors
+    cannot see a mid-prose call the parser promotes anyway, and its serialization reaches the
+    client before the call runs. The boundary is the call's own start, so the prose ahead of
+    it still streams.
+    """
+    for m in _GEMMA_BARE_TC_RE.finditer(text, start):
+        if _markerless_promotable(m.group(1), enabled_tool_names):
+            return m.start()
+    return -1
+
+
 def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
     """Whether a leading guarded ``call:NAME{..}`` still hides a call the parser will promote.
 
