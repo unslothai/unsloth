@@ -189,11 +189,8 @@ class TestMlaTargetCtxReserve:
         assert mtp > separate
 
     def test_one_layer_mtp_arch_drops_target_copy(self):
-        # glm5next's MTP context covers only the NextN block, so llama.cpp
-        # allocates one layer of cache instead of copying the trunk's: measured
-        # 4+3 MiB against 48+36 MiB over 12 layers at n_ctx 4096. Charging the
-        # copy would shrink the fitted context or set drafter_no_vram, and Auto
-        # would then fall back to ngram for the arch this reserve is priced for.
+        # A NextN-only MTP context allocates no copy, and charging one trips
+        # drafter_no_vram, dropping the very MTP the reserve is priced for.
         b = _make_mla_backend()
         b._architecture = "glm5next"
         other = _make_mla_backend()

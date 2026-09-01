@@ -2280,12 +2280,7 @@ def test_reload_forced_mtp_bounces_auto_mla():
     )
 
 
-# ── The MLA archs exempt from that gate (measured faster, not slower) ──
-#
-# glm5next (GLM-5.3-Flash) is MLA with an embedded NextN head, so it matches the
-# gate above on metadata alone, but its MTP path is 1.31x FASTER rather than 2x
-# slower: it runs the NextN block against its own one-layer KV cache instead of
-# duplicating the trunk's. Auto must therefore keep draft-mtp for it.
+# glm5next matches the MLA gate on metadata, but its MTP is 1.31x faster, not slower.
 _GLM5NEXT_MODEL = "unsloth/GLM-5.3-Flash-GGUF"
 
 
@@ -2308,8 +2303,7 @@ def test_auto_glm5next_keeps_draft_mtp(monkeypatch):
 
 
 def test_auto_glm5next_hyphenated_arch_still_gated(monkeypatch):
-    # A second upstream port spells the same model "glm5-next" and never builds
-    # the NextN graph, so the exemption must not spill onto that spelling.
+    # The "glm5-next" port never builds the NextN graph: no spillover.
     backend = _mla_resolver_backend(monkeypatch)
     backend._architecture = "glm5-next"
     flags = backend._build_speculative_flags(
@@ -2335,10 +2329,7 @@ def test_arch_has_fast_mla_mtp_is_case_and_space_tolerant():
 
 
 def test_glm5next_target_kv_excludes_nextn():
-    # Both upstream ports install a trunk filter (llama-model.cpp) returning
-    # il < n_layer() && !is_recr(il), so blk.45 gets no target KV and reserving
-    # for it would cost context. The KV sizing is shared even though only the
-    # unhyphenated port runs the NextN graph.
+    # Both ports filter il < n_layer() && !is_recr(il), so blk.45 gets no target KV.
     assert "glm5next" in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
     assert "glm5-next" in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
 

@@ -3376,20 +3376,10 @@ def _auto_mode_drops_mtp(
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
 
 
-# MLA architectures whose MTP context runs the NextN block against a cache of just
-# that block's layers instead of duplicating the trunk's KV. Named individually, so
-# a new MLA arch keeps the conservative default until someone reads its filter.
-#
-# One fact, two consequences: not paying for the duplicate is why Auto keeps MTP
-# here (the gate below) and why the fit must not reserve for it (_estimate_mtp_
-# overhead_bytes). glm5next (GLM-5.3-Flash) at n_ctx 4096 allocates 4+3 MiB over one
-# layer where the trunk holds 48+36 MiB over twelve.
-# unslothai/llama.cpp b10715-mix-86bd2d3, UD-IQ1_S on one B200, --spec-draft-n-max 3:
-# 61.1 -> 80.2 tok/s (1.31x), draft acceptance 0.634.
-#
-# Only the unhyphenated spelling. A second upstream port of the same model uses the
-# arch name "glm5-next" and does not implement the NextN graph at all (it loads the
-# blk.45 tensors and logs them as unused), so Auto must not promote MTP there.
+# MLA archs whose MTP context covers only the NextN block instead of duplicating the
+# trunk KV: glm5next holds 4+3 MiB over one layer where its trunk holds 48+36 over
+# twelve. That one fact is why Auto keeps MTP (gate below) and why the fit must not
+# reserve the copy (_estimate_mtp_overhead_bytes). Not "glm5-next": no NextN graph.
 _MLA_MTP_FAST_ARCHS = frozenset({"glm5next"})
 
 
@@ -4095,9 +4085,7 @@ _TARGET_KV_EXCLUDES_NEXTN_ARCHS = frozenset(
         # MLA/DSA trunk with a dense MTP head, llama-model.cpp:2129
         "glm-dsa",
         "deepseek32",
-        # Hybrid KDA + DSA trunk, filtered in the same block as the Qwen hybrids.
-        # Both upstream spellings of GLM-5.3-Flash keep blk.45 out of the trunk cache,
-        # so the sizing is the same either way even though only glm5next runs NextN.
+        # Hybrid KDA + DSA trunk; both GLM-5.3-Flash ports filter blk.45 out
         "glm5next",
         "glm5-next",
         # Plain attention trunk with an explicit nextn filter, llama-model.cpp:2356
@@ -11869,9 +11857,8 @@ class LlamaCppBackend:
         # separate-drafter spec modes (draft-simple/draft-eagle3) load a small
         # distinct drafter with its own KV -- already counted in draft_kv/weights --
         # rather than duplicating the target, so they must not be charged for it.
-        # Third gate: an MLA arch whose MTP context covers only the NextN layers
-        # never allocates that copy, so charging it shrinks the fitted context or
-        # trips drafter_no_vram, which drops the MTP the fit was reserving for.
+        # Third gate: a NextN-only MTP context never allocates the copy, and
+        # charging it trips drafter_no_vram, losing the MTP being reserved for.
         target_ctx_copy = 0
         if (
             mtp_keeps_target_ctx
