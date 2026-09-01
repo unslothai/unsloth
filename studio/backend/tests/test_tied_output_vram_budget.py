@@ -956,14 +956,10 @@ def test_only_the_emitters_that_pin_the_drafter_lend_it_the_main_device(monkeypa
 
     generated = ["--model-draft", "draft.gguf", "--device", "none"]
     assert llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}) is True
-    assert (
-        llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}, dspark_drafter = True) is False
-    )
+    assert llama_cpp._extra_args_draft_offloaded_to_cpu(generated, {}, dspark_drafter = True) is False
     # An explicit draft pin still owns the drafter, DSpark included.
     explicit = ["--model-draft", "draft.gguf", "--spec-draft-device", "none"]
-    assert (
-        llama_cpp._extra_args_draft_offloaded_to_cpu(explicit, {}, dspark_drafter = True) is True
-    )
+    assert llama_cpp._extra_args_draft_offloaded_to_cpu(explicit, {}, dspark_drafter = True) is True
     assert (
         llama_cpp._extra_args_draft_offloaded_to_cpu(
             ["--spec-draft-ngl", "0"], {}, dspark_drafter = True
