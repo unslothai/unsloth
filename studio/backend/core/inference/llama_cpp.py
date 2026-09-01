@@ -10503,6 +10503,12 @@ class LlamaCppBackend:
         # vouch for cannot be told from a host that has no gpu at all
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
+        # A tied model's duplicated output matrix is the one weight the mmap premise
+        # above does not cover: it is built from token_embd rather than read from the
+        # file, so it is an anonymous allocation that cannot page back to disk. Left
+        # out, a host whose RAM is within one embedding matrix of the requirement is
+        # neither warned nor given the pageable override, and is OOM-killed instead.
+        model_bytes += self._tied_output_bytes(model_path)
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)

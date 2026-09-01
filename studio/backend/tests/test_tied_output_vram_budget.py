@@ -847,3 +847,57 @@ def test_the_two_corrections_only_cancel_as_a_set(backend, tied_gguf_with_ple):
         "the host-pinned discount alone UNDER-charges by one vocabulary matrix, "
         "which is the direction that fails a launch"
     )
+
+
+@pytest.fixture
+def mib_embd_pair(tmp_path: Path) -> "tuple[Path, Path]":
+    """A tied and an untied model whose embedding matrix is exactly 1 MiB."""
+    rows = (256, 1024)  # 262144 f32 elements
+    return (
+        _write_gguf(
+            tmp_path / "tied_mib.gguf",
+            [("token_embd.weight", rows), ("blk.0.attn_q.weight", (8, 8))],
+        ),
+        _write_gguf(
+            tmp_path / "untied_mib.gguf",
+            [
+                ("token_embd.weight", rows),
+                ("output.weight", rows),
+                ("blk.0.attn_q.weight", (8, 8)),
+            ],
+        ),
+    )
+
+
+def test_the_host_shortfall_prices_the_tied_duplicate(backend, mib_embd_pair):
+    """The duplicate is the one weight that cannot page back to disk.
+
+    The rest of an oversized load survives because it is mmap'd, which is also
+    what the pageable-load override is protecting. The duplicate is built from
+    ``token_embd`` rather than read from the file, so it is an anonymous
+    allocation: a host within one embedding matrix of the requirement is
+    OOM-killed rather than run slowly, and must be warned.
+
+    Priced at the boundary, so the assertion is the term and not a margin: 20 GiB
+    of weights against 4 GiB of VRAM spills exactly 16 GiB, and available RAM is
+    set to exactly that plus the reserved headroom.
+    """
+    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
+
+    tied, untied = mib_embd_pair
+    assert backend._tied_output_bytes(str(tied)) == 1024 * 1024
+    assert backend._tied_output_bytes(str(untied)) == 0
+
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    avail_mib = 16 * 1024 + _HOST_RAM_HEADROOM_MIB
+
+    def priced(path: Path):
+        return instance._launch_host_shortfall_message(
+            ["llama-server", "-m", str(path)],
+            [(0, 4 * 1024)],
+            avail_mib = avail_mib,
+        )
+
+    assert priced(tied) is not None, "the tied duplicate is missing from the host floor"
+    assert priced(untied) is None, "a model shipping its own output must not be charged twice"
