@@ -102,9 +102,19 @@ test("usage past the window clamps to 100 percent", () => {
 test("the limit advice follows the backend and the unclamped ratio", () => {
   const at = { used: 40000, total: 32768 };
   assert.equal(deriveContextUsageBar(at)?.advice, "stops-at-limit");
-  assert.equal(deriveContextUsageBar({ ...at, isMlx: true })?.advice, "mlx-past-limit");
+  // The MLX branches are about the ratio, so they state the bound they assume: an
+  // unconfirmed window advises on its own terms (see mlx-context-helpers).
   assert.equal(
-    deriveContextUsageBar({ used: 30000, total: 32768, isMlx: true })?.advice,
+    deriveContextUsageBar({ ...at, isMlx: true, contextEnforced: true })?.advice,
+    "mlx-past-limit",
+  );
+  assert.equal(
+    deriveContextUsageBar({
+      used: 30000,
+      total: 32768,
+      isMlx: true,
+      contextEnforced: true,
+    })?.advice,
     "mlx-near-limit",
   );
   assert.equal(deriveContextUsageBar({ used: 4096, total: 32768 })?.advice, "none");

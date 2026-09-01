@@ -164,11 +164,13 @@ test("--fit owns sizing only for an unpinned GGUF on manual auto-layers", () => 
 });
 
 test("the usage bar names the three ways a window can end", () => {
+  // Bounded unless a case says otherwise: an unconfirmed window is its own answer below.
   const at = (used: number, extra: Record<string, unknown> = {}) =>
     deriveContextUsageBar({
       used,
       total: 32768,
       isMlx: true,
+      contextEnforced: true,
       ...extra,
     })?.advice;
   assert.equal(at(1000), "none");
@@ -179,7 +181,13 @@ test("the usage bar names the three ways a window can end", () => {
   assert.equal(at(30000, { contextEnforced: false }), "unenforced-limit");
   assert.equal(at(40000, { contextEnforced: false }), "unenforced-limit");
   assert.equal(at(30000, { contextEnforced: true }), "mlx-near-limit");
-  assert.equal(at(30000, { contextEnforced: null }), "mlx-near-limit");
+  // Unjudged says the same thing operationally: a probe that could not build a cache
+  // installed no window, so it grows exactly as a confirmed unenforced one does, and
+  // rotating-cache advice would be the opposite of true.
+  assert.equal(at(30000, { contextEnforced: null }), "unenforced-limit");
+  assert.equal(at(30000, { contextEnforced: undefined }), "unenforced-limit");
+  // Only for MLX: nothing else installs a window whose bound could go unjudged.
+  assert.equal(at(30000, { isMlx: false, contextEnforced: null }), "stops-at-limit");
 });
 
 test("an outgoing self-sizing window does not become the next model's request", () => {

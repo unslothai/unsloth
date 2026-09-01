@@ -53,8 +53,10 @@ function contextLimitAdvice(
 ): ContextLimitAdvice {
   if ((used / total) * 100 <= 85) return "none";
   // A window the backend confirmed does not bound the cache is not a limit at all:
-  // nothing rotates and nothing stops, so neither of the other two is true of it.
-  if (enforced === false) return "unenforced-limit";
+  // nothing rotates and nothing stops, so neither of the other two is true of it. An
+  // unjudged MLX window says the same thing operationally: the probe could not build a
+  // cache, so none was bounded and it grows exactly as a confirmed false one does.
+  if (enforced === false || (isMlx && enforced == null)) return "unenforced-limit";
   if (!isMlx) return "stops-at-limit";
   return used > total ? "mlx-past-limit" : "mlx-near-limit";
 }

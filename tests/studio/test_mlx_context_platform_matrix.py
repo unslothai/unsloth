@@ -140,6 +140,10 @@ _NOT_A_REAL_CELL = (
     "macOS build. Kept as an expectation about the detector's ordering, not a machine."
 )
 
+# The reasons hardware.py groups as "no GPU this torch can use" (see its own tuple in
+# _chat_only_reason): a CPU-only wheel and an unusable CUDA build are not "no_gpu".
+_CPU_ONLY_REASONS = ("no_gpu", "torch_cpu_build", "torch_cuda_unavailable")
+
 EXPECTED: dict[tuple[str, str], Expectation] = {
     # --- Windows -----------------------------------------------------------------
     ("windows", "nvidia"): Expectation(
@@ -301,7 +305,15 @@ def test_detected_device_per_cell(os_key, vendor, spoof_cell):
         hw.DeviceType, expected.device
     ), f"{os_key}/{vendor}: expected {expected.device}, got {device!r}. {expected.note}"
     assert hw.IS_ROCM is expected.is_rocm, f"{os_key}/{vendor}: IS_ROCM"
-    assert hw.CHAT_ONLY_REASON == expected.chat_only_reason, f"{os_key}/{vendor}: chat-only reason"
+    # A CPU cell names one of the three reasons hardware.py itself groups: which one
+    # depends on whether the HOST has GPUs this torch cannot use, so pinning a single
+    # spelling would pass on a GPU-less runner and fail on a GPU box, and vice versa.
+    if expected.chat_only_reason == "no_gpu":
+        assert hw.CHAT_ONLY_REASON in _CPU_ONLY_REASONS, f"{os_key}/{vendor}: chat-only reason"
+    else:
+        assert hw.CHAT_ONLY_REASON == expected.chat_only_reason, (
+            f"{os_key}/{vendor}: chat-only reason"
+        )
 
 
 # ======================================================================================

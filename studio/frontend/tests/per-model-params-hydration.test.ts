@@ -605,8 +605,10 @@ test("a remembered budget is capped by a non-GGUF load", () => {
     ),
     "utf8",
   );
-  // Reported for a safetensors load too, so the cap is not narrowed to GGUF.
-  assert.match(status, /maxTokensCap: status\.context_length \?\? undefined,/);
+  // Reported for a safetensors load too, so the cap is not narrowed to GGUF, and
+  // through the same floor the load paths use: hydration must not clamp Max Tokens
+  // below its own slider either.
+  assert.match(status, /maxTokensCap: replayMaxTokensCap\(status\.context_length\),/);
 });
 
 // The clamp itself, through the store: the memory holds a budget from a larger

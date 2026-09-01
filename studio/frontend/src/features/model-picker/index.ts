@@ -58,6 +58,7 @@ export {
   contextPinPatch,
   listPerModelConfigs,
   isServedByMlx,
+  residentIsServedByMlx,
   savedContextPin,
   loadedContextFields,
   presetLoadSettingNames,

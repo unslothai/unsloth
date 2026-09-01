@@ -12,7 +12,10 @@ import {
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
-import { mergeBackendRecommendedInference } from "../presets/preset-policy";
+import {
+  mergeBackendRecommendedInference,
+  replayMaxTokensCap,
+} from "../presets/preset-policy";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   CHAT_REASONING_ENABLED_KEY,
@@ -173,7 +176,7 @@ export function applyActiveModelStatusToStore(
       // narrowed to GGUF; absent, there is nothing to cap against.
       {
         fromModelDefaults: true,
-        maxTokensCap: status.context_length ?? undefined,
+        maxTokensCap: replayMaxTokensCap(status.context_length),
       },
     );
   }
@@ -697,7 +700,7 @@ export function applyActiveModelStatusToStore(
         { ...current.params, ...qwenParams },
         {
           fromModelDefaults: true,
-          maxTokensCap: status.context_length ?? undefined,
+          maxTokensCap: replayMaxTokensCap(status.context_length),
         },
       );
     }

@@ -115,6 +115,7 @@ import {
   currentRuntimePerModelConfig,
   isServedByMlx,
   normalizeMaxSeqLength,
+  residentIsServedByMlx,
   resolveInitialConfig,
   type PerModelConfig,
   loadedContextFields,
@@ -1248,10 +1249,13 @@ export function useChatModelRuntime() {
               : null) ?? maxSeqLength;
           // The intent the model had, not the length it ended up at: sending the
           // resolved length would pin a model nobody pinned.
-          const previousIsMlx = isServedByMlx(
+          // The resident backend's own answer, so a native-audio checkpoint the worker
+          // served off the MLX path does not roll back at the sentinel.
+          const previousIsMlx = residentIsServedByMlx(
             previousIsGguf,
             platform.deviceType,
             platform.chatOnlyReason,
+            stateBeforeUnload.loadedIsMlx,
           );
           // What the outgoing model loaded with, not the control's value: a pin typed
           // and never applied would change a window the failed switch never touched.

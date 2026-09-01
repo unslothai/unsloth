@@ -541,3 +541,12 @@ test("a resident MLX pin from another tab is adopted, not read as Auto", () => {
   });
   assert.equal(gguf.customContextLength, null);
 });
+
+test("a failed switch rolls back on the backend that served the outgoing model", () => {
+  // The platform alone would call a native-audio checkpoint MLX on a Mac and roll it
+  // back at the auto-size sentinel, losing the context it was actually serving.
+  assert.match(
+    RUNTIME,
+    /const previousIsMlx = residentIsServedByMlx\(\s*\n\s*previousIsGguf,\s*\n\s*platform\.deviceType,\s*\n\s*platform\.chatOnlyReason,\s*\n\s*stateBeforeUnload\.loadedIsMlx,\s*\n\s*\);/,
+  );
+});
