@@ -730,6 +730,9 @@ _stdio_reaper_started = False
 # stale. Bump a generation on every close so that connect discards its
 # session instead of publishing it. Guarded by _stdio_sessions_lock.
 _stdio_close_all_gen = 0
+# "close everything in one workspace", kept apart from the shutdown counter above
+# so one account's bulk close cannot reject another account's live connection.
+_stdio_subject_close_gen: dict[str, int] = {}
 _stdio_url_close_gen: dict[str, int] = {}
 _stdio_cfg_close_gen: dict[tuple, int] = {}
 
@@ -741,22 +744,29 @@ def _headers_key(headers: Optional[dict]) -> tuple:
     return tuple(sorted((headers or {}).items()))
 
 
-def _url_close_key(url: str) -> str:
+def _url_close_key(url: str, subject: Optional[str] = None) -> str:
     # Commands/URLs (token args, embedded credentials) and env values can hold
     # secrets and these maps are never pruned; key by digest so closed/edited
-    # configs don't retain them in memory forever.
-    return hashlib.sha256(url.encode()).hexdigest()
+    # configs don't retain them in memory forever. Scoped by workspace so editing
+    # one account's row does not invalidate another's identical command.
+    return hashlib.sha256(
+        repr((subject or current_workspace_subject(), url)).encode()
+    ).hexdigest()
 
 
-def _cfg_close_key(url: str, headers: Optional[dict]) -> str:
-    return hashlib.sha256(repr((url, _headers_key(headers))).encode()).hexdigest()
+def _cfg_close_key(url: str, headers: Optional[dict], subject: Optional[str] = None) -> str:
+    return hashlib.sha256(
+        repr((subject or current_workspace_subject(), url, _headers_key(headers))).encode()
+    ).hexdigest()
 
 
-def _stdio_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int]:
+def _stdio_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int, int]:
+    subject = current_workspace_subject()
     return (
         _stdio_close_all_gen,
-        _stdio_url_close_gen.get(_url_close_key(url), 0),
-        _stdio_cfg_close_gen.get(_cfg_close_key(url, headers), 0),
+        _stdio_subject_close_gen.get(subject, 0),
+        _stdio_url_close_gen.get(_url_close_key(url, subject), 0),
+        _stdio_cfg_close_gen.get(_cfg_close_key(url, headers, subject), 0),
     )
 
 
@@ -942,30 +952,45 @@ def _evict_stdio_lru_locked() -> list:
     return victims
 
 
-def close_stdio_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> None:
+def close_stdio_sessions(
+    url: Optional[str] = None,
+    headers = _ANY_HEADERS,
+    *,
+    all_workspaces: bool = False,
+) -> None:
     """Close persistent stdio sessions: all of them (``url`` None), every env
     for one command (``headers`` omitted), or one server config (url + headers).
     Two server rows can share a command with different envs; editing one must
-    not kill the other's live state, so the routes pass the edited row's env."""
+    not kill the other's live state, so the routes pass the edited row's env.
+
+    Confined to the calling workspace, for the same reason: two accounts can
+    configure the same command, and editing one account's row must not kill the
+    other's live child. ``all_workspaces`` is the process-shutdown path.
+    """
     global _stdio_close_all_gen
     # HTTP/SSE servers are never cached as stdio sessions, so a specific non-stdio
     # url has nothing to close and must not accrue a close-generation entry.
     if url is not None and not is_stdio(url):
         return
     hk = None if headers is _ANY_HEADERS else _headers_key(headers)
+    subject = current_workspace_subject()
     with _stdio_sessions_lock:
-        if url is None:
+        if url is None and all_workspaces:
             _stdio_close_all_gen += 1
+        elif url is None:
+            _stdio_subject_close_gen[subject] = _stdio_subject_close_gen.get(subject, 0) + 1
         elif hk is None:
-            uk = _url_close_key(url)
+            uk = _url_close_key(url, subject)
             _stdio_url_close_gen[uk] = _stdio_url_close_gen.get(uk, 0) + 1
         else:
-            cfg = _cfg_close_key(url, headers)
+            cfg = _cfg_close_key(url, headers, subject)
             _stdio_cfg_close_gen[cfg] = _stdio_cfg_close_gen.get(cfg, 0) + 1
         keys = [
             k
             for k in _stdio_sessions
-            if (url is None or k[0] == url) and (hk is None or k[1] == hk)
+            if (url is None or k[0] == url)
+            and (hk is None or k[1] == hk)
+            and (all_workspaces or k[3] == subject)
         ]
         sessions = [_stdio_sessions.pop(k) for k in keys]
         for key in keys:
