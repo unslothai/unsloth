@@ -276,13 +276,13 @@ def _wait_until(predicate, timeout: float) -> bool:
     return predicate()
 
 
-def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
-    """Serve ``app`` on every detected LAN address at ``port``. Idempotent.
-
-    Returns the bound addresses. Raises ``RuntimeError`` with a machine-readable
-    reason (``no_lan_address``, ``bind_failed``, ``listener_start_failed``) when
-    the listener could not be brought up.
-    """
+def start_lan_listener(
+    app,
+    loop,
+    port: int,
+    fallback_ports: tuple[int, ...] = (),
+) -> tuple[str, ...]:
+    """Serve ``app`` on LAN addresses at the first bindable candidate port."""
     global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
 
     with _lock:
@@ -297,16 +297,26 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
         sockets: list[socket.socket] = []
         bound: list[str] = []
         failures: list[str] = []
-        for address in candidates:
-            try:
-                sockets.append(_bind_listener(address, port))
-            except OSError as exc:
-                failures.append(f"{address} ({exc})")
-                continue
-            bound.append(address)
+        attempted: list[str] = []
+        for candidate_port in (port, *fallback_ports):
+            sockets = []
+            bound = []
+            failures = []
+            for address in candidates:
+                try:
+                    sockets.append(_bind_listener(address, candidate_port))
+                except OSError as exc:
+                    failures.append(f"{address}:{candidate_port} ({exc})")
+                    continue
+                bound.append(address)
+            if sockets:
+                port = candidate_port
+                break
+            attempted.extend(failures)
+
         if not sockets:
             _error = "bind_failed"
-            logger.warning("LAN access could not bind port %s: %s", port, "; ".join(failures))
+            logger.warning("LAN access could not bind: %s", "; ".join(attempted))
             raise RuntimeError(_error)
         if failures:
             logger.info("LAN access skipped unbindable addresses: %s", "; ".join(failures))

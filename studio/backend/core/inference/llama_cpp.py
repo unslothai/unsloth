@@ -6358,6 +6358,26 @@ class LlamaCppBackend:
     def chat_template_override(self) -> Optional[str]:
         return self._chat_template_override
 
+    def _effective_chat_template(self, chat_template_override: Optional[str]) -> Optional[str]:
+        """The template to launch with: the caller's override, else a repaired copy of the
+        GGUF's own when llama-server's Jinja cannot parse it.
+
+        The repair stays out of ``_chat_template_override``, which the reload check
+        compares against the request's intent -- a value no request sends would reload the
+        model on every Apply.
+        """
+        if chat_template_override:
+            return chat_template_override
+        from core.inference.chat_template_helpers import repair_numeric_member_access
+
+        repaired = repair_numeric_member_access(self._chat_template)
+        if repaired:
+            logger.warning(
+                "The GGUF's chat template indexes with numeric member access, which "
+                "llama-server's Jinja rejects; launching with a repaired copy"
+            )
+        return repaired
+
     @property
     def supports_reasoning(self) -> bool:
         return self._supports_reasoning
@@ -21439,15 +21459,19 @@ class LlamaCppBackend:
                 if _paravirtual_cpu_forced:
                     _pv_split_mode_pin = _paravirtual_split_mode_pin(extra_args)
 
-                # Apply custom chat template override if provided.
                 self._chat_template_override = chat_template_override
-                if chat_template_override:
+                _effective_template = self._effective_chat_template(chat_template_override)
+                if _effective_template:
                     import tempfile
 
                     flags = detect_reasoning_flags(
-                        chat_template_override,
+                        _effective_template,
                         self._model_identifier,
-                        log_source = "GGUF chat template override",
+                        log_source = (
+                            "GGUF chat template override"
+                            if chat_template_override
+                            else "repaired GGUF chat template"
+                        ),
                     )
                     self._supports_reasoning = flags["supports_reasoning"]
                     self._reasoning_style = flags["reasoning_style"]
@@ -21464,7 +21488,7 @@ class LlamaCppBackend:
                         delete = False,
                         prefix = "unsloth_chat_template_",
                     )
-                    self._chat_template_file.write(chat_template_override)
+                    self._chat_template_file.write(_effective_template)
                     self._chat_template_file.close()
                     cmd.extend(["--chat-template-file", self._chat_template_file.name])
                     logger.info(f"Using custom chat template file: {self._chat_template_file.name}")
