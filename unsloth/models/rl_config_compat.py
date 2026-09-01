@@ -81,16 +81,9 @@ TRL_REMOVED_FIELD_ADVICE = {
 }
 
 
-# Every trl config subclasses `transformers.TrainingArguments`, so a field
-# transformers drops disappears from the trl configs at the same moment and
-# lands in exactly the same place as a trl removal. transformers 5.0.0 removed
-# 28 of them, `warmup_ratio` and `group_by_length` among them, so the tables
-# below carry the same policy across that boundary.
-#
-# Sourced from the "Trainer" section of transformers' own MIGRATION_GUIDE_V5.md,
-# with every target checked against the installed 5.16.1 `TrainingArguments`.
-# Note the guide says `warmup_step`; the field is `warmup_steps`, and it does
-# take the float that `warmup_ratio` used to.
+# Every trl config subclasses `transformers.TrainingArguments`, so transformers 5
+# removals land here too. From transformers' MIGRATION_GUIDE_V5.md, whose
+# `warmup_step` is a typo for `warmup_steps` (which does take a float).
 TRANSFORMERS_CONFIG_RENAMES = {
     "warmup_ratio": "warmup_steps",
     "no_cuda": "use_cpu",
@@ -101,8 +94,7 @@ TRANSFORMERS_CONFIG_RENAMES = {
 }
 
 
-# The rest of the transformers 5 removals, where the replacement needs a
-# different value or no longer exists at all, so the value cannot be carried.
+# transformers 5 removals whose value cannot be carried across.
 TRANSFORMERS_REMOVED_FIELD_ADVICE = {
     "group_by_length": 'set `train_sampling_strategy = "group_by_length"` instead',
     "include_inputs_for_metrics": 'add "inputs" to the `include_for_metrics` list instead',
@@ -217,49 +209,27 @@ def _default_notifier(message):
 
 
 def rename_source(key):
-    """Which project renamed `key`, so the message can name the right one.
-
-    A user told "TRL renamed `warmup_ratio`" would go looking in the wrong
-    changelog.
-    """
+    """Which project renamed `key`, so the message names the right changelog."""
     return "transformers" if key in TRANSFORMERS_CONFIG_RENAMES else "TRL"
 
 
 def removal_source(key):
-    """Which project retired `key`. Same reason as `rename_source`."""
+    """Which project retired `key`."""
     return "transformers" if key in TRANSFORMERS_REMOVED_FIELD_ADVICE else "TRL"
 
 
 def classify_config_kwarg(config_class, key):
-    """Say what `config_class` makes of `key`, without acting on it.
-
-    Returns `(verdict, detail)`, one of:
-
-        ("accepted", key)      the config declares this name
-        ("rename", new_name)   TRL renamed the field and the new name is here
-        ("retired", advice)    TRL removed the field; `advice` is the way out
-        ("unknown", None)      not a name TRL ever had, so a caller mistake
-        ("opaque", None)       the config declares nothing readable to judge by
-
-    `filter_config_init_kwargs` below acts on the same verdicts, but it drops
-    everything it does not recognise, which is right for a config constructor and
-    wrong for a trainer kwarg: `unsloth/trainer.py` has to leave an unrecognised
-    name on the trainer call so Python reports it. Exposing the verdict
-    separately lets both callers share one policy and one table.
-
-    A trailing `**kwargs` on the config is deliberately not treated as
-    acceptance. The generated `Unsloth<X>Config.__init__` has one, and taking it
-    at face value would classify every retired field as fine and put it back to
-    being swallowed. Only a name the config actually declares counts.
-    """
+    """Verdict on `key`: accepted / rename / retired / unknown, or opaque when the
+    config declares nothing to judge by. A trailing `**kwargs` is deliberately not
+    acceptance: the generated `Unsloth<X>Config.__init__` has one, so trusting it
+    would put every retired field back to being swallowed."""
     accepted, takes_var_keyword = _accepted_parameters(config_class)
     if key in accepted:
         return "accepted", key
     if takes_var_keyword and not accepted:
         return "opaque", None
 
-    # trl first: a name can be retired by trl while transformers still has it,
-    # and the trl entry is the one that describes this config.
+    # trl first: it can retire a name transformers still has.
     for renames in (TRL_CONFIG_RENAMES, TRANSFORMERS_CONFIG_RENAMES):
         renamed = renames.get(key)
         if renamed is not None and renamed in accepted:
@@ -283,10 +253,6 @@ def filter_config_init_kwargs(
     Renames are applied where TRL or transformers documented one; everything else
     the config rejects is dropped. Each decision is reported through `notify`
     (`print` by default, which shows up reliably in a notebook).
-
-    The per-name decision is `classify_config_kwarg` above, shared with the
-    trainer-kwarg path in `unsloth/trainer.py`; the both-names-set arbitration
-    below stays here because only this caller can see the whole kwargs dict.
     """
     if not kwargs:
         return kwargs

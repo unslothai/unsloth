@@ -194,8 +194,7 @@ def test_rename_targets_are_real_fields_of_the_modern_config():
 
 
 def test_the_transformers_tables_do_not_overlap_or_contradict_the_trl_ones():
-    """One name must not be both a rename and a retirement, or the verdict would
-    depend on which table happened to be consulted first."""
+    """A name in both tables would resolve to whichever was consulted first."""
     renames = set(TRANSFORMERS_CONFIG_RENAMES) | set(TRL_CONFIG_RENAMES)
     advice = set(TRANSFORMERS_REMOVED_FIELD_ADVICE) | set(_MODULE.TRL_REMOVED_FIELD_ADVICE)
     assert not (renames & advice), sorted(renames & advice)
@@ -203,11 +202,7 @@ def test_the_transformers_tables_do_not_overlap_or_contradict_the_trl_ones():
 
 
 def test_transformers_rename_targets_are_real_fields_of_the_installed_version():
-    """The whole point of a rename is that the value lands somewhere real.
-
-    Skipped on transformers 4, where the old names still exist and the table is
-    never consulted; this is the transformers 5 guard.
-    """
+    """Skipped on transformers 4, which still declares the old names."""
     transformers = pytest.importorskip("transformers")
     TrainingArguments = transformers.TrainingArguments
     fields = {f.name for f in dataclasses.fields(TrainingArguments)}
@@ -223,7 +218,7 @@ def test_transformers_rename_targets_are_real_fields_of_the_installed_version():
 
 
 def test_a_transformers_5_removal_is_carried_across_on_a_real_config():
-    """`warmup_ratio` is the one every notebook sets, so it gets its own test."""
+    """`warmup_ratio` is the one every notebook sets."""
     transformers = pytest.importorskip("transformers")
     fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
     if "warmup_ratio" in fields:

@@ -717,34 +717,12 @@ def _route_unknown_trainer_kwargs(
     notify = None,
     already_supplied = None,
 ):
-    """Sort keyword names that neither the trainer nor the config declares.
+    """Split names neither side declares into `(to_config, to_trainer)` using
+    `rl_config_compat`'s rename/retire policy, which otherwise only runs when a
+    config is built; unrecognised names go back to the trainer call to raise there.
 
-    `models/rl_config_compat.py` already holds unsloth's policy for an argument
-    TRL renamed or retired, but it is only consulted when a config is being
-    built, so the same name arriving as a *trainer* keyword never reached it.
-    That gap is the whole reason a retired field could be dropped in silence
-    here: twelve `SFTConfig`/`GRPOConfig`/`DPOConfig` fields have been removed
-    between TRL 0.18 and 1.12, and a script pinned to an older TRL passes them
-    beside `args = ...` exactly the way the docs of the day said to.
-
-    Consulting the table keeps the two paths in agreement:
-
-      * a renamed field is carried across to the new name,
-      * a retired field is reported by name with TRL's advice and dropped,
-      * a name TRL never had is returned for the trainer call, where normal
-        unexpected-keyword handling reports it.
-
-    `already_supplied` names the config keywords the caller passed under their
-    current spelling. A rename must not overwrite one of those: the caller who
-    wrote the new name chose that value deliberately. Same rule as
-    `filter_config_init_kwargs`, decided on better evidence -- that function is
-    handed every mirrored parameter of the generated config, so it cannot see
-    which the caller typed and falls back to comparing against the declared
-    default; here `kwargs` holds only what was actually written, so presence is
-    proof. The two therefore differ on a new name set to its own default value,
-    where only this path can tell that apart from not set at all.
-
-    Returns `(to_config, to_trainer)`.
+    `already_supplied` uses presence, not a default comparison, because `kwargs`
+    holds only what the caller typed, so an explicit new name is never overwritten.
     """
     if not unknown:
         return {}, {}
@@ -756,15 +734,13 @@ def _route_unknown_trainer_kwargs(
             rename_source,
         )
     except Exception:
-        # tests/ loads this function by AST into a bare namespace, where there is
-        # no package to import from; it supplies the classifier directly instead.
+        # tests/ AST-load this function into a bare namespace with no package to
+        # import from, and supply the classifier through globals() instead.
         classify_config_kwarg = globals().get("classify_config_kwarg")
         rename_source = globals().get("rename_source", lambda key: "TRL")
         removal_source = globals().get("removal_source", lambda key: "TRL")
         if classify_config_kwarg is None:
-            # Vendored next to this file and stdlib-only, so reaching here in a
-            # real install should not happen. Keep the value on the trainer
-            # rather than invent a second, quieter policy for it.
+            # Unreachable in a real install; keep the value on the trainer.
             return {}, dict(unknown)
 
     if notify is None:
@@ -818,9 +794,8 @@ def _backwards_compatible_trainer(trainer_class, config_class):
         if ("args" in kwargs) and (Version(trl) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
 
-            # `discard`, not `remove`: a trainer whose __init__ names its config
-            # something other than `args` would otherwise die with a KeyError
-            # here instead of whatever it was really going to say.
+            # `discard`, not `remove`: a trainer naming its config something other
+            # than `args` would otherwise die with a bare KeyError here.
             trainer_params.discard("self")
             trainer_params.discard("args")
 
@@ -853,14 +828,9 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 elif key in moved_params or key in config_fields:
                     additional_config_kwargs[key] = value
                 else:
-                    # Neither side has this name, and the branch below only copies
-                    # the keys the config recognises. Sorting it in with the config
-                    # kwargs therefore dropped it in silence.
+                    # Filing this with the config kwargs dropped it in silence.
                     unknown_kwargs[key] = value
 
-            # A name TRL renamed or retired is migrated or reported; anything
-            # else stays on the trainer call so the unexpected keyword is
-            # reported the ordinary way instead of disappearing.
             migrated, unroutable = _route_unknown_trainer_kwargs(
                 config_class,
                 unknown_kwargs,
@@ -882,8 +852,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 # the moved values on the caller's config rather than rebuild it.
                 config = training_args
                 for key, value in additional_config_kwargs.items():
-                    # `migrated` is already known to be a name this config takes,
-                    # so it does not have to clear the same gate a second time.
+                    # `migrated` keys are already known to be accepted here.
                     if key in config_fields or key in moved_params or key in migrated:
                         setattr(config, key, value)
 

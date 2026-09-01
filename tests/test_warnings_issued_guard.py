@@ -367,9 +367,8 @@ if __name__ == "__main__":
 
 def _sft_config():
     pytest.importorskip("trl")
-    # Not `trl.SFTConfig`: on Apple Silicon the `import unsloth` in tests/conftest.py
-    # rebinds that name to the MLX training config, which carries none of SFTConfig's
-    # fields. The module the dataclass is defined in still holds the real one.
+    # Not `trl.SFTConfig`: on Apple Silicon `import unsloth` rebinds that name to
+    # the MLX training config. The defining module still holds the real one.
     from trl.trainer.sft_config import SFTConfig
     return SFTConfig
 
@@ -389,11 +388,7 @@ class _RecordingTrainer:
 
 
 def _rl_config_compat():
-    """The `rl_config_compat` module, loaded by file spec.
-
-    Same reason as tests/test_rl_config_compat.py: importing it through the
-    package would run unsloth/__init__.py and drag in torch and unsloth_zoo.
-    """
+    """Load by file spec: importing via the package drags in torch and unsloth_zoo."""
     import importlib.util
 
     path = ROOT / "unsloth" / "models" / "rl_config_compat.py"
@@ -413,8 +408,7 @@ def _wrapped_recording(trainer_base = None):
     )
     if "trl" not in ns:
         pytest.skip("trl not installed")
-    # `_route_unknown_trainer_kwargs` imports these relatively, which cannot work
-    # in the bare namespace `_load` builds, so hand them over directly.
+    # The relative import in the routed function cannot work in a bare namespace.
     for name in ("classify_config_kwarg", "rename_source", "removal_source"):
         ns[name] = getattr(_rl_config_compat(), name)
 
@@ -467,12 +461,7 @@ def test_untouched_config_values_keep_what_the_caller_set(tmp_path):
 
 
 def test_a_kwarg_neither_side_takes_is_reported_not_swallowed(tmp_path):
-    """A name neither signature accepts must reach the normal TypeError path.
-
-    Do not use `max_seq_length` as the sentinel: Unsloth's normal generated SFT
-    config intentionally restores that legacy field even when pristine trl removed
-    it, so its presence depends on whether trainer generation ran before this test.
-    """
+    """Not `max_seq_length` as the sentinel: the generated SFT config restores it."""
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
     unexpected = "definitely_not_a_trainer_or_config_kwarg"
@@ -483,15 +472,7 @@ def test_a_kwarg_neither_side_takes_is_reported_not_swallowed(tmp_path):
 
 
 def test_a_field_trl_retired_is_reported_and_dropped_not_raised(tmp_path, capsys):
-    """The other half of "neither side takes it", and the half that has to stay quiet.
-
-    Twelve config fields were removed from SFTConfig/GRPOConfig/DPOConfig between
-    TRL 0.18 and 1.12. A script pinned to an older TRL passes them beside `args =`
-    exactly as the docs of the day said to, so turning them into TypeError breaks
-    code that was correct when it was written and cannot be fixed without editing
-    the library. models/rl_config_compat.py already decided that trade for config
-    kwargs; this keeps the trainer-kwarg path on the same side of it.
-    """
+    """Must warn, not raise: scripts pinned to an older TRL still pass these."""
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
     retired = "rpo_alpha"  # DPOConfig, removed in TRL 0.29.0
@@ -518,17 +499,8 @@ def test_a_field_trl_renamed_is_carried_across_to_the_new_name(tmp_path, capsys)
 
 
 def test_the_explicitly_supplied_new_name_beats_the_renamed_old_one(tmp_path, capsys):
-    """Setting both names must not let the migrated legacy value win.
-
-    `filter_config_init_kwargs` already arbitrates this for a config constructor
-    (tests/test_rl_config_compat.py::test_an_explicitly_set_new_name_beats_the_old_one):
-    the name the caller wrote under its current spelling is the one they chose.
-    Migrating on top of it here would quietly train with the opposite setting,
-    and would make the two paths disagree.
-
-    Both branches of the wrapper are checked: the caller's own config object,
-    and the one rebuilt from `config_dict` when `args` is not a TrainingArguments.
-    """
+    """Migrating over an explicit new name would silently train with the opposite
+    setting. Covers both branches: the caller's config, and the rebuilt one."""
     Trainer, config_class = _wrapped_recording()
     fields = {f.name for f in dataclasses.fields(config_class)}
     if "use_liger_kernel" not in fields or "use_liger_loss" in fields:
@@ -561,8 +533,7 @@ def test_a_name_trl_never_had_still_raises(tmp_path):
 
 
 def test_a_variadic_trainer_receives_a_name_the_table_does_not_know(tmp_path):
-    """A trainer that declares `**kwargs` opted into arbitrary names, so an
-    unrecognised one is delivered rather than dropped."""
+    """A trainer declaring `**kwargs` opted into arbitrary names, so deliver."""
 
     class _Variadic(_RecordingTrainer):
         def __init__(
@@ -585,9 +556,7 @@ def test_a_variadic_trainer_receives_a_name_the_table_does_not_know(tmp_path):
 
 
 def test_a_trainer_whose_config_parameter_is_not_called_args_does_not_KeyError(tmp_path):
-    """`trainer_params.discard`, not `.remove`: the set is built from the real
-    signature, so a trainer that names its config something else used to die with
-    a bare KeyError before it could say anything useful."""
+    """`discard`, not `remove`: this used to raise KeyError."""
 
     class _OddlyNamed:
         def __init__(
