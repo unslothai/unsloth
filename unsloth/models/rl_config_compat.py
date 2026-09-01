@@ -86,7 +86,6 @@ TRL_REMOVED_FIELD_ADVICE = {
 # `warmup_step` is a typo for `warmup_steps` (which does take a float).
 TRANSFORMERS_CONFIG_RENAMES = {
     "warmup_ratio": "warmup_steps",
-    "no_cuda": "use_cpu",
     "push_to_hub_token": "hub_token",
     "per_gpu_train_batch_size": "per_device_train_batch_size",
     "per_gpu_eval_batch_size": "per_device_eval_batch_size",
@@ -99,6 +98,10 @@ TRANSFORMERS_REMOVED_FIELD_ADVICE = {
     # a bool to "no"/"all" in `__post_init__`, which the trainer's `setattr` path
     # does not run, so a migrated `False` would read as truthy.
     "include_tokens_per_second": ('set `include_num_input_tokens_seen = "all"` instead'),
+    # Also not a rename. `__post_init__` reads `device`, which is a cached_property,
+    # and settles `_n_gpu` with it, so assigning `use_cpu` afterwards is a no-op
+    # (measured: device stays cuda:0). Reporting it as forwarded would be a lie.
+    "no_cuda": "set `use_cpu = True` on the config you construct instead",
     "group_by_length": 'set `train_sampling_strategy = "group_by_length"` instead',
     "include_inputs_for_metrics": 'add "inputs" to the `include_for_metrics` list instead',
     "tpu_metrics_debug": "use `debug` instead",
@@ -239,6 +242,21 @@ def _is_untouched(
         return default is value
 
 
+def rename_value_is_unset(config_class, renamed, value):
+    """True if `value` carries no information and must not overwrite `renamed`.
+
+    The legacy spellings are `Optional` and default to `None` (`per_gpu_*_batch_size`
+    in transformers 4.x), so a wrapper mirroring an old signature forwards `None`
+    for an argument nobody set. Writing that onto a target whose own default is a
+    number replaces a working value with one the trainer cannot do arithmetic on.
+    A target that defaults to `None` itself loses nothing, so it still migrates.
+    """
+    if value is not None:
+        return False
+    default = _field_default(config_class, renamed)
+    return default is not _MISSING and default is not None
+
+
 def _default_notifier(message):
     print(message)
 
@@ -322,6 +340,8 @@ def filter_config_init_kwargs(
             # overwrite the default: an explicitly set new name wins.
             existing = kwargs.get(renamed, _MISSING)
             who = rename_source(key)
+            if rename_value_is_unset(config_class, renamed, value):
+                continue
             if existing is _MISSING or _is_untouched(
                 config_class, renamed, existing, mirrored_from = mirrored_from
             ):

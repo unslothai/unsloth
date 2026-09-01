@@ -732,6 +732,7 @@ def _route_unknown_trainer_kwargs(
             classify_config_kwarg,
             removal_source,
             rename_source,
+            rename_value_is_unset,
         )
     except Exception:
         # tests/ AST-load this function into a bare namespace with no package to
@@ -739,6 +740,9 @@ def _route_unknown_trainer_kwargs(
         classify_config_kwarg = globals().get("classify_config_kwarg")
         rename_source = globals().get("rename_source", lambda key: "TRL")
         removal_source = globals().get("removal_source", lambda key: "TRL")
+        rename_value_is_unset = globals().get(
+            "rename_value_is_unset", lambda cls, name, value: False
+        )
         if classify_config_kwarg is None:
             # Unreachable in a real install; keep the value on the trainer.
             return {}, dict(unknown)
@@ -757,6 +761,10 @@ def _route_unknown_trainer_kwargs(
         if verdict == "accepted":
             to_config[key] = value
         elif verdict == "rename":
+            # A legacy Optional forwarded at its `None` default says nothing, so
+            # it must not replace a real value. Same rule as the config path.
+            if rename_value_is_unset(config_class, detail, value):
+                continue
             if already_supplied and detail in already_supplied:
                 notify(
                     f"Unsloth: `{key}` was renamed to `{detail}` by {rename_source(key)} and "

@@ -341,6 +341,46 @@ def test_the_renames_rl_py_overrides_the_default_of_are_the_known_ones():
     }, sorted(needing_mirror)
 
 
+def test_a_legacy_optional_forwarded_at_none_does_not_erase_the_target():
+    """`per_gpu_train_batch_size` really did default to `None` in transformers 4.x
+    (checked against 4.57.6), so a wrapper mirroring that signature forwards a
+    `None` nobody asked for. Writing it onto `per_device_train_batch_size` leaves
+    the trainer doing arithmetic on `None`."""
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        per_device_train_batch_size: int = 8
+
+    kept, messages = _collect(ModernSFTConfig, {"per_gpu_train_batch_size": None})
+    assert kept == {}, "an unset legacy alias must not be migrated"
+    assert messages == []
+
+    # A value that was actually chosen still migrates.
+    kept, _ = _collect(ModernSFTConfig, {"per_gpu_train_batch_size": 16})
+    assert kept == {"per_device_train_batch_size": 16}
+
+
+def test_none_still_migrates_when_the_target_itself_defaults_to_none():
+    """The guard is about losing information, not about `None` being special."""
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        hub_token: str = None
+
+    kept, _ = _collect(ModernSFTConfig, {"push_to_hub_token": None})
+    assert kept == {"hub_token": None}
+
+
+def test_an_alias_whose_target_is_read_during_post_init_is_not_a_rename():
+    """`use_cpu` is consumed by `__post_init__`, which resolves `device` (a
+    cached_property) and `_n_gpu` from it. Measured on transformers 5.16.1: after
+    `setattr(args, "use_cpu", True)` the device stays `cuda:0`, so routing
+    `no_cuda` through the trainer path would report a change that never happened.
+    """
+    assert "no_cuda" in TRANSFORMERS_REMOVED_FIELD_ADVICE
+    assert "no_cuda" not in TRANSFORMERS_CONFIG_RENAMES
+
+
 def test_a_rename_target_normalised_in_post_init_is_not_a_rename():
     """`setattr` on an existing config skips `__post_init__`, so a field that
     normalises its own value cannot be migrated by assignment."""

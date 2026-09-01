@@ -188,7 +188,8 @@ def _wrapped():
     )
     if "trl" not in ns:
         pytest.skip("trl not installed")
-    for name in ("classify_config_kwarg", "rename_source", "removal_source"):
+    for name in ("classify_config_kwarg", "rename_source", "removal_source",
+                 "rename_value_is_unset"):
         ns[name] = getattr(_rl_config_compat(), name)
 
     class T(_FakeTrainer):
@@ -409,7 +410,8 @@ def _wrapped_recording(trainer_base = None):
     if "trl" not in ns:
         pytest.skip("trl not installed")
     # The relative import in the routed function cannot work in a bare namespace.
-    for name in ("classify_config_kwarg", "rename_source", "removal_source"):
+    for name in ("classify_config_kwarg", "rename_source", "removal_source",
+                 "rename_value_is_unset"):
         ns[name] = getattr(_rl_config_compat(), name)
 
     class T(trainer_base or _RecordingTrainer):
