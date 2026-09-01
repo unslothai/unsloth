@@ -195,6 +195,8 @@ _GENERATION_STREAM_MODULES = (
     "mlx_vlm.generate",
     "mlx_vlm.generate.dispatch",
     "mlx_vlm.generate.ar",
+    # A second stream since mlx-vlm 0.6.0, created on import and never wired-limited.
+    "mlx_vlm.speculative.common",
 )
 
 
@@ -221,7 +223,9 @@ def test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing(monkeypatch, shape
     monkeypatch.setattr(
         mx,
         "synchronize",
-        lambda stream = None: events.append(f"synchronize:{stream if stream else 'default'}"),
+        lambda stream = None: events.append(
+            f"synchronize:{'default' if stream is None else stream}"
+        ),
     )
     clear = lambda: events.append("clear_cache")
     if shape == "core":
@@ -257,7 +261,9 @@ def test_mlx_clear_gpu_memory_drains_only_the_streams_that_exist(monkeypatch):
     monkeypatch.setattr(
         mx,
         "synchronize",
-        lambda stream = None: events.append(f"synchronize:{stream if stream else 'default'}"),
+        lambda stream = None: events.append(
+            f"synchronize:{'default' if stream is None else stream}"
+        ),
     )
     monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
     _stub_generation_streams(monkeypatch, "mlx_lm.generate")
@@ -279,6 +285,81 @@ def test_mlx_clear_gpu_memory_is_a_noop_without_cache_clearing(monkeypatch):
     unsloth.clear_gpu_memory()
 
     assert events == []
+
+
+def _recording_synchronize(monkeypatch, mx, events, failing = ()):
+    def synchronize(stream = None):
+        if stream in failing:
+            raise RuntimeError("There is no Stream(gpu, 0) in current thread.")
+        events.append(f"synchronize:{'default' if stream is None else stream}")
+    monkeypatch.setattr(mx, "synchronize", synchronize)
+    monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
+
+
+def test_mlx_clear_gpu_memory_still_clears_when_a_stream_cannot_be_drained(monkeypatch):
+    """torch.cuda.empty_cache() routes here, and callers invoke it from finally arms.
+
+    mlx made command encoders thread local in 0.31.2, so a stream bound on another
+    thread raises when synchronized. Not draining is survivable; raising is not.
+    """
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    events = []
+    _recording_synchronize(monkeypatch, mx, events, failing = ("mlx_lm.generate",))
+    _stub_generation_streams(monkeypatch, "mlx_lm.generate")
+
+    unsloth.clear_gpu_memory()
+
+    assert events == ["synchronize:default", "clear_cache"]
+
+
+def test_mlx_clear_gpu_memory_drains_a_shared_stream_once(monkeypatch):
+    """mlx-vlm 0.6.x defines the stream once and re-exports it from every candidate."""
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    events = []
+    _recording_synchronize(monkeypatch, mx, events)
+    shared = types.SimpleNamespace(generation_stream = "shared")
+    for name in _GENERATION_STREAM_MODULES:
+        if name.startswith("mlx_vlm.generate"):
+            monkeypatch.setitem(sys.modules, name, shared)
+        else:
+            monkeypatch.delitem(sys.modules, name, raising = False)
+
+    unsloth.clear_gpu_memory()
+
+    assert events == ["synchronize:shared", "synchronize:default", "clear_cache"]
+
+
+def test_mlx_clear_gpu_memory_drains_the_speculative_stream(monkeypatch):
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    events = []
+    _recording_synchronize(monkeypatch, mx, events)
+    _stub_generation_streams(monkeypatch, "mlx_vlm.speculative.common")
+
+    unsloth.clear_gpu_memory()
+
+    assert events == [
+        "synchronize:mlx_vlm.speculative.common", "synchronize:default", "clear_cache",
+    ]
+
+
+def test_mlx_clear_gpu_memory_still_clears_without_synchronize(monkeypatch):
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    events = []
+    monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
+    monkeypatch.delattr(mx, "synchronize", raising = False)
+    _stub_generation_streams(monkeypatch, "mlx_lm.generate")
+
+    unsloth.clear_gpu_memory()
+
+    assert events == ["clear_cache"]
 
 
 def test_mlx_training_arguments_preserve_explicit_epoch_training():

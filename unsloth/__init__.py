@@ -359,16 +359,36 @@ if _IS_MLX:
             # MLX pins buffers a live command buffer reads, but not a dropped output array.
             # mlx-lm and mlx-vlm generate on their own thread-local streams, which a
             # no-argument mx.synchronize() would not wait on.
-            for _module in (
-                "mlx_lm.generate",
-                "mlx_vlm.generate",
-                "mlx_vlm.generate.dispatch",
-                "mlx_vlm.generate.ar",
-            ):
-                _stream = getattr(sys.modules.get(_module), "generation_stream", None)
-                if _stream is not None:
-                    mx.synchronize(_stream)
-            mx.synchronize()
+            #
+            # Best effort, because this helper is what torch.cuda.empty_cache() calls on
+            # MLX and library code calls that from finally arms, on whatever thread it is
+            # on. mlx made command encoders thread local in 0.31.2, so synchronizing a
+            # stream bound on another thread raises; failing to drain is survivable,
+            # raising out of empty_cache() is not.
+            _synchronize = getattr(mx, "synchronize", None)
+            if callable(_synchronize):
+                _drained = []
+                for _module in (
+                    "mlx_lm.generate",
+                    "mlx_vlm.generate",
+                    "mlx_vlm.generate.dispatch",
+                    "mlx_vlm.generate.ar",
+                    # Speculative decoding owns a second stream wired_limit never sees.
+                    "mlx_vlm.speculative.common",
+                ):
+                    try:
+                        _stream = getattr(sys.modules.get(_module), "generation_stream", None)
+                        # 0.6.x aliases one object across every mlx_vlm.generate name.
+                        if _stream is None or any(_stream is _seen for _seen in _drained):
+                            continue
+                        _drained.append(_stream)
+                        _synchronize(_stream)
+                    except Exception:
+                        continue
+                try:
+                    _synchronize()
+                except Exception:
+                    pass
             clear_cache()
 
     def _patch_mlx_torch_cuda_compat_api():

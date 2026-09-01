@@ -3288,4 +3288,78 @@ def test_the_drain_covers_both_generation_stream_modules():
         "mlx_vlm.generate",
         "mlx_vlm.generate.dispatch",
         "mlx_vlm.generate.ar",
+        # A second stream since 0.6.0, created on import and never wired-limited.
+        "mlx_vlm.speculative.common",
     }
+
+
+def _fake_stream_module(monkeypatch, name, stream):
+    monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(generation_stream = stream))
+
+
+def _recording_mx(monkeypatch, synchronize = None):
+    from core.inference import mlx_inference
+
+    events = []
+    mx = types.SimpleNamespace(
+        synchronize = synchronize or (
+            lambda stream = None: events.append(
+                f"synchronize:{'default' if stream is None else stream}"
+            )
+        ),
+    )
+    for name in mlx_inference._GENERATION_STREAM_MODULES:
+        monkeypatch.delitem(sys.modules, name, raising = False)
+    return mlx_inference, mx, events
+
+
+def test_a_stream_that_cannot_be_drained_does_not_stop_the_caller(monkeypatch):
+    """A plain mx.new_stream raises when synchronized off its creating thread."""
+    def synchronize(stream = None):
+        if stream == "foreign":
+            raise RuntimeError("There is no Stream(gpu, 0) in current thread.")
+        events.append(f"synchronize:{'default' if stream is None else stream}")
+
+    mlx_inference, mx, events = _recording_mx(monkeypatch, synchronize)
+    _fake_stream_module(monkeypatch, "mlx_lm.generate", "foreign")
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:default"]
+
+
+def test_a_module_getattr_that_raises_does_not_stop_the_caller(monkeypatch):
+    mlx_inference, mx, events = _recording_mx(monkeypatch)
+    module = types.ModuleType("mlx_vlm.generate")
+    module.__getattr__ = lambda name: (_ for _ in ()).throw(RuntimeError(name))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:default"]
+
+
+def test_one_stream_shared_by_several_modules_is_drained_once(monkeypatch):
+    """0.6.x defines the stream once and re-exports it from every candidate name."""
+    mlx_inference, mx, events = _recording_mx(monkeypatch)
+    for name in ("mlx_vlm.generate", "mlx_vlm.generate.dispatch", "mlx_vlm.generate.ar"):
+        _fake_stream_module(monkeypatch, name, "shared")
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:shared", "synchronize:default"]
+
+
+def test_the_speculative_decoding_stream_is_drained_too(monkeypatch):
+    mlx_inference, mx, events = _recording_mx(monkeypatch)
+    _fake_stream_module(monkeypatch, "mlx_vlm.speculative.common", "speculative")
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:speculative", "synchronize:default"]
+
+
+def test_a_runtime_without_synchronize_is_not_an_error():
+    from core.inference import mlx_inference
+
+    mlx_inference._drain_generation_streams(types.SimpleNamespace())

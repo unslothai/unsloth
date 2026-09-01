@@ -654,21 +654,45 @@ def _kv_quant_probe(language_model, entries, bits):
 
 # mlx-lm and mlx-vlm both run generation on their own thread-local stream, so a
 # no-argument mx.synchronize() -- which waits on the default stream -- drains none of it.
-# mlx-vlm moves generation_stream between release layouts, so every candidate is tried.
+# mlx-vlm moves generation_stream between release layouts, so every candidate is tried;
+# speculative decoding owns a separate stream that wired_limit never sees.
 _GENERATION_STREAM_MODULES = (
     "mlx_lm.generate",
     "mlx_vlm.generate",
     "mlx_vlm.generate.dispatch",
     "mlx_vlm.generate.ar",
+    "mlx_vlm.speculative.common",
 )
 
 
 def _drain_generation_streams(mx):
+    """Best effort: every caller is a cleanup path whose old body could not fail.
+
+    mlx made command encoders thread local in 0.31.2, and at the mlx-vlm pin floor
+    generation_stream is still a plain mx.new_stream, so synchronizing one from a
+    thread that did not create it raises. Draining is a safety margin on top of the
+    clear, not a precondition for it, so a drain we cannot perform is skipped and
+    the clear still happens.
+    """
+
+    synchronize = getattr(mx, "synchronize", None)
+    if not callable(synchronize):
+        return
+    drained = []
     for name in _GENERATION_STREAM_MODULES:
-        stream = getattr(sys.modules.get(name), "generation_stream", None)
-        if stream is not None:
-            mx.synchronize(stream)
-    mx.synchronize()
+        try:
+            stream = getattr(sys.modules.get(name), "generation_stream", None)
+            # 0.6.x aliases one object across every mlx_vlm.generate name.
+            if stream is None or any(stream is seen for seen in drained):
+                continue
+            drained.append(stream)
+            synchronize(stream)
+        except Exception as error:
+            logger.debug("MLX stream drain skipped for %s: %s", name, error)
+    try:
+        synchronize()
+    except Exception as error:
+        logger.debug("MLX default stream drain skipped: %s", error)
 
 
 def _kv_quant_eligibility(
