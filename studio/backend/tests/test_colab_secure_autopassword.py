@@ -1020,6 +1020,7 @@ def test_clear_legacy_cache_truncates_and_verifies_when_unlink_fails(monkeypatch
     assert colab._clear_colab_login_credentials() is True
     assert cache.is_file()
     assert cache.stat().st_size == 0
+    assert colab._load_colab_login_credentials() is None
 
 
 def test_clear_legacy_cache_does_not_claim_uncheckable_path_is_absent(monkeypatch):

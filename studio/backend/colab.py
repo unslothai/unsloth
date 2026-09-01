@@ -106,12 +106,14 @@ def _load_colab_login_credentials() -> "tuple[str, str] | None":
     """Return stored Colab admin credentials from a previous ``start()`` run, if any."""
     path = _colab_login_credentials_path()
     try:
-        path.stat()
+        cache_stat = path.stat()
     except FileNotFoundError:
         return None
     except OSError as e:
         logger.info(f"Could not inspect Colab login credentials ({e}).")
         raise _ColabCredentialHandoffFailed("cached admin credentials could not be loaded") from e
+    if cache_stat.st_size == 0:
+        return None
     try:
         lines = path.read_text(encoding = "utf-8").splitlines()
         if len(lines) >= 2 and lines[0] and lines[1]:
