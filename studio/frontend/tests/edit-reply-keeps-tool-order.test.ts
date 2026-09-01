@@ -193,11 +193,95 @@ test("deleting a marker keeps the call rather than dropping it", async () => {
     "Let me look that up.\n\nHere is what I found.",
   );
 
-  assert.equal(
-    result.filter((part) => part.type === "tool-call").length,
-    1,
-    "the call must survive an edit that removed its marker",
+  assert.deepEqual(result, [
+    { type: "text", text: "Let me look that up.\n\nHere is what I found." },
+    SEARCH,
+  ]);
+});
+
+test("deleting one marker leaves the other card where its own marker is", async () => {
+  const content = [
+    { type: "text", text: "First I search." },
+    SEARCH,
+    { type: "text", text: "Then I compute." },
+    PYTHON,
+    { type: "text", text: "Done." },
+  ];
+  const shown = await save(content).then((r) => r.text);
+
+  const { result } = await save(
+    content,
+    shown.replace(/<TOOL 1:[^>]*>\n\n/, ""),
   );
+
+  // The python card is still the one between "Then I compute." and "Done."; only the
+  // card whose marker went away is moved, and it is moved to the end rather than lost.
+  assert.deepEqual(result, [
+    { type: "text", text: "First I search.\n\nThen I compute." },
+    PYTHON,
+    { type: "text", text: "Done." },
+    SEARCH,
+  ]);
+});
+
+test("moving a marker moves that card and no other", async () => {
+  const content = [
+    { type: "text", text: "First I search." },
+    SEARCH,
+    { type: "text", text: "Then I compute." },
+    PYTHON,
+    { type: "text", text: "Done." },
+  ];
+
+  const { result } = await save(
+    content,
+    "First I search.\n\n<TOOL 2: python>\n\nThen I compute.\n\n<TOOL 1: web_search>\n\nDone.",
+  );
+
+  assert.deepEqual(result, [
+    { type: "text", text: "First I search." },
+    PYTHON,
+    { type: "text", text: "Then I compute." },
+    SEARCH,
+    { type: "text", text: "Done." },
+  ]);
+});
+
+test("a half-deleted marker keeps the prose that follows it", async () => {
+  const head = "Here is the plan.";
+  const tail = "I searched and found three papers.";
+  const content = [
+    { type: "text", text: head },
+    SEARCH,
+    { type: "text", text: tail },
+  ];
+  const shown = await save(content).then((r) => r.text);
+  // Whatever the marker looks like, it is what sits between the two sentences.
+  const marker = shown.slice(head.length + 2, shown.length - tail.length - 2);
+
+  // Backspacing into the marker used to turn every following sentence into a part the
+  // save silently dropped, and the loss was written to the server.
+  const broken = [
+    marker.slice(0, -1),
+    marker.slice(1),
+    marker.slice(0, Math.ceil(marker.length / 2)),
+  ];
+  for (const half of broken) {
+    const { result } = await save(content, `${head}\n\n${half}\n\n${tail}`);
+    const text = result
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n\n");
+    assert.ok(
+      text.includes(head) && text.includes(tail),
+      `prose lost for ${JSON.stringify(half)}`,
+    );
+    assert.equal(
+      result.filter((part) => part.type === "tool-call").length,
+      1,
+      `card lost for ${JSON.stringify(half)}`,
+    );
+  }
 });
 
 test("a reply that is only a tool card keeps it", async () => {
@@ -256,8 +340,26 @@ test("prose that mentions the marker tag is not mistaken for one", async () => {
     { type: "text", text: "Done." },
   ];
   const out = await roundTrip(content);
-  assert.equal(out.filter((p: any) => p.type === "tool-call").length, 1,
-    "the call must not be consumed by prose that looks like a marker");
+  // Not just the count: the sentence has to come back whole, with the card still
+  // between it and "Done." rather than wedged into the middle of it.
+  assert.deepEqual(out, content);
+});
+
+test("a code block quoting the marker syntax survives a no-op save", async () => {
+  const content = [
+    { type: "text", text: "```xml\n<TOOL>read_file</TOOL>\n```" },
+    tool("1"),
+    { type: "text", text: "Done." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a no-op save returns the very same text, part for part", async () => {
+  for (const shape of shapes) {
+    assert.deepEqual(await roundTrip(shape), shape,
+      `shape ${JSON.stringify(shape.map((p: any) => p.type))}`);
+  }
 });
 
 test("no tool part is ever dropped, whatever the edit", async () => {
