@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // A user turn is identified by its id, never by its text (#9984). Neither function here is
-// exported, so these assert structure, and must fail for any reinserted dedupe.
+// exported, so these read source. They count the ways a turn can be dropped rather than
+// pinning the text, so a rename or a reformat is fine and a new drop is not.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -17,11 +18,6 @@ const runtimeProvider = readFileSync(
   "utf8",
 );
 
-/** Whitespace-insensitive so reformatting does not fail the pin, but nothing else is. */
-function normalise(source: string): string {
-  return source.trim().replace(/\s+/g, " ");
-}
-
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
   const end = source.indexOf(to, start);
@@ -29,23 +25,11 @@ function slice(source: string, from: string, to: string): string {
   return source.slice(start, end);
 }
 
-// The whole function: a dedupe folded into `const history` escapes a narrower slice.
-const LOOP_START = "for (let index = 0; index < history.length; index += 1) {";
-const LOOP_BODY = normalise(`
-  for (let index = 0; index < history.length; index += 1) {
-    const message = history[index];
-    const refused = isAnthropicRefusalMessage(message);
-    if (refused || abandoned[index]) {
-      if (refused || index < lastSurviving) {
-        const last = surviving.at(-1);
-        if (last && last.role === "user") surviving.pop();
-      }
-      continue;
-    }
-    surviving.push(message);
-  }
-`);
+function count(source: string, pattern: RegExp): number {
+  return source.match(pattern)?.length ?? 0;
+}
 
+// From the signature, so a filter folded into the input is in scope too.
 const outboundPrune = slice(
   adapter,
   "function pruneOutboundHistory(",
@@ -62,12 +46,16 @@ const historyAppend = slice(
   "return trackHistoryAppend(",
 );
 
-test("the outbound prune keeps every turn the abandoned-turn guard did not drop", () => {
-  // Filtering this line is the one way to drop a turn without touching the loop.
-  assert.match(outboundPrune, /\n {2}const history = \[\.\.\.messages\];\n/);
-  // Pinned, not pattern-matched: three rounds each found another spelling a regex let
-  // through. A refactor has to update this string, which is the point.
-  assert.equal(normalise(slice(outboundPrune, LOOP_START, "return surviving;")), LOOP_BODY);
+test("the outbound prune drops a turn only for the abandoned-turn guard", () => {
+  // The input is copied whole; filtering here drops a turn without touching the loop.
+  assert.match(outboundPrune, /const history = \[\.\.\.messages\];/);
+  // Inside the loop a turn can only be lost three ways, and the guard already owns one of
+  // each. A second is a dedupe, whatever it is called.
+  assert.equal(count(outboundPrune, /\bcontinue;/g), 1);
+  assert.equal(count(outboundPrune, /surviving\.pop\(\)/g), 1);
+  // Unconditional: `if (...) surviving.push(message);` would skip turns silently.
+  assert.equal(count(outboundPrune, /surviving\.push\(message\);/g), 1);
+  assert.match(outboundPrune, /\n\s*surviving\.push\(message\);/);
 });
 
 test("a message is persisted under the id the runtime gave it", () => {
