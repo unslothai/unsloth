@@ -220,7 +220,10 @@ export async function requestStart(
         }
         mode = action;
       }
-      if (status.has_partial && !status.last_transport) {
+      if (
+        status.has_partial &&
+        (status.resumable === false || !status.last_transport)
+      ) {
         toast.info("Restarting this download", {
           description:
             "An earlier partial download can't be resumed, so it will start again from the beginning.",

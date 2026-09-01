@@ -51,6 +51,9 @@ const HYDRATE = read("../src/features/hub/download-manager/hydration.ts");
 const CONFLICT = read(
   "../src/features/hub/download-manager/transport-conflict.ts",
 );
+const CONTROLLER = read(
+  "../src/features/hub/download-manager/download-manager-controller.ts",
+);
 const STATE = read(
   "../src/features/hub/download-manager/download-manager-state.ts",
 );
@@ -100,6 +103,24 @@ test("the global resumable count excludes external jobs", () => {
   assert.match(
     PANEL,
     /!job\.external && RESUMABLE_STATES\.has\(job\.state\)/,
+  );
+});
+
+test("web auth session boundaries clear persisted download rows", () => {
+  assert.match(
+    CONTROLLER,
+    /AUTH_SESSION_CLEARED_EVENT[\s\S]*AUTH_SESSION_STORED_EVENT/,
+  );
+  assert.match(CONTROLLER, /if \(isTauri\) return/);
+  assert.match(CONTROLLER, /resetDownloadManagerState\(\)/);
+  assert.match(CONTROLLER, /useDownloadManagerStore\.persist\.clearStorage\(\)/);
+  assert.match(CONTROLLER, /event\.key === AUTH_SESSION_MARK_KEY/);
+});
+
+test("a restart-only partial is disclosed before Resume starts it over", () => {
+  assert.match(
+    CONFLICT,
+    /status\.has_partial &&[\s\S]*?status\.resumable === false[\s\S]*?Restarting this download/,
   );
 });
 
