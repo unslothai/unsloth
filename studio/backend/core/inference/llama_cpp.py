@@ -423,7 +423,6 @@ from core.inference.tool_call_parser import (
     thinking_exhausted_message as _thinking_exhausted_message,
     unfinished_thought_progress as _unfinished_thought_progress,
 )
-from core.tool_healing import strip_outside_think as _strip_outside_think
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
 from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.tool_loop_controller import (
@@ -883,6 +882,7 @@ _BLOCKQUOTE_PREFIX = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])?[ \t]*(?:>[ \t]?)
 _FENCE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w.+#-]*")
 # A fence on a list-marker line is block level, so the prose rules below do not apply.
 _LIST_MARKER_ONLY = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+$")
+_ONE_QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
 
 
 def _has_unclosed_code_fence(text: str) -> bool:
@@ -935,6 +935,10 @@ def _has_unclosed_code_fence(text: str) -> bool:
                     active_char, active_len, active_quote, active_base = None, 0, 0, 0
                     closed_any = True
                 continue
+            # A later run on the same line closes an inline span ("```python``` is
+            # the syntax"), so neither run opens a block, at column zero or not.
+            if index != len(runs) - 1:
+                continue
             if blank_prefix:
                 # Its own indentation, so the baseline is 0. Past three columns it
                 # is an indented code line and opens nothing.
@@ -943,14 +947,13 @@ def _has_unclosed_code_fence(text: str) -> bool:
                     active_quote, active_base = quote_depth, 0
                 continue
             # A list marker is a container, so a fence on that line is block level and
-            # skips the rest. CommonMark has no mid-PROSE fence, but models open one. Only
-            # the last run can be it (an earlier one is closed by the later, "the
-            # marker is ```python```"), and only a bare info string separates an
-            # opener from prose. Bare, after something closed, it is a literal ("wrap
-            # it in ```"); before any close, "here is code: ```" still opens.
+            # skips the rest. CommonMark has no mid-PROSE fence, but models open one, and
+            # only a bare info string separates that opener from prose. Bare, after
+            # something closed, it is a literal ("wrap it in ```"); before any close,
+            # "here is code: ```" still opens.
             in_list = _LIST_MARKER_ONLY.match(prefix) is not None
             if not in_list:
-                if indented_quote or index != len(runs) - 1:
+                if indented_quote:
                     continue
                 if trailing and not _FENCE_INFO_STRING_RE.fullmatch(trailing):
                     continue
@@ -1003,10 +1006,22 @@ def _is_blank_fence(matched: str) -> bool:
     The delimiters are on the first and last lines, so what sits between them is
     the answer, and a block holding a single space is no more one than an empty
     `<html></html>` is a page."""
-    if not matched[:1] in ("`", "~"):
+    if matched[:1] not in ("`", "~"):
         return False
     lines = matched.splitlines()
-    return not any(_BLOCKQUOTE_PREFIX.sub("", line).strip() for line in lines[1:-1])
+    # The closing line sits at the container's depth, so that is how many markers
+    # belong to the quote; any deeper one on a body line is content.
+    closing = _BLOCKQUOTE_PREFIX.match(lines[-1]) if lines else None
+    depth = closing.group(0).count(">") if closing else 0
+    for line in lines[1:-1]:
+        for _ in range(depth):
+            marker = _ONE_QUOTE_MARKER.match(line)
+            if marker is None:
+                break
+            line = line[marker.end() :]
+        if line.strip():
+            return False
+    return True
 
 
 def _first_real_artifact(text: str):
@@ -1037,27 +1052,16 @@ def _strip_markup_outside_fences(text: str) -> str:
 
 
 def _text_outside_think(text: str) -> str:
-    """``text`` with <think>/[THINK] blocks dropped, leaving what the user was told.
+    """``text`` with a LEADING reasoning block dropped, leaving what the user was told.
 
-    Those blocks are preserved for display, so judging whether an answer landed means
-    removing them. Routed through ``strip_outside_think`` so the span detection is the
-    one every strip path uses rather than a second reading of the markers.
+    Only a leading block is reasoning. The loop folds `reasoning_content` in as one
+    prefix per turn, so that is the only provenance genuine reasoning has, and a
+    `<think>` further in is the model quoting the tag in an example; the Anthropic
+    path reads it the same way (`routes/inference.py` `_split_think_segments`). A
+    prefilled template sends the opener itself, so the block may arrive carrying
+    only its closer.
     """
-    outside: list[str] = []
-
-    def _collect(segment: str, _is_last: bool) -> str:
-        outside.append(segment)
-        return segment
-
-    _strip_outside_think(text, _collect)
-    kept = "".join(outside)
-    if kept != text:
-        return kept
-    # A prefilled reasoning template emits the opening marker itself, so the
-    # generated text carries only the closer and the splitter sees no block. A pair
-    # the splitter does not know is unhandled too, but only when the opener starts
-    # the turn: further in, "plan <think>...</think> answer" is the ordinary shape
-    # where the plan was on screen.
+    stripped = text.lstrip()
     for opener, closer in (
         ("<think", "</think>"),
         ("[THINK]", "[/THINK]"),
@@ -1066,9 +1070,9 @@ def _text_outside_think(text: str) -> str:
         close = text.find(closer)
         if close < 0:
             continue
-        if opener not in text[:close] or text.lstrip().startswith(opener):
+        if stripped.startswith(opener) or opener not in text[:close]:
             return text[close + len(closer) :]
-    return kept
+    return text
 
 
 def _has_answer_artifact(text: str) -> bool:
@@ -29678,7 +29682,10 @@ class LlamaCppBackend:
                             else ""
                         )
                         _reasoning = reasoning_accum.strip()
-                        _stripped = _visible if _visible else _reasoning
+                        # Bracketed reasoning IS the turn for a Magistral-style model,
+                        # and the strip takes it whole, so classify the raw text rather
+                        # than lose the nudge on a turn that showed nothing.
+                        _stripped = _visible or _reasoning or _visible_raw
                         # Thinking rendered as <think> in the CONTENT channel stays
                         # in _visible, and a fence inside one was never shown.
                         _visible_answer = _text_outside_think(_visible).strip()

@@ -230,11 +230,13 @@ def test_quoted_closer_does_not_close_an_unquoted_fence():
 
 
 def test_balanced_inline_fence_span_is_not_an_opener():
-    """A balanced inline span is not a fence. Scanning one delimiter per line
-    read the first run as an opener and left the answer looking unfinished."""
-    text = "First, let me show it.\n```python\nx = 1\n```\nThe marker is ```python```."
-    assert _has_answer_artifact(text)
-    assert not _would_reprompt(text)
+    """A balanced inline span is not a fence, wherever on the line it starts.
+    Scanning one delimiter per line read the first run as an opener and left the
+    answer looking unfinished."""
+    for tail in ("The marker is ```python```.", "```python``` is the syntax."):
+        text = "First, let me show it.\n```python\nx = 1\n```\n" + tail
+        assert _has_answer_artifact(text), tail
+        assert not _would_reprompt(text), tail
 
 
 def test_bare_delimiter_in_prose_after_a_closed_block():
@@ -738,26 +740,10 @@ def test_artifact_regex_detects_four_or_more_tildes():
 
 
 def test_reasoning_only_visible_artifact_suppresses_reprompt():
-    """When content_accum is empty AND there are no content tokens, the
-    backend yields reasoning_accum as plain content. In that case the
-    reasoning text IS the user-visible answer and a complete artifact
-    inside it should suppress the re-prompt."""
-    from core.inference.llama_cpp import _REPROMPT_MAX_CHARS
-
-    content_accum = ""
-    reasoning_accum = "First, let me set up pygame.\n```python\nimport pygame\npygame.init()\n```"
-    has_content_tokens = False
-
-    visible = content_accum.strip()
-    reasoning = reasoning_accum.strip()
-    stripped = visible if visible else reasoning
-    artifact_text = visible if visible else (reasoning if not has_content_tokens else "")
-    would_reprompt = bool(
-        0 < len(stripped) < _REPROMPT_MAX_CHARS
-        and _INTENT_SIGNAL.search(stripped)
-        and not (artifact_text and _has_answer_artifact(artifact_text))
-    )
-    assert not would_reprompt
+    """With no content tokens at all the loop yields the reasoning as the answer, so
+    a complete artifact inside it is the answer and suppresses the re-prompt."""
+    reasoning = "First, let me set up pygame.\n```python\nimport pygame\npygame.init()\n```"
+    assert not _gate_would_reprompt("", reasoning, False)
 
 
 def test_artifact_regex_rejects_shorter_commonmark_closing_fence():
@@ -1063,7 +1049,7 @@ def _gate_would_reprompt(
     visible_raw = content_accum.strip()
     visible = strip_tool_markup(content_accum, final = True).strip() if visible_raw else ""
     reasoning = reasoning_accum.strip()
-    stripped = visible if visible else reasoning
+    stripped = visible or reasoning or visible_raw
     visible_answer = _text_outside_think(visible).strip()
     reasoning_shown = (
         not has_content_tokens and promote_reasoning_only and finish_reason != "length"
@@ -1115,6 +1101,9 @@ def test_whitespace_only_fence_is_not_an_answer():
     quoted = "First, I will run it.\n> ```bash\n>   \n> ```"
     assert not _has_answer_artifact(quoted)
     assert _would_reprompt(quoted)
+    # Only the container's own depth is the container. A marker deeper than the
+    # closing line's is content, and content is an answer.
+    assert _has_answer_artifact("First, let me show it.\n> ```text\n> >\n> ```")
     # A blank first line with real code after it is still an answer.
     assert _has_answer_artifact("First, let me show it.\n```bash\n \necho hi\n```")
 
@@ -1128,6 +1117,21 @@ def test_reasoning_artifact_counts_only_when_the_loop_promotes_it():
     assert _gate_would_reprompt("", reasoning, False, promote_reasoning_only = False)
     # Promoted but cut off by the window: nothing is yielded, so it is a stall too.
     assert _gate_would_reprompt("", reasoning, False, finish_reason = "length")
+
+
+def test_only_a_leading_block_is_reasoning():
+    """A `<think>` further into the turn is the model quoting the tag, which is how
+    the Anthropic path reads it too, so a fenced example containing one is an answer."""
+    example = "First, let me write it.\n```xml\n<think>private</think>\n```"
+    assert _has_answer_artifact(example)
+    assert not _gate_would_reprompt(example, "", True)
+
+
+def test_bracketed_reasoning_only_turn_still_gets_nudged():
+    """`[THINK]...[/THINK]` IS the whole turn for a Magistral-style model and the
+    strip takes it, so the raw text is classified rather than losing the nudge."""
+    assert _gate_would_reprompt("[THINK]First, I will search.[/THINK]", "", True)
+    assert _gate_would_reprompt("<think>First, I will search.</think>", "", True)
 
 
 def test_intent_inside_a_think_block_is_not_an_announcement():
