@@ -55,5 +55,7 @@ test("pinned pipeline paths retain their Hub selector identity across remounts",
   const picker = source(
     "../src/features/model-picker/components/model-selector/pickers.tsx",
   );
+  const images = source("../src/features/images/images-page.tsx");
+  assert.ok(images.includes("displayRepoId: status.display_repo_id ?? undefined"));
   assert.ok(picker.includes("isPinnedDiffusionLoadId(c.repo_id, c.load_id)"));
 });

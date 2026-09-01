@@ -2370,7 +2370,11 @@ export function ImagesPage({
     // Set before the recipe decision below: whether Reapply has a target is a separate question
     // from whether the model's defaults should seed the form.
     if (status?.model_kind === "pipeline") {
-      lastLoad.current = { repoId, kind: "pipeline" };
+      lastLoad.current = {
+        repoId,
+        kind: "pipeline",
+        displayRepoId: status.display_repo_id ?? undefined,
+      };
     }
     // A stored recipe is the user's own choice, so it outranks the resident model's defaults on
     // the first seed. Later resident changes still seed, as picking a model always has.
@@ -2388,6 +2392,7 @@ export function ImagesPage({
     imagePresets.storedRecipe,
     residentDefaults,
     status?.loaded,
+    status?.display_repo_id,
     status?.model_kind,
     status?.repo_id,
   ]);
