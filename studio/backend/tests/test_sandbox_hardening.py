@@ -3243,3 +3243,156 @@ class TestR8_StaticIndirectionCoverage:
     def test_unrelated_add_method_with_sensitive_text_allowed(self):
         code = "class Bag:\n def add(self, value): return value\nBag().add('/root/.ssh')"
         assert not _is_blocked(code), "an unrelated add method was treated as tarfile"
+
+
+class TestR9_ScopeAndClientCoverage:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import httpx\n"
+                "with httpx.Client() as client:\n"
+                " client.get('http://169.254.169.254/latest')"
+            ),
+            (
+                "import httpx\n"
+                "async def fetch():\n"
+                " async with httpx.AsyncClient() as client:\n"
+                "  await client.get('http://169.254.169.254/latest')"
+            ),
+            (
+                "import aiohttp\n"
+                "async def fetch():\n"
+                " async with aiohttp.ClientSession() as client:\n"
+                "  await client.get('http://169.254.169.254/latest')"
+            ),
+        ],
+    )
+    def test_context_managed_metadata_clients_blocked(self, code):
+        assert _is_blocked(code), "context-managed client bypassed network policy"
+
+    def test_context_managed_trusted_client_allowed(self):
+        code = "import httpx\nwith httpx.Client() as client:\n client.get('https://google.com/')"
+        assert not _is_blocked(code), "trusted context-managed client was blocked"
+
+    def test_closed_context_client_identity_does_not_leak(self):
+        code = (
+            "import httpx\n"
+            "with httpx.Client() as client:\n pass\n"
+            "client.get('https://private.example')"
+        )
+        assert not _is_blocked(code), "context-local client identity leaked past the block"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import requests\n"
+                "client = requests.session()\n"
+                "client.get('http://169.254.169.254/latest')"
+            ),
+            (
+                "import requests as req\n"
+                "factory = req.session\n"
+                "client = factory()\n"
+                "client.get('http://169.254.169.254/latest')"
+            ),
+            (
+                "from requests import session\n"
+                "client = session()\n"
+                "client.get('http://169.254.169.254/latest')"
+            ),
+        ],
+    )
+    def test_requests_session_factory_metadata_blocked(self, code):
+        assert _is_blocked(code), "requests.session client bypassed network policy"
+
+    def test_requests_session_factory_trusted_allowed(self):
+        code = "import requests\nrequests.session().get('https://google.com/')"
+        assert not _is_blocked(code), "trusted requests.session request was blocked"
+
+    def test_unrelated_session_factory_allowed(self):
+        code = "local.session().get('https://private.example')"
+        assert not _is_blocked(code), "untracked session factory was treated as requests"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "[open(path).read() for path in ['/etc/shadow']]",
+            "{open(path).read() for path in ['/etc/shadow']}",
+            "{path: open(path).read() for path in ['/etc/shadow']}",
+            "tuple(open(path).read() for path in ['/etc/shadow'])",
+            ("[open(path).read() for path in ['./safe.txt', '/etc/shadow'] if path]"),
+            "[open(path).read() for path, flag in [('/etc/shadow', True)] if flag]",
+        ],
+    )
+    def test_literal_comprehension_sensitive_reads_blocked(self, code):
+        assert _is_blocked(code), "literal comprehension bypassed sensitive-file policy"
+
+    def test_literal_comprehension_project_read_allowed(self):
+        code = "[open(path).read() for path in ['./a.txt', './b.txt']]"
+        assert not _is_blocked(code), "project comprehension read was blocked"
+
+    def test_comprehension_binding_does_not_leak(self):
+        code = "path = './safe.txt'\n[path for path in ['/etc/shadow']]\nopen(path).read()"
+        assert not _is_blocked(code), "comprehension-local binding leaked outward"
+
+    def test_method_uses_global_alias_not_class_attribute(self):
+        code = (
+            "import requests as client\n"
+            "class Fetcher:\n"
+            " client = LocalClient()\n"
+            " def fetch(self):\n"
+            "  return client.get('http://169.254.169.254/latest')"
+        )
+        assert _is_blocked(code), "method lost its global requests alias"
+
+    def test_class_lambda_uses_global_alias_not_class_attribute(self):
+        code = (
+            "import requests as client\n"
+            "class Fetcher:\n"
+            " client = LocalClient()\n"
+            " fetch = lambda: client.get('http://169.254.169.254/latest')"
+        )
+        assert _is_blocked(code), "class lambda lost its global requests alias"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import requests as client\n"
+                "class Fetcher:\n"
+                " client = LocalClient()\n"
+                " client.get('https://private.example')"
+            ),
+            (
+                "import requests as client\n"
+                "class Fetcher:\n"
+                " client = LocalClient()\n"
+                " def fetch(self):\n"
+                "  return self.client.get('https://private.example')"
+            ),
+            (
+                "import requests as client\n"
+                "class Fetcher:\n"
+                " def fetch(self):\n"
+                "  client = LocalClient()\n"
+                "  return client.get('https://private.example')"
+            ),
+            (
+                "import requests as client\n"
+                "class Fetcher:\n"
+                " client = LocalClient()\n"
+                " def fetch(self, value=client.get('https://private.example')):\n"
+                "  return value"
+            ),
+            (
+                "import requests as client\n"
+                "class Fetcher:\n"
+                " client = LocalClient()\n"
+                " fetch = lambda self: self.client.get('https://private.example')"
+            ),
+        ],
+    )
+    def test_class_local_and_method_local_clients_allowed(self, code):
+        assert not _is_blocked(code), "class or method local client was treated as global"

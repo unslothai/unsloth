@@ -14987,7 +14987,12 @@ def _check_signal_escape_patterns(code: str):
     pending_global_bindings: dict[int, tuple[dict | set, dict | set]] = {}
     pending_global_names: set[str] = set()
 
-    def _visit_local_binding_scope(visitor: ast.NodeVisitor, node: ast.AST) -> None:
+    def _visit_local_binding_scope(
+        visitor: ast.NodeVisitor,
+        node: ast.AST,
+        *,
+        visit_definition_time: bool = True,
+    ) -> None:
         """Visit a nested lexical scope with only its own binding overlay."""
         saved_cwd_literal = getattr(visitor, "cwd_literal", None)
         saved_bindings = dict(string_bindings)
@@ -15020,19 +15025,53 @@ def _check_signal_escape_patterns(code: str):
             path_class_aliases_prepass,
             *(value for value in vars(visitor).values() if isinstance(value, (dict, set))),
         ]
+        outer_container_values = [container.copy() for container in tracked_containers]
         global_names, nonlocal_names = _declared_enclosing_binding_names(node)
         local_names = _local_scope_binding_names(node) - global_names - nonlocal_names
         # Defaults, decorators, annotations, bases, and class keywords are
         # evaluated by the enclosing scope before local parameters exist.
-        for child in _definition_time_children(node):
-            visitor.visit(child)
+        if visit_definition_time:
+            for child in _definition_time_children(node):
+                visitor.visit(child)
         for container in tracked_containers:
             _replace_binding_subset(container, local_names, container.__class__())
         active_local_scopes.append(local_names)
         _run_alias_prepass(node)
         _run_string_binding_prepass(node)
         try:
-            if isinstance(node, ast.Lambda):
+            if isinstance(node, ast.ClassDef):
+                methods = []
+                class_lambdas = []
+                previous_lambda_collector = getattr(visitor, "_class_lambda_collector", None)
+                visitor._class_lambda_collector = class_lambdas
+                try:
+                    for child in node.body:
+                        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            for definition_child in _definition_time_children(child):
+                                visitor.visit(definition_child)
+                            methods.append(child)
+                        else:
+                            visitor.visit(child)
+                finally:
+                    if previous_lambda_collector is None:
+                        del visitor._class_lambda_collector
+                    else:
+                        visitor._class_lambda_collector = previous_lambda_collector
+
+                class_container_values = [container.copy() for container in tracked_containers]
+                for container, outer_values in zip(tracked_containers, outer_container_values):
+                    container.clear()
+                    container.update(outer_values)
+                active_local_scopes.pop()
+                try:
+                    for method in (*methods, *class_lambdas):
+                        _visit_local_binding_scope(visitor, method, visit_definition_time = False)
+                finally:
+                    active_local_scopes.append(local_names)
+                    for container, class_values in zip(tracked_containers, class_container_values):
+                        container.clear()
+                        container.update(class_values)
+            elif isinstance(node, ast.Lambda):
                 visitor.visit(node.body)
             else:
                 for child in node.body:
@@ -15088,6 +15127,15 @@ def _check_signal_escape_patterns(code: str):
             if not active_local_scopes:
                 pending_global_bindings.clear()
                 pending_global_names.clear()
+
+    def _visit_lambda_binding_scope(visitor: ast.NodeVisitor, node: ast.Lambda) -> None:
+        collector = getattr(visitor, "_class_lambda_collector", None)
+        if collector is not None:
+            for child in _definition_time_children(node):
+                visitor.visit(child)
+            collector.append(node)
+            return
+        _visit_local_binding_scope(visitor, node)
 
     def _literal_getattr_target(node: ast.AST) -> "tuple[ast.AST, str] | None":
         """Return ``(receiver, attribute)`` for a literal two-arg getattr."""
@@ -15280,7 +15328,10 @@ def _check_signal_escape_patterns(code: str):
             _visit_local_binding_scope(self, node)
 
         visit_AsyncFunctionDef = visit_FunctionDef
-        visit_Lambda = visit_FunctionDef
+
+        def visit_Lambda(self, node):
+            _visit_lambda_binding_scope(self, node)
+
         visit_ClassDef = visit_FunctionDef
 
         def visit_Assign(self, node):
@@ -16253,7 +16304,7 @@ def _check_signal_escape_patterns(code: str):
 
         @staticmethod
         def _constructor_instance_module(constructor: str) -> "str | None":
-            if constructor == "requests.Session":
+            if constructor in ("requests.Session", "requests.session"):
                 return "requests"
             if constructor in ("httpx.Client", "httpx.AsyncClient"):
                 return "httpx"
@@ -16350,8 +16401,10 @@ def _check_signal_escape_patterns(code: str):
             if node.module in self.network_module_aliases:
                 for alias in node.names:
                     canonical = f"{node.module}.{alias.name}"
-                    if canonical == "urllib.request.Request" or any(
-                        canonical.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES
+                    if (
+                        canonical == "urllib.request.Request"
+                        or any(canonical.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES)
+                        or self._constructor_instance_module(canonical) is not None
                     ):
                         self.network_call_aliases[alias.asname or alias.name] = canonical
             elif node.module in ("urllib", "http"):
@@ -16433,7 +16486,10 @@ def _check_signal_escape_patterns(code: str):
                 name = target.id
                 if receiver in self.pathlib_aliases and attr in _PATHLIB_PATH_CLASSES:
                     self.path_aliases.add(name)
-                if any(canonical.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES):
+                if (
+                    any(canonical.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES)
+                    or self._constructor_instance_module(canonical) is not None
+                ):
                     self.network_call_aliases[name] = canonical
                 if canonical in ("io.open", "io.FileIO", "codecs.open", "os.open"):
                     self.file_reader_aliases.add(name)
@@ -16524,11 +16580,54 @@ def _check_signal_escape_patterns(code: str):
             self._record_constructed_binding([node.target], node.value)
             self.generic_visit(node)
 
+        def _visit_comprehension_scope(self, node):
+            def record_literal_binding(target, value):
+                if isinstance(target, ast.Name):
+                    literal = _extract_string_from_node(value)
+                    if literal is not None:
+                        _record_string_binding(target.id, literal)
+                    return
+                if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
+                    value, (ast.Tuple, ast.List)
+                ):
+                    if len(target.elts) == len(value.elts):
+                        for nested_target, nested_value in zip(target.elts, value.elts):
+                            record_literal_binding(nested_target, nested_value)
+
+            saved_bindings = dict(string_bindings)
+            saved_all = {name: list(values) for name, values in string_bindings_all.items()}
+            try:
+                for generator in node.generators:
+                    self.visit(generator.iter)
+                    if isinstance(generator.iter, (ast.List, ast.Tuple, ast.Set)):
+                        for element in generator.iter.elts:
+                            record_literal_binding(generator.target, element)
+                    for condition in generator.ifs:
+                        self.visit(condition)
+                if isinstance(node, ast.DictComp):
+                    self.visit(node.key)
+                    self.visit(node.value)
+                else:
+                    self.visit(node.elt)
+            finally:
+                string_bindings.clear()
+                string_bindings.update(saved_bindings)
+                string_bindings_all.clear()
+                string_bindings_all.update(saved_all)
+
+        visit_ListComp = _visit_comprehension_scope
+        visit_SetComp = _visit_comprehension_scope
+        visit_DictComp = _visit_comprehension_scope
+        visit_GeneratorExp = _visit_comprehension_scope
+
         def visit_With(self, node):
             saved_archive_instances = set(self.archive_instance_aliases)
+            saved_network_instances = dict(self.network_instance_aliases)
             try:
                 for item in node.items:
                     self.visit(item.context_expr)
+                    if isinstance(item.optional_vars, ast.Name):
+                        self._record_constructed_binding([item.optional_vars], item.context_expr)
                     if self._archive_constructor_name(item.context_expr) is not None and isinstance(
                         item.optional_vars, ast.Name
                     ):
@@ -16538,6 +16637,8 @@ def _check_signal_escape_patterns(code: str):
             finally:
                 self.archive_instance_aliases.clear()
                 self.archive_instance_aliases.update(saved_archive_instances)
+                self.network_instance_aliases.clear()
+                self.network_instance_aliases.update(saved_network_instances)
 
         visit_AsyncWith = visit_With
 
@@ -16545,7 +16646,10 @@ def _check_signal_escape_patterns(code: str):
             _visit_local_binding_scope(self, node)
 
         visit_AsyncFunctionDef = visit_FunctionDef
-        visit_Lambda = visit_FunctionDef
+
+        def visit_Lambda(self, node):
+            _visit_lambda_binding_scope(self, node)
+
         visit_ClassDef = visit_FunctionDef
 
         def visit_Call(self, node):
