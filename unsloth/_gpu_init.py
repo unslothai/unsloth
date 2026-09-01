@@ -329,6 +329,8 @@ elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 
+# For Gradio HF Spaces?
+# if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
 
 if DEVICE_TYPE == "cuda":
