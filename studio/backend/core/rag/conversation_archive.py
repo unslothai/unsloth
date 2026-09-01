@@ -846,8 +846,10 @@ def _active_chain(
         parent = message.get("parentId") or message.get("parent_id")
         # A row that CARRIES the column and holds null is a root the client meant, as
         # editing the first prompt makes. Only a row written before the column exists has
-        # nothing to say, and there storage order stands in.
-        stated = "parentId" in message or "parent_id" in message
+        # nothing to say, and there storage order stands in. Under the legacy path the
+        # stand-in is unconditional, as it always was: `_transcript_positions` numbers
+        # turns off this chain, and rooting a null there renumbers the whole archive.
+        stated = require_unique and ("parentId" in message or "parent_id" in message)
         if parent is None and previous is not None and not stated:
             synthesized.add(identifier)
             parent = previous
