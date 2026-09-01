@@ -3376,6 +3376,23 @@ def _auto_mode_drops_mtp(
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
 
 
+# MLA archs whose MTP context covers only the NextN block instead of duplicating the
+# trunk KV: glm5next holds 4+3 MiB over one layer where its trunk holds 48+36 over
+# twelve. That one fact is why Auto keeps MTP (gate below) and why the fit must not
+# reserve the copy (_estimate_mtp_overhead_bytes). Not "glm5-next": no NextN graph.
+_MLA_MTP_FAST_ARCHS = frozenset({"glm5next"})
+
+
+def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
+    """Whether this MLA architecture's embedded MTP head is worth promoting in Auto."""
+    return bool(architecture) and str(architecture).strip().lower() in _MLA_MTP_FAST_ARCHS
+
+
+def _arch_mtp_skips_target_kv_copy(architecture: Optional[str]) -> bool:
+    """Whether this MLA architecture's MTP context skips the duplicated target KV."""
+    return _arch_has_fast_mla_mtp(architecture)
+
+
 def _mla_mtp_auto_enabled() -> bool:
     """Whether Auto may pick embedded MTP for an MLA model (GLM-5.2/DeepSeek/Kimi).
 
@@ -4068,6 +4085,9 @@ _TARGET_KV_EXCLUDES_NEXTN_ARCHS = frozenset(
         # MLA/DSA trunk with a dense MTP head, llama-model.cpp:2129
         "glm-dsa",
         "deepseek32",
+        # Hybrid KDA + DSA trunk; both GLM-5.3-Flash ports filter blk.45 out
+        "glm5next",
+        "glm5-next",
         # Plain attention trunk with an explicit nextn filter, llama-model.cpp:2356
         "step35",
         "hy_v3",
@@ -11335,6 +11355,17 @@ class LlamaCppBackend:
         n_embd_s = head_dim * head_dim * n_head
         return int(n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel))
 
+    def _rollback_state_bytes(self, n_parallel: int = 1) -> int:
+        """One target-context rollback snapshot, whichever recurrent family this is.
+
+        Both callers price the same thing (llama.cpp's `1 seqs N rs_seq`) and both
+        used to reach for the Mamba helper alone, which answers 0 for a KDA hybrid
+        and silently dropped the reserve. Route every caller through here.
+        """
+        return self._mamba_recurrent_state_bytes(n_parallel) or self._recurrent_state_bytes(
+            n_parallel
+        )
+
     def _target_kv_excludes_nextn(self) -> bool:
         """Whether this model's TARGET KV cache skips the embedded MTP blocks.
 
@@ -11837,8 +11868,14 @@ class LlamaCppBackend:
         # separate-drafter spec modes (draft-simple/draft-eagle3) load a small
         # distinct drafter with its own KV -- already counted in draft_kv/weights --
         # rather than duplicating the target, so they must not be charged for it.
+        # Third gate: a NextN-only MTP context allocates no copy, and charging one
+        # trips drafter_no_vram, losing the MTP being reserved for.
         target_ctx_copy = 0
-        if mtp_keeps_target_ctx and self._kv_lora_rank is not None:
+        if (
+            mtp_keeps_target_ctx
+            and self._kv_lora_rank is not None
+            and not _arch_mtp_skips_target_kv_copy(getattr(self, "_architecture", None))
+        ):
             target_ctx_copy = self._estimate_kv_cache_bytes(
                 n_ctx,
                 "f16",
@@ -11856,8 +11893,7 @@ class LlamaCppBackend:
         # dominant hidden cost on Qwen3.5/3.8 at multiple parallel slots.
         target_recurrent_copies = 0
         if target_rollback and spec_draft_n_max > 0:
-            base_recurrent = self._mamba_recurrent_state_bytes(n_parallel)
-            target_recurrent_copies = base_recurrent * spec_draft_n_max
+            target_recurrent_copies = self._rollback_state_bytes(n_parallel) * spec_draft_n_max
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
             # MLA target copy so a large config can't launch over budget (the small
@@ -19048,9 +19084,9 @@ class LlamaCppBackend:
                         # displaced does not run. The flat fraction below is gated on
                         # this; the byte-accurate callback was not, so the fit went on
                         # charging VRAM no drafter allocates.
-                        # One term survives: a Hybrid Mamba target's recurrent rollback
-                        # snapshots sit in the TARGET context, so pinning the drafter to
-                        # CPU does not move them. Charge those alone. Flat in ctx (the
+                        # One term survives: a recurrent target's rollback snapshots sit
+                        # in the TARGET context, so pinning the drafter to CPU does not
+                        # move them. Charge those alone. Flat in ctx (the
                         # state is per-slot), hence the same _np/_n_ubatch keywords the
                         # replaced callback takes, so _mtp_bytes can still re-price slots.
                         def _cpu_draft_target_state(
@@ -19062,7 +19098,7 @@ class LlamaCppBackend:
                         ) -> int:
                             if not _rollback or _n <= 0:
                                 return 0
-                            return self._mamba_recurrent_state_bytes(_np) * _n
+                            return self._rollback_state_bytes(_np) * _n
 
                         mtp_overhead_fn = (
                             _cpu_draft_target_state
@@ -24149,6 +24185,7 @@ class LlamaCppBackend:
             and self._kv_lora_rank is not None
             and not bool(mtp_draft_path)
             and not _mla_mtp_auto_enabled()
+            and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
         )
 
         if user_owns_spec_type:
