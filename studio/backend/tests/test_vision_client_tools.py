@@ -143,6 +143,9 @@ def _vision_probe(chat_template = _CHATML_WITH_TOOLS):
         def __init__(self):
             self.chat_template = chat_template
             self.tokenizer = Tokenizer()
+            # A real VLM processor carries one; the mirror keys off it to tell a
+            # genuine image render from the raw-tokenizer text fallback.
+            self.image_processor = object()
 
         def apply_chat_template(self, messages, **kwargs):
             seen["messages"] = messages
@@ -413,6 +416,48 @@ def test_the_processor_template_is_mirrored_for_the_route_to_profile():
 
     mirrored = backend.models["vision-tools"]["chat_template_info"]
     assert mirrored["processor_template"] == _PROCESSOR_TEMPLATE_NO_TOOLS
+
+
+def test_a_processor_that_cannot_process_images_is_not_mirrored():
+    """FastVisionModel hands back a raw tokenizer for some vision-marked models, and
+    _generate_chat_response_inner then ignores the image and renders the tokenizer text
+    path. Mirroring that body as the processor body would make the route profile an image
+    render that never happens, under the stricter processor rules (#10092)."""
+    backend, _seen = _vision_probe()
+    info = backend.models["vision-tools"]
+    del info["processor"].image_processor
+    info["processor"].chat_template = _PROCESSOR_TEMPLATE_NO_TOOLS
+    backend._load_chat_template_info("vision-tools")
+
+    mirrored = backend.models["vision-tools"]["chat_template_info"]
+    assert mirrored["processor_template"] is None
+
+
+def test_the_named_template_list_form_survives_the_mirror():
+    """Hermes-style named templates ship as [{"name": ..., "template": ...}], which
+    _selected_template_strings_from_value and model_markup both accept. Discarding the
+    list at the mirror would silently drop the image-turn override for those models."""
+    listed = [
+        {"name": "default", "template": _PROCESSOR_TEMPLATE_NO_TOOLS},
+        {"name": "tool_use", "template": _CHATML_WITH_TOOLS},
+    ]
+    backend, _seen = _vision_probe()
+    backend.models["vision-tools"]["processor"].chat_template = listed
+    backend._load_chat_template_info("vision-tools")
+
+    assert backend.models["vision-tools"]["chat_template_info"]["processor_template"] == listed
+
+    mlx = pytest.importorskip("core.inference.mlx_inference")
+
+    class _Proc:
+        chat_template = listed
+        tokenizer = None
+
+    mlx_backend = mlx.MLXInferenceBackend.__new__(mlx.MLXInferenceBackend)
+    mlx_backend.models = {"m": {"processor": _Proc(), "tokenizer": None}}
+    mlx_backend._populate_chat_template_info("m", _CHATML_WITH_TOOLS)
+
+    assert mlx_backend.models["m"]["chat_template_info"]["processor_template"] == listed
 
 
 def test_a_processor_body_that_cannot_advertise_empties_the_healing_catalog():

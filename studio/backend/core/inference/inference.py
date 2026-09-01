@@ -2977,9 +2977,24 @@ class InferenceBackend:
             "processor_template": None,
         }
         processor = self.models[model_name].get("processor")
-        processor_template = getattr(processor, "chat_template", None)
-        if isinstance(processor_template, (str, dict)) and processor_template:
-            chat_template_info["processor_template"] = processor_template
+        # A vision-marked model whose stored processor cannot process images (FastVisionModel
+        # may hand back a raw tokenizer) has its image ignored and renders through the
+        # tokenizer text path instead, so mirroring a body the image render never selects
+        # would make the route profile the wrong template. Same predicate as that fallback.
+        try:
+            from transformers import ProcessorMixin
+            processes_images = processor is not None and (
+                isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")
+            )
+        except Exception:
+            processes_images = processor is not None and hasattr(processor, "image_processor")
+        if processes_images:
+            processor_template = getattr(processor, "chat_template", None)
+            # The named-template list form, [{"name": ..., "template": ...}], is a supported
+            # representation downstream (_selected_template_strings_from_value, model_markup);
+            # narrowing it away here would silently disable the image-turn override.
+            if isinstance(processor_template, (str, dict, list, tuple)) and processor_template:
+                chat_template_info["processor_template"] = processor_template
 
         try:
             from utils.datasets import MODEL_TO_TEMPLATE_MAPPER

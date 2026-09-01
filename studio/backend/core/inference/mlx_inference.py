@@ -1636,7 +1636,9 @@ class MLXInferenceBackend:
         }
         _proc = entry.get("processor")
         _proc_tpl = getattr(_proc, "chat_template", None)
-        if isinstance(_proc_tpl, (str, dict)) and _proc_tpl:
+        # list/tuple is the named-template form _selected_template_strings_from_value and
+        # model_markup both accept; narrowing it away would drop the override for it.
+        if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
             info["processor_template"] = _proc_tpl
         try:
             tpl = (
