@@ -10,6 +10,7 @@ and a child env inherits what it was never granted. ``is`` throughout: ``False =
 """
 
 import hashlib
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Optional
 
@@ -292,3 +293,72 @@ def test_the_stt_routes_keep_the_caller_boundary(route_line, expected):
     marker = source.index(f'"/{route_line}"')
     signature = source[marker : marker + 400]
     assert ("Depends(get_request_hf_token)" in signature) is expected
+
+
+def test_an_explicit_token_evicts_the_ambient_aliases_too():
+    """Granting HF_TOKEN alone leaves the operator's credential in a legacy alias."""
+    env = _child_env("hf_caller_token")
+
+    assert env["HF_TOKEN"] == "hf_caller_token"
+    for alias in ("HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
+        assert alias not in env, f"{alias} still carried the operator credential"
+
+
+def test_the_audio_tokenizer_fallback_does_not_reach_for_the_ambient_token(monkeypatch):
+    """`hf_token or os.environ.get("HF_TOKEN")` reads past the sentinel to the operator's."""
+    import utils.models.model_config as mc
+
+    monkeypatch.setenv("HF_TOKEN", "ambient-operator-token")
+    seen = {}
+
+    class _Resp:
+        status_code = 404
+        text = ""
+        def json(self): return {}
+
+    def _get(url, headers = None, timeout = None, **_kw):
+        seen.setdefault("headers", headers)
+        return _Resp()
+
+    import requests
+    monkeypatch.setattr(requests, "get", _get)
+    mc._detect_audio_from_tokenizer("org/private", hf_token = False, revision = None)
+
+    assert "Authorization" not in (seen.get("headers") or {}), (
+        "an anonymous caller's tokenizer probe carried the operator's bearer"
+    )
+
+
+def test_the_stt_sidecars_pass_the_sentinel_through_unchanged():
+    """`hf_token or None` before spawn_download makes the child-env scrub unreachable."""
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parent.parent / "core" / "inference"
+    for name in ("stt_sidecar.py", "stt_ggml_sidecar.py", "stt_mtmd_sidecar.py"):
+        source = (root / name).read_text()
+        assert "hf_token or None" not in source, (
+            f"{name} launders the sentinel into ambient access before the worker"
+        )
+
+
+def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monkeypatch):
+    """The disk fast path returns real rows without asking the Hub anything."""
+    from hub.services.datasets import formatting
+
+    called = {"cache": 0}
+    monkeypatch.setattr(
+        formatting,
+        "_load_cached_hf_preview_slice",
+        lambda *_a, **_k: called.__setitem__("cache", called["cache"] + 1) or "ROWS",
+    )
+    monkeypatch.setattr(
+        formatting, "_load_processed_hf_preview_slice", lambda *_a, **_k: None
+    )
+    request = SimpleNamespace(dataset_name = "org/private", local_path = None,
+                              subset = None, train_split = "train")
+
+    assert formatting._load_any_cached_hf_preview_slice(request, 5, None) == "ROWS"
+    assert called["cache"] == 1
+
+    assert formatting._load_any_cached_hf_preview_slice(request, 5, False) is None
+    assert called["cache"] == 1, "the anonymous caller reached the unauthenticated cache"

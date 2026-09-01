@@ -43,6 +43,7 @@ from hub.utils.paths import (
     normalize_path,
     resolve_dataset_path,
 )
+from hub.utils.hf_tokens import is_anonymous
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.paths.path_utils import drop_shadowed_appledouble_names
 
@@ -308,9 +309,14 @@ def _load_any_cached_hf_preview_slice(
     preview_size: int,
     hf_token: Optional[str] = None,
 ):
-    cached_preview = _load_cached_hf_preview_slice(request, preview_size)
-    if cached_preview is not None:
-        return cached_preview
+    # The disk fast path returns real rows without asking the Hub anything, so a caller
+    # denied the ambient credential must not reach it: it could name a private dataset the
+    # UI had already cached and read its contents back. A UI session resolves to None and
+    # keeps the fast path; only a forced-anonymous caller pays for the round trip.
+    if not is_anonymous(hf_token):
+        cached_preview = _load_cached_hf_preview_slice(request, preview_size)
+        if cached_preview is not None:
+            return cached_preview
     try:
         return _load_processed_hf_preview_slice(request, preview_size, hf_token)
     except Exception as exc:

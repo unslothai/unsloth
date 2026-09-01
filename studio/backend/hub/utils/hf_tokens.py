@@ -39,6 +39,10 @@ def apply_token_to_child_env(env: MutableMapping[str, str], hf_token: HfTokenArg
     Only the sentinel scrubs; ``None`` keeps the inherited env on purpose.
     """
     if isinstance(hf_token, str) and hf_token:
+        # Scrub before granting: setting HF_TOKEN alone leaves an operator credential
+        # sitting in HF_HUB_TOKEN or a legacy alias, so the child holds two.
+        for key in _HF_TOKEN_ENV_KEYS:
+            env.pop(key, None)
         env["HF_TOKEN"] = hf_token
         # An inherited HF_HUB_DISABLE_IMPLICIT_TOKEN=1 would otherwise 401 a gated repo.
         env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"

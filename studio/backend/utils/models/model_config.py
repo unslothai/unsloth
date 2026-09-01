@@ -887,9 +887,7 @@ def __getattr__(name: str) -> Any:
 
 def _vision_check_child_env(hf_token: HfTokenArg) -> Dict[str, str]:
     """Child environment for the vision-check probe, carrying the caller's credential."""
-    env = utf8_child_env(
-        get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-    )
+    env = utf8_child_env(get_hf_cache_paths().child_env(child_env_without_native_path_secret()))
     apply_token_to_child_env(env, hf_token)
     return env
 
@@ -1428,7 +1426,9 @@ def _detect_audio_from_tokenizer(
     except Exception:
         return None, read_any
 
-    token = hf_token or os.environ.get("HF_TOKEN")
+    # `False` is falsy, so `or` would reach past it to the ambient credential and fetch a
+    # private tokenizer with the operator's token for a caller denied it.
+    token = None if is_anonymous(hf_token) else (hf_token or os.environ.get("HF_TOKEN"))
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     transient = False  # a fetch failed for a non-404 reason (network/5xx)
