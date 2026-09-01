@@ -54,10 +54,23 @@ test("the scoped badge column reserves the wider on-device marker", () => {
 });
 
 test("the unscoped badge column is sized per list, not to the union of both", () => {
-  // One slot sized for both lists left ~44px of empty column on every On Device row. 26px is the
-  // vision badge measured, so rows with and without one keep the same column positions.
-  assert.ok(PICKERS.includes('badgeDevice: "min-w-min min-[560px]:w-[26px]"'));
+  // Sized to the widest set each list can draw, not to both lists at once. On Device is the vision
+  // badge (26px), a gap-1 (4px) and the partial mark (14px): a GGUF repo can show vision and be
+  // half-downloaded at once, and at 26px that row alone grew and carried its quant chip 18px left
+  // of every other row -- the exact drift the fixed columns exist to stop.
+  assert.ok(PICKERS.includes('badgeDevice: "min-w-min min-[560px]:w-[44px]"'));
   assert.ok(PICKERS.includes('badgeWide: "min-w-min min-[560px]:w-[36px]"'));
+  // Both marks really can land on one On Device row, which is what makes 44 the right number.
+  const gguf = PICKERS.slice(PICKERS.indexOf("const renderDownloadedGgufRow"));
+  const row = gguf.slice(0, gguf.indexOf("\n  };"));
+  assert.ok(row.includes('alignMeta="device"'));
+  assert.ok(row.includes("showVision={c.has_vision"));
+  assert.ok(row.includes("partial={isPartialRepo}"));
+  // And they sit in that one slot rather than overlapping.
+  assert.match(
+    PICKERS,
+    /\{showVision && <VisionBadge \/>\}\n\s*\{partial \? <PartialBadge \/> : null\}/,
+  );
   assert.match(
     PICKERS,
     /alignMeta === "device"\n\s*\? META_COLUMN\.badgeDevice\n\s*: META_COLUMN\.badgeWide/,

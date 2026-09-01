@@ -948,9 +948,10 @@ const META_COLUMN = {
   badge: "min-w-min min-[560px]:w-[24px]",
   // One glyph plus the disk mark (18 + 4 + 14).
   badgeMid: "min-w-min min-[560px]:w-[36px]",
-  // On Device draws the vision badge and no disk mark: 26px is that badge measured, so rows with
-  // and without one still line up. One slot sized for both lists left ~44px empty on every row.
-  badgeDevice: "min-w-min min-[560px]:w-[26px]",
+  // On Device draws the vision badge (26px) and, since partials are listed, the partial mark
+  // (14px) beside it. 44px is that pair with its gap: reserving only the badge let a row drawing
+  // both grow past the slot and carry its quant chip 18px left of every other row.
+  badgeDevice: "min-w-min min-[560px]:w-[44px]",
   // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
   badgeWide: "min-w-min min-[560px]:w-[36px]",
   // The fit mark (Hub rows), one 18px glyph.
@@ -5650,7 +5651,10 @@ export function HubModelPicker({
                 onConfigure(c.repo_id, {
                   source: "hub",
                   isLora: false,
-                  loadId: c.load_id,
+                  // Run spreads this meta straight back into a select, so it carries the
+                  // row's rule: no load identity for a snapshot that is not all there.
+                  // The config page keys its settings off the repo id, not this field.
+                  loadId: isPartial ? undefined : c.load_id,
                   isDownloaded: !isPartial,
                   isGguf: false,
                   pipelineTag: c.task ?? null,

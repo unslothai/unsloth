@@ -163,8 +163,8 @@ test("a partial pick carries no load identity", () => {
   // snapshot told that page the weights were there and skipped the download.
   assert.equal(
     PICKERS.split("loadId: isPartial ? undefined : c.load_id,").length - 1,
-    2,
-    "both cached row selects drop it when the snapshot is torn",
+    3,
+    "every cached-row pick drops it when the snapshot is torn",
   );
   // The GGUF variant select set this rule first; the two must not diverge.
   assert.ok(
@@ -180,6 +180,24 @@ test("a partial pick carries no load identity", () => {
   );
   // And the route still forwards whatever the pick gives it.
   assert.ok(PICKERS.includes("loadId: meta.loadId ?? undefined,"));
+});
+
+test("configure carries the same rule, because Run replays its metadata", () => {
+  // The settings page keys itself off the repo id, but onRun spreads this meta straight back
+  // into a select, so a loadId left on it would reach the load path the row click already drops.
+  // The sole-quant row shares one meta between its click and its gear, so it is covered once.
+  assert.equal(
+    PICKERS.split("onConfigure(c.repo_id, selectMeta)").length - 1,
+    1,
+  );
+  // What makes it load bearing: Run reuses the stored meta verbatim.
+  const selector = read(
+    "../src/features/model-picker/components/model-selector.tsx",
+  );
+  assert.match(
+    selector,
+    /onRun=\{\(config, isDiffusion\) =>\n\s*onSelect\(visibleConfigTarget\.id, \{\n\s*\.\.\.visibleConfigTarget\.meta,/,
+  );
 });
 
 test("a partial row keeps its buttons on screen instead of hiding them behind hover", () => {
