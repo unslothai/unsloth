@@ -451,6 +451,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 imatrix_file = cmd.get("imatrix_file"),
                 private = cmd.get("private", False),
+                gguf_shard_size = cmd.get("gguf_shard_size"),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(

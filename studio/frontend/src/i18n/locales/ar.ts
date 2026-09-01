@@ -688,7 +688,7 @@ export const ar = {
         sectionTitle: "التبديل التلقائي للنموذج (OpenAI API)",
         enable: "تبديل النموذج حسب الطلب",
         enableDescription:
-          "تحميل ملف GGUF منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
+          "تحميل نموذج منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
         idleUnload: "التفريغ التلقائي عند الخمول",
         idleUnloadDescription:
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
@@ -794,7 +794,7 @@ export const ar = {
         embeddingModel: "نموذج التضمين (Embedding)",
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
-        searchPlaceholder: "ابحث عن نماذج التضمين",
+        searchPlaceholder: "ابحث عن أي نموذج على HF",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",
@@ -802,7 +802,24 @@ export const ar = {
         saveError: "فشل حفظ نموذج التضمين.",
         saved: "تم حفظ نموذج التضمين.",
         saveAnyway: "الحفظ على أي حال",
-        resetAction: "إعادة التعيين إلى الافتراضي",
+        recommended: "موصى به",
+        onDevice: "على الجهاز",
+        searching: "جارٍ البحث في Hugging Face…",
+        checking: "جارٍ التحقق…",
+        noResults: "لم يتم العثور على نماذج تضمين",
+        download: "تنزيل",
+        unload: "إلغاء التحميل",
+        unloadFailed: "تعذّر إلغاء تحميل نموذج التضمين",
+        downloadingStatus: "جارٍ التنزيل…",
+        notDownloaded: "غير مُنزّل",
+        notDownloadedSized: "غير مُنزّل · {size}",
+        loaded: "مُحمّل",
+        downloading: "جارٍ تنزيل {model}",
+        downloadingDescription:
+          "يظهر التقدم في لوحة التنزيلات. ستستخدمه الفهرسة بمجرد اكتماله.",
+        downloadFailed: "تعذّر بدء التنزيل",
+        downloadConflict: "استأنف هذا التنزيل من Hub",
+        downloadBusy: "التنزيل قيد التقدم بالفعل",
       },
       storage: {
         sectionTitle: "التخزين",
@@ -1189,6 +1206,7 @@ export const ar = {
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
         unknown: "غير معروف",
+        vramWithShared: "{vram} VRAM + {shared} ذاكرة مشتركة",
       },
     },
     agents: {
@@ -1218,6 +1236,15 @@ export const ar = {
       docs: "التوثيق",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
       subagent: {
@@ -1304,6 +1331,9 @@ export const ar = {
         showAllQuantizations: "إظهار جميع خيارات التكميم",
         showAllQuantizationsDescription:
           "عند التفعيل: تُدرج جميع خيارات التكميم ضمن «On Device»، بما فيها الخيارات غير المُنزَّلة. عند التعطيل: لا تظهر إلا خيارات التكميم المُنزَّلة.",
+        showMemoryBar: "إظهار شريط استخدام VRAM",
+        showMemoryBarDescription:
+          "يعرض أسفل صف كل نموذج تم تنزيله الاستخدام التقديري لذاكرة VRAM: الأوزان، وذاكرة KV المؤقتة عند طول السياق الذي سيُحمَّل به، وأي حجز لمسودة فك التشفير التخميني.",
       },
       menu: {
         title: "قائمة المحادثة",
@@ -1330,10 +1360,36 @@ export const ar = {
       rememberParamsPerModel: "تذكر الإعدادات لكل نموذج",
       rememberParamsPerModelDescription:
         "عند تبديل النموذج تُستعاد درجة الحرارة والموجّه وبقية الإعدادات التي استخدمتها آخر مرة مع ذلك النموذج. عند الإيقاف تبقى مجموعة إعدادات واحدة لكل النماذج.",
+      autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
+      autoCompactDescription:
+        "عندما تصل محادثة GGUF محلية إلى طول السياق المحدد، احذف الأدوار الأقدم بدلًا من إرجاع خطأ. لا يعتمد ذلك على ذاكرة VRAM المتاحة.",
+      compactionStyle: "عند امتلاء السياق",
+      compactionStyleDescription:
+        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
+      compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
+      compactionStyleCheckpoint: "إعادة ضبط المحادثة",
+      compactionStyleRollingDefault: "حذف الأدوار الأقدم (مساحة إضافية نحو 25%)",
+      compactionStyleRolling10: "حذف الأدوار الأقدم (مساحة إضافية نحو 10%)",
+      compactionStyleRolling5: "حذف الأدوار الأقدم (مساحة إضافية نحو 5%)",
+      compactionStyleRollingNone: "حذف الأدوار الأقدم (دون اقتطاع إضافي)",
+      autoCompactKeywords:
+        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+      },
+      currentDate: {
+        label: "إخبار النموذج بتاريخ اليوم",
+        description:
+          "أضف التاريخ الحالي إلى المطالبة حتى يبحث البحث على الويب و Deep Research عن مصادر حديثة بدلًا من افتراض تاريخ انتهاء تدريب النموذج.",
+        loadError: "تعذّر تحميل إعدادات التاريخ الحالي",
+        saveError: "تعذّر تحديث إعدادات التاريخ الحالي",
+      },
+      tools: {
+        collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
+        collapseByDefaultDescription:
+          "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
       },
       webSearch: {
         title: "البحث على الويب",
@@ -1352,6 +1408,11 @@ export const ar = {
         blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
         blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
         blockedBannerAction: "السماح لهذا الـ Canvas",
+        blockedTitle: "الوصول إلى الشبكة لـ Canvas معطّل",
+        blockedHint:
+          "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
+        blockedSettingsAction: "فتح الإعدادات",
+        blockedDismiss: "تجاهل",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",
@@ -1425,6 +1486,8 @@ export const ar = {
       archivedImagesDescription: "اعرض الصور التي أرشفتها وأدرها.",
       archivedVideos: "الفيديوهات المؤرشفة",
       archivedVideosDescription: "اعرض الفيديوهات التي أرشفتها وأدرها.",
+      archivedAudio: "الصوتيات المؤرشفة",
+      archivedAudioDescription: "اعرض المقاطع الصوتية التي أرشفتها وأدرها.",
       manageAction: "إدارة",
       manageChats: "إدارة المحادثات",
       manageChatsDescription:
@@ -1607,7 +1670,7 @@ export const ar = {
         desktopCheckingDescription: "يستغرق ذلك عادةً بضع ثوانٍ.",
         desktopAvailable: "يتوفر إصدار جديد من تطبيق سطح المكتب: {version}",
         desktopAvailableDescription:
-          "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
+          "حدّث الآن ليُجهَّز التحديث في الخلفية. يمكنك متابعة عملك وإعادة التشغيل عندما يصبح جاهزًا.",
         desktopExternalServer:
           "شغّل الأمر `unsloth studio update` في الطرفية التي شغّلت الخادم.",
         desktopManualInstall:
@@ -1616,11 +1679,20 @@ export const ar = {
         desktopCheckFailedDescription: "تحقق من اتصالك ثم حاول مرة أخرى.",
         desktopCurrent: "تطبيق سطح المكتب محدّث",
         desktopCurrentDescription: "سيواصل Unsloth التحقق تلقائيًا.",
+        desktopPreparingDescription:
+          "يجري تجهيز التحديث في الخلفية. يمكنك متابعة عملك.",
+        desktopReadyToRestartDescription:
+          "كل شيء جاهز. أعد التشغيل لإكمال تثبيت التحديث.",
+        desktopReadyToInstallDescription:
+          "تم تنزيل تحديث التطبيق. أكمل تحديث الواجهة الخلفية لتثبيته.",
         checkForUpdates: "التحقق من وجود تحديثات",
         checkAgain: "التحقق مرة أخرى",
         retryCheck: "إعادة المحاولة",
         checking: "جارٍ التحقق...",
+        preparing: "جارٍ التجهيز...",
         updateNow: "التحديث الآن",
+        restartToUpdate: "إعادة التشغيل للتحديث",
+        finishUpdate: "إكمال التحديث",
         openReleasePage: "فتح صفحة الإصدار",
         unknownInstall:
           "تعذّر اكتشاف طريقة تثبيت Unsloth. لعمليات تثبيت المثبّت أو PyPI، استخدم الأوامر أعلاه.",
@@ -2325,5 +2397,14 @@ export const ar = {
       datasetStreaming: "مجموعة البيانات: تُقرأ بالتدفّق (من دون تنزيل كامل)",
       modelWeights: "أوزان النموذج",
     },
+  },
+  modelMemory: {
+    readout:
+      "الأوزان {model} + السياق {context} = {total} من {budget} من VRAM القابلة للاستخدام",
+    readoutWithSpec:
+      "الأوزان {model} + KV {kv} + مسودة MTP {spec} = {total} من {budget} من VRAM القابلة للاستخدام",
+    kvRate: "KV محجوزة مسبقًا، ~{rate}/توكن",
+    oomLikely: "مع الإعدادات الحالية يُرجَّح نفاد الذاكرة",
+    tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

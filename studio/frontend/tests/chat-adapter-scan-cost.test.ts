@@ -452,7 +452,7 @@ const FLAG_NEXT_TO_APPEND =
   /streamedChars \+= reasoning\.length \+ delta\.length;\s*producedReplyText = true;/;
 
 /** The adapter between two anchors, without its comments. */
-function regionOf(from: string, to: string, maxChars = 60_000): string {
+function regionOf(from: string, to: string, maxChars = 75_000): string {
   const start = ADAPTER.indexOf(from);
   assert.notEqual(start, -1, `"${from}" is gone; this test needs rewriting`);
   const end = ADAPTER.indexOf(to, start);
@@ -602,8 +602,14 @@ test("the trailing strip runs on the finished reply, not on every arrival", () =
     true,
     "the strip must sit after the SSE loop, not inside it",
   );
+  // Pinned as a prefix, deliberately. What this test is about is WHERE the final
+  // build sits relative to the strip, not how the merge is spelled, and pinning the
+  // closing parens made it fail the first time an argument was added to
+  // `mergeContinuation` even though the ordering it guards was untouched. A pin that
+  // breaks on unrelated edits gets "fixed" by re-pinning, and one of those days it
+  // gets re-pinned past a real reordering.
   const finalBuild = source.indexOf(
-    "buildAssistantContent(mergeContinuation(cumulativeText))",
+    "buildAssistantContent(mergeContinuation(cumulativeText",
     strip,
   );
   assert.equal(

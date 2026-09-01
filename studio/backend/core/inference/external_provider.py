@@ -8,11 +8,15 @@ Most providers use OpenAI-compatible /v1/chat/completions; Anthropic uses
 the native Messages API, translated in this client.
 """
 
+import asyncio
 import base64
+import io
 import json as _json
 import mimetypes
 import re
+import threading
 import time
+import wave
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
@@ -52,6 +56,83 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
 logger = structlog.get_logger(__name__)
+
+_MAX_CONCATENATED_WAV_BYTES = 64 * 1024 * 1024
+_MAX_CONCATENATED_WAV_SEGMENTS = 1_024
+
+
+def _merge_concatenated_wav_segments(
+    audio: bytes, cancelled: Optional[threading.Event] = None
+) -> bytes:
+    """Join a byte stream containing multiple complete WAV files into one WAV."""
+    cancelled = cancelled or threading.Event()
+    if len(audio) > _MAX_CONCATENATED_WAV_BYTES:
+        return audio
+
+    def _segment_offsets():
+        offset = 0
+        while offset < len(audio):
+            if audio[offset : offset + 4] != b"RIFF" or audio[offset + 8 : offset + 12] != b"WAVE":
+                raise ValueError("not a concatenated WAV stream")
+            segment_end = offset + 8 + int.from_bytes(audio[offset + 4 : offset + 8], "little")
+            if segment_end <= offset + 12 or segment_end > len(audio):
+                raise ValueError("invalid RIFF segment length")
+            yield offset, segment_end
+            offset = segment_end
+
+    try:
+        params = None
+        source = io.BytesIO(audio)
+        segment_count = 0
+        for segment_start, _segment_end in _segment_offsets():
+            if cancelled.is_set():
+                return audio
+            segment_count += 1
+            if segment_count > _MAX_CONCATENATED_WAV_SEGMENTS:
+                return audio
+            source.seek(segment_start)
+            with wave.open(source, "rb") as reader:
+                current = (
+                    reader.getnchannels(),
+                    reader.getsampwidth(),
+                    reader.getframerate(),
+                    reader.getcomptype(),
+                    reader.getcompname(),
+                )
+                if params is None:
+                    params = current
+                elif current != params:
+                    return audio
+        if segment_count < 2:
+            return audio
+        assert params is not None
+        output = io.BytesIO()
+        with wave.open(output, "wb") as writer:
+            writer.setnchannels(params[0])
+            writer.setsampwidth(params[1])
+            writer.setframerate(params[2])
+            writer.setcomptype(params[3], params[4])
+            for segment_start, _segment_end in _segment_offsets():
+                if cancelled.is_set():
+                    return audio
+                source.seek(segment_start)
+                with wave.open(source, "rb") as reader:
+                    expected_bytes = (
+                        reader.getnframes() * reader.getnchannels() * reader.getsampwidth()
+                    )
+                    observed_bytes = 0
+                    while frames := reader.readframes(65_536):
+                        if cancelled.is_set():
+                            return audio
+                        observed_bytes += len(frames)
+                        writer.writeframesraw(frames)
+                    if observed_bytes != expected_bytes:
+                        return audio
+        return output.getvalue()
+    except MemoryError:
+        raise
+    except Exception:
+        return audio
 
 
 def _append_provider_path(base_url: str, endpoint: str) -> str:
@@ -588,6 +669,36 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "none"
         elif enable_thinking is True:
             body["reasoning_effort"] = "high"
+
+
+# ollama's openai-compatible /v1/chat/completions accepts these five values.
+# https://docs.ollama.com/api/openai-compatibility
+_OLLAMA_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "max"})
+_OLLAMA_REASONING_EFFORT_ALIASES = {
+    "minimal": "low",
+    "xhigh": "max",
+}
+
+
+def _apply_ollama_reasoning_controls(
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> None:
+    """Map API thinking controls onto Ollama's ``reasoning_effort`` field.
+
+    Requests with neither control remain unchanged. An explicit off is
+    ``none``; an on without a level is ``medium``. #9649
+    """
+    effort = (reasoning_effort or "").strip().lower()
+    if effort in _OLLAMA_REASONING_EFFORT_ALIASES:
+        effort = _OLLAMA_REASONING_EFFORT_ALIASES[effort]
+    if effort in _OLLAMA_REASONING_EFFORTS:
+        body["reasoning_effort"] = effort
+        return
+    if enable_thinking is False:
+        body["reasoning_effort"] = "none"
+        return
+    if enable_thinking is True:
+        body["reasoning_effort"] = "medium"
 
 
 # Shared client reused across all requests for HTTP connection pooling.
@@ -1156,6 +1267,8 @@ class ExternalProviderClient:
                 tpl_kw = {}
             tpl_kw["enable_thinking"] = bool(enable_thinking)
             body["chat_template_kwargs"] = tpl_kw
+        elif self.provider_type == "ollama":
+            _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
 
         # OpenRouter's unified `reasoning` field gates per-model thinking.
         # Some routes (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.
@@ -6327,6 +6440,7 @@ class ExternalProviderClient:
         voice: Optional[str] = None,
         response_format: str = "wav",
         speed: Optional[float] = None,
+        instructions: Optional[str] = None,
     ) -> tuple[bytes, str]:
         """POST /audio/speech (OpenAI CreateSpeech). Returns (audio_bytes, media_type)."""
         body: dict[str, Any] = {
@@ -6338,6 +6452,8 @@ class ExternalProviderClient:
             body["voice"] = voice
         if speed is not None:
             body["speed"] = speed
+        if instructions is not None:
+            body["instructions"] = instructions
         response = await _http_client.post(
             _append_provider_path(self.base_url, "/audio/speech"),
             headers = self._auth_headers(),
@@ -6346,7 +6462,29 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
-        return response.content, media_type or f"audio/{response_format}"
+        audio = response.content
+        if response_format.strip().lower() == "wav":
+            merge_cancelled = threading.Event()
+            merge_task = asyncio.create_task(
+                asyncio.to_thread(_merge_concatenated_wav_segments, audio, merge_cancelled)
+            )
+            try:
+                audio = await asyncio.shield(merge_task)
+            except asyncio.CancelledError:
+                merge_cancelled.set()
+                while not merge_task.done():
+                    try:
+                        await asyncio.shield(merge_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                try:
+                    merge_task.result()
+                except BaseException:
+                    pass
+                raise asyncio.CancelledError
+        return audio, media_type or f"audio/{response_format}"
 
     async def create_transcription(
         self,

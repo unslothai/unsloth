@@ -14,6 +14,7 @@ from typing import Optional, Sequence
 from loggers import get_logger
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
+    file_contents_available_locally,
     has_appledouble_magic,
     is_appledouble_metadata,
 )
@@ -30,6 +31,7 @@ class GgufVariantInfo:
     size_bytes: int
     display_label: Optional[str] = None
     download_size_bytes: int = 0
+    shard_count: int = 0
 
 
 GGUF_QUANT_PREFERENCE = [
@@ -72,6 +74,10 @@ GGUF_QUANT_PREFERENCE = [
 ]
 
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+_GGUF_CANONICAL_SPLIT_RE = re.compile(
+    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    re.IGNORECASE,
+)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -453,6 +459,363 @@ def gguf_variant_family(filename: str) -> str:
     NOT share one are two different checkpoints, so summing across them is not.
     """
     return _unknown_gguf_variant_key(filename)
+
+
+def complete_gguf_shard_count(filenames: Sequence[str], first_filename: str) -> int:
+    """Return a complete canonical split's part count, otherwise zero."""
+    normalized_first = first_filename.replace("\\", "/")
+    first_match = _GGUF_CANONICAL_SPLIT_RE.match(normalized_first.rsplit("/", 1)[-1])
+    if first_match is None or int(first_match.group("index")) != 1:
+        return 0
+    total = int(first_match.group("total"))
+    if total < 2:
+        return 0
+
+    family = gguf_variant_family(normalized_first).casefold()
+    indices: list[int] = []
+    for filename in filenames:
+        normalized = filename.replace("\\", "/")
+        if gguf_variant_family(normalized).casefold() != family:
+            continue
+        match = _GGUF_CANONICAL_SPLIT_RE.match(normalized.rsplit("/", 1)[-1])
+        if match is None or match.group("total") != first_match.group("total"):
+            return 0
+        indices.append(int(match.group("index")))
+    return total if sorted(indices) == list(range(1, total + 1)) else 0
+
+
+def gguf_checkpoint_family(filename: str) -> Optional[str]:
+    """the exact checkpoint name shared by quant variants, or ``None`` when unnamed."""
+    path = filename.replace("\\", "/")
+    family_parts = gguf_variant_family(path).split("/")
+    basename = family_parts.pop()
+    family_parts = [
+        segment for segment in family_parts if segment and not _is_quant_directory(segment)
+    ]
+    quant = quant_token_with_bpw(basename)
+    if quant is not None:
+        basename = re.sub(re.escape(quant), "", basename, count = 1, flags = re.IGNORECASE)
+    family = "/".join((*family_parts, basename))
+    return family.strip("-_. /\t\r\n") or None
+
+
+def local_path_physical_identity(raw_path: str) -> str:
+    """Identity for an existing local path without folding valid filename characters."""
+    try:
+        path = os.path.realpath(os.path.expanduser(raw_path))
+        stat = os.stat(path)
+        if stat.st_ino:
+            return "\x00".join(("stat", str(stat.st_dev), str(stat.st_ino)))
+        return f"path\x00{path}"
+    except (OSError, UnicodeError, ValueError):
+        return f"path\x00{os.path.abspath(os.path.expanduser(raw_path))}"
+
+
+def should_group_local_gguf_files(filenames: Sequence[str]) -> bool:
+    """Whether filenames are variants of one selectable checkpoint."""
+    if len(filenames) == 1:
+        return True
+
+    families = {gguf_checkpoint_family(filename) for filename in filenames}
+    variant_keys = [gguf_variant_key(filename) for filename in filenames]
+    exact_families_by_variant: dict[str, set[str]] = {}
+    for filename, variant_key in zip(filenames, variant_keys):
+        exact_families_by_variant.setdefault(variant_key.casefold(), set()).add(
+            gguf_variant_family(filename)
+        )
+    has_ambiguous_variant = any(
+        len(exact_families) > 1 for exact_families in exact_families_by_variant.values()
+    )
+    return (
+        not has_ambiguous_variant
+        and (families == {None} or (None not in families and len(families) == 1))
+    ) or all(is_h3_denoiser_variant_key(key) for key in variant_keys)
+
+
+def suppress_grouped_gguf_file_rows(rows: Sequence[object]) -> list:
+    """Drop rows already represented by a physical GGUF directory row."""
+    from utils.models.model_config import _extract_quant_label as _loader_quant
+
+    def row_path_is_dir(row) -> bool:
+        try:
+            return Path(getattr(row, "path", "")).is_dir()
+        except OSError:
+            return False
+
+    grouped_rows = [
+        (row, Path(os.path.abspath(os.path.expanduser(getattr(row, "path", "")))))
+        for row in rows
+        if getattr(row, "model_format", None) == "gguf"
+        and not getattr(row, "partial", False)
+        and row_path_is_dir(row)
+    ]
+    if not grouped_rows:
+        return list(rows)
+
+    paths_by_group = {
+        id(row): list(iter_gguf_files(directory, recursive = True)) for row, directory in grouped_rows
+    }
+    physical_ancestors_by_group = {
+        id(row): {
+            local_path_physical_identity(str(parent))
+            for parent in Path(os.path.realpath(directory)).parents
+        }
+        for row, directory in grouped_rows
+    }
+    families_by_group = {}
+    for row, directory in grouped_rows:
+        families_by_file = {}
+        for file in paths_by_group[id(row)]:
+            try:
+                filename = str(file.relative_to(directory))
+            except ValueError:
+                filename = file.name
+            if (
+                is_mmproj_filename(file.name)
+                or is_imatrix_filename(file.name)
+                or is_mtp_drafter_path(filename)
+                or is_appledouble_metadata(file)
+                or is_big_endian_gguf_path(filename, _loader_quant(filename))
+            ):
+                continue
+            file_identity = local_path_physical_identity(str(file))
+            families_by_file.setdefault(file_identity, set()).add(gguf_checkpoint_family(filename))
+        families_by_group[id(row)] = families_by_file
+
+    nested_groups_to_drop = set()
+    for row, directory in grouped_rows:
+        families_by_file = families_by_group[id(row)]
+        if not families_by_file:
+            continue
+        physical_ancestors = physical_ancestors_by_group[id(row)]
+        for parent_row, parent_directory in grouped_rows:
+            if row is parent_row:
+                continue
+            parent_families_by_file = families_by_group[id(parent_row)]
+            parent_identity = local_path_physical_identity(getattr(parent_row, "path", ""))
+            try:
+                lexically_nested = bool(directory.relative_to(parent_directory).parts)
+            except ValueError:
+                lexically_nested = False
+            matching_families = [
+                families & parent_families_by_file.get(file_identity, set())
+                for file_identity, families in families_by_file.items()
+            ]
+            outside_families = set().union(
+                *(
+                    families
+                    for file_identity, families in parent_families_by_file.items()
+                    if file_identity not in families_by_file
+                )
+            )
+            if (
+                (lexically_nested or parent_identity in physical_ancestors)
+                and all(matching_families)
+                and (
+                    not outside_families
+                    or all(families & outside_families for families in matching_families)
+                )
+            ):
+                nested_groups_to_drop.add(id(row))
+                break
+
+    filtered = []
+    for row in rows:
+        if id(row) in nested_groups_to_drop:
+            continue
+        if getattr(row, "model_format", None) == "gguf" and not row_path_is_dir(row):
+            path = getattr(row, "path", "")
+            loose_path = Path(os.path.abspath(os.path.expanduser(path)))
+            file_identity = local_path_physical_identity(path)
+            family = gguf_checkpoint_family(Path(path).name)
+            resolved_parent = Path(os.path.realpath(loose_path.parent))
+            physical_parent_ancestry = {
+                local_path_physical_identity(str(parent))
+                for parent in (resolved_parent, *resolved_parent.parents)
+            }
+            for grouped_row, directory in grouped_rows:
+                grouped_families = families_by_group[id(grouped_row)].get(file_identity, set())
+                if not grouped_families:
+                    continue
+                try:
+                    lexically_nested = bool(loose_path.relative_to(directory).parts)
+                except ValueError:
+                    lexically_nested = False
+                grouped_identity = local_path_physical_identity(getattr(grouped_row, "path", ""))
+                if (
+                    not lexically_nested and grouped_identity not in physical_parent_ancestry
+                ) or family in grouped_families:
+                    break
+            else:
+                filtered.append(row)
+                continue
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def dedupe_custom_gguf_rows(rows: Sequence[object]) -> list:
+    """Remove scanner overlap while preserving independently loadable GGUF checkpoints."""
+    from utils.models.model_config import colocated_split_shards
+
+    def row_path_is_dir(row) -> bool:
+        try:
+            return Path(getattr(row, "path", "")).is_dir()
+        except OSError:
+            return False
+
+    deduped = list(rows)
+    split_groups: dict[tuple[str, ...], list[tuple[object, Path, list[Path]]]] = {}
+    for row in deduped:
+        path = Path(getattr(row, "path", ""))
+        if (
+            getattr(row, "source", None) not in {"models_dir", "lmstudio"}
+            or getattr(row, "model_format", None) != "gguf"
+            or getattr(row, "partial", False)
+            or row_path_is_dir(row)
+        ):
+            continue
+        shards, complete = colocated_split_shards(path)
+        if not complete or len(shards) < 2:
+            continue
+        key = tuple(local_path_physical_identity(str(shard)) for shard in shards)
+        split_groups.setdefault(key, []).append((row, path, shards))
+
+    dropped_rows: set[int] = set()
+    replacement_rows: dict[int, object] = {}
+    for candidates in split_groups.values():
+        shards = candidates[0][2]
+        first_identity = local_path_physical_identity(str(shards[0]))
+        chosen = next(
+            (
+                row
+                for row, path, _shards in candidates
+                if local_path_physical_identity(str(path)) == first_identity
+            ),
+            None,
+        )
+        if chosen is None:
+            continue
+        for row, _path, _shards in candidates:
+            if row is not chosen:
+                dropped_rows.add(id(row))
+        if hasattr(chosen, "size_bytes"):
+            size_bytes = 0
+            for shard in shards:
+                try:
+                    size_bytes += shard.stat().st_size
+                except OSError:
+                    pass
+            replacement_rows[id(chosen)] = chosen.model_copy(update = {"size_bytes": size_bytes})
+
+    deduped = [replacement_rows.get(id(row), row) for row in deduped if id(row) not in dropped_rows]
+
+    grouped_dirs = {
+        local_path_physical_identity(getattr(row, "path", ""))
+        for row in deduped
+        if getattr(row, "source", None) != "lmstudio"
+        and getattr(row, "model_format", None) == "gguf"
+        and not getattr(row, "partial", False)
+        and row_path_is_dir(row)
+    }
+    gguf_dirs = [
+        Path(getattr(row, "path", ""))
+        for row in deduped
+        if getattr(row, "model_format", None) == "gguf"
+        and not getattr(row, "partial", False)
+        and row_path_is_dir(row)
+    ]
+    files_by_parent: dict[str, list[Path]] = {}
+    for row in deduped:
+        path = Path(getattr(row, "path", ""))
+        if (
+            getattr(row, "source", None) == "lmstudio"
+            and getattr(row, "model_format", None) == "gguf"
+            and not getattr(row, "partial", False)
+            and not row_path_is_dir(row)
+        ):
+            files_by_parent.setdefault(local_path_physical_identity(str(path.parent)), []).append(
+                path
+            )
+
+    grouped_decisions = {
+        parent: should_group_local_gguf_files([path.name for path in files])
+        for parent, files in files_by_parent.items()
+        if parent in grouped_dirs
+    }
+    if not grouped_decisions:
+        return deduped
+
+    grouped_paths = {
+        local_path_physical_identity(str(path)): path
+        for path in gguf_dirs
+        if local_path_physical_identity(str(path)) in grouped_decisions
+    }
+    nested_groups_to_drop: set[str] = set()
+    for parent_identity, parent_path in grouped_paths.items():
+        nested_paths = []
+        for candidate in gguf_dirs:
+            if candidate == parent_path:
+                continue
+            try:
+                candidate.relative_to(parent_path)
+            except ValueError:
+                continue
+            nested_paths.append(candidate)
+        if not nested_paths:
+            continue
+
+        filenames = [path.name for path in files_by_parent[parent_identity]]
+        nested_identities = set()
+        parent_visible_files = {
+            local_path_physical_identity(str(file))
+            for file in iter_gguf_files(parent_path, recursive = True)
+        }
+        for nested_path in nested_paths:
+            nested_identities.add(local_path_physical_identity(str(nested_path)))
+            try:
+                relative_parent = nested_path.relative_to(parent_path)
+                nested_files = [
+                    file
+                    for file in nested_path.iterdir()
+                    if file.is_file()
+                    and is_gguf_filename(file.name)
+                    and not is_mmproj_filename(file.name)
+                    and not is_imatrix_filename(file.name)
+                    and not is_mtp_drafter_path(file.name)
+                    and not is_appledouble_metadata(file)
+                ]
+            except OSError:
+                grouped_decisions[parent_identity] = False
+                break
+            if not nested_files or any(
+                local_path_physical_identity(str(file)) not in parent_visible_files
+                for file in nested_files
+            ):
+                grouped_decisions[parent_identity] = False
+                break
+            filenames.extend(str(relative_parent / file.name) for file in nested_files)
+        else:
+            grouped_decisions[parent_identity] = should_group_local_gguf_files(filenames)
+        if grouped_decisions[parent_identity]:
+            nested_groups_to_drop.update(nested_identities)
+
+    filtered = []
+    for row in deduped:
+        path = Path(getattr(row, "path", ""))
+        is_dir = row_path_is_dir(row)
+        identity = local_path_physical_identity(str(path if is_dir else path.parent))
+        keep_group = grouped_decisions.get(identity)
+        if getattr(row, "model_format", None) == "gguf" and (
+            (
+                keep_group is not None
+                and ((is_dir and not keep_group) or (not is_dir and keep_group))
+            )
+            or (is_dir and local_path_physical_identity(str(path)) in nested_groups_to_drop)
+        ):
+            continue
+        filtered.append(row)
+    return filtered
 
 
 def extract_quant_label(filename: str) -> str:
@@ -875,6 +1238,7 @@ def list_partial_gguf_variants_from_state(
             )
         )
         main_filename: Optional[str] = None
+        main_filenames: list[str] = []
         size_bytes = 0
         companion_bytes = 0
         imatrix_only = False
@@ -899,6 +1263,7 @@ def list_partial_gguf_variants_from_state(
                     continue
                 if main_filename is None:
                     main_filename = expected.path
+                main_filenames.append(expected.path)
                 size_bytes += max(0, int(expected.size or 0))
         if main_filename is None:
             # An older build could download the imatrix as a variant of its own, so its
@@ -915,6 +1280,7 @@ def list_partial_gguf_variants_from_state(
                 quant = variant,
                 size_bytes = size_bytes,
                 download_size_bytes = size_bytes + companion_bytes,
+                shard_count = complete_gguf_shard_count(main_filenames, main_filename),
             )
         )
 
@@ -1027,7 +1393,12 @@ def list_gguf_variants(
         main_files.append((filename, int(getattr(sibling, "size", 0) or 0)))
 
     variants = [
-        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
+        GgufVariantInfo(
+            filename = filename,
+            quant = quant,
+            size_bytes = size,
+            shard_count = complete_gguf_shard_count([path for path, _size in main_files], filename),
+        )
         for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
 
@@ -1082,10 +1453,15 @@ def list_local_gguf_variants(
         if is_imatrix_filename(file.name):
             continue
         if is_mmproj_filename(file.name):
-            # An empty projector is an interrupted download; an audio-only one is not vision.
+            # Header metadata distinguishes vision projectors from audio-only ones. Read it
+            # only when Windows reports the file fully present; opening a cloud placeholder
+            # would recall the projector during discovery.
             try:
+                info = file.stat()
                 has_vision = has_vision or (
-                    file.stat().st_size > 0 and mmproj_accepts_image(str(file))
+                    info.st_size > 0
+                    and file_contents_available_locally(file, info)
+                    and mmproj_accepts_image(str(file))
                 )
             except OSError:
                 pass
@@ -1106,7 +1482,12 @@ def list_local_gguf_variants(
         main_files.append((rel, size))
 
     variants = [
-        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
+        GgufVariantInfo(
+            filename = filename,
+            quant = quant,
+            size_bytes = size,
+            shard_count = complete_gguf_shard_count([path for path, _size in main_files], filename),
+        )
         for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   ggufVariantFromStorageKey,
   modelIdFromStorageKey,
@@ -9,7 +10,6 @@ import {
   normalizeModelIdentity,
   publicModelId,
 } from "./model-identity";
-import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
   SEPARATE_DRAFT_MODEL_SPEC_TYPES,
@@ -206,7 +206,10 @@ export {
   SPECULATIVE_TYPES,
 } from "@/lib/speculative-modes";
 
-const STORAGE_KEY = "unsloth_model_configs";
+/** Exported so cross-tab listeners can tell this key's storage event from the
+ *  dozens of others Studio writes. */
+export const PER_MODEL_CONFIG_STORAGE_KEY = "unsloth_model_configs";
+const STORAGE_KEY = PER_MODEL_CONFIG_STORAGE_KEY;
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // v2 added nBatch / nUbatch, v3 llamaExtraArgs, v4 disableVision and v5 the
@@ -722,17 +725,28 @@ function readMap(): StoredMap {
   return readMapRaw();
 }
 
+/** Fires when any model's saved config changes, in this tab. The browser's own
+ *  `storage` event only reaches *other* tabs, so readers that need to react to
+ *  an edit made here (the picker's memory bar) have nothing else to listen to. */
+export const PER_MODEL_CONFIG_UPDATED_EVENT =
+  "unsloth-per-model-config-updated";
+
 function writeMap(map: StoredMap): boolean {
   if (!canUseStorage()) {
     return false;
   }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-    return true;
   } catch (err) {
     console.warn("Failed to persist per-model config:", err);
     return false;
   }
+  // Best-effort: the write already landed, so a host that cannot dispatch
+  // events must not make a saved config report back as unsaved.
+  if (typeof window?.dispatchEvent === "function") {
+    window.dispatchEvent(new Event(PER_MODEL_CONFIG_UPDATED_EVENT));
+  }
+  return true;
 }
 
 function warnDroppedFields(

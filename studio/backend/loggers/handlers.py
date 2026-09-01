@@ -84,6 +84,9 @@ _QUIET_POLL_PATHS = {
     # otherwise emit nothing at all.
     "/api/inference/images/load-progress",
     "/api/inference/video/load-progress",
+    # Templated; matched through normalize_poll_path. See _TEMPLATED_POLL_PATHS.
+    "/api/chat/threads/{id}",
+    "/api/chat/threads/{id}/forks",
 }
 # The pure-liveness subset of _QUIET_POLL_PATHS. Every one of these answers the same
 # question ("the server is up and answering"), and the SPA fires them together in one
@@ -180,6 +183,29 @@ _CHAT_LIST_PATHS = {
     "/api/chat/threads",
     "/api/chat/projects",
 }
+# Templated paths. The sets above match EXACTLY, which #7087 chose so detail reads kept
+# their access line; what changed is that streaming now drives these two on a loop (25 and
+# 21 lines, 34% of the access log, over a 20s four-tab session). So they get a heartbeat
+# rather than silence: the first of each window logs with its real path, the rest drop.
+_CHAT_THREAD_DETAIL = "/api/chat/threads/{id}"
+_CHAT_THREAD_FORKS = "/api/chat/threads/{id}/forks"
+_TEMPLATED_POLL_PATHS = frozenset({_CHAT_THREAD_DETAIL, _CHAT_THREAD_FORKS})
+# One id segment, no slashes: a deeper path such as /threads/{id}/messages/{mid} must NOT
+# collapse into the detail bucket, since a message read is a different question.
+_CHAT_THREAD_PATH_RE = re.compile(r"^/api/chat/threads/(?!$)[^/]+(/forks)?$")
+
+
+def normalize_poll_path(path: str) -> str:
+    """Collapse a per-resource id so a templated path can join a suppression class.
+
+    Used for classification and the de-duplication bucket only; the emitted line still
+    carries the real path. One bucket across ids is deliberate, as with the liveness
+    group: four tabs polling four threads are still one question.
+    """
+    m = _CHAT_THREAD_PATH_RE.match(path)
+    if m is None:
+        return path
+    return _CHAT_THREAD_FORKS if m.group(1) else _CHAT_THREAD_DETAIL
 
 
 # The log viewer polls these while reading the very file this middleware writes,
@@ -284,10 +310,12 @@ class LoggingMiddleware:
         # /api/inference/audio/stt/status?model=... extends the downloaded check to a
         # custom repo, so it keeps its own identity rather than joining the bucket.
         is_liveness = path in _LIVENESS_POLL_PATHS and not query
+        # Bucketed by template, so four tabs polling four threads share one heartbeat.
+        norm = normalize_poll_path(path) if not query else path
         if path in _WATCHDOG_POLL_PATHS:
             # Zeroed along with the quiet window, so --verbose still logs every probe.
             window_ms = _WATCHDOG_POLL_DEDUP_MS if _QUIET_POLL_DEDUP_MS > 0 else 0
-        elif is_liveness or path in _QUIET_POLL_PATHS:
+        elif is_liveness or norm in _QUIET_POLL_PATHS:
             window_ms = _QUIET_POLL_DEDUP_MS
         else:
             window_ms = _ACCESS_LOG_DEDUP_MS
@@ -296,7 +324,7 @@ class LoggingMiddleware:
         # The liveness group shares one bucket, so a burst of them logs once, not once
         # per path. Only the query-less form joins it, so a parameterized call still
         # gets its own status and latency line.
-        key = _LIVENESS_DEDUP_KEY if is_liveness else (method, path, query, status_code)
+        key = _LIVENESS_DEDUP_KEY if is_liveness else (method, norm, query, status_code)
         last = self._last_log.get(key)
         if last is not None and (now - last) * 1000.0 < window_ms:
             return True

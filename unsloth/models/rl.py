@@ -278,6 +278,9 @@ def PatchRL(FastLanguageModel):
         else:
             labels = None
 
+        # Force logits during eval, but restore the user's prior setting after
+        # so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
+        _old_return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         with torch.no_grad():
             if has_labels or loss_without_labels:
@@ -317,7 +320,7 @@ def PatchRL(FastLanguageModel):
                 # TODO: this needs to be fixed and made cleaner later.
                 if self.args.past_index >= 0:
                     self._past = outputs[self.args.past_index - 1]
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
         if prediction_loss_only:
             return (loss, None, None)
 
@@ -4316,16 +4319,6 @@ def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
         function()  # Call the function to apply the patch
-    return
-
-
-def patch_trl_vllm_generation():
-    # trl moved vllm stuff to trl/generation/vllm_generation.py
-    # We need to min_p patch it to not instantiate another vLLM instance if we already have one with fast_inference
-    # Find the instance of self.llm = LLM(..) (multiline) and wrap it around an if clause
-    for function in RL_ADDITIONAL_FUNCTIONS["vllm_generation"]:
-        logger.info(f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}")
-        function()
     return
 
 
