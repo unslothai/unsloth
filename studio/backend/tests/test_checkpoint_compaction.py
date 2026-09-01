@@ -3523,3 +3523,28 @@ def test_holding_the_block_whole_does_not_freeze_it_on_the_first_epoch():
 
     assert seen_rounds[0] == 4, "the carried block survives while it fits"
     assert seen_rounds[-1] == 0, "and ages out instead of holding every slot forever"
+
+
+def test_every_epoch_the_writer_records_carries_a_count_the_reader_can_use():
+    """`_thread_has_checkpoint` now demands a resolved boundary, not just the flag.
+
+    The old gate read `checkpoint` alone, so a record with the flag and no count still
+    admitted the search tool. Nothing released can write that pair -- this pins it, since
+    a writer that dropped the count would silently close the loop on a live epoch.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(checkpoint))
+    counts = {"dropped_messages", "boundary_messages"}
+    seen = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        keys = {k.value for k in node.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        if "checkpoint" not in keys:
+            continue
+        seen += 1
+        assert keys & counts, f"epoch record without a count: {sorted(keys)}"
+
+    assert seen, "no epoch record found; the invariant would pass vacuously"
