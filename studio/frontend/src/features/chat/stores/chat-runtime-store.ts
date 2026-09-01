@@ -2830,8 +2830,8 @@ type ChatRuntimeStore = {
       fromModelDefaults?: boolean;
       /** The context the model just loaded with. */
       maxTokensCap?: number;
-      /** The defaults came from the model already resident on the server at
-       * startup, so a legacy global snapshot can be attributed to it. */
+      /** Defaults came from the server-resident model at startup, so a legacy
+       * global snapshot can be attributed to it. */
       migrateOwnedGlobalQwenDefaults?: boolean;
     },
   ) => void;
@@ -3129,15 +3129,13 @@ let loadedModelReasoningMode: {
 } | null = null;
 
 /**
- * Record the mode a load/status response actually put the active model in.
- * Persisted settings can describe the previous model and therefore cannot
- * choose the migration table after a family default changed on load.
+ * Record the mode a load/status response put the active model in. Persisted
+ * settings can describe the previous model, so they cannot pick the migration
+ * table after a family default changed on load.
  *
- * `fromLoad` separates a model this browser actually loaded from a status
- * refresh that merely reported one. A refresh reads whatever reasoningEnabled
- * already sits in the store, which before hydration is this browser's local
- * default rather than the installation's, so it is not authoritative enough to
- * outrank the persisted toggle.
+ * `fromLoad` marks a model this browser actually loaded. A status refresh only
+ * echoes the reasoningEnabled already in the store, which before hydration is
+ * this browser's local default, so it must not outrank the persisted toggle.
  */
 export function noteLoadedModelReasoningMode(
   checkpoint: string,
@@ -3473,8 +3471,7 @@ function capParamsToLoadedContext(
 }
 
 /** A model selected while the request was in flight. Its defaults lose to its
- * own entry but outrank the global set, which belongs to whichever model was
- * used last. Not narrowed to the keys that moved. */
+ * own entry but outrank the global set, which belongs to the last model used. */
 let modelLoadedBeforeHydration: string | null = null;
 
 /** A model stepped off before hydration. Nothing can be filed for it yet, but the
@@ -3487,8 +3484,8 @@ function noteModelDefaultsBeforeHydration(
   ownsPersistedGlobal: boolean,
 ): void {
   // A model the user selected while settings were in flight does not own the
-  // previous session's global snapshot, even when it was the first checkpoint
-  // in this tab. Server-resident startup adoption is the explicit exception.
+  // previous session's global snapshot, even as this tab's first checkpoint.
+  // Server-resident startup adoption is the one exception.
   if (!ownsPersistedGlobal) {
     modelLoadedBeforeHydration = checkpoint;
     return;
@@ -3676,12 +3673,10 @@ function getHydratedSettingsState(
       continue;
     }
     // Same reason, the other direction: a load that landed while this response
-    // was in flight already chose the mode for the model now running, and it
-    // advances no mutation version, so the stored toggle describes whatever was
-    // loaded before. Let the load win, as the sampling table it selected does.
-    // Only an actual load, though: a status refresh reports a resident model
-    // using whatever this browser had locally, which must not outrank the
-    // installation's own persisted toggle.
+    // was in flight already chose the mode for the running model and advances
+    // no mutation version, so the stored toggle describes the previous one. Let
+    // the load win, as its sampling table does. Only an actual load, though: a
+    // status refresh echoes local state and must not outrank the installation.
     if (
       key === "reasoningEnabled" &&
       loadEstablishedReasoningMode(state, true)
@@ -3796,13 +3791,12 @@ function installationReasoningEnabled(state: ChatRuntimeStore): boolean {
 
 /**
  * Whether a load or status response established the reasoning mode for the
- * model that is active now, with no user toggle since.
+ * active model, with no user toggle since.
  *
- * A load writes reasoningEnabled straight into the store without advancing its
- * mutation version, so hydration would otherwise replay a persisted toggle that
- * describes the previous model. Both the migration table and the hydrated pill
- * read this, so the two cannot disagree and show a thinking pill above
- * non-thinking sampling.
+ * A load writes reasoningEnabled without advancing its mutation version, so
+ * hydration would otherwise replay a toggle describing the previous model. The
+ * migration table and the hydrated pill both read this, so they cannot disagree
+ * and show a thinking pill above non-thinking sampling.
  */
 function loadEstablishedReasoningMode(
   state: ChatRuntimeStore,
@@ -3880,10 +3874,9 @@ function qwenMigrationExpectedAbsentPaths(
       }
     }
   }
-  // Normalizing a differently-cased key creates a new exact-key entry carrying
-  // the whole row. Without fencing its absence the subset compare only checks
-  // the old spelling, so an exact-key row another tab added after the
-  // confirming read would be overwritten wholesale rather than rejected.
+  // Normalizing a differently-cased key writes a new exact-key row. Unfenced,
+  // the subset compare only checks the old spelling, so an exact-key row
+  // another tab added after the confirming read would be overwritten whole.
   const stored = settings.inferenceParamsByModel;
   for (const modelId of Object.keys(patch.inferenceParamsByModel ?? {})) {
     if (stored === undefined || !Object.hasOwn(stored, modelId)) {
@@ -3924,10 +3917,9 @@ function applyLegacyQwenDefaultsAfterPresetChange(
       ? migration.patch.inferenceParamsByModel?.[activeModelId]
       : migration.patch.inferenceParams;
     if (activePatch) {
-      // The open chat may pin one of these values, but a later snapshot-less
-      // chat falls back to the installation copy captured when pairing began.
-      // Move that copy with the migrated shared defaults before restoring the
-      // active thread over the live params.
+      // The open chat may pin one of these, but a later snapshot-less chat
+      // falls back to the installation copy captured when pairing began. Move
+      // it with the migrated defaults before restoring the thread's params.
       noteThreadScopedDefaults(activePatch);
     }
     return {
@@ -3954,11 +3946,10 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
   migrateOwnedGlobalAlongsideModelMemory: boolean,
 ): Promise<void> {
   try {
-    // First land the preset selection and its generic Default values. The
-    // confirming GET can then recognize that exact legacy snapshot, while a
-    // newer edit in another tab makes the fingerprint fail safely. A write that
-    // has not drained by then simply hides the legacy fingerprint, so the
-    // migration declines this pass and the next trigger picks it up.
+    // Land the preset selection first so the confirming GET can recognize the
+    // legacy snapshot; a newer edit in another tab fails the fingerprint
+    // safely. An undrained write only hides it, so this pass declines and the
+    // next trigger picks the migration up.
     await flushPendingChatSettings();
     const state = useChatRuntimeStore.getState();
     if (
@@ -3970,9 +3961,8 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     const checkpoint = state.params.checkpoint;
     const confirmed = sanitizeChatSettings(await getChatSettings());
     const confirmedState = useChatRuntimeStore.getState();
-    // A model switch while the confirming GET was in flight invalidates both
-    // the row and the loaded reasoning mode this retry was about to persist.
-    // The new model's defaults application schedules its own retry.
+    // A model switch during the confirming GET invalidates both the row and the
+    // reasoning mode this retry would persist. The new model schedules its own.
     if (
       !confirmedState.settingsHydrated ||
       confirmedState.activePresetSource !== "builtin-default" ||
@@ -3997,9 +3987,9 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       qwenMigrationExpectedAbsent(confirmed),
       qwenMigrationExpectedAbsentPaths(confirmed, migration.patch),
     );
-    // Only now touch local state. Applying first and persisting after would
-    // leave this tab generating with values the server just rejected, with no
-    // later read to correct it; the write is the thing that decides.
+    // Only now touch local state. Applying before persisting would leave this
+    // tab generating with values the server rejected, with no read to correct
+    // it; the write decides.
     if (persisted.applied) {
       applyLegacyQwenDefaultsAfterPresetChange(
         ownedGlobalCheckpoint,
@@ -4067,10 +4057,9 @@ function scheduleLegacyQwenDefaultsRetry(
         includeOwnedGlobal,
         migrateScheduledOwnedGlobalAlongsideModelMemory,
       ).patch !== null;
-    // A normal status refresh only needs a confirming GET when the local store
-    // still contains a legacy row. Adoption is the exception: it explicitly
-    // owns a possibly-global server snapshot which model defaults have already
-    // replaced locally, so the server remains the only place to inspect it.
+    // A status refresh needs a confirming GET only when the local store still
+    // holds a legacy row. Adoption is the exception: it owns a server snapshot
+    // model defaults already replaced locally, so only the server still has it.
     const hasOwnedGlobalCandidate =
       includeOwnedGlobal && isPresenceBumpQwen(state.params.checkpoint);
     if (!hasLocalCandidate && !hasOwnedGlobalCandidate) {
@@ -4285,9 +4274,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           get(),
           hydrationVersions.scalarSettings.reasoningEnabled,
         );
-        // A model loaded while the settings GET was in flight replaced the model
-        // whose global fallback was saved. Only the model already resident at
-        // startup can establish ownership of a global-only legacy snapshot.
+        // A model loaded during the settings GET replaced the one whose global
+        // fallback was saved. Only the model resident at startup can own a
+        // global-only legacy snapshot.
         const globalBelongsToActiveCheckpoint =
           modelLoadedBeforeHydration !== checkpoint &&
           modelLeftBeforeHydration === null;
@@ -4305,20 +4294,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         );
         if (fromServer && migration.patch) {
           try {
-            // Re-read immediately before the write. The migration patch is
-            // derived from this confirmation, not from the earlier hydration
-            // response, so a newer edit from another tab is left untouched.
+            // Re-read immediately before the write, so the patch derives from
+            // this confirmation rather than the earlier hydration response and
+            // a newer edit from another tab is left untouched.
             const confirmed = sanitizeChatSettings(await getChatSettings());
             const confirmedState = get();
-            // A model switch while the confirming GET was in flight invalidates
-            // the checkpoint and mode this migration was about to persist. The
-            // active model's defaults update will schedule its own retry.
-            // The checkpoint is not the only thing that can move while the
-            // confirming GET is in flight. A slider touched now sets the local
-            // preset source to "modified" and queues its write behind the
-            // debounce, so the server still reads "builtin-default"; migrating
-            // on that stale read would rewrite the sampling of a preset the
-            // user has already modified. Trust the local provenance version.
+            // A model switch during the confirming GET invalidates the
+            // checkpoint and mode this migration would persist; the new model
+            // schedules its own retry. The preset can move too: a slider
+            // touched now sets the local source to "modified" but queues its
+            // write behind the debounce, so the server still reads
+            // "builtin-default". Migrating on that stale read would rewrite a
+            // preset the user already modified, so trust the local version.
             const presetSourceUnchanged =
               activePresetSourceMutationVersion ===
                 hydrationVersions.presets.activePresetSource &&
@@ -4368,10 +4355,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               };
             }
           } catch {
-            // Migration persistence is best effort, but "best effort" cannot
-            // mean hydrating values the server never accepted: that shows the
-            // migrated sampling in the sheet and sends it with every request
-            // while storage still holds the old row, silently, on each start.
+            // Best effort, but that cannot mean hydrating values the server
+            // never accepted: the sheet and every request would show migrated
+            // sampling while storage still held the old row, on each start.
             // Fall back to what was actually read.
             migration = {
               settings,
@@ -4560,9 +4546,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           : {}),
       };
     });
-    // Startup can hydrate settings before the server's active model is adopted.
-    // Once status applies that model's defaults, its checkpoint and reasoning
-    // mode are known and the deferred active-row migration can run safely.
+    // Startup can hydrate before the server's active model is adopted. Once
+    // status applies its defaults the checkpoint and reasoning mode are known,
+    // so the deferred active-row migration can run.
     if (options?.fromModelDefaults === true) {
       const retryState = get();
       const ownsPersistedGlobal =
@@ -4596,9 +4582,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { activePresetSource };
     });
     if (returnedToBuiltInDefault) {
-      // The settings sheet updates provenance before it applies the associated
-      // parameter edit. Defer one microtask so a final slider move that restores
-      // built-in Default has landed before the migration inspects and flushes it.
+      // The sheet updates provenance before applying the parameter edit. Defer
+      // a microtask so a final slider move restoring built-in Default has
+      // landed before the migration inspects and flushes it.
       scheduleLegacyQwenDefaultsRetry(
         useChatRuntimeStore.getState().params.checkpoint,
       );

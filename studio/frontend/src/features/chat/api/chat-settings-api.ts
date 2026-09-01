@@ -178,12 +178,10 @@ export async function saveChatSettingsPatchIfCurrent(
       patch,
     }),
   });
-  // A backend without this route: 404 with the desktop app's --api-only server,
-  // 405 when the browser build's GET-only SPA catch-all takes the path instead.
-  // The desktop app adopts any backend above a version floor, so a new bundle
-  // against an older one is a supported install, not a bug. Report it as "not
-  // applied" so the caller leaves the server alone rather than treating an
-  // unpersisted local change as saved.
+  // A backend without this route answers 404 (--api-only) or 405 (the browser
+  // build's GET-only SPA catch-all). The desktop app adopts any backend above a
+  // version floor, so that pairing is supported, not a bug. Report "not
+  // applied" so the caller leaves the server alone.
   if (response.status === 404 || response.status === 405) {
     return { settings: expected, applied: false };
   }

@@ -174,9 +174,8 @@ test("a preset modified during hydration is not migrated on a stale read", async
   }));
   settingsHttp.hold();
   const hydration = useChatRuntimeStore.getState().hydratePersistedSettings();
-  // The user moves a slider while the settings GET is still in flight. Its
-  // provenance write is behind the debounce, so the server still reads
-  // "builtin-default" when the confirming GET lands.
+  // A slider moves while the settings GET is in flight. Its provenance write
+  // sits behind the debounce, so the server still reads "builtin-default".
   useChatRuntimeStore.getState().setActivePresetSource("modified");
   settingsHttp.release?.();
   await hydration;
@@ -297,9 +296,9 @@ test("the loaded model's reasoning mode survives hydration", async () => {
 });
 
 test("a status refresh cannot outrank the installation's persisted reasoning", async () => {
-  // Startup adoption of a resident model reports it using whatever this browser
-  // had locally, which before hydration is a local default and not the shared
-  // installation setting. Only a load this browser performed may win.
+  // Adoption of a resident model echoes whatever this browser had locally,
+  // which before hydration is a local default, not the installation setting.
+  // Only a load this browser performed may win.
   resetHttp({
     activePreset: "Default",
     activePresetSource: "builtin-default",

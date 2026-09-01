@@ -4,11 +4,10 @@
 /**
  * The single Qwen3 sampling table, kept free of store imports.
  *
- * qwen-params.ts imports the runtime store, and the store imports the defaults
- * migration, so the migration cannot read the table from there without a cycle.
- * Keeping the pure resolver here lets model load, the Think toggle and the
- * upgrade migration all agree by construction: change a recommended value once
- * and every consumer follows, including rows already written to disk.
+ * qwen-params.ts imports the store, which imports this migration, so the table
+ * cannot live there without a cycle. Keeping it pure lets model load, the Think
+ * toggle and the migration agree by construction: change a value once and every
+ * consumer follows, including rows already on disk.
  */
 
 import { parseExternalModelId } from "../external-providers";
@@ -21,19 +20,19 @@ export type QwenThinkingParams = {
   presencePenalty?: number;
 };
 
-// Anchored at identifier boundaries rather than a bare substring: "Qwen3.80"
-// and "Qwen3.8B" are a future family and a parameter count, not Qwen3.8, and a
-// substring test would hand both the presence bump. Real ids keep matching
-// because a family segment always ends the string or runs into -, _, / or \.
+// Boundary-anchored, not a substring: "Qwen3.80" and "Qwen3.8B" are a future
+// family and a parameter count, and a substring test would give both the
+// presence bump. Real ids still match, since a family segment always ends the
+// string or runs into -, _, / or \.
 const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[-_/\\])/;
 
 /**
  * The bare model id, with any external wrapper removed.
  *
- * An external checkpoint is `external::<provider>::<percent-encoded id>`, so a
- * provider-namespaced "Qwen/Qwen3.8-27B" arrives with its slash as `%2F`. That
- * leaves an alphanumeric `f` against the family segment, which the boundary
- * match above would reject, dropping the presence bump for every external Qwen.
+ * An external checkpoint is `external::<provider>::<percent-encoded id>`, so
+ * "Qwen/Qwen3.8-27B" arrives with its slash as `%2F`. That leaves an
+ * alphanumeric `f` against the family segment, which the boundary match would
+ * reject, dropping the presence bump for every external Qwen.
  */
 function bareModelId(checkpoint: string): string {
   return parseExternalModelId(checkpoint)?.modelId ?? checkpoint;
