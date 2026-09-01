@@ -3197,12 +3197,31 @@ export function HubModelPicker({
 
   // Hide downloaded models from the recommended list. Case-insensitive
   // since the HF cache lowercases repo IDs.
-  const downloadedSet = useMemo(() => {
-    const s = new Set<string>();
-    for (const c of cachedGguf) s.add(c.repo_id.toLowerCase());
-    for (const c of cachedModels) s.add(c.repo_id.toLowerCase());
-    return s;
-  }, [cachedGguf, cachedModels]);
+  // Complete downloads only. This set answers "can this id load right now": it decides
+  // isDownloaded on a search pick, which is what skips download staging, and it paints the
+  // on-disk dot. A partial is on disk but not loadable, so admitting one here would send a
+  // torn snapshot straight to the loader from the Hub and Recommended lists.
+  const downloadedSet = useMemo(
+    () =>
+      new Set(
+        [...cachedGguf, ...cachedModels]
+          .filter((c) => !c.partial)
+          .map((c) => c.repo_id.toLowerCase()),
+      ),
+    [cachedGguf, cachedModels],
+  );
+
+  // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
+  // or as absent. Same split the Hub page keeps.
+  const partialSet = useMemo(
+    () =>
+      new Set(
+        [...cachedGguf, ...cachedModels]
+          .filter((c) => c.partial === true)
+          .map((c) => c.repo_id.toLowerCase()),
+      ),
+    [cachedGguf, cachedModels],
+  );
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -6753,6 +6772,7 @@ export function HubModelPicker({
                               // unsloth upload, and two publishers would collide.
                               hideOwner={isUnslothOwned(id)}
                               downloaded={downloadedSet.has(id.toLowerCase())}
+                              partial={partialSet.has(id.toLowerCase())}
                               capabilities={capsById.get(id)}
                               meta={
                                 info?.meta ??
@@ -6858,6 +6878,7 @@ export function HubModelPicker({
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
                             downloaded={downloadedSet.has(id.toLowerCase())}
+                            partial={partialSet.has(id.toLowerCase())}
                             capabilities={capsById.get(id)}
                             // Same meta the unfiltered Recommended row shows, so a
                             // model does not lose its size chip just because it was

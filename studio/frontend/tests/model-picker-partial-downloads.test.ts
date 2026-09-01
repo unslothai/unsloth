@@ -163,6 +163,42 @@ test("a partial row keeps its buttons on screen instead of hiding them behind ho
   );
 });
 
+test("a partial never reaches the complete-download lookup", () => {
+  // downloadedSet decides isDownloaded on a search pick, and isDownloaded: true is what skips
+  // download staging. Listing partials in cachedGguf / cachedModels put their ids in this set,
+  // so a partial reached from Recommended or Hub search (which use handleModelClick, not the
+  // On Device renderer) went straight to the loader with an incomplete snapshot.
+  const start = PICKERS.indexOf("const downloadedSet = useMemo(");
+  assert.ok(start > 0, "downloadedSet exists");
+  const set = PICKERS.slice(start, PICKERS.indexOf("const partialSet", start));
+  assert.match(
+    set,
+    /\[\.\.\.cachedGguf, \.\.\.cachedModels\]\n\s*\.filter\(\(c\) => !c\.partial\)/,
+    "both cached lists are filtered before the ids land in the set",
+  );
+  // The search pick still reads that set, which is what makes the guard above load bearing.
+  assert.ok(
+    PICKERS.includes("isDownloaded: downloadedSet.has(id.toLowerCase()),"),
+  );
+});
+
+test("Hub rows can still tell a partial apart from an absent model", () => {
+  // Splitting partials out of downloadedSet would otherwise leave them looking like something
+  // never fetched, so the mark comes from its own set rather than from the on-disk one.
+  assert.ok(PICKERS.includes("const partialSet = useMemo("));
+  assert.equal(
+    PICKERS.split("partial={partialSet.has(id.toLowerCase())}").length - 1,
+    2,
+    "both Hub row renderers mark a partial",
+  );
+  // A partial must never take the green on-disk dot; ModelRow already yields one to the other.
+  assert.ok(
+    PICKERS.includes(
+      "{downloaded && !partial && !loaded ? <DownloadedBadge /> : null}",
+    ),
+  );
+});
+
 test("a torn quant inside the expander keeps its own menu", () => {
   // The expander lists torn quants, but the menu was gated on v.downloaded, so the one row that
   // holds bytes you might want back had no reveal and no delete. A partial still occupies disk.
