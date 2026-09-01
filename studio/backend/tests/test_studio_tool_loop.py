@@ -457,9 +457,18 @@ def test_structured_call_makes_the_healer_dormant(executed):
 # ── Budget ────────────────────────────────────────────────────────
 
 
-def test_zero_budget_withdraws_the_catalog(executed):
+def test_zero_budget_withdraws_the_catalog_and_skips_rag(executed, monkeypatch):
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("zero tool budget must prevent RAG retrieval")
+
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", fail_autoinject)
     transport = FakeTransport([[_sse({"content": "no tools for me"}), _sse(finish = "stop"), _DONE]])
-    _run(transport, max_calls = 0)
+    _run(
+        transport,
+        tools = [_tool("search_knowledge_base")],
+        max_calls = 0,
+        rag_scope = {"project_id": "p1", "autoinject": False},
+    )
 
     assert executed == []
     assert transport.requests[0]["tools"] is None

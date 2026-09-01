@@ -785,6 +785,8 @@ async def stream_with_studio_tools(
     transport_sanitizes = bool(getattr(transport, "sanitizes_provider_frames", False))
 
     skip_autoinject = (
+        remaining <= 0
+        or
         "search_knowledge_base" not in allowed_tool_names
         or tool_choice == "none"
         or run.continue_final_message
