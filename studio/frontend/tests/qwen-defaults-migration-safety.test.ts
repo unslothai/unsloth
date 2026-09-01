@@ -393,9 +393,12 @@ test("a model without reasoning support is migrated as non-thinking", async () =
   assert.equal(serverRow().topP, 0.8);
 });
 
-test("an empty stored model map does not fence off the migration", async () => {
-  // sanitizeChatSettings drops inferenceParamsByModel: {}, so asserting its
-  // absence would fence a key the row still has and the CAS would reject.
+test("an empty stored model map is declined, since it cannot be fenced", async () => {
+  // sanitizeChatSettings drops inferenceParamsByModel: {}, so it lands in
+  // neither expected nor expectedAbsent, and the server matches expected by
+  // recursive subset, where an empty map matches a populated one. Another tab
+  // adding the first row would slip through, so this declines rather than
+  // write unfenced. An absent key is different and stays fenced.
   resetHttp({
     activePreset: "Default",
     activePresetSource: "builtin-default",
@@ -421,8 +424,8 @@ test("an empty stored model map does not fence off the migration", async () => {
   await useChatRuntimeStore.getState().hydratePersistedSettings();
 
   const global = settingsHttp.settings.inferenceParams as Record<string, number>;
-  assert.equal(global.presencePenalty, 1.5);
-  assert.equal(global.minP, 0);
+  assert.equal(global.presencePenalty, 0);
+  assert.equal(global.minP, 0.01);
 });
 
 test("case-distinct POSIX paths keep separate reasoning-mode records", async () => {
@@ -643,38 +646,6 @@ test("a decision field that sanitizes away blocks the write", async () => {
   // this window and says nothing about whether the migration wrote.
   assert.equal(serverRow().presencePenalty, 0);
   assert.equal(serverRow().minP, 0.01);
-});
-
-test("an empty model map still migrates despite sanitizing away", async () => {
-  // The companion to the case above: this one means what the migration already
-  // assumes, so it must not be treated as unfenceable.
-  resetHttp({
-    activePreset: "Default",
-    activePresetSource: "builtin-default",
-    inferenceParams: {
-      temperature: 0.6,
-      topP: 0.95,
-      minP: 0.01,
-      presencePenalty: 0.0,
-    },
-    inferenceParamsByModel: {},
-  });
-  useChatRuntimeStore.setState((state) => ({
-    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
-    paramsByModel: {},
-    activePreset: "Default",
-    activePresetSource: "builtin-default",
-    rememberParamsPerModel: false,
-    reasoningAlwaysOn: false,
-    reasoningEnabled: true,
-    supportsReasoning: true,
-    settingsHydrated: false,
-  }));
-
-  await useChatRuntimeStore.getState().hydratePersistedSettings();
-
-  const global = settingsHttp.settings.inferenceParams as Record<string, number>;
-  assert.equal(global.presencePenalty, 1.5);
 });
 
 test("a case-distinct external switch during the write is not migrated", async () => {
@@ -1164,4 +1135,28 @@ test("a model switch during hydration still gets its own row migrated", async ()
   )[QWEN36];
   assert.equal(row.presencePenalty, 1.5);
   assert.equal(row.minP, 0);
+});
+
+test("a custom preset chosen mid-write keeps its own legacy-valued fields", async () => {
+  resetHttp({ ...LEGACY_SETTINGS });
+  useChatRuntimeStore.getState().applyThreadScopedSettings(null, {});
+  useChatRuntimeStore.setState({ activeThreadId: null });
+  // A custom preset can hold presencePenalty 0 on purpose. Applying it leaves
+  // that field's value alone, so its mutation counter does not move and the
+  // recovery path would read it as untouched.
+  settingsHttp.beforeConditionalApply = () => {
+    useChatRuntimeStore.getState().setActivePresetSource("custom");
+  };
+  seedActiveQwen();
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  const after = useChatRuntimeStore.getState().params;
+  assert.equal(after.presencePenalty, 0);
+  assert.equal(after.minP, 0.01);
 });

@@ -3959,19 +3959,11 @@ const QWEN_MIGRATION_DECISION_FIELDS = [
 // so asserting absence from the sanitized copy would fence a key the row has.
 /**
  * True when a decision field is stored but sanitizes away, such as an explicit
- * null: the compare-and-set can assert a value or an absence and neither fits,
- * so decline rather than migrate unfenced. An empty inferenceParamsByModel map
- * is exempt, and only that, since it means what the migration already assumes.
+ * null or an empty inferenceParamsByModel map: the compare-and-set can assert a
+ * value or an absence and neither fits, and `expected` matches by recursive
+ * subset, so an empty map matches a populated one. Decline rather than migrate
+ * unfenced. An absent key is different, and stays fenced by expectedAbsent.
  */
-function isEmptyPlainObject(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.keys(value).length === 0
-  );
-}
-
 function qwenMigrationHasUnfenceableField(
   rawSettings: unknown,
   sanitized: PersistedChatSettings,
@@ -3981,10 +3973,7 @@ function qwenMigrationHasUnfenceableField(
       ? (rawSettings as Record<string, unknown>)
       : {};
   return QWEN_MIGRATION_DECISION_FIELDS.some(
-    (field) =>
-      Object.hasOwn(raw, field) &&
-      sanitized[field] === undefined &&
-      !(field === "inferenceParamsByModel" && isEmptyPlainObject(raw[field])),
+    (field) => Object.hasOwn(raw, field) && sanitized[field] === undefined,
   );
 }
 
@@ -4234,7 +4223,13 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
           ownedGlobalCheckpoint,
           migrateOwnedGlobalAlongsideModelMemory,
         );
-      } else if (migration.patch) {
+      } else if (
+        migration.patch &&
+        useChatRuntimeStore.getState().activePresetSource !== "custom"
+      ) {
+        // "modified" is an ordinary edit and belongs here. A custom preset does
+        // not: it can hold a legacy value on purpose, and selecting it bumps no
+        // counter for a field it leaves alone, so this would overwrite it.
         adoptMigratedFieldsAfterLocalEdit(
           migration.patch,
           checkpoint,
