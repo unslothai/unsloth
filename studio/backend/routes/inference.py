@@ -6762,6 +6762,27 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
     )
 
 
+def _looks_like_a_local_model_path(candidate: str) -> bool:
+    """Whether this model identifier is a filesystem path rather than a Hub repo id.
+
+    Decided on shape alone, with no filesystem access, so the answer does not
+    change when the path is renamed out from under a resident model. A Hub id is
+    ``owner/name`` (optionally with a revision): one forward slash, no separators
+    beyond it, not rooted, no drive letter, no home shorthand.
+    """
+    if not candidate:
+        return False
+    if candidate.startswith("~") or os.path.isabs(candidate):
+        return True
+    if "\\" in candidate:
+        # A Windows separator, which a Hub id never contains.
+        return True
+    if candidate.startswith("./") or candidate.startswith("../"):
+        return True
+    # A Hub id is one slash deep; anything deeper is a path, not a repo.
+    return candidate.count("/") > 1
+
+
 def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
     """Refuse generation on a model another account loaded from a private path.
 
@@ -6779,17 +6800,36 @@ def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
     workspace_root() is studio_root() and cache_root() sits inside it, so a plain
     "under the workspace" test would call every shared model that account's
     private one and stop everybody else generating with it.
+
+    A Hub repo id is told from a local path by SHAPE, never by asking the
+    filesystem whether it exists. Deleting an account renames its workspace while
+    an idle pipeline is still resident, so an existence test called the retired
+    path a Hub id and handed the departed account's private weights to whoever
+    generated next.
     """
+    from auth.storage import is_installation_owner
+
+    if is_installation_owner():
+        # The owner may load a model from anywhere on the host, which is what
+        # _reject_uncontained_local_path already allows them at load time, so an
+        # arbitrary path outside the Unsloth roots is theirs by construction.
+        # Refusing them their own resident model here would break the ordinary
+        # single-user case of loading weights from somewhere else on disk.
+        return
     repo_id = (status or {}).get("repo_id")
     if not isinstance(repo_id, str) or not repo_id.strip():
         return
     candidate = repo_id.strip()
-    try:
-        if not Path(os.path.expanduser(candidate)).exists():
-            # A Hub repo id, not a path: shared by design.
+    if not _looks_like_a_local_model_path(candidate):
+        try:
+            # Shape did not settle it, so ask the filesystem as a fallback. This
+            # only ever widens what counts as local, never narrows it, which is
+            # why the rename case above is handled by shape and not by this.
+            if not Path(os.path.expanduser(candidate)).exists():
+                # A Hub repo id, not a path: shared by design.
+                return
+        except OSError:
             return
-    except OSError:
-        return
 
     from routes.models import _is_sizable_local_path
     from utils.paths.storage_roots import cache_root

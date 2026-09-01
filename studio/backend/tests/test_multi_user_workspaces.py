@@ -2761,15 +2761,81 @@ def test_the_stdio_spawn_itself_refuses_a_managed_account(monkeypatch):
 
 
 def test_a_managed_training_run_cannot_borrow_the_owners_hub_token():
-    from core.training.training import _ambient_hub_credentials_suppressed_for
+    from core.training.training import _ambient_credentials_suppressed_for
 
     # The training child is spawned, so it copies the live parent environment.
     # An owner HF_TOKEN there, or a cached hub login, would let a managed account
     # train on a private repo it cannot read.
-    assert _ambient_hub_credentials_suppressed_for(LEGACY_WORKSPACE_SUBJECT) == {}
-    suppressed = _ambient_hub_credentials_suppressed_for("alice")
+    assert _ambient_credentials_suppressed_for(LEGACY_WORKSPACE_SUBJECT) == {}
+    suppressed = _ambient_credentials_suppressed_for("alice")
     assert suppressed["HF_TOKEN"] == ""
     assert suppressed["HUGGING_FACE_HUB_TOKEN"] == ""
     # Blanking the variables is not enough on its own: without this the hub still
     # reaches for the machine's cached login.
     assert suppressed["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+
+
+def test_a_managed_training_run_cannot_borrow_the_owners_wandb_identity():
+    from fastapi import HTTPException
+
+    from core.training.training import _ambient_credentials_suppressed_for
+    from routes.training import _reject_wandb_without_an_account_token
+
+    # The worker only overwrites WANDB_API_KEY when the request carried a token,
+    # so an inherited owner key uploaded the run under the owner's identity.
+    assert _ambient_credentials_suppressed_for("alice")["WANDB_API_KEY"] == ""
+
+    token = _bind("alice")
+    try:
+        with pytest.raises(HTTPException) as exc:
+            _reject_wandb_without_an_account_token(True, None)
+        assert exc.value.status_code == 403
+        # Its own key is fine, and so is not using W&B at all.
+        _reject_wandb_without_an_account_token(True, "alice-key")
+        _reject_wandb_without_an_account_token(False, None)
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        # The owner's own key in the environment is the owner's to use.
+        _reject_wandb_without_an_account_token(True, None)
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_retired_workspace_path_is_still_recognised_as_private(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+
+    token = _bind("alice")
+    try:
+        private = workspace_root() / "models" / "secret-model"
+        private.mkdir(parents = True, exist_ok = True)
+        resident = {"loaded": True, "repo_id": str(private)}
+    finally:
+        reset_workspace_subject(token)
+
+    # Deleting the account renames the workspace while an idle pipeline is still
+    # resident. Classified by existence, the retired path read as a Hub id and the
+    # departed account's weights were handed to whoever generated next.
+    import shutil
+
+    shutil.rmtree(private)
+    assert not private.exists()
+
+    token = _bind("bob")
+    try:
+        with pytest.raises(HTTPException) as exc:
+            inference_routes._reject_foreign_private_resident_model(resident, "image")
+        assert exc.value.status_code == 403
+    finally:
+        reset_workspace_subject(token)
+
+    # Shape, not existence: a Hub id stays shared whether or not anything is there.
+    assert inference_routes._looks_like_a_local_model_path("black-forest-labs/FLUX.1-dev") is False
+    assert inference_routes._looks_like_a_local_model_path("/var/lib/x/model") is True
+    assert inference_routes._looks_like_a_local_model_path("a/b/c") is True

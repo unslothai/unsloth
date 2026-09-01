@@ -633,7 +633,20 @@ class DiffusionTrainingService:
             # Keep the lease secret out of the child's env, as other orchestrators do.
             from utils.native_path_leases import native_path_secret_removed_for_child_start
 
-            with native_path_secret_removed_for_child_start():
+            # And the owner's Hub and W&B credentials, for the same reason the LLM
+            # trainer does: this child is spawned, so it copies the live parent
+            # environment, and the trainers pass token=cfg.hf_token straight into
+            # from_pretrained, where None means "use whatever is ambient".
+            from utils.hf_cache_settings import child_environment_for_spawn
+
+            from .training import _ambient_credentials_suppressed_for
+
+            with (
+                child_environment_for_spawn(
+                    _ambient_credentials_suppressed_for(workspace_subject)
+                ),
+                native_path_secret_removed_for_child_start(),
+            ):
                 self._proc.start()
             try:
                 from utils.process_lifetime import adopt_pid

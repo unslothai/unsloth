@@ -1094,8 +1094,13 @@ _HF_TOKEN_ENV_KEYS = (
 )
 
 
-def _ambient_hub_credentials_suppressed_for(subject: "Optional[str]") -> dict:
-    """Env overrides that stop a managed account's worker using the owner's token.
+# W&B authenticates from the environment too, and a run started with the owner's
+# key uploads under the owner's identity.
+_WANDB_TOKEN_ENV_KEYS = ("WANDB_API_KEY",)
+
+
+def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
+    """Env overrides that stop a managed account's worker using the owner's tokens.
 
     The training child is spawned, so it copies the live parent environment: an
     owner HF_TOKEN in the server's own environment, or a cached hub login, would
@@ -1107,6 +1112,10 @@ def _ambient_hub_credentials_suppressed_for(subject: "Optional[str]") -> dict:
     applied to the parent environment for the duration of the start and restored
     afterwards, and huggingface_hub reads an empty value as no token at all.
 
+    The same applies to WANDB_API_KEY: the worker only overwrites it when the
+    request carried a token of its own, so an inherited owner key meant a managed
+    account's run authenticated and uploaded under the owner's W&B identity.
+
     The owner gets an empty dict, so their runs are unchanged. An account that
     supplies its own token is unaffected: that one travels in the config, and the
     worker sets it after this.
@@ -1115,7 +1124,7 @@ def _ambient_hub_credentials_suppressed_for(subject: "Optional[str]") -> dict:
 
     if is_installation_owner(subject):
         return {}
-    suppressed = {key: "" for key in _HF_TOKEN_ENV_KEYS}
+    suppressed = {key: "" for key in _HF_TOKEN_ENV_KEYS + _WANDB_TOKEN_ENV_KEYS}
     suppressed["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     return suppressed
 
@@ -1835,7 +1844,7 @@ class TrainingBackend:
 
             cache_env = get_hf_cache_paths().child_env({})
             cache_env.update(
-                _ambient_hub_credentials_suppressed_for(self._active_workspace_subject)
+                _ambient_credentials_suppressed_for(self._active_workspace_subject)
             )
 
             try:
@@ -2503,7 +2512,7 @@ class TrainingBackend:
                 from utils.hf_cache_settings import get_hf_cache_paths
                 cache_env = get_hf_cache_paths().child_env({})
                 cache_env.update(
-                    _ambient_hub_credentials_suppressed_for(self._active_workspace_subject)
+                    _ambient_credentials_suppressed_for(self._active_workspace_subject)
                 )
             from utils.hf_cache_settings import child_environment_for_spawn
             from utils.transformers_version import sidecar_swap_in_progress

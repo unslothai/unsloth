@@ -486,6 +486,34 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
+def _reject_wandb_without_an_account_token(enable_wandb: Any, wandb_token: Any) -> None:
+    """A managed account logging to W&B must bring its own key.
+
+    The spawned worker only overwrites WANDB_API_KEY when the request carried a
+    token, so an owner key in the server's environment would otherwise be
+    inherited and the run would authenticate and upload under the owner's W&B
+    identity.
+
+    Refused here rather than only blanked in the child, so the account is told
+    why up front instead of watching a long run fail inside wandb.init(). The
+    child environment blanks it as well, for any path that does not come through
+    this route.
+    """
+    if not enable_wandb:
+        return
+    if isinstance(wandb_token, str) and wandb_token.strip():
+        return
+    if is_installation_owner():
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "Weights and Biases logging needs your own API key. Add one in "
+            "Settings, or turn the logging off."
+        ),
+    )
+
+
 def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
@@ -1229,6 +1257,9 @@ async def start_training(
         # Before anything is reserved or torn down. The worker runs as the same OS
         # user, so repository code it loads reaches every account's files.
         _reject_remote_code_from_a_managed_account(request.trust_remote_code)
+        _reject_wandb_without_an_account_token(
+            request.enable_wandb, getattr(request, "wandb_token", None)
+        )
         backend = get_training_backend()
         if await asyncio.to_thread(backend.is_training_active) and not _training_workspace_owned(
             backend, current_subject
