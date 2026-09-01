@@ -398,6 +398,14 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     return text[:last_open], text[last_open:]
 
 
+# Families that accept `prompt_cache_retention: "24h"`. Everything else 400s
+# with "prompt_cache_retention is not supported on this model" and the turn
+# dies (openai/codex#39397), while an unmatched model just falls back to
+# in-memory caching -- so guess narrow.
+# https://developers.openai.com/api/docs/guides/prompt-caching
+_OPENAI_EXTENDED_CACHE_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?(?:[-.]|$)|gpt-4\.1$)")
+
+
 class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
     kind: Literal["adaptive", "manual"]
@@ -5165,9 +5173,10 @@ class ExternalProviderClient:
                     break
             input_items[insert_at:insert_at] = openai_replay_items
 
-        # gpt-5.x / o3 / gpt-4.5 reject temperature/top_p (400 "Unsupported
-        # parameter"); the openai allowlist scopes the picker to these families,
-        # so never forward sampling knobs.
+        # Reasoning families reject temperature/top_p, and the UI hides both
+        # sliders for the rest (provider-capabilities.ts), so the only values
+        # arriving here are ChatCompletionRequest's 0.6/0.95 defaults, which
+        # would override OpenAI's own with a number the user never chose.
         del temperature, top_p  # accepted for API symmetry, not forwarded.
 
         body: dict[str, Any] = {
@@ -5226,9 +5235,14 @@ class ExternalProviderClient:
                 }
 
         # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min).
-        # Gated on the OpenAI cloud host because ollama / llama.cpp / "custom"
-        # presets reach this path too and would 400 on the unknown field.
-        if is_openai_cloud and enable_prompt_caching is not False:
+        # Gated on the cloud host because ollama / llama.cpp / "custom" presets
+        # reach this path and 400 on the unknown field, and on the model
+        # because most cloud families reject the value itself.
+        if (
+            is_openai_cloud
+            and enable_prompt_caching is not False
+            and _OPENAI_EXTENDED_CACHE_FAMILY.match(model.strip().lower())
+        ):
             body["prompt_cache_retention"] = "24h"
 
         # Server-side context compaction (OpenAI cloud only).
