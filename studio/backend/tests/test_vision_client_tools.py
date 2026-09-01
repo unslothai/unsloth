@@ -984,3 +984,56 @@ def test_image_reasoning_is_classified_from_the_processor_template():
     message = body["choices"][0]["message"]
     assert message["reasoning_content"] == "hidden reasoning", message
     assert "hidden reasoning" not in (message["content"] or "")
+
+
+def test_the_prefill_probe_gets_the_selected_processor_body():
+    """Feature detection resolves a named collection down to one body, but the prefill
+    probe was still handed the whole collection. Its <think> guard then tests the dict's
+    keys and returns False, so a selected branch that prefills an open block is missed
+    (#10092)."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import routes.inference as inf
+    import test_sf_client_tools_passthrough as passthrough
+
+    collection = {"default": "DEFAULT_BODY <think></think>", "tool_use": "TOOL_BODY"}
+    backend = passthrough._ScriptedBackend(passthrough._fixed("an answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
+        "processor_template": collection,
+    }
+    seen: list = []
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._install(monkeypatch, backend)
+        real = inf._sf_reasoning_prefill_mode
+        monkeypatch.setattr(
+            inf,
+            "_sf_reasoning_prefill_mode",
+            lambda features, enable, template, **k: (
+                seen.append(template) or real(features, enable, template, **k)
+            ),
+        )
+
+        async def _run():
+            return await inf.openai_chat_completions(
+                _image_request(stream = False),
+                request = passthrough._Request(),
+                current_subject = "u",
+            )
+
+        asyncio.run(_run())
+    finally:
+        monkeypatch.undo()
+
+    # A processor never selects tool_use, so "default" is the body that renders.
+    assert seen, "the prefill probe never ran"
+    assert collection["default"] in seen, seen
+    assert not any(isinstance(t, dict) for t in seen), seen

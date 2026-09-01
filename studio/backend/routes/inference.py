@@ -22279,6 +22279,21 @@ async def produce_openai_chat_completions(
         # parameter, and the default is what all of them already assume.
         _pref = {} if prefer_tool_use else {"prefer_tool_use": False}
         features = _detect_safetensors_features(backend, body, tools = tools, **_pref)
+        # The prefill probe needs the ONE body that will render, not the named collection
+        # it came from: its <think> guard tests the collection's keys and returns False, so
+        # a selected branch that prefills an open block would be missed. Feature detection
+        # already resolves the same way (#10092).
+        try:
+            from core.inference.chat_template_helpers import (
+                _selected_template_strings_from_value,
+            )
+            _selected = _selected_template_strings_from_value(
+                body, tools, prefer_tool_use = prefer_tool_use
+            )
+            if _selected:
+                body = _selected[0]
+        except Exception:
+            logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
         parse_think = bool(
             features.get("supports_reasoning") or features.get("reasoning_always_on")
         )
