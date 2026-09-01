@@ -553,9 +553,21 @@ def load_model_config(
     revision_kwargs = {"revision": revision} if revision is not None else {}
 
     if is_anonymous(token):
-        # `False` is falsy: without this it falls past both branches to the default-auth
-        # call below and picks the ambient token back up.
-        use_auth = False
+        # `False` is falsy, so without this the call falls past both branches below and
+        # picks the ambient token back up. It goes to the hub as the sentinel rather than
+        # through without_hf_auth(): that context deletes HF_TOKEN/HF_HOME and moves the
+        # login token files process-wide, and /config runs these probes in worker threads,
+        # so it would strip a concurrent download's credential -- and two overlapping
+        # windows would have the inner exit restore the token while the outer probe is
+        # still running, letting the anonymous probe authenticate after all.
+        return AutoConfig.from_pretrained(
+            model_name,
+            trust_remote_code = trust_remote_code,
+            token = False,
+            local_files_only = local_files_only,
+            cache_dir = active_hf_hub_cache(),
+            **revision_kwargs,
+        )
 
     if token:
         return AutoConfig.from_pretrained(

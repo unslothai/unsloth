@@ -27,6 +27,7 @@ from utils.models.model_config import (
     _is_mtp_drafter,
 )
 from utils.hf_cache_settings import active_hf_hub_cache
+from utils.utils import hf_env_offline
 from utils.paths.path_utils import (
     is_local_path,
     normalize_path,
@@ -378,6 +379,13 @@ def read_default_chat_template(
                     return template
         except Exception as exc:
             logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+
+    if is_anonymous(hf_token) and hf_env_offline():
+        # Offline, hf_hub_download serves the cached copy straight off disk and never
+        # checks the credential, so the fallback below would hand back the very template
+        # the walk above just refused. The route forces offline whenever the Hub looks
+        # unreachable, so this is the ordinary path on a disconnected install.
+        return None
 
     try:
         from huggingface_hub import HfApi, hf_hub_download

@@ -2,9 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-// Module state outlives a logout, so this store clears with the session.
-// eslint-disable-next-line no-restricted-imports
-import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session-events";
+// Module state outlives a logout, so this store clears with the session. Relative and
+// extensioned like the sibling import below: the store's own test runs under
+// `node --experimental-strip-types`, which does not resolve the `@/` alias.
+import { AUTH_SESSION_CLEARED_EVENT } from "../../auth/session-events.ts";
 import { isTrainingProgressForJob } from "../lib/training-stream-scope.ts";
 import type {
   TrainingMetricsResponse,

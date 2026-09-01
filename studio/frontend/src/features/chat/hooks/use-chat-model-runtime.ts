@@ -32,7 +32,10 @@ import {
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
+import {
+  isOllamaLinkPath,
+  modelDisplayName,
+} from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
@@ -1135,7 +1138,11 @@ export function useChatModelRuntime() {
         // Hoisted out of performLoad's GGUF branch for the progress pollers, but kept off
         // loads that never reach the Hub: it validates over the network and can block on a
         // dialog, and a stale Settings token must not gate a local or cached-LoRA load.
-        const mayReachHub = !isLocal && nativePathToken == null;
+        // An Ollama row's id is an opaque `ollama-manifest:` reference rather than a
+        // path, so isLocalModelPath does not recognise it even though the backend
+        // materialises the load entirely from the local Ollama store.
+        const mayReachHub =
+          !isLocal && !isOllamaLinkPath(modelId) && nativePathToken == null;
         if (mayReachHub) {
           const preparedToken = await prepareHfTokenForUse(hfToken);
           if (!preparedToken.proceed) {

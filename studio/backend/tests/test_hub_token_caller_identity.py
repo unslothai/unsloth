@@ -10,6 +10,7 @@ and a child env inherits what it was never granted. ``is`` throughout: ``False =
 """
 
 import hashlib
+import os
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Optional
@@ -426,3 +427,60 @@ def test_resolving_the_hub_token_keeps_the_anonymous_sentinel():
     assert models_routes._resolve_hub_token(None, None) is None
     assert models_routes._resolve_hub_token(False, "hf_query") == "hf_query"
     assert models_routes._resolve_hub_token("hf_header", "hf_query") == "hf_header"
+
+
+def test_an_anonymous_caller_gets_no_template_from_the_offline_fallback(monkeypatch):
+    """Offline, hf_hub_download answers from disk and never checks the credential.
+
+    The chat-template route forces offline whenever the Hub looks unreachable, so
+    without this the Hub fallback hands back the template the cache walk just refused.
+    """
+    from picker import service as picker_service
+
+    monkeypatch.setattr(picker_service, "hf_env_offline", lambda: True)
+    monkeypatch.setattr(
+        picker_service, "resolve_cached_repo_id_case", lambda name: name
+    )
+
+    def _exploded(*args, **kwargs):
+        raise AssertionError("the anonymous caller reached the hub fallback")
+
+    monkeypatch.setattr(picker_service, "iter_snapshots_preferring_whole", _exploded)
+
+    assert picker_service.read_default_chat_template("org/private", False) is None
+
+
+def test_an_anonymous_config_read_does_not_strip_the_process_credential(monkeypatch):
+    """The sentinel goes to the hub as `token=False`, not via without_hf_auth().
+
+    That context deletes HF_TOKEN and moves the login token files process-wide, so a
+    concurrent download in another worker thread would lose the operator's credential.
+    """
+    import utils.models.model_config as model_config_module
+
+    monkeypatch.setenv("HF_TOKEN", "ambient-operator-token")
+    seen = {}
+
+    class _Config:
+        pass
+
+    def _from_pretrained(model_name, **kwargs):
+        seen["token"] = kwargs.get("token", "<absent>")
+        seen["ambient"] = os.environ.get("HF_TOKEN")
+        return _Config()
+
+    import transformers
+
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained", staticmethod(_from_pretrained)
+    )
+    monkeypatch.setattr(
+        model_config_module, "active_hf_hub_cache", lambda: None, raising = False
+    )
+
+    model_config_module.load_model_config("org/private", token = False)
+
+    assert seen["token"] is False, "the sentinel was not passed through to the hub"
+    assert seen["ambient"] == "ambient-operator-token", (
+        "the anonymous probe removed a credential another thread was still using"
+    )

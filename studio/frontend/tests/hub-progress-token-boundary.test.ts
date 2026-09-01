@@ -113,6 +113,10 @@ test("a local load is not gated behind Hub token preparation", () => {
   assert.notEqual(start, -1, "the local-load guard is missing");
   const guarded = chatRuntime.slice(start, start + 600);
   assert.match(guarded, /!isLocal/);
+  // An Ollama row is local too, but its id is an opaque reference rather than a path,
+  // so isLocalModelPath alone lets it through. chat-load-hub-token-reach.test.ts pins
+  // what the predicate itself classifies.
+  assert.match(guarded, /!isOllamaLinkPath\(modelId\)/);
   assert.match(guarded, /nativePathToken\s*==\s*null/);
   assert.match(guarded, /if\s*\(mayReachHub\)\s*\{[\s\S]*prepareHfTokenForUse\(hfToken\)/);
 });
