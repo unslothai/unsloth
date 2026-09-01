@@ -1222,7 +1222,13 @@ def test_update_changelog_uses_full_installed_release_identity(monkeypatch, tmp_
     )
     seen = {}
 
-    def fake_changelog(repo, installed, latest, *, force_refresh = False):
+    def fake_changelog(
+        repo,
+        installed,
+        latest,
+        *,
+        force_refresh = False,
+    ):
         seen.update(
             repo = repo,
             installed = installed,

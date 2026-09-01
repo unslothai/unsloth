@@ -147,9 +147,7 @@ def test_changelog_handler_runs_off_event_loop(monkeypatch):
         return {"matched": True, "installed_tag": "b1", "latest_tag": "b2"}
 
     monkeypatch.setattr(rl, "get_update_changelog", fake_changelog)
-    out = asyncio.run(
-        rl.llama_update_changelog(force_refresh = True, current_subject = "test")
-    )
+    out = asyncio.run(rl.llama_update_changelog(force_refresh = True, current_subject = "test"))
 
     assert out.matched is True
     assert seen == {"thread": seen["thread"], "refresh": True}

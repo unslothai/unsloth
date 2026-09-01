@@ -46,9 +46,7 @@ def test_delta_excludes_old_prs_after_rebase(monkeypatch):
         lambda _repo, tag, *, force_refresh = False: releases.get(tag),
     )
 
-    result = changes.changelog_for_update(
-        "unslothai/llama.cpp", "b10698-mix-old", "b10715-mix-new"
-    )
+    result = changes.changelog_for_update("unslothai/llama.cpp", "b10698-mix-old", "b10715-mix-new")
 
     assert result is not None
     assert [item["summary"] for item in result["changes"]] == [
@@ -109,10 +107,6 @@ def test_invalid_repo_never_reaches_github(monkeypatch):
 
 
 def test_cpp_identifiers_keep_literal_underscores():
-    entry = changes._entry(
-        "ggml-cuda: keep ROCm_Host and GGML_CUDA_ENABLE_UNIFIED_MEMORY=0"
-    )
+    entry = changes._entry("ggml-cuda: keep ROCm_Host and GGML_CUDA_ENABLE_UNIFIED_MEMORY=0")
 
-    assert entry["summary"] == (
-        "ggml-cuda: keep ROCm_Host and GGML_CUDA_ENABLE_UNIFIED_MEMORY=0"
-    )
+    assert entry["summary"] == ("ggml-cuda: keep ROCm_Host and GGML_CUDA_ENABLE_UNIFIED_MEMORY=0")

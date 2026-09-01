@@ -35,15 +35,17 @@ _BULLET = re.compile(r"^ {0,3}[-*+]\s+(.+?)\s*$")
 _LINK = re.compile(r"\[([^\]]+)]\((https://github\.com/[^\s)]+)\)")
 _PR_URL = re.compile(r"^https://github\.com/([^/]+/[^/]+)/pull/(\d+)(?:/|$)", re.I)
 _ISSUE_URL = re.compile(r"^https://github\.com/([^/]+/[^/]+)/issues/(\d+)(?:/|$)", re.I)
-_TEXT_REFERENCE = re.compile(
-    r"(?<![\w./-])([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)#(\d+)\b"
-)
+_TEXT_REFERENCE = re.compile(r"(?<![\w./-])([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)#(\d+)\b")
 
 _release_memo: dict[tuple[str, str], tuple[float, dict]] = {}
 _release_failed_at: dict[tuple[str, str], float] = {}
 
 
-def _fetch_release(repo: str, tag: str, timeout: float = 5.0) -> Optional[dict]:
+def _fetch_release(
+    repo: str,
+    tag: str,
+    timeout: float = 5.0,
+) -> Optional[dict]:
     """Fetch one exact GitHub release. None on invalid input or any failure."""
     if not _REPO.fullmatch(repo) or not tag:
         return None
@@ -88,7 +90,12 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
     return payload if isinstance(payload, dict) else None
 
 
-def _release_for_tag(repo: str, tag: str, *, force_refresh: bool = False) -> Optional[dict]:
+def _release_for_tag(
+    repo: str,
+    tag: str,
+    *,
+    force_refresh: bool = False,
+) -> Optional[dict]:
     """Exact release with 24h success and 60s failure memoization."""
     key = (repo, tag)
     now = time.time()
@@ -188,9 +195,7 @@ def changelog_for_update(
     if installed is None or latest is None:
         return None
 
-    old_identities = set().union(
-        *(_identities(item) for item in _bullets(installed.get("body")))
-    )
+    old_identities = set().union(*(_identities(item) for item in _bullets(installed.get("body"))))
     new_items = []
     seen = set()
     for item in _bullets(latest.get("body")):
