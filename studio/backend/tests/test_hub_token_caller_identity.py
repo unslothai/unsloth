@@ -845,3 +845,42 @@ def test_a_public_model_keeps_its_size_when_the_cache_is_bypassed():
     assert "inspection_target != model_name" in source, (
         "snapshot sizing is still chosen from the flag rather than the target"
     )
+
+
+@pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
+def test_the_offline_autoconfig_read_is_denied_to_an_anonymous_caller(monkeypatch, hf_token):
+    """token=False disables authentication but not the local cache."""
+    import transformers
+
+    import utils.models.model_config as model_config_module
+
+    monkeypatch.setattr(model_config_module, "_env_offline", lambda: True)
+    monkeypatch.setattr(model_config_module, "active_hf_hub_cache", lambda: None, raising = False)
+    reached = {"n": 0}
+
+    def _from_pretrained(_name, **_kwargs):
+        reached["n"] += 1
+        return object()
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", staticmethod(_from_pretrained))
+
+    if is_anonymous(hf_token):
+        with pytest.raises(OSError):
+            model_config_module.load_model_config("org/private", token = hf_token)
+        assert reached["n"] == 0, "the anonymous caller read the offline config cache"
+    else:
+        model_config_module.load_model_config("org/private", token = hf_token)
+        assert reached["n"] == 1
+
+
+def test_the_prefer_local_scan_branch_carries_the_anonymous_guard():
+    """Only the exact-snapshot branch was gated; the sibling resolved the cache anyway."""
+    import inspect
+
+    source = inspect.getsource(models_routes.scan_model_remote_code)
+    marker = source.index("elif prefer_local_cache is True")
+    branch = source[marker : marker + 200]
+
+    assert "not is_anonymous(hf_token)" in branch, (
+        "the prefer-local scan branch still resolves a cached snapshot for any caller"
+    )

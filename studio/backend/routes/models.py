@@ -2597,7 +2597,10 @@ async def scan_model_remote_code(
                 normalize_path(exact_snapshot_path),
                 hf_token,
             )
-        elif prefer_local_cache is True and not local_model:
+        elif prefer_local_cache is True and not local_model and not is_anonymous(hf_token):
+            # Same guard as the exact_snapshot branch above: resolving the repo to its
+            # cached snapshot hands the scanner a private repo's Python, and the route
+            # returns source snippets from it, with no credential consulted anywhere.
             from core.training.training import _resolve_model_snapshot
             local_path = normalize_path(model_local_path) if model_local_path else None
             scan_target = _resolve_model_snapshot(model_name, local_path) or model_name

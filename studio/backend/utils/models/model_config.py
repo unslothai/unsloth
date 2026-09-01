@@ -561,6 +561,15 @@ def load_model_config(
         # so it would strip a concurrent download's credential -- and two overlapping
         # windows would have the inner exit restore the token while the outer probe is
         # still running, letting the anonymous probe authenticate after all.
+        #
+        # token=False disables authentication but not the local cache, so offline (which
+        # _hf_offline_if_unreachable_for forces on an unreachable hub) AutoConfig would
+        # load a cached private repo's config.json anyway. With no network this caller has
+        # no way to establish access, so it gets nothing rather than the cache's answer.
+        if local_files_only or _env_offline():
+            raise OSError(
+                f"config.json for {model_name} is not available to an unauthorized caller"
+            )
         return AutoConfig.from_pretrained(
             model_name,
             trust_remote_code = trust_remote_code,
