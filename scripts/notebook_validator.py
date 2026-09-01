@@ -162,7 +162,6 @@ def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
         return True  # nothing to judge on, or a field the oracle cannot answer for
     try:
         from packaging.markers import Marker
-
         return bool(Marker(marker_text).evaluate(environment))
     except Exception:
         return True
