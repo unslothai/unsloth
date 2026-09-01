@@ -237,7 +237,9 @@ class TestRocmVersionSourcesBounded:
         lines = _exec_lines(body, pattern)
         assert lines, f"get_radeon_wheel_url no longer runs a probe matching {pattern}"
         for line in lines:
-            assert "_run_bounded" in line, f"get_radeon_wheel_url runs an unbounded probe: {line.strip()}"
+            assert (
+                "_run_bounded" in line
+            ), f"get_radeon_wheel_url runs an unbounded probe: {line.strip()}"
 
 
 @pytest.mark.skipif(not _have_timeout(), reason = "`timeout` binary not available")
@@ -268,7 +270,9 @@ def test_detect_rocm_version_tag_returns_when_a_source_hangs(hanging_tool):
         hanging.write_text("#!/bin/sh\nsleep 30\n")
         hanging.chmod(hanging.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
-        real_bins = {Path(shutil.which(c)).parent for c in ("timeout", "awk", "grep", "sort", "tr", "sh")}
+        real_bins = {
+            Path(shutil.which(c)).parent for c in ("timeout", "awk", "grep", "sort", "tr", "sh")
+        }
         path_env = os.pathsep.join([str(fake_dir)] + [str(p) for p in real_bins])
 
         script = "\n".join(parts) + '\n_detect_rocm_version_tag\necho "RC=$?"\n'
