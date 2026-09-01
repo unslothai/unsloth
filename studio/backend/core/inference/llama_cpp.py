@@ -935,10 +935,11 @@ def _has_unclosed_code_fence(text: str) -> bool:
                     active_char, active_len, active_quote, active_base = None, 0, 0, 0
                     closed_any = True
                 continue
-            # A later run of the SAME delimiter closes an inline span ("```python```
-            # is the syntax"), at column zero or not. A different one is info-string
-            # text (```markdown title=~~~) and leaves the opener standing.
-            if any(
+            # A later BACKTICK run closes an inline span ("```python``` is the
+            # syntax"), at column zero or not. A different delimiter is info-string
+            # text (```markdown title=~~~), and a tilde info string may itself hold
+            # tildes (~~~markdown title=~~~~), which CommonMark allows.
+            if ch == "`" and any(
                 (later.group("backticks") or later.group("tildes"))[0] == ch
                 for later in runs[index + 1 :]
             ):
@@ -1112,11 +1113,15 @@ def _text_outside_think(text: str) -> str:
     )
     # Whichever opener actually starts the turn owns it, so settle that before
     # looking at bare closers: a leading block may name another marker in its body.
+    fences = None
     for lead, _opener, closer in pairs:
         if lead.match(stripped):
-            # Plain scan: an artifact can span from a tag named in the thought to
-            # one in the answer, and that span must not swallow the block's closer.
-            close = text.find(closer)
+            # Fences only. A closer shown in a complete example is the example, but
+            # a MARKUP span can run from a tag named in the thought to one in the
+            # answer, and that must not be allowed to swallow the real closer.
+            if fences is None:
+                fences = [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)]
+            close = _find_outside_artifacts(text, closer, fences)
             # No closer: a thought the window cut off runs to the end, and none of
             # it was shown.
             return text[close + len(closer) :] if close >= 0 else ""

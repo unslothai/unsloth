@@ -1168,6 +1168,24 @@ def test_a_thought_naming_a_tag_does_not_swallow_its_own_closer():
     assert not _gate_would_reprompt(turn, "", True)
 
 
+def test_leading_thought_may_show_its_own_closer_in_an_example():
+    """A closer inside a complete fence is the example, so the thought ends at its
+    real closer. Fences only: a markup span can bridge the thought and the answer."""
+    turn = (
+        "<think>Example:\n```xml\n</think>\n```\nFirst, I will search.</think>"
+        "The answer is Paris."
+    )
+    assert not _gate_would_reprompt(turn, "", True)
+
+
+def test_tilde_info_string_may_hold_tildes():
+    """CommonMark bars backticks from a backtick info string but allows tildes in a
+    tilde one, so a longer tilde run there does not displace the opener."""
+    text = "First, let me show it.\n~~~markdown title=~~~~\nbody\n~~~"
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
 def test_delimiter_mention_after_a_closed_block_is_prose():
     """Once a block has closed, an inline delimiter is a mention whether or not it
     carries a language token. A real second block starts at column 0."""
