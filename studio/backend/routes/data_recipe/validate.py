@@ -151,6 +151,12 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
     if recipe_has_stdio_mcp(recipe):
         require_ui_session_for_local_commands(via_api_key)
 
+    # Validation builds the providers and calls the endpoint, so it is the same
+    # exfiltration path as running the job and needs the same guard.
+    from routes.data_recipe.jobs import reject_env_credentials_in_recipe
+
+    reject_env_credentials_in_recipe(recipe)
+
     _patch_local_providers(recipe)
 
     github_source = _github_seed_source(recipe)

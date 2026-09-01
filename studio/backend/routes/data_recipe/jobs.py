@@ -275,6 +275,22 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
+def reject_env_credentials_in_recipe(recipe: Any) -> None:
+    """Guard every provider collection a recipe carries, wherever it enters.
+
+    Called from the job and validate entry points rather than from
+    _inject_local_providers, which returns early for a recipe with no local
+    providers and never sees mcp_providers at all, so the ordinary external-only
+    recipe walked straight past the check.
+    """
+    if not isinstance(recipe, dict):
+        return
+    for key in ("model_providers", "mcp_providers"):
+        collection = recipe.get(key)
+        if isinstance(collection, list):
+            _reject_env_credentials_from_a_managed_account(collection)
+
+
 def _reject_env_credentials_from_a_managed_account(providers: list) -> None:
     """Only the owner may have a recipe read a provider key out of the environment.
 
@@ -369,8 +385,6 @@ def _inject_local_providers(
             expect_gen = expect_gen,
         )
         internal_key_id = int(row["id"])
-
-    _reject_env_credentials_from_a_managed_account(providers)
 
     # Strip stale "external"-only fields (extra_headers/extra_body/api_key_env)
     # the frontend may have serialized; a provider flipped from external to local
@@ -467,6 +481,10 @@ def create_job(
                 event = "data_recipe.jobs.run_config_invalid",
                 log = logger,
             ) from exc
+
+    # Before anything builds providers from it, and before the local-injection
+    # helper's early returns can skip it.
+    reject_env_credentials_in_recipe(recipe)
 
     try:
         internal_api_key_id = _inject_local_providers(

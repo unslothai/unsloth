@@ -1097,6 +1097,10 @@ _HF_TOKEN_ENV_KEYS = (
 # W&B authenticates from the environment too, and a run started with the owner's
 # key uploads under the owner's identity.
 _WANDB_TOKEN_ENV_KEYS = ("WANDB_API_KEY",)
+# The bundled GitHub seed plugin falls back to these by design, and a recipe run
+# with the owner's token reads the owner's private repositories into the caller's
+# dataset.
+_GITHUB_TOKEN_ENV_KEYS = ("GH_TOKEN", "GITHUB_TOKEN")
 
 
 def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
@@ -1114,7 +1118,10 @@ def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
 
     The same applies to WANDB_API_KEY: the worker only overwrites it when the
     request carried a token of its own, so an inherited owner key meant a managed
-    account's run authenticated and uploaded under the owner's W&B identity.
+    account's run authenticated and uploaded under the owner's W&B identity. And
+    to GH_TOKEN / GITHUB_TOKEN, which the GitHub seed plugin reads deliberately
+    when a recipe leaves its token blank, turning the owner's private
+    repositories into the caller's dataset.
 
     The owner gets an empty dict, so their runs are unchanged. An account that
     supplies its own token is unaffected: that one travels in the config, and the
@@ -1124,7 +1131,10 @@ def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
 
     if is_installation_owner(subject):
         return {}
-    suppressed = {key: "" for key in _HF_TOKEN_ENV_KEYS + _WANDB_TOKEN_ENV_KEYS}
+    suppressed = {
+        key: ""
+        for key in _HF_TOKEN_ENV_KEYS + _WANDB_TOKEN_ENV_KEYS + _GITHUB_TOKEN_ENV_KEYS
+    }
     suppressed["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     return suppressed
 

@@ -2874,3 +2874,52 @@ def test_a_managed_recipe_cannot_read_provider_keys_from_the_server_environment(
         _reject_env_credentials_from_a_managed_account(providers)
     finally:
         reset_workspace_subject(token)
+
+
+def test_the_recipe_env_secret_guard_covers_every_provider_collection():
+    from fastapi import HTTPException
+
+    from routes.data_recipe.jobs import reject_env_credentials_in_recipe
+
+    # The first version of this guard sat inside _inject_local_providers, which
+    # returns early for a recipe with no local providers and never sees
+    # mcp_providers, so the ordinary external-only recipe walked straight past it.
+    external_only = {
+        "model_providers": [
+            {"provider_type": "external", "api_key_env": "OPENAI_API_KEY"},
+        ]
+    }
+    mcp_only = {
+        "mcp_providers": [{"api_key_env": "SOME_SECRET"}],
+    }
+    token = _bind("alice")
+    try:
+        for recipe in (external_only, mcp_only):
+            with pytest.raises(HTTPException) as exc:
+                reject_env_credentials_in_recipe(recipe)
+            assert exc.value.status_code == 403
+        # No provider collections at all, and a recipe that is not a dict, are
+        # both reached by the validate route and must not raise.
+        reject_env_credentials_in_recipe({"columns": []})
+        reject_env_credentials_in_recipe(None)
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        reject_env_credentials_in_recipe(external_only)
+        reject_env_credentials_in_recipe(mcp_only)
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_managed_recipe_workers_do_not_inherit_the_owners_github_token():
+    from core.training.training import _ambient_credentials_suppressed_for
+
+    # The GitHub seed plugin reads these deliberately when a recipe leaves its
+    # token blank, so an inherited owner token reads the owner's private
+    # repositories into the caller's dataset.
+    suppressed = _ambient_credentials_suppressed_for("alice")
+    assert suppressed["GH_TOKEN"] == ""
+    assert suppressed["GITHUB_TOKEN"] == ""
+    assert _ambient_credentials_suppressed_for(LEGACY_WORKSPACE_SUBJECT) == {}
