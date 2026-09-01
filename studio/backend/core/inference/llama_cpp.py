@@ -883,6 +883,9 @@ _FENCE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w.+#-]*")
 # A fence on a list-marker line is block level, so the prose rules below do not apply.
 _LIST_MARKER_ONLY = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+$")
 _ONE_QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
+# A balanced inline code span on one line: `</think>` shown as an example is the
+# example, exactly as a fenced one is.
+_INLINE_CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)[^\r\n]*?(?<!`)\1(?!`)")
 
 
 def _has_unclosed_code_fence(text: str) -> bool:
@@ -1120,7 +1123,9 @@ def _text_outside_think(text: str) -> str:
             # a MARKUP span can run from a tag named in the thought to one in the
             # answer, and that must not be allowed to swallow the real closer.
             if fences is None:
-                fences = [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)]
+                fences = [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)] + [
+                    m.span() for m in _INLINE_CODE_SPAN.finditer(text)
+                ]
             close = _find_outside_artifacts(text, closer, fences)
             # No closer: a thought the window cut off runs to the end, and none of
             # it was shown.

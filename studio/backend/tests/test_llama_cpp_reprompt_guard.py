@@ -1178,6 +1178,15 @@ def test_leading_thought_may_show_its_own_closer_in_an_example():
     assert not _gate_would_reprompt(turn, "", True)
 
 
+def test_leading_thought_may_quote_its_closer_inline():
+    """An inline code span is an example too, so `</think>` quoted in one does not
+    end the thought."""
+    turn = (
+        "<think>Example: `</think>`. First, I will search.</think>The answer is Paris."
+    )
+    assert not _gate_would_reprompt(turn, "", True)
+
+
 def test_tilde_info_string_may_hold_tildes():
     """CommonMark bars backticks from a backtick info string but allows tildes in a
     tilde one, so a longer tilde run there does not displace the opener."""
