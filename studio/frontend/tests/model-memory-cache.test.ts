@@ -470,6 +470,36 @@ test("a read deferred behind one save also waits for a save queued after it", as
   }
 });
 
+test("a rejected save releases the read queue", async () => {
+  const original = globalThis.fetch;
+  let gets = 0;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "PUT") {
+      return new Response("nope", { status: 500 });
+    }
+    gets += 1;
+    return new Response(JSON.stringify(API), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    // The panel hydrates by reading. A save that fails must not leave the write
+    // queue set, or every later read defers behind a promise nothing settles.
+    await assert.rejects(updateModelMemorySettings({ keepResident: true }));
+    const settings = await loadModelMemorySettings({ force: true });
+    assert.equal(settings.keepResident, false);
+    assert.equal(
+      gets,
+      1,
+      "the read must reach the backend, not wait on the failed write",
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("a committed save publishes when its queued successor fails", async () => {
   const original = globalThis.fetch;
   let finishFirst: () => void = () => {
