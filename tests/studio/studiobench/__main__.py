@@ -61,8 +61,6 @@ def engines_installed(probe_text: str) -> list:
     return out
 
 
-
-
 def doctor(args) -> int:
     """What is here, what is missing, and what each missing thing costs. Never raises."""
     ok = True
@@ -197,8 +195,6 @@ def doctor(args) -> int:
     _log()
     _log("doctor: PASS" if ok else "doctor: FAIL")
     return 0 if ok else 1
-
-
 
 
 def _windowed_arms(spec: str, labels: list) -> set:

@@ -214,8 +214,6 @@ def _reading(cap: dict) -> dict:
     return {k: cap.get(k) for k in ("streaming", "in_flight", "in_flight_unplaced", "queued_idle")}
 
 
-
-
 def test_a_waiting_queue_is_not_read_as_a_blind_probe(page):
     """THE REGRESSION. Same button, same empty in-flight list, opposite meanings."""
     idle = _capture(page, QUEUED_IDLE)
@@ -272,8 +270,6 @@ def test_what_reading_the_queue_surface_gives_up(page):
     assert cap["queued_idle"] is True, cap
 
 
-
-
 def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     """The fixtures above are hand-written, so they can drift into asserting themselves.
 
@@ -294,7 +290,6 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
         "queued-idle interval is indistinguishable again"
     )
     assert 'aria-label="Stop queued message"' in src
-
 
 
 #: An overlay is walked from `document`, OUTSIDE `.aui-thread-root`, so its digest carries neither

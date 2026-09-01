@@ -40,8 +40,6 @@ def reasoning_trigger(seconds: str) -> dict:
     }
 
 
-
-
 def test_a_duration_split_across_text_nodes_is_normalised():
     # The exact regression. Before the fix these two differed by one character and the digest moved;
     # the two arms are the same build and the only difference is wall clock.
@@ -70,8 +68,6 @@ def test_a_split_relative_time_is_normalised():
         return {"tag": "div", "children": [{"tag": "time", "children": [n, " minutes ago"]}]}
 
     assert sig(stamp("2")) == sig(stamp("9"))
-
-
 
 
 def test_a_bare_number_with_no_unit_still_moves_the_signature():

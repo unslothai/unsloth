@@ -235,7 +235,6 @@ class TraceCapture:
         self._t_start = 0.0
         self._subscribed = False
 
-
     def _subscribe(self) -> None:
         if self._subscribed:
             return
@@ -399,8 +398,6 @@ class TraceCapture:
         if compression == "gzip":
             raw = gzip.decompress(raw)
         return raw.decode("utf-8", errors = "strict"), chunks
-
-
 
 
 @dataclass
@@ -630,7 +627,6 @@ class TracingInstrument:
         self._failed_windows: list[str] = []
         self._save_traces = True
 
-
     def attach(self, ctx: Any) -> None:
         self.ctx = ctx
 
@@ -741,7 +737,6 @@ class TracingInstrument:
             except Exception:
                 pass
             self.capture = None
-
 
     def _wait(self, ms: float) -> None:
         page = getattr(self.ctx, "page", None)

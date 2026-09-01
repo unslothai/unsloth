@@ -190,7 +190,6 @@ class Measure:
         if not self.attempted and not self.note:
             raise PayloadSchemaError("a not-attempted Measure must say why")
 
-
     @classmethod
     def not_attempted(cls, unit: str, reason: str) -> "Measure":
         return cls(value = None, attempted = False, unit = unit, note = reason)
@@ -210,7 +209,6 @@ class Measure:
     ) -> "Measure":
         return cls(value = float(value), attempted = True, unit = unit, floor = floor, note = note)
 
-
     @property
     def has_reading(self) -> bool:
         return self.attempted and self.value is not None
@@ -223,7 +221,6 @@ class Measure:
             and self.floor is not None
             and abs(float(self.value)) < float(self.floor)
         )
-
 
     def display(self) -> str:
         if not self.attempted:

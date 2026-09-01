@@ -81,8 +81,6 @@ def _runner(order: list):
     return runner
 
 
-
-
 def test_the_census_and_the_digest_are_taken_after_the_action_window_closes():
     """THE REGRESSION TEST FOR THE 14.3-vs-49.0 fps READING.
 
@@ -122,8 +120,6 @@ def test_the_gap_windows_census_is_taken_before_the_gap_opens():
     runner._gap_window("stream:gap12", until_ms = 300, t0 = time.monotonic())
     names = [kind for kind, _ in order]
     assert names.index("census") < names.index("open")
-
-
 
 
 class _Page:
@@ -221,8 +217,6 @@ def test_thread_reopen_says_so_in_the_log_as_well_as_in_the_row():
     ctx.log = lines.append
     A.thread_reopen(ctx)
     assert any("NOT MEASURED" in line for line in lines), lines
-
-
 
 
 class _RunningPage:

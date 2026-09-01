@@ -228,8 +228,6 @@ def streaming_arm(
 STREAM_POINTS = (12, 24, 48, 81)
 
 
-
-
 def test_the_same_document_at_two_points_in_one_stream_moves_the_raw_digest():
     """CASE ONE: the drift is real, and it is not the comparison layer inventing it.
 
@@ -276,8 +274,6 @@ def test_a_real_difference_survives_the_streamed_message_drifting_at_the_same_ti
     assert got["verdict"] == P.DIFFER, got
     assert got["moved"] == ["msg1(assistant):120->131c"], got["moved"]
     assert got["in_flight"] == [2]
-
-
 
 
 def null_battery(*, streaming_fields: bool) -> list[dict]:
@@ -505,8 +501,6 @@ def test_the_mutant_score_is_unchanged_by_the_streaming_fields():
         assert P.mutation_detected(old_before, old_after)["detected"], name
 
 
-
-
 def test_reordering_the_streamed_message_past_a_sibling_is_refused_not_passed():
     """THE SECOND COST, and the one that had to be found by a mutant rather than by reading.
 
@@ -589,8 +583,6 @@ def test_a_message_that_vanished_is_never_excused_by_being_in_flight():
     # Caught one level earlier than `localise`, by the mount-count check: neither arm is windowing
     # and they mounted different numbers of messages, which is a lost conversation.
     assert "different numbers of messages (3 vs 2)" in got["reason"], got
-
-
 
 
 def test_a_running_reply_the_probe_could_not_place_refuses_the_pair():
@@ -819,8 +811,6 @@ def test_an_old_payload_without_the_streaming_fields_is_scored_as_it_always_was(
     b = streaming_arm(24, streaming_fields = False)
     assert P.compare(a, b)["verdict"] == P.MATCH
     assert P.compare(a, streaming_arm(48, streaming_fields = False))["verdict"] == P.DIFFER
-
-
 
 
 def test_eliding_a_subtree_keeps_its_presence_its_position_and_its_role():

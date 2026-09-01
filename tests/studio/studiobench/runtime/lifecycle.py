@@ -326,8 +326,6 @@ def external_checkpoint_id(provider: ProviderSeed, model_id: str) -> str:
     return f"external::{provider.id}::{quote(model_id, safe = '')}"
 
 
-
-
 class HttpError(RuntimeError):
     def __init__(self, status: int, body: str, url: str) -> None:
         super().__init__(f"HTTP {status} from {url}: {body[:400]}")
@@ -370,8 +368,6 @@ def wait_for_healthz(base_url: str, timeout_s: float = 180.0) -> bool:
             pass
         time.sleep(1)
     return False
-
-
 
 
 def _run(
@@ -633,7 +629,6 @@ def stop_studio(install: StudioInstall) -> None:
             os.killpg(os.getpgid(install.pid), signal.SIGTERM)
         except Exception:  # noqa: BLE001
             pass
-
 
 
 BENCH_PASSWORD = "studiobench-Passw0rd!"

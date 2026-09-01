@@ -129,8 +129,6 @@ def _ctx(page, log = None) -> ActionContext:
     )
 
 
-
-
 def test_the_control_really_is_unreachable_until_it_is_hovered(page):
     """WITHOUT THIS THE REST PROVES NOTHING. If the fixture's button were hit-testable at rest,
     every assertion below would pass with or without the fix."""
@@ -145,8 +143,6 @@ def test_the_control_really_is_unreachable_until_it_is_hovered(page):
     assert (
         A._reachable_point(_ctx(page), SELECTOR) is None
     ), "the un-hovered control hit-tests to itself, so this fixture does not reproduce the failure"
-
-
 
 
 def test_hovering_reveals_the_control_and_returns_a_point_on_it(page):
@@ -179,8 +175,6 @@ def test_the_hover_is_reported_so_the_gesture_is_not_silent(page):
     said: list[str] = []
     A._click_or_navigate(_ctx(page, said.append), SELECTOR, FALLBACK_URL)
     assert any("hover-revealed" in m for m in said), said
-
-
 
 
 def test_an_ordinary_control_is_not_hovered_first(page):

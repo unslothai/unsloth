@@ -47,8 +47,6 @@ def _cap(visible: dict[int, str], ever: list[int] | None = None) -> dict:
     }
 
 
-
-
 def test_a_difference_that_is_only_off_screen_passes():
     """THE POLICY, IN ONE ASSERTION. The treatment renders ordinals 1-3 differently -- they are
     genuinely not the same DOM -- but the viewport never showed them during this action, so the
@@ -79,8 +77,6 @@ def test_showing_different_messages_is_itself_a_visible_difference():
     assert "DIFFERENT MESSAGES on screen" in got["reason"]
 
 
-
-
 def test_a_windowed_arm_and_a_full_arm_are_compared_by_thread_position():
     """The reason this mode works where the digest does not. The base has the whole thread mounted
     and the treatment has a window of it, so mounted INDEX 0 is a different message on the two
@@ -88,8 +84,6 @@ def test_a_windowed_arm_and_a_full_arm_are_compared_by_thread_position():
     base = _cap({16: "p", 17: "q", 18: "r"})
     treat = _cap({16: "p", 17: "q", 18: "r"})
     assert P.compare_visible(base, treat)["verdict"] == P.MATCH
-
-
 
 
 def test_a_visibility_scan_that_saw_nothing_is_not_a_pass():
@@ -115,8 +109,6 @@ def test_a_missing_capture_is_refused_rather_than_assumed_empty():
         ]
         == P.NOT_COMPARABLE
     )
-
-
 
 
 def test_a_message_seen_mid_action_but_unmounted_by_capture_is_not_counted_as_agreement():

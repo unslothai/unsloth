@@ -137,8 +137,6 @@ def test_a_healthy_studio_whose_pid_cannot_be_found_is_still_returned(launched):
     assert launched["signalled"] == []
 
 
-
-
 def test_a_port_that_is_already_serving_is_refused_before_anything_is_launched(launched):
     """The `--keep-studio` case, which no cleanup covers because retention is what was asked for.
 

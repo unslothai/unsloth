@@ -56,8 +56,6 @@ def _side(
     return side
 
 
-
-
 def test_two_self_installed_copies_of_one_ref_are_a_null_control():
     """`--branch main --ab main`: same build, two ports, and it is the calibration run."""
 
@@ -220,8 +218,6 @@ def test_an_attached_side_and_a_self_installed_one_on_the_same_port_are_refused(
     assert stream_cost_injection_problem(side_specs(args, "main"), args.inject_stream_cost_ms)
 
 
-
-
 def test_two_origins_may_inject():
     args = _inject_args(
         "http://127.0.0.1:5401", "http://127.0.0.1:5402", "--inject-stream-cost-ms", "3"
@@ -352,8 +348,6 @@ def test_a_null_control_states_the_commit_it_compared_with_itself():
     assert _ab_label(sides, True) == "null control: main @ aaaaaaaaaaaa vs itself"
 
 
-
-
 def test_each_attached_side_authenticates_with_its_own_password():
     args = parse_args(
         [
@@ -387,8 +381,6 @@ def test_without_ab_there_is_one_side():
     assert len(side_specs(args, None)) == 1
 
 
-
-
 def test_ab_sides_never_share_an_explicit_home():
     base = side_home("/tmp/home", "/out", "base", ab = True)
     treatment = side_home("/tmp/home", "/out", "treatment", ab = True)
@@ -404,8 +396,6 @@ def test_without_home_each_side_lands_under_the_output_directory():
     assert side_home(None, "/out", "treatment", ab = True) == Path("/out/studio_home_treatment")
 
 
-
-
 def test_an_engine_with_a_note_is_not_installed():
     assert engines_installed("chromium, webkit (not installed), firefox (unavailable)") == [
         "chromium"
@@ -417,8 +407,6 @@ def test_an_engine_with_a_note_is_not_installed():
         == []
     )
     assert engines_installed("chromium, webkit, firefox") == ["chromium", "webkit", "firefox"]
-
-
 
 
 def test_a_fully_resumed_run_is_a_success():
@@ -434,8 +422,6 @@ def test_a_run_that_did_nothing_at_all_is_still_a_failure():
 def test_one_failed_cell_fails_the_run():
     assert completion_exit_code([{"completed": True}, {"completed": False}], resumed = 2) == 1
     assert completion_exit_code([{"completed": True}], resumed = 0) == 0
-
-
 
 
 def _rows(
@@ -548,8 +534,6 @@ def test_an_explicit_tier_still_wins(tmp_path):
     assert main(["--report", str(path), "--tier", "quick"]) == 0
     summary = (tmp_path / "summary.md").read_text(encoding = "utf-8")
     assert "100,000" not in summary and "100K" not in summary
-
-
 
 
 def _rungs(value):

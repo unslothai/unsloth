@@ -218,8 +218,6 @@ def test_the_abort_message_says_why_reporting_nothing_is_better():
     assert "the numbers get quoted and the blindness does not" in str(caught.value)
 
 
-
-
 def _recovery(
     base,
     injected,

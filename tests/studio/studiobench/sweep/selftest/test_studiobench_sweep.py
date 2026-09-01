@@ -22,8 +22,6 @@ from tests.studio.studiobench.sweep import floor_table as F  # noqa: E402
 from tests.studio.studiobench.sweep import ui_parity as U  # noqa: E402
 
 
-
-
 def cell(rung: str, arm: str, rep: str, timings: dict[str, float]) -> list[dict]:
     cid = f"{rung}.{arm}.{rep}"
     return [
@@ -72,8 +70,6 @@ def verdict(
     return v
 
 
-
-
 def test_a_large_consistent_effect_over_a_tight_floor_passes(tmp_path):
     assert (
         verdict(
@@ -105,8 +101,6 @@ def test_the_floor_clears_the_null_controls_bias_not_only_its_spread(tmp_path):
     assert verdict(tmp_path, [(1000.0, 700.0)] * 4, floor_pairs) == "faster"
 
 
-
-
 def test_pairs_that_disagree_on_sign_are_void_however_large_the_mean(tmp_path):
     # Mean past the floor; two repetitions say faster and two say slower.
     assert (
@@ -117,8 +111,6 @@ def test_pairs_that_disagree_on_sign_are_void_however_large_the_mean(tmp_path):
         )
         == "VOID (pairs disagree on sign)"
     )
-
-
 
 
 def test_an_effect_smaller_than_its_own_scatter_is_void(tmp_path):
@@ -152,8 +144,6 @@ def test_gate_three_cannot_fire_on_a_single_pair(tmp_path):
         result["message_menu.open_close_ms"], {"delta_pct": 0.0, "spread_pct": 1.0}
     )
     assert v == "faster"
-
-
 
 
 def count_cell(cid: str, chars: float) -> list[dict]:
@@ -267,8 +257,6 @@ def test_a_boolean_count_is_not_harvested_as_a_number(tmp_path):
     )
     harvested = F._action_timings(F.read_rows(out / "payload.jsonl"), "100K.base.rep0")
     assert harvested == {"select_all_copy.count.selected_chars": 12.0}
-
-
 
 
 def test_no_floor_at_all_yields_no_verdict_rather_than_a_pass(tmp_path):
@@ -661,8 +649,6 @@ def test_one_file_holding_two_tiers_is_refused_like_two_files(tmp_path):
     assert "different tiers" in str(exc.value)
 
 
-
-
 def timed_action(cid: str, sid: str, ms: float) -> dict:
     return {
         "row_type": "action",
@@ -743,8 +729,6 @@ def test_a_payload_with_no_session_ids_pairs_exactly_as_before(tmp_path):
     }
 
 
-
-
 def parity_action(cid: str, action: str, digest: str) -> dict:
     capture = {
         "parity_attempted": True,
@@ -787,8 +771,6 @@ def test_matching_rungs_still_report_a_pass(tmp_path):
         rows.append(parity_action(f"{rung}.treatment.rep0", "settings", "CCC"))
     path = write(tmp_path, "clean", rows)
     assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 0
-
-
 
 
 def parity_run(tmp_path: Path, name: str, cells: list[tuple[str, str, str, str]]) -> Path:
@@ -861,8 +843,6 @@ def test_a_declared_unstable_action_still_holds_at_every_rung(tmp_path):
     assert U.report([path], "t", U.unstable_set(None)[0]) == 2
 
 
-
-
 def in_session(row: dict, sid: str) -> dict:
     row["session_id"] = sid
     return row
@@ -931,8 +911,6 @@ def test_a_parity_payload_with_no_session_ids_pairs_exactly_as_before(tmp_path):
     # blind the tool to every older run.
     path = parity_run(tmp_path, "legacy_parity", [("r1K", "rep0", "A", "B")])
     assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 1
-
-
 
 
 def parity_cell(cid: str, arm: str, sid: str, rep: str, completed: bool) -> dict:
@@ -1023,8 +1001,6 @@ def test_an_attempt_that_was_never_re_run_still_carries_its_parity_verdict(tmp_p
 
     assert len(U.collect([path])["pairs"]) == 1
     assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 1
-
-
 
 
 def two_tier_parity(tmp_path: Path, name: str, fast: tuple[str, str], standard: tuple[str, str]):
@@ -1154,8 +1130,6 @@ def test_main_without_a_floor_says_so_and_still_prints(tmp_path, capsys):
 def test_main_returns_two_when_nothing_matches(tmp_path, capsys):
     assert F.main([str(tmp_path / "does-not-exist")]) == 2
     assert "no payload found" in capsys.readouterr().out
-
-
 
 
 def probe_payload(tmp_path: Path, name: str, script: str | None) -> Path:
@@ -1305,8 +1279,6 @@ def test_the_composer_click_does_not_set_the_frame_floor(tmp_path):
     assert metrics["max_frame_ms"] == 120.0
 
 
-
-
 LOOP_DOC = Path(__file__).resolve().parents[2] / "CONTRIBUTING-perf.md"
 
 
@@ -1427,8 +1399,6 @@ def test_the_repetition_that_missed_its_slot_is_what_the_verdict_turns_on(tmp_pa
     assert cli_main(["--assert-liveness", str(mine)]) == 0
 
 
-
-
 # A null control is base against base, so its four paired ratios are this machine's noise. The
 # fourth repetition hiccupped.
 NULL_WITH_A_NOISY_REPETITION = [
@@ -1516,8 +1486,6 @@ def test_the_null_repetition_that_kept_its_reading_voids_the_same_result(tmp_pat
     assert "30.1  VOID (under floor)" in table
     assert "0 metric(s) cleared all three gates." in table
     assert cli_main(["--assert-liveness", str(null)]) == 0
-
-
 
 
 def test_a_gate_from_an_attempt_that_never_closed_still_refuses_its_cell(tmp_path):

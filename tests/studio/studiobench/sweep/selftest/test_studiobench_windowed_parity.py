@@ -57,8 +57,6 @@ def _row(action: str, capture: dict, **expect) -> dict:
     }
 
 
-
-
 def test_a_windowed_capture_is_detected_from_its_own_numbers():
     assert P.windowed_mount(_capture(6, 18)) is True
     assert P.windowed_mount(_capture(18, 18)) is False
@@ -116,8 +114,6 @@ def test_a_refused_pair_is_not_evidence_of_stability_either():
     assert derived["select_text"]["unstable"] is False
     assert derived["select_text"]["undetermined"] is True
     assert derived["select_text"]["not_comparable"] == 4
-
-
 
 
 def test_the_scroll_extent_invariant_passes_a_virtualizer_that_sizes_its_spacers():
@@ -247,8 +243,6 @@ def test_a_reopen_measured_through_a_page_navigation_is_broken():
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN
     assert "reopen_used_the_control:treatment" in got["reason"]
-
-
 
 
 def _reopen_row(
@@ -580,8 +574,6 @@ def test_the_observation_cost_is_not_charged_to_the_action_budget():
     )
 
 
-
-
 def _styled(elements: int, digest: str = "s") -> dict:
     cap = _capture(mounted = 18, total = 18)
     cap["styles"] = {"elements": elements, "digest": digest, "capped": False}
@@ -625,8 +617,6 @@ def test_the_passing_digest_verdict_states_what_it_did_not_look_at():
     src = inspect.getsource(U.report)
     assert "THREAD STRUCTURE" in src
     assert "sidebar-blind" in src and "layout-blind" in src
-
-
 
 
 def test_a_truncated_clipboard_still_fails():
@@ -682,8 +672,6 @@ def test_without_a_fully_mounted_arm_there_is_no_reference_and_no_verdict():
     checks = {c["invariant"]: c for c in got["checks"]}
     assert checks["clipboard_carries_the_whole_thread"]["ok"] is None
     assert got["verdict"] == P.NOT_COMPARABLE, got
-
-
 
 
 def _visible_shard(
@@ -881,8 +869,6 @@ def test_the_noise_floor_cannot_silence_an_arm_that_lost_the_thread(tmp_path, ca
     assert "one arm lost the thread" in capsys.readouterr().out
 
 
-
-
 def _write(tmp_path, name, rows):
     import json
 
@@ -1011,8 +997,6 @@ def test_a_run_where_nothing_could_be_digested_carries_no_visible_verdict(tmp_pa
     assert "NOTHING WAS COMPARED" in out, out
 
 
-
-
 def _failed_parity(why = "the parity probe timed out"):
     return {"parity_attempted": False, "reason": why}
 
@@ -1109,8 +1093,6 @@ def test_a_payload_whose_captures_all_failed_is_not_a_structural_pass(tmp_path, 
     assert code == 2, out
     assert "NOTHING WAS COMPARED" in out, out
     assert "No stable action rendered a different THREAD STRUCTURE" not in out, out
-
-
 
 
 def _copy_expect(*, clipboard, selected, mounted):
@@ -1246,8 +1228,6 @@ def test_an_arm_declared_windowed_is_still_digested_where_it_mounted_everything(
     shard = _write(tmp_path, "declared_but_mounted", rows)
     assert all(mode == U.STRUCTURAL for mode, _why in U.decide_modes([shard]).values())
     assert U.any_windowed([shard]) is None
-
-
 
 
 def _one_sided_shard(
@@ -1561,8 +1541,6 @@ def test_only_the_cell_that_failed_is_refused(tmp_path, capsys):
     assert "NOT COMPARABLE:             1" in out, out
 
 
-
-
 def _legacy_capture(digest):
     """A capture from a checkout that predates `mounted_messages` / `thread_total`.
 
@@ -1668,8 +1646,6 @@ def test_the_declaration_still_decides_the_run_that_made_it(tmp_path):
     modes = _modes_by_shard_action(U.decide_modes([shard, other]))
     assert modes[("still_declared", "select_all_copy")] == U.WINDOWED, modes
     assert modes[("unrelated", "settings")] == U.STRUCTURAL, modes
-
-
 
 
 def _tiered_visible_shard(
@@ -1806,8 +1782,6 @@ def test_a_visible_floor_from_the_SAME_corpus_still_applies(tmp_path, capsys):
     assert code == 0, out
 
 
-
-
 def _resumed_completeness_shard(tmp_path, name, *, retry_passes):
     """A payload where attempt 1 of a cell FAILED `thread_complete` and `--resume` re-ran it.
 
@@ -1879,8 +1853,6 @@ def test_a_resume_that_failed_again_is_still_refused(tmp_path):
     bad = U.incomplete_cells([shard / "payload.jsonl"])
     assert set(bad) == {"r100K.base.rep0", "r100K.treatment.rep0"}, bad
     assert "still short" in bad["r100K.base.rep0"], bad
-
-
 
 
 def _windowed_only_shard(
@@ -2112,8 +2084,6 @@ def test_a_floor_each_film_clears_on_its_own_still_passes(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "TOO LITTLE COMPARED" not in out, out
     assert code == 0, out
-
-
 
 
 def test_an_assertion_that_failed_on_one_arm_fails_the_windowed_verdict(tmp_path, capsys):

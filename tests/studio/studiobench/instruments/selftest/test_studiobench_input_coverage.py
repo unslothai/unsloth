@@ -151,8 +151,6 @@ def test_settling_on_the_work_keeps_it(tmp_path):
     assert got["inputs_seen"] == 12
 
 
-
-
 class _Page:
     def __init__(self) -> None:
         self.value = ""

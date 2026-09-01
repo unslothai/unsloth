@@ -128,8 +128,6 @@ def _capture(page) -> dict:
     return page.evaluate("async () => await window.__sb.parityVisible.capture()")
 
 
-
-
 def test_it_reports_only_what_the_viewport_showed(page):
     _watch(page)
     got = _capture(page)
@@ -187,8 +185,6 @@ def test_an_unmounted_message_is_still_reported_as_having_been_visible(page):
     assert got["unmounted_at_capture"] == got["ever_visible_count"]
 
 
-
-
 def test_the_capture_never_reads_geometry(page):
     """THE CONTENT-VISIBILITY TRAP, held closed by construction rather than by review.
 
@@ -219,8 +215,6 @@ def test_the_capture_never_reads_geometry(page):
     )
 
 
-
-
 def test_capturing_without_watching_is_refused_not_reported_empty(page):
     got = page.evaluate("async () => await window.__sb.parityVisible.capture()")
     assert got["visible_attempted"] is False
@@ -232,8 +226,6 @@ def test_a_page_with_no_thread_viewport_is_refused(page):
     got = page.evaluate("() => window.__sb.parityVisible.watch()")
     assert got["visible_attempted"] is False, got
     assert "viewport" in got["reason"]
-
-
 
 
 def test_the_top_up_is_proportional_to_the_mutation_not_to_the_document(page):
@@ -592,8 +584,6 @@ def test_the_structural_digest_still_sees_the_ordinals(browser):
     plain = _thread_digests(browser, "nowhere")
     assert set(numbered) == set(plain)
     assert all(numbered[i] != plain[i] for i in numbered), (numbered, plain)
-
-
 
 
 #: An EMPTY viewport, so a row appended to it is on screen immediately. `__churn` mounts and

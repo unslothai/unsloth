@@ -38,8 +38,6 @@ def _deps():
     return _mod
 
 
-
-
 def _make_dist(
     site: Path,
     name: str,
@@ -315,8 +313,6 @@ def test_findings_are_capped_when_the_files_are_deleted(site):
     assert all("is missing" in line for line in found)
 
 
-
-
 def test_a_clean_tree_passes_through(monkeypatch):
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
@@ -450,8 +446,6 @@ def test_windows_is_told_the_powershell_installer(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "install.ps1" in err
     assert "curl" not in err
-
-
 
 
 def test_update_exposes_verify_defaulting_on():
@@ -702,8 +696,6 @@ def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, 
     with pytest.raises(typer.Exit):
         studio._fail_if_install_damaged()
     assert expected in capsys.readouterr().err
-
-
 
 
 def test_a_shared_top_level_test_tree_is_not_damage(site):

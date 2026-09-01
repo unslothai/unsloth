@@ -166,8 +166,6 @@ def _rows(state):
     return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line]
 
 
-
-
 def test_the_base_studio_is_stopped_when_the_treatment_install_fails(studio):
     """The reported leak: the base is up and serving while the treatment's clone and build run."""
 
@@ -241,8 +239,6 @@ def test_a_run_that_reaches_its_cells_stops_the_studios_once_at_the_end(studio):
     assert sb.run(args, ab_ref = "pr-9296") == 0
     assert studio["stopped_when_the_cells_ran"] == []
     assert [i.branch for i in studio["stopped"]] == ["main", "pr-9296"]
-
-
 
 
 def test_an_attached_ab_records_the_treatment_url_it_measured(studio):
@@ -350,8 +346,6 @@ def test_the_same_treatment_studio_still_resumes(studio):
         )
         is None
     )
-
-
 
 
 def test_a_run_records_whether_the_click_probe_ran(studio):

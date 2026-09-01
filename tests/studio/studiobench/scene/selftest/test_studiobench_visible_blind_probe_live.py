@@ -311,8 +311,6 @@ def test_the_same_row_with_the_same_role_is_still_residue(browser):
     assert got["not_digested"] == [4], got
 
 
-
-
 def test_a_windowed_arm_that_unmounted_the_live_row_is_not_read_as_blind(browser):
     """THE FALSE POSITIVE THE CONTROL USED TO HAVE, and the one this mode exists for.
 

@@ -151,8 +151,6 @@ def test_an_unterminated_frame_is_reported_as_still_buffered(page):
     assert got["pending_chars"] > 0, got
 
 
-
-
 def _instrument(page):
     from studiobench.instruments.streamcost import StreamCostInstrument
 
@@ -316,8 +314,6 @@ def test_a_failure_before_the_window_does_not_taint_it(page):
     assert out["reply_chars_scoreable"] is True, out
 
 
-
-
 def test_a_window_that_opens_on_a_half_delivered_frame_is_not_scoreable(page):
     """THE DEFECT, one window to the right of the one already covered above.
 
@@ -400,8 +396,6 @@ def test_a_marker_fragment_held_at_the_open_does_not_cost_the_window_its_reading
     # Every counted character arrived inside the window: the fragment held none of them.
     assert out["reply_chars_delta"] == len("hello"), out
     assert out["reply_chars_scoreable"] is True, out
-
-
 
 
 def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):

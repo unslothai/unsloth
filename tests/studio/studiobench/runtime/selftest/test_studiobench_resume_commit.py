@@ -150,8 +150,6 @@ def _rows(state):
     return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line]
 
 
-
-
 def test_a_run_records_the_commit_its_ref_resolved_to(studio):
     assert sb.run(_args(studio, "--branch", "main")) == 0
 
@@ -167,8 +165,6 @@ def test_an_attached_studio_records_no_commit(studio):
 
     meta = [r for r in _rows(studio) if r.get("row_type") == "run_meta"][0]
     assert meta["studio_commit"] == ""
-
-
 
 
 def test_a_resume_after_the_branch_moved_is_refused(studio):
@@ -208,8 +204,6 @@ def test_a_resume_after_the_treatment_moved_is_refused(studio):
     message = str(excinfo.value)
     assert "treatment_commit" in message
     assert "c-fix-1" in message and "c-fix-2" in message
-
-
 
 
 def test_the_same_commit_still_resumes(studio):

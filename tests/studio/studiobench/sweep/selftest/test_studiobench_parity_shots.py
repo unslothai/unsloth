@@ -99,8 +99,6 @@ def quiet_null(tmp: Path, name: str, actions: list[str]) -> Path:
     return write(tmp, name, rows)
 
 
-
-
 def test_only_the_stable_differences_are_illustrated(tmp_path, capsys):
     shots = tmp_path / "shots"
     # `settings` differs and is stable here; `stop_generation` differs and is DECLARED unstable, so
@@ -129,8 +127,6 @@ def test_a_verdict_with_no_stable_difference_produces_no_pictures(tmp_path, caps
     assert "no corroborated stable difference" in capsys.readouterr().out
 
 
-
-
 def test_a_missing_half_is_reported_not_rendered_alone(tmp_path, capsys):
     shots = tmp_path / "shots"
     rows = [{"row_type": "run_meta", "tier": "fast"}]
@@ -155,8 +151,6 @@ def test_a_scroll_mismatch_is_called_out(tmp_path, capsys):
     out = tmp_path / "out"
     assert S.build(result, null, shots, out) == 0
     assert "SCROLL MISMATCH" in capsys.readouterr().out
-
-
 
 
 def test_the_composite_pads_rather_than_scales(tmp_path):
@@ -218,8 +212,6 @@ def test_shot_index_reads_the_payload_rather_than_globbing(tmp_path):
     index = S.shot_index([result / "payload.jsonl"])
     assert ("result", "r100K.base.rep0", "settings", "base") in index
     assert all("IMPOSTOR" not in v["file"] for v in index.values())
-
-
 
 
 def test_a_one_repetition_flake_is_not_illustrated_at_the_verdicts_threshold(tmp_path, capsys):
@@ -304,8 +296,6 @@ def test_the_workflow_actually_runs_the_prune_it_documents():
     ).read_text(encoding = "utf-8")
     prune, upload = text.index("--prune"), text.index("- name: Upload the payload")
     assert prune < upload, "the prune has to happen BEFORE the upload it exists to shrink"
-
-
 
 
 def _one_sided_rows(action_name: str, reps: tuple[str, ...], shots: Path) -> list[dict]:

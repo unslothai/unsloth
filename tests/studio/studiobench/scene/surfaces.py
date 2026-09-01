@@ -107,7 +107,6 @@ class Surface:
         }
 
 
-
 #: Back to the known state the hard way. The restore for anything that navigated, and the
 #: recovery path when a surface's own restore left the app dirty.
 HOME: tuple[Step, ...] = (("goto", KNOWN_STATE_PATH), ("wait", 400))
@@ -207,7 +206,6 @@ def _settings_tab(tab_id: str, title: str) -> Surface:
         restore = ESCAPE_OUT + HOME,
         root = (".settings-surface", '[data-slot="dialog-content"]'),
     )
-
 
 
 _SURFACES: list[Surface] = [
@@ -826,8 +824,6 @@ KNOWN_UNCOVERED: tuple[dict, ...] = (
         "reports a difference between two runs of the same build",
     },
 )
-
-
 
 
 def surfaces() -> list[Surface]:

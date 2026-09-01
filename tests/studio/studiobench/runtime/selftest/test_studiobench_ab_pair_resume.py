@@ -93,8 +93,6 @@ def _keystroke(cell_id, p95):
     }
 
 
-
-
 def test_a_pair_interrupted_between_its_two_arms_is_re_run_whole():
     work = _work()
     done = {"r10K.base.rep0"}  # the run died after the base arm and before the treatment arm
@@ -152,8 +150,6 @@ def test_a_run_without_ab_skips_exactly_what_it_recorded():
     done = {"r1K.A0.rep0", "r100K.A0.rep0"}
 
     assert skippable_cells(work, done) == done
-
-
 
 
 def _resumed_table(tmp_path, *, pair_granular: bool) -> str:

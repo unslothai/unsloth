@@ -120,7 +120,6 @@ class _ThreadPage:
         self.goto_calls: list[str] = []
         self.probes = 0
 
-
     @property
     def frame(self) -> _Frame:
         return self.frames[min(self.step, len(self.frames) - 1)]
@@ -168,7 +167,6 @@ class _ThreadPage:
             "pinning": False,
         }
 
-
     def evaluate(
         self,
         script,
@@ -212,7 +210,6 @@ class _ThreadPage:
         if self.phase == "rebuild":
             self.step += 1
 
-
     def _route(self, target: str) -> None:
         if "New chat" in target or "new=" in target:
             self.phase = "gone"
@@ -236,8 +233,6 @@ def _ctx(
         dom = None,
         log = log or (lambda _m: None),
     )
-
-
 
 
 def test_a_refused_reopen_leaves_the_thread_where_it_found_it():
@@ -318,8 +313,6 @@ def test_a_substituted_navigation_on_the_way_back_repairs_the_scene_but_is_not_t
     assert "never timed" in (result.reason or "")
     assert page.goto_calls == [THREAD_URL]
     assert page.phase == "rebuild", "the thread was not put back for the slots that follow"
-
-
 
 
 def test_the_scripted_rebuild_declares_its_total_before_it_has_built_anything():
@@ -418,7 +411,6 @@ def test_a_thread_whose_end_cannot_be_identified_is_refused_before_it_is_touched
     assert result.ran is False
     assert "identify the end of the thread" in (result.reason or "")
     assert page.phase == "thread" and page.goto_calls == []
-
 
 
 #: How long the centre click burns before it gives up. `_click_or_navigate` passes `timeout = 2000`

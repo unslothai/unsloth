@@ -205,8 +205,6 @@ class Seeder:
         return got or []
 
 
-
-
 def dom_signature(page) -> dict:
     """What the app BUILT, read from the DOM. The only fair comparison between the two paths."""
     return page.evaluate("() => window.__sb.dom.counts()")
@@ -287,8 +285,6 @@ def compare_signatures(
         "fields": fields,
         "checked_attempted": True,
     }
-
-
 
 
 def measure_chars_per_token(

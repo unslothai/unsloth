@@ -31,8 +31,6 @@ from studiobench.scene import surface_sweep, surfaces  # noqa: E402
 from studiobench.scoring.schema import validate_payload  # noqa: E402
 
 
-
-
 def test_the_shipped_registry_validates():
     surfaces.validate_registry()
 
@@ -167,8 +165,6 @@ def test_the_registry_covers_every_routed_path():
     assert routed - reached == set()
 
 
-
-
 def _one(**overrides):
     base = dict(
         id = "x:one",
@@ -201,8 +197,6 @@ def test_validate_rejects_the_wrong_number_of_arguments():
 def test_validate_rejects_a_surface_with_no_digest_root():
     with pytest.raises(surfaces.RegistryError, match = "root"):
         surfaces.validate_registry([_one(root = ())])
-
-
 
 
 def test_the_surface_row_type_is_registered():
@@ -266,8 +260,6 @@ def test_a_payload_carrying_surface_rows_has_no_bare_zeros():
     # from 'we never ran that'. Surface rows carry counts, so they have to attest.
     rows = surface_sweep.sweep(_FakePage(reach_ok = True), "http://x")[0]
     validate_payload({"excluded_cells": [], "surfaces": rows})
-
-
 
 
 def _rows_for(entries, reached_ids):
@@ -401,8 +393,6 @@ def test_an_unscoped_sweep_says_so_in_the_rendered_manifest():
     text = surface_sweep.render_manifest(manifest)
     assert "WARNING" in text
     assert "ignored the moved root" in text
-
-
 
 
 class _FakePage:
@@ -555,8 +545,6 @@ def test_the_sweep_returns_to_the_known_state_before_every_surface():
     page = _FakePage()
     surface_sweep.sweep(page, "http://x")
     assert surfaces.KNOWN_STATE_PATH == "/chat"
-
-
 
 
 def test_the_sweep_takes_its_digest_through_parity_capture():

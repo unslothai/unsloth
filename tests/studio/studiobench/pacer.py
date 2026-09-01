@@ -202,7 +202,6 @@ class _Handler(BaseHTTPRequestHandler):
     def state(self) -> PacerState:
         return self.server.state  # type: ignore[attr-defined]
 
-
     def _json(self, code: int, body: dict) -> None:
         raw = json.dumps(body).encode("utf-8")
         self.send_response(code)
@@ -285,7 +284,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._stream(body)
         else:
             self._json(404, {"error": {"message": f"no route {path}"}})
-
 
     def _stream(self, body: dict) -> None:
         script = self.state.get_script()
@@ -503,7 +501,6 @@ class Pacer:
             pass
         if self._thread is not None:
             self._thread.join(timeout = 5)
-
 
     def load(
         self,

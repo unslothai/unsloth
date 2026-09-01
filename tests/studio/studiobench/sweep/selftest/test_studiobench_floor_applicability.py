@@ -169,8 +169,6 @@ def _result(tmp_path):
 METRIC = "reasoning_toggle.close_ms"
 
 
-
-
 def test_the_censored_null_is_marked_unpoolable_in_the_first_place(tmp_path):
     """The precondition, stated so a fix that stopped marking it could not pass the rest."""
     floors = floor_table.summarise([_null(tmp_path, censored = True)])
@@ -252,8 +250,6 @@ def test_a_whole_floor_still_certifies_a_real_effect(tmp_path, capsys):
     stats = floor_table.summarise([big])
     f, verdict = floor_table.verdict_for(stats[METRIC], floors[METRIC])
     assert verdict in ("faster", "SLOWER"), f"a whole floor refused a real effect: {verdict}"
-
-
 
 
 def _floor_and_result(
@@ -375,8 +371,6 @@ def test_a_payload_with_no_run_meta_at_all_is_not_scored(tmp_path):
     with pytest.raises(SystemExit) as exc:
         floor_table.render([out / "payload.jsonl"], "t", floors = floors, floor_meta = floor_meta)
     assert "no run_meta" in str(exc.value)
-
-
 
 
 def test_the_cli_applies_both_guards(tmp_path, capsys):

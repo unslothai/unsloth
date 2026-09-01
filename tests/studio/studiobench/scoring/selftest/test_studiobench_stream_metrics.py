@@ -101,8 +101,6 @@ def _window(
     }
 
 
-
-
 def test_a_window_with_traffic_and_growth_is_the_streaming_phase():
     picked, rejected = _stream_windows([_window("stream:gap1")])
     assert len(picked) == 1
@@ -289,8 +287,6 @@ def test_a_window_the_instrument_never_ran_in_is_refused():
     assert any("did not run" in reason for reason in rejected)
 
 
-
-
 def test_the_rate_is_cost_per_thousand_streamed_characters():
     m = _stream_measures([_window("stream:gap1", delta_task_ms = 900.0, chars_close = 3_000)])
     assert m["stream_delta_cost_ms_per_kchar"].value == pytest.approx(300.0)
@@ -370,8 +366,6 @@ def test_an_action_running_during_generation_does_not_set_the_worst_streaming_fr
     # the gap windows either side: the chain runs until the event loop drains, so the typing lands
     # inside it and is billed to the stream.
     assert "1 unaided streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
-
-
 
 
 def test_no_clamp_means_null_with_a_reason_not_zero_cost():
@@ -496,8 +490,6 @@ def test_every_declared_stream_metric_is_produced():
     m = _stream_measures([_window("stream:gap1")])
     assert set(m) == set(STREAM_METRICS)
     assert all(v.value is not None for v in m.values())
-
-
 
 
 def test_a_gap_window_is_not_labelled_stream():

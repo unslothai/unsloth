@@ -134,8 +134,6 @@ def _lines() -> tuple[list[str], callable]:
     return got, got.append
 
 
-
-
 def test_the_fixture_marker_matches_the_seeder_exactly(browser):
     """If these two ever drift, every gate below passes or fails for the wrong reason.
 
@@ -189,8 +187,6 @@ def test_thread_total_reads_the_published_setsize_and_falls_back_to_the_count(br
         assert page.evaluate("() => window.__sb.dom.isWindowed()") is True
     finally:
         page.close()
-
-
 
 
 def test_full_mount_is_admitted_in_full_mode(browser):
@@ -452,8 +448,6 @@ def test_windowed_mode_also_admits_a_thread_short_enough_to_mount_whole(browser)
     assert r.conditions["posinset_reaches_end"] is True
 
 
-
-
 def test_a_half_mounted_thread_is_refused_in_full_mode(browser):
     """The original failure, reproduced: mounting, not finished, and not admitted."""
     page = _page(browser, "mounting")
@@ -666,8 +660,6 @@ def test_a_thread_that_lost_its_head_passes_readiness_and_fails_completeness(bro
     assert any("COMPLETENESS FAILED" in line for line in got)
 
 
-
-
 def test_evaluate_never_reports_a_mode_inapplicable_condition_as_a_pass():
     """`None` is not `True`, and the difference is the whole design of the two modes."""
     probe = {
@@ -768,8 +760,6 @@ def test_evaluate_does_not_waive_malformed_ordinals_for_a_fully_mounted_thread()
     conditions = evaluate(junk, junk, 18, MODE_WINDOWED)
     assert conditions["posinset_ordinals_valid"] is False
     assert conditions["posinset_reaches_end"] is False
-
-
 
 
 def test_ordinal_coverage_never_reports_a_gap_in_the_gesture_as_data_loss():
@@ -873,8 +863,6 @@ def test_evaluate_cannot_settle_on_a_single_sample():
     assert evaluate(probe, probe, 18, MODE_FULL)["settled"] is True
     grew = dict(probe, elements = 101)
     assert evaluate(grew, probe, 18, MODE_FULL)["settled"] is False
-
-
 
 
 def test_a_windowed_thread_with_no_viewport_is_refused(browser):

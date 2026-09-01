@@ -79,8 +79,6 @@ def _window(
     }
 
 
-
-
 def test_action_absent_from_scene_is_not_attempted():
     m = measures_from_records([_cell()])["10000" if False else 10_000]
     keystroke = m["keystroke_p95_ms"]
@@ -122,8 +120,6 @@ def test_scroll_settle_says_it_is_gesture_time_not_settle_time():
     scroll = measures_from_records(recs)[10_000]["scroll_settle_ms"]
     assert scroll.value == pytest.approx(466.5)
     assert "not post-gesture settle" in scroll.note
-
-
 
 
 def test_frame_metrics_pool_the_active_windows():
@@ -213,8 +209,6 @@ def test_names_come_from_action_rows_not_the_lossy_embedded_copy():
     assert measures_from_records(recs)[10_000]["keystroke_p95_ms"].value == pytest.approx(31.5)
 
 
-
-
 def test_bare_zero_outside_an_attested_block_still_fails():
     with pytest.raises(PayloadSchemaError):
         validate_payload({"excluded_cells": [], "result": {"cost_ms": 0}})
@@ -258,8 +252,6 @@ def test_real_payload_shape_round_trips(tmp_path):
     # keystroke + menu + the three frame metrics = 85% of the weight, over the 60% floor, so the rung
     # scores despite scroll being legitimately unavailable at this size.
     assert rung.usable is True
-
-
 
 
 def test_measures_by_cell_keeps_every_repetition():
@@ -366,8 +358,6 @@ def test_the_scroll_intent_block_still_attests_in_the_session_layer():
     assert '"follow_attempted": bool(follow.get("follow_attempted"))' in block
 
 
-
-
 def test_an_action_whose_own_assertion_failed_is_not_a_reading():
     """`report/payload.py` lists this cell under EXCLUDED CELLS with "must not be quoted".
 
@@ -396,8 +386,6 @@ def test_an_action_whose_assertion_passed_is_still_a_reading():
         {**_action("c1", "keystroke", ran = True, timings = {"p95_ms": 12.0}), "expect_ok": True},
     ]
     assert measures_from_records(recs)[10_000]["keystroke_p95_ms"].value == 12.0
-
-
 
 
 def test_setup_windows_are_excluded_so_the_click_does_not_become_the_worst_frame():

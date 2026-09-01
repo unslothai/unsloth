@@ -260,8 +260,6 @@ def test_blank_lines_are_skipped(tmp_path, blank):
     assert main(["--assert-liveness", str(path)]) == 0
 
 
-
-
 NOW = "s-now"
 OLD = "s-before"
 
@@ -322,8 +320,6 @@ def test_the_superseded_attempt_does_not_count_as_a_second_cell(tmp_path):
     # The summary names scene problems and missed slots apart on this branch, so the count is asserted
     # on its own rather than against one spelling of the rest of the line.
     assert any("1 cell(s)" in line and "0 scene problem(s)" in line for line in logged), logged
-
-
 
 
 def test_a_cell_that_was_never_re_run_still_fails(tmp_path):

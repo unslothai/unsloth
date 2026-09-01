@@ -47,8 +47,6 @@ OPENING = ("R" * 2_000, "C" * 8_000)
 FOLLOW = ("r" * 300, "c" * 1_200)
 
 
-
-
 def _consume(pacer: Pacer, *, stop_after_bytes: int | None = None) -> None:
     """Read one stream off the wire. `stop_after_bytes` closes the socket mid-reply, which is what
     an interrupted opening reply looks like from the pacer's side."""
@@ -199,8 +197,6 @@ def test_send_turn_keeps_the_stats_of_every_turn_before_it():
         pacer.stop()
 
 
-
-
 def test_the_check_passes_when_every_planned_turn_streamed_in_full():
     streams = [
         {"tag": "c1", "chars_sent": 100, "completed": True, "disconnected": False},
@@ -251,8 +247,6 @@ def test_the_stop_actions_throwaway_turn_is_extra_and_not_a_failure():
 def test_a_cell_with_nothing_planned_is_not_checked():
     got = check_planned_streams([], [])
     assert got["checked"] is False and got["ok"] is True
-
-
 
 
 CENSUS = {"messages": 6, "elements": 1200, "highlight_spans": 200, "assistant_chars": 1120}
@@ -627,8 +621,6 @@ def test_a_send_turn_that_did_not_run_is_not_demanded_of_the_pacer(cell_runner, 
 
     assert row["completed"] is True
     assert row["pacer"]["check"]["planned_turns"] == 1
-
-
 
 
 class _WirePage:

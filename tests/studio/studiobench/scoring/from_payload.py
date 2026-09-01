@@ -662,8 +662,6 @@ def measures_by_cell(
     return out
 
 
-
-
 def probe_scripts(records: Sequence[Mapping[str, Any]]) -> list[str]:
     """Every external init script this payload records, in order, without duplicates.
 

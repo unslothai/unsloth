@@ -139,8 +139,6 @@ def _finished_ab(
     return paths
 
 
-
-
 def test_resuming_after_changing_the_treatment_ref_is_refused(tmp_path):
     paths = _finished_ab(tmp_path)
     args = parse_args(["--tier", "standard", "--branch", "main", "--ab", "other", "--resume"])
@@ -237,8 +235,6 @@ def test_the_refusal_happens_before_anything_is_installed_or_recorded(tmp_path):
 
     assert paths.payload_jsonl.read_text(encoding = "utf-8") == before
     assert sorted(p.name for p in paths.out.glob("payload*.jsonl")) == ["payload.jsonl"]
-
-
 
 
 def test_the_same_configuration_still_resumes(tmp_path):
@@ -568,8 +564,6 @@ def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_pat
         assert "stream_tail_chars" in str(excinfo.value)
 
 
-
-
 def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
     paths = _fixture_payload(
         tmp_path, "same", "sess-1", stream_tail_chars = 24_000, corpus_dollars = True
@@ -583,8 +577,6 @@ def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
         is None
     )
     assert _resume_set(paths) == {"r10K.A0.rep0"}
-
-
 
 
 def test_resuming_under_a_different_browser_engine_is_refused(tmp_path):
@@ -861,8 +853,6 @@ def test_a_dead_cell_is_still_re_run_and_a_missing_payload_is_still_empty(tmp_pa
     assert _resume_set(Paths.under(tmp_path / "nothing-here")) == set()
 
 
-
-
 def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
     """The legacy control for this axis, and the one for a session that never got a browser up.
 
@@ -929,8 +919,6 @@ def test_the_report_a_mode_change_would_have_produced(tmp_path):
     # what the report prints, over a rung the run being reported measured cleanly.
     assert "died at 10K" not in (same_mode.rungs[0].incomplete_reason or "")
     assert "died at 10K" in (changed_mode.rungs[0].incomplete_reason or "")
-
-
 
 
 def test_a_fresh_run_moves_the_previous_payload_aside(tmp_path):

@@ -132,8 +132,6 @@ def sigs(*trees: dict) -> list[str]:
     return run_js({"trees": list(trees)})["signatures"]
 
 
-
-
 def test_rendered_durations_collapse():
     # unslothai/unsloth#9054: a 295 vs 310 ms difference in the action bar, which is wall clock.
     got = norm_text("copied in 295ms", "copied in 310ms", "took 1.2 s", "ran for 3 min")
@@ -205,8 +203,6 @@ def test_text_content_moves_the_signature():
         {"tag": "p", "children": ["hello world"]}, {"tag": "p", "children": ["hello worlds"]}
     )
     assert one != two
-
-
 
 
 @pytest.mark.parametrize(
@@ -343,8 +339,6 @@ def test_content_below_the_depth_cap_is_not_compared():
         wrap({"tag": "p", "children": ["alpha"]}, 60), wrap({"tag": "p", "children": ["omega"]}, 60)
     )
     assert one == two, "if this now fails the cap moved and the docstring must be updated"
-
-
 
 
 def capture(
@@ -484,8 +478,6 @@ def test_a_capped_style_probe_is_not_comparable_rather_than_equal():
     capped = capture(styles = {"digest": "s0", "chars": 5, "elements": 64, "capped": True})
     got = P.compare(capture(), capped)
     assert got["style_verdict"] == P.NOT_COMPARABLE
-
-
 
 
 def test_mutation_detected_reports_a_real_change():

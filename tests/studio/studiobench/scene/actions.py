@@ -111,8 +111,6 @@ def paint_floor_ms(page, samples: int = 9) -> float | None:
         return None
 
 
-
-
 #: The bound that stops a wedged renderer from eating the slot; the wait itself ENDS when nothing
 #: is in flight, and reaching this bound means a lost sample the coverage check fails on.
 KEYSTROKE_SETTLE_TIMEOUT_MS = 3000
@@ -228,7 +226,6 @@ def keystroke(ctx: ActionContext) -> ActionResult:
     )
 
 
-
 SCROLL_JS = """
 async ([steps, stepPx, settleMs]) => {
   const D = window.__sb.dom;
@@ -337,7 +334,6 @@ def scroll_during_generation(ctx: ActionContext) -> ActionResult:
 @register_action(name = "scroll_after", default_budget_ms = 8000)
 def scroll_after(ctx: ActionContext) -> ActionResult:
     return _scroll(ctx, "after")
-
 
 
 # SETTLE ON THE DOM, NOT ON `data-state`: the attribute flips before the content it reveals has
@@ -662,7 +658,6 @@ def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
     )
 
 
-
 #: Fixed waits the throwaway turn costs once it starts: 80 ms for the composer, 600 ms to get the
 #: turn going, 400 ms for in-flight chunks, 200 ms for the cleanup delete. RESERVED out of the
 #: drain wait, or the overrun lands in `scroll_after`'s window as a bogus `slot_missed`. Split,
@@ -982,8 +977,6 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     )
 
 
-
-
 @register_action(name = "settings", default_budget_ms = 12000)
 def settings(ctx: ActionContext) -> ActionResult:
     """Open the Settings dialog, scroll its body, close it.
@@ -1065,8 +1058,6 @@ def settings(ctx: ActionContext) -> ActionResult:
     )
 
 
-
-
 @register_action(name = "model_change", default_budget_ms = 10000)
 def model_change(ctx: ActionContext) -> ActionResult:
     """Open the model picker and select a row.
@@ -1130,8 +1121,6 @@ def model_change(ctx: ActionContext) -> ActionResult:
     )
 
 
-
-
 @register_action(name = "composer_fill", default_budget_ms = 10000)
 def composer_fill(ctx: ActionContext) -> ActionResult:
     """Short, medium and very long text into the composer, timing each paint.
@@ -1192,8 +1181,6 @@ def composer_fill(ctx: ActionContext) -> ActionResult:
         timings = timings,
         reason = None if ok else "the composer did not hold every length it was given",
     )
-
-
 
 
 @register_action(name = "copy_markdown", default_budget_ms = 6000)
@@ -1259,8 +1246,6 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
         timings = {"copy_ms": round(elapsed, 1)},
         reason = reason or (None if ok else "the clipboard was empty after Copy"),
     )
-
-
 
 
 @register_action(name = "select_text", default_budget_ms = 6000)
@@ -1470,8 +1455,6 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     )
 
 
-
-
 @register_action(name = "send_turn", default_budget_ms = 10000)
 def send_turn(ctx: ActionContext) -> ActionResult:
     """Send another prompt mid-film and let the next reply stream in.
@@ -1671,7 +1654,6 @@ def image_upload(ctx: ActionContext) -> ActionResult:
         timings = {"upload_ms": round(elapsed, 1)},
         reason = None if ok else "no attachment appeared in the composer after the file was set",
     )
-
 
 
 #: The end of the thread as a plain string that can be looked for after the rebuild. NOT the
@@ -2073,7 +2055,6 @@ def _click_or_navigate(
         )
 
 
-
 MENU_JS = """
 async (opts) => {
   const D = window.__sb.dom;
@@ -2222,7 +2203,6 @@ def message_menu(ctx: ActionContext) -> ActionResult:
         else f"opened={raw['openMs'] is not None} closed={raw['closeMs'] is not None} "
         f"items={raw['items']}",
     )
-
 
 
 DELETE_JS = """

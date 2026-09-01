@@ -323,8 +323,6 @@ class Unit:
         )
 
 
-
-
 def _expression(rng: random.Random, salt: str, terms: int) -> str:
     """One LaTeX expression body, unique to `salt`.
 
@@ -637,8 +635,6 @@ def units_for_chars(total_chars: int, seed: int = CORPUS_SEED) -> list[Unit]:
     return out
 
 
-
-
 def freeze(
     max_chars: int = SHIPPED_CHARS_BUDGET,
     seed: int = CORPUS_SEED,
@@ -792,7 +788,6 @@ class Corpus:
     def iter_units(self) -> Iterator[Unit]:
         for entry in self.manifest["units"]:
             yield self.unit(entry["index"])
-
 
 
 RUNGS: dict[str, int] = {

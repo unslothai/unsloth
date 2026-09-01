@@ -53,8 +53,6 @@ def _count(text: str, patterns) -> int:
     return sum(len(p.findall(text)) for p in patterns)
 
 
-
-
 def test_the_corpus_contains_math_at_all():
     # The literal v1 defect, stated as an assertion so it cannot come back unnoticed.
     joined = "\n".join(_texts())
@@ -85,8 +83,6 @@ def test_there_is_both_display_and_inline_math():
     # Inline is the common case in a real reply and takes a different path through the pipeline,
     # interleaved with text rather than sitting in its own block.
     assert _count(joined, INLINE) >= _count(joined, DISPLAY)
-
-
 
 
 def test_the_fence_share_is_what_it_was_before_math_existed():
@@ -149,8 +145,6 @@ def test_every_expression_is_balanced():
         assert "{}" not in body, body
         # A trailing backslash-command with nothing after it renders as an error node.
         assert not body.rstrip().endswith("\\"), body
-
-
 
 
 def test_the_shipped_corpus_matches_the_generator_byte_for_byte():

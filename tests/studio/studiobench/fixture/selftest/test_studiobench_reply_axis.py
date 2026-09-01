@@ -200,8 +200,6 @@ def test_dollarise_does_not_reduce_the_text(corpus: Corpus):
     assert dollarise("", "x") == ""
 
 
-
-
 def test_a_long_tail_really_does_outlast_the_standard_film(corpus: Corpus):
     """The premise of the test below, taken from the real corpus rather than asserted.
 

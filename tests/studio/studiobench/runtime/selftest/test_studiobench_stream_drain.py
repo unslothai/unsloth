@@ -304,8 +304,6 @@ def _rows(state):
     return [json.loads(line) for line in text.splitlines() if line]
 
 
-
-
 def test_the_drain_reports_rather_than_raises_when_the_reply_never_ends(cell_runner):
     """The premise, taken from the shipped `_drain_stream` rather than asserted about it."""
 
@@ -316,8 +314,6 @@ def test_the_drain_reports_rather_than_raises_when_the_reply_never_ends(cell_run
 
     assert drained["finished"] is False
     assert "three times past its own cadence" in drained["reason"]
-
-
 
 
 def test_a_cell_whose_reply_never_finished_does_not_complete(cell_runner):
@@ -350,8 +346,6 @@ def test_the_rung_scores_incomplete_and_the_run_cannot_exit_zero(cell_runner):
     assert ladder.rungs[0].complete is False
     assert "RuntimeError" in (ladder.rungs[0].incomplete_reason or "")
     assert completion_exit_code([row]) == 1
-
-
 
 
 def test_a_cell_whose_reply_finished_still_completes(cell_runner):

@@ -237,7 +237,6 @@ class Session:
     _open: Optional[Window] = None
     cell: Optional[Cell] = None
 
-
     @contextlib.contextmanager
     def window(
         self,
@@ -426,7 +425,6 @@ class CellRunner:
                     }
                 )
         return row
-
 
     def _run_inner(self, cell: Cell, plan: RungPlan, row: dict) -> None:
         s = self.session

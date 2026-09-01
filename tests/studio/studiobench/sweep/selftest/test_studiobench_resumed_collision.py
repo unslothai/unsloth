@@ -163,8 +163,6 @@ def _interleaved(tmp_path, name = "concurrent"):
     return _write(tmp_path, name, rows)
 
 
-
-
 def test_a_resumed_ab_is_scored_rather_than_refused(tmp_path):
     pooled = floor_table.paired(floor_table.read_rows(_resumed(tmp_path)))
     assert pooled, (
@@ -217,8 +215,6 @@ def test_the_floor_side_is_reduced_the_same_way(tmp_path):
     assert floors[METRIC]["base"] == 1010.0 and floors[METRIC]["treat"] == 505.0
 
 
-
-
 def test_two_concurrent_launchers_are_still_refused(tmp_path):
     with pytest.raises(SystemExit) as exc:
         floor_table.paired(floor_table.read_rows(_interleaved(tmp_path)))
@@ -266,8 +262,6 @@ def test_an_unrelated_interleaved_session_does_not_condemn_a_resume(tmp_path):
     assert pooled[METRIC] == [(1010.0, 505.0)]
 
 
-
-
 def test_a_superseded_dead_attempt_does_not_mark_a_metric_censored(tmp_path):
     """`censored_metrics` counts an `expect_ok is False` action as a censored cell.
 
@@ -287,8 +281,6 @@ def test_a_superseded_dead_attempt_does_not_mark_a_metric_censored(tmp_path):
     assert stats[METRIC].get("poolable") is not False
 
 
-
-
 def test_an_ordinary_single_session_payload_is_untouched(tmp_path):
     rows = [_meta("s1")] + _arm(BASE, "s1", 1000.0) + _arm(TREAT, "s1", 500.0)
     pooled = floor_table.paired(floor_table.read_rows(_write(tmp_path, "plain", rows)))
@@ -302,8 +294,6 @@ def test_sequential_sessions_with_no_repeated_id_still_pair_within_themselves(tm
     rows += _arm("r1K.base.rep0", "s2", 20.0) + _arm("r1K.treatment.rep0", "s2", 10.0)
     pooled = floor_table.paired(floor_table.read_rows(_write(tmp_path, "shards", rows)))
     assert sorted(pooled[METRIC]) == [(20.0, 10.0), (1000.0, 500.0)]
-
-
 
 
 def test_sessions_that_overlap_in_time_are_refused_even_when_the_file_looks_sequential(tmp_path):
@@ -350,8 +340,6 @@ def test_naming_a_session_still_reads_that_session(tmp_path):
     rows = floor_table.read_rows(path)
     first = floor_table.cell_metrics(rows, session = "s1")
     assert first[BASE][METRIC] == 1000.0, "naming the superseded session returned the resume"
-
-
 
 
 def test_a_whole_payload_read_does_not_fall_back_to_the_superseded_cell_row(tmp_path):

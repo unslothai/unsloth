@@ -72,8 +72,6 @@ ROW_REQUIRED: dict[str, tuple[str, ...]] = {
 }
 
 
-
-
 @dataclass(frozen = True)
 class Cell:
     """One measured configuration: one rung, one arm, one repetition."""
@@ -117,7 +115,6 @@ def make_cell_id(rung: str, arm: str, rep: int) -> str:
     return f"r{rung}.{arm}.rep{rep}"
 
 
-
 #: `gap` is the quiet stretch the scheduler holds between two slots. It is NOT `stream`: a gap
 #: window opens before every slot, so most sit long after the reply finished. See
 #: SceneRunner._gap_window.
@@ -159,8 +156,6 @@ class Window:
             "instruments": self.instruments,
             "notes": self.notes,
         }
-
-
 
 
 @dataclass
@@ -251,8 +246,6 @@ class ActionContext:
     log: Callable[[str], None]
 
 
-
-
 class Instrument:
     """Base class. Subclassing is optional; duck typing on `name`/`level` is enough."""
 
@@ -269,8 +262,6 @@ class Instrument:
         return None
 
     def detach(self) -> None: ...
-
-
 
 
 @dataclass
@@ -312,8 +303,6 @@ class BenchContext:
     recorder: Optional["Recorder"] = None
     log: Callable[[str], None] = print
     browser_procs: list = field(default_factory = list)
-
-
 
 
 class OutDirLock:
@@ -583,8 +572,6 @@ class OutDirLock:
                     f"own --out."
                 )
             other.unlink(missing_ok = True)
-
-
 
 
 class Recorder:
