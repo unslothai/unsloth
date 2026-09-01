@@ -12,7 +12,6 @@ from __future__ import annotations
 # boundaries, etc.) remain suppressed exactly as with skip_special_tokens=True.
 NATIVE_TOOL_CONTROL_TOKENS = frozenset(
     {
-        # Qwen/Hermes JSON and Qwen3.5 function XML.
         "<tool_call>",
         "</tool_call>",
         "<function=",
@@ -27,18 +26,15 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "</arg_key>",
         "<arg_value>",
         "</arg_value>",
-        # Llama 3 native tool tag.
         "<|python_tag|>",
         # Gemma native wrapper and quoted-string delimiter.
         "<|tool_call>",
         "<tool_call|>",
         '<|"|>',
-        # Mistral/Devstral native controls.
         "[TOOL_CALLS]",
         "[/TOOL_CALLS]",
         "[CALL_ID]",
         "[ARGS]",
-        # DeepSeek R1/V3 variants.
         "<｜tool▁calls▁begin｜>",
         "<｜tool_calls_begin｜>",
         "<｜tool▁calls｜>",
@@ -48,20 +44,16 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<｜tool▁call▁begin｜>",
         "<｜tool▁sep｜>",
         "<｜tool▁call▁end｜>",
-        # Kimi K2/Moonshot.
         "<|tool_calls_section_begin|>",
         "<|tool_calls_section_end|>",
         "<|tool_call_begin|>",
         "<|tool_call_argument_begin|>",
         "<|tool_call_end|>",
-        # TML Inkling.
         "<|message_model|>",
         "<|content_invoke_tool_json|>",
         "<|end_message|>",
-        # Reasoning delimiters. Provenance of the opposite kind, and needed for the same
-        # reason: the parser skips a call rehearsed inside one, so dropping them turns
-        # ``[THINK][TOOL_CALLS]terminal[ARGS]{..}[/THINK]`` into a standalone real call.
-        # Kept whenever tool controls are, not only when a reasoning protocol is selected.
+        # Kept whenever tool controls are: the parser skips a call rehearsed inside one, so
+        # dropping them makes ``[THINK][TOOL_CALLS]terminal[ARGS]{..}[/THINK]`` a real call.
         "<think>",
         "</think>",
         "[THINK]",
@@ -92,9 +84,8 @@ def _decode_without_special_spacing(tokenizer, token_ids, *, skip_special_tokens
             spaces_between_special_tokens = False,
         )
     except TypeError as exc:
-        # Lightweight/custom tokenizers may not expose the HF slow-tokenizer option. They do
-        # not add that spacing themselves, so retain compatibility without masking other
-        # tokenizer failures.
+        # Lightweight tokenizers may not expose the option, and do not add that spacing
+        # themselves; re-raise anything else rather than masking it.
         if "spaces_between_special_tokens" not in str(exc):
             raise
         return tokenizer.decode(token_ids, skip_special_tokens = skip_special_tokens)

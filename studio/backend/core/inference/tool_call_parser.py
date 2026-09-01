@@ -2869,7 +2869,6 @@ def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set
     if end is None:
         return True  # body still arriving
     tail = probe[end + 1 :]
-    # Any promotable call in the tail will be executed, wherever it sits.
     for nxt in _GEMMA_BARE_TC_RE.finditer(tail):
         if _markerless_promotable(nxt.group(1), enabled_tool_names):
             return True
