@@ -1089,10 +1089,7 @@ def _archive_branch_chain(
         chain = _chain(branch_messages)
         if not chain:
             return None
-        # The turn being answered is not stored until the reply completes, so a stored row
-        # carrying it sits on a SIBLING, and matching it there hands this request that
-        # branch's deeper boundary. Re-prove the branch from the settled turns only: the
-        # unstored tail may EXTEND the chain it selects, never switch it.
+        # The unstored newest turn only matches on a SIBLING, so settled turns pick the branch.
         settled = list(branch_messages)
         while settled and settled[-1].get("role") == "user":
             settled.pop()
@@ -1128,11 +1125,9 @@ def _compaction_branch_states(
     Multiple rows are returned only when Retry siblings are textually indistinguishable;
     consumers must then choose the conservative result across all of them.
     """
-    # Assistant messages only: against every role a short abandoned reply ("Done") rides
-    # in on a live user message that merely contains it ("not done yet").
+    # Assistant rows only: an abandoned "Done" rides in on a live "not done yet".
     branch = _archive_branch_transcript(branch_messages, ("assistant",))
     if branch_messages and not branch:
-        # A branch with no reply of its own has no boundary to restore.
         return []
 
     chain = _archive_branch_chain(stored, branch_messages)
@@ -1145,9 +1140,7 @@ def _compaction_branch_states(
     if not candidates:
         return []
 
-    # The text fallback has to narrow Retry substring collisions before metadata is
-    # interpreted. Otherwise an abandoned exact "Done" can be accepted based on a live
-    # "Not done yet" row that merely contains it.
+    # Exact first: the branch check is a substring test, so "Done" matches "Not done yet".
     if chain is None:
         live = set(branch or ())
         exact = [
@@ -1158,10 +1151,7 @@ def _compaction_branch_states(
         if exact:
             candidates = exact
 
-    # A completed row with no truncation state means the whole branch fit and ends the old
-    # epoch, including a response completed at its output cap (`incomplete.reason=length`).
-    # Only active or aborted rows without valid state are placeholders. The custom shape is
-    # Studio's persisted metadata; top-level fields are server-managed rows.
+    # A COMPLETED row with no truncation ends the epoch; only active/aborted are placeholders.
     states = []
     for message in candidates:
         metadata = message.get("metadata")
@@ -1181,12 +1171,8 @@ def _compaction_branch_states(
                 except (TypeError, ValueError):
                     pass
         if recorded is None and chain is not None:
-            # Skipping a row defers to the epoch before it, which only ancestry can prove
-            # is the same branch. On the text path below the rows are indistinguishable,
-            # so dropping one lets its twin decide alone; keeping it forces `(0, False)`.
-            # Deep Research runs in isolated `research:<run-id>` inference state. Its
-            # server-managed parent-thread row reports the research lifecycle, not whether
-            # the parent chat fit, so it cannot end that chat's checkpoint epoch.
+            # Skipping defers to the previous epoch, so it needs a proved branch: on the text
+            # path the rows are twins. A research row reports its run, not whether this fit.
             research_row = (
                 (metadata.get("serverManaged") or custom.get("serverManaged"))
                 and (metadata.get("researchRunId") or custom.get("researchRunId"))
@@ -1261,8 +1247,7 @@ def _sticky_compaction_state(
             recorded = state.recorded
             if truncation is None:
                 return 0, False
-            # Only a fit that SUCCEEDED describes a boundary worth restoring. Unlike a
-            # missing record above, an explicit failed fit remains authoritative.
+            # Only a SUCCEEDED fit describes a boundary, but an explicit failure still rules.
             if not truncation.get("fits"):
                 return 0, False
             # A boundary is valid only under the fit that will consume it, and the two
