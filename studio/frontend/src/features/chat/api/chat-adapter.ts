@@ -7927,17 +7927,33 @@ export function createOpenAIStreamAdapter(
           // An image-bearing result is an object; citations live on `.text`.
           return parseSourcesFromResult(searchResultText(tc.result));
         });
-        // Every card now carries its own sources, and the last one is also
-        // overwritten with the run's aggregate, so a URL found by two searches
-        // arrives twice. `id` is the url, so that is a duplicate React key.
-        const seenSourceUrls = new Set<string>();
-        const dedupedSourceParts = sourceParts.filter((part) => {
-          if (seenSourceUrls.has(part.url)) {
-            return false;
+        // Every card carries its own sources, so a URL found by two searches
+        // arrives twice and `id` is the url, which is a duplicate React key.
+        // Merge rather than take the first: a source recovered from
+        // `action.sources` alone titles itself with its own URL and has no
+        // description, and dropping the later entry would keep that stub over
+        // the citation that actually names the page.
+        const sourcesByUrl = new Map<string, (typeof sourceParts)[number]>();
+        for (const part of sourceParts) {
+          const seen = sourcesByUrl.get(part.url);
+          if (!seen) {
+            sourcesByUrl.set(part.url, part);
+            continue;
           }
-          seenSourceUrls.add(part.url);
-          return true;
-        });
+          const title =
+            seen.title === seen.url && part.title !== part.url
+              ? part.title
+              : seen.title;
+          const metadata = seen.metadata?.description
+            ? seen.metadata
+            : part.metadata;
+          sourcesByUrl.set(part.url, {
+            ...seen,
+            title,
+            ...(metadata ? { metadata } : {}),
+          });
+        }
+        const dedupedSourceParts = [...sourcesByUrl.values()];
 
         const meta = serverMetadata;
         const finalTokenCount =

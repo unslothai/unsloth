@@ -879,3 +879,100 @@ def test_a_later_output_event_still_wins_over_a_bundled_empty_list(monkeypatch):
     ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
     assert len(ends) == 1
     assert "hi" in ends[0]["result"]
+
+
+def test_citations_merge_into_the_last_card_instead_of_replacing_it(monkeypatch):
+    # The card already carries that call's own results; the citation list is only
+    # the subset the model cited, so overwriting loses everything it did not cite.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_only",
+                "action": {"type": "search", "query": "tigers"},
+                "results": [
+                    {"title": "A", "url": "https://a.example", "snippet": "sa"},
+                    {"title": "B", "url": "https://b.example", "snippet": "sb"},
+                    {"title": "C", "url": "https://c.example", "snippet": "sc"},
+                ],
+            },
+        },
+        {
+            "type": "response.output_text.annotation.added",
+            "annotation": {
+                "type": "url_citation",
+                "url": "https://b.example",
+                "title": "B",
+            },
+        },
+        {"type": "response.completed", "response": {"output": []}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
+    final = ends[-1]["result"]
+    for url in ("https://a.example", "https://b.example", "https://c.example"):
+        assert f"URL: {url}" in final, url
+    assert final.count("\n---\n") == 2
+
+
+def test_a_citation_adds_the_title_a_bare_source_url_lacked(monkeypatch):
+    # `action.sources` gives a URL and nothing else, so the record titles itself
+    # with its own URL; the citation for the same page carries the real one.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_bare",
+                "action": {
+                    "type": "search",
+                    "query": "tigers",
+                    "sources": [{"url": "https://a.example"}, {"url": "https://uncited.example"}],
+                },
+            },
+        },
+        {
+            "type": "response.output_text.annotation.added",
+            "annotation": {
+                "type": "url_citation",
+                "url": "https://a.example",
+                "title": "Real Title",
+                "snippet": "a description",
+            },
+        },
+        {"type": "response.completed", "response": {"output": []}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
+    final = ends[-1]["result"]
+    assert "Title: Real Title" in final
+    assert "Snippet: a description" in final
+    assert final.count("URL: https://a.example") == 1
+    # and the page the model never cited is still on the card
+    assert "URL: https://uncited.example" in final
+
+
+def test_a_bundled_empty_output_is_not_a_report_when_the_stream_is_cut(monkeypatch):
+    # The bundled empty list deliberately leaves the call open because a real
+    # shell_call_output may still follow. If the stream dies first, it never
+    # reported -- so the card must not claim it completed with no output.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "shell_call",
+                "id": "sc_cut",
+                "action": {"commands": ["echo hi"]},
+                "output": [],
+            },
+        },
+        {
+            "type": "response.incomplete",
+            "response": {"incomplete_details": {"reason": "max_output_tokens"}},
+        },
+    ]
+    lines = _drive_stream(sse_events, ["code_execution"], monkeypatch)
+    ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
+    assert len(ends) == 1
+    assert ends[0]["result"] == "(response truncated before the command reported)"

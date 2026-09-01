@@ -56,7 +56,7 @@ test("a finished find_in_page does not claim it found the pattern", () => {
 test("a URL embedded mid-line cannot become the source pill's href", () => {
   // Title and snippet carry page-controlled text. The parser is line anchored so
   // only a real `URL:` line can point the pill; see the backend's matching
-  // one-line normalization in _format_web_search_per_call_sources.
+  // one-line normalization in _web_search_source_records.
   const card = readFileSync(CARD, "utf8");
   const re = (name: string): RegExp => {
     const m = card.match(new RegExp(`const ${name} = (/.*?/[a-z]*);`, "s"));
@@ -78,16 +78,20 @@ test("a URL embedded mid-line cannot become the source pill's href", () => {
 });
 
 test("the Sources group cannot receive the same url twice", () => {
-  // Every web_search card now carries its own sources and the last one is also
-  // overwritten with the run's aggregate, so a url found by two searches arrives
-  // twice. `id` is the url, so an undeduped list means duplicate React keys.
+  // Every card carries its own sources and the last also merges the run's
+  // aggregate, so a url found by two searches arrives twice; `id` is the url,
+  // so an undeduped list means duplicate React keys.
   const adapter = readFileSync(
     fileURLToPath(
       new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
     ),
     "utf8",
   );
-  assert.match(adapter, /const seenSourceUrls = new Set<string>\(\);/);
+  assert.match(adapter, /sourcesByUrl\.set\(part\.url,/);
+  assert.match(
+    adapter,
+    /const dedupedSourceParts = \[\.\.\.sourcesByUrl\.values\(\)\];/,
+  );
   assert.match(adapter, /\.\.\.dedupedSourceParts,/);
   assert.doesNotMatch(adapter, /\.\.\.sourceParts,/);
   // and the adapter's own copy of the block parser is anchored like the card's
@@ -111,4 +115,30 @@ test("the no-output message is only claimed on a completed call", () => {
     card,
     /status\?\.type === "complete" \? \(\s*<p[^>]*>\s*Command completed with no output\./,
   );
+});
+
+test("deduplicating sources keeps the richer entry, not the first", () => {
+  // A source recovered from `action.sources` alone titles itself with its own
+  // URL and carries no description; a first-seen filter would keep that stub
+  // over the citation for the same page that actually names it.
+  const adapter = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /const sourcesByUrl = new Map<string, \(typeof sourceParts\)\[number\]>\(\);/,
+  );
+  assert.match(
+    adapter,
+    /seen\.title === seen\.url && part\.title !== part\.url/,
+  );
+  assert.match(
+    adapter,
+    /seen\.metadata\?\.description\s*\?\s*seen\.metadata\s*:\s*part\.metadata/,
+  );
+  assert.doesNotMatch(adapter, /const seenSourceUrls = new Set<string>\(\);/);
+  assert.match(adapter, /\.\.\.dedupedSourceParts,/);
 });

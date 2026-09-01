@@ -433,14 +433,23 @@ _SHELL_TRUNCATED_NOTE = "(response truncated before the command reported)"
 _SHELL_NO_REPORT_NOTE = "(no output reported for this command)"
 
 
-def _shell_flush_result(state: dict[str, Any], formatter: Any, note: str) -> str:
+def _shell_flush_result(
+    state: dict[str, Any], formatter: Any, note: str, *, bundled_is_final: bool
+) -> str:
     """Finalise an orphan shell card. `output` stays None until an output field
-    is seen, so an empty list means the command reported nothing (a real silent
-    success) while None means it never reported at all."""
-    reported = state.get("output")
-    text = formatter(reported or [])
-    if text or reported is not None:
+    is seen, so an empty list means the command reported nothing.
+
+    Whether that empty list is the last word depends on why we are flushing. Once
+    the response completes, nothing more is coming and it is a silent success. On
+    a truncated stream the real shell_call_output may simply never have arrived --
+    which is exactly why an empty bundled list does not finalize the call -- so
+    there it still counts as unreported.
+    """
+    text = formatter(state.get("output") or [])
+    if text:
         return text
+    if bundled_is_final and state.get("output") is not None:
+        return ""
     return note
 
 
@@ -457,40 +466,98 @@ def _one_line(value: Any) -> str:
     return " ".join(str(value).split())
 
 
-def _format_web_search_per_call_sources(results: Any, sources: Any) -> str:
-    """Format one web search call's sources for the frontend source parser."""
-    blocks: list[str] = []
+def _clean_source_url(value: Any) -> str:
+    """A URL fit for the block format: whitespace cannot survive it, and the
+    frontend rejects such a URL anyway, so drop the entry instead."""
+    if not isinstance(value, str) or not value or any(c.isspace() for c in value):
+        return ""
+    return value
 
-    def _clean_url(value: Any) -> str:
-        # Whitespace in a URL cannot survive the block format, and the frontend
-        # rejects it anyway, so drop the entry rather than emit a broken block.
-        if not isinstance(value, str) or not value or any(c.isspace() for c in value):
-            return ""
-        return value
 
+def _web_search_source_records(results: Any, sources: Any) -> list[dict[str, str]]:
+    """One call's results (or its bare `action.sources`) as {url,title,snippet}.
+
+    A record recovered from `action.sources` alone has only a URL, so it titles
+    itself with one; `_merge_source_records` treats that as "no title yet".
+    """
+    records: list[dict[str, str]] = []
     if isinstance(results, list):
         for result in results:
             if not isinstance(result, dict):
                 continue
-            url = _clean_url(result.get("url"))
+            url = _clean_source_url(result.get("url"))
             if not url:
                 continue
-            # Blank means missing: `Title:\s*(.+)` eats the newline and takes the URL line.
-            title = _one_line(result.get("title") or "") or url
-            snippet = _one_line(result.get("snippet") or result.get("text") or "")
-            entry = f"Title: {title}\nURL: {url}"
-            if snippet:
-                entry += f"\nSnippet: {snippet}"
-            blocks.append(entry)
-    if not blocks and isinstance(sources, list):
+            records.append(
+                {
+                    # Blank means missing: `Title:\s*(.+)` eats the newline and
+                    # would take the URL line as the title.
+                    "title": _one_line(result.get("title") or "") or url,
+                    "url": url,
+                    "snippet": _one_line(result.get("snippet") or result.get("text") or ""),
+                }
+            )
+    if not records and isinstance(sources, list):
         for source in sources:
             raw = source if isinstance(source, str) else None
             if isinstance(source, dict):
                 raw = source.get("url")
-            url = _clean_url(raw)
+            url = _clean_source_url(raw)
             if url:
-                blocks.append(f"Title: {url}\nURL: {url}")
+                records.append({"title": url, "url": url, "snippet": ""})
+    return records
+
+
+def _merge_source_records(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Union by URL in first-seen order, keeping the richest fields.
+
+    The aggregate citation list and a call's own results describe the same pages
+    from different angles: one may carry a real title, the other a snippet.
+    Taking whichever arrived first would throw the other half away.
+    """
+    merged: dict[str, dict[str, str]] = {}
+    for group in groups:
+        for record in group:
+            url = record.get("url") or ""
+            if not url:
+                continue
+            current = merged.get(url)
+            if current is None:
+                merged[url] = dict(record)
+                continue
+            if current["title"] == url and record["title"] != url:
+                current["title"] = record["title"]
+            if not current.get("snippet") and record.get("snippet"):
+                current["snippet"] = record["snippet"]
+    return list(merged.values())
+
+
+def _format_source_blocks(records: list[dict[str, str]]) -> str:
+    """Render records as the `Title:/URL:/Snippet:` blocks the frontend parses."""
+    blocks: list[str] = []
+    for record in records:
+        entry = f"Title: {record['title']}\nURL: {record['url']}"
+        if record.get("snippet"):
+            entry += f"\nSnippet: {record['snippet']}"
+        blocks.append(entry)
     return "\n---\n".join(blocks)
+
+
+def _citation_source_records(citations: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """The run's aggregated url_citations as source records."""
+    records: list[dict[str, str]] = []
+    for citation in citations:
+        url = _clean_source_url(citation.get("url"))
+        if not url:
+            continue
+        records.append(
+            {
+                "title": _one_line(citation.get("title") or "") or url,
+                "url": url,
+                "snippet": _one_line(citation.get("snippet") or ""),
+            }
+        )
+    return records
 
 
 def _web_search_card_text(arguments: dict[str, Any]) -> str:
@@ -5571,6 +5638,9 @@ class ExternalProviderClient:
                     # the LAST web_search tool_end (parseSourcesFromResult
                     # flatmaps every call, one non-empty is enough).
                     web_search_calls: dict[str, dict[str, Any]] = {}
+                    # Each call's own results, so the terminal citation backfill can
+                    # merge with the last card instead of replacing what it found.
+                    web_search_sources: dict[str, list[dict[str, str]]] = {}
                     all_url_citations: list[dict[str, Any]] = []
                     # shell_calls (code execution): {call_id -> {commands, output}}.
                     # shell_call <-> shell_call_output match by call_id; emit
@@ -6058,10 +6128,12 @@ class ExternalProviderClient:
                                         if isinstance(item.get("action"), dict)
                                         else {}
                                     )
-                                    per_call_sources = _format_web_search_per_call_sources(
+                                    source_records = _web_search_source_records(
                                         item.get("results"),
                                         action.get("sources"),
                                     )
+                                    web_search_sources[item_id] = source_records
+                                    per_call_sources = _format_source_blocks(source_records)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
@@ -6298,21 +6370,21 @@ class ExternalProviderClient:
                                         }
                                     )
                                     container_id_emitted = True
-                                # Overwrite the last web_search card with the
-                                # citation list (the extractor flatMaps cards).
+                                # Merge the citation list into the last web_search
+                                # card: it already carries that call's own results,
+                                # and the citations are only the cited subset.
                                 if web_search_calls and all_url_citations:
                                     last_id = list(web_search_calls.keys())[-1]
-                                    blocks: list[str] = []
-                                    for cit in all_url_citations:
-                                        line = f"Title: {cit['title']}\nURL: {cit['url']}"
-                                        if cit.get("snippet"):
-                                            line += f"\nSnippet: {cit['snippet']}"
-                                        blocks.append(line)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": last_id,
-                                            "result": "\n---\n".join(blocks),
+                                            "result": _format_source_blocks(
+                                                _merge_source_records(
+                                                    web_search_sources.get(last_id, []),
+                                                    _citation_source_records(all_url_citations),
+                                                )
+                                            ),
                                         }
                                     )
                                 # Final flush: finalise any orphan shell_call
@@ -6329,6 +6401,7 @@ class ExternalProviderClient:
                                                 sc_state,
                                                 _format_shell_output,
                                                 _SHELL_NO_REPORT_NOTE,
+                                                bundled_is_final = True,
                                             ),
                                         }
                                     )
@@ -6404,17 +6477,16 @@ class ExternalProviderClient:
                                 # Same citation backfill as response.completed.
                                 if web_search_calls and all_url_citations:
                                     last_id = list(web_search_calls.keys())[-1]
-                                    blocks = []
-                                    for cit in all_url_citations:
-                                        line = f"Title: {cit['title']}\nURL: {cit['url']}"
-                                        if cit.get("snippet"):
-                                            line += f"\nSnippet: {cit['snippet']}"
-                                        blocks.append(line)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": last_id,
-                                            "result": "\n---\n".join(blocks),
+                                            "result": _format_source_blocks(
+                                                _merge_source_records(
+                                                    web_search_sources.get(last_id, []),
+                                                    _citation_source_records(all_url_citations),
+                                                )
+                                            ),
                                         }
                                     )
                                 # Mirror the response.completed flush so
@@ -6432,6 +6504,7 @@ class ExternalProviderClient:
                                                 sc_state,
                                                 _format_shell_output,
                                                 _SHELL_TRUNCATED_NOTE,
+                                                bundled_is_final = False,
                                             ),
                                         }
                                     )
