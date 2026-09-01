@@ -34,6 +34,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference.diffusion_auto_policy import build_resolved_record
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
     resolve_diffusion_device_target,
@@ -874,6 +875,8 @@ class _SdState:
     mode: str = "server"
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
     hf_token: Optional[str] = None
+    # Per-control provenance for the Loaded build panel and load-time control reseeding.
+    resolved: Optional[dict] = None
     # The GGUF basename this load committed: some variants pick their encoder by filename, and a local *klein-9B*.gguf carries that keyword only in the basename.
     gguf_filename: Optional[str] = None
     # The FLUX.2 inner_dim this load read out of the checkpoint's own header, when it could. Kept
@@ -1343,6 +1346,7 @@ class SdCppDiffusionBackend:
                 gguf_filename = gguf_filename,
                 base = base,
                 fam = fam,
+                family_override = family_override,
                 hf_token = hf_token,
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
@@ -1362,6 +1366,7 @@ class SdCppDiffusionBackend:
         gguf_filename: str,
         base: str,
         fam: DiffusionFamily,
+        family_override: Optional[str] = None,
         hf_token: Optional[str],
         # Cache-only when set: every Hub call below is either skipped or told to resolve from disk,
         # so a load nobody asked for cannot pull bytes. See begin_load for what it does not cover.
@@ -1729,6 +1734,17 @@ class SdCppDiffusionBackend:
                     server = server,
                     mode = mode,
                     hf_token = hf_token,
+                    resolved = build_resolved_record(
+                        {
+                            "family_override": (
+                                family_override,
+                                fam.name,
+                                "detected from the model"
+                                if family_override is None
+                                else "requested",
+                            )
+                        }
+                    ),
                     gguf_filename = gguf_filename,
                     flux2_inner_dim = inner_dim,
                     # Only the one-shot path needs to carry it: it re-resolves sd-cli per image,
@@ -2762,6 +2778,7 @@ class SdCppDiffusionBackend:
                 "transformer_quant": None,
                 "attention_backend": None,
                 "transformer_cache": None,
+                "resolved": None,
                 "engine": "sd_cpp",
                 "native_mode": None,
                 "supports_lora": False,
@@ -2795,6 +2812,7 @@ class SdCppDiffusionBackend:
             "transformer_quant": None,
             "attention_backend": None,
             "transformer_cache": None,
+            "resolved": state.resolved,
             "engine": "sd_cpp",
             "supports_lora": diffusion_lora.supports_lora(
                 engine = "sd_cpp",
