@@ -86,10 +86,15 @@ import {
 } from "../lib/resident-config-match";
 import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
+  loadedContextForParams,
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
+  unpinnedDefaultRequest,
+  unpinnedLoadContext,
   resolveLoadMaxSeqLength,
   resolveExplicitCtxPin,
+  loadRequestContextPin,
+  replayMaxTokensCap,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -104,16 +109,22 @@ import {
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
+  DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
+  isServedByMlx,
   normalizeMaxSeqLength,
+  residentIsServedByMlx,
+  resolveInitialConfig,
   type PerModelConfig,
+  loadedContextFields,
 } from "@/features/model-picker";
 import {
   invalidateLlamaFlagCatalog,
   loadManagedLlamaFlags,
 } from "@/features/model-picker/api/llama-flags";
+import { usePlatformStore } from "@/config/env";
 import type {
   ChatLoraSummary,
   ChatModelRow,
@@ -478,15 +489,15 @@ async function syncInferenceStatusToStore(options?: {
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // Unsloth starting against an already-resident GGUF: history can load before this first
-        // status refresh has a checkpoint or window, so its own recount never runs. A null thread
-        // would publish an empty count, hence the mounted-thread guard.
+        // Against an already-resident model, history can load before this first status
+        // has a checkpoint, so its own recount never runs. The thread guard stops a null
+        // thread publishing an empty count.
         const hydrated = useChatRuntimeStore.getState();
         if (
           !selectedCheckpoint &&
           hydrated.contextUsage == null &&
           hydrated.activeThreadId != null &&
-          hydrated.ggufContextLength != null &&
+          hydrated.loadedContextLength != null &&
           !isExternalModelId(checkpointId)
         ) {
           void refreshContextUsage({ threadId: hydrated.activeThreadId });
@@ -890,20 +901,33 @@ export function useChatModelRuntime() {
             gpuMemoryMode: readPersistedGpuMemoryMode(),
             gpuLayers: GPU_LAYERS_AUTO,
             nCpuMoe: 0,
-            // The n_ctx /load would send. Built from the live store, as performLoad
-            // builds it, so an unset length resolves the same way on both sides.
+            // The n_ctx /load would send, from performLoad's own inputs, so an unset
+            // length resolves the same way on both sides.
             resolveContextLength: (customContextLength) => {
               const live = useChatRuntimeStore.getState();
+              const platform = usePlatformStore.getState();
+              // Identity matched above, so the resident model is this pick.
+              const residentIsGguf = status.is_gguf ?? false;
               return resolveLoadMaxSeqLength({
                 modelId,
                 ggufVariant,
-                // Identity matched above, so the resident model is this pick.
-                isGguf: status.is_gguf,
+                isGguf: residentIsGguf,
                 customContextLength,
-                ggufContextLength: live.ggufContextLength,
+                loadedContextLength: live.loadedContextLength,
                 currentCheckpoint: live.params.checkpoint,
                 activeGgufVariant: live.activeGgufVariant,
-                maxSeqLength: live.params.maxSeqLength,
+                isMlx: isServedByMlx(
+                  residentIsGguf,
+                  platform.deviceType,
+                  platform.chatOnlyReason,
+                ),
+                pinnedMaxSeqLength: normalizeMaxSeqLength(
+                  pendingConfig
+                    ? pendingConfig.maxSeqLength
+                    : resolveInitialConfig(modelId, ggufVariant).config
+                        .maxSeqLength,
+                ),
+                defaultMaxSeqLength: live.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
                 presetSource: live.activePresetSource,
               });
             },
@@ -1195,11 +1219,18 @@ export function useChatModelRuntime() {
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
+          const platform = usePlatformStore.getState();
           let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
           let approvedRemoteCodeFingerprint: string | null = null;
+          // A staged config carries its pin; one that applied the saved record and then
+          // selected carries none, so the pre-move field is where it survives.
+          const pinnedMaxSeqLength = normalizeMaxSeqLength(
+            pendingLoadConfig
+              ? pendingLoadConfig.maxSeqLength
+              : resolveInitialConfig(modelId, ggufVariant).config.maxSeqLength,
+          );
           const maxSeqLength =
-            normalizeMaxSeqLength(pendingLoadConfig?.maxSeqLength) ??
-            stateBeforeUnload.params.maxSeqLength;
+            pinnedMaxSeqLength ?? stateBeforeUnload.params.maxSeqLength;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
           const previousActiveLoadId = stateBeforeUnload.activeLoadId;
@@ -1216,18 +1247,31 @@ export function useChatModelRuntime() {
             (typeof selection !== "string"
               ? selection.previousConfig?.maxSeqLength
               : null) ?? maxSeqLength;
-          // Respect the rolled-back model's auto-layers mode: a Manual+Auto model
-          // with an unpinned context must reload with 0 (so --fit re-auto-sizes),
-          // not the positive context it picked (which the backend treats as a pin).
-          const rollbackMaxSeqLength = resolveFitMaxSeqLength(
+          // The intent the model had, not the length it ended up at: sending the
+          // resolved length would pin a model nobody pinned.
+          // The resident backend's own answer, so a native-audio checkpoint the worker
+          // served off the MLX path does not roll back at the sentinel.
+          const previousIsMlx = residentIsServedByMlx(
             previousIsGguf,
-            stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-            stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-            stateBeforeUnload.loadedCustomContextLength,
-            previousIsGguf
-              ? (stateBeforeUnload.ggufContextLength ?? 0)
-              : previousMaxSeqLength,
+            platform.deviceType,
+            platform.chatOnlyReason,
+            stateBeforeUnload.loadedIsMlx,
           );
+          // What the outgoing model loaded with, not the control's value: a pin typed
+          // and never applied would change a window the failed switch never touched.
+          const previousPin = stateBeforeUnload.loadedCustomContextLength;
+          // It reloads at the pin it loaded with, whichever backend served it; only
+          // llama.cpp's placement rules override that, where they own sizing.
+          const rollbackMaxSeqLength = previousIsGguf
+            ? resolveFitMaxSeqLength(
+                previousIsGguf,
+                stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
+                stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                stateBeforeUnload.loadedCustomContextLength,
+                stateBeforeUnload.loadedContextLength ?? 0,
+              )
+            : (previousPin ??
+              unpinnedLoadContext(false, previousIsMlx, previousMaxSeqLength));
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
@@ -1253,7 +1297,7 @@ export function useChatModelRuntime() {
           let loadCustomContextLength =
             pendingLoadConfig?.customContextLength ??
             stateBeforeUnload.customContextLength;
-          const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
+          const loadContextLength = stateBeforeUnload.loadedContextLength;
           const loadTensorParallel = targetIsDiffusion
             ? false
             : (pendingLoadConfig?.tensorParallel ??
@@ -1401,10 +1445,16 @@ export function useChatModelRuntime() {
                 ggufVariant,
                 isGguf,
                 customContextLength: validateCustomContextLength,
-                ggufContextLength: loadGgufContextLength,
+                loadedContextLength: loadContextLength,
                 currentCheckpoint,
                 activeGgufVariant: loadActiveGgufVariant,
-                maxSeqLength,
+                isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+                pinnedMaxSeqLength,
+                defaultMaxSeqLength: unpinnedDefaultRequest(
+                  previousIsMlx,
+                  stateBeforeUnload.params.maxSeqLength,
+                  DEFAULT_MAX_SEQ_LENGTH,
+                ),
                 presetSource: loadActivePresetSource,
               }),
             );
@@ -1599,13 +1649,22 @@ export function useChatModelRuntime() {
             // the wire, is what the completed load pins: several send rules put a
             // positive n_ctx on the wire with the control on Auto, and a pin read
             // back out of one of those is a number the user never chose.
-            const explicitCtxPin = loadCustomContextLength;
+            const targetIsMlx = isServedByMlx(
+              isGguf,
+              platform.deviceType,
+              platform.chatOnlyReason,
+            );
+            const explicitCtxPin = loadRequestContextPin(
+              loadCustomContextLength,
+              targetIsMlx,
+              pinnedMaxSeqLength,
+            );
             // Pinning layers on the SAME model keeps the currently resolved
             // context: with no explicit pin, a manual+pinned reload would send 0,
             // which the backend's --fit off branch treats as the NATIVE context --
             // far larger than the sheet shows when the load was fit-sized (Default
             // or Manual + Auto layers may auto-reduce context to fit VRAM), a
-            // likely OOM. ggufContextLength is that resolved value; a model already
+            // likely OOM. loadedContextLength is that resolved value; a model already
             // at native reloads unchanged, so this is safe for any prior mode.
             if (
               isGguf &&
@@ -1613,19 +1672,25 @@ export function useChatModelRuntime() {
               loadGpuMemoryMode === "manual" &&
               loadGpuLayers >= 0 &&
               loadCustomContextLength == null &&
-              (loadGgufContextLength ?? 0) > 0
+              (loadContextLength ?? 0) > 0
             ) {
-              loadCustomContextLength = loadGgufContextLength;
+              loadCustomContextLength = loadContextLength;
             }
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
               isGguf,
               customContextLength: loadCustomContextLength,
-              ggufContextLength: loadGgufContextLength,
+              loadedContextLength: loadContextLength,
               currentCheckpoint,
               activeGgufVariant: loadActiveGgufVariant,
-              maxSeqLength,
+              isMlx: targetIsMlx,
+              pinnedMaxSeqLength,
+              defaultMaxSeqLength: unpinnedDefaultRequest(
+                  previousIsMlx,
+                  stateBeforeUnload.params.maxSeqLength,
+                  DEFAULT_MAX_SEQ_LENGTH,
+                ),
               presetSource: loadActivePresetSource,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(
@@ -1707,18 +1772,37 @@ export function useChatModelRuntime() {
             persistGpuMemoryModeOnLoad(loadResponse, loadGpuMemoryMode);
 
             const currentParams = useChatRuntimeStore.getState().params;
-            // The context this load actually has: the server's for a GGUF, the
-            // sequence length the load was invoked with otherwise.
-            const loadedContextCap = loadResponse.is_gguf
-              ? (loadResponse.context_length ?? undefined)
-              : effectiveMaxSeqLength;
+            const loadedFields = loadedContextFields(loadResponse);
+            // The reported window, or where nothing sized one the requested length.
+            // The request answers only for a backend that sizes nothing: a self-sizing
+            // one was sent the sentinel, which as a budget is zero.
+            const loadedContextCap = replayMaxTokensCap(
+              loadedFields.loadedContextLength ??
+                (!loadResponse.is_gguf && effectiveMaxSeqLength > 0
+                  ? effectiveMaxSeqLength
+                  : null),
+            );
             setParams(
-              mergeBackendRecommendedInference({
-                current: currentParams,
-                response: loadResponse,
-                modelId,
-                presetSource: useChatRuntimeStore.getState().activePresetSource,
-              }),
+              {
+                ...mergeBackendRecommendedInference({
+                  current: currentParams,
+                  response: loadResponse,
+                  modelId,
+                  presetSource: useChatRuntimeStore.getState().activePresetSource,
+                  loadedContextLength: loadedFields.loadedContextLength,
+                }),
+                // The served window, as background and compare loads already record,
+                // or the active model reports a context it is not running at.
+                ...(isGguf
+                  ? {}
+                  : {
+                      maxSeqLength: loadedContextForParams(
+                        loadedFields.loadedContextLength,
+                        loadMaxSeqLength,
+                        currentParams.maxSeqLength,
+                      ),
+                    }),
+              },
               // Lay this model's remembered settings back over its defaults,
               // but not a budget larger than the context it just loaded with.
               {
@@ -1781,19 +1865,11 @@ export function useChatModelRuntime() {
               !(loadResponse.is_diffusion ?? false)
                 ? committedServerTuningState(loadServerTuning)
                 : clearedServerTuningState();
-            const nativeCtx = loadResponse.is_gguf
-              ? (loadResponse.context_length ?? 131072)
-              : null;
-            const reportedMaxCtx = loadResponse.is_gguf
-              ? (loadResponse.max_context_length ?? null)
-              : null;
-            const reportedNativeCtx = loadResponse.is_gguf
-              ? (loadResponse.native_context_length ?? null)
-              : null;
             // The user's own Context Length (see explicitCtxPin), so an Auto load
-            // stays Auto whatever n_ctx the send rules resolved for it.
+            // stays Auto whatever n_ctx the send rules resolved for it. MLX pins the
+            // same way, so it is admitted here rather than cleared as a non-GGUF.
             const keepCustomCtx = resolveExplicitCtxPin(
-              loadResponse.is_gguf ? explicitCtxPin : null,
+              loadResponse.is_gguf || targetIsMlx ? explicitCtxPin : null,
             );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
@@ -1817,7 +1893,6 @@ export function useChatModelRuntime() {
                     reasoningEffortLevels,
                   )
                 : clampLocalReasoningEffort(existingReasoningEffort);
-            const ggufMaxContextLength = reportedMaxCtx;
             const nextReasoningEnabled = reasoningAlwaysOn
               ? true
               : reloadingSameModel && supportsReasoning
@@ -1827,9 +1902,7 @@ export function useChatModelRuntime() {
             // A later rollback reads the snapshot path, not the id this was stored under.
             rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
-              ggufContextLength: nativeCtx,
-              ggufMaxContextLength,
-              ggufNativeContextLength: reportedNativeCtx,
+              ...loadedContextFields(loadResponse),
               modelRequiresTrustRemoteCode:
                 loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning,

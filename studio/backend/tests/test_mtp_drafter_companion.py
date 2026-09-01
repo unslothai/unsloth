@@ -1440,6 +1440,89 @@ def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
     assert found is not None and found.endswith("mtp-model.gguf")
 
 
+def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monkeypatch):
+    """Offline reuse must name the file the online picker names.
+
+    Lexical order put mtp-Qwen3.8-Flash-Next-BF16.gguf first, so a cached user got
+    the 7.77 GB slowest head while a fresh install downloaded the 2.79 GB shared
+    Q8_0 one.
+    """
+    import core.inference.llama_cpp as llama_cpp_module
+
+    published = [
+        f"MTP/mtp-Qwen3.8-Flash-Next-{tier}.gguf"
+        for tier in ("BF16", "Q4_K_M", "Q8_0", "shared-BF16", "shared-Q4_K_M", "shared-Q8_0")
+    ]
+    snap = tmp_path / "snap"
+    for rel in [*published, "UD-IQ1_S/model.gguf"]:
+        (snap / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snap / rel).write_bytes(b"x")
+
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+
+    found = backend._cached_repo_mtp_drafter("unsloth/Qwen3.8-Flash-Next-GGUF")
+    assert found is not None
+    assert Path(found).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", (
+        f"offline reuse picked {Path(found).name}; the online picker takes "
+        f"{llama_cpp_module._pick_mtp(published)}"
+    )
+    # Same listing, same answer, whichever path reaches it first.
+    assert Path(found).name == Path(llama_cpp_module._pick_mtp(published)).name
+
+
+def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monkeypatch):
+    """Everything under MTP/ classifies as an mtp drafter: right for excluding
+    companions from menus, wrong for choosing what to launch."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    snap = tmp_path / "snap"
+    for rel in ("MTP/mmproj-BF16.gguf", "MTP/imatrix_unsloth.gguf", "model-Q4_K_M.gguf"):
+        (snap / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snap / rel).write_bytes(b"x")
+
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+    assert backend._cached_repo_mtp_drafter("some/repo") is None
+
+
+def test_a_shared_head_pairs_with_its_target_in_the_local_scan(tmp_path):
+    """-shared marks the head's FORM, not its family.
+
+    mtp-<model>-shared-<quant>.gguf left a pairing stem of <model>-shared, which
+    never prefixes <model>-<quant>, so detect_mtp_file could not pair the head the
+    hub picker prefers: a local checkout of the files Studio had just downloaded
+    resolved differently from the download.
+    """
+    from utils.models.drafters.common import _drafter_matches_weight, _drafter_pairing_stem
+    from utils.models.model_config import detect_mtp_file
+
+    weight = "qwen3.8-flash-next-ud-iq1_s-00001-of-00003.gguf"
+    for tier in ("Q8_0", "BF16", "Q4_K_M"):
+        name = f"mtp-Qwen3.8-Flash-Next-shared-{tier}.gguf"
+        assert _drafter_pairing_stem(name, kind = "mtp") == "qwen3.8-flash-next"
+        assert _drafter_matches_weight(name, weight, kind = "mtp"), name
+    # A different family is still rejected, which is the whole point of pairing.
+    assert not _drafter_matches_weight("mtp-Some-Other-shared-Q8_0.gguf", weight, kind = "mtp")
+    # Only MTP publishes a borrowed form, so no other kind changes meaning.
+    assert _drafter_pairing_stem("dspark-Model-shared-Q8_0.gguf", kind = "dspark") == "model-shared"
+
+    root = tmp_path / "local"
+    (root / "MTP").mkdir(parents = True)
+    for i in (1, 2, 3):
+        (root / f"Qwen3.8-Flash-Next-UD-IQ1_S-0000{i}-of-00003.gguf").write_bytes(b"x" * 64)
+    shared = root / "MTP" / "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+    shared.write_bytes(b"x" * 64)
+    found = detect_mtp_file(
+        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root = str(root)
+    )
+    assert found is not None and Path(found).name == shared.name
+
+
 def test_cached_dspark_lookup_prefers_q8_and_excludes_dflash(tmp_path, monkeypatch):
     import core.inference.llama_cpp as llama_cpp_module
 
