@@ -935,9 +935,13 @@ def _has_unclosed_code_fence(text: str) -> bool:
                     active_char, active_len, active_quote, active_base = None, 0, 0, 0
                     closed_any = True
                 continue
-            # A later run closes an inline span ("```python``` is the syntax"), at
-            # column zero or not.
-            if index != len(runs) - 1:
+            # A later run of the SAME delimiter closes an inline span ("```python```
+            # is the syntax"), at column zero or not. A different one is info-string
+            # text (```markdown title=~~~) and leaves the opener standing.
+            if any(
+                (later.group("backticks") or later.group("tildes"))[0] == ch
+                for later in runs[index + 1 :]
+            ):
                 continue
             if blank_prefix:
                 # Its own indentation, so the baseline is 0. Past three columns it
@@ -1044,7 +1048,13 @@ def _strip_markup_outside_fences(text: str) -> str:
     fences = [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)]
 
     def _keep_examples(m):
-        return m.group(0) if any(s <= m.start() < e for s, e in fences) else ""
+        # Either endpoint inside a fence makes the match that example's content:
+        # prose may open a tag the fenced fragment goes on to close.
+        return (
+            m.group(0)
+            if any(s <= m.start() < e or s < m.end() <= e for s, e in fences)
+            else ""
+        )
 
     return _CLOSED_MARKUP_ARTIFACT.sub(_keep_examples, text)
 
@@ -1098,23 +1108,27 @@ def _text_outside_think(text: str) -> str:
     only its closer.
     """
     stripped = text.lstrip()
-    spans = None
-    # Longest opener first: "<think" is also a prefix of "<thinking".
-    for lead, opener, closer in (
+    pairs = (
         (_THINKING_OPEN_RE, "<thinking", "</thinking>"),
         (_THINK_OPEN_RE, "<think", "</think>"),
         (_BRACKET_THINK_OPEN_RE, "[THINK]", "[/THINK]"),
-    ):
+    )
+    # Whichever opener actually starts the turn owns it, so settle that before
+    # looking at bare closers: a leading block may name another marker in its body.
+    for lead, _opener, closer in pairs:
+        if lead.match(stripped):
+            close = _find_outside_artifacts(text, closer)
+            # No closer: a thought the window cut off runs to the end, and none of
+            # it was shown.
+            return text[close + len(closer) :] if close >= 0 else ""
+    # No leading opener, so a closer with none before it is a prefilled template's:
+    # it emits the opening marker itself and only the closer is generated.
+    spans = None
+    for _lead, opener, closer in pairs:
         if closer in text and spans is None:
             spans = _artifact_spans(text)
         close = _find_outside_artifacts(text, closer, spans)
-        if close < 0:
-            # A leading block with no closer runs to the end: a thought the window
-            # cut off has no closing tag, and none of it was shown.
-            if lead.match(stripped):
-                return ""
-            continue
-        if lead.match(stripped) or opener not in text[:close]:
+        if close >= 0 and opener not in text[:close]:
             return text[close + len(closer) :]
     return text
 

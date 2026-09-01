@@ -1151,6 +1151,32 @@ def test_reasoning_marker_inside_an_example_is_not_reasoning():
     assert not _gate_would_reprompt("First, I will search.</think>The answer is Paris.", "", True)
 
 
+def test_leading_block_wins_over_a_marker_named_in_its_body():
+    """A leading `<think>` that discusses `</thinking>` still ends at its own closer,
+    so none of the private body leaks into the answer."""
+    turn = "<think>First, I will search. The </thinking> marker is different.</think>The answer is Paris."
+    assert not _gate_would_reprompt(turn, "", True)
+
+
+def test_info_string_may_hold_the_other_delimiter():
+    """```markdown title=~~~ is an opener whose info string mentions tildes; only a
+    later run of the SAME delimiter closes an inline span."""
+    text = "First, let me show it.\n```markdown title=~~~\nbody line\n```"
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
+def test_markup_closed_inside_a_fence_stays_that_fence_s_content():
+    """Prose may open a tag that the fenced fragment goes on to close, so a markup
+    match ending inside a fence belongs to the example."""
+    text = (
+        "First, I will complete `<html>` with this fragment:\n"
+        "```html\n<body>Hi</body></html>\n```"
+    )
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
 def test_bracketed_reasoning_only_turn_still_gets_nudged():
     """`[THINK]...[/THINK]` IS the whole turn for a Magistral-style model and the
     strip takes it, so the raw text is classified rather than losing the nudge."""
