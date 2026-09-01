@@ -1227,9 +1227,11 @@ def test_install_sh_launcher_gates_port_file_on_baked_flag_not_runtime_env():
                 return line[len("PORT_FILE=") :]
         return ""
 
+    # default-mode must keep PORT_FILE empty even if UNSLOTH_STUDIO_HOME leaks in.
     assert (
         _run_launcher_gate("false", {"UNSLOTH_STUDIO_HOME": "/tmp/leaked"}) == ""
     ), "default-mode launcher must keep PORT_FILE empty even with UNSLOTH_STUDIO_HOME in env"
+    # env-mode must set PORT_FILE regardless of runtime env.
     assert (
         _run_launcher_gate("true", {}) == "/tmp/test_data_dir/studio.port"
     ), "env-mode launcher must set PORT_FILE based on baked DATA_DIR"
@@ -1247,8 +1249,6 @@ def test_main_py_studio_root_id_caches_at_module_load():
     assert (
         "return _STUDIO_ROOT_ID_CACHE" in fn_block
     ), "_studio_root_id() body must return the cached value"
-    # default-mode must keep PORT_FILE empty even if UNSLOTH_STUDIO_HOME leaks in.
-    # env-mode must set PORT_FILE regardless of runtime env.
     assert (
         "read_text(" not in fn_block and "hashlib" not in fn_block
     ), "_studio_root_id() must NOT do filesystem or hash work on every call"
