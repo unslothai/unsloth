@@ -18,6 +18,8 @@ logger = get_logger(__name__)
 
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 _BWRAP_PROBE_BIN = os.path.realpath(os.path.abspath(shutil.which("true") or "/usr/bin/true"))
+_SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+_NIX_STORE = "/nix/store"
 
 _sandbox_available_cache: bool | None = None
 # Absolute path to ``bwrap``, resolved once at probe time so the runtime
@@ -234,6 +236,19 @@ def _safe_subpath(p: str) -> str:
     return p
 
 
+def _path_is_within(
+    path: str,
+    root: str,
+    *,
+    strict: bool = False,
+) -> bool:
+    """Return whether *path* is inside *root*, optionally excluding *root*."""
+    try:
+        return (not strict or path != root) and os.path.commonpath((path, root)) == root
+    except ValueError:
+        return False
+
+
 def _editable_source_paths() -> list[str]:
     """Source dirs registered by PEP 660 editable installs.
 
@@ -292,12 +307,12 @@ def _exec_chain_symlinks(executable: str) -> list[str]:
 def _python_read_paths() -> list[str]:
     """Real dirs the Python interpreter needs to read at runtime.
 
-    Returns ``sys.prefix``, ``sys.base_prefix``, system site-packages,
-    user site-packages, and editable-install source dirs — all
+    Returns ``sys.prefix``, ``sys.base_prefix``, the sandbox sitecustomize
+    shim, system site-packages, user site-packages, and editable-install source dirs — all
     realpath-normalized, deduplicated, and filtered to existing dirs.
     Used by both the macOS Seatbelt profile and the Linux bwrap argv.
     """
-    candidates: list[str] = [sys.prefix, sys.base_prefix]
+    candidates: list[str] = [sys.prefix, sys.base_prefix, _SANDBOX_SITE_DIR]
     # site.getsitepackages / getusersitepackages are absent (older virtualenv
     # site.py) or can raise (embedded / frozen builds) in some environments.
     # This runs in the sandboxed exec path, so degrade gracefully instead of
@@ -319,12 +334,15 @@ def _python_read_paths() -> list[str]:
             candidates.append(user_site)
     candidates.extend(_editable_source_paths())
 
+    resolved_candidates = [os.path.realpath(p) for p in candidates if p]
+    if any(_path_is_within(p, _NIX_STORE) for p in resolved_candidates):
+        # Nix packages keep their ELF loader and shared-library runtime closure
+        # in sibling store derivations, not necessarily below sys.prefix.
+        resolved_candidates.append(os.path.realpath(_NIX_STORE))
+
     seen: set[str] = set()
     out: list[str] = []
-    for p in candidates:
-        if not p:
-            continue
-        rp = os.path.realpath(p)
+    for rp in resolved_candidates:
         if rp in seen or not os.path.isdir(rp):
             continue
         # A root-valued prefix would turn the deny-by-default sandbox into a
@@ -340,10 +358,20 @@ def _python_read_paths() -> list[str]:
 
 def _macos_seatbelt_profile(workdir: str) -> str:
     """Build a Seatbelt profile string for ``sandbox-exec -p``."""
-    py_subpaths = [f'(subpath "{_safe_subpath(p)}")' for p in _python_read_paths()]
-
+    python_read_paths = _python_read_paths()
     wd = _safe_subpath(os.path.realpath(workdir))
+    py_subpaths = [f'(subpath "{_safe_subpath(p)}")' for p in python_read_paths]
     py_block = "\n    ".join(py_subpaths)
+    nested_runtime_paths = [
+        f'(subpath "{_safe_subpath(p)}")'
+        for p in python_read_paths
+        if _path_is_within(p, os.path.realpath(workdir), strict = True)
+    ]
+    runtime_write_deny_block = (
+        "\n(deny file-write* file-ioctl\n    " + "\n    ".join(nested_runtime_paths) + "\n)"
+        if nested_runtime_paths
+        else ""
+    )
     ca_block = "\n    ".join(
         f'(literal "{_safe_subpath(p)}")'
         if os.path.splitext(p)[1]
@@ -465,6 +493,7 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 (allow file-read* (subpath "{wd}"))
 (allow file-write* (subpath "{wd}"))
 (allow file-ioctl (subpath "{wd}"))
+{runtime_write_deny_block}
 (allow file-write-data
     (require-all
         (path "/dev/null")
@@ -617,7 +646,8 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     # _python_read_paths() already realpaths, filters non-dirs, dedupes,
     # and includes editable-install source dirs (so `pip install -e .`
     # repos like unsloth remain readable inside the sandbox).
-    for rp in _python_read_paths():
+    python_read_paths = _python_read_paths()
+    for rp in python_read_paths:
         if _is_under_top_ro(rp):
             continue
         args.extend(["--ro-bind-try", rp, rp])
@@ -646,6 +676,11 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         args.extend(["--ro-bind-try", sym, sym])
 
     args.extend(["--bind", wd, wd])
+    # A later writable parent bind hides earlier nested read-only mounts.
+    # Reapply interpreter/runtime paths below the workdir after that bind.
+    for rp in python_read_paths:
+        if _path_is_within(rp, wd, strict = True):
+            args.extend(["--ro-bind-try", rp, rp])
 
     args.append("--")
     args.extend(_linux_inner_rlimit_wrapper(inner_argv))

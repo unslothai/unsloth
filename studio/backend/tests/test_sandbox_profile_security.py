@@ -29,6 +29,34 @@ def test_python_read_paths_rejects_filesystem_roots(monkeypatch):
     assert root not in sandbox._python_read_paths()
 
 
+def test_python_read_paths_includes_source_tree_sandbox_site(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    prefix = tmp_path / "python"
+    prefix.mkdir()
+
+    monkeypatch.setattr(sandbox.sys, "prefix", str(prefix))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(prefix))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [])
+
+    assert os.path.realpath(sandbox._SANDBOX_SITE_DIR) in sandbox._python_read_paths()
+
+
+def test_python_read_paths_includes_nix_store_for_nix_runtime(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    nix_store = tmp_path / "nix" / "store"
+    prefix = nix_store / "hash-python"
+    prefix.mkdir(parents = True)
+
+    monkeypatch.setattr(sandbox, "_NIX_STORE", str(nix_store))
+    monkeypatch.setattr(sandbox.sys, "prefix", str(prefix))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(prefix))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [])
+
+    assert os.path.realpath(nix_store) in sandbox._python_read_paths()
+
+
 def test_linux_ca_mounts_exclude_private_key_directories(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
@@ -49,6 +77,31 @@ def test_linux_ca_mounts_exclude_private_key_directories(tmp_path, monkeypatch):
     assert "/etc/pki/tls/certs" in targets
 
 
+def test_linux_reapplies_nested_runtime_after_writable_workdir(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "project"
+    runtime = workdir / ".venv"
+    runtime.mkdir(parents = True)
+    wd = os.path.realpath(workdir)
+    rp = os.path.realpath(runtime)
+
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [rp])
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
+
+    writable_index = next(
+        index
+        for index, token in enumerate(argv)
+        if token == "--bind" and argv[index + 1 : index + 3] == [wd, wd]
+    )
+    readonly_indices = [
+        index
+        for index, token in enumerate(argv)
+        if token == "--ro-bind-try" and argv[index + 1 : index + 3] == [rp, rp]
+    ]
+    assert readonly_indices[-1] > writable_index
+
+
 def test_macos_profile_allows_child_signals_and_dev_null_writes(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
@@ -60,6 +113,23 @@ def test_macos_profile_allows_child_signals_and_dev_null_writes(monkeypatch):
     assert "(allow file-write-data" in profile
     assert '(path "/dev/null")' in profile
     assert "(vnode-type CHARACTER-DEVICE)" in profile
+
+
+def test_macos_profile_denies_writes_to_nested_runtime(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "project"
+    runtime = workdir / ".venv"
+    runtime.mkdir(parents = True)
+    wd = os.path.realpath(workdir)
+    rp = os.path.realpath(runtime)
+
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [rp])
+    monkeypatch.setattr(sandbox, "_safe_subpath", lambda path: path.replace("\\", "/"))
+    profile = sandbox._macos_seatbelt_profile(str(workdir))
+
+    expected = f'(deny file-write* file-ioctl\n    (subpath "{rp.replace(chr(92), "/")}")\n)'
+    assert f'(allow file-write* (subpath "{wd.replace(chr(92), "/")}"))' in profile
+    assert expected in profile
 
 
 def test_macos_ca_reads_exclude_private_key_directories(monkeypatch):
