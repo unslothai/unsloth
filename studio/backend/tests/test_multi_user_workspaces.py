@@ -3829,9 +3829,7 @@ def test_embedding_resolution_is_contained_like_the_save(tmp_path, monkeypatch):
         # absolute path was a recursive read of another account's workspace whose
         # answer distinguished a real model from anything else there.
         with pytest.raises(HTTPException) as exc:
-            resolve_embedding_model(
-                model = str(elsewhere), hf_token = None, current_subject = "alice"
-            )
+            resolve_embedding_model(model = str(elsewhere), hf_token = None, current_subject = "alice")
         assert exc.value.status_code == 403
     finally:
         reset_workspace_subject(token)
@@ -3884,9 +3882,7 @@ def test_only_the_account_that_started_a_dictation_download_may_cancel_it(monkey
 
     from routes import inference as inference_routes
 
-    monkeypatch.setattr(
-        inference_routes, "_STT_DOWNLOAD_INITIATORS", {}, raising = False
-    )
+    monkeypatch.setattr(inference_routes, "_STT_DOWNLOAD_INITIATORS", {}, raising = False)
 
     token = _bind("alice")
     try:
