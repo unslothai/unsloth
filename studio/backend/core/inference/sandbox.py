@@ -40,6 +40,7 @@ _LINUX_ACCELERATOR_DEVICE_PATHS = (
 _LINUX_DRM_DIR = "/dev/dri"
 _LINUX_ROCM_OPT_ROOT = "/opt"
 _LINUX_ROCM_ROOTS = ("/opt/rocm",)
+_LINUX_ROCM_ROOT_ENV_VARS = ("ROCM_PATH", "HIP_PATH")
 _LINUX_ROCM_RUNTIME_LIBRARY_PREFIXES = (
     "libamdhip64.so",
     "libhsa-runtime64.so",
@@ -252,9 +253,29 @@ def _linux_drm_render_device_paths() -> list[str]:
     return paths
 
 
+def configured_rocm_environment() -> dict[str, str]:
+    """Validated ROCm installation roots safe to preserve for the child."""
+    configured_roots: dict[str, str] = {}
+    for variable in _LINUX_ROCM_ROOT_ENV_VARS:
+        configured = os.environ.get(variable)
+        if not configured:
+            continue
+        if not os.path.isabs(configured):
+            logger.warning("Ignoring relative %s for sandbox mounts: %s", variable, configured)
+            continue
+        configured = os.path.normpath(configured)
+        if os.path.dirname(configured) == configured:
+            logger.warning("Ignoring filesystem-root %s for sandbox mounts", variable)
+            continue
+        if not os.path.isdir(configured):
+            continue
+        configured_roots[variable] = configured
+    return configured_roots
+
+
 def _linux_rocm_runtime_bindings() -> list[tuple[str, str]]:
     """Detected ROCm library directories as ``(real source, logical dest)``."""
-    roots = list(_LINUX_ROCM_ROOTS)
+    roots = [*_LINUX_ROCM_ROOTS, *configured_rocm_environment().values()]
     try:
         with os.scandir(_LINUX_ROCM_OPT_ROOT) as entries:
             roots.extend(
@@ -341,6 +362,39 @@ def _bwrap_supports_keep_groups(bwrap: str) -> bool | None:
     return b"--keep-groups" in proc.stdout
 
 
+def _linux_bwrap_path_is_trusted(path: str) -> bool:
+    """Return whether *path* and its ancestors resist replacement by this user."""
+    if not hasattr(os, "getuid"):
+        return False
+
+    current = path
+    first = True
+    while True:
+        try:
+            current_stat = os.stat(current, follow_symlinks = False)
+        except OSError:
+            return False
+        mode = stat.S_IMODE(current_stat.st_mode)
+        if first:
+            if not stat.S_ISREG(current_stat.st_mode) or not os.access(current, os.X_OK):
+                return False
+            first = False
+        elif not stat.S_ISDIR(current_stat.st_mode):
+            return False
+
+        # Only a root-owned installation is accepted. Any group/other-writable
+        # component permits replacement through a shared directory.
+        if current_stat.st_uid != 0:
+            return False
+        if mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return False
+
+        parent = os.path.dirname(current)
+        if parent == current:
+            return True
+        current = parent
+
+
 def _linux_probe() -> _ProbeResult:
     """Smoke-test that ``bwrap`` can apply a minimal sandbox here.
 
@@ -353,6 +407,13 @@ def _linux_probe() -> _ProbeResult:
         logger.warning("bwrap not found on PATH; tool execution will run unsandboxed")
         return _ProbeResult(ok = False)
     bwrap = os.path.realpath(os.path.abspath(bwrap))
+    if not _linux_bwrap_path_is_trusted(bwrap):
+        logger.warning(
+            "Ignoring untrusted or user-replaceable bwrap executable %s; "
+            "tool execution will run unsandboxed",
+            bwrap,
+        )
+        return _ProbeResult(ok = False)
     keep_groups = _bwrap_supports_keep_groups(bwrap)
     if keep_groups is None:
         logger.warning(
@@ -597,10 +658,8 @@ def _path_is_within(
         return False
 
 
-def opted_in_user_site_path() -> str | None:
-    """Return the safe parent user-site path when the operator opts in."""
-    if os.environ.get("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE") != "1":
-        return None
+def _validated_user_site_path() -> str | None:
+    """Return the parent's bounded user-site directory when it is safe."""
     try:
         user_site = site.getusersitepackages()
     except Exception as e:  # noqa: BLE001 - best-effort; never break tool exec
@@ -617,6 +676,13 @@ def opted_in_user_site_path() -> str | None:
         logger.warning("Ignoring unsafe user-site path containing user home: %s", resolved)
         return None
     return resolved
+
+
+def opted_in_user_site_path() -> str | None:
+    """Return the safe parent user-site path when the operator opts in."""
+    if os.environ.get("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE") != "1":
+        return None
+    return _validated_user_site_path()
 
 
 def _plain_pth_source_paths() -> list[str]:
@@ -772,8 +838,20 @@ def _editable_source_paths() -> list[str]:
     for the child only while it shares ``sys.executable`` with the parent.
     """
     paths: list[str] = _plain_pth_import_paths()
+    user_site = _validated_user_site_path()
+    user_site_opted_in = os.environ.get("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE") == "1"
     for name, mod in list(sys.modules.items()):
         if not (name.startswith("__editable___") and name.endswith("_finder")):
+            continue
+        origin = getattr(mod, "__file__", None)
+        if origin is None:
+            origin = getattr(getattr(mod, "__spec__", None), "origin", None)
+        if (
+            user_site
+            and origin
+            and _path_is_within(os.path.realpath(origin), user_site)
+            and not user_site_opted_in
+        ):
             continue
         paths.extend(getattr(mod, "MAPPING", {}).values())
         for ns_paths in getattr(mod, "NAMESPACES", {}).values():

@@ -2445,10 +2445,85 @@ case "$OS" in
         # guard and logs a warning (set UNSLOTH_STUDIO_SANDBOX_STRICT=1 to refuse
         # instead of falling back). Missing bwrap must not block install, so this
         # is intentionally outside the required-dependency handling above.
+        bubblewrap_path_trusted() {
+            _bw_path="$(readlink -f "$1" 2>/dev/null)" || return 1
+            [ -f "$_bw_path" ] && [ -x "$_bw_path" ] || return 1
+            _bw_component="$_bw_path"
+            while :; do
+                _bw_meta="$(stat -Lc '%u %a' "$_bw_component" 2>/dev/null)" || return 1
+                set -- $_bw_meta
+                [ "$#" -eq 2 ] && [ "$1" = "0" ] || return 1
+                _bw_mode="$2"
+                _bw_perms="${_bw_mode#${_bw_mode%???}}"
+                case "$_bw_perms" in
+                    [0-7][0-7][0-7]) ;;
+                    *) return 1 ;;
+                esac
+                _bw_remainder="${_bw_perms#?}"
+                _bw_group_digit="${_bw_remainder%?}"
+                _bw_other_digit="${_bw_perms#??}"
+                [ $((_bw_group_digit & 2)) -eq 0 ] || return 1
+                [ $((_bw_other_digit & 2)) -eq 0 ] || return 1
+                [ "$_bw_component" != "/" ] || break
+                _bw_component="$(dirname "$_bw_component")" || return 1
+            done
+            BWRAP_BIN="$_bw_path"
+        }
+
+        bubblewrap_requires_keep_groups() {
+            _bw_uid="$(id -u 2>/dev/null)" || return 1
+            _bw_primary_gid="$(id -g 2>/dev/null)" || return 1
+            _bw_groups=" $(id -G 2>/dev/null) " || return 1
+            for _bw_device in \
+                /dev/dxg /dev/kfd /dev/accel/* /dev/nvidia-caps/* \
+                /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools \
+                /dev/nvidia[0-9]* /dev/dri/renderD[0-9]*; do
+                if [ ! -c "$_bw_device" ] && [ ! -b "$_bw_device" ]; then
+                    continue
+                fi
+                _bw_meta="$(stat -Lc '%u %g %a' "$_bw_device" 2>/dev/null)" || continue
+                set -- $_bw_meta
+                [ "$#" -eq 3 ] || continue
+                _bw_owner_uid="$1"
+                _bw_group_gid="$2"
+                _bw_mode="$3"
+                _bw_perms="${_bw_mode#${_bw_mode%???}}"
+                case "$_bw_perms" in
+                    [0-7][0-7][0-7]) ;;
+                    *) continue ;;
+                esac
+                _bw_owner_digit="${_bw_perms%??}"
+                _bw_remainder="${_bw_perms#?}"
+                _bw_group_digit="${_bw_remainder%?}"
+                _bw_other_digit="${_bw_perms#??}"
+                case "$_bw_groups" in
+                    *" $_bw_group_gid "*) ;;
+                    *) continue ;;
+                esac
+                [ "$_bw_group_gid" != "$_bw_primary_gid" ] || continue
+                [ $((_bw_group_digit & 6)) -eq 6 ] || continue
+                if [ "$_bw_owner_uid" = "$_bw_uid" ] && \
+                    [ $((_bw_owner_digit & 6)) -eq 6 ]; then
+                    continue
+                fi
+                [ $((_bw_other_digit & 6)) -ne 6 ] || continue
+                return 0
+            done
+            return 1
+        }
+
         bubblewrap_usable() {
             BWRAP_BIN="$(command -v bwrap 2>/dev/null)" || return 1
+            bubblewrap_path_trusted "$BWRAP_BIN" || return 1
             TRUE_BIN="$(command -v true 2>/dev/null)" || TRUE_BIN="/usr/bin/true"
-            "$BWRAP_BIN" --ro-bind / / --unshare-all --die-with-parent \
+            set -- "$BWRAP_BIN"
+            if bubblewrap_requires_keep_groups; then
+                case "$("$BWRAP_BIN" --help 2>&1)" in
+                    *--keep-groups*) set -- "$@" --keep-groups ;;
+                    *) return 1 ;;
+                esac
+            fi
+            "$@" --ro-bind / / --unshare-all --die-with-parent \
                 --proc /proc --dev /dev --tmpfs /tmp "$TRUE_BIN" \
                 </dev/null >/dev/null 2>&1
         }

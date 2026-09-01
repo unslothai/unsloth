@@ -339,6 +339,20 @@ class TestSandboxEnvIsolation:
         assert child_paths[0] == tools_mod._SANDBOX_SITE_DIR
         assert os.path.realpath(source) in child_paths
 
+    def test_validated_rocm_root_is_preserved_for_child(self, monkeypatch, tmp_path):
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        rocm = tmp_path / "rocm"
+        rocm.mkdir()
+        monkeypatch.setattr(
+            tools_mod,
+            "configured_rocm_environment",
+            lambda: {"ROCM_PATH": str(rocm)},
+        )
+
+        assert _build_safe_env(str(tmp_path))["ROCM_PATH"] == str(rocm)
+
     def _trusted_git_bash(
         self,
         monkeypatch,

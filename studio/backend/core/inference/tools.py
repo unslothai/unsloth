@@ -80,6 +80,7 @@ from core.inference.mcp_client import (
 from core.inference.sandbox import (
     SandboxProfilePathError,
     build_sandbox_argv,
+    configured_rocm_environment,
     opted_in_user_site_path,
     plain_pth_pythonpath_roots,
     sandbox_available,
@@ -6905,6 +6906,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
         "PYTHONPATH": os.pathsep.join(python_path_entries),
     }
+    env.update(configured_rocm_environment())
     if venv:
         env["VIRTUAL_ENV"] = venv
     # Device nodes are restored inside the Linux sandbox; retain the standard

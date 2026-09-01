@@ -7,6 +7,7 @@ import importlib.util
 import os
 import socket
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +36,9 @@ def test_installer_bwrap_probe_uses_production_mount_primitives():
     probe = text.split("bubblewrap_usable() {", 1)[1].split("}", 1)[0]
     for required in ("--proc /proc", "--dev /dev", "--tmpfs /tmp"):
         assert required in probe
+    assert "bubblewrap_path_trusted" in probe
+    assert "bubblewrap_requires_keep_groups" in probe
+    assert "--keep-groups" in probe
 
 
 def test_python_read_paths_rejects_filesystem_roots(monkeypatch):
@@ -176,6 +180,32 @@ def test_plain_pth_pythonpath_root_does_not_become_a_read_mount(tmp_path, monkey
     assert os.path.realpath(source) not in sandbox._python_read_paths()
 
 
+def test_user_site_pep660_finder_requires_explicit_opt_in(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    home = tmp_path / "home" / "user"
+    user_site = home / ".local" / "lib" / "python" / "site-packages"
+    source = home / "editable-source"
+    user_site.mkdir(parents = True)
+    source.mkdir(parents = True)
+    finder_path = user_site / "__editable___demo_finder.py"
+    finder_path.write_text("MAPPING = {}\n")
+    finder = SimpleNamespace(
+        __file__ = str(finder_path),
+        MAPPING = {"demo": str(source)},
+        NAMESPACES = {},
+    )
+
+    monkeypatch.setattr(sandbox.os.path, "expanduser", lambda _path: str(home))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox.site, "getusersitepackages", lambda: str(user_site))
+    monkeypatch.setitem(sandbox.sys.modules, "__editable___demo_finder", finder)
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE", raising = False)
+
+    assert str(source) not in sandbox._editable_source_paths()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE", "1")
+    assert str(source) in sandbox._editable_source_paths()
+
+
 def test_linux_ca_mounts_exclude_private_key_directories(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
@@ -255,6 +285,26 @@ def test_linux_detects_versioned_rocm_library_roots(tmp_path, monkeypatch):
 
     assert (os.path.realpath(logical / "lib"), os.path.normpath(logical / "lib")) in bindings
     assert (os.path.realpath(lib), os.path.normpath(lib)) in bindings
+
+
+def test_linux_honors_configured_rocm_runtime_root(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    configured = tmp_path / "srv" / "amd" / "rocm"
+    lib = configured / "lib"
+    lib.mkdir(parents = True)
+    (lib / "libamdhip64.so.7").write_text("runtime")
+    empty_opt = tmp_path / "opt"
+    empty_opt.mkdir()
+
+    monkeypatch.setattr(sandbox, "_LINUX_ROCM_OPT_ROOT", str(empty_opt))
+    monkeypatch.setattr(sandbox, "_LINUX_ROCM_ROOTS", ())
+    monkeypatch.setenv("ROCM_PATH", str(configured))
+    monkeypatch.delenv("HIP_PATH", raising = False)
+
+    assert sandbox.configured_rocm_environment() == {"ROCM_PATH": str(configured)}
+    assert sandbox._linux_rocm_runtime_bindings() == [
+        (os.path.realpath(lib), os.path.normpath(lib))
+    ]
 
 
 def test_linux_restores_accelerator_sysfs_class_and_backing_tree(tmp_path, monkeypatch):
@@ -572,6 +622,7 @@ def test_linux_probe_uses_keep_groups_when_available(monkeypatch):
     sandbox = _load_sandbox_module()
     captured = []
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: True)
     monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
 
@@ -588,6 +639,7 @@ def test_linux_probe_uses_keep_groups_when_available(monkeypatch):
 def test_linux_probe_declines_group_device_on_older_bwrap(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: False)
     monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
     monkeypatch.setattr(
@@ -602,6 +654,7 @@ def test_linux_probe_declines_group_device_on_older_bwrap(monkeypatch):
 def test_linux_probe_retries_transient_group_capability_check(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: None)
     monkeypatch.setattr(
         sandbox,

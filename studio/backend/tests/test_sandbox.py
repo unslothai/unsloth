@@ -814,6 +814,7 @@ def test_linux_probe_canonicalizes_relative_path(monkeypatch, tmp_path):
     monkeypatch.setattr(sandbox, "_sandbox_available_cache", None)
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", None)
     monkeypatch.setattr(sandbox.shutil, "which", lambda _: "bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(
         sandbox,
         "_probe",
@@ -822,6 +823,23 @@ def test_linux_probe_canonicalizes_relative_path(monkeypatch, tmp_path):
 
     assert sandbox.sandbox_available() is True
     assert sandbox._linux_bwrap_path == os.path.realpath(tmp_path / "bin" / "bwrap")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
+def test_linux_probe_rejects_user_replaceable_bwrap(monkeypatch, tmp_path):
+    sandbox = _load_sandbox_module()
+    binary = tmp_path / "bin" / "bwrap"
+    binary.parent.mkdir()
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: str(binary))
+    monkeypatch.setattr(
+        sandbox,
+        "_probe",
+        lambda *_args: pytest.fail("untrusted Bubblewrap must not be executed"),
+    )
+
+    assert sandbox._linux_probe().ok is False
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
