@@ -160,8 +160,6 @@ def test_splits_within_cap_honours_the_attestation_per_split():
     assert rl.splits_within_cap({"a": good, "b": bad}, 2048) is False
 
 
-
-
 def _inlined_within_cap(cap):
     """Build `_unsloth_within_cap` out of the codegen string and return it.
 
@@ -222,8 +220,6 @@ def test_studio_stamps_the_attribute_this_scan_reads():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
-
-
 
 
 # ------------------------------------------- the generated block must still parse

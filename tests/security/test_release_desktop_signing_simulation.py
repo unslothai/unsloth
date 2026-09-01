@@ -59,8 +59,6 @@ RUNNER_APPEND = r"if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $L
 WINDOWS_GUARD = "matrix.platform == 'windows-latest'"
 
 
-
-
 @functools.lru_cache(maxsize = 1)
 def workflow():
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
@@ -95,8 +93,6 @@ def run_step(script, env):
         timeout = 300,
     )
     return result.returncode, result.stdout + result.stderr
-
-
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -166,8 +162,6 @@ def installed_binary(sandbox):
     return sandbox["runner_temp"] / "trusted-signing-cli" / "trusted-signing-cli.exe"
 
 
-
-
 def test_pin_is_a_full_sha256_and_a_versioned_url():
     url, digest = pinned()
     assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
@@ -203,8 +197,6 @@ def test_the_install_step_never_interpolates_workflow_expressions():
     # `${{ }}` in a run body is a shell-injection surface;
     body = step("Install trusted-signing-cli")["run"]
     assert "${{" not in body
-
-
 
 
 def test_a_matching_digest_installs_and_publishes_the_path(sandbox, asset_server):
@@ -260,8 +252,6 @@ def test_a_path_containing_spaces_still_works(tmp_path, asset_server):
     assert (spaced / "trusted-signing-cli" / "trusted-signing-cli.exe").is_file()
 
 
-
-
 def test_a_tampered_asset_fails_the_release(sandbox, asset_server):
     url, _ = asset_server
     code, out = run_step(sandbox["install"], install_env(sandbox, url, "0" * 64))
@@ -312,8 +302,6 @@ def test_an_empty_digest_pin_cannot_pass(sandbox, asset_server):
     code, out = run_step(sandbox["install"], install_env(sandbox, url, ""))
     assert code != 0
     assert not installed_binary(sandbox).exists()
-
-
 
 
 def _fake_on_path(directory, name, script):
@@ -431,8 +419,6 @@ def test_the_install_step_publishes_its_directory_for_path_prepending(sandbox, a
     assert run_step(sandbox["install"], install_env(sandbox, url, good_digest(handler)))[0] == 0
     published = sandbox["github_path"].read_text().strip()
     assert published == str(sandbox["runner_temp"] / "trusted-signing-cli")
-
-
 
 
 @needs_network

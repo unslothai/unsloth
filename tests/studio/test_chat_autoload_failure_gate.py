@@ -1272,8 +1272,6 @@ def test_the_remembered_local_model_is_tried_before_a_smaller_one():
     assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
 
 
-
-
 def test_the_default_model_is_fetched_through_the_download_manager():
     """Not inline inside /api/inference/load: the manager owns the transfer, so
     it gets a panel entry, progress, and a Cancel that stops it."""
@@ -1346,8 +1344,6 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
     )
     out = _run(f"scenario({{ chatOnly: true, deviceType: 'mac', localModels: [{mlx}] }})")
     assert _loaded_paths(out) == ["/models/mlx"]
-
-
 
 
 def test_an_image_generation_row_is_never_auto_loaded_for_chat():

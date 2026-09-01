@@ -83,8 +83,6 @@ def _has_unsloth() -> bool:
     return importlib.util.find_spec("unsloth") is not None
 
 
-
-
 # unsloth-zoo modules with no top-level vllm/CUDA import:
 _ZOO_VLLM_FREE_MODULES = [
     "unsloth_zoo.compiler",
@@ -124,8 +122,6 @@ def test_unsloth_zoo_module_imports_under_spoof(modname: str):
         )
 
 
-
-
 # Spoof correctness: _IS_MLX stays False on a non-Mac runner.
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_unsloth_is_mlx_false_under_spoof():
@@ -137,8 +133,6 @@ def test_unsloth_is_mlx_false_under_spoof():
         f"_IS_MLX activated on a non-Apple-Silicon runner under CUDA spoof; "
         f"the MLX gate logic in unsloth/__init__.py is too lax"
     )
-
-
 
 
 # unsloth.models.* — core surfaces loaded transitively by `from unsloth import FastLanguageModel`.
@@ -178,8 +172,6 @@ def test_unsloth_core_module_imports_under_spoof(modname: str):
         )
 
 
-
-
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_fast_model_class_surface_under_spoof():
     sys.modules.pop("unsloth", None)
@@ -202,8 +194,6 @@ def test_fast_model_class_surface_under_spoof():
         f"none of FastLanguageModel/FastVisionModel/FastModel reachable "
         f"on `unsloth` package root"
     )
-
-
 
 
 # FastLanguageModel/FastVisionModel/FastModel surface must be non-empty with the notebook-relied methods present.
@@ -232,8 +222,6 @@ def test_unsloth_rl_replacements_dispatch_populated():
         ), f"RL_FUNCTIONS[{key!r}] is empty list; rewrites no-op"
 
 
-
-
 # unsloth-zoo compiler test_apply_fused_lm_head (compiler.py:1983) must be callable.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_zoo_compiler_apply_fused_lm_head_callable():
@@ -244,8 +232,6 @@ def test_zoo_compiler_apply_fused_lm_head_callable():
         f"unsloth_zoo.compiler.test_apply_fused_lm_head missing or non-callable; "
         f"the in-file CPU regression test is the only fused-LM-head coverage"
     )
-
-
 
 
 # FastModel.from_pretrained kwarg stability:

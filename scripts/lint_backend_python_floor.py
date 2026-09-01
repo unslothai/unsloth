@@ -58,7 +58,6 @@ ROOTS = (
 EXCLUDE_PARTS = ("vendor", "node_modules", "__pycache__", ".venv")
 
 
-
 # An above-floor symbol reached deliberately is suppressed AT THE SITE, with `# novermin` and a comment saying why, not
 # by dropping its file from the scan.
 # The one live case is locale.getencoding() in the data-designer plugin's state_store, inside a try/except

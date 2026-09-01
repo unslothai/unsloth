@@ -34,8 +34,6 @@ class _FakeTokenizer:
         self.saved_to.append(path)
 
 
-
-
 def test_merged_fp8_routes_to_compressed(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(save_mod, "_unsloth_save_compressed_tensors", lambda **kw: seen.update(kw))
@@ -86,8 +84,6 @@ def test_merged_16bit_does_not_route_compressed(monkeypatch, tmp_path):
     )
     assert calls["compressed"] == 0, "merged_16bit must not hit the compressed export"
     assert calls["generic"] == 1, "merged_16bit must go through the normal merge path"
-
-
 
 
 def test_gguf_lora_passes_valid_outtype(monkeypatch, tmp_path):
@@ -259,8 +255,6 @@ def test_push_to_hub_gguf_preserves_positional_max_shard_size():
     )
     assert bound.arguments["max_shard_size"] == "50GB"
     assert "is_main_process" not in bound.arguments
-
-
 
 
 def test_torchao_ptq_routes_to_given_config(monkeypatch, tmp_path):

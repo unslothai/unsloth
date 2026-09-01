@@ -259,8 +259,6 @@ def test_def_comma_exact_output_strip_and_add():
     )
 
 
-
-
 @pytest.mark.parametrize(
     "src,expected",
     [
@@ -344,8 +342,6 @@ def test_fstring_fold_applied_inside_large_multiline_call():
     assert changed is True
     assert 'detail=(f"{name}@{ver} is on the BLOCKED list")' in out
     assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(src))
-
-
 
 
 # collapse_short_asserts: strip the magic comma holding a short assert open ── Strips the trailing comma so ruff joins

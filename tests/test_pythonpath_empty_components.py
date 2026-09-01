@@ -73,7 +73,8 @@ def _stage(monkeypatch, tmp_path, pythonpath):
 @pytest.mark.parametrize(
     "before",
     [
-        os.pathsep + "/opt/lib",  # PYTHONPATH=$PYTHONPATH:/opt/lib, unset PYTHONPATH=/opt/lib:$PYTHONPATH, unset
+        os.pathsep
+        + "/opt/lib",  # PYTHONPATH=$PYTHONPATH:/opt/lib, unset PYTHONPATH=/opt/lib:$PYTHONPATH, unset
         "/opt/lib" + os.pathsep,
         "/opt/a" + os.pathsep + os.pathsep + "/opt/b",
         os.pathsep,
@@ -99,8 +100,6 @@ def test_it_is_still_idempotent(monkeypatch, tmp_path):
     directory, after = _stage(monkeypatch, tmp_path, before)
     assert IF.propagate_torchao_fix_to_subprocesses() == directory
     assert os.environ["PYTHONPATH"] == after
-
-
 
 
 def _probe_tree(tmp_path):

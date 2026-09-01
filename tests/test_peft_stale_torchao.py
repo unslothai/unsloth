@@ -116,8 +116,6 @@ def _raiser(exc):
     return is_torchao_available
 
 
-
-
 def test_stale_torchao_becomes_false(peft_env):
     iu, _ = peft_env(_raiser(STALE))
     assert FIX() is True
@@ -140,8 +138,6 @@ def test_warning_is_emitted_once(peft_env):
     assert len(seen) == 1, "one stale dependency, one message"
     assert "torchao" in seen[0]
     assert "upgrade" in seen[0].lower()
-
-
 
 
 # ---- what must still fail -------------------------------------------------
@@ -194,8 +190,6 @@ def test_a_non_import_error_still_raises(peft_env):
         iu.is_torchao_available()
 
 
-
-
 # ---- what must not change -------------------------------------------------
 def test_a_working_torchao_still_answers_true(peft_env):
     iu, _ = peft_env(lambda: True)
@@ -238,8 +232,6 @@ def test_metadata_survives(peft_env):
     iu, _ = peft_env(_raiser(STALE))
     FIX()
     assert iu.is_torchao_available.__name__ == "is_torchao_available"
-
-
 
 
 def test_called_from_gpu_init():

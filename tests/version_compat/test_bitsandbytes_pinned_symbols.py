@@ -20,8 +20,6 @@ BNB_TAGS = [
 ]
 
 
-
-
 # bnb.functional dequantize_4bit / quantize_4bit:
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_functional_4bit(tag: str):
@@ -37,8 +35,6 @@ def test_bnb_functional_4bit(tag: str):
     assert not missing, (
         f"{tag}: bnb.functional missing {missing}; " f"unsloth-zoo dequant kernels rely on these"
     )
-
-
 
 
 # bnb.nn.Linear4bit / Params4bit:
@@ -64,10 +60,6 @@ def test_bnb_nn_linear4bit_classes(tag: str):
         f"{tag}: Linear4bit={found_linear} Params4bit={found_params} "
         f"in {candidates}; unsloth + peft 4-bit isinstance checks fail"
     )
-
-
-
-
 
 
 # Coverage extension (2026-05):

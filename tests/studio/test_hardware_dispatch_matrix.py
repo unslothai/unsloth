@@ -315,8 +315,6 @@ def test_studio_is_apple_silicon_matches_profile(profile, spoof_hardware):
     )
 
 
-
-
 # Negative-space tests: catch regressions where the dispatch order changes.
 def test_cuda_takes_priority_over_mlx_when_both_available(spoof_hardware):
     """CUDA wins over MLX when both available: canary against GPU users being routed to MLX after refactors."""

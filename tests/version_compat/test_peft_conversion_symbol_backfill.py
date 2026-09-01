@@ -756,8 +756,6 @@ def test_the_backfill_runs_from_the_guard():
     assert "_backfill_missing_conversion_symbols() or patched_any" in src
 
 
-
-
 def test_the_model_type_map_is_recovered_not_emptied(fake_modules):
     """peft copies this dict and looks model families up in it, so handing it
     the stub's empty one drops every alias silently: `_convert_peft_config_moe`
@@ -915,8 +913,6 @@ def test_the_fetcher_walks_a_package():
 
     src = inspect.getsource(_peft_converter_source)
     assert "__path__" in src and "iter_modules" in src
-
-
 
 
 def test_a_fused_moe_type_that_does_not_say_moe_still_refuses():

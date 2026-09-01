@@ -106,7 +106,9 @@ def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen(monkeypatch):
 
     assert any("manual forward/backward" in str(w.message) for w in caught)
     assert "hook" not in m._unsloth_pretrain_marker
-    assert m._unsloth_pretrain_marker["seen"] is False  # no backward graph -> clean grad-enabled forward poisons the
+    assert (
+        m._unsloth_pretrain_marker["seen"] is False
+    )  # no backward graph -> clean grad-enabled forward poisons the
 
 
 def test_reset_tears_down_hook_even_when_not_seen(monkeypatch):

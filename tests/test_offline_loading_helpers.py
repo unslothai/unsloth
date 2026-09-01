@@ -11,7 +11,6 @@ import pytest
 from unsloth.models import loader_utils as L
 
 
-
 _OFFLINE_TRUE = ("1", "true", "yes", "on", "ON", " 1 ", "\tyes\n")
 _OFFLINE_FALSE = ("0", "no", "false", "off", "", "  ", "maybe")
 
@@ -64,8 +63,6 @@ def test_effective_lfo_is_read_only():
     kwargs = {"local_files_only": True}
     L._get_effective_local_files_only(kwargs)
     assert kwargs == {"local_files_only": True}
-
-
 
 
 def _http_error(status):
@@ -227,8 +224,6 @@ def test_cause_context_cycle_terminates():
     assert L._is_offline_related_error(a) is False
 
 
-
-
 def _inprocess_offline_flags():
     flags = []
     try:
@@ -308,8 +303,6 @@ def test_reset_hf_sessions_is_safe():
     L._reset_hf_sessions()
 
 
-
-
 def _touch(path, name):
     open(os.path.join(path, name), "w").close()
 
@@ -359,8 +352,6 @@ def test_resolve_tokenizer_config_without_files_falls_back(tmp_path):
 
 def test_resolve_tokenizer_nonexistent_dir_falls_back():
     assert L._resolve_checkpoint_tokenizer_name("/no/such/dir", {}) is None
-
-
 
 
 def test_retry_once_on_offline_error_then_succeed(monkeypatch):
@@ -472,8 +463,6 @@ def test_retry_runs_gc_collect_between_attempts(monkeypatch):
     assert len(gc_calls) == 1
 
 
-
-
 def test_force_offline_restores_freshly_imported_constant(monkeypatch):
     # If huggingface_hub.constants is first imported inside the window, the saved value must be the pre-window state
     import sys
@@ -498,8 +487,6 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
                 saved_mod.HF_HUB_OFFLINE = saved_val
 
 
-
-
 def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
@@ -514,8 +501,6 @@ def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
     assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) == str(
         tmp_path
     )
-
-
 
 
 def test_the_online_error_is_what_surfaces_when_the_cache_is_empty(monkeypatch):
@@ -618,8 +603,6 @@ def test_a_successful_retry_is_unchanged(monkeypatch):
 
     assert fake("model") == "loaded from cache"
     assert L._force_offline_depth == 0
-
-
 
 
 # what the retry must not hold, hide, or overwrite

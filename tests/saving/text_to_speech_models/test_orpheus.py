@@ -137,8 +137,6 @@ print("🔍 SECTION 6: Running Inference")
 print(f"{'='*80}")
 
 
-
-
 FastLanguageModel.for_inference(model)
 
 snac_model.to("cpu")
@@ -161,9 +159,7 @@ end_tokens = torch.tensor([[128009, 128260]], dtype = torch.int64)
 
 all_modified_input_ids = []
 for input_ids in all_input_ids:
-    modified_input_ids = torch.cat(
-        [start_token, input_ids, end_tokens], dim = 1
-    )
+    modified_input_ids = torch.cat([start_token, input_ids, end_tokens], dim = 1)
     all_modified_input_ids.append(modified_input_ids)
 
 all_padded_tensors = []

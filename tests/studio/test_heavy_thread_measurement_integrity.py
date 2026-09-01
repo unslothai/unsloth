@@ -110,7 +110,6 @@ def _load_harness():
 HARNESS = _load_harness()
 
 
-
 # performance.now() is the fake clock, requestAnimationFrame is a queue this file pumps, and setTimeout is a queue too
 FAKE_ENV = """
 let now = 0;
@@ -165,7 +164,6 @@ def run_node(body: str, sources: dict[str, str]) -> dict:
 RECORDER_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT}
 
 
-
 # ── the recorder must not leak a loop into the next action ────────────
 LEAK_BODY = """
 eval(RECORDER_INIT);
@@ -199,7 +197,6 @@ def test_the_recorder_does_not_charge_the_between_action_gap_as_a_frame() -> Non
     # It lands in worst_frame_ms and, once the gap is over 33ms, in frames_over_33 as well: both growth axes.
     got = run_node(LEAK_BODY, RECORDER_SOURCES)
     assert got["second_worst"] == 16, got
-
 
 
 # ── re-open must not stop the clock while Shiki is still running ──────
@@ -262,7 +259,6 @@ def test_reopen_closes_its_recorder_window_at_the_last_activity() -> None:
     # number.
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
     assert got["wallMs"] <= got["lastChangeAt"] + 120, got
-
 
 
 # ── no-regression guards: what the timed windows may scan ───────────── GUARDS, not evidence for a finding.
@@ -379,7 +375,6 @@ def test_the_menu_window_takes_one_census_and_not_one_per_frame() -> None:
     assert got["querySelectorAllCalls"] <= 1, got
 
 
-
 MENU_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "MENU_JS": HARNESS.MENU_JS}
 
 # A menu that opens and closes with NO work at all:
@@ -448,8 +443,6 @@ def test_the_menu_growth_value_has_both_floors_removed() -> None:
     assert (small, large) == (40.0, 940.0), (small, large)
 
 
-
-
 def menu_repetition(open_ms: float | None) -> dict:
     close_ms = 40.0
     total = None if open_ms is None else open_ms + close_ms
@@ -489,8 +482,6 @@ def test_the_median_of_three_good_repetitions_is_unchanged() -> None:
         [menu_repetition(80.0), menu_repetition(100.0), menu_repetition(120.0)]
     )
     assert summary["menu"]["openMs"] == 100.0, summary["menu"]
-
-
 
 
 # ── the verdict must reject an action that never settled ──────────────
@@ -634,8 +625,6 @@ def test_a_jump_that_never_settled_is_a_harness_failure() -> None:
     assert any("jump action but it never reached a settled state" in f for f in failures), failures
 
 
-
-
 class StubLocator:
     def __init__(self, log: list, selector: str) -> None:
         self.log = log
@@ -767,8 +756,6 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
     assert "seeded.current = built.messages" in page
 
 
-
-
 # high subtracts time the action never spent. REOPEN_JS now counts the waits it actually pays, so
 # the declared paint floor ────────────────────────────────────────── `growth()` subtracts `floored` double-rAF vsync
 def floor_row(
@@ -896,8 +883,6 @@ def test_an_action_that_ran_without_a_count_is_still_reported() -> None:
     assert len(problems) == 1 and "unverified" in problems[0], problems
 
 
-
-
 # the wall axes carry the floor they actually paid ──────────────────
 def wall_cells(
     paint_waits: int,
@@ -950,8 +935,6 @@ def test_a_missing_wait_count_subtracts_nothing_rather_than_crashing() -> None:
     _pick, floored = wall_axis()
     assert floored({"actions": {"menu": {}}}) == 0
     assert floored({}) == 0
-
-
 
 
 def error_cell(seed_errors = 0, action_errors = 0) -> dict:
@@ -1013,8 +996,6 @@ def test_the_recorder_zeroes_its_wait_counter_at_the_start_of_each_window() -> N
         "begin() no longer zeroes the paint-wait counter, so every window inherits the waits of "
         "the ones before it"
     )
-
-
 
 
 # ── a counter rising from zero has to say something ─────────────────── No ratio can be formed against zero, so
@@ -1222,8 +1203,6 @@ def wall_cells_for_report(paint_waits: int) -> dict:
             }
         },
     }
-
-
 
 
 # ── halves, and counters that never left the noise ────────────────────

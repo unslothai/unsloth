@@ -207,8 +207,6 @@ class PackageEntry:
         return f"{self.name}@{self.version}"
 
 
-
-
 # ───────────────────────────────────────────────────────────────────── IOC patterns.
 # Two flavours: - HOSTS / TOKEN_PATHS: high-confidence substrings;
 # near-zero FP rate - JS_PATTERNS / SCRIPT_PATTERNS: regex;
@@ -558,8 +556,6 @@ _OBFUSC_BLOB = re.compile(
 )
 
 
-
-
 def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     """Return (entries, structural_findings).
 
@@ -653,8 +649,6 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     return entries, findings
 
 
-
-
 def _decode_integrity(integrity: str) -> tuple[str, bytes] | None:
     """Parse SRI integrity 'sha512-<base64>' -> (algo, digest_bytes)."""
     if "-" not in integrity:
@@ -734,8 +728,6 @@ def download_tarball(
             f"got {algo}={_b64.b64encode(actual).decode()!r}"
         )
     return dest, None
-
-
 
 
 def _is_within(root: Path, candidate: Path) -> bool:
@@ -834,8 +826,6 @@ def safe_extract(
     except Exception as exc:
         return f"unexpected extract error: {exc!r}"
     return None
-
-
 
 
 # a too-far start only over-binds (more context, still fail-closed), never less.
@@ -1595,7 +1585,6 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 )
             )
 
-
     # Credential PATHS aren't scanned here (too many FPs at file scope);
     # scan_package_json catches them inside lifecycle scripts.
     if _JS_FETCH_EVAL.search(text):
@@ -1700,8 +1689,6 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
             findings.extend(scan_package_json(pkg, rel, text))
         findings.extend(scan_text_blob(pkg, rel, text))
     return findings
-
-
 
 
 def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | None]:

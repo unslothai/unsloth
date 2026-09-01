@@ -86,8 +86,6 @@ def test_the_reference_signature_is_what_we_matched():
     assert _params(node[0])[:4] == ["self", "save_directory", "tokenizer", "save_method"]
 
 
-
-
 def test_merge_and_unload_path_refuses_an_unsupported_method():
     src = ST_PY.read_text(encoding = "utf-8")
     node = _defs("_save_pretrained_merged", ST_PY)[0]
@@ -111,8 +109,6 @@ def test_an_explicit_tokenizer_is_not_shadowed_by_kwargs(i):
     body = ast.get_source_segment(src, _defs("_save_pretrained_merged", ST_PY)[i])
     assert "if tokenizer is None:" in body
     assert 'pop("tokenizer", None)' in body
-
-
 
 
 def _extract_helper(name):
@@ -245,8 +241,6 @@ def test_unsupported_save_method_raises_not_implemented(tmp_path):
     assert st.saved == [], "and before writing a half-finished directory"
 
 
-
-
 def test_no_modules_fallback_refuses_an_unsupported_method(tmp_path):
     """That branch drops save_method and merges unconditionally, so "lora"
     would return full weights for a request to write adapters."""
@@ -273,8 +267,6 @@ def test_the_forwarding_path_still_accepts_lora(tmp_path):
     fn(st, str(tmp_path), None, "lora")
     assert st.inner.forwarded["save_method"] == "lora"
     assert not st.inner.merged
-
-
 
 
 # spellings mean the same thing as in unsloth_save_model ----------------

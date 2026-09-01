@@ -25,8 +25,6 @@ PEFT_TAGS = [
 ]
 
 
-
-
 # Top-level re-exports: sentence_transformer.py:1948 does `from peft import LoraConfig, get_peft_model`;
 # unsloth_zoo saving_utils/lora extractors hit PeftModel.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
@@ -46,8 +44,6 @@ def test_peft_top_level_exports(tag: str):
     )
 
 
-
-
 # LoraConfig at the canonical sub-module path:
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_config_class(tag: str):
@@ -62,8 +58,6 @@ def test_peft_lora_config_class(tag: str):
         if src is not None and has_def(src, "LoraConfig", "class"):
             found_in.append(p)
     assert found_in, f"{tag}: peft.tuners.lora.LoraConfig not in any of {candidates}"
-
-
 
 
 # get_peft_model: top-level helper used by sentence_transformer.py:2043.
@@ -83,8 +77,6 @@ def test_get_peft_model_function(tag: str):
     pytest.fail(f"{tag}: def get_peft_model(...) not found in any of {candidates}")
 
 
-
-
 # LoraLayer base class: unsloth-zoo's MoE LoRA extractor walks subclasses of peft.tuners.lora.LoraLayer.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_layer_class(tag: str):
@@ -102,8 +94,6 @@ def test_peft_lora_layer_class(tag: str):
         f"unsloth-zoo MoE LoRA extractor relies on isinstance checks "
         f"against this class"
     )
-
-
 
 
 # bnb-aware LoRA: peft.tuners.lora.bnb is the bitsandbytes integration point.
@@ -173,8 +163,6 @@ def test_peft_param_wrapper_class(tag: str):
         _present = name in src
 
 
-
-
 # peft.tuners.lora.layer.ParamWrapper — peft 0.18 added the class for MoE 3D-parameter LoRA.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_config_target_parameters(tag: str):
@@ -230,8 +218,6 @@ def test_peft_transformers_weight_conversion_module(tag: str):
     )
 
 
-
-
 # peft.utils.transformers_weight_conversion.build_peft_weight_mapping — unsloth#5167 wraps it to handle
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_integrations_dequantize_module_weight(tag: str):
@@ -247,8 +233,6 @@ def test_peft_integrations_dequantize_module_weight(tag: str):
         f"unsloth-zoo vllm_utils.py:2701, unsloth/_utils.py:1550, "
         f"saving_utils.py:270 ImportError"
     )
-
-
 
 
 # peft.utils.integrations.dequantize_module_weight — used by 3 unsloth/ unsloth-zoo callsites.
@@ -270,8 +254,6 @@ def test_peft_type_lora_enum(tag: str):
         f"{tag}: peft.PeftType (with LORA member) not in any of {candidates}; "
         f"unsloth-zoo vllm_utils.py:2520 reference breaks"
     )
-
-
 
 
 # peft.PeftType.LORA — used by unsloth-zoo vllm_utils.py:2520-2559.
@@ -306,8 +288,6 @@ def test_peft_peft_model_from_pretrained_signature(tag: str):
     assert has_def(
         src, "from_pretrained", "func"
     ), f"{tag}: PeftModel.from_pretrained missing in peft_model.py"
-
-
 
 
 # 9. peft.PeftModel.from_pretrained signature pin — unsloth#4807.

@@ -58,8 +58,6 @@ def no_torch_venv(request, tmp_path_factory):
     return str(venv_python)
 
 
-
-
 class TestDataCollatorsAST:
     """Static analysis: data_collators.py has no top-level torch imports."""
 
@@ -132,8 +130,6 @@ class TestChatTemplatesAST:
                 f"torch import at line {imp.lineno} is at top level"
                 " (should be inside a function)"
             )
-
-
 
 
 class TestDataCollatorsNoTorchVenv:
@@ -223,8 +219,6 @@ class TestDataCollatorsNoTorchVenv:
         )
         assert result.returncode == 0, f"VLMDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: VLMDataCollator instantiated" in result.stdout
-
-
 
 
 class TestChatTemplatesNoTorchVenv:
@@ -321,8 +315,6 @@ class TestChatTemplatesNoTorchVenv:
             result.returncode == 0
         ), f"DEFAULT_ALPACA_TEMPLATE check failed:\n{result.stderr.decode()}"
         assert b"OK: DEFAULT_ALPACA_TEMPLATE defined and valid" in result.stdout
-
-
 
 
 class TestFormatConversionAST:
@@ -490,8 +482,6 @@ class TestFormatConversionNoTorchVenv:
             result.returncode == 0
         ), f"convert_alpaca_to_chatml failed without torch:\n{result.stderr.decode()}"
         assert b"OK: convert_alpaca_to_chatml works without torch" in result.stdout
-
-
 
 
 class TestNegativeControls:

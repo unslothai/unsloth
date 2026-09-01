@@ -269,7 +269,6 @@ def test_an_unrelated_class_is_not_reduced_through_the_patched_one(patched):
     assert _Unrelated not in copyreg.dispatch_table
 
 
-
 # and only then imports unsloth. The fixture above cannot reproduce it, because
 _PRISTINE_PROBE = r"""
 import json, os, pickle, sys, tempfile

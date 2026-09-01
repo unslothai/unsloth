@@ -44,8 +44,6 @@ sys.path.insert(0, str(ROOT))
 from unsloth import import_fixes as IF  # noqa: E402
 
 
-
-
 def test_it_is_valid_python():
     """A syntax error breaks every subprocess on the machine, which is far
     worse than the bug being fixed."""
@@ -108,8 +106,6 @@ def test_it_only_imports_the_stdlib_and_torch():
                 assert a.name in allowed, f"unexpected import: {a.name}"
         elif isinstance(node, ast.ImportFrom) and node.module:
             assert node.module in allowed, f"unexpected import: {node.module}"
-
-
 
 
 @pytest.fixture(autouse = True)
@@ -180,8 +176,6 @@ def test_it_is_idempotent_on_pythonpath():
     import inspect
     src = inspect.getsource(IF.propagate_torchao_fix_to_subprocesses)
     assert "if directory not in parts:" in src
-
-
 
 
 def test_the_directory_is_private_to_this_user():
@@ -261,8 +255,6 @@ def test_the_refusal_does_not_propagate_as_a_crash(monkeypatch):
     i = src.index("_subprocess_fix_directory()")
     assert "try:" in src[:i]
     assert "except Exception as exception:" in src[i:]
-
-
 
 
 @pytest.fixture
@@ -495,8 +487,6 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
-
-
 # ---- the in-process fix must not disable this one -------------------------
 def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp_path):
     """_gpu_init.py runs fix_torchao_torch_symbol_skew() immediately before
@@ -542,8 +532,6 @@ def test_a_placeholder_does_not_count_as_a_real_torch_symbol():
         IF._torch_really_has(type("_F", (), {"ScalingType": placeholder}), "ScalingType") is False
     )
     assert IF._torch_really_has(type("_F", (), {}), "ScalingType") is False
-
-
 
 
 # a hook file planted before the directory was tightened ---------------
@@ -699,8 +687,6 @@ def test_the_staging_file_is_private_and_leaves_nothing_behind(tmp_path):
         assert oct(_stat.S_IMODE(os.lstat(target).st_mode)) == oct(0o600)
 
 
-
-
 # the chained sitecustomize keeps its own name -------------------------
 def test_a_chained_package_stays_importable(staged, tmp_path):
     """Restoring our module under `sitecustomize` would hide the real one from
@@ -757,8 +743,6 @@ def test_a_broken_chained_module_does_not_keep_our_name(staged, tmp_path):
     )
     assert "STILL OK" in p.stdout, p.stdout + p.stderr
     assert "MARK <<none>>" in p.stdout, p.stdout + p.stderr
-
-
 
 
 _COUNT_HOOKS = (

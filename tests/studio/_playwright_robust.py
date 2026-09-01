@@ -97,8 +97,6 @@ def install_view_transition_killer(ctx: Any) -> None:
     ctx.add_init_script(_VIEW_TRANSITION_KILLER_JS)
 
 
-
-
 # The smoke pages are dev-server-only, so each harness owns its server.
 # Hence the process group, stdout drain and SIGKILL escalation.
 # A backgrounded `npm run dev &` puts the npm WRAPPER in $!, and killing that orphans the node child holding the port
@@ -340,8 +338,6 @@ def wait_for_health(
     return False
 
 
-
-
 # Page recovery: if the page died mid-test, open a fresh one in the same context (localStorage auth survives);
 def recover_or_replace_page(
     page: Any,
@@ -375,8 +371,6 @@ def recover_or_replace_page(
     return page
 
 
-
-
 def click_and_wait_for_response(
     page: Any,
     *,
@@ -408,7 +402,6 @@ def click_and_wait_for_response(
         except Exception:
             pass
         return None, exc
-
 
 
 # Console-error / page-error filtering.
@@ -493,8 +486,6 @@ def echo_browser_errors(page: Any, info: Callable[[str], None]) -> None:
         "framenavigated",
         lambda f: info(f"navigated: {f.url}") if f is page.main_frame else None,
     )
-
-
 
 
 def dump_diagnostics(

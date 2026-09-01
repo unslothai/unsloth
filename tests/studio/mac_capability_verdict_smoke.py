@@ -118,8 +118,6 @@ def ok(msg: str) -> None:
     print(f"[verdict]   OK {msg}", flush = True)
 
 
-
-
 def _get(
     url: str,
     token: str | None = None,
@@ -156,8 +154,6 @@ def _post(
     except Exception:
         # Connection refused before the socket binds, and read timeouts while a C-extension import holds the GIL.
         return None, None
-
-
 
 
 @dataclass(frozen = True)
@@ -363,8 +359,6 @@ class TokenGetter(threading.Thread):
         self._stop.set()
 
 
-
-
 def _write_mlx_block_shim(directory: Path) -> Path:
     """A sitecustomize that hides mlx from the import system, for the server we boot.
 
@@ -459,8 +453,6 @@ def _read_marker(marker: Path) -> dict | None:
         return None
 
 
-
-
 def boot(port: int, log: Path, env: dict) -> int | None:
     """Run the repo's boot script and return the server pid.
 
@@ -551,8 +543,6 @@ def tail_log(log: Path, lines: int = 80) -> None:
     info(f"last {min(lines, len(content))} lines of {log}:")
     for line in content[-lines:]:
         print(f"  | {line}", flush = True)
-
-
 
 
 def assert_watched_the_window(poller: HealthPoller) -> None:
@@ -665,8 +655,6 @@ def booted(port: int, log: Path, env: dict):
         poller.stop()
         poller.report()
         stop(pid)
-
-
 
 
 def scenario_real_mlx(port: int, log: Path) -> None:

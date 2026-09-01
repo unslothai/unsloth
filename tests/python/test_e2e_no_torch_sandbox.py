@@ -165,11 +165,8 @@ def no_torch_venv(request, tmp_path_factory):
     return str(py)
 
 
-
-
 class TestBeforeAfterImportChain:
     """BEFORE (synthetic top-level torch import) crashes; AFTER (lazy imports) works."""
-
 
     def test_before_chat_templates_crashes(self, no_torch_venv, sandbox_dir):
         """BEFORE: chat_templates.py with top-level IterableDataset import crashes without torch."""
@@ -259,7 +256,6 @@ class TestBeforeAfterImportChain:
         result = _run_in_sandbox(no_torch_venv, code)
         assert result.returncode != 0, "BEFORE full import chain should crash without torch"
         assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
-
 
     def test_after_chat_templates_imports(self, no_torch_venv):
         """AFTER: PR branch chat_templates.py imports fine without torch."""
@@ -361,8 +357,6 @@ class TestBeforeAfterImportChain:
         assert b"OK: full import chain succeeded" in result.stdout
 
 
-
-
 class TestDataclassInstantiation:
     """Dataclass collators instantiate and constants are accessible without torch."""
 
@@ -442,8 +436,6 @@ class TestDataclassInstantiation:
         """)
         result = _run_in_sandbox(no_torch_venv, code)
         assert result.returncode == 0, f"Failed:\n{result.stderr.decode()}"
-
-
 
 
 class TestEdgeCasesBrokenTorch:
@@ -580,8 +572,6 @@ class TestEdgeCasesBrokenTorch:
         assert b"OK: import succeeded" in result.stdout
 
 
-
-
 class TestHardwareDetectionNoTorch:
     """Hardware module works without torch, falling back to CPU."""
 
@@ -650,8 +640,6 @@ class TestHardwareDetectionNoTorch:
         result = _run_in_sandbox(no_torch_venv, code)
         assert result.returncode == 0, f"Failed:\n{result.stderr.decode()}"
         assert b"OK:" in result.stdout
-
-
 
 
 class TestInstallShLogic:
@@ -824,8 +812,6 @@ class TestInstallShLogic:
         assert r.stdout.strip() == b"true"
 
 
-
-
 class TestInstallPythonStackFiltering:
     """NO_TORCH filtering logic in install_python_stack.py."""
 
@@ -909,8 +895,6 @@ class TestInstallPythonStackFiltering:
         assert (
             "not IS_WINDOWS and not IS_MACOS" in source
         ), "'not IS_WINDOWS and not IS_MACOS' guard for triton not found"
-
-
 
 
 def _studio_venv_python() -> Path | None:

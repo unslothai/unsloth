@@ -75,8 +75,6 @@ def _has_def(
     return False
 
 
-
-
 # HARD-import symbols: must be present in every tested version.
 @pytest.mark.parametrize("tag", VLLM_TAGS)
 def test_vllm_lora_request_hard_imports(tag: str):
@@ -162,8 +160,6 @@ def test_vllm_lora_models_either_path(tag: str):
         )
 
 
-
-
 # Optional / version-gated symbols:
 @pytest.mark.parametrize("tag", VLLM_TAGS)
 def test_vllm_worker_lora_manager_class(tag: str):
@@ -191,8 +187,6 @@ def test_lora_request_no_removed_kwargs(tag: str):
     has_dir = bool(re.search(r"\blora_dir\b", src))
     has_path = bool(re.search(r"\blora_path\b", src))
     assert has_dir or has_path, f"{tag}: vllm.lora.request has neither lora_dir nor lora_path"
-
-
 
 
 # UNSLOTH_VLLM_STANDBY hard-error windows: unsloth-zoo refuses standby on 0.10.0 <= vllm < 0.11.0 (std::bad_alloc) and

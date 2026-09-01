@@ -94,8 +94,7 @@ def test_st_models_re_exports(tag: str):
     top = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
     assert top is not None, f"{tag}: sentence_transformers/__init__.py missing"
     has_shim = bool(
-        re.search(r"setup_deprecated_module_imports\s*\(", top)
-        or "import_from_string" in top
+        re.search(r"setup_deprecated_module_imports\s*\(", top) or "import_from_string" in top
     )
     assert has_shim, (
         f"{tag}: ST 5.4+ layout: deprecated-module shim NOT wired in "

@@ -58,8 +58,6 @@ WRAPPED = "_unsloth_grpo_hidden_states_forward_wrapped"
 DEGRADED = "_unsloth_grpo_hidden_states_warning_issued"
 
 
-
-
 class _Plain:
     """A model Unsloth never touched: no marker, no wrapper.
 
@@ -142,8 +140,6 @@ def test_a_self_referencing_wrapper_chain_terminates():
     assert hidden_states_signal(model) is None
 
 
-
-
 def _lm_head(vocab, hidden):
     return torch.zeros(vocab, hidden)
 
@@ -201,7 +197,6 @@ def test_a_negative_signal_cannot_overrule_a_decisive_width_test():
     """
     head = _lm_head(17, 8)
     assert returns_hidden_states(_wrapped(degraded = True), _tensor(8), head) is True
-
 
 
 SQUARE = 12  # vocab_size == hidden_size: the width comparison cannot decide

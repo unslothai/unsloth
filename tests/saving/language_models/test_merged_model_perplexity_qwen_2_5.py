@@ -161,7 +161,6 @@ def load_and_compute_8bit_ppl(
     result_queue.put(ppl_value)
 
 
-
 if __name__ == "__main__":
     mp.set_start_method("spawn", force = True)
 
@@ -244,7 +243,6 @@ if __name__ == "__main__":
     model.save_pretrained_merged(
         save_directory = "./unsloth_out/merged_qwen_text_model", tokenizer = tokenizer
     )
-
 
     print("Loading merged model in 4 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(

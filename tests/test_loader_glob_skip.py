@@ -38,7 +38,6 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
 
         return both_exist, glob_mock.called
 
-
     def test_glob_skipped_when_is_model_false(self):
         both_exist, glob_called = self._run_both_exist_block(
             is_model = False,
@@ -79,7 +78,6 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
         self.assertFalse(glob_called, "glob should not be called when SUPPORTS_LLAMA32=False")
         # both_exist set by the old-style check: (is_model and is_peft) and not SUPPORTS_LLAMA32
         self.assertTrue(both_exist)
-
 
     def test_glob_called_when_both_true_and_supports_llama32(self):
         both_exist, glob_called = self._run_both_exist_block(

@@ -119,8 +119,6 @@ _NOT_RDNA1_NAMES = [
 ]
 
 
-
-
 class TestUnsupportedNameLookup:
     @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
     def test_rdna1_names_resolve_to_their_arch(self, name, expected):
@@ -150,8 +148,6 @@ class TestUnsupportedNameLookup:
         supported = {arch for _p, arch in stack_mod._WIN_GPU_NAME_ARCH_TABLE}
         unsupported = {arch for _p, arch in stack_mod._UNSUPPORTED_GPU_NAME_ARCH_TABLE}
         assert not (supported & unsupported)
-
-
 
 
 def _wmi_detect(names):
@@ -373,8 +369,6 @@ class TestWindowsWmiMessage:
         assert "does not cover" not in out
 
 
-
-
 def _sh_function_body(source: str, name: str) -> str:
     needle = f"{name}() {{"
     start = source.find(needle)
@@ -501,8 +495,6 @@ class TestUnsupportedTableParity:
     def test_no_copy_claims_a_supported_card(self, name):
         answers = {where: fn(name) for where, fn in _all_copies().items()}
         assert set(answers.values()) == {None}, f"{name!r} was claimed as unsupported: {answers}"
-
-
 
 
 def _normalised(path: Path) -> str:
@@ -689,8 +681,6 @@ class TestAdviceIsNotEmittedForRdna1:
         assert src.index(needle) < src.index(fallthrough)
 
 
-
-
 def _run_setup_kfd_lookup(gpu_name: str, lspci_lines: "list[str] | None", tmp_path) -> str:
     """Run studio/setup.sh's report-side lookup with a scripted lspci.
 
@@ -795,8 +785,6 @@ class TestSetupShKfdOnlyHost:
             assert "lspci" not in rhs, f"_setup_mkt fed from lspci: {rhs!r}"
 
 
-
-
 def test_the_unsupported_arch_variable_is_declared_outside_the_amd_block():
     """install.ps1 reads it on paths an NVIDIA host takes.
 
@@ -831,8 +819,6 @@ def test_setup_ps1_hoists_the_unsupported_arch_variable_too():
         "setup.ps1: the unsupported-arch declaration is indented, so it now sits "
         "inside a block an NVIDIA host skips"
     )
-
-
 
 
 _ROCM_ARM = {
@@ -890,8 +876,6 @@ def test_the_rocm_summary_chain_yields_to_an_identified_uncovered_card():
         "setup.ps1: the ROCm summary reports an uncovered card as ordinary ROCm, so the "
         f"same run says 'ROCm' here and 'no wheels' below:\n{lines[opener]}"
     )
-
-
 
 
 # A host is not one GPU.
@@ -958,8 +942,6 @@ def test_the_scoped_wording_is_the_one_that_ships(name, claims):
         )
 
 
-
-
 def _run_sh_lookup(source_path: Path, fn_name: str, gpu_name: str) -> str:
     body = _sh_function_body(source_path.read_text(encoding = "utf-8"), fn_name)
     script = f'{body}\n{fn_name} "$1" || true\n'
@@ -1018,8 +1000,6 @@ class TestShellLookupsRun:
         because it comes last. Evaluate it in a real shell rather than trusting
         the ordering by inspection."""
         assert _run_sh_lookup(path, fn, name) == expected
-
-
 
 
 # ── The Vulkan pointer (#8458) ───────────────────────────────────────────────
@@ -1334,8 +1314,6 @@ class TestVulkanAdvice:
             "the ignore notice is no longer gated on an explicit request, so every macOS "
             f"install logs it:\n{body}"
         )
-
-
 
 
 # ── Polaris, the second card in the cluster (#8458) ──────────────────────────

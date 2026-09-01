@@ -73,8 +73,6 @@ DEFAULT_PROMPT = (
 _PERFECT_MATCH_PSNR = 100.0
 
 
-
-
 def _gray(frame: Any) -> Any:
     import numpy as np
     f = np.asarray(frame, dtype = np.float64)
@@ -232,8 +230,6 @@ def verdict(metrics: dict[str, Any], audio: dict[str, Any]) -> str:
     return "PASS"
 
 
-
-
 def decode_mp4(mp4_bytes: bytes, workdir: Path, name: str) -> tuple[list[Any], Optional[Any]]:
     """Frames (uint8 arrays) + mono audio samples (float array or None) from bytes."""
     import av
@@ -252,8 +248,6 @@ def decode_mp4(mp4_bytes: bytes, workdir: Path, name: str) -> tuple[list[Any], O
             audio = np.concatenate([c.reshape(c.shape[0], -1).mean(axis = 0) for c in chunks])
     container.close()
     return frames, audio
-
-
 
 
 def parse_spec(spec: str) -> dict[str, str]:
@@ -399,8 +393,6 @@ def run_gate(args: Any) -> int:
     (out_dir / "report.json").write_text(json.dumps(report, indent = 1))
     print(f"report: {out_dir / 'report.json'}", flush = True)
     return 0 if all(r["verdict"] != "FAIL" for r in rows) else 1
-
-
 
 
 def selftest() -> int:

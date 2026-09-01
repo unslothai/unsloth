@@ -50,8 +50,6 @@ HEAD_DIM = 128
 MAX_POS = 131072
 
 
-
-
 def _load_class_init():
     tree = ast.parse(LLAMA_PY.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
@@ -160,8 +158,6 @@ def test_v5_repair_reuses_recompute():
         "_unsloth_recompute_inv_freq; transformers v5 blanks the buffer on load "
         "and an unscaled rebuild re-drops llama3 scaling (issue #2405)."
     )
-
-
 
 
 def _make_config(rope_scaling):
@@ -351,8 +347,6 @@ def _cos_at_position(rot, position):
     freqs = torch.outer(t, inv_freq)
     emb = torch.cat((freqs, freqs), dim = -1)
     return emb.cos().squeeze(0)
-
-
 
 
 @requires_gpu

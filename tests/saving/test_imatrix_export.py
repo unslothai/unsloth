@@ -36,8 +36,6 @@ class _Model:
         self.peft_config = {}
 
 
-
-
 def test_public_savers_accept_imatrix_file():
     for fn in (S.unsloth_save_pretrained_gguf, S.unsloth_push_to_hub_gguf):
         assert "imatrix_file" in inspect.signature(fn).parameters, fn.__name__
@@ -52,8 +50,6 @@ def test_imatrix_quants_registry():
     for q in ("iq2_xxs", "iq4_xs", "iq1_s", "iq3_xxs"):
         assert q in S.IMATRIX_QUANTS
         assert q not in S.ALLOWED_QUANTS, f"{q} must be gated, not in the always-on allow-list"
-
-
 
 
 def test_resolve_none_and_false_return_none(tmp_path):
@@ -86,8 +82,6 @@ def test_resolve_gguf_file_is_renamed_to_gguf(tmp_path):
     assert os.path.isfile(out)
 
 
-
-
 def test_repo_candidates_appends_gguf():
     repos = S._gguf_repo_candidates(_Model("unsloth/Llama-3.1-8B-Instruct"))
     assert "unsloth/Llama-3.1-8B-Instruct-GGUF" in repos
@@ -107,8 +101,6 @@ def test_repo_candidates_keeps_existing_gguf_suffix():
 
 def test_repo_candidates_skips_local_dirs(tmp_path):
     assert S._gguf_repo_candidates(_Model(str(tmp_path))) == []
-
-
 
 
 class _FakeApi:
@@ -174,8 +166,6 @@ def test_resolve_true_missing_raises(monkeypatch, tmp_path):
     assert "imatrix" in str(e.value).lower()
 
 
-
-
 def test_iq_quant_without_imatrix_is_rejected():
     with pytest.raises(RuntimeError) as e:
         S.save_to_gguf(
@@ -199,8 +189,6 @@ def test_unknown_quant_is_rejected():
         )
 
 
-
-
 @_needs_zoo_imatrix
 def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
     captured = {}
@@ -222,7 +210,9 @@ def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
     import shlex
 
     monkeypatch.setattr(L.subprocess, "run", _fake_run)
-    imat = str(tmp_path / "imatrix it.dat")  # space in path -> must be shell-quoted quantize_gguf validates the
+    imat = str(
+        tmp_path / "imatrix it.dat"
+    )  # space in path -> must be shell-quoted quantize_gguf validates the
     with open(imat, "wb") as f:
         f.write(b"\x00")
     L.quantize_gguf(

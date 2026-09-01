@@ -92,8 +92,6 @@ def _run_check(caplog):
     return _warnings(caplog)
 
 
-
-
 @pytest.mark.parametrize(
     "requires, installed",
     [
@@ -134,8 +132,6 @@ def test_satisfied_requirements_are_silent(monkeypatch, caplog, requires, instal
     _install_env(monkeypatch, requires, installed)
     assert IF._unsatisfied_transformers_requirements() == []
     assert _run_check(caplog) == []
-
-
 
 
 def test_violated_floor_is_reported_and_names_the_dependency(monkeypatch, caplog):
@@ -213,8 +209,6 @@ def test_prerelease_dependency_satisfying_the_floor_is_not_reported(monkeypatch,
     assert _run_check(caplog) == []
 
 
-
-
 def test_inapplicable_environment_markers_are_skipped(monkeypatch, caplog):
     """Extras and python_version gates that do not apply must not be checked,
     even when a violating version of the named package is installed."""
@@ -249,8 +243,6 @@ def test_applicable_environment_marker_is_still_checked(monkeypatch, caplog):
     )
     assert IF._unsatisfied_transformers_requirements() == [("safetensors", ">=0.8.0", "0.7.0")]
     assert "safetensors" in _run_check(caplog)[0]
-
-
 
 
 def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, caplog):
@@ -302,8 +294,6 @@ def test_unreadable_metadata_is_still_silent(monkeypatch, caplog):
     monkeypatch.setattr(IF, "importlib_version", broken_version)
     assert IF._unsatisfied_transformers_requirements() == []
     assert _run_check(caplog) == []
-
-
 
 
 @pytest.mark.parametrize(
@@ -361,8 +351,6 @@ def test_env_var_silences_the_check(monkeypatch, caplog):
     )
     monkeypatch.setenv("UNSLOTH_SKIP_TRANSFORMERS_DEPENDENCY_CHECK", "1")
     assert _run_check(caplog) == []
-
-
 
 
 def test_runs_against_the_real_environment_without_raising(caplog):

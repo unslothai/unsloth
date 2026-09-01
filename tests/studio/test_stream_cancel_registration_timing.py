@@ -22,8 +22,6 @@ SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(SRC)
 
 
-
-
 def _collect_async_functions(tree: ast.AST):
     return [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)]
 
@@ -73,8 +71,6 @@ def _calls_name(node: ast.AST, name: str) -> bool:
             if sub.func.id == name:
                 return True
     return False
-
-
 
 
 def test_no_tracker_enter_inside_async_generators():
@@ -241,7 +237,6 @@ def test_audio_input_stream_installs_disconnect_watcher():
     assert has_cleanup, "audio_input_stream must stop its disconnect watcher in finally"
 
 
-
 _WANTED = {
     "_CANCEL_REGISTRY",
     "_CANCEL_LOCK",
@@ -357,8 +352,6 @@ async def _post_fix_gguf_loop(cancel_event):
         yield cumulative
     yield "final_chunk"
     yield "[DONE]"
-
-
 
 
 def test_finally_cleanup_on_normal_completion():
@@ -482,8 +475,6 @@ def test_cancel_during_streaming_stops_iteration_promptly():
     assert "cumulative-2" not in seen
     assert "final_chunk" in seen
     assert "[DONE]" in seen
-
-
 
 
 def _loop_has_cancel_event_check(fn) -> bool:
@@ -746,8 +737,6 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
         "request.is_disconnected() / CancelledError cleanup paths and "
         "prevents KV-cache drift after cancel-via-POST"
     )
-
-
 
 
 def test_unsloth_stream_loop_breaks_on_external_cancel_event():

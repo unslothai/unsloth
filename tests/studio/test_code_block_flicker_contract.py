@@ -201,8 +201,6 @@ def test_content_relaid_out_above_the_anchor_is_a_shift() -> None:
     assert analyse_stream(frames)["anchorShiftPx"] == 900.0
 
 
-
-
 def test_a_sweep_over_a_thread_that_knows_its_own_size_reports_no_shift() -> None:
     tops = [0.0, 1700.0, 3400.0]
     frames = [{"tops": tops, "scrollHeight": 5100.0, "heights": [1700.0] * 3} for _ in range(20)]
@@ -228,8 +226,6 @@ def test_sub_pixel_wobble_is_not_a_shift() -> None:
     a = {"tops": [0.0, 1700.0], "scrollHeight": 3400.0, "heights": [1700.0, 1700.0]}
     b = {"tops": [0.0, 1700.4], "scrollHeight": 3400.4, "heights": [1700.0, 1700.4]}
     assert analyse_sweep([a, b])["shiftFrames"] == 0
-
-
 
 
 def harness_source() -> str:

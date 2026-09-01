@@ -46,8 +46,6 @@ def _safe_version(raw):
         return _PkgVersion(match.group(0))
 
 
-
-
 def test_protobuf_message_factory_get_prototype_or_get_message_class_present():
     """``fix_message_factory_issue``."""
     mf = pytest.importorskip("google.protobuf.message_factory")
@@ -68,8 +66,6 @@ def test_protobuf_message_factory_get_prototype_or_get_message_class_present():
     assert has_get_prototype or has_get_message_class
 
 
-
-
 def test_datasets_version_not_in_broken_recursion_range():
     """``patch_datasets``: datasets 4.4.0-4.5.0 hit RLock recursion in the Arrow loader."""
     pytest.importorskip("datasets")
@@ -81,8 +77,6 @@ def test_datasets_version_not_in_broken_recursion_range():
         f"range that patch_datasets explicitly forbids. Downgrade to "
         f"datasets==4.3.0 or upgrade past 4.5.0."
     )
-
-
 
 
 def test_trl_is_x_available_returns_bool_not_tuple():
@@ -151,8 +145,6 @@ def test_trl_cached_available_flags_are_not_tuples():
         )
 
 
-
-
 def test_pretrained_model_enable_input_require_grads_uses_old_pattern():
     """``patch_enable_input_require_grads``: HF PR #41993 made
     enable_input_require_grads iterate ``self.modules()``, so vision submodules
@@ -211,8 +203,6 @@ def test_transformers_is_causal_conv1d_available_symbol_present():
         )
 
 
-
-
 def test_transformers_and_accelerate_is_wandb_available_callable():
     """``disable_broken_wandb``: patches is_wandb_available in three modules
     (transformers integration_utils + accelerate imports/utils); all must exist."""
@@ -238,8 +228,6 @@ def test_transformers_and_accelerate_is_wandb_available_callable():
     )
 
 
-
-
 def test_peft_transformers_weight_conversion_importable_and_signature():
     """``patch_peft_weight_converter_compatibility``: wraps build_peft_weight_mapping;
     silently no-ops if the module is unimportable."""
@@ -263,8 +251,6 @@ def test_peft_transformers_weight_conversion_importable_and_signature():
         f"build_peft_weight_mapping signature drifted: expected at "
         f"least {sorted(expected_params)}, got {sorted(actual_params)}."
     )
-
-
 
 
 def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
@@ -294,8 +280,6 @@ def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
         "``binary.metadata.num_ctas, *binary.metadata.cluster_dims`` "
         "unpack under torch.compile."
     )
-
-
 
 
 # Mirrors TORCH_TORCHVISION_COMPAT in torchvision_compatibility_check.
@@ -357,8 +341,6 @@ def test_installed_torch_torchvision_pair_is_compatible():
     )
 
 
-
-
 def test_vllm_guided_decoding_params_or_structured_outputs_present():
     """``fix_vllm_guided_decoding_params``: vLLM PR #22772 renamed
     GuidedDecodingParams -> StructuredOutputsParams; the fix re-aliases for trl."""
@@ -398,8 +380,6 @@ def test_vllm_aimv2_ovis_config_is_past_fix_version():
         )
 
 
-
-
 def test_huggingface_hub_is_offline_mode_or_hf_hub_offline_present():
     """``fix_huggingface_hub``: re-injects top-level ``is_offline_mode`` from
     ``constants.HF_HUB_OFFLINE`` after huggingface_hub dropped it."""
@@ -424,8 +404,6 @@ def test_huggingface_hub_is_offline_mode_or_hf_hub_offline_present():
     )
 
 
-
-
 def test_torch_nn_init_trunc_normal_exists():
     """``patch_trunc_normal_precision_issue``: fp16/bf16 wrapper monkey-patches
     torch.nn.init.trunc_normal_, which must still exist."""
@@ -436,8 +414,6 @@ def test_torch_nn_init_trunc_normal_exists():
         "torch.nn.init.trunc_normal_ removed/renamed; "
         "patch_trunc_normal_precision_issue cannot wrap it."
     )
-
-
 
 
 def test_xformers_is_post_num_splits_key_fix_or_not_installed():
@@ -455,8 +431,6 @@ def test_xformers_is_post_num_splits_key_fix_or_not_installed():
         )
 
 
-
-
 def test_transformers_pretrained_model_has_get_input_embeddings():
     """``patch_enable_input_require_grads``: its replacement calls
     ``get_input_embeddings`` per submodule, so the accessor must still exist."""
@@ -467,8 +441,6 @@ def test_transformers_pretrained_model_has_get_input_embeddings():
         "PreTrainedModel.get_input_embeddings was renamed or removed; "
         "patch_enable_input_require_grads's replacement no longer compiles."
     )
-
-
 
 
 # Regression for issue #4188:
@@ -690,8 +662,6 @@ def test_accelerate_patch_wired_into_gpu_init():
     )
 
 
-
-
 def test_bitsandbytes_rocm_detection_helpers_recognizable():
     """``fix_bitsandbytes_rocm_arch_detection``: the source sniff only patches
     bnb's ROCm helpers in recognized shapes; fail (don't import) when it drifts."""
@@ -734,8 +704,6 @@ def test_bitsandbytes_rocm_detection_helpers_recognizable():
                 "decline to patch it and Windows ROCm import-time noise / "
                 "wrong ROCM_GPU_ARCH may return."
             )
-
-
 
 
 def test_psutil_cpu_freq_shape_and_wiring():

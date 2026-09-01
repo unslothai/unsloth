@@ -35,8 +35,6 @@ _AMD_PY = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
 _PYSTACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
 
-
-
 def test_hf_resolve_url_parts_valid():
     assert prebuilt._hf_resolve_url_parts(
         "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
@@ -54,8 +52,6 @@ def test_hf_resolve_url_parts_valid():
 )
 def test_hf_resolve_url_parts_non_hf_returns_none(url):
     assert prebuilt._hf_resolve_url_parts(url) is None
-
-
 
 
 def test_fetch_validation_model_prefers_huggingface_hub(tmp_path):
@@ -79,8 +75,6 @@ def test_fetch_validation_model_falls_back_to_urllib_on_hf_failure():
     ):
         assert prebuilt._fetch_validation_model_bytes() == b"GGUF-via-urllib"
     assert dl.called
-
-
 
 
 def _capture_env(command, system):
@@ -115,8 +109,6 @@ def test_run_capture_no_injection_for_non_amd_smi_on_windows():
 def test_run_capture_no_injection_on_linux():
     # amd-smi does not auto-elevate on Linux, so no env override is applied.
     assert _capture_env(["amd-smi", "list"], "Linux") is None
-
-
 
 
 def _ps_name_arch_rows(text):
@@ -556,8 +548,6 @@ def test_install_ps1_installs_rocm_torch_for_known_arch():
         "known/name-inferred arch should install ROCm directly to avoid a wasted "
         "CPU PyTorch base that setup.ps1 immediately force-reinstalls."
     )
-
-
 
 
 # ── PR #6296 follow-ups (review-bot findings) ────────────────────────────────

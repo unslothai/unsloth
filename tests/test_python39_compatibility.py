@@ -436,8 +436,6 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
     )
 
 
-
-
 # the exemption itself ------------------------------------------------ The skip above is the kind of thing that rots
 def test_the_truststore_guard_is_what_exempts_it():
     """Not the path. If upstream drops the version guard, the files come back

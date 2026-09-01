@@ -78,8 +78,6 @@ def _reset(monkeypatch):
     dnp.reset_warning_state()
 
 
-
-
 # The zoo's threshold, duplicated in ZOO_MIN_ROWS_FOR_MULTIPROC ──
 def _zoo_source():
     """Read unsloth_zoo's dataset_utils source without importing it.
@@ -118,8 +116,6 @@ def test_zoo_still_treats_none_as_auto_not_serial():
     assert "_num_proc_was_auto = num_proc is None or type(num_proc) is not int" in _zoo_source()
 
 
-
-
 def test_explicit_count_is_bounded(monkeypatch):
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 4)
     assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(BIG)), 64) == 4
@@ -142,8 +138,6 @@ def test_explicit_count_serialised_by_memory_becomes_one_not_none(monkeypatch):
 def test_explicit_count_ignores_split_size():
     """The zoo already skips its guard for explicit counts, so we take nothing."""
     assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(SMALL)), 6) == 6
-
-
 
 
 def test_auto_small_split_passes_none_through():
@@ -228,8 +222,6 @@ def test_env_override_wins_on_the_split_size_shortcut(monkeypatch, trainer):
     """
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "3")
     assert dnp.resolve_responses_only_num_proc(trainer, None) == 3
-
-
 
 
 @pytest.fixture

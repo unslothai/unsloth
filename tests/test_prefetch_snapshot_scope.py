@@ -224,8 +224,6 @@ def _install_fake_model_info(monkeypatch, filenames):
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
 
 
-
-
 def test_variant_keeps_bin_when_only_default_safetensors(monkeypatch):
     """A default model.safetensors must not prove a variant .bin redundant; without a variant it does."""
     _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.fp16.bin"])
@@ -765,8 +763,6 @@ def test_gguf_file_warm_keeps_gguf(capture):
     assert "model-Q4_K_M.gguf" in kept
     assert "config.json" in kept
     assert "model-Q8_0.gguf" not in kept
-
-
 
 
 def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):

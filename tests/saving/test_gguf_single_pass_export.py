@@ -24,8 +24,6 @@ import pytest
 import unsloth.save as save_mod
 
 
-
-
 @pytest.mark.parametrize(
     "methods, model_dtype, expected",
     [
@@ -45,8 +43,6 @@ def test_choose_first_conversion(methods, model_dtype, expected):
 def test_choose_first_conversion_imatrix_forces_two_pass():
     # Only llama-quantize can apply an imatrix, so q8_0-only must keep the 16-bit base.
     assert save_mod._choose_first_conversion(["q8_0"], "f16", has_imatrix = True) == "f16"
-
-
 
 
 class _Harness:
@@ -247,8 +243,6 @@ def test_quantize_failure_raises_actionable_error(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path, quantize_error = OSError("disk full"))
     with pytest.raises(RuntimeError, match = "Quantization failed"):
         _run(tmp_path, ["q4_k_m", "q5_k_m"])
-
-
 
 
 def _tight_disk(monkeypatch, free_gb = 1):

@@ -197,8 +197,6 @@ def test_on_real_hardware_a_module_on_the_current_card_is_unchanged():
     assert not w.original_module.weight.requires_grad
 
 
-
-
 # The DEFAULT path.
 # `use_gradient_checkpointing = "unsloth"` offloads the trained embedding and head to disk BEFORE `_get_peft_model`
 # runs, so PEFT builds `modules_to_save.default` on CPU and the copy has no index left to preserve.

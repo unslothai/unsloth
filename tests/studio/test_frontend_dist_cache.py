@@ -346,8 +346,6 @@ def test_the_dist_cache_has_no_restore_keys() -> None:
     )
 
 
-
-
 # The touch, which is where a hit stops being a hit.
 def _touch_steps() -> list[dict]:
     return [s for s in _steps(RESTORE_ACTION) if "outrank its sources" in str(s.get("name", ""))]
@@ -534,8 +532,6 @@ def test_no_windows_job_reaches_the_posix_install_composite() -> None:
     )
 
 
-
-
 def test_the_dist_cache_is_saved_on_main_only() -> None:
     step = _step(SAVE_ACTION, "Save the built frontend")
     assert step is not None, "the dist cache is restored but never saved, so it can only ever miss"
@@ -615,8 +611,6 @@ def test_the_markers_the_reuse_assertion_greps_for_still_exist(script: Path, mar
         f"frontend-dist-save greps for a string that never appears. Update both "
         f"together."
     )
-
-
 
 
 # One definition of the key, and where it may be referenced from.
@@ -868,7 +862,6 @@ def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
         if "save" in idx and idx["save"] < max(installs):
             offenders.append(f"{name}:{jid}: the save runs before the install")
     assert not offenders, "\n  ".join(["misordered frontend-dist steps:"] + offenders)
-
 
 
 # Named, not detected: a lane whose whole point is a cold machine should have to be removed from this list

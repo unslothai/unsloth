@@ -208,7 +208,6 @@ if __name__ == "__main__":
         save_directory = "./unsloth_out/merged_llama_text_model", tokenizer = tokenizer
     )
 
-
     print("Loading merged model in 4 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
         model_name = "./unsloth_out/merged_llama_text_model",

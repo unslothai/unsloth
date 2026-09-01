@@ -161,8 +161,6 @@ def test_may12_ioc_caught_by_scan_archive():
     )
 
 
-
-
 def test_scan_packages_pip_download_failure_propagates(tmp_path):
     """A pip download failure must exit 2 (SCAN INCOMPLETE), not `0 findings, exit 0`.
 
@@ -206,8 +204,6 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
         "no archive_corrupted finding on corrupt tarball; got "
         f"{[(f.severity, f.check) for f in findings_tar]}"
     )
-
-
 
 
 def test_strip_noncode_blanks_docstrings_and_comments_keeps_geometry():
@@ -1471,8 +1467,6 @@ def test_committed_baseline_entries_all_carry_evidence_hash():
         assert e["evidence_hash"] == sp._evidence_hash(e["evidence"]), e["file"]
 
 
-
-
 # sdist fallback: cover sdist-only packages without building.
 # PyPI JSON / download are mocked.
 class _FakeResp:
@@ -1702,8 +1696,6 @@ def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
     assert any(p.name.endswith(".tar.gz") for p in tmp_path.iterdir())
 
 
-
-
 def test_find_safe_version_handles_download_tuple(monkeypatch):
     monkeypatch.setattr(sp, "fetch_pypi_versions", lambda name: ["0.9.0", "1.0.0"])
     monkeypatch.setattr(
@@ -1911,7 +1903,10 @@ def test_two_reviewed_versions_may_share_a_key_with_distinct_pins(tmp_path):
 @pytest.mark.parametrize(
     "pins",
     [
-        (None, None),  # the same unpinned approval, written twice the same pin, written twice unpinned wins, so the
+        (
+            None,
+            None,
+        ),  # the same unpinned approval, written twice the same pin, written twice unpinned wins, so the
         ("c" * 64, "c" * 64),
         (None, "c" * 64),
         ("c" * 64, None),

@@ -125,7 +125,6 @@ def make_chatml_p1_rows() -> list:
     return list(_CHATML_P1_ROWS)
 
 
-
 _SHAREGPT_ROWS = [
     {
         "conversations": [

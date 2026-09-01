@@ -195,7 +195,6 @@ def _load_helpers():
     return real_hidden, real_raw, "unsloth_zoo"
 
 
-
 _VOCAB = 17
 _HIDDEN = 8
 _BATCH = 2
@@ -281,7 +280,9 @@ def _build_namespace(
         (
             data.input_ids[i : i + 1],
             data.attention_mask[i : i + 1],
-            torch.zeros(1, 3) if is_vlm else None,  # pixel_values_chunk (the stub ignores it) image_grid_thw_chunk
+            torch.zeros(1, 3)
+            if is_vlm
+            else None,  # pixel_values_chunk (the stub ignores it) image_grid_thw_chunk
             None,
             None,
             None,
@@ -343,8 +344,6 @@ def _run_padded_loop(
         logprobs = namespace["logprobs"],
         entropies = namespace["entropies"],
     )
-
-
 
 
 def test_extracted_block_is_the_padded_loop():

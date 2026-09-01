@@ -32,8 +32,6 @@ COLAB_2026_05 = {
 }
 
 
-
-
 def test_r_inst_001_fires_on_transformers_git_head():
     cell = """%%capture
 !pip install --force-reinstall git+https://github.com/huggingface/transformers.git
@@ -57,8 +55,6 @@ def test_r_inst_001_allowlist_unsloth_zoo_git():
 """
     findings = nv.rule_inst_001_git_plus(cell, "fixture", 0)
     assert findings == []
-
-
 
 
 # ---------- R-INST-003 : peft / torchao floor (PR #258) ------------------ #
@@ -88,8 +84,6 @@ def test_r_inst_003_silent_when_torchao_pinned_high():
     assert findings == []
 
 
-
-
 # ---------- R-INST-004 : torch / torchcodec ABI (PR #261a) --------------- #
 def test_r_inst_004_fires_torch_2_7_with_torchcodec_0_6():
     cell = """%%capture
@@ -107,8 +101,6 @@ def test_r_inst_004_silent_when_torch_2_7_with_torchcodec_0_5():
 """
     findings = nv.rule_inst_004_torchcodec_torch(cell, COLAB_2026_05, "fixture", 0)
     assert findings == []
-
-
 
 
 # ---------- R-INST-005 : transformers + tokenizers window (PRs #261b/#264) -- #
@@ -167,7 +159,6 @@ def test_r_inst_005_silent_without_no_deps(monkeypatch):
     assert findings == []
 
 
-
 # ---------- R-API-003 : suboptimal optim warning (PR #221, partial) ------ #
 import json
 from pathlib import Path as _P
@@ -200,8 +191,6 @@ def test_r_api_003_silent_on_adamw_8bit():
     assert findings == []
 
 
-
-
 @pytest.mark.parametrize(
     "path,expected",
     [
@@ -218,8 +207,6 @@ def test_r_api_003_silent_on_adamw_8bit():
 )
 def test_environment_classifier(path, expected):
     assert nv.target_environment(path) == expected
-
-
 
 
 def _live_notebooks_dir(candidates: list[Path] | None = None) -> Path | None:

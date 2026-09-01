@@ -430,8 +430,6 @@ class Finding:
     file_sha256: str = ""
 
 
-
-
 def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
     """Run all .pth-specific checks.
 
@@ -559,7 +557,9 @@ def _strip_noncode(content: str, blank_comments: bool = True) -> str:
     except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
         return content
 
-    spans: list[tuple[int, int, int, int]] = []  # (srow, scol, erow, ecol) start-of-file behaves like a new line
+    spans: list[
+        tuple[int, int, int, int]
+    ] = []  # (srow, scol, erow, ecol) start-of-file behaves like a new line
     prev_significant = tokenize.NEWLINE
     n = len(toks)
     for i, tok in enumerate(toks):
@@ -710,7 +710,6 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_temp_exec = bool(RE_TEMP_EXEC.search(content))
     has_c2_polling = bool(RE_C2_POLLING.search(content))
     has_may12_ioc = bool(RE_MAY12_IOC.search(content))
-
 
     if has_base64 and has_subprocess:
         findings.append(
@@ -894,7 +893,6 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
             )
         )
 
-
     if has_base64 and has_exec_eval and has_blob:
         # Digest every blob too: a payload may sit on a separate line from the decode call, and a second encoded blob
         _, blob_digest = _blob_digest(content)
@@ -1040,7 +1038,6 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 )
             )
 
-
     if has_base64 and has_exec_eval and not has_blob:
         findings.append(
             Finding(
@@ -1157,7 +1154,9 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
     a string -- including a triple-quoted string spanning several lines, which a
     per-line regex cannot blank."""
     out: list[str] = []
-    in_triple: str | None = None  # active ''' or \"\"\" delimiter, or None active ' or " continued via a trailing
+    in_triple: str | None = (
+        None  # active ''' or \"\"\" delimiter, or None active ' or " continued via a trailing
+    )
     in_string: str | None = None
     for line in lines:
         buf: list[str] = []
@@ -1408,8 +1407,6 @@ def _blob_digest(content: str) -> tuple[str, str]:
     return blobs[0], digest
 
 
-
-
 # Non-Python checkers Recent PyPI compromises (Lightning 2.6.x, ForceMemo) carried the payload in a bundled .js / .sh /
 def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
     """Run JS-side checks. Triggered by .js / .mjs / .cjs / .ts."""
@@ -1596,7 +1593,6 @@ def check_workflow_file(content: str, filename: str, package: str) -> list[Findi
             )
         )
     return findings
-
 
 
 # Tarbomb caps mirrored from scripts/scan_npm_packages.py::safe_extract; duplicated to stay standalone, so keep in sync.
@@ -1796,8 +1792,6 @@ def _scan_one(task: tuple[str, str]) -> tuple[str, list[Finding]]:
     with contextlib.redirect_stderr(buf):
         findings = scan_archive(archive_path, package)
     return buf.getvalue(), findings
-
-
 
 
 _RE_PYPI_SPEC_VERSION = re.compile(r"==\s*([A-Za-z0-9_.\-+!]+)")
@@ -2323,7 +2317,6 @@ def download_packages(
     return results, download_errors
 
 
-
 _RE_NAME = re.compile(r"^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)")
 
 
@@ -2393,8 +2386,6 @@ def get_downloaded_version(archive_path: str) -> str | None:
     return None
 
 
-
-
 def severity_color(sev: str) -> str:
     colors = {CRITICAL: "\033[91m", HIGH: "\033[93m", MEDIUM: "\033[33m"}
     return colors.get(sev, "")
@@ -2435,8 +2426,6 @@ def print_findings(findings: list[Finding]) -> None:
     if meds:
         parts.append(f"{meds} MEDIUM")
     print(f"  Summary: {', '.join(parts)}")
-
-
 
 
 def version_sort_key(v: str) -> tuple:
@@ -2728,8 +2717,6 @@ def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> N
     print(f"\n  Re-run without --fix to verify the scan is clean.")
 
 
-
-
 def _find_requirements_files(root: str) -> list[str]:
     """Recursively find pip requirements files under root.
 
@@ -2758,7 +2745,6 @@ def _find_requirements_files(root: str) -> list[str]:
             elif dirname == "requirements":
                 results.append(os.path.join(dirpath, fname))
     return sorted(results)
-
 
 
 # Baseline allowlist: triaged known-good CRITICAL/HIGH findings so the gate can enforce without drowning in
@@ -2957,8 +2943,6 @@ def _partition_baseline(
             hit = pins is None or f.file_sha256 in pins
         (suppressed if hit else active).append(f)
     return active, suppressed
-
-
 
 
 def main() -> int:

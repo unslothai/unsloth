@@ -65,8 +65,6 @@ def _force(import_fixes, monkeypatch, *, win, rocm, detected):
     monkeypatch.setattr(import_fixes, "_detect_installed_bnb_rocm_version", lambda: detected)
 
 
-
-
 # _detect_installed_bnb_rocm_version ---------------------------------------------------------------------------
 def test_detect_picks_highest_rocm_suffix(import_fixes, tmp_path, monkeypatch):
     pkg = tmp_path / "bitsandbytes"
@@ -96,8 +94,6 @@ def test_detect_none_when_only_non_rocm_dlls(import_fixes, tmp_path, monkeypatch
 def test_detect_none_when_bnb_absent(import_fixes, monkeypatch):
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
     assert import_fixes._detect_installed_bnb_rocm_version() is None
-
-
 
 
 def test_sets_bnb_version_on_windows_rocm(import_fixes, clean_env):
@@ -196,8 +192,6 @@ def test_empty_string_value_without_marker_is_respected(import_fixes, clean_env)
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert os.environ["BNB_ROCM_VERSION"] == ""
-
-
 
 
 # _is_hip_torch_build: strict gate; HIP-SDK env hints (HIP_PATH) must NOT count

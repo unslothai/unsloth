@@ -178,7 +178,6 @@ def test_shipped_templates_still_have_the_shape_the_guard_keys_on():
     assert mapping["<eos>"] == stop_word == "<|im_end|>"
 
 
-
 # The resolved flag only matters for what the vocab surgery below it then does, so run that surgery against a real fast
 GEMMA_CHATML_MAPPING = {"<start_of_turn>": "<|im_start|>", "<eos>": "<|im_end|>"}
 STOP_WORD = "<|im_end|>"

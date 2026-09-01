@@ -822,7 +822,10 @@ _GPU_ROWS = [
     [
         (None, [0, 1, 2]),
         ([], []),
-        (["0", "2"], [0, 2]),  # filter by index UUID match is case insensitive same device requested twice is
+        (
+            ["0", "2"],
+            [0, 2],
+        ),  # filter by index UUID match is case insensitive same device requested twice is
         (["gpu-bbb"], [1]),
         (["0", "0"], [0]),
         (["99"], []),

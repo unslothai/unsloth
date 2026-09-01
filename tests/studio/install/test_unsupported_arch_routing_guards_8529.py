@@ -84,8 +84,6 @@ _UNSUPPORTED_ARCH_INPUTS = (
 _ROUTABLE_ARCHES = [("gfx1030", "gfx103X-all"), ("gfx1100", "gfx110X-all")]
 
 
-
-
 @pytest.fixture(autouse = True)
 def _no_index_mirror():
     """Both resolvers honour a mirror override, and a host that has one set would
@@ -142,8 +140,6 @@ class TestPythonIndexResolversAreAskedDirectly:
         """The shape half, kept alongside the behavioural one: a table entry and a
         code bypass are different mistakes and each should name itself."""
         assert arch not in stack_mod._GFX_TO_AMD_INDEX_ARCH
-
-
 
 
 def _sh_function_body(source: str, name: str) -> str:
@@ -211,8 +207,6 @@ class TestInstallShIndexFamilyRuns:
             re.findall(r"^\s*[^#\n]*_amd_arch_index_family_for_gfx \"\$", src, re.MULTILINE)
         )
         assert calls >= 3, f"install.sh calls the index-family selector {calls} times, expected 3"
-
-
 
 
 # What get_torch_index_url calls that is not in the two functions extracted below.
@@ -313,8 +307,6 @@ class TestInstallShIndexSelectorRuns:
         assert url.endswith("/rocm6.4"), f"the AMD branch was not reached: {url!r}"
 
 
-
-
 # print a line, so its result must not flow into either: assigning it to _setup_gfx passes
 # setup.sh forwards `--rocm-gfx "$_setup_gfx"` to install_llama_prebuilt.py and the whisper installer, and keys the
 _SETUP_SH_UNSUPPORTED_HELPERS = ("_setup_unsupported_gfx_any", "_setup_unsupported_gfx_from_name")
@@ -369,8 +361,6 @@ def test_setup_sh_never_assigns_an_unsupported_arch_to_the_routed_variable(arch)
         if not line.lstrip().startswith("#") and re.search(r"_setup_gfx=[^\n]*" + arch, line)
     ]
     assert not hits, f"studio/setup.sh routes {arch} into --rocm-gfx: {hits}"
-
-
 
 
 def _ps_block(source: str, header: str, opener: str, closer: str) -> str:
@@ -543,8 +533,6 @@ class TestPowerShellMapEvaluated:
         assert not routed, f"setup.ps1: {routed} reach an AMD wheel index"
 
 
-
-
 # a routing site the assertions above cannot see. Reachability is narrow, but "narrow" is
 # The Strix reroute picks a per-arch index without consulting either family map, so it is a routing site the assertions
 _STRIX_SITES = [
@@ -567,8 +555,6 @@ def test_the_strix_reroute_names_no_unsupported_arch(source_path, pattern):
         )
     # Positive control: the arm really does name the arches it is supposed to route.
     assert "gfx1151" in named, f"{source_path.name}: extraction matched nothing useful"
-
-
 
 
 _SUMMARY_GUARD_ANCHOR = "_covered_disp_gfx=$(_infer_linux_amd_gfx_arch"
@@ -669,8 +655,6 @@ class TestInstallShCpuSummaryBlamesTheRightCard:
 
     def test_a_covered_card_alone_says_nothing_about_uncovered_arches(self, tmp_path):
         assert _run_summary_guard(tmp_path, [_RX_7900]) == "GENERIC"
-
-
 
 
 _SETUP_SH_FUNCS = (
@@ -854,8 +838,6 @@ def test_setup_sh_treats_a_blank_index_pin_as_unset(url, family, pinned):
         f"setup.sh read UNSLOTH_TORCH_INDEX_URL={url!r} / _FAMILY={family!r} as "
         f"{out.stdout.strip()}"
     )
-
-
 
 
 _PARITY_NAMES = [

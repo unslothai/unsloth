@@ -150,8 +150,6 @@ def _run(
     return args, env
 
 
-
-
 def test_float32_model_on_t4_stays_float32():
     args, env = _run(torch.float32, bf16_supported = False)
     assert args.fp16 is False, "float32 model must not get float16 autocast"
@@ -164,8 +162,6 @@ def test_float32_full_finetuning_on_t4_stays_float32():
     args, env = _run(torch.float32, bf16_supported = False, full_finetuning = "1")
     assert (args.fp16, args.bf16) == (False, False)
     assert env["ACCELERATE_MIXED_PRECISION"] == "no"
-
-
 
 
 # ---- everything that must NOT change -------------------------------------

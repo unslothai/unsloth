@@ -26,7 +26,6 @@ LLAMA_PY = REPO_ROOT / "unsloth" / "models" / "llama.py"
 FUNC_NAME = "_fast_prepare_inputs_for_generation"
 
 
-
 # Model files that call fix_prepare_inputs_for_generation(...) and share the guarded function.
 # glm4_moe (MLA attention, different path) and falcon_h1 (its own variant) are intentionally absent.
 WIRED_MODEL_FILES = [
@@ -209,7 +208,6 @@ def test_model_families_stay_wired_to_shared_prepare_inputs():
         "so they lose the guarded left-padding-safe prepare_inputs path: "
         f"{missing}"
     )
-
 
 
 PAST_LEN = 4

@@ -84,8 +84,6 @@ _BUILTINS = set(dir(builtins)) | {
 }
 
 
-
-
 @dataclass
 class Binding:
     kind: str
@@ -128,7 +126,9 @@ class _Builder(ast.NodeVisitor):
 
     def __init__(self):
         self.module = Scope("module", "<module>", None)
-        self.uses: list[tuple[Scope, str, int]] = []  # hard loads annotations: count as "used" but never as
+        self.uses: list[
+            tuple[Scope, str, int]
+        ] = []  # hard loads annotations: count as "used" but never as
         # annotations: count as "used" but never as "unresolved" (forward refs)
         self.soft_uses: list[tuple[Scope, str, int]] = []
 
@@ -408,8 +408,6 @@ class _Builder(ast.NodeVisitor):
         self._visit_body(tree.body, self.module)
 
 
-
-
 def _any_star(scope: Scope) -> bool:
     c = scope
     while c is not None:
@@ -471,8 +469,6 @@ def _legb_chain(scope: Scope) -> list[Scope]:
                 chain.append(p)
         p = p.parent
     return chain
-
-
 
 
 def _analyze(src: str):
@@ -666,7 +662,6 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             )
             findings.append(("INFO", f"{path}: TARGET-MISSING {t} in scope {scope}{relocated}"))
     return findings
-
 
 
 _SELF_TESTS = {

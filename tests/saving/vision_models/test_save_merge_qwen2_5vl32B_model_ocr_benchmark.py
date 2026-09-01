@@ -166,7 +166,6 @@ avg_wer, avg_cer = ocr_evaluator.evaluate_model(
 ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 
 
-
 def find_lora_base_model(model_to_inspect):
     current = model_to_inspect
     if hasattr(current, "base_model"):
@@ -183,8 +182,6 @@ print((base.__class__.__name__))
 model.save_pretrained_merged(
     save_directory = "qwen2.5-ocr-merged-finetune-merge-16bit", tokenizer = tokenizer
 )
-
-
 
 
 model, tokenizer = FastVisionModel.from_pretrained(

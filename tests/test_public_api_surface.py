@@ -55,8 +55,6 @@ def _accepts(callable_obj, kwargs: set[str]) -> tuple[bool, set[str]]:
     return (not missing), missing
 
 
-
-
 # FastLanguageModel: headline class.
 def test_fast_language_model_class_present():
     unsloth = pytest.importorskip("unsloth")
@@ -108,8 +106,6 @@ def test_fast_language_model_for_inference_callable():
         )
 
 
-
-
 def test_fast_vision_model_class_and_methods():
     unsloth = pytest.importorskip("unsloth")
     if not hasattr(unsloth, "FastVisionModel"):
@@ -144,8 +140,6 @@ def test_fast_vision_model_get_peft_model_vision_kwargs():
         )
 
 
-
-
 # FastModel: modern unified entry point.
 def test_fast_model_class_and_methods():
     unsloth = pytest.importorskip("unsloth")
@@ -172,8 +166,6 @@ def test_fast_model_from_pretrained_kwargs():
             f"DRIFT DETECTED: FastModel.from_pretrained dropped kwargs "
             f"{sorted(missing)}; 103 notebook call sites would crash."
         )
-
-
 
 
 # Bf16 helper alias (renamed once already;

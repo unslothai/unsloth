@@ -173,7 +173,6 @@ def test_a_redirect_body_is_bounded_too(monkeypatch):
                 raise AssertionError("the probe kept reading a redirect body past its cap")
             yield b"x" * 65_536
 
-
     module = types.ModuleType("requests")
     module.compat = types.SimpleNamespace(urljoin = lambda base, url: url)
     module.get = lambda url, timeout = None, stream = False, allow_redirects = True: (

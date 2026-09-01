@@ -75,8 +75,6 @@ def _tag_ge(tag: str, floor: str) -> bool:
         return False
 
 
-
-
 # unsloth/trainer.py + unsloth/models/rl.py rebind these top-level names.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_top_level_grpo_sft(tag: str):
@@ -88,8 +86,6 @@ def test_trl_top_level_grpo_sft(tag: str):
             f"{tag}: `from trl import {name}` will fail; "
             f"unsloth/trainer.py + unsloth/models/rl.py rely on this re-export"
         )
-
-
 
 
 # trl.trainer.grpo_trainer.GRPOTrainer
@@ -119,8 +115,6 @@ def test_grpo_config_class_canonical_path(tag: str):
     )
 
 
-
-
 # DataCollatorForPreference: rl_replacements.py:318 hard-imports from trl.trainer.dpo_trainer (old TRL had it in
 # trl.trainer.utils).
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -140,8 +134,6 @@ def test_data_collator_for_preference_resolvable(tag: str):
     )
 
 
-
-
 # trl.trainer.utils.pad: emitted into the GRPO compile cell as _unsloth_trl_pad (rl_replacements.py:326).
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_trainer_utils_pad(tag: str):
@@ -155,8 +147,6 @@ def test_trl_trainer_utils_pad(tag: str):
         f"unsloth/models/rl_replacements.py:326 emits `from trl.trainer.utils "
         f"import pad as _unsloth_trl_pad` into the GRPO compile cell"
     )
-
-
 
 
 # trl.models.unwrap_model_for_generation
@@ -180,8 +170,6 @@ def test_unwrap_model_for_generation_either_path(tag: str):
     )
 
 
-
-
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_experimental_openenv_gated(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/experimental/openenv/__init__.py")
@@ -193,8 +181,6 @@ def test_trl_experimental_openenv_gated(tag: str):
         f"{tag}: trl.experimental.openenv exists but utils.py missing; "
         f"unsloth/models/rl_replacements.py:1765 imports openenv.utils explicitly"
     )
-
-
 
 
 # trl.experimental.openenv:
@@ -215,8 +201,6 @@ def test_trl_generation_vllm_generation_gated(tag: str):
             f"{tag}: VLLMGeneration.{method} missing; "
             f"unsloth/models/rl_replacements.py rewrites this method body"
         )
-
-
 
 
 # trl.generation.vllm_generation: gated import for the fast_inference server mode (rl_replacements.py:1846-1848).
@@ -246,10 +230,6 @@ def test_trl_version_parseable(tag: str):
     )
 
 
-
-
-
-
 # TRL's __version__ must be parseable;
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_is_conversational_export(tag: str):
@@ -258,8 +238,6 @@ def test_trl_is_conversational_export(tag: str):
     if "is_conversational" not in src:
         # Old TRLs omit it; unsloth-zoo's gated soft import falls back.
         pytest.skip(f"{tag}: trl.is_conversational not exported (legacy TRL)")
-
-
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -276,8 +254,6 @@ def test_trl_sft_trainer_module_internals(tag: str):
         pass
 
 
-
-
 # Coverage extension (added 2026-05):
 # trl.is_conversational — soft import in unsloth-zoo dataset_utils.
 @pytest.mark.parametrize("tag", TRL_TAGS)
@@ -288,8 +264,6 @@ def test_trl_dpo_trainer_module_exists(tag: str):
         f"unsloth-zoo/temporary_patches/misc.py:1376 import fails"
     )
     assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
-
-
 
 
 # 2-4. trl.trainer.sft_trainer surface used by unsloth tokenizer utils + tests.
@@ -307,8 +281,6 @@ def test_trl_constant_length_dataset_optional(tag: str):
         pytest.skip(
             f"{tag}: ConstantLengthDataset removed; unsloth-zoo soft " f"import handles this"
         )
-
-
 
 
 # 5-6.
@@ -337,8 +309,6 @@ def test_trl_models_utils_disable_gradient_checkpointing(tag: str):
         )
 
 
-
-
 # 8.
 # rl.py:1976-1994 gates via hasattr();
 # trl.models.utils.disable_gradient_checkpointing — added in TRL 1.0.0+.
@@ -360,8 +330,6 @@ def test_trl_import_utils_available_pattern(tag: str):
     )
 
 
-
-
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_openenv_utils_generators(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/experimental/openenv/utils.py")
@@ -374,8 +342,6 @@ def test_trl_openenv_utils_generators(tag: str):
         f"nor `_generate_rollout_completions_colocate`; "
         f"unsloth/models/rl_replacements.py:1775-1781 patch breaks"
     )
-
-
 
 
 # trl.import_utils `_*_available` cache pattern — import_fixes.py:508-516 clears these cached booleans so vllm-ascend
@@ -424,8 +390,6 @@ def test_trl_grpo_source_inference_mode_unwrap(tag: str):
         f"or self.accelerator.unwrap_model={has_unwrap}; "
         f"unsloth/models/rl_replacements.py:526 autocast insertion no-ops"
     )
-
-
 
 
 # 11-16.
@@ -482,8 +446,6 @@ def test_trl_sft_trainer_class(tag: str):
     assert has_def(src, "SFTTrainer", "class"), f"{tag}: class SFTTrainer missing"
 
 
-
-
 # KTOTrainer.get_batch_logps + the literal raise-message rewriter.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_dpo_trainer_methods(tag: str):
@@ -503,8 +465,6 @@ def test_trl_dpo_trainer_methods(tag: str):
     ):
         _present = has_def(src, method, "func")
         _ = _present
-
-
 
 
 @pytest.mark.parametrize("tag", TRL_TAGS)

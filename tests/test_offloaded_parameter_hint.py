@@ -45,8 +45,6 @@ def _p(device):
     return torch.nn.Parameter(torch.zeros(2, device = device), requires_grad = False)
 
 
-
-
 def test_a_meta_parameter_produces_a_hint():
     m = _Model([("model.layers.0.mlp.down_proj.weight", _p("meta"))])
     hint = _offloaded_parameter_hint(m)
@@ -80,8 +78,6 @@ def test_a_mix_of_real_and_meta_still_fires():
     """Partial offload is the normal case -- only some layers move."""
     m = _Model([("good", _p("cpu")), ("bad", _p("meta"))])
     assert _offloaded_parameter_hint(m)
-
-
 
 
 def test_a_fully_resident_model_gets_no_hint():
@@ -122,7 +118,6 @@ def test_a_parameter_with_no_device_does_not_crash():
 
     m = _Model([("weird", NoDevice())])
     assert _offloaded_parameter_hint(m) == ""
-
 
 
 SRC = (ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")

@@ -352,8 +352,6 @@ def test_shipping_code_names_an_encoding():
     )
 
 
-
-
 # The assertion above passes vacuously once the trees are clean, so it cannot tell a
 def test_detects_the_plain_cases():
     assert _offenders_in("from pathlib import Path\np = Path('x')\ns = p.read_text()\n")

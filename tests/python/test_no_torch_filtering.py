@@ -25,8 +25,6 @@ OVERRIDES_TXT = REQ_ROOT / "overrides.txt"
 TRITON_KERNELS_TXT = REQ_ROOT / "triton-kernels.txt"
 
 
-
-
 class TestFilterRequirements:
     """Verify _filter_requirements correctly removes packages by prefix."""
 
@@ -208,8 +206,6 @@ class TestFilterRequirements:
         assert len(non_blank) == 2, f"git+ URL should be preserved, got: {non_blank}"
 
 
-
-
 class TestRealRequirementsFiltering:
     """Filter the ACTUAL extras.txt and extras-no-deps.txt with NO_TORCH_SKIP_PACKAGES."""
 
@@ -293,8 +289,6 @@ class TestRealRequirementsFiltering:
         result = self._filter(EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
         filtered_text = Path(result).read_text(encoding = "utf-8").lower()
         assert "trl" in filtered_text, "trl should survive NO_TORCH filtering"
-
-
 
 
 class TestNoTorchConstant:
@@ -414,8 +408,6 @@ class TestNoTorchConstant:
             assert ips._infer_no_torch() is True
 
 
-
-
 class TestIsMacosConstant:
     """Verify IS_MACOS detection logic."""
 
@@ -423,8 +415,6 @@ class TestIsMacosConstant:
         import sys
         expected = sys.platform == "darwin"
         assert ips.IS_MACOS is expected
-
-
 
 
 class TestInstallPythonStackSubprocessMock:
@@ -484,7 +474,6 @@ class TestInstallPythonStackSubprocessMock:
         prefix = f".{Path(filename).stem}-filtered-"
         return any("-r" in cmd and prefix in cmd for cmd in cmds)
 
-
     def test_no_torch_macos_skips_overrides(self):
         """With NO_TORCH=True, overrides.txt pip_install must NOT be called."""
         cmds = self._capture_install(no_torch = True, is_macos = True, is_windows = False)
@@ -515,7 +504,6 @@ class TestInstallPythonStackSubprocessMock:
         ) or self._cmds_contain_filtered_file(cmds, "extras-no-deps.txt")
         assert has_extras_nd, "extras-no-deps.txt (or its filtered temp) should be called"
 
-
     def test_windows_no_torch_skips_overrides(self):
         """Windows+NO_TORCH: overrides.txt must be skipped."""
         cmds = self._capture_install(no_torch = True, is_macos = False, is_windows = True)
@@ -529,7 +517,6 @@ class TestInstallPythonStackSubprocessMock:
         assert not self._cmds_contain_file(
             cmds, "triton-kernels.txt"
         ), "triton-kernels.txt should be skipped on Windows"
-
 
     def test_normal_linux_includes_overrides(self):
         """Normal Linux: torchao override step runs (via --reinstall, not overrides.txt)."""
@@ -559,7 +546,6 @@ class TestInstallPythonStackSubprocessMock:
             cmds, "extras-no-deps.txt"
         ), "extras-no-deps.txt should be called on normal Linux"
 
-
     def test_windows_only_skips_triton(self):
         """Windows (without NO_TORCH): triton still skipped."""
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = True)
@@ -573,7 +559,6 @@ class TestInstallPythonStackSubprocessMock:
         assert any(
             "--reinstall" in cmd for cmd in cmds
         ), "overrides step (--reinstall) should be called on Windows when NO_TORCH=False"
-
 
     def test_update_path_intel_macos_still_skips_overrides(self):
         """Update path (no SKIP_STUDIO_BASE): overrides still skipped on Intel Mac."""
@@ -592,7 +577,6 @@ class TestInstallPythonStackSubprocessMock:
         assert not self._cmds_contain_file(
             cmds, "triton-kernels.txt"
         ), "triton-kernels.txt should be skipped on macOS even via studio update"
-
 
     # -- The harness above must not write the venv it is running in --
     def test_the_harness_never_writes_the_running_venv_root(self):
@@ -629,8 +613,6 @@ class TestInstallPythonStackSubprocessMock:
         )
 
 
-
-
 class TestOverridesSkip:
     """Verify overrides.txt is skipped when NO_TORCH is True (source-level check)."""
 
@@ -644,8 +626,6 @@ class TestOverridesSkip:
         source = Path(ips.__file__).read_text(encoding = "utf-8")
         overrides_match = re.search(r"if NO_TORCH:.*?overrides", source, re.DOTALL)
         assert overrides_match is not None, "Expected NO_TORCH conditional before overrides install"
-
-
 
 
 class TestInstallShNoTorchFlag:
@@ -780,8 +760,6 @@ class TestInstallShNoTorchFlag:
         assert (
             "HINT_PRINTED" not in result2.stdout
         ), "CPU hint should NOT print when SKIP_TORCH=true"
-
-
 
 
 class TestTritonMacosSkip:

@@ -45,8 +45,6 @@ def _load_split_repo_variant():
 _split = _load_split_repo_variant()
 
 
-
-
 @pytest.mark.parametrize(
     "model_arg, expected",
     [
@@ -65,8 +63,6 @@ def test_repo_variant_split(model_arg, expected):
     assert _split(model_arg) == expected
 
 
-
-
 @pytest.mark.parametrize(
     "model_arg",
     [
@@ -79,8 +75,6 @@ def test_no_colon_returns_none_variant(model_arg):
     repo, variant = _split(model_arg)
     assert repo == model_arg
     assert variant is None
-
-
 
 
 # ── Local paths must NOT be split ------------------------------------
@@ -102,8 +96,6 @@ def test_local_path_passthrough(local_path):
     repo, variant = _split(local_path)
     assert repo == local_path
     assert variant is None
-
-
 
 
 def test_empty_string():

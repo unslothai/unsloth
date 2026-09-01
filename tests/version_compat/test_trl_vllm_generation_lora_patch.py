@@ -40,7 +40,6 @@ if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed; this test drives the real patch", allow_module_level = True)
 
 
-
 # TRL-shaped method sources ------------------------------------------------ `_init_vllm` and `sync_weights` are still
 _INIT_VLLM = """
 def _init_vllm(self, model):
@@ -437,8 +436,6 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
     self = _make_generation(cls, log)
     cls.generate(self, ["hello"])
     assert len(_lora_requests(log)) == 1, f"generate reached the engine twice: {log}"
-
-
 
 
 # --- vLLM signature fidelity -------------------------------------------------- The tests above use an engine whose

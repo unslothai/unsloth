@@ -348,7 +348,9 @@ def _eagerly_consumed(tree: ast.Module) -> set:
             consumed.update(id(_resolve(a)) for a in node.args)
             consumed.update(id(_resolve(k.value)) for k in node.keywords)
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            consumed.add(id(_resolve(node.iter)))  # the loop pulls every item `list(enumerate(_paths()))` drains
+            consumed.add(
+                id(_resolve(node.iter))
+            )  # the loop pulls every item `list(enumerate(_paths()))` drains
     by_id = {id(n): n for n in ast.walk(tree)}
     queue = [by_id[i] for i in list(consumed) if i in by_id]
     while queue:
@@ -974,7 +976,9 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
                 scope[id(caller)] = here
             positional = [a.arg for a in [*func.args.posonlyargs, *func.args.args]]
             if bound:
-                positional = positional[1:]  # the receiver already fills `self` A keyword-only parameter never takes a
+                positional = positional[
+                    1:
+                ]  # the receiver already fills `self` A keyword-only parameter never takes a
             # A keyword-only parameter never takes a positional slot, so it is
             params = positional + [a.arg for a in func.args.kwonlyargs]
             supplied = dict(zip(positional, call.args))

@@ -41,8 +41,6 @@ def _run_auditor(
     )
 
 
-
-
 def test_malicious_lockfile_exits_1(tmp_path):
     """Non-registry URL + IOC substring + missing integrity hash -> auditor exits 1."""
     fixture = FIXTURES / "malicious_lockfile.json"
@@ -78,8 +76,6 @@ def test_audit_npm_lockfile_direct_call_findings():
     assert "non-registry-resolved-url" in kinds
     assert "missing-integrity-hash" in kinds
     assert "known-ioc-string" in kinds
-
-
 
 
 _MAY12_IOCS = (
@@ -122,8 +118,6 @@ def test_lockfile_auditor_blocked_versions_match_scanner():
     assert (
         lsa.BLOCKED_NPM_VERSIONS == snp.BLOCKED_NPM_VERSIONS
     ), "auditor and scanner BLOCKED_NPM_VERSIONS tables drifted"
-
-
 
 
 _MALICIOUS_CARGO_LOCK = """\
@@ -298,8 +292,6 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
     for line in warning_lines:
         assert "%0A" in line
         assert "missing-resolved-url" in line
-
-
 
 
 def test_skip_env_var_with_short_value_rejected(tmp_path):

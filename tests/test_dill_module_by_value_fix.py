@@ -47,7 +47,6 @@ REPO = Path(__file__).resolve().parents[1]
 pytest.importorskip("dill")
 
 
-
 # The real thing, in a subprocess, on a real off-prefix tree
 _HOSTILE_TREE = {
     # The pyarrow stand-in.
@@ -298,8 +297,6 @@ def test_the_env_switch_turns_it_off(tmp_path):
     got = _run_on_hostile_tree(tmp_path, apply = True, extra_env = {"UNSLOTH_DISABLE_DILL_FIX": "1"})
     assert got["applied"] is False
     assert got["dumps"].startswith("PicklingError")
-
-
 
 
 # The gate: an ordinary install must be untouched

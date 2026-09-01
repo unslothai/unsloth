@@ -47,8 +47,6 @@ TRANSFORMERS_TAGS = [
 ]
 
 
-
-
 # Trainer surface: unsloth/models/_utils.py rewrites Trainer.{__init__, training_step, get_batch_samples, compute_loss}.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_trainer_class_importable_path(tag: str):
@@ -129,8 +127,6 @@ def test_trainer_inner_training_loop_inplace_loss_v5(tag: str):
     )
 
 
-
-
 # modeling_utils: checkpoint, PushToHubMixin, ALL_ATTENTION_FUNCTIONS.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_modeling_utils_exposes_checkpoint(tag: str):
@@ -164,8 +160,6 @@ def test_pushtohubmixin_create_repo_status(tag: str):
     _ = has_create
 
 
-
-
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_integrations_bitsandbytes_module_present(tag: str):
     src = fetch_text(
@@ -195,8 +189,6 @@ def test_quantizers_should_convert_module_signature(tag: str):
     _ = has_dot_form
 
 
-
-
 # integrations.finegrained_fp8.FP8Linear: bias/has_bias rename in v5.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_fp8linear_init_param_names(tag: str):
@@ -217,8 +209,6 @@ def test_fp8linear_init_param_names(tag: str):
     ), f"{tag}: FP8Linear.__init__ has neither `bias` nor `has_bias` param"
 
 
-
-
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_processing_utils_unpack_importable(tag: str):
     """unsloth-zoo#583/584: transformers.processing_utils.Unpack must keep importing."""
@@ -230,8 +220,6 @@ def test_processing_utils_unpack_importable(tag: str):
         f"{tag}: transformers.processing_utils.Unpack missing; "
         f"unsloth-zoo#583/584 import guard breaks"
     )
-
-
 
 
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
@@ -285,8 +273,6 @@ def test_auto_factory_lazy_mapping_private_api(tag: str):
     )
 
 
-
-
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_configuration_utils_alias(tag: str):
     """transformers 5.x renamed PretrainedConfig -> PreTrainedConfig; unsloth-zoo imports both defensively."""
@@ -305,8 +291,6 @@ def test_configuration_utils_alias(tag: str):
     )
 
 
-
-
 # configuration_utils: PreTrainedConfig vs PretrainedConfig in 5.x.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_apply_chat_template_signature_present(tag: str):
@@ -321,8 +305,6 @@ def test_apply_chat_template_signature_present(tag: str):
     assert has_def(
         src, "apply_chat_template", "func"
     ), f"{tag}: apply_chat_template missing in tokenization_utils_base.py"
-
-
 
 
 # tokenization: apply_chat_template return_dict default flip in v5.

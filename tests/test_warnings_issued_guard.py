@@ -70,8 +70,6 @@ class _Bare(torch.nn.Module):
     """A module with no `warnings_issued`, exactly like transformers >= 5.1."""
 
 
-
-
 def test_a_module_without_the_attribute_gets_a_dict():
     m = _Bare()
     with pytest.raises(AttributeError):
@@ -132,8 +130,6 @@ def test_running_twice_is_idempotent():
     assert m.warnings_issued == {"estimate_tokens": True}
 
 
-
-
 @pytest.mark.parametrize("value", [None, "Qwen/Qwen2.5-1.5B", 7, object()])
 def test_non_modules_are_left_alone_without_raising(value):
     """trl accepts a repo id string and builds the model itself. Attaching an
@@ -153,8 +149,6 @@ def test_a_model_that_refuses_the_assignment_does_not_raise():
             super().__setattr__(name, value)
 
     GUARD(_Locked())  # must not propagate
-
-
 
 
 @dataclasses.dataclass
@@ -230,8 +224,6 @@ def test_no_model_at_all_still_reaches_the_wrapped_init():
         _wrapped()()
 
 
-
-
 # ---- the source, so the fix cannot be half-applied -------------------------
 def _new_init_body():
     tree = ast.parse(SRC)
@@ -279,8 +271,6 @@ def test_the_generated_compiled_guard_is_still_there():
     rl = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
     assert "warnings_issued_check" in rl
     assert "model.warnings_issued = {}" in rl
-
-
 
 
 def test_trl_still_writes_the_attribute_unconditionally():
@@ -356,8 +346,6 @@ def test_every_trl_trainer_that_writes_it_goes_through_the_wrapper():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
-
-
 
 
 def _sft_config():

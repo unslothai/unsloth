@@ -161,8 +161,6 @@ def test_the_resolver_is_screened_at_every_entry_point():
     assert not bare, f"unscreened resolver calls in the install flow: {bare}"
 
 
-
-
 # The screen inside the resolver ── The window above starts at the install step, so it never sees the recovery paths:
 def _every_version_match_screens_the_patch() -> list[str]:
     body = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")

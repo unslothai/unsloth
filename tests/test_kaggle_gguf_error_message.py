@@ -62,8 +62,6 @@ def plenty_of_free_space(monkeypatch):
     return ample
 
 
-
-
 @pytest.mark.parametrize(
     "msg",
     [
@@ -87,8 +85,6 @@ def test_the_check_is_case_insensitive():
     assert _looks_like_disk(RuntimeError("NO SPACE LEFT ON DEVICE")) is True
 
 
-
-
 @pytest.mark.usefixtures("plenty_of_free_space")
 def test_an_unconvertible_architecture_is_not_a_disk_problem():
     """The bert_classification case."""
@@ -108,8 +104,6 @@ def test_a_bad_quant_method_is_not_a_disk_problem():
     assert _looks_like_disk(exc, os.getcwd()) is False
 
 
-
-
 # ---- the guard must never be what raises ---------------------------------
 def test_a_nonexistent_directory_does_not_raise():
     assert _looks_like_disk(RuntimeError("boom"), "/definitely/not/a/real/path") in (True, False)
@@ -121,8 +115,6 @@ def test_none_directory_does_not_raise():
 
 def test_an_exception_with_no_message_does_not_raise():
     assert _looks_like_disk(RuntimeError()) in (True, False)
-
-
 
 
 def test_the_kaggle_branch_is_gated_on_the_check():
@@ -158,8 +150,6 @@ def test_the_real_error_survives_either_way():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
-
-
 
 
 def test_sigkill_is_recognised_from_the_message():
@@ -277,8 +267,6 @@ def test_it_chains_the_original():
     src = inspect.getsource(_s.unsloth_save_pretrained_gguf)
     i = src.index("_gguf_child_was_oom_killed(e)")
     assert "from e" in src[i : i + 900]
-
-
 
 
 def test_no_kaggle_disk_message_is_left_ungated():

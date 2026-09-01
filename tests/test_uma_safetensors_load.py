@@ -71,8 +71,6 @@ def _install_fake_modeling_utils(monkeypatch, safe_open_fn):
     return fake_mu
 
 
-
-
 def test_force_uma_on(uma, monkeypatch):
     monkeypatch.setenv("UNSLOTH_FORCE_UMA", "1")
     uma.is_integrated_unified_memory_gpu.cache_clear()
@@ -104,8 +102,6 @@ def test_is_cuda_target(uma, device, expected):
 def test_is_cuda_target_torch_device(uma):
     assert uma._is_cuda_target(torch.device("cuda", 0)) is True
     assert uma._is_cuda_target(torch.device("cpu")) is False
-
-
 
 
 def test_wrapper_passes_through_off_uma(uma, force_uma, monkeypatch):
@@ -158,8 +154,6 @@ def test_patch_installs_and_is_idempotent(uma, force_uma, monkeypatch):
     # second call must not double-wrap
     assert uma.patch_unified_memory_safetensors_load() is True
     assert fake_mu.safe_open is wrapped
-
-
 
 
 def test_cpu_target_is_passthrough(uma, force_uma, monkeypatch, tiny_safetensors):

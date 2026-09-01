@@ -22,8 +22,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNSLOTH_INIT = REPO_ROOT / "unsloth" / "__init__.py"
 
 
-
-
 def test_is_mlx_gate_uses_three_required_predicates():
     """_IS_MLX must AND Darwin+arm64+importable-mlx; dropping any breaks dispatch."""
     tree = ast.parse(UNSLOTH_INIT.read_text(encoding = "utf-8"))
@@ -67,8 +65,6 @@ def test_is_mlx_gate_uses_three_required_predicates():
     assert helper_src.index("UNSLOTH_FORCE_GPU_PATH") < helper_src.index(
         "from unsloth_zoo.mlx import is_mlx_available"
     ), "_IS_MLX helper must run the local MLX precheck before importing zoo"
-
-
 
 
 # Runtime gate behavior with platform spoofed to Apple Silicon + fake mlx.
@@ -135,8 +131,6 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
     import os
 
     assert _evaluate_is_mlx_precheck(platform, importlib.util, os) is False
-
-
 
 
 # detect_hardware() picks MLX only when CUDA+XPU are both unavailable AND the host is Apple Silicon AND mlx is

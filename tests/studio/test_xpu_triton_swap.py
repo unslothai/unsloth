@@ -243,7 +243,10 @@ class TestXpuTritonSwap:
     @pytest.mark.parametrize(
         "spec, generic",
         [
-            ("pytorch-triton-xpu==3.5.0", ""),  # nothing shadowing it torch is not the +xpu wheel torch declares no
+            (
+                "pytorch-triton-xpu==3.5.0",
+                "",
+            ),  # nothing shadowing it torch is not the +xpu wheel torch declares no
             ("triton==3.7.1", "3.7.1"),
             ("", "3.7.1"),
         ],

@@ -272,8 +272,6 @@ def test_lora_merge_budgets_per_device():
     assert "get_device_properties(0).total_memory * maximum_memory_usage" not in body
 
 
-
-
 def _fake_torch_xpu():
     t = types.ModuleType("torch")
     t.cuda = types.SimpleNamespace(is_available = lambda: False)
@@ -317,8 +315,6 @@ def test_torchao_export_uses_the_shared_release():
     assert "_restore_model_after_quantize_subprocess(model" in torchao
     # No hand-rolled single-device gate left behind.
     assert "len(_devs) == 1" not in torchao
-
-
 
 
 # ── regressions for the multi-GPU dispatch branch ──
@@ -436,7 +432,9 @@ def test_snapshot_restores_a_forward_patched_after_the_dispatch(_fake_accelerate
     stock_forward = lambda *a, **k: "stock"  # noqa: E731
     fused_forward = lambda *a, **k: "unsloth-fused"  # noqa: E731
     mlp._hf_hook = object()
-    mlp._old_forward = stock_forward  # captured by accelerate at dispatch time installed by unsloth afterwards
+    mlp._old_forward = (
+        stock_forward  # captured by accelerate at dispatch time installed by unsloth afterwards
+    )
     mlp.forward = fused_forward
 
     snapshot = ns["_snapshot_dispatch_state"](root)

@@ -119,7 +119,6 @@ GIT_PLUS_ALLOWLIST = (
 )
 
 
-
 @dataclasses.dataclass
 class Finding:
     rule: str
@@ -132,8 +131,6 @@ class Finding:
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
-
-
 
 
 def iter_notebooks(
@@ -207,7 +204,6 @@ def target_environment(notebook_name: str) -> str:
     return "colab"
 
 
-
 PINNED_RE = re.compile(r"^\s*([A-Za-z0-9._-]+)\s*==\s*([^\s;#]+)")
 
 
@@ -247,8 +243,6 @@ def cmp_versions(a: str, b: str) -> int:
     if ta > tb:
         return 1
     return 0
-
-
 
 
 @dataclasses.dataclass
@@ -374,8 +368,6 @@ def explicit_pin(spec: SpecParts) -> str | None:
     return None
 
 
-
-
 def pypi_metadata(name: str, version: str) -> dict[str, Any] | None:
     PYPI_CACHE_DIR.mkdir(parents = True, exist_ok = True)
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", f"{name.lower()}__{version}")
@@ -445,8 +437,6 @@ def constraint_satisfied(version: str, ops: list[tuple[str, str]]) -> bool:
     return True
 
 
-
-
 def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     """Merge install-cell constraints with Colab pip-freeze (cell wins).
 
@@ -478,8 +468,6 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
         if existing is None or cmp_versions(existing, ub) > 0:
             out[name] = ub
     return out
-
-
 
 
 def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
@@ -688,8 +676,6 @@ def rule_inst_006_double_bang(install_cell: str, file: str, cell_idx: int) -> li
     return findings
 
 
-
-
 class _APIScanner(ast.NodeVisitor):
     """Scan user-facing code cells for known deprecated patterns. R-API-001
     (`for_training`/`for_inference`) is intentionally absent: those helpers are
@@ -741,7 +727,6 @@ def scan_user_cells(nb: dict[str, Any], file: str) -> list[Finding]:
         scanner.visit(tree)
         findings.extend(scanner.findings)
     return findings
-
 
 
 POLICY_CLAUSES_DEFAULT = [
@@ -806,8 +791,6 @@ def _extract_dont_update_exceptions(update_script: pathlib.Path) -> list[str]:
         if m2:
             out.append(m2.group(1))
     return out
-
-
 
 
 def cmd_drift(args: argparse.Namespace) -> int:
@@ -883,8 +866,6 @@ def cmd_drift(args: argparse.Namespace) -> int:
     return rc
 
 
-
-
 def cmd_convert(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     out = pathlib.Path(args.out).resolve()
@@ -918,8 +899,6 @@ def cmd_convert(args: argparse.Namespace) -> int:
     print(f"converted {len(notebooks) - len(failed)}/{len(notebooks)} notebooks to {out}")
     _emit(failed)
     return 0 if not failed else 1
-
-
 
 
 def cmd_lint(args: argparse.Namespace) -> int:
@@ -969,14 +948,10 @@ def cmd_lint(args: argparse.Namespace) -> int:
     return 0 if not any(f.severity == "error" for f in findings) else 1
 
 
-
-
 def cmd_exceptions(args: argparse.Namespace) -> int:
     findings = rule_l12_exceptions_coverage(pathlib.Path(args.notebooks_dir).resolve())
     _emit(findings)
     return 0 if not findings else 1
-
-
 
 
 def cmd_api(args: argparse.Namespace) -> int:
@@ -1022,8 +997,6 @@ def cmd_api(args: argparse.Namespace) -> int:
                         )
     _emit(findings)
     return 0 if not findings else 1
-
-
 
 
 def cmd_all(args: argparse.Namespace) -> int:
@@ -1208,8 +1181,6 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             "refresh-colab --all --snapshot-dir scripts/data` at your convenience."
         )
     return 0
-
-
 
 
 def _emit(findings: list[Finding]) -> None:

@@ -46,8 +46,6 @@ RL_REPLACEMENTS = REPO_ROOT / "unsloth" / "models" / "rl_replacements.py"
 SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
-
-
 class _pretend_cuda:
     """torch.cuda answering as a card without bfloat16, or with it."""
 
@@ -78,8 +76,6 @@ def test_disabling_autocast_skips_that_check():
     with _pretend_cuda(has_bf16 = False):
         with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16, enabled = False):
             pass
-
-
 
 
 def _prepare_inputs_snippet() -> str:
@@ -148,8 +144,6 @@ def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, exp
             namespace,
         )
     assert namespace["seen"] == [expect_enabled]
-
-
 
 
 # _get_per_token_logps and friends, which run as ordinary code --------

@@ -124,8 +124,6 @@ def _if_test_containing(fn_name, needle, env):
     raise AssertionError(f"{fn_name}: no `if` test containing {needle!r}")
 
 
-
-
 # Reference implementations:
 def _old_cuda_fields(ver, hip, cuda):
     """merge base studio/install_python_stack.py:2339-2346 (_ensure_cuda_torch)."""

@@ -55,8 +55,6 @@ def test_the_producers_were_all_found():
     )
 
 
-
-
 @pytest.mark.parametrize("value", _shipped_values())
 def test_shipped_dtype_fields_resolve(value):
     """A false rejection here breaks loading one of the six model families."""
@@ -74,8 +72,6 @@ def test_shipped_dtype_fields_match_the_old_eval(value):
     for field in (dtype, bnb_compute_dtype):
         reference = eval(field, {"torch": torch})
         assert resolve_dtype(field) is reference, field
-
-
 
 
 @pytest.mark.parametrize(
@@ -98,8 +94,6 @@ def test_hostile_dtype_field_rejected(payload):
 def test_table_covers_only_dtypes():
     for key, value in DTYPE_ALIASES.items():
         assert value is None or isinstance(value, torch.dtype), key
-
-
 
 
 def test_a_value_we_set_is_trusted(monkeypatch):
@@ -131,8 +125,6 @@ def test_an_inherited_value_that_mimics_ours_is_still_not_trusted(monkeypatch):
 def test_unset_is_empty(monkeypatch):
     monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising = False)
     assert trusted_custom_dtype() == ("", False)
-
-
 
 
 def test_vision_does_not_eval_the_dtype_fields():

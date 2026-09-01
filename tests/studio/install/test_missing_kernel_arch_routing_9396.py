@@ -132,8 +132,6 @@ def _run_install(
     return str(pip.call_args_list) + str(pip_try.call_args_list)
 
 
-
-
 @pytest.mark.parametrize(
     "gfx, leaf",
     [
@@ -223,8 +221,6 @@ def test_the_mirror_override_is_honoured():
     assert "https://mirror.test/whl/gfx110X-all/" in calls, calls
 
 
-
-
 # ── the neighbours this must not disturb ─────────────────────────────────────
 @pytest.mark.parametrize("gfx", ["gfx1100", "gfx1102", "gfx1030", "gfx1201"])
 def test_a_supported_arch_keeps_the_generic_index(gfx):
@@ -260,7 +256,6 @@ def test_a_mixed_host_whose_runtime_target_is_supported_keeps_the_generic_index(
     calls = _run_install(gfx_devices = ("gfx1100", "gfx1103"), env = {"HIP_VISIBLE_DEVICES": "0"})
     assert _GENERIC in calls, calls
     assert _AMD not in calls, calls
-
 
 
 # Measured on an AMD DevLab strix-halo host (amd-smi 26.2.2):
@@ -366,8 +361,6 @@ def test_a_repeated_arch_on_an_amd_smi_host_does_not_shift_the_mask():
     assert _AMD not in calls, calls
 
 
-
-
 def test_kfd_topology_answers_when_neither_userland_probe_is_installed():
     """A runtime-only ROCm install ships no rocminfo and no amd-smi; the kernel's own
     topology still names the GPU, and _has_rocm_gpu() already reads that same sysfs."""
@@ -466,8 +459,6 @@ def test_the_inferred_arch_install_is_not_repeated_by_the_reroute():
     assert f"{_AMD}/gfx1151/" in calls, calls
 
 
-
-
 def test_torch_already_on_the_right_per_arch_wheels_is_not_reinstalled():
     """_ensure_rocm_torch runs twice per install and again on every update, and the
     reroute is a --force-reinstall --no-cache-dir of a multi-GB stack."""
@@ -510,8 +501,6 @@ def test_a_leaf_that_needs_torch_211_keeps_its_floor():
     assert "torch>=2.4,<2.12.0" not in calls, calls
 
 
-
-
 # ── the spoofed runtime the per-arch wheels cannot survive ───────────────────
 def test_a_kfd_only_spoofed_host_clears_the_override_before_installing():
     """With no rocminfo and no amd-smi the spoof check has nothing to distrust and declines,
@@ -550,8 +539,6 @@ def test_a_mixed_kernel_reading_never_clears_the_override():
     assert _run_install.hsa_override_after == "11.0.0"
 
 
-
-
 _SECRET_MIRROR = "https://user:s3cr3t-token@mirror.example/whl"
 
 
@@ -570,8 +557,6 @@ def test_the_strix_banner_redacts_mirror_credentials():
         env = {"UNSLOTH_AMD_ROCM_MIRROR": _SECRET_MIRROR},
     )
     assert "s3cr3t-token" not in _run_install.printed, _run_install.printed
-
-
 
 
 @pytest.mark.parametrize("apu", ["gfx1103", "gfx1036", "gfx1035", "gfx1033"])
@@ -607,8 +592,6 @@ def test_an_all_integrated_host_is_never_deposed():
     """Every candidate is a shadowing APU, so there is no discrete card to prefer."""
     calls = _run_install(gfx_devices = ("gfx1103", "gfx1036"))
     assert f"{_AMD}/gfx110X-all/" in calls, calls
-
-
 
 
 def test_the_leaf_lands_on_the_path_not_inside_a_mirror_token():
@@ -724,8 +707,6 @@ def test_an_all_unroutable_host_keeps_enumeration_order():
     assert _AMD not in calls, calls
 
 
-
-
 def test_a_stale_per_arch_family_is_replaced_when_the_target_goes_generic():
     """An earlier gfx1103-only run installs gfx110X-all. Add a dGPU, or point
     HIP_VISIBLE_DEVICES at one, and those wheels carry no kernels for the new target,
@@ -770,7 +751,6 @@ def test_an_unreadable_family_never_forces_a_reinstall(family, owns):
     )
     assert _GENERIC not in calls, calls
     assert _AMD not in calls, calls
-
 
 
 _ROCM_ARCH_TORCH_210 = stack_mod._TORCH_PROBE_MARKER + "2.10.0+rocm7.13.0|7.13|\n"
@@ -829,8 +809,6 @@ def test_a_stale_family_is_repaired_when_no_generic_tag_resolves():
     assert f"{_AMD}/gfx120X-all/" in calls, calls
 
 
-
-
 @pytest.mark.parametrize("probe", [(), ("gfx1103",)])
 def test_an_unreadable_rocm_version_still_routes_a_missing_kernel_arch(probe):
     """A bundled-runtime host has no /opt/rocm version to read, and the missing-kernel
@@ -878,8 +856,6 @@ def test_keeping_the_matching_wheels_also_clears_a_confirmed_spoof():
     assert f"{_AMD}/gfx1152/" not in calls, calls
     assert "torch already runs on the gfx1152 wheels" in _run_install.printed
     assert _run_install.hsa_override_after is None, _run_install.hsa_override_after
-
-
 
 
 def test_the_rocr_layer_is_applied_before_the_hip_index_on_an_unfiltered_list():
@@ -961,8 +937,6 @@ def test_a_stale_per_arch_family_is_repaired_even_when_the_rocm_version_is_unrea
         installed_family = "gfx120x-all",
     )
     assert "skipping torch reinstall" in _run_install.printed, _run_install.printed
-
-
 
 
 # ── two orders, and the mask that cannot be applied to either ────────────────
@@ -1117,7 +1091,10 @@ def test_a_named_arch_resolves_an_ordering_no_probe_can():
 @pytest.mark.parametrize(
     "gfx, leaf",
     [
-        ("gfx1200", "gfx120X-all"),  # RDNA 4, and the generic wheel lists it Strix Halo, reached here when the version
+        (
+            "gfx1200",
+            "gfx120X-all",
+        ),  # RDNA 4, and the generic wheel lists it Strix Halo, reached here when the version
         ("gfx1151", "gfx1151"),
     ],
 )

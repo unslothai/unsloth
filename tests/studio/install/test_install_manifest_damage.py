@@ -73,8 +73,6 @@ def _healthy(site_packages: Path):
     ]
 
 
-
-
 def test_a_healthy_install_reports_nothing(site_packages):
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
@@ -112,8 +110,6 @@ def test_the_findings_respect_the_limit(site_packages):
     dist_info = _dist(site_packages)
     _record(dist_info, [[f"{PKG}/m{i}.py", "sha256=x", 10] for i in range(9)])
     assert len(install_manifest.damaged_payload_files(PKG, limit = 3)) == 3
-
-
 
 
 def test_a_regenerated_frontend_dist_is_not_damage(site_packages):
@@ -230,8 +226,6 @@ def test_an_unreadable_environment_reports_undamaged(monkeypatch):
     assert install_manifest.damaged_payload_files(PKG) == []
 
 
-
-
 def _complete_install(tmp_path, monkeypatch, site_packages):
     """A manifest and requirements that make every metadata check pass."""
     req_root = tmp_path / "requirements"
@@ -295,8 +289,6 @@ def test_the_scan_runs_last_and_diverts_no_existing_reason(tmp_path, monkeypatch
     assert state["reason"] == "studio_install_incomplete"
 
 
-
-
 def test_the_installers_ask_for_the_scan():
     """They import this module from their own directory, so unlike an external
     CLI they can never be skewed against it."""
@@ -318,8 +310,6 @@ def test_the_desktop_boot_path_does_not_ask_for_the_scan():
     cli = (repo / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
     assert "def _install_state(deep: bool = False)" in cli
     assert "_install_state(deep = True)" in cli
-
-
 
 
 def test_a_package_directory_replaced_by_a_file_is_damage(site_packages):

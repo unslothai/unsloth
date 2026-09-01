@@ -151,8 +151,6 @@ _completion_mask_of = HELPERS["create_completion_attention_mask"]
 _left_pad_of = HELPERS["calculate_pad_tokens_in_prompt"]
 
 
-
-
 class _Model(torch.nn.Module):
     """`hidden_states = False` ignores UNSLOTH_RETURN_HIDDEN_STATES and returns
     real [.., vocab] logits; True is Unsloth's generated forward.
@@ -198,8 +196,6 @@ class _Model(torch.nn.Module):
         )
         h = torch.tanh(self.emb(input_ids))
         return SimpleNamespace(logits = h if self.hidden_states else self.head(h))
-
-
 
 
 def _statement_lists(node):
@@ -272,8 +268,6 @@ def _packed_block_source():
     first, last = found[0]
     lines = text.splitlines(keepends = True)[first.lineno - 1 : last.end_lineno]
     return textwrap.dedent("".join(lines))
-
-
 
 
 def _batch():
@@ -357,8 +351,6 @@ def _reference_logprobs(model, input_ids, max_left_pad):
         for j in range(1, real.shape[1]):
             out[row, cols[j]] = logps[j - 1, real[0, j]]
     return out[:, -width:]
-
-
 
 
 def test_packed_path_survives_a_forward_that_returns_real_logits():

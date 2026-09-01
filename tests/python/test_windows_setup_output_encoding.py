@@ -230,8 +230,6 @@ def test_step_label_and_value_stay_on_one_line(use_command_shape: bool) -> None:
     assert matches[0] == "  gpu            none (chat-only / GGUF)"
 
 
-
-
 @pwsh_only
 @pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
 def test_banner_and_footer_are_valid_utf8(use_command_shape: bool) -> None:
@@ -252,8 +250,6 @@ def test_banner_and_footer_print_once_each(use_command_shape: bool) -> None:
     assert text.count(f"  {SLOTH} Unsloth Studio Setup") == 1
     assert text.count("  Unsloth Studio Setup Complete") == 1
     assert text.count("  " + RULE_CHAR * 52) == 3, "the 52-char rule did not survive intact"
-
-
 
 
 # so a regression is caught without waiting for a Windows runner.

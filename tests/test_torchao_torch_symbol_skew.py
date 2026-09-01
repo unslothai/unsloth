@@ -45,8 +45,6 @@ from unsloth.import_fixes import (  # noqa: E402
 GPU_INIT = ROOT / "unsloth" / "_gpu_init.py"
 
 
-
-
 def test_it_can_be_imported():
     """The whole point: satisfy `from torch.nn.functional import X`."""
     ph = _make_torch_symbol_placeholder("ScalingType", "detail here")
@@ -86,8 +84,6 @@ def test_repr_is_honest():
 def test_it_is_marked_as_ours():
     ph = _make_torch_symbol_placeholder("ScalingType", "d")
     assert getattr(ph, "__unsloth_placeholder__", False) is True
-
-
 
 
 def test_it_is_a_no_op_when_torch_already_has_the_symbols():
@@ -135,8 +131,6 @@ def test_calling_it_twice_is_stable():
     assert second is False or first == second
 
 
-
-
 def test_it_runs_before_unsloth_zoo_is_imported():
     """unsloth_zoo pulls in transformers and therefore torchao, so calling the
     fix after that import would be pointless."""
@@ -178,8 +172,6 @@ def test_symbols_torch_already_provides_are_never_replaced():
     real = F.scaled_dot_product_attention
     IF.fix_torchao_torch_symbol_skew()
     assert F.scaled_dot_product_attention is real
-
-
 
 
 def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
@@ -229,7 +221,6 @@ def test_the_cleanup_in_the_test_above_is_real():
         assert not getattr(
             obj, "__unsloth_placeholder__", False
         ), f"a placeholder for {n} leaked out of a test"
-
 
 
 INIT = ROOT / "unsloth" / "__init__.py"
@@ -287,13 +278,14 @@ def test_the_mlx_call_cannot_break_the_import():
     assert "except Exception" in window and "pass" in window
 
 
-
-
 @pytest.mark.parametrize(
     "version,affected",
     [
         ("0.18.0", True),
-        ("0.18.0+cu130", True),  # wheels carry a local version a dev build of a later release still has it future
+        (
+            "0.18.0+cu130",
+            True,
+        ),  # wheels carry a local version a dev build of a later release still has it future
         ("0.19.0.dev20260801", True),
         ("1.0.0", True),
         ("0.17.0", False),

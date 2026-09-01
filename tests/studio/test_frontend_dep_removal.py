@@ -310,7 +310,6 @@ def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
     )
 
 
-
 # Classifier unit tests: feed snippets into classify(), assert the kind.
 # Import classify() by file path so this test needs no installed package.
 import importlib.util as _ilu
@@ -721,7 +720,6 @@ def run_classify_unit_tests() -> int:
     return 0 if passed == len(CLASSIFY_CASES) else 1
 
 
-
 # checker, clean up. Catches regressions in the full grep+classify pipeline.
 # Adversarial end-to-end cases:
 ADVERSARIAL_TMP_DIR = REPO / "studio/frontend/src/__dep_check_adversarial__"
@@ -864,8 +862,6 @@ ADV_CASES: list[AdvCase] = [
         ["__adv_only_pkg_m__"],
     ),
 ]
-
-
 
 
 # package.json field-reference cases: simulate prettier/eslintConfig/overrides/ peerDependenciesMeta etc., testing
@@ -1163,8 +1159,6 @@ def run_adversarial_cases() -> int:
     return 0 if passed == len(ADV_CASES) else 1
 
 
-
-
 @dataclass
 class EnumCase:
     id: str
@@ -1333,8 +1327,6 @@ def run_enum_cases() -> int:
     print()
     print(f"{passed}/{len(ENUM_CASES)} enumeration cases pass")
     return 0 if passed == len(ENUM_CASES) else 1
-
-
 
 
 # Script-wrapper cases: scripts_bin_refs / _next_real_bin must credit the real bin (`biome` -> @biomejs/biome), not the

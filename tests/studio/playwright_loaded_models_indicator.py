@@ -107,7 +107,6 @@ def api(
         return json.loads(response.read().decode())
 
 
-
 NOTHING_CHAT = {
     "active_model": None,
     "loaded": [],

@@ -101,8 +101,6 @@ class _Plan:
         return "  (fabricated plan)"
 
 
-
-
 @pytest.mark.parametrize(
     "device_map",
     [
@@ -171,8 +169,6 @@ def test_an_unset_switch_plans_so_a_bare_from_pretrained_needs_no_device_map(mon
     )
     assert resolved == planned
     assert calls == ["unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit"]
-
-
 
 
 # ------------------------------------------------------- where planning cannot apply
@@ -380,8 +376,6 @@ def test_an_infeasible_plan_is_raised_not_swallowed():
         ns["resolve_unsloth_device_map"]("unsloth", "m")
 
 
-
-
 @pytest.mark.parametrize(
     "kwargs,devices,planner",
     [
@@ -445,8 +439,6 @@ def test_the_default_device_map_still_resolves_to_the_plain_sentinel():
     Widening that to "balanced" would change what every single-card caller loads."""
     ns = _load()
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
-
-
 
 
 def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
@@ -713,8 +705,6 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
             assert (
                 passed.get("quantization_config") == "qcfg"
             ), f"diffusion.py:{call.lineno} plans without the skip list the load applies"
-
-
 
 
 # Planning by default reaches paths the opt-in never did.

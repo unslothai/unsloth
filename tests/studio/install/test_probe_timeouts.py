@@ -44,8 +44,6 @@ def _extract_sh_function_body(source: str, name: str) -> str:
     return source[start:]
 
 
-
-
 class TestInstallShBoundedProbe:
     def _src(self) -> str:
         return INSTALL_SH.read_text(encoding = "utf-8")
@@ -97,8 +95,6 @@ class TestInstallShBoundedProbe:
         ), "found an unbounded LC_ALL=C $_smi execution in get_torch_index_url"
 
 
-
-
 class TestPowerShellBoundedProbe:
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_bounded_helper_present(self, path):
@@ -138,8 +134,6 @@ class TestPowerShellBoundedProbe:
         assert (
             "Test-NvidiaSmiHasGpu $p" in src
         ), f"{path.name} hardcoded-path fallback must use Test-NvidiaSmiHasGpu"
-
-
 
 
 # ── Behavioral: a hanging nvidia-smi must not hang _has_usable_nvidia_gpu ──

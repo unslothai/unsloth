@@ -56,7 +56,6 @@ _adamw_mod = _load_module(
 make_q_galore_param_groups = _adamw_mod.make_q_galore_param_groups
 
 
-
 class TestGaLoreProjector:
     """Tests for the GaLore low-rank gradient projector."""
 
@@ -145,8 +144,6 @@ class TestGaLoreProjector:
         assert abs(ratio - 0.5) < 1e-5, f"Expected ratio ~0.5, got {ratio:.8f}"
 
 
-
-
 class TestQuantizationUtils:
     """Tests for _quantize, _dequantize, _quantize_stochastic."""
 
@@ -193,8 +190,6 @@ class TestQuantizationUtils:
 
         mean_error = sum(errors) / len(errors)
         assert abs(mean_error) < 0.01, f"Mean error {mean_error} suggests biased rounding"
-
-
 
 
 class TestParamGroupHelper:
@@ -271,8 +266,6 @@ class TestParamGroupHelper:
 
         galore_groups = [g for g in groups if "rank" in g]
         assert len(galore_groups) == 0, "Expected no GaLore groups when target_modules=[]"
-
-
 
 
 class TestQGaLoreIntegration:
@@ -399,7 +392,9 @@ class TestQGaLoreIntegration:
         _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
 
         p = torch.nn.Parameter(torch.ones(4, 4))
-        p._saved_data = torch.ones(4, 4) * 2.0  # Pre-update weights Simulate project-back: p.data = p._saved_data +
+        p._saved_data = (
+            torch.ones(4, 4) * 2.0
+        )  # Pre-update weights Simulate project-back: p.data = p._saved_data +
         p.data = p._saved_data.add_(torch.ones(4, 4) * 1.0)
 
         group = {"weight_decay": 0.1, "lr": 1.0, "_wd_saved": 0.1}

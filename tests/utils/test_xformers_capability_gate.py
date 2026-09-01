@@ -17,7 +17,11 @@ from unsloth.utils import attention_dispatch as ad
         ((9, 0), None, False),
         ((10, 0), None, False),
         ((12, 0), True, False),
-        ((12, 0), False, True),  # Ada: below sm_120, never probed, always kept Hopper: below sm_120, kept Blackwell
+        (
+            (12, 0),
+            False,
+            True,
+        ),  # Ada: below sm_120, never probed, always kept Hopper: below sm_120, kept Blackwell
     ],
 )
 def test_capability_gate(capability, probe_result, expect_disabled):

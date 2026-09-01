@@ -24,7 +24,6 @@ LOG_DIR.mkdir(parents = True, exist_ok = True)
 LOG_PATH = LOG_DIR / "none_detect_results.log"
 
 
-
 class Tee:
     """Write to both stdout and a file simultaneously."""
 
@@ -88,9 +87,6 @@ def assert_exact_recall(stats: dict, expected_bad: set, label: str):
     else:
         print()
     return all_caught
-
-
-
 
 
 # Minimal mock for hand-crafted rows pyarrow can't represent (e.g. messages=None / "not a list").
@@ -426,8 +422,6 @@ def test_synthetic():
     return results
 
 
-
-
 def _brute_force_bad_rows(ds, fmt: str) -> set:
     """Pure-Python ground-truth scanner (no shared code with dataset_none_detect) for independent proof.
 
@@ -521,8 +515,6 @@ def test_dataclaw():
         return None
 
 
-
-
 def test_codex_data():
     section("3. HuggingFace — peteromallet/my-personal-codex-data")
     try:
@@ -552,8 +544,6 @@ def test_codex_data():
         print(f"  [ERROR] Could not load codex dataset: {exc}")
         traceback.print_exc()
         return None
-
-
 
 
 def main():

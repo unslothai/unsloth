@@ -58,13 +58,15 @@ def _body(name: str) -> str:
     return ast.get_source_segment(SRC, _function(name)) or ""
 
 
-
-
 @pytest.mark.parametrize(
     ("mode", "layers", "expected"),
     [
         ("manual", 8, 8),
-        ("manual", 0, 0),  # CPU-only is a real request, not "unset" Auto slider defers to the runner Unsloth mode
+        (
+            "manual",
+            0,
+            0,
+        ),  # CPU-only is a real request, not "unset" Auto slider defers to the runner Unsloth mode
         ("manual", -1, None),
         ("auto", 8, None),
         ("auto", -1, None),
@@ -77,8 +79,6 @@ def test_effective_ngl(llama_cpp, mode, layers, expected):
 def test_zero_layers_is_not_swallowed_as_falsy(llama_cpp):
     """The exact case in the report: GPU layers set to 0 must reach the child."""
     assert llama_cpp._diffusion_manual_ngl("manual", 0) == 0
-
-
 
 
 def test_shim_without_ngl_is_detected(llama_cpp, tmp_path):
@@ -95,8 +95,6 @@ def test_shim_with_ngl_is_detected(llama_cpp, tmp_path):
 
 def test_missing_shim_file_does_not_raise(llama_cpp, tmp_path):
     assert llama_cpp._shim_supports_ngl(["python", str(tmp_path / "gone.py")]) is False
-
-
 
 
 def test_diffusion_server_accepts_the_layer_split():
@@ -152,8 +150,6 @@ def test_diffusion_no_longer_hardcodes_auto_over_the_users_choice():
     assert "self._gpu_layers = -1" not in body
 
 
-
-
 def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
     """A backend that looks like a healthy diffusion runner, for the dedup guards."""
     b = llama_cpp.LlamaCppBackend()
@@ -189,7 +185,13 @@ def _in_target_state(llama_cpp, b, *, mode, layers):
 @pytest.mark.parametrize(
     ("recorded", "requested_ngl", "mode", "layers", "expected"),
     [
-        (-1, None, "auto", -1, True),  # auto -> auto inert manual preference must not loop a real split must reload
+        (
+            -1,
+            None,
+            "auto",
+            -1,
+            True,
+        ),  # auto -> auto inert manual preference must not loop a real split must reload
         (-1, None, "manual", -1, True),  # inert manual preference must not loop
         (-1, None, "manual", 8, False),
         (8, 8, "manual", 8, True),
@@ -235,8 +237,6 @@ def test_requested_split_survives_a_shim_without_the_flag(llama_cpp):
     assert b.diffusion_requested_ngl == 20
 
 
-
-
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -266,8 +266,6 @@ def test_probe_falls_back_to_a_substring_scan_on_unparseable_source(llama_cpp, t
     assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
 
 
-
-
 # the probe must inspect the file that will be spawned, whatever its name ──
 @pytest.mark.parametrize("name", ["shim", "shim.pyw", "SHIM.PY"])
 def test_probe_keys_on_argv_shape_not_suffix(llama_cpp, tmp_path, name):
@@ -286,8 +284,6 @@ def test_probe_does_not_mistake_the_module_form_for_a_file(llama_cpp, monkeypatc
     monkeypatch.setattr(ilu, "find_spec", lambda name: None)
     cmd = ["python", "-m", "unsloth_zoo.diffusion_studio.shim"]
     assert llama_cpp._shim_supports_ngl(cmd) is False  # unresolvable -> conservative
-
-
 
 
 # the guard must mirror what the launcher will actually do ──
@@ -324,12 +320,15 @@ def test_training_guard_mirrors_shim_support():
     assert "_scale_diffusion_required_gb" in body
 
 
-
-
 @pytest.mark.parametrize(
     ("required", "ngl", "n_layers", "expected"),
     [
-        (15.0, 10, 30, 5.0),  # a third of the layers -> a third of the footprint all layers -> unchanged over-ask
+        (
+            15.0,
+            10,
+            30,
+            5.0,
+        ),  # a third of the layers -> a third of the footprint all layers -> unchanged over-ask
         (15.0, 30, 30, 15.0),
         (15.0, 99, 30, 15.0),
         (15.0, 10, None, 15.0),
@@ -356,20 +355,18 @@ def test_probe_ignores_a_sibling_shim_next_to_a_custom_override(llama_cpp, tmp_p
     assert llama_cpp._shim_supports_ngl(["python", str(override)]) is False
 
 
-
-
 def test_zoo_upgrade_reloads_a_dropped_split(llama_cpp):
     """manual/20 against an old shim launched with the default and deduped on the
     ask. Once the shim gains --ngl, the identical ask must reload to apply it."""
     b = _loaded_diffusion(llama_cpp, recorded_layers = -1, requested_ngl = 20)
-    assert _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is True  # shim still old zoo upgraded in this
+    assert (
+        _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is True
+    )  # shim still old zoo upgraded in this
     b.diffusion_split_supported = lambda: True
     assert _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is False
     b2 = _loaded_diffusion(llama_cpp, recorded_layers = 20, requested_ngl = 20)
     b2.diffusion_split_supported = lambda: True
     assert _in_target_state(llama_cpp, b2, mode = "manual", layers = 20) is True
-
-
 
 
 def test_response_models_expose_the_requested_split():

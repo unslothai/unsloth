@@ -45,8 +45,6 @@ _ARC = "Intel(R) Arc(TM) A770 Graphics"
 HANDOFF = "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF"
 
 
-
-
 def _balanced(src: str, start: int, opener: str, closer: str) -> str:
     """Slice from `start` through the delimiter that closes the first `opener` after it."""
     depth, i = 0, src.index(opener, start)
@@ -122,8 +120,6 @@ def _prelude(src: str) -> str:
             _function(src, "Resolve-ShadowingGfxPick"),
         ]
     )
-
-
 
 
 def _driver(
@@ -204,8 +200,6 @@ def _run(
     return json.loads(proc.stdout)
 
 
-
-
 def test_scan_wraps_the_whole_if_in_an_array():
     """The unwrapped form is the bug, so keep it out of the source."""
     block = _amd_scan_block(_setup_source())
@@ -255,8 +249,6 @@ def test_setup_consumes_the_handoff_only_after_its_own_inference():
     assert block.index("gfx arch inferred from GPU name") < block.index(f"$env:{HANDOFF}")
 
 
-
-
 @requires_pwsh
 @pytest.mark.parametrize("ps51", [False, True], ids = ["pwsh", "ps51"])
 @pytest.mark.parametrize("strict", [False, True], ids = ["lax", "strict"])
@@ -296,8 +288,6 @@ def test_a_host_with_no_amd_adapter_is_not_read_as_amd(tmp_path, adapters):
     assert out["labels"] == []
     assert out["label"] is None
     assert out["arch"] is None
-
-
 
 
 @requires_pwsh
@@ -352,8 +342,6 @@ def test_a_discrete_card_is_preferred_over_a_shadowing_igpu(tmp_path):
 def test_a_pinned_mask_is_honoured_over_the_shadowing_preference(tmp_path):
     out = _run(tmp_path, [(_R780M, 0), (_RX9070, 0)], env = {"HIP_VISIBLE_DEVICES": "0"})
     assert out["arch"] == "gfx1103", "an explicit selection must never be repicked"
-
-
 
 
 @requires_pwsh
@@ -422,8 +410,6 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
         env = {"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1010", HANDOFF: "gfx1103"},
     )
     assert out["arch"] == "gfx1010"
-
-
 
 
 def _installer_scan_block() -> str:
@@ -511,8 +497,6 @@ def test_the_installer_and_setup_agree_on_which_adapter_is_active(tmp_path):
     assert _run_installer_scan(tmp_path, adapters)["arch"] == setup["arch"] == "gfx1151"
 
 
-
-
 def _handoff_lifecycle_block() -> str:
     """install.ps1's save / set / try / finally around the setup call, as shipped."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -598,8 +582,6 @@ def test_only_this_runs_arch_is_handed_to_the_child(tmp_path, arch, inherited, e
     than forwarded as though the scan had produced it."""
     out = _run_handoff_lifecycle(tmp_path, arch = arch, inherited = inherited, fails = False)
     assert out["seen_by_child"] == expected
-
-
 
 
 @requires_pwsh

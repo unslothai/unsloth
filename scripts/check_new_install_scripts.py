@@ -53,8 +53,6 @@ class Finding:
         )
 
 
-
-
 def _strip_nm_prefix(key: str) -> str:
     """Convert a v2/v3 `packages` key into a bare package name (leaf after last `node_modules/`)."""
     if not key:
@@ -121,8 +119,6 @@ def _load_lockfile(path: Path) -> dict:
         raise ValueError(f"{path}: not valid JSON: {exc}") from exc
 
 
-
-
 # Registry lookup for the postinstall command body (best-effort).
 def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
     """Return {hook: command} for lifecycle hooks in registry metadata; None on any error (never raises)."""
@@ -146,8 +142,6 @@ def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
         if isinstance(cmd, str) and cmd.strip():
             keep[hook] = cmd
     return keep or None
-
-
 
 
 def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
@@ -178,8 +172,6 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
             )
         )
     return findings
-
-
 
 
 def main(argv: list[str] | None = None) -> int:

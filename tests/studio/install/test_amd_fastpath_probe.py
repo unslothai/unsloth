@@ -88,8 +88,6 @@ def _needs_pass():
     return stack._amd_torch_needs_dependency_pass()
 
 
-
-
 # Wrong wheel
 @pytest.mark.parametrize(
     "version",
@@ -115,8 +113,6 @@ def test_an_explicit_rocm_pin_answers_without_a_hardware_probe(monkeypatch):
 def test_a_real_device_selection_is_not_a_hidden_host(monkeypatch):
     _host(monkeypatch, torch = ("2.9.0+cpu", ""), env = {"HIP_VISIBLE_DEVICES": "1"})
     assert _needs_pass() is True
-
-
 
 
 @pytest.mark.parametrize(
@@ -154,8 +150,6 @@ def test_a_strix_host_on_a_wheel_without_its_kernels_forces_the_pass(monkeypatch
         installed_family = gfx,
     )
     assert _needs_pass() is False
-
-
 
 
 @pytest.mark.parametrize(
@@ -324,8 +318,6 @@ def test_a_host_without_rocm_wheels_keeps_the_fast_path(monkeypatch, kwargs):
     assert _needs_pass() is False
 
 
-
-
 def _run_cli(
     *args,
     env = None,
@@ -443,8 +435,6 @@ def test_a_malformed_probe_call_never_falls_through_to_the_installer(argv):
     assert result.returncode == 2, result.stdout.decode(errors = "replace")
 
 
-
-
 # conservative divergences (unreadable torch, hidden mask, mixed arch, wrong ROCm
 # Repair parity Both directions are asserted, so every row must be one the two sides agree on.
 def _repair_installs(monkeypatch):
@@ -538,8 +528,6 @@ def test_the_preflight_and_the_repair_agree(monkeypatch, label, host, expected):
         assert installs, f"{label}: preflight forced a pass the repair declined"
     else:
         assert not installs, f"{label}: the repair acts but the preflight kept the fast path"
-
-
 
 
 # Right wheel family, wrong architecture

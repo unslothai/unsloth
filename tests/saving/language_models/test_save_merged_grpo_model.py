@@ -710,8 +710,6 @@ def training_run(result_queue):
     gc.collect()
 
 
-
-
 if __name__ == "__main__":
     mp.set_start_method("spawn", force = True)
     result_queue = mp.Queue()

@@ -85,8 +85,6 @@ def _ps_literal(value: object) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-
-
 def test_prologue_neutralizes_profile_state():
     block = _extract_prologue()
     assert (
@@ -199,8 +197,6 @@ def test_setup_ps1_handoff_never_inherits_the_profile():
     assert (
         '"-NoProfile"' in src[start : start + branch]
     ), "-NoProfile must be added unconditionally, before the hidden-window branch"
-
-
 
 
 _HOSTILE_PROFILE = """
@@ -669,8 +665,6 @@ def test_install_ps1_parses():
     assert res.returncode == 0, res.stdout + res.stderr
 
 
-
-
 def _proxy_prelude() -> str:
     """The PowerShell the setup launch prepends to its -Command, read from the shipped source."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
@@ -778,8 +772,6 @@ def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
         assert result.returncode == 0, f"the prelude must not fail the launch on {absent!r}"
         assert "IWR=\n" in result.stdout or result.stdout.startswith("IWR=\n")
         assert not result.stderr.strip(), f"the prelude leaked an error on {absent!r}"
-
-
 
 
 def test_module_autoloading_is_restored_before_the_handoff_needs_it():

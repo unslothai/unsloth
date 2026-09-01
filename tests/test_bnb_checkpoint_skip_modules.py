@@ -63,8 +63,6 @@ class _Config:
         self.__dict__.update(fields)
 
 
-
-
 def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
     """The regression this file exists for.
 
@@ -124,8 +122,6 @@ def test_the_bnb_config_chain_is_still_one_piece():
         ), f"the 16bit-LoRA notice fell out of the chain: {tests}"
         return
     raise AssertionError("could not find the bnb_config if/elif chain in vision.py")
-
-
 
 
 def test_the_stamp_keeps_the_list_the_load_actually_used():

@@ -516,7 +516,10 @@ _SELF_TEST_CASES = [
     # `N = K = 256` is written in this repo;
     (2, "N = K = 256\nN = K = 512\n"),
     (0, "N = K = 256\nM = 512\n"),
-    (0, "X = X = 1\n"),  # one statement, one live binding Overload signatures reached through an import alias are still
+    (
+        0,
+        "X = X = 1\n",
+    ),  # one statement, one live binding Overload signatures reached through an import alias are still
     (
         0,
         "import typing as t\n@t.overload\ndef f(x: int) -> int: ...\n"

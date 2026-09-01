@@ -178,8 +178,6 @@ def test_the_skip_variable_still_skips_everything():
     probe.assert_not_called()
 
 
-
-
 def test_the_repair_names_the_wheel_for_this_torch_patch():
     """`0.22.*` on a torch 2.7.0 host resolves torchvision 0.22.1, which requires
     torch 2.7.1, and `--no-deps` then keeps the 2.7.0 that does not match it. The
@@ -277,7 +275,10 @@ def test_a_build_no_public_index_carries_is_not_sent_to_pip():
         return str(excinfo.value)
 
     for raw, required in (
-        ("2.9.1+rocm7.2.0.lw.git7e1940d4", (0, 24, 1)),  # Radeon Linux extra Radeon Windows extra built from source
+        (
+            "2.9.1+rocm7.2.0.lw.git7e1940d4",
+            (0, 24, 1),
+        ),  # Radeon Linux extra Radeon Windows extra built from source
         ("2.9.1+rocmsdk20260116", (0, 24, 1)),
         ("2.7.0+git1a2b3c", (0, 22, 0)),
         ("2.12.0.dev20260801+cpu", (0, 27, 0)),

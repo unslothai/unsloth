@@ -48,8 +48,6 @@ RL_SRC = RL_PY.read_text(encoding = "utf-8")
 REPL_SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
-
-
 def _mixed_precision_source() -> str:
     """The `mixed_precision = (...)` literal rl.py compiles into __init__."""
     for node in ast.walk(ast.parse(RL_SRC)):
@@ -99,8 +97,6 @@ class _pretend_cuda:
 
     def __exit__(self, *exc):
         torch.cuda.is_available, torch.cuda.is_bf16_supported = self._saved
-
-
 
 
 class _Args:
@@ -337,8 +333,6 @@ def test_the_trainer_init_prefers_the_finetuning_stamp_over_the_shared_flag():
     assert "_unsloth_full_finetuning" in MP_SRC
     reads = re.findall(r"environ\.get\(\s*['\"]UNSLOTH_ENABLE_FULL_FINETUNING", MP_SRC)
     assert len(reads) == 1, reads
-
-
 
 
 def _fast_generate_autocast_source() -> str:
@@ -593,8 +587,6 @@ def test_the_diffusion_dispatch_stamps_both_answers():
     body = ast.unparse(helper)
     assert "_mark_forced_float32(model, False)" in body
     assert "_mark_requested_float32(model, user_float32)" in body
-
-
 
 
 # ---- everything that must NOT change -------------------------------------

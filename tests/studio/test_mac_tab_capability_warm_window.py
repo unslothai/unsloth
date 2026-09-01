@@ -190,8 +190,6 @@ def _health(mod, bodies):
     mod._get_json = fake
 
 
-
-
 # The regression Codex found: the window shut before the browser got there.
 # The regression Codex found:
 def test_greyed_row_fails_even_though_the_warm_window_already_shut(tmp_path, monkeypatch):
@@ -281,8 +279,6 @@ def test_unreadable_health_fails_rather_than_returning_early(tmp_path, monkeypat
     assert any("provisional" in m for m in mod._failed), mod._failed
 
 
-
-
 # The real-warm sampler still has to fail when it does catch a grey-out.
 def test_real_warm_grey_out_still_fails(tmp_path, monkeypatch):
     mod = _load(tmp_path, monkeypatch)
@@ -319,8 +315,6 @@ def test_missed_warm_window_alone_is_not_a_failure(tmp_path, monkeypatch):
     assert mod._failed == []
 
 
-
-
 # The tab walk: a pinned row that is not there means the tab checked nothing.
 def test_drive_tabs_fails_when_the_pinned_rows_never_render(tmp_path, monkeypatch):
     mod = _load(tmp_path, monkeypatch)
@@ -346,8 +340,6 @@ def test_drive_tabs_does_not_fail_on_the_rows_that_live_under_more(tmp_path, mon
 
     assert mod._failed == []
     assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
-
-
 
 
 # Drift guard: the row asserted on has to be one the sidebar actually pins.
@@ -406,7 +398,6 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
         "assert_row_never_greyed_while_unmeasured", set()
     )
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
-
 
 
 # What the survival poller fails on, now that it no longer replays the watchdog.
@@ -642,8 +633,6 @@ def test_the_watchdog_replay_is_gone():
         assert f"def {gone}" not in source and f"\n{gone} =" not in source, gone
 
 
-
-
 # The post-run watch, which is what stops the window boundary deciding the verdict.
 def _scripted_probes(mod, kinds):
     """Point _get_json at a scripted sequence of outcomes; the last one repeats."""
@@ -734,8 +723,6 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
     assert reports, "main() no longer hands a post-run verdict to report()"
     passed = {kw.arg for call in reports for kw in call.keywords}
     assert {"final_kind", "final_wait_s"} <= passed, passed
-
-
 
 
 # The watch has to be bounded, paced, and honest about what it saw.

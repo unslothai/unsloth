@@ -129,7 +129,6 @@ def test_fast_path_rejected_checksum_falls_back_to_api(monkeypatch):
     assert used["api"]
 
 
-
 RELEASE_TAG = "b9964-mix-53618c5"
 UPSTREAM_TAG = "b9964"
 BINARY_ASSET = "app-b9964-mix-53618c5-windows-x64-rocm-gfx1151.zip"
@@ -239,8 +238,6 @@ def test_resolved_release_manifest_404_falls_back(monkeypatch):
     )
     _stub_downloads(monkeypatch, _sha_payload(), not_found)
     assert ILP._download_host_resolved_release(FORK_REPO, RELEASE_TAG) is None
-
-
 
 
 class _FakeResponse:

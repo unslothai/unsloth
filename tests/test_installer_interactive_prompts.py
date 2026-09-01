@@ -582,8 +582,6 @@ def test_approved_prompts_are_documented():
         assert reason.strip(), f"APPROVED_PROMPTS[{key}] needs a reason, not an empty string"
 
 
-
-
 # Detector self-tests: a scan that silently stops matching passes everything.
 def test_detects_literal_marker_prompt():
     source = 'printf "  Enable telemetry? [Y/n] "\nread -r _reply </dev/tty || _reply="n"\n'

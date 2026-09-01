@@ -291,8 +291,6 @@ def _latest_of(tmp_path):
     return json.loads((tmp_path / "github.json").read_text(encoding = "utf-8"))["latest"]
 
 
-
-
 def _run_gate(tmp_path, *, release_tag, assets, repair_pointer):
     state_path = _world(
         tmp_path,
@@ -361,8 +359,6 @@ def test_the_gate_fails_closed_when_the_release_cannot_be_read(tmp_path):
     assert result.returncode == 1
     assert "refusing to advance the channel" in result.stderr
     assert outputs == {}
-
-
 
 
 def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(tmp_path):

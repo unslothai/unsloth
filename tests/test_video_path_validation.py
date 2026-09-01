@@ -15,8 +15,6 @@ from pathlib import Path
 import pytest
 
 
-
-
 def _extract_fns_via_ast(
     source_path,
     fn_names,
@@ -107,8 +105,6 @@ def make_auto_validating_collator(check_dataset_for_missing_videos):
     return _AutoValidatingCollator
 
 
-
-
 def _make_video_dataset(*video_paths):
     return [
         {"messages": [{"role": "user", "content": [{"type": "video", "video": p}]}]}
@@ -118,8 +114,6 @@ def _make_video_dataset(*video_paths):
 
 def _batch(*video_paths):
     return _make_video_dataset(*video_paths)
-
-
 
 
 def test_missing_local_file_raises(check_dataset_for_missing_videos):
@@ -172,8 +166,6 @@ def test_duplicate_paths_deduplicated(check_dataset_for_missing_videos):
     with pytest.raises(FileNotFoundError) as exc_info:
         check_dataset_for_missing_videos(ds)
     assert str(exc_info.value).count("/nonexistent/clip.mp4") == 1
-
-
 
 
 def test_collator_raises_on_first_batch_with_missing_video(make_auto_validating_collator):
@@ -468,8 +460,6 @@ def test_duplicate_missing_deduped_in_warn_mode(check_dataset_for_missing_videos
         warnings.simplefilter("always")
         missing = check_dataset_for_missing_videos(ds, raise_error = False)
     assert missing == ["/nonexistent/dup.mp4"]
-
-
 
 
 # above don't cover super()/formatting_func); skip when unsloth can't import.

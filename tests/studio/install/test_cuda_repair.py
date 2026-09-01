@@ -18,7 +18,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
 _STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
@@ -175,8 +174,6 @@ def _index_url(mock_pip) -> str:
     return args[args.index("--index-url") + 1]
 
 
-
-
 # Repair fires only on the poisoning signature.
 class TestCudaRepairFires:
     def test_hip_build_on_nvidia_triggers_repair(self):
@@ -252,8 +249,6 @@ class TestCudaRepairFires:
         )
         assert mock_pip.call_count == 1
         assert "https://mirror.local/cu128" in _index_url(mock_pip)
-
-
 
 
 class TestCudaRepairSkips:
@@ -415,8 +410,6 @@ class TestTorchBackendDerivationFromPin:
         assert (
             'elif _idx_leaf.startswith("cu"):' not in src
         ), "_TORCH_BACKEND derivation must not use a bare startswith('cu')"
-
-
 
 
 class TestCudaIndexResolution:
@@ -683,7 +676,6 @@ class TestPreTuringWheelFamily:
         assert _sms("7.0\nN/A\n") is None
         assert _sms("") is None
         assert _sms("7.0\n", returncode = 1) is None
-
 
 
 # The updater runs setup.ps1 -> install_python_stack.py, never install.ps1, which held the

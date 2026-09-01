@@ -85,8 +85,6 @@ def _has_vllm() -> bool:
     return importlib.util.find_spec("vllm") is not None
 
 
-
-
 # rl_replacements: zero direct vllm imports;
 # the GRPO + fast_inference surface.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
@@ -107,8 +105,6 @@ def test_rl_replacements_imports_without_vllm():
     ), "expected at least one GRPO-related export in rl_replacements"
 
 
-
-
 # empty_model: no vllm import;
 # pure builder for the fast_inference=True path.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
@@ -123,8 +119,6 @@ def test_empty_model_imports_without_vllm():
         or hasattr(em, "create_empty_model")
         or any(n.startswith("create_empty") for n in dir(em))
     ), "expected a create_empty_* helper in empty_model"
-
-
 
 
 # vllm_lora_request / vllm_lora_worker_manager / vllm_utils:

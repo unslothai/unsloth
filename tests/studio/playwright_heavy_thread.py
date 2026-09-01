@@ -388,7 +388,6 @@ def info(message: str) -> None:
     print(f"[heavy-thread] {message}", flush = True)
 
 
-
 # ── in-page actions ─────────────────────────────────────────────────── Each one brackets itself with
 # __hv.begin()/__hv.end(), so the recorder window is exactly the action rather than the action plus a CDP round trip.
 KEYSTROKE_JS = """

@@ -53,8 +53,6 @@ def _calls(node):
     return out
 
 
-
-
 # the property that broke -------------------------------------------
 def test_save_pretrained_gguf_calls_the_converter(tree):
     """The whole purpose of the function. Without this call it is an
@@ -84,8 +82,6 @@ def test_the_gguf_conversion_is_not_dead_code(tree):
             f"a save_to_gguf call is stranded as dead code inside "
             f"{owner.name} (line {owner.lineno})"
         )
-
-
 
 
 def _unreachable(body):

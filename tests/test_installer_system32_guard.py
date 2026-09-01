@@ -38,8 +38,6 @@ def _load_guard_module():
 _system_dir_guard = _load_guard_module()
 
 
-
-
 def _install_ps1() -> str:
     return INSTALL_PS1.read_text(encoding = "utf-8")
 
@@ -319,8 +317,6 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
     assert "cannot be installed from" in res.stdout
     assert "irm https://unsloth.ai/install.ps1 | iex" in res.stdout
     assert "FAILED:" in res.stdout, "must route through Exit-InstallFailure for rollback"
-
-
 
 
 def _expand_windows_user(value: str, environ: dict[str, str]) -> str:

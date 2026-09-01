@@ -229,13 +229,9 @@ def test_varlen_from_position_ids():
     cu, seq_idx = packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 0, 0, 1, 2]]))
     assert cu.tolist() == [0, 2, 3, 6]
     assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
-    assert (
-        packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 2, 3]])) is None
-    )
+    assert packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 2, 3]])) is None
     assert packing_module._varlen_from_position_ids(torch.tensor([[1, 2, 3]])) is None
-    assert (
-        packing_module._varlen_from_position_ids(torch.tensor([[0, 1], [0, 1]])) is None
-    )
+    assert packing_module._varlen_from_position_ids(torch.tensor([[0, 1], [0, 1]])) is None
     assert packing_module._varlen_from_position_ids(None) is None
 
 
@@ -473,9 +469,7 @@ def test_patch_hybrid_varlen_partial_dispatch_aborts(monkeypatch):
 
 
 def test_varlen_from_position_ids_mrope_3d():
-    pos = (
-        torch.tensor([[0, 1, 0, 0, 1, 2]]).unsqueeze(0).expand(3, 1, 6).clone()
-    )
+    pos = torch.tensor([[0, 1, 0, 0, 1, 2]]).unsqueeze(0).expand(3, 1, 6).clone()
     cu, seq_idx = packing_module._varlen_from_position_ids(pos)
     assert cu.tolist() == [0, 2, 3, 6]
     assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
@@ -1175,8 +1169,6 @@ def test_packing_sdpa(tmp_path):
 
     if hasattr(trainer, "accelerator"):
         trainer.accelerator.free_memory()
-
-
 
 
 # fmt: off

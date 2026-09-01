@@ -60,26 +60,16 @@ def test_fast_generate_slow_guard():
     )
     assert _rejects(lambda: w(["a", "b"]), "fast_inference=True")
     assert _rejects(lambda: w([{"prompt": "hi"}]), "fast_inference=True")
-    assert _rejects(
-        lambda: w({"prompt_token_ids": [1, 2, 3]}), "fast_inference=True"
-    )
+    assert _rejects(lambda: w({"prompt_token_ids": [1, 2, 3]}), "fast_inference=True")
     assert _rejects(lambda: w(prompts = "hello"), "fast_inference=True")
-    assert _rejects(
-        lambda: w(prompts = [{"prompt": "hi"}]), "fast_inference=True"
-    )
-    assert _rejects(
-        lambda: w(prompt_token_ids = [1, 2, 3]), "fast_inference=True"
-    )
-    assert _rejects(
-        lambda: w(prompts = [1, 2, 3]), "fast_inference=True"
-    )
+    assert _rejects(lambda: w(prompts = [{"prompt": "hi"}]), "fast_inference=True")
+    assert _rejects(lambda: w(prompt_token_ids = [1, 2, 3]), "fast_inference=True")
+    assert _rejects(lambda: w(prompts = [1, 2, 3]), "fast_inference=True")
     assert _rejects(
         lambda: w(prompts = None), "fast_inference=True"
     )  # vLLM-only kwarg present even if None
     assert _rejects(lambda: w({"prompt": "hi"}, _SamplingParams()), "sampling_params")
-    assert _rejects(
-        lambda: w({"prompt": "hi"}, [_SamplingParams()]), "sampling_params"
-    )
+    assert _rejects(lambda: w({"prompt": "hi"}, [_SamplingParams()]), "sampling_params")
     assert _rejects(lambda: w(sampling_params = object()), "sampling_params")
 
     # pass normal tokenized calls with no false positives

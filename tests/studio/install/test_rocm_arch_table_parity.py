@@ -70,8 +70,6 @@ def _load_stack_module():
 stack_mod = _load_stack_module()
 
 
-
-
 def _sh_function_body(source: str, name: str) -> str:
     """Return a POSIX-shell function body by brace matching (same idea as
     _extract_sh_function_body in test_rocm_support.py, kept local so this file
@@ -123,8 +121,6 @@ def _strip_sh_comment(line: str) -> str:
     """Drop a trailing `# ...` comment. Safe here: no table line contains a '#'
     inside a pattern."""
     return line.split("#", 1)[0]
-
-
 
 
 def _gfx_family_map_sh() -> dict[str, str]:
@@ -220,8 +216,6 @@ class TestSupportedWheelArchList:
             f"studio/setup.ps1 $_rocmWheelArches is missing {sorted(mapped - listed)}: "
             "those arches map to an AMD index but would still fall back to CPU torch"
         )
-
-
 
 
 # Table 2: GPU marketing name -> gfx ─────────────────────────────────────── Each copy is an ordered, first-match-wins
@@ -550,8 +544,6 @@ class TestSpoofFixtureParity:
             assert answers != {gfx}, f"{gfx} now agrees everywhere; drop it from _SPOOF_DIVERGENCES"
 
 
-
-
 # A table line names a card and gives its arch.
 _MKT_NAME = re.compile(r"(RX\s*\d{4}|PRO\s*[WV]\d{3,4}|\b90[5-8]0\b)", re.IGNORECASE)
 _GFX_ID = re.compile(r"gfx1[0-2][0-9a-z]{1,2}")
@@ -659,8 +651,6 @@ class TestNoUnregisteredArchTable:
         assert (
             "src-tauri/target/debug/install.sh" not in found
         ), f"cargo build output is still scanned: {found}"
-
-
 
 
 class TestTorch211PinAllowlistParity:

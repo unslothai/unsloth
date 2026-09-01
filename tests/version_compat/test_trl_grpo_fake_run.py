@@ -156,8 +156,6 @@ def test_grpo_patch_neutralizes_ref_adapter_and_qlora_cast(generated_grpo_source
     ), "TRL's hardcoded QLoRA bf16 cast survived; rl.py neutralization no-oped"
 
 
-
-
 # SFT / DPO: the same source-transform patcher runs on them (a fake patch run, no training), so a structural TRL change
 # can break generation.
 # Catches "and or others" beyond GRPO.

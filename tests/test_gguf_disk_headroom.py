@@ -205,8 +205,6 @@ def test_the_helper_is_called_before_quantizing(save_mod):
     assert source.index("_free_merge_if_disk_is_tight(") < source.index("def _quantize_one")
 
 
-
-
 # ---- what reclamation must never do ---------------------------------------
 def test_a_complete_stale_shard_set_is_not_inherited(tmp_path, monkeypatch, save_mod):
     """A finished earlier save in the same directory, index and every shard.

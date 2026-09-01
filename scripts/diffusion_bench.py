@@ -47,8 +47,6 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -149,8 +147,6 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     if mse == 0.0:
         return math.inf
     return 20.0 * math.log10(255.0) - 10.0 * math.log10(mse)
-
-
 
 
 def _wait_for_load(backend: Any, timeout_s: int = 2400) -> None:
@@ -301,8 +297,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-
-
 def _write_baseline(args: argparse.Namespace) -> int:
     baseline_path = Path(args.write_baseline).resolve()
     ref_png = baseline_path.parent / "reference.png"
@@ -408,8 +402,6 @@ def _compare(args: argparse.Namespace) -> int:
         return 1
     print("\n  PASS: no regression beyond thresholds.", flush = True)
     return 0
-
-
 
 
 def _build_parser() -> argparse.ArgumentParser:

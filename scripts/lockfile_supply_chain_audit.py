@@ -269,8 +269,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "intercom-client": {"7.0.4"},
 }
 
-CARGO_IOC_STRINGS: tuple[str, ...] = (
-)
+CARGO_IOC_STRINGS: tuple[str, ...] = ()
 
 
 NPM_REGISTRY_PREFIX = "https://registry.npmjs.org/"
@@ -287,7 +286,7 @@ CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
         "git+https://github.com/tauri-apps/fix-path-env-rs#"
         "c4c45d503ea115a839aae718d02f79e7c7f0f673",
     ),
-# Empty by default; the `source` origin check catches the structural pattern.
+    # Empty by default; the `source` origin check catches the structural pattern.
 )
 
 
