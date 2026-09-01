@@ -122,6 +122,7 @@ import {
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
+import { resolveParentId } from "./utils/message-order";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -2017,7 +2018,7 @@ function useStudioRuntimeAdapters(
           return completeLoad(
             {
               messages: msgs.map((m) => {
-                const parentId = m.parentId != null ? m.parentId : previousId;
+                const parentId = resolveParentId(m, previousId);
                 previousId = m.id;
                 return {
                   parentId,

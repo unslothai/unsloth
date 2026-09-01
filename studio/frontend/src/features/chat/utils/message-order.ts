@@ -10,6 +10,15 @@ export type ParentLinkedMessage = {
 
 const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 
+// An explicit `parentId` is authoritative even when it is null; only a record from before
+// the field existed chains to its predecessor.
+export function resolveParentId(
+  message: ParentLinkedMessage,
+  previousId: string | null,
+): string | null {
+  return message.parentId !== undefined ? message.parentId : previousId;
+}
+
 export function orderBySelectedBranch<T extends ParentLinkedMessage>(
   messages: T[],
 ): T[] {
@@ -31,7 +40,7 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
   let previousId: string | null = null;
   for (const message of sorted) {
     byId.set(message.id, message);
-    parentOf.set(message.id, message.parentId ?? previousId);
+    parentOf.set(message.id, resolveParentId(message, previousId));
     previousId = message.id;
   }
 

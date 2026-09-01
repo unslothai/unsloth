@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import * as messageOrder from "../src/features/chat/utils/message-order.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Module = {
@@ -48,6 +49,7 @@ function harness(options: { rejectIds?: Set<string>; failWith?: Error } = {}) {
         saveChatThread: async () => {},
       },
       "../db": { DEXIE_DB_NAME: "test", db: {} },
+      "./message-order": messageOrder,
       "./chat-thread-tombstones": { isChatThreadDeleted: () => false },
       "./thread-record-write-coordinator": {
         ThreadRecordWriteCoordinator: class {
