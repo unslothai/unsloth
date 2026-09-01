@@ -6163,13 +6163,18 @@ if ($LocalLlamaCppLinked) {
             }
         } elseif ($prebuiltExit -eq 3) {
             # Windows reports an in-use file and an unreadable ACL alike as WinError 5, so
-            # exit 3 cannot name one cause; the helper output carries both repairs (#9928).
+            # exit 3 cannot name one cause. The helper prints takeown guidance only when
+            # access was denied, so do not reference that guidance for other busy errors.
             step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Existing install was restored" "Yellow"
             }
-            substep "Close Unsloth or other llama.cpp users, or repair the ACLs named above, then retry" "Yellow"
+            if ($prebuiltOutput -match 'takeown /F') {
+                substep "Close Unsloth or other llama.cpp users, or repair the ACLs named above, then retry" "Yellow"
+            } else {
+                substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
+            }
             Exit-SetupFailure "llama.cpp install is blocked; the existing install could not be replaced" 3
         } elseif ($prebuiltExit -eq 4) {
             step "llama.cpp" "not enough disk space to install llama.cpp" "Yellow"
