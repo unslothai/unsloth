@@ -229,9 +229,9 @@ def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
             json = {"dataset_name": "org/private-seed"},
             headers = {"Authorization": "Bearer token"},
         )
-        assert seen["token"] is (
-            False if via_api_key else None
-        ), "hardcoding allow_ambient_token=False takes the fallback away from the UI too"
+        assert seen["token"] is (False if via_api_key else None), (
+            "hardcoding allow_ambient_token=False takes the fallback away from the UI too"
+        )
 
 
 def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):
@@ -343,9 +343,9 @@ def test_the_audio_tokenizer_fallback_does_not_reach_for_the_ambient_token(monke
     monkeypatch.setattr(requests, "get", _get)
     mc._detect_audio_from_tokenizer("org/private", hf_token = False, revision = None)
 
-    assert "Authorization" not in (
-        seen.get("headers") or {}
-    ), "an anonymous caller's tokenizer probe carried the operator's bearer"
+    assert "Authorization" not in (seen.get("headers") or {}), (
+        "an anonymous caller's tokenizer probe carried the operator's bearer"
+    )
 
 
 def test_the_stt_sidecars_pass_the_sentinel_through_unchanged():
@@ -355,9 +355,9 @@ def test_the_stt_sidecars_pass_the_sentinel_through_unchanged():
     root = _Path(__file__).resolve().parent.parent / "core" / "inference"
     for name in ("stt_sidecar.py", "stt_ggml_sidecar.py", "stt_mtmd_sidecar.py"):
         source = (root / name).read_text()
-        assert (
-            "hf_token or None" not in source
-        ), f"{name} launders the sentinel into ambient access before the worker"
+        assert "hf_token or None" not in source, (
+            f"{name} launders the sentinel into ambient access before the worker"
+        )
 
 
 def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monkeypatch):
@@ -375,8 +375,9 @@ def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monk
     monkeypatch.setattr(
         formatting,
         "_load_processed_hf_preview_slice",
-        lambda *_a, **_k: called.__setitem__("processed", called["processed"] + 1)
-        or "PROCESSED_ROWS",
+        lambda *_a, **_k: (
+            called.__setitem__("processed", called["processed"] + 1) or "PROCESSED_ROWS"
+        ),
     )
     request = SimpleNamespace(
         dataset_name = "org/private", local_path = None, subset = None, train_split = "train"
@@ -499,9 +500,9 @@ def test_an_anonymous_config_read_does_not_strip_the_process_credential(monkeypa
     model_config_module.load_model_config("org/private", token = False)
 
     assert seen["token"] is False, "the sentinel was not passed through to the hub"
-    assert (
-        seen["ambient"] == "ambient-operator-token"
-    ), "the anonymous probe removed a credential another thread was still using"
+    assert seen["ambient"] == "ambient-operator-token", (
+        "the anonymous probe removed a credential another thread was still using"
+    )
 
 
 @pytest.mark.parametrize(
@@ -622,9 +623,7 @@ def test_gguf_variants_serve_the_hf_cache_only_to_an_authorized_caller(monkeypat
 
 
 @pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
-def test_offline_capability_probes_do_not_read_the_cache_anonymously(
-    monkeypatch, hf_token
-):
+def test_offline_capability_probes_do_not_read_the_cache_anonymously(monkeypatch, hf_token):
     """Offline, is_vision_model derives local_files_only from the environment.
 
     So passing local_files_only=False does not put the anonymous caller back on the wire:
@@ -644,9 +643,7 @@ def test_offline_capability_probes_do_not_read_the_cache_anonymously(
         return "stt", True
 
     monkeypatch.setattr(model_config_module, "_is_vision_model_uncached", _vision)
-    monkeypatch.setattr(
-        model_config_module, "_detect_audio_type_uncached", _audio, raising = False
-    )
+    monkeypatch.setattr(model_config_module, "_detect_audio_type_uncached", _audio, raising = False)
     # A fresh probe every time, so a warm entry cannot stand in for the guard.
     monkeypatch.setattr(model_config_module, "_vision_detection_cache", {})
     monkeypatch.setattr(model_config_module, "_audio_detection_cache", {})
@@ -664,9 +661,7 @@ def test_offline_capability_probes_do_not_read_the_cache_anonymously(
 
 
 @pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
-def test_the_config_json_fallbacks_do_not_reach_the_cache_anonymously(
-    monkeypatch, hf_token
-):
+def test_the_config_json_fallbacks_do_not_reach_the_cache_anonymously(monkeypatch, hf_token):
     """Keying the memo apart is not enough when the value came off disk to begin with."""
     import utils.transformers_version as tv
 
@@ -712,9 +707,7 @@ def test_a_cache_only_gguf_listing_is_refused_for_an_anonymous_caller(monkeypatc
     monkeypatch.setattr(gguf_variants, "_quants_from_state", lambda *_a, **_k: None)
 
     with pytest.raises(fastapi.HTTPException) as excinfo:
-        asyncio.run(
-            gguf_variants.get_gguf_variants_answer("org/private", hf_token = False)
-        )
+        asyncio.run(gguf_variants.get_gguf_variants_answer("org/private", hf_token = False))
 
     assert excinfo.value.status_code == 404
 
@@ -762,8 +755,6 @@ def test_an_anonymous_seed_preview_is_refused_while_offline(monkeypatch):
     )
 
     with pytest.raises(fastapi.HTTPException) as excinfo:
-        asyncio.run(
-            seed_routes.inspect_seed_dataset(payload, allow_ambient_token = False)
-        )
+        asyncio.run(seed_routes.inspect_seed_dataset(payload, allow_ambient_token = False))
 
     assert excinfo.value.status_code == 404
