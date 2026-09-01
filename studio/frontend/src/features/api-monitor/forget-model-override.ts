@@ -5,12 +5,15 @@ import { splitModelOverrideKey } from "@/features/model-picker/model-config/mode
 
 export type ForgetModelOverrideDeps = {
   removeRemote: (modelId: string, ggufVariant: string | null) => Promise<void>;
-  removeLocal: (modelId: string, ggufVariant: string | null) => void;
+  /** False when a record was left behind, as deletePerModelConfig reports it. */
+  removeLocal: (modelId: string, ggufVariant: string | null) => boolean;
   reload: () => Promise<void>;
   onError: (message: string) => void;
 };
 
 export const FORGET_MODEL_OVERRIDE_FAILED = "Failed to forget these settings";
+export const FORGET_MODEL_OVERRIDE_LOCAL_FAILED =
+  "Forgot these settings for the API, but this browser kept its own copy";
 
 export async function forgetModelOverride(
   overrideKey: string,
@@ -25,6 +28,11 @@ export async function forgetModelOverride(
     );
     return;
   }
-  deps.removeLocal(modelId, ggufVariant);
+  // Reported rather than swallowed: the picker would still apply that copy, and the
+  // model's next save mirrors it back to the server the row was just removed from.
+  // The list is refetched either way, because the server entry is gone.
+  if (!deps.removeLocal(modelId, ggufVariant)) {
+    deps.onError(FORGET_MODEL_OVERRIDE_LOCAL_FAILED);
+  }
   await deps.reload();
 }

@@ -8,9 +8,11 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { FORGET_MODEL_OVERRIDE_FAILED, forgetModelOverride } = await import(
-  "../src/features/api-monitor/forget-model-override.ts"
-);
+const {
+  FORGET_MODEL_OVERRIDE_FAILED,
+  FORGET_MODEL_OVERRIDE_LOCAL_FAILED,
+  forgetModelOverride,
+} = await import("../src/features/api-monitor/forget-model-override.ts");
 
 type Trace = {
   deps: Parameters<typeof forgetModelOverride>[1];
@@ -20,7 +22,10 @@ type Trace = {
   reloads: number;
 };
 
-function trace(remote: () => Promise<void> = () => Promise.resolve()): Trace {
+function trace(
+  remote: () => Promise<void> = () => Promise.resolve(),
+  local = true,
+): Trace {
   const state: Trace = {
     removedRemote: [],
     removedLocal: [],
@@ -33,6 +38,7 @@ function trace(remote: () => Promise<void> = () => Promise.resolve()): Trace {
       },
       removeLocal: (modelId, ggufVariant) => {
         state.removedLocal.push([modelId, ggufVariant]);
+        return local;
       },
       reload: () => {
         state.reloads += 1;
@@ -88,4 +94,14 @@ test("a rejection that is not an Error still reports", async () => {
 
   assert.deepEqual(state.errors, [FORGET_MODEL_OVERRIDE_FAILED]);
   assert.deepEqual(state.removedLocal, []);
+});
+
+test("a browser copy that could not be deleted is reported, not swallowed", async () => {
+  const state = trace(() => Promise.resolve(), false);
+
+  await forgetModelOverride(PATH_KEY, state.deps);
+
+  assert.deepEqual(state.errors, [FORGET_MODEL_OVERRIDE_LOCAL_FAILED]);
+  // The server entry is gone whatever the browser did, so the list still refetches.
+  assert.equal(state.reloads, 1);
 });

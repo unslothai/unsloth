@@ -3,6 +3,7 @@
 
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
+  cachedRepoOverrideIdentity,
   ggufVariantFromStorageKey,
   modelIdFromStorageKey,
   modelStorageKey,
@@ -1314,6 +1315,57 @@ export function deletePerModelConfig(
     return true;
   }
   return writeMap(map);
+}
+
+/** Stored ids naming the same cached quant as *modelId* under its other spelling. */
+function cachedRepoAliasModelIds(
+  modelId: string,
+  ggufVariant?: string | null,
+): string[] {
+  const identity = cachedRepoOverrideIdentity(modelId, ggufVariant);
+  if (identity === null) {
+    return [];
+  }
+  const own = normalizeModelIdentity(modelId);
+  const aliases = new Map<string, string>();
+  for (const key of Object.keys(readMap())) {
+    const storedId = modelIdFromStorageKey(key);
+    // Its own id, so this only asks whether the key carries the quant being forgotten.
+    if (
+      !(storedId && configKeyMatchesModelVariant(key, storedId, ggufVariant))
+    ) {
+      continue;
+    }
+    const storedIdentity = normalizeModelIdentity(storedId);
+    if (
+      storedIdentity === own ||
+      aliases.has(storedIdentity) ||
+      cachedRepoOverrideIdentity(storedId, ggufVariant) !== identity
+    ) {
+      continue;
+    }
+    aliases.set(storedIdentity, storedId);
+  }
+  return [...aliases.values()];
+}
+
+/**
+ * Delete this model's config and every other spelling of the same cached quant.
+ *
+ * The server's forget clears both spellings of a cached repo (cached_repo_alias_keys), and the
+ * panel forgets under whichever one the server row carries. Deleting only that one leaves the
+ * record adoptLegacyConfigKey moved to the other, and the model's next save mirrors it straight
+ * back over the forget.
+ */
+export function deletePerModelConfigAliases(
+  modelId: string,
+  ggufVariant?: string | null,
+): boolean {
+  let deleted = deletePerModelConfig(modelId, ggufVariant);
+  for (const aliasId of cachedRepoAliasModelIds(modelId, ggufVariant)) {
+    deleted = deletePerModelConfig(aliasId, ggufVariant) && deleted;
+  }
+  return deleted;
 }
 
 /**

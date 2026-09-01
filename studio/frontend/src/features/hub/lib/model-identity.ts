@@ -96,7 +96,7 @@ function looksLikeModelPath(identifier: string): boolean {
 }
 
 /** `.../models--org--name/snapshots/<sha>` -> `org/name`, else null. */
-function hfCacheRepoId(path: string): string | null {
+export function hfCacheRepoId(path: string): string | null {
   const parts = path.replace(BACKSLASHES_RE, "/").split("/");
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index];

@@ -12,7 +12,7 @@ import {
   fetchModelOverrides,
   putModelOverride,
 } from "@/features/model-picker/api/model-overrides";
-import { deletePerModelConfig } from "@/features/model-picker/model-config/per-model-config";
+import { deletePerModelConfigAliases } from "@/features/model-picker/model-config/per-model-config";
 import { Trash2 } from "lucide-react";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -123,9 +123,8 @@ export function SavedModelSettingsPanel(): ReactElement {
         await forgetModelOverride(overrideKey, {
           removeRemote: (modelId, ggufVariant) =>
             putModelOverride(modelId, ggufVariant, null),
-          removeLocal: (modelId, ggufVariant) => {
-            deletePerModelConfig(modelId, ggufVariant);
-          },
+          removeLocal: (modelId, ggufVariant) =>
+            deletePerModelConfigAliases(modelId, ggufVariant),
           reload: load,
           onError: (message) => {
             toast.error(message);
