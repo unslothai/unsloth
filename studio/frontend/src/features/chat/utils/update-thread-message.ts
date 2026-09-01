@@ -8,8 +8,11 @@ type ThreadImportExport = {
 
 type ContentPart = { type: "text" | "reasoning" | "tool"; text: string; slot?: number };
 
+// A raw string is prose that extractTaggedText emits as-is, without a marker. It has to
+// count as editable here too, or the restoration list gains a slot the editor never
+// numbered and every marker after it restores the wrong part.
 export function isEditablePart(part: any): boolean {
-  return part?.type === 'text' || part?.type === 'reasoning';
+  return typeof part === 'string' || part?.type === 'text' || part?.type === 'reasoning';
 }
 
 function toolLabel(part: any): string {
@@ -46,7 +49,7 @@ export function extractTaggedText(content: any): string {
 
   return content
     .map((part: any) => {
-      if (typeof part === 'string') return part;
+      if (typeof part === 'string') return escapeMarkers(part);
       if (!part) return "";
 
       if (!isEditablePart(part)) {
@@ -68,6 +71,16 @@ export function extractTaggedText(content: any): string {
     .join('\n\n');
 }
 
+// extractTaggedText joins parts with a blank line and puts a newline inside the THINK
+// tags. Only that separator may be removed: trimming instead would eat a reply's own
+// leading whitespace, and four spaces are an indented code block, not padding.
+function stripSeparators(text: string, afterTag: boolean, beforeTag: boolean): string {
+  let out = text;
+  if (afterTag) out = out.replace(/^\n\n?/, "");
+  if (beforeTag) out = out.replace(/\n\n?$/, "");
+  return out;
+}
+
 function parseTaggedTextToContent(text: string): ContentPart[] {
   const parts: ContentPart[] = [];
   // A tool marker is one whole token carrying its slot number. Requiring the number
@@ -76,6 +89,7 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
   const tagRegex = /<\/?THINK>|<TOOL (\d+): ([^<>\n]*)>/g;
   let lastIndex = 0;
   let match;
+  let sawTag = false;
   let currentType: ContentPart["type"] = "text";
 
   while ((match = tagRegex.exec(text)) !== null) {
@@ -83,11 +97,12 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
     const index = match.index;
 
     if (index > lastIndex) {
-      // Trim the extracted content to remove any leading/trailing
-      // newlines created by the tag wrapping process.
-      const content = text.substring(lastIndex, index).trim();
+      const content = stripSeparators(
+        text.substring(lastIndex, index), sawTag, true,
+      );
       if (content) parts.push({ type: currentType, text: unescapeMarkers(content) });
     }
+    sawTag = true;
     lastIndex = index + fullTag.length;
 
     if (match[1] !== undefined) {
@@ -98,7 +113,7 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
   }
 
   if (lastIndex < text.length) {
-    const remainingText = text.substring(lastIndex).trim();
+    const remainingText = stripSeparators(text.substring(lastIndex), sawTag, false);
     if (remainingText) parts.push({ type: currentType, text: unescapeMarkers(remainingText) });
   }
 

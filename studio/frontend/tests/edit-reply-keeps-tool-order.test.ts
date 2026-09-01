@@ -367,6 +367,31 @@ test("text that already contains an escaped marker round-trips too", async () =>
   assert.deepEqual(await roundTrip(content), content);
 });
 
+test("an indented code block after a card keeps its indentation", async () => {
+  // Four leading spaces are a Markdown code block, not padding: trimming them at the
+  // marker boundary would render the reply differently after a no-op Save.
+  const content = [
+    { type: "text", text: "Here is the fix:" },
+    SEARCH,
+    { type: "text", text: "    const x = 1;\n    return x;" },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a raw string part is prose, and does not consume a card's slot", async () => {
+  // Legacy and imported rows can hold a bare string. extractTaggedText emits it as
+  // prose without numbering it, so restoration must not count it as a card either.
+  const legacy = ["intro", SEARCH, { type: "text", text: "answer" }] as unknown as Part[];
+  const { result } = await save(legacy);
+
+  assert.deepEqual(result, [
+    { type: "text", text: "intro" },
+    SEARCH,
+    { type: "text", text: "answer" },
+  ]);
+});
+
 test("a code block quoting the marker syntax survives a no-op save", async () => {
   const content = [
     { type: "text", text: "```xml\n<TOOL>read_file</TOOL>\n```" },
