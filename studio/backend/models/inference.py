@@ -1464,9 +1464,19 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     requested_context_length: Optional[int] = Field(
         None,
         description = (
-            "The n_ctx the active GGUF load was invoked with (0 = Auto). Lets the "
-            "UI re-seed a Manual + Auto-layers context pin on hydration, where "
-            "context_length only exposes the resolved value. None for non-GGUF."
+            "The max_seq_length the active load was invoked with (0 = Auto). Lets the "
+            "UI re-seed a Manual + Auto-layers context pin on hydration, and lets a CLI "
+            "attach tell a no-op from a reload, where context_length only exposes the "
+            "resolved value. None when the running model predates this field."
+        ),
+    )
+    load_in_4bit: Optional[bool] = Field(
+        None,
+        description = (
+            "The 4-bit setting the active non-GGUF load was REQUESTED with, not the "
+            "value it resolved to: LoRA and the latest-transformers tier rewrite it, so "
+            "only the requested value can be compared against a later request. None for "
+            "GGUF, which does not use it."
         ),
     )
     llama_cpp_supports_mtp: bool = Field(

@@ -3371,11 +3371,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Distro package-manager fallbacks. Mirrors install.sh::get_torch_index_url
-    # and _detect_rocm_version() in install_python_stack.py so package-managed
-    # ROCm hosts without /opt/rocm/.info/version still report a usable version
-    # and the <= host version filter in resolve_upstream_asset_choice picks
-    # the correct upstream prebuilt instead of the newest-regardless fallback.
+    # Distro package-manager fallbacks. Deliberately diverges from install.sh and
+    # _detect_rocm_version(): stops at the first answer, no "installed" status word gate.
     for _cmd in (
         ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
         ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],

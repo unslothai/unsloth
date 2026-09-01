@@ -1597,6 +1597,72 @@ def test_mlx_prompt_cache_only_stores_verifiable_prefix_coverage(monkeypatch):
     assert tuple(range(30)) in history._lru.entries["key"]
 
 
+def test_mlx_prompt_cache_covers_hybrid_recurrent_layouts(monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    from mlx_lm.models.cache import (
+        ArraysCache,
+        CacheList,
+        KVCache,
+        RotatingKVCache,
+        can_trim_prompt_cache,
+    )
+
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _kv_prefix_coverage, _MLXPromptCacheHistory
+
+    def attention(entry, n):
+        for _ in range(n):
+            block = mx.zeros((1, 2, 1, 4), dtype = mx.float16)
+            entry.update_and_fetch(block, block)
+        mx.eval(entry.state)
+        return entry
+
+    def recurrent():
+        # A GatedDeltaNet layer: conv + recurrent state, neither grows with the prompt.
+        entry = ArraysCache(size = 2)
+        entry[0] = mx.zeros((1, 4, 4), dtype = mx.float16)
+        entry[1] = mx.zeros((1, 2, 4, 4), dtype = mx.float16)
+        mx.eval(entry.state)
+        return entry
+
+    assert getattr(recurrent(), "offset", None) is None
+
+    # qwen3_5/qwen3_next: a full-attention layer every fourth layer.
+    hybrid = [recurrent(), recurrent(), recurrent(), attention(KVCache(), 30)]
+    assert _kv_prefix_coverage(hybrid) == 30
+    # falcon_h1: both halves inside one CacheList.
+    nested = [CacheList(recurrent(), attention(KVCache(), 30))]
+    assert _kv_prefix_coverage(nested) == 30
+
+    # Pin it: an mlx-lm that made these trimmable must fail here, not reuse stale state.
+    assert can_trim_prompt_cache(hybrid) is False
+    assert can_trim_prompt_cache(nested) is False
+
+    class _TrimmableOpaqueState:
+        def is_trimmable(self):
+            return True
+
+    assert _kv_prefix_coverage([_TrimmableOpaqueState(), attention(KVCache(), 30)]) is None
+
+    # mamba/rwkv: nothing attests to a token count.
+    assert _kv_prefix_coverage([recurrent(), recurrent()]) is None
+
+    # A recurrent entry does not excuse an attention sibling that cannot attest.
+    windowed = attention(RotatingKVCache(max_size = 10, keep = 2), 30)
+    assert _kv_prefix_coverage([recurrent(), windowed]) is None
+    assert (
+        _kv_prefix_coverage([recurrent(), attention(KVCache(), 30), attention(KVCache(), 29)])
+        is None
+    )
+
+    history = _MLXPromptCacheHistory(6, 1 << 40)
+    history.insert("recurrent", list(range(40)), [recurrent(), recurrent()])
+    assert "recurrent" not in history._lru.entries
+
+    history.insert("hybrid", list(range(40)), hybrid)
+    assert tuple(range(30)) in history._lru.entries["hybrid"]
+
+
 # ── Tests: audio-input capability + generation ───────────────────────
 
 
