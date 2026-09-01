@@ -393,15 +393,17 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     rather than dropped: it can still run, and the rules that must see every install path
     (R-INST-001 and the git+ ban above all) have to keep seeing it. Only the effective-version
     replay skips them. The tail ends at an `&&` or a `;`, since the lists are left-associative
-    and `(A || B) && C` runs C when A succeeded, but an operator inside a `(` or `{` group
-    belongs to the group rather than to the enclosing list and does not end the tail. An
-    unquoted `#` that starts a word comments out the rest of the line, so scanning stops.
+    and `(A || B) && C` runs C when A succeeded. Which list an operator belongs to is its group
+    depth: the `&&` in `A || (B && C)` is the group's and leaves the tail alone, the one in
+    `(A || B && C)` is the same list's and ends it. An unquoted `#` that starts a word comments
+    out the rest of the line, so scanning stops.
     """
     out: list[tuple[str, bool]] = []
     buf: list[str] = []
     quote = ""
     conditional = False  # inside the conditional tail of an and-or list
     depth = 0  # open ( or { : an operator inside a group does not end the enclosing list
+    tail_depth = 0  # the depth the `||` that opened the tail sat at
     i = 0
 
     def flush() -> None:
@@ -429,17 +431,19 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         elif line.startswith("||", i):
             flush()
             conditional = True
+            tail_depth = depth
             i += 2
         elif line.startswith("&&", i):
             flush()
-            if depth == 0:
-                # Left-associative: (A || B) && C runs C when A succeeded. Inside a group the
-                # whole group is still the fallback, so the flag has to survive.
+            if depth == tail_depth:
+                # Left-associative: (A || B) && C runs C when A succeeded. It has to be the
+                # same list though, which is what the depth says: the `&&` in A || (B && C)
+                # is the group's, the one in (A || B && C) is the list's.
                 conditional = False
             i += 2
         elif ch == ";":
             flush()
-            if depth == 0:
+            if depth == tail_depth:
                 conditional = False
             i += 1
         else:
@@ -627,6 +631,32 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
 _GIT_SOURCE_RE = re.compile(r"""git\+[^\s'"]+""")
 
 
+def _git_source_repository(source: str) -> str:
+    """`git+https://user@github.com/Org/Repo.git@ref` -> `github.com/org/repo`.
+
+    Matched against the allowlist as a path rather than a substring: an arbitrary repository
+    can carry `github.com/unslothai/unsloth` inside its own path, and a substring test reads
+    that as permission.
+    """
+    remainder = source.split("+", 1)[1] if "+" in source else source
+    remainder = remainder.split("://", 1)[-1]
+    host, _, path = remainder.partition("/")
+    host = host.rsplit("@", 1)[-1]  # drop any credentials
+    path = path.split("#", 1)[0].split("?", 1)[0]
+    path = path.split("@", 1)[0].rstrip("/")  # drop a trailing @ref
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    return f"{host.lower()}/{path.lower()}"
+
+
+def _git_source_is_allowed(source: str) -> bool:
+    repository = _git_source_repository(source)
+    return any(
+        repository == allowed.lower() or repository.startswith(f"{allowed.lower()}/")
+        for allowed in GIT_PLUS_ALLOWLIST
+    )
+
+
 def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
     """Whole lines, not parsed commands.
 
@@ -634,18 +664,20 @@ def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[
     depend on how a line splits into commands: a fallback, a `(...)` group, an `if ...; then`
     body, anything the splitter does not turn into a recognisable pip command would otherwise
     hide one. A line counts when any part of it parses as a pip install.
+
+    The commands rather than the raw line, because `_split_chained` drops a shell comment and
+    a comment naming a prohibited source is documentation, not an install.
     """
     findings: list[Finding] = []
     for line_no, line in _glue_line_continuations(install_cell):
-        commands = [parse_pip_line(command, line_no) for command, _ in _split_chained(line)]
-        if not any(inv is not None for inv in commands) and PIP_LINE_RE.match(line) is None:
+        commands = [command for command, _ in _split_chained(line)]
+        parsed = [parse_pip_line(command, line_no) for command in commands]
+        if not any(inv is not None for inv in parsed) and PIP_LINE_RE.match(line) is None:
             continue
         # Per source, not per line: one allowlisted repository beside a prohibited one must
         # not clear the whole line.
-        sources = _GIT_SOURCE_RE.findall(line)
-        if not any(
-            not any(allowed in source for allowed in GIT_PLUS_ALLOWLIST) for source in sources
-        ):
+        sources = [source for command in commands for source in _GIT_SOURCE_RE.findall(command)]
+        if not sources or all(_git_source_is_allowed(source) for source in sources):
             continue
         findings.append(
             Finding(
@@ -786,6 +818,19 @@ def cmp_releases(a: str, b: str) -> int:
     left += [0] * (width - len(left))
     right += [0] * (width - len(right))
     return (left > right) - (left < right)
+
+
+def _exclusion_covers_minor(version: str, exclusion: str) -> bool:
+    """True when `!=exclusion` rules out every release in `version`'s minor.
+
+    Only a wildcard can: `!=0.11.*` takes the whole 0.11 line, while `!=0.11` and `!=0.11.1.*`
+    each remove one release or one patch line and leave the minor reachable.
+    """
+    wanted = normalise_version(exclusion).split(".")
+    if not wanted or wanted[-1] != "*":
+        return False
+    wanted = wanted[:-1]
+    return len(wanted) <= 2 and normalise_version(version).split(".")[: len(wanted)] == wanted
 
 
 def _version_is_excluded(version: str, exclusion: str) -> bool:
@@ -943,8 +988,11 @@ def _effective_version(
         # Whatever the requirement leaves in place still has to satisfy its own exclusions,
         # which covers the version that was already installed and the one just landed on.
         if current is not None and any(_version_is_excluded(current, ver) for ver in exclusions):
+            # A window that pins one minor still pins it: `>=0.11,<0.12,!=0.11.0` moves off
+            # 0.11.0 and stays in the 0.11 line, and the minor is what the callers compare.
+            # Only an exclusion covering the whole minor takes that away.
             if landing is not None and not any(
-                _version_is_excluded(landing, ver) for ver in exclusions
+                _exclusion_covers_minor(landing, ver) for ver in exclusions
             ):
                 current, exact_known = landing, True
             else:

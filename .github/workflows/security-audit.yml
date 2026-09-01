@@ -825,10 +825,19 @@ jobs:
             files: 'unsloth-deps no-torch-runtime'
           - name: 'pip scan-packages :: studio'
             id: studio
-            files: 'studio overrides extras-no-deps audio-torch210 audio-torch290 audio-torch280'
+            files: 'studio overrides extras-no-deps audio-torch210'
           - name: 'pip scan-packages :: extras'
             id: extras
             files: 'extras'
+          # scan_packages.py keeps the first requirement per normalised package name, so the
+          # torchcodec lines have to be scanned apart or only one of them is ever fetched.
+          # They are one package each, so the shards are cheap.
+          - name: 'pip scan-packages :: audio-torch290'
+            id: audio-torch290
+            files: 'audio-torch290'
+          - name: 'pip scan-packages :: audio-torch280'
+            id: audio-torch280
+            files: 'audio-torch280'
     steps:
       # Egress block on every shard. Each shard pulls hundreds of
       # PyPI archives -- if a malicious wheel ever phones home from

