@@ -864,8 +864,8 @@ _CLOSED_MARKUP_ARTIFACT = re.compile(
 )
 _HAS_ANSWER_ARTIFACT = re.compile(
     # Backtick then tilde fence (models emit ~~~ when the body holds backticks).
-    # CommonMark takes 3+ to open, at least as many to close, and the closing line
-    # must end cleanly, so ``` ```not actually closed ``` does not count.
+    # CommonMark takes 3+ to open and as many to close, on a cleanly ended line, so
+    # ``` ```not actually closed ``` does not count.
     r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
     r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
     r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,200}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
@@ -902,9 +902,9 @@ def _has_unclosed_code_fence(text: str) -> bool:
     active_base = 0
     closed_any = False
     for raw_line in text.splitlines():
-        # A quote marker four columns in is an indented code line, not a container,
-        # and nothing on it opens a fence. List markers are left alone: at that depth
-        # they are as likely to continue a list this scan cannot see.
+        # A quote marker four columns in is indented code, not a container. List
+        # markers are left alone: at that depth they may continue a list not visible
+        # from one line.
         lead = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
         quote = _BLOCKQUOTE_PREFIX.match(raw_line)
         indented_quote = quote is not None and len(lead.expandtabs(4)) > 3
@@ -935,8 +935,8 @@ def _has_unclosed_code_fence(text: str) -> bool:
                     active_char, active_len, active_quote, active_base = None, 0, 0, 0
                     closed_any = True
                 continue
-            # A later run on the same line closes an inline span ("```python``` is
-            # the syntax"), so neither run opens a block, at column zero or not.
+            # A later run closes an inline span ("```python``` is the syntax"), at
+            # column zero or not.
             if index != len(runs) - 1:
                 continue
             if blank_prefix:
@@ -946,11 +946,10 @@ def _has_unclosed_code_fence(text: str) -> bool:
                     active_char, active_len = ch, len(fence)
                     active_quote, active_base = quote_depth, 0
                 continue
-            # A list marker is a container, so a fence on that line is block level and
-            # skips the rest. CommonMark has no mid-PROSE fence, but models open one, and
-            # only a bare info string separates that opener from prose. Bare, after
-            # something closed, it is a literal ("wrap it in ```"); before any close,
-            # "here is code: ```" still opens.
+            # A list marker is a container, so its fence is block level and skips the
+            # rest. CommonMark has no mid-PROSE fence, but models open one, and only a
+            # bare info string tells that opener from prose. Bare, after something
+            # closed, it is a literal ("wrap it in ```"); before, it still opens.
             in_list = _LIST_MARKER_ONLY.match(prefix) is not None
             if not in_list:
                 if indented_quote:
@@ -960,9 +959,8 @@ def _has_unclosed_code_fence(text: str) -> bool:
                 if not trailing and closed_any:
                     continue
             active_char, active_len, active_quote = ch, len(fence), quote_depth
-            # A list marker IS the container, so its width is the baseline. A fence
-            # opened mid-sentence has no container and its column is just where the
-            # sentence reached, so the closer is measured from 0 as usual.
+            # A list marker IS the container, so its width is the baseline. Mid-sentence
+            # there is no container, only how far the sentence got, so 0.
             active_base = indent if in_list else 0
     return active_char is not None
 
@@ -1118,12 +1116,10 @@ def _has_answer_artifact(text: str) -> bool:
     # snippet, or backticks inside finished HTML, are content, not open state.
     if _has_unclosed_code_fence(_strip_markup_outside_fences(text)):
         return False
-    # A page the artifact is nested in is deliberately NOT inspected. Telling an
-    # unfinished enclosing page from a tag named in prose needs to know which text
-    # belongs to an element, which is an HTML parser; two attempts at it here each
-    # went on to reject a finished answer instead. Missing the nudge on a page that
-    # stopped after a complete inner block leaves that block on screen, which is the
-    # cheaper mistake.
+    # A page the artifact is nested in is deliberately NOT inspected: separating an
+    # unfinished enclosing page from a tag named in prose needs an HTML parser, and two
+    # attempts here each went on to reject a finished answer. Missing the nudge leaves
+    # the block on screen, which is the cheaper mistake.
     return _first_real_artifact(text) is not None
 
 
@@ -29715,9 +29711,8 @@ class LlamaCppBackend:
                             else ""
                         )
                         _reasoning = reasoning_accum.strip()
-                        # Bracketed reasoning IS the turn for a Magistral-style model,
-                        # and the strip takes it whole, so classify the raw text rather
-                        # than lose the nudge on a turn that showed nothing.
+                        # Bracketed reasoning IS the turn for a Magistral-style model
+                        # and the strip takes it whole, so fall back to the raw text.
                         _stripped = _visible or _reasoning or _visible_raw
                         # Thinking rendered as <think> in the CONTENT channel stays
                         # in _visible, and a fence inside one was never shown.
