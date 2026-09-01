@@ -1985,6 +1985,9 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
+    // Top level, not inside rag_scope: an archived thread puts search_conversation and its
+    // compaction nudge in the prompt whether or not RAG is on, and the completion sends it here.
+    ...(threadId ? { thread_id: threadId } : {}),
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
     ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
     // Keeps search_knowledge_base and its grounding nudge in the prompt. No retrieval runs for

@@ -2739,9 +2739,8 @@ export function ModelConfigPage({
   // target whose window has not been read falls back to the app default. Reset clears the
   // pin to null, so no fallback may reconstruct one from a runtime value.
   //
-  // Reported as it stands, not through the bounds a request is held to: a window nobody
-  // requested is subject to neither, and 2,056 would read 2,048 while 10,485,760 would
-  // read 1,048,576, each naming a limit the model does not have.
+  // Reported as it stands, not snapped to the request step: a window nobody requested is
+  // not subject to it, and 2,056 would read 2,048, naming a limit the model does not have.
   const servedWindow = (value: unknown) =>
     typeof value === "number" && Number.isFinite(value) && value > 0
       ? Math.floor(value)
@@ -2749,9 +2748,17 @@ export function ModelConfigPage({
   const mlxNativeWindow = targetIsMlx
     ? servedWindow(modelMaxPosition.maxPositionEmbeddings)
     : null;
+  // What a load would actually serve. The backend clamps an auto-sized window to the
+  // request ceiling, so a wider native one (Llama 4 Scout declares 10,485,760) would name
+  // a length no load can serve and would change the instant the model loaded. Native
+  // above stays raw, since it is metadata rather than a promise.
+  const mlxProspectiveWindow =
+    mlxNativeWindow == null
+      ? null
+      : Math.min(mlxNativeWindow, MAX_SEQ_LENGTH_MAX);
   const mlxServedWindow =
     (targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??
-    mlxNativeWindow;
+    mlxProspectiveWindow;
   const maxSeqLengthValue =
     servedWindow(savedContextPin(config)) ??
     mlxServedWindow ??

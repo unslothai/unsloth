@@ -89,6 +89,7 @@ import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
+  unpinnedDefaultRequest,
   unpinnedLoadContext,
   resolveLoadMaxSeqLength,
   resolveExplicitCtxPin,
@@ -1447,7 +1448,11 @@ export function useChatModelRuntime() {
                 activeGgufVariant: loadActiveGgufVariant,
                 isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
                 pinnedMaxSeqLength,
-                defaultMaxSeqLength: stateBeforeUnload.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
+                defaultMaxSeqLength: unpinnedDefaultRequest(
+                  previousIsMlx,
+                  stateBeforeUnload.params.maxSeqLength,
+                  DEFAULT_MAX_SEQ_LENGTH,
+                ),
                 presetSource: loadActivePresetSource,
               }),
             );
@@ -1670,7 +1675,11 @@ export function useChatModelRuntime() {
               activeGgufVariant: loadActiveGgufVariant,
               isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
               pinnedMaxSeqLength,
-              defaultMaxSeqLength: stateBeforeUnload.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
+              defaultMaxSeqLength: unpinnedDefaultRequest(
+                  previousIsMlx,
+                  stateBeforeUnload.params.maxSeqLength,
+                  DEFAULT_MAX_SEQ_LENGTH,
+                ),
               presetSource: loadActivePresetSource,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(

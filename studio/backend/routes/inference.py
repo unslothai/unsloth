@@ -4649,8 +4649,8 @@ async def _select_request_tools(
     # Same rule for the conversation archive: offered only once this thread has had turns
     # evicted, so a short chat never sees the extra schema. On the first compaction the
     # tool is still absent (the archive is written mid-request) and the forced recall
-    # covers that turn. getattr, because this helper also serves the token-count request
-    # model, which carries no thread_id.
+    # covers that turn. getattr because the count request model reaches here too; it
+    # carries the same thread_id so both price the archive alike.
     # Follows the ARCHIVE, not the caller's allowlist: Unsloth always sends an explicit
     # enabled_tools array and has no reason to name an internal tool it shows no pill for,
     # so the filter above removed search_conversation and neither it nor the compaction
@@ -27011,7 +27011,7 @@ def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
     return _positive_int_or_none(max_seq_length) == _positive_int_or_none(recorded)
 
 
-async def _mlx_count_chat_tokens(payload) -> Optional[JSONResponse]:
+async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONResponse]:
     """Count with the resident MLX model's tokenizer, or None if MLX is not serving one.
 
     This has to answer the question the safetensors completion answers -- which of its two
@@ -27037,6 +27037,12 @@ async def _mlx_count_chat_tokens(payload) -> Optional[JSONResponse]:
     # The same helper the completion path derives these with; rebuilding either here is
     # how a count comes to price a prompt nobody sends.
     system_prompt, messages, _image = _extract_content_parts(payload.messages)
+    # The completion applies this once for both non-GGUF backends before it branches, so a
+    # count that skipped it would price a prompt shorter than the one that gets sent.
+    # Only with a request: without one there is no setting to read, and the helper's
+    # requestless mode injects the date unconditionally.
+    if request is not None:
+        system_prompt = _apply_current_date_prompt(system_prompt, request)
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
 
@@ -27174,6 +27180,9 @@ async def _mlx_count_chat_tokens(payload) -> Optional[JSONResponse]:
             _tools_to_use,
             rag_scope = payload.rag_scope,
         )
+        # The safetensors completion appends this too. No `checkpoint_fitted`: only the
+        # llama.cpp path fits that way, so neither this count nor its completion resets.
+        _nudge = _apply_compaction_nudge(_nudge, _tools_to_use)
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
         _auto_heal = (
@@ -27292,7 +27301,7 @@ async def chat_count_tokens(
     if not llama_backend.is_loaded:
         # The refusals above are about the request and so are shared; the ones below are
         # llama.cpp's own render concerns, so this returns rather than falling through.
-        _mlx_count = await _mlx_count_chat_tokens(payload)
+        _mlx_count = await _mlx_count_chat_tokens(payload, request)
         if _mlx_count is not None:
             return _mlx_count
         raise HTTPException(

@@ -3290,6 +3290,7 @@ def _count_route(
     backend,
     template = _TOOL_TEMPLATE,
     models = None,
+    request = None,
     **fields,
 ):
     """Drive the endpoint against `backend`, classifying capabilities from a real template."""
@@ -3303,7 +3304,11 @@ def _count_route(
     monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
     monkeypatch.setattr(route.active_generations, "count", lambda: 0)
     return asyncio.run(
-        route.chat_count_tokens(route.ChatCountTokensRequest(**fields), current_subject = "tester")
+        route.chat_count_tokens(
+            route.ChatCountTokensRequest(**fields),
+            request = request,
+            current_subject = "tester",
+        )
     )
 
 
@@ -3741,3 +3746,59 @@ def test_the_probe_answers_unknown_rather_than_raising_without_mlx():
     from core.inference.mlx_inference import _kv_window_enforced
     with _without_mlx("mlx", "mlx_lm", "mlx_vlm"):
         assert _kv_window_enforced(SimpleNamespace(layers = [object()]), False, 4096) is None
+
+
+def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatch):
+    """The completion applies this once for both non-GGUF backends before it branches.
+
+    A count that skipped it under-reports every interactive MLX prompt, so the usage bar
+    claims room the next completion does not have.
+    """
+    from starlette.datastructures import Headers
+
+    # Interactive session: no API key, which is what makes the prompt Studio's to compose.
+    interactive = SimpleNamespace(headers = Headers({}), query_params = {}, cookies = {})
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        template = _PLAIN_TEMPLATE,
+        request = interactive,
+        messages = [{"role": "user", "content": "hi"}],
+    )
+    from routes.inference import current_date_prompt_line
+
+    line = current_date_prompt_line(request = interactive)
+    assert line, "the harness must actually produce a date line"
+    assert backend.system.startswith(line), (
+        f"the count dropped the date line the completion prepends: {backend.system!r}"
+    )
+
+
+def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):
+    """A thread with an archive puts search_conversation and a compaction nudge in the
+    prompt. Both are gated on the thread id, so a count that drops it under-reports."""
+    from routes import inference as route
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(route, "_thread_has_conversation_archive", lambda tid: bool(tid))
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        messages = [{"role": "user", "content": "hi"}],
+        enabled_tools = ["web_search"],
+        thread_id = "thread-with-an-archive",
+    )
+    names = [t["function"]["name"] for t in (backend.tools or [])]
+    assert "search_conversation" in names, (
+        f"the archive tool the completion renders was not priced: {names}"
+    )
+    from routes.inference import _apply_compaction_nudge
+
+    assert _apply_compaction_nudge("", backend.tools) , "the nudge must be non-empty here"
+    assert _apply_compaction_nudge("", backend.tools) in backend.system, (
+        "the count omitted the compaction nudge the completion appends"
+    )

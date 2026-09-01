@@ -414,3 +414,45 @@ def test_the_count_sends_every_setting_that_changes_the_rendered_prompt():
     # `unsloth studio run --enable-tools` answer for the count.
     assert off.get("enable_tools") is False
     assert "max_tool_calls_per_message" not in off
+
+
+# Tools on, RAG deliberately off: the archive tool is gated on the thread id alone, so a
+# scope-only id would leave it unpriced exactly when RAG is not in play.
+TOOLS_ON_RAG_OFF = (
+    "{ supportsTools: true, toolsEnabled: true, codeToolsEnabled: false, "
+    "artifactsEnabled: false, mcpEnabledForChat: false, ragEnabled: false, "
+    'ragSource: { type: "thread" }, ragMode: "hybrid", ragTopK: 5, '
+    "autoHealToolCalls: true }"
+)
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "expected"),
+    [("undefined", None), ('"thread-a"', "thread-a")],
+    ids = ["unpersisted_new_chat", "persisted_thread"],
+)
+def test_the_count_sends_the_thread_id_at_top_level_even_with_rag_off(thread_id, expected):
+    """`_select_request_tools` reads `payload.thread_id`, not the one inside `rag_scope`.
+
+    An archived thread puts `search_conversation` and its compaction nudge in the prompt,
+    so a count that only ever nests the id under a RAG scope under-reports every archived
+    conversation whose Docs pill is off, and the bar claims room the completion lacks.
+    """
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ buildLocalTokenCountExtras, seed }} from "./harness.ts";
+            seed({TOOLS_ON_RAG_OFF});
+            const extras = await buildLocalTokenCountExtras({thread_id});
+            console.log(JSON.stringify({{
+              threadId: extras.thread_id ?? null,
+              ragScope: extras.rag_scope ?? null,
+            }}));
+            """
+        )
+    )
+    assert out.get("ragScope") is None, "RAG is off, so there is no scope to hide the id in"
+    assert out.get("threadId") == expected, (
+        "the archive tool and its nudge are gated on the top-level thread id"
+    )

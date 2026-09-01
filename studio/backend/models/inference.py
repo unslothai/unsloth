@@ -2561,6 +2561,14 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
             "whenever the composer armed research, so the count carries it too."
         ),
     )
+    thread_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] The thread being counted. A thread with a conversation archive puts "
+            "search_conversation and its compaction nudge in the prompt, so the count needs "
+            "the same id the completion sends to price them."
+        ),
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",

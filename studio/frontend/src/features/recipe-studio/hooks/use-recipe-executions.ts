@@ -224,18 +224,37 @@ function localSelectionMatchesActive(input: {
   );
 }
 
+/** A context request, with the auto sentinel and "unset" collapsed onto null.
+ *
+ *  Only a positive value is a pin; 0 is the wire form of Auto, so it must compare equal
+ *  to a selection that asked for nothing rather than forcing a reload every run.
+ */
+function contextIntent(value: number | null | undefined): number | null {
+  return typeof value === "number" && value > 0 ? value : null;
+}
+
 async function isLocalModelAlreadyLoaded(
   selection: LocalModelSelection,
 ): Promise<boolean> {
-  const { target, ggufVariant } = selection;
+  const { target, ggufVariant, requestedContextLength } = selection;
   try {
     const status = await getInferenceStatus();
-    return localSelectionMatchesActive({
-      target,
-      ggufVariant,
-      activeModel: status.model_identifier ?? status.active_model,
-      activeVariant: status.gguf_variant?.trim() ?? "",
-    });
+    if (
+      !localSelectionMatchesActive({
+        target,
+        ggufVariant,
+        activeModel: status.model_identifier ?? status.active_model,
+        activeVariant: status.gguf_variant?.trim() ?? "",
+      })
+    ) {
+      return false;
+    }
+    // Same checkpoint, different context intent is still a different load: a recipe that
+    // asked for nothing must not inherit whatever window Chat pinned.
+    return (
+      contextIntent(requestedContextLength) ===
+      contextIntent(status.requested_context_length)
+    );
   } catch {
     // Fall through to load attempt; the backend will re-error if needed.
     return false;
@@ -373,7 +392,9 @@ function isSameLocalModelSelection(
   return Boolean(
     left &&
       left.target.toLowerCase() === right.target.toLowerCase() &&
-      left.ggufVariant === right.ggufVariant,
+      left.ggufVariant === right.ggufVariant &&
+      contextIntent(left.requestedContextLength) ===
+        contextIntent(right.requestedContextLength),
   );
 }
 

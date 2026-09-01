@@ -445,6 +445,22 @@ export function localMaxTokensCeiling(
   return Math.max(MAX_TOKENS_MIN, loadedContextLength ?? unreportedWindowFallback);
 }
 
+/** The app-level request to fall back on when the target has no pin of its own.
+ *
+ *  `params.maxSeqLength` holds a REQUEST only while the backend serving it does not size
+ *  its own window. A load that sized one wrote its RESOLVED window there instead, so
+ *  carrying that value into the next model asks transformers to allocate the outgoing
+ *  model's window: leaving a 131072 MLX model for an unconfigured one loads it at 131072.
+ */
+export function unpinnedDefaultRequest(
+  outgoingSizedItsOwnWindow: boolean | null | undefined,
+  sessionMaxSeqLength: number | null | undefined,
+  appDefault: number,
+): number {
+  if (outgoingSizedItsOwnWindow) return appDefault;
+  return sessionMaxSeqLength || appDefault;
+}
+
 /** What a load asks for when the user has pinned no context of their own.
  *
  *  Both local backends take the same non-positive sentinel to mean "size it yourself".

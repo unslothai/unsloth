@@ -29,10 +29,12 @@ const {
 const {
   capturedContextLength,
   loadedContextForParams,
+  resolveLoadMaxSeqLength,
   localMaxTokensCeiling,
   resolveExplicitCtxPin,
   resolveFitMaxSeqLength,
   retainedContextPin,
+  unpinnedDefaultRequest,
   unpinnedLoadContext,
   unreportedWindowMaxTokens,
 } = await import("../src/features/chat/presets/preset-policy.ts");
@@ -177,4 +179,34 @@ test("the usage bar names the three ways a window can end", () => {
   assert.equal(at(40000, { contextEnforced: false }), "unenforced-limit");
   assert.equal(at(30000, { contextEnforced: true }), "mlx-near-limit");
   assert.equal(at(30000, { contextEnforced: null }), "mlx-near-limit");
+});
+
+test("an outgoing self-sizing window does not become the next model's request", () => {
+  // An unpinned MLX load writes its RESOLVED window into params.maxSeqLength.
+  const afterMlx = loadedContextForParams(131072, 0, 4096);
+  assert.equal(afterMlx, 131072);
+  // Switching to an unconfigured transformers model must still ask for the app default:
+  // 131072 there is an allocation nobody requested.
+  assert.equal(unpinnedDefaultRequest(true, afterMlx, DEFAULT_MAX_SEQ_LENGTH), 4096);
+  // A backend that does not size its own window leaves the session request intact.
+  assert.equal(unpinnedDefaultRequest(false, 8192, DEFAULT_MAX_SEQ_LENGTH), 8192);
+  assert.equal(unpinnedDefaultRequest(false, 0, DEFAULT_MAX_SEQ_LENGTH), 4096);
+  assert.equal(unpinnedDefaultRequest(null, null, DEFAULT_MAX_SEQ_LENGTH), 4096);
+  // End to end: the resolver must not hand the outgoing window to the new load.
+  assert.equal(
+    resolveLoadMaxSeqLength({
+      modelId: "org/plain-transformers",
+      ggufVariant: null,
+      isGguf: false,
+      customContextLength: null,
+      loadedContextLength: null,
+      currentCheckpoint: "mlx-community/Some-MLX",
+      activeGgufVariant: null,
+      isMlx: false,
+      pinnedMaxSeqLength: null,
+      defaultMaxSeqLength: unpinnedDefaultRequest(true, afterMlx, DEFAULT_MAX_SEQ_LENGTH),
+      presetSource: "builtin-default",
+    }),
+    4096,
+  );
 });
