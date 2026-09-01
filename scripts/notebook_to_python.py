@@ -192,11 +192,8 @@ def convert_notebook(
     allow_shell: bool = True,
 ) -> str:
     """Convert notebook JSON content to Python script."""
-    # Imported here, not at module scope, so the pure-string helpers below can be
-    # imported without it. `Repo tests (CPU, auto-discovered)` runs pytest over all
-    # of tests/ and does not install nbformat, so a module-level import made
-    # importing `converted_filename` from a test a collection-time
-    # ModuleNotFoundError for the whole file.
+    # Local, so the string helpers below import without nbformat. The CPU test job
+    # does not install it, and a module-level import failed collection there.
     import nbformat
 
     # Parse notebook
@@ -262,11 +259,9 @@ def convert_notebook(
 def converted_filename(filename: str) -> str:
     """The .py name this script writes for a given notebook filename.
 
-    Split out so there is one spelling of the rule. notebooks-ci.yml carried a
-    second one in shell, and it was wrong: `basename ... | tr -c '[:alnum:]_' _`
-    turned basename's trailing newline into a trailing underscore, so the smoke
-    job looked for `<name>_.py` for every notebook in its matrix and never found
-    one. It also mapped `.` to `_`, which this does not.
+    One spelling of the rule. notebooks-ci.yml had a second one in shell whose
+    `tr -c '[:alnum:]_' _` turned basename's trailing newline into a trailing
+    underscore, so the smoke job looked for `<name>_.py` and never found it.
     """
     out = filename.replace(".ipynb", ".py")
     return out.replace("(", "").replace(")", "").replace("-", "_")

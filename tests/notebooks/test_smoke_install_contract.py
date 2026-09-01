@@ -2,26 +2,19 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """Pins the two contracts the notebooks-ci smoke job kept breaking silently.
 
-The job installs a Colab-shaped venv on a CPU runner and then runs one
-notebook's install cell. It had never once reached the import check it exists
-for: 872 matrix legs across 109 scheduled runs and 112 days, every one either
-cancelled at the 25 minute cap or failed. Two independent causes, and each is
-the kind that reads as green in review.
+The job had never once reached the import check it exists for: 872 matrix legs
+across 109 scheduled runs and 112 days, all red. Two independent causes:
 
-  * The runner pinned Python 3.12 while the committed Colab snapshot beside it
-    had been refreshed to a 3.13 image. `audioop-lts` is a backport of the
-    stdlib module 3.13 removed, so it carries Requires-Python >=3.13 and could
-    never resolve on 3.12. That failed the bulk install in 8 seconds on every
-    run and dropped the job into a 682-pin one-at-a-time fallback that spent
-    the whole cap. Nothing tied the two files together, so the rotation moved
-    one and not the other.
+  * The runner pinned Python 3.12 while the Colab snapshot beside it had been
+    refreshed to a 3.13 image. `audioop-lts` requires 3.13, so the bulk install
+    failed in 8 seconds every run and fell back to 682 one-at-a-time installs
+    that spent the whole cap. Nothing tied the two files together.
 
-  * The workflow rebuilt the converted script's filename in shell rather than
+  * The workflow rebuilt the converted script's filename in shell instead of
     asking the converter, and the copy was wrong for every row of the matrix.
 
-Both are cheap to assert and impossible to notice otherwise, because a leg that
-exceeds `timeout-minutes` is scored `cancelled`, and `cancelled` outranks
-`failure` in GitHub's run rollup.
+Neither is noticeable otherwise: a leg over `timeout-minutes` is scored
+`cancelled`, and `cancelled` outranks `failure` in GitHub's run rollup.
 """
 
 from __future__ import annotations
@@ -89,11 +82,10 @@ def test_the_smoke_job_runs_the_interpreter_the_snapshot_names():
 
 
 def test_the_freeze_resolves_against_the_interpreter_the_snapshot_names():
-    """Anything with an explicit floor above the pinned interpreter is unresolvable.
+    """A pin whose Requires-Python floor is above the runner can never resolve.
 
-    `audioop-lts` is the live example and the reason this file exists. It only exists
-    for 3.13+, so its presence in the freeze is itself evidence of the interpreter the
-    image was running.
+    `audioop-lts` is the live example: it exists only for 3.13+, so its presence in
+    the freeze is itself evidence of the image's interpreter.
     """
     want = _mapping()["python_version"]
     names = {
@@ -134,8 +126,7 @@ def test_converted_names_do_not_collide_across_the_matrix():
     [
         ("Gemma3_(4B)-Vision.ipynb", "Gemma3_4B_Vision.py"),
         ("Whisper.ipynb", "Whisper.py"),
-        # A dot survives. The shell copy mapped it to `_`, so even ignoring the
-        # trailing underscore it named a different file for these two.
+        # A dot survives; the shell copy mapped it to `_`.
         ("Llama3.1_(8B)-GRPO.ipynb", "Llama3.1_8B_GRPO.py"),
         ("gpt-oss-(20B)-Fine-tuning.ipynb", "gpt_oss_20B_Fine_tuning.py"),
     ],
@@ -145,10 +136,10 @@ def test_the_naming_rule_itself(filename, expected):
 
 
 def _shell(job) -> str:
-    """Every `run:` body in the job with comment lines removed.
+    """Every `run:` body in the job, comments stripped.
 
-    Comments are stripped because the steps quote the old broken pipeline to explain
-    why it went, and a rule about what the shell DOES must not read prose as code.
+    The steps quote the old broken pipeline to explain why it went, and a rule about
+    what the shell DOES must not read that prose as code.
     """
     lines = []
     for step in job["steps"]:
@@ -159,11 +150,8 @@ def _shell(job) -> str:
 
 
 def test_the_workflow_asks_the_converter_instead_of_rebuilding_the_name():
-    """Anti-regression: the second spelling of the rule must stay gone.
-
-    Structural checks above cannot see a reintroduced `tr` pipeline, because they read
-    the matrix rather than the step body.
-    """
+    """Anti-regression: the checks above read the matrix, not the step body, so
+    only this one can see a reintroduced `tr` pipeline."""
     body = _shell(_job())
     assert "tr -c '[:alnum:]_'" not in body, (
         "the smoke job is rebuilding the converted filename in shell again. Call "
@@ -179,8 +167,8 @@ def test_the_workflow_asks_the_converter_instead_of_rebuilding_the_name():
 
 
 def test_the_seed_install_refuses_source_builds():
-    """Nine pins in this snapshot are sdist-only and need system libraries the runner
-    lacks. Without --only-binary pip spends 20-90s per package on a doomed build."""
+    """Sdist-only pins need system libraries the runner lacks; without --only-binary
+    pip spends 20-90s per package on a doomed build."""
     body = _shell(_job())
     installs = [ln for ln in body.splitlines() if re.search(r"\bpip install\b", ln)]
     offenders = [
@@ -190,8 +178,8 @@ def test_the_seed_install_refuses_source_builds():
 
 
 def test_the_known_unbuildable_pins_are_skipped():
-    """Each of these failed a source build in the 2026-08-31 run, and any one of them
-    is enough to fail a single bulk resolve for the whole set."""
+    """Each failed a source build in the 2026-08-31 run, and one is enough to fail
+    the bulk resolve for the whole set."""
     skip = set(_mapping()["skip"])
     # name -> the system dependency whose absence killed its build in that run.
     system_bound = {
