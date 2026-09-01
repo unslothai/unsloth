@@ -4,10 +4,14 @@
 """The backend's own HF_TOKEN is the operator's credential, not a shared service credential.
 
 The Unsloth UI sends the user's saved token in ``X-Unsloth-HF-Token`` on every hub download, so
-only a caller that has none reaches the ambient fallback. A UI session is the installation's
-owner and keeps it (Settings hands that session the saved token anyway). An sk-unsloth API key
-is the lesser credential -- Settings refuses it the saved token -- so it must not reach private
-repos by naming one in a download request instead.
+only a caller that has none reaches the ambient fallback. The OWNER's UI session keeps it: the
+process token is that account's own credential, and Settings hands the session it anyway. An
+sk-unsloth API key is the lesser credential -- Settings refuses it the saved token -- so it must
+not reach private repos by naming one in a download request instead.
+
+A managed account is refused it too. Saved credentials are per workspace, so the process token
+is not that account's to spend: with it, naming a private or gated repo pulls the owner's repos
+into the shared cache. Public repos need no token, and an account with its own still uses it.
 """
 
 import asyncio
@@ -62,22 +66,40 @@ class _ImmediateThread:
         self.target()
 
 
-def _client(via_api_key: bool) -> TestClient:
+def _client(via_api_key: bool, subject: str = "unsloth") -> TestClient:
     app = FastAPI()
     app.include_router(inventory_routes.router, prefix = "/api/hub")
     app.include_router(datasets_routes.router, prefix = "/api/hub/datasets")
-    app.dependency_overrides[get_current_subject] = lambda: "alice"
+    app.dependency_overrides[get_current_subject] = lambda: subject
     app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
     return TestClient(app)
 
 
-@pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, True)])
-def test_only_a_ui_session_may_borrow_the_backend_token(via_api_key, expected):
-    assert asyncio.run(allow_ambient_hf_token(via_api_key = via_api_key)) is expected
+# The owner's UI session keeps the fallback; an API key and a managed account do not.
+_AMBIENT_CASES = [
+    (True, "unsloth", False),
+    (False, "unsloth", True),
+    (True, "alice", False),
+    (False, "alice", False),
+]
 
 
-@pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, True)])
-def test_model_download_route_gates_the_ambient_token(monkeypatch, via_api_key, expected):
+@pytest.mark.parametrize("via_api_key, subject, expected", _AMBIENT_CASES)
+def test_only_the_owners_ui_session_may_borrow_the_backend_token(
+    via_api_key, subject, expected
+):
+    assert (
+        asyncio.run(
+            allow_ambient_hf_token(via_api_key = via_api_key, current_subject = subject)
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize("via_api_key, subject, expected", _AMBIENT_CASES)
+def test_model_download_route_gates_the_ambient_token(
+    monkeypatch, via_api_key, subject, expected
+):
     seen = {}
 
     async def _fake(
@@ -92,7 +114,7 @@ def test_model_download_route_gates_the_ambient_token(monkeypatch, via_api_key, 
 
     monkeypatch.setattr(model_downloads, "download_model_response", _fake)
 
-    response = _client(via_api_key).post(
+    response = _client(via_api_key, subject).post(
         "/api/hub/download",
         json = {"repo_id": "attacker/private-model"},
         headers = {"Authorization": "Bearer token"},
@@ -103,8 +125,10 @@ def test_model_download_route_gates_the_ambient_token(monkeypatch, via_api_key, 
     assert seen["allow_ambient_token"] is expected
 
 
-@pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, True)])
-def test_dataset_download_route_gates_the_ambient_token(monkeypatch, via_api_key, expected):
+@pytest.mark.parametrize("via_api_key, subject, expected", _AMBIENT_CASES)
+def test_dataset_download_route_gates_the_ambient_token(
+    monkeypatch, via_api_key, subject, expected
+):
     seen = {}
 
     async def _fake(
@@ -119,7 +143,7 @@ def test_dataset_download_route_gates_the_ambient_token(monkeypatch, via_api_key
 
     monkeypatch.setattr(dataset_downloads, "download_dataset_response", _fake)
 
-    response = _client(via_api_key).post(
+    response = _client(via_api_key, subject).post(
         "/api/hub/datasets/download",
         json = {"repo_id": "attacker/private-dataset"},
         headers = {"Authorization": "Bearer token"},

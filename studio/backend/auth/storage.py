@@ -814,6 +814,45 @@ def delete_user(username: str) -> None:
         conn.close()
 
 
+def is_installation_owner(subject: str | None = None) -> bool:
+    """Whether this account administers the install, for capability decisions.
+
+    The seeded owner short-circuits without touching auth.db: the single-user
+    path then costs nothing, cannot fail on a database error, and cannot be
+    demoted by a half-applied is_admin migration that left its row at 0.
+
+    Fails CLOSED for anything it cannot answer, so an unreachable auth.db
+    withholds a capability rather than granting one.
+    """
+    from utils.workspace_context import (
+        LEGACY_WORKSPACE_SUBJECT,
+        current_workspace_subject,
+    )
+
+    resolved = subject or current_workspace_subject()
+    if resolved == LEGACY_WORKSPACE_SUBJECT or resolved == DEFAULT_ADMIN_USERNAME:
+        return True
+    try:
+        return bool(is_admin(resolved))
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.warning("Could not check admin status for %s", resolved, exc_info = True)
+        return False
+
+
+def subject_may_reach_private_hosts(subject: str | None = None) -> bool:
+    """Whether this account may point the backend at a loopback or LAN address.
+
+    The owner may: a local Ollama, llama.cpp or vLLM endpoint is the ordinary
+    reason to run Unsloth at all, and the owner administers the host anyway. A
+    managed account may not. It cannot reach those services from its browser,
+    and letting it name one as a provider or MCP target turns the backend into a
+    probe for whatever else is on that network.
+
+    Single-user installs are unaffected: the only account there is the owner.
+    """
+    return is_installation_owner(subject)
+
+
 def is_admin(username: str) -> bool:
     """Return whether ``username`` may manage installation accounts."""
     conn = get_connection()

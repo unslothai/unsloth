@@ -2668,3 +2668,60 @@ def test_load_progress_hides_another_accounts_download():
     assert backend.load_progress("alice")["phase"] is not None
     # The engine's own probes keep the unfiltered view.
     assert backend.load_progress()["phase"] is not None
+
+
+def test_only_the_owner_may_point_the_backend_at_a_private_address(monkeypatch):
+    from urllib.parse import urlparse
+
+    from fastapi import HTTPException
+
+    from core.inference.providers import validate_provider_base_url
+    from routes import mcp_servers as mcp_routes
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS", raising = False)
+
+    private = "http://127.0.0.1:11434/v1"
+    # A public IP literal, not a hostname: _reject_non_public resolves names, and
+    # this suite must not depend on DNS. Note the consequence for real installs,
+    # which the opt-in env flag already had: an unresolvable host fails closed, so
+    # a managed account on a box with no DNS cannot add a provider it could not
+    # have reached either.
+    public = "https://8.8.8.8/v1"
+
+    # A local Ollama or llama.cpp endpoint is the ordinary reason to run Unsloth,
+    # so the owner keeps it. Single-user installs only ever have the owner.
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        assert validate_provider_base_url(private) == private
+        mcp_routes._reject_private_target_for_managed_accounts(urlparse(private))
+    finally:
+        reset_workspace_subject(token)
+
+    # A managed account cannot reach that address from its browser, so naming it
+    # here would make the backend probe it on the account's behalf.
+    token = _bind("alice")
+    try:
+        with pytest.raises(ValueError):
+            validate_provider_base_url(private)
+        with pytest.raises(HTTPException) as exc:
+            mcp_routes._reject_private_target_for_managed_accounts(urlparse(private))
+        assert exc.value.status_code == 403
+        # Public targets are unaffected for everybody.
+        assert validate_provider_base_url(public) == public
+        mcp_routes._reject_private_target_for_managed_accounts(urlparse(public))
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_owner_check_does_not_depend_on_a_readable_auth_database(monkeypatch):
+    from auth import storage as storage_mod
+
+    def _explode(_username):
+        raise RuntimeError("auth.db is unreadable")
+
+    monkeypatch.setattr(storage_mod, "is_admin", _explode)
+    # The seeded owner is decided without a lookup, so a single-user install keeps
+    # working when auth.db cannot be read.
+    assert storage_mod.is_installation_owner(LEGACY_WORKSPACE_SUBJECT) is True
+    # Anything else fails closed: withhold the capability rather than grant it.
+    assert storage_mod.is_installation_owner("alice") is False
