@@ -384,7 +384,11 @@ jobs:
     name: smoke install (Colab-shaped venv, opt-in)
     if: ${{ github.event.inputs.include_smoke == 'true' || github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Above the sum of the per-step caps below (6 + 12 + 8), on purpose. The
+    # steps are what should stop a stall, because a step reports `failure` with
+    # a diagnostic and this cap reports `cancelled` with nothing. If this number
+    # is ever the one that fires, the step budgets are wrong.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -419,8 +423,14 @@ jobs:
           ref: ${{ env.NOTEBOOKS_REF }}
           path: notebooks
           persist-credentials: false
+      # Whatever interpreter the snapshot was taken on. Colab rotated 3.12 to
+      # 3.13 and #9376 refreshed the freeze accordingly, but this pin stayed on
+      # 3.12, so the job has been installing a 3.13 environment onto a 3.12
+      # runner ever since. `python_version` in the mapping is the snapshot's own
+      # record of that, and the seed step below fails loudly if the two drift
+      # apart again rather than letting one pin resolve short.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with: { python-version: '3.12' }
+        with: { python-version: '3.13' }
 
       - name: Restore the pip cache
         id: pip-cache
@@ -444,15 +454,36 @@ jobs:
 
       - name: Seed Colab-shaped venv from pip-freeze (CPU-mapped)
         run: |
-          # Strip cu128 local versions, route torch/torchvision to the CPU
-          # wheel index, drop CUDA-specific deps the runner can't use.
-          python -u - <<'PY' > /tmp/seed_pins.txt
-          import json, re
+          # set -e, or the interpreter check below is decorative: the heredoc
+          # exits 1, the `cat`/`head`/`wc` after it succeed, and the step takes
+          # the last command's status and reports green with an ::error:: in the
+          # log. Same shape as the bug this job already shipped once.
+          set -euo pipefail
+          # Strip cu128 local versions, split the torch packages out for the CPU
+          # wheel index, drop what the runner can't use.
+          python -u - <<'PY'
+          import json, re, sys
           mapping = json.load(open("unsloth/scripts/data/colab_to_cpu_pin.json"))
           rewrite = mapping["rewrite"]
           skip = set(mapping["skip"])
           spoof = set(mapping["module_spoof"])
-          out = []
+
+          # The freeze is a snapshot of a Colab image, so it is only installable on
+          # the interpreter that image was running. Drift here is not cosmetic: it
+          # is what made every bulk resolve fail and every leg time out.
+          want = mapping["python_version"]
+          have = "%d.%d" % sys.version_info[:2]
+          if want != have:
+              print(
+                  f"::error::the Colab snapshot was captured on Python {want} but this "
+                  f"runner is {have}. Pins carrying a Requires-Python floor cannot "
+                  f"resolve. Move python-version in this workflow to {want}, or refresh "
+                  f"the snapshot and its python_version together.",
+                  file = sys.stderr,
+              )
+              raise SystemExit(1)
+
+          torch_pins, rest = [], []
           for line in open("unsloth/scripts/data/colab_pip_freeze.gpu.txt"):
               line = line.strip()
               if not line or line.startswith("#"):
@@ -461,44 +492,90 @@ jobs:
               if not m:
                   continue
               name, ver = m.group(1).lower(), m.group(2)
-              if name in skip:
+              if name in skip or name in spoof:
                   continue
-              if name in spoof:
-                  continue
-              if name in rewrite:
-                  ver = re.sub(r"[+\-].+$", "", ver)
-                  out.append(f"{name}=={ver}")
-              else:
-                  ver = re.sub(r"[+\-].+$", "", ver)
-                  out.append(f"{name}=={ver}")
-          print("\n".join(out))
+              # Drop the local version (`+cu128`) whatever the package is; the CPU
+              # index publishes the same version without it.
+              ver = re.sub(r"[+\-].+$", "", ver)
+              (torch_pins if name in rewrite else rest).append(f"{name}=={ver}")
+
+          open("/tmp/seed_torch.txt", "w").write("\n".join(torch_pins) + "\n")
+          open("/tmp/seed_pins.txt", "w").write("\n".join(rest) + "\n")
+          print(f"{len(torch_pins)} torch pins, {len(rest)} others, Python {have}")
           PY
+          cat /tmp/seed_torch.txt
           head -5 /tmp/seed_pins.txt
           wc -l /tmp/seed_pins.txt
 
       - name: Install Colab-shaped venv
+        # A cap this step reports itself. `timeout-minutes` on the job scores an
+        # overrun as `cancelled`, and `cancelled` outranks `failure` in GitHub's
+        # run rollup, so a matrix where every leg timed out reads as though
+        # somebody pressed stop, and one leg that genuinely failed beside them is
+        # hidden outright (2026-08-21 did exactly that). Nothing watches this
+        # workflow, so a silent stall was indistinguishable from a pass.
         run: |
+          set -uo pipefail
           python -m pip install --upgrade pip
-          # One resolve for the whole pin set instead of one per line. The per-line loop
-          # below re-resolved against both indexes for every one of ~683 pins, which is
-          # why this step spent its entire 25 minute cap here and never once reached
-          # "Verify imports under spoof".
-          #
-          # Best-effort is preserved, just moved: a single unresolvable pin fails the bulk
-          # install, and the fallback then walks the list line by line exactly as before,
-          # tolerating the ones that cannot resolve on CPU. The smoke contract is "the
-          # install cell + the unsloth import works", not "the entire Colab venv
-          # reproduces."
-          if ! pip install -r /tmp/seed_pins.txt \
-                --index-url https://download.pytorch.org/whl/cpu \
-                --extra-index-url https://pypi.org/simple; then
-            echo "::warning::bulk resolve failed, falling back to per-pin best effort"
-            while IFS= read -r spec; do
-              pip install "$spec" --index-url https://download.pytorch.org/whl/cpu \
-                --extra-index-url https://pypi.org/simple || \
-                echo "::warning::pin failed: $spec"
-            done < /tmp/seed_pins.txt
+
+          # Only the three torch packages want the PyTorch index. Pointing
+          # --index-url at it globally made all 682 other pins resolve against it
+          # first and fall through to PyPI, once each.
+          timeout --signal=INT --kill-after=30s 6m \
+            pip install --only-binary=:all: -r /tmp/seed_torch.txt \
+              --index-url https://download.pytorch.org/whl/cpu \
+              --extra-index-url https://pypi.org/simple 2>&1 | tee /tmp/install_torch.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::CPU torch install failed (exit $rc). Last lines:"
+            tail -40 /tmp/install_torch.log
+            exit "$rc"
           fi
+
+          # One resolve for the whole pin set. The per-line fallback below is
+          # best effort and quadratic-ish -- later pins uninstall and downgrade
+          # what earlier ones installed -- so reaching it at all is a defect, not
+          # a mode. It stays because a Colab rotation can always introduce a pin
+          # PyPI will not serve, and a partial venv still exercises the install
+          # cell; the warning is what makes that visible.
+          #
+          # --only-binary=:all: because every sdist-only pin in this snapshot
+          # needs a system library the runner does not have. Without it pip spends
+          # 20-90s per package on a build that cannot succeed.
+          timeout --signal=INT --kill-after=30s 12m \
+            pip install --only-binary=:all: -r /tmp/seed_pins.txt \
+              --index-url https://pypi.org/simple 2>&1 | tee /tmp/install_seed.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$rc" -eq 124 ]; then
+            echo "::error::the Colab seed install exceeded 12 minutes. Last lines:"
+            tail -40 /tmp/install_seed.log
+            exit 1
+          fi
+
+          echo "::warning::bulk resolve failed (exit $rc), falling back to per-pin best effort"
+          grep -E "^ERROR: (Could not find|No matching|Ignored)" /tmp/install_seed.log | head -20 || true
+          total=$(grep -c . /tmp/seed_pins.txt || echo 0)
+          done_n=0; failed_n=0
+          # Bounded, because an unbounded fallback is how this job spent 112 days
+          # being scored `cancelled`. Running out of budget is a failure with a
+          # number attached, not a silent stop, and the per-pin cap keeps one
+          # pathological resolve from eating the whole allowance.
+          deadline=$(( SECONDS + 480 ))
+          while IFS= read -r spec; do
+            [ -n "$spec" ] || continue
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::per-pin fallback ran out of budget at $done_n/$total pins, $failed_n failed"
+              exit 1
+            fi
+            done_n=$(( done_n + 1 ))
+            timeout --signal=INT --kill-after=10s 90s \
+              pip install --only-binary=:all: "$spec" --index-url https://pypi.org/simple \
+              > /dev/null 2>&1 || { failed_n=$(( failed_n + 1 )); echo "::warning::pin failed: $spec"; }
+          done < /tmp/seed_pins.txt
+          echo "::warning::per-pin fallback finished: $done_n/$total attempted, $failed_n failed"
 
       - name: Save the pip cache
         if: always()
@@ -512,13 +589,30 @@ jobs:
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
       - name: Run install cell
+        env:
+          NOTEBOOK: ${{ matrix.notebook }}
         run: |
-          python unsloth/scripts/notebook_validator.py convert \
-              --notebooks-dir notebooks --out _converted
-          # Take the converted .py and run the install cell only.
-          BASE="$(basename '${{ matrix.notebook }}' .ipynb | tr -d '()' | tr -c '[:alnum:]_' _)"
-          PY="_converted/${BASE}.py"
-          [ -f "$PY" ] || { echo "::error::$PY not found"; ls _converted | head; exit 1; }
+          set -euo pipefail
+          # Convert THIS notebook only, and take whatever file the converter
+          # produced, rather than converting all 560 and rebuilding the name.
+          #
+          # The name was rebuilt with
+          #     basename "$nb" .ipynb | tr -d '()' | tr -c '[:alnum:]_' _
+          # which turned basename's trailing newline into a trailing underscore,
+          # so every leg looked for `<name>_.py` and none has ever been found.
+          # It also mapped dots to underscores where notebook_to_python.py keeps
+          # them. Two spellings of one rule, and the copy was wrong; asking the
+          # converter removes the second spelling entirely, and dropping 559
+          # conversions we never read removes a basename collision with it.
+          rm -rf _converted && mkdir -p _converted
+          python unsloth/scripts/notebook_to_python.py -o _converted "notebooks/$NOTEBOOK"
+          mapfile -t converted < <(find _converted -maxdepth 1 -type f -name '*.py' | sort)
+          if [ "${#converted[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one converted script for $NOTEBOOK, got ${#converted[@]}"
+            printf '%s\n' "${converted[@]:-(none)}"
+            exit 1
+          fi
+          PY="${converted[0]}"
           # Truncate at the first `from unsloth import` so we run install +
           # core imports only.
           awk '/^from unsloth import/ { print "import sys; sys.exit(0)"; exit } { print }' "$PY" > _smoke.py

@@ -253,6 +253,19 @@ def convert_notebook(
     return "\n".join(lines)
 
 
+def converted_filename(filename: str) -> str:
+    """The .py name this script writes for a given notebook filename.
+
+    Split out so there is one spelling of the rule. notebooks-ci.yml carried a
+    second one in shell, and it was wrong: `basename ... | tr -c '[:alnum:]_' _`
+    turned basename's trailing newline into a trailing underscore, so the smoke
+    job looked for `<name>_.py` for every notebook in its matrix and never found
+    one. It also mapped `.` to `_`, which this does not.
+    """
+    out = filename.replace(".ipynb", ".py")
+    return out.replace("(", "").replace(")", "").replace("-", "_")
+
+
 def convert_notebook_to_script(
     source: str,
     output_dir: str | None = None,
@@ -277,8 +290,7 @@ def convert_notebook_to_script(
             content = f.read()
         source_name = source
 
-    output_filename = filename.replace(".ipynb", ".py")
-    output_filename = output_filename.replace("(", "").replace(")", "").replace("-", "_")
+    output_filename = converted_filename(filename)
 
     if output_dir:
         output_path = os.path.join(output_dir, output_filename)
