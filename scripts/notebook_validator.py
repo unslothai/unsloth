@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import ast
 import dataclasses
+import functools
 import json
 import os
 import pathlib
@@ -84,6 +85,65 @@ COLAB_FALLBACK_FILE = DATA_DIR / "colab_pip_freeze.gpu.txt"
 # subcommand surfaces NEW/REMOVED/CHANGED entries so upstream Colab base
 # image rotations land in CI within ~24h, giving R-INST-002/003/004/005
 # earlier signal.
+# The image's Python, read from the os-info oracle beside the pip freeze ("Python 3.13.15").
+# Only used to evaluate PEP 508 markers, so an unreadable or absent snapshot just means no
+# marker is evaluated and every requirement is replayed, which is the older behaviour.
+_COLAB_OS_INFO_FILE = DATA_DIR / "colab_os_info.gpu.txt"
+_COLAB_PYTHON_RE = re.compile(r"^Python\s+(\d+\.\d+(?:\.\d+)?)", re.MULTILINE)
+
+
+@functools.lru_cache(maxsize = 1)
+def _colab_python_version() -> str | None:
+    try:
+        text = _COLAB_OS_INFO_FILE.read_text(encoding = "utf-8")
+    except OSError:
+        return None
+    match = _COLAB_PYTHON_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
+    """The environment PEP 508 markers are evaluated against, or None to skip them.
+
+    Only for notebooks resolved against the Colab image, since that is the one environment
+    this can name. Everything else replays every requirement, as before.
+    """
+    if not colab:
+        return None
+    full = _colab_python_version()
+    if not full:
+        return None
+    parts = full.split(".")
+    return {
+        "python_version": ".".join(parts[:2]),
+        "python_full_version": full if len(parts) > 2 else f"{full}.0",
+        "sys_platform": "linux",
+        "platform_system": "Linux",
+        "platform_machine": "x86_64",
+        "os_name": "posix",
+    }
+
+
+def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
+    """False only when the requirement carries a marker that is false for `environment`.
+
+    pip skips such a requirement outright, so replaying its bounds moves a version the cell
+    never touches. An unparseable marker, a missing `packaging`, or no environment to judge
+    against all mean the requirement is replayed.
+    """
+    if environment is None or ";" not in raw:
+        return True
+    marker_text = raw.split(";", 1)[1].strip()
+    if not marker_text:
+        return True
+    try:
+        from packaging.markers import Marker
+
+        return bool(Marker(marker_text).evaluate(environment))
+    except Exception:
+        return True
+
+
 COLAB_ORACLE_FILES: dict[str, str] = {
     "pip-freeze.gpu.txt": "colab_pip_freeze.gpu.txt",
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
@@ -625,10 +685,11 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     out = dict(colab)
     pinned: set[str] = set()
     upper_bounds: dict[str, str] = {}
+    environment = _marker_environment(colab)
     for inv in unconditional_pip_invocations(install_cell):
         for raw in inv.packages:
             sp = parse_spec(raw)
-            if sp is None:
+            if sp is None or not _requirement_applies(raw, environment):
                 continue
             for op, ver in sp.pins:
                 if op == "==":
@@ -930,13 +991,31 @@ def _spec_window(
 
 # Flags that stop pip treating what is installed as satisfying an unbounded requirement, so
 # it resolves from the index instead of leaving the version alone.
-_RESOLVE_ANYWAY_FLAGS = frozenset(
-    {"--upgrade", "-U", "--force-reinstall", "--ignore-installed", "-I"}
-)
+_RESOLVE_ANYWAY_LONG = frozenset({"--upgrade", "--force-reinstall", "--ignore-installed"})
+_RESOLVE_ANYWAY_SHORT = frozenset({"U", "I"})
+
+
+def _forces_resolution(flags: set[str]) -> bool:
+    """True when any flag makes pip re-resolve rather than keep what is installed.
+
+    Short options bundle: pip takes `-Uq` and parse_pip_line keeps it as one token, so the
+    letters are compared rather than the token.
+    """
+    if flags & _RESOLVE_ANYWAY_LONG:
+        return True
+    return any(
+        not flag.startswith("--")
+        and flag.startswith("-")
+        and set(flag[1:]) & _RESOLVE_ANYWAY_SHORT
+        for flag in flags
+    )
 
 
 def _effective_version(
-    install_cell: str, target: str, resolved: str | None
+    install_cell: str,
+    target: str,
+    resolved: str | None,
+    environment: dict[str, str] | None = None,
 ) -> tuple[str | None, bool]:
     """`resolved` walked forward through the cell's own requirements, in invocation order.
 
@@ -970,6 +1049,8 @@ def _effective_version(
         named = False
         replaced_unnamed = False
         for raw in inv.packages:
+            if not _requirement_applies(raw, environment):
+                continue  # pip skips it, so its bounds never move anything
             # Before parse_spec, which reads `./torchcodec-0.13.0-...whl` as a project called
             # `.` and hides the archive behind a name that never matches.
             archive = _archive_requirement(raw)
@@ -991,7 +1072,7 @@ def _effective_version(
         if inv.action == "uninstall":
             current = None  # removed; a later install can put it back
             continue
-        if not pins and not replaced_unnamed and inv.flags & _RESOLVE_ANYWAY_FLAGS:
+        if not pins and not replaced_unnamed and _forces_resolution(inv.flags):
             # A bare name with any of these takes whatever the index offers: none of them let
             # the installed version satisfy the requirement, so it is not what the cell ends
             # on, and nothing here names what does.
@@ -1076,8 +1157,13 @@ def rule_inst_004_torchcodec_torch(
 ) -> list[Finding]:
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
-    torch_v, torch_exact = _effective_version(install_cell, "torch", res.get("torch"))
-    codec_v, codec_exact = _effective_version(install_cell, "torchcodec", res.get("torchcodec"))
+    environment = _marker_environment(colab)
+    torch_v, torch_exact = _effective_version(
+        install_cell, "torch", res.get("torch"), environment
+    )
+    codec_v, codec_exact = _effective_version(
+        install_cell, "torchcodec", res.get("torchcodec"), environment
+    )
     if not torch_v or not codec_v:
         return findings
     # An inexact version is a floor: everything at or above it is possible. That is enough for
