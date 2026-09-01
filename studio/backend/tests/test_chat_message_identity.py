@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A user turn is identified by its id, never by its text (#9984)."""
+"""A user turn is identified by its id, never by its text (#9984).
+
+These run the real studio_db, so they cover the behaviour rather than the source. The frontend
+guards in studio/frontend/tests/chat-user-turn-identity.test.ts only read source and say so.
+"""
 
 import itertools
 import random

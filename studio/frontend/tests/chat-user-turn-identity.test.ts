@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A user turn is identified by its id, never by its text (#9984). Neither function here is
-// exported, so these read source. They count the ways a turn can be dropped rather than
-// pinning the text, so a rename or a reformat is fine and a new drop is not.
+// A user turn is identified by its id, never by its text (#9984).
+//
+// Scope, because the names below would otherwise overclaim. These read source, so they catch
+// the shape the reverted change actually had, a comparison written inline at one of the three
+// sites. They are NOT a proof that no dedupe can return: source matching has no closed set of
+// patterns, and review found several ways past it, among them replacing `history` in place,
+// binding the filtered array to a new name, and reassigning the id after the payload is built.
+// Proving the negative needs the pure logic extracted and called, which is a change to
+// production code rather than to this file. Behaviour is covered where the damage lands, in
+// studio/backend/tests/test_chat_message_identity.py, against the real studio_db.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -54,7 +61,7 @@ const historyAppend = slice(
   "return trackHistoryAppend(",
 );
 
-test("the outbound prune drops a turn only for the abandoned-turn guard", () => {
+test("the outbound prune has no second way to drop a turn", () => {
   // The input is copied whole; filtering here drops a turn without touching the loop.
   assert.match(outboundPrune, /const history = \[\.\.\.messages\];/);
   // Inside the loop a turn can only be lost three ways, and the guard already owns one of
@@ -71,7 +78,7 @@ test("the outbound prune drops a turn only for the abandoned-turn guard", () => 
   assert.match(outboundPrune, /\n\s*surviving\.push\(message\);/);
 });
 
-test("a message is persisted under the id the runtime gave it", () => {
+test("the append payload is built with the id the runtime gave it", () => {
   // A different id leaves the next assistant parented to a row nothing wrote.
   assert.match(historyAppend, /id: message\.id,/);
   assert.doesNotMatch(historyAppend, /\bid:\s*(?!message\.id\b)\w+,/);
@@ -82,7 +89,7 @@ test("appending a message does not read the whole thread", () => {
   assert.doesNotMatch(historyAppend, /listStoredChatMessages/);
 });
 
-test("loading a thread passes on every stored message", () => {
+test("nothing between the load and the rebuild narrows msgs", () => {
   // A dangling parent breaks the thread, so cover both names and in-place removal.
   // Not reordering: the existing msgs.sort keeps the set.
   assert.deepEqual(
