@@ -1198,8 +1198,7 @@ def _scan_cached_models(
                     # artifact even when its repo name/card cannot identify a family. Keep this
                     # structural fact separate from task inference: an explicit family choice may
                     # use it, while components and loose checkpoints remain ineligible.
-                    "artifact_kind": _diffusers_pipeline_artifact_kind(load_snapshot)
-                    or "unknown",
+                    "artifact_kind": _diffusers_pipeline_artifact_kind(load_snapshot) or "unknown",
                     "task": row_task,
                     "audio_type": audio_type,
                     "partial": snapshot_partial,

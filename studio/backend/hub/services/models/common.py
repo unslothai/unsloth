@@ -103,9 +103,7 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
 
-def _diffusers_pipeline_artifact_kind(
-    path: Optional[Path],
-) -> Optional[LocalArtifactKind]:
+def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArtifactKind]:
     """Return the root-manifest contract for a Diffusers pipeline directory.
 
     Conventional and Modular Diffusers manifests are not interchangeable: the image loader
