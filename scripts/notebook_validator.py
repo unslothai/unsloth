@@ -124,6 +124,27 @@ def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
     }
 
 
+# PEP 508 names a fixed set of marker variables. `Marker.evaluate` fills any field the given
+# environment omits from the running process, so a marker naming one of these would be judged
+# against this machine rather than the image and the answer would move between runners.
+_MARKER_VARIABLES = frozenset(
+    {
+        "os_name",
+        "sys_platform",
+        "platform_machine",
+        "platform_python_implementation",
+        "platform_release",
+        "platform_system",
+        "platform_version",
+        "python_version",
+        "python_full_version",
+        "implementation_name",
+        "implementation_version",
+        "extra",
+    }
+)
+
+
 def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
     """False only when the requirement carries a marker that is false for `environment`.
 
@@ -136,8 +157,12 @@ def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
     marker_text = raw.split(";", 1)[1].strip()
     if not marker_text:
         return True
+    named = set(re.findall(r"[A-Za-z_]\w*", marker_text)) & _MARKER_VARIABLES
+    if not named or named - environment.keys():
+        return True  # nothing to judge on, or a field the oracle cannot answer for
     try:
         from packaging.markers import Marker
+
         return bool(Marker(marker_text).evaluate(environment))
     except Exception:
         return True
@@ -455,11 +480,13 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     stripped = stripped.lstrip("({").strip().rstrip(")}").rstrip()
     conditional = False
     while True:
-        head, _, rest = stripped.partition(" ")
-        if head.lower() not in _SHELL_KEYWORDS:
+        # Any whitespace, not a literal space: `then\tpip install ...` is the same command to
+        # the shell, and leaving `then\tpip` as one word hides it from every rule.
+        parts = stripped.split(maxsplit = 1)
+        if not parts or parts[0].lower() not in _SHELL_KEYWORDS:
             break
-        conditional = conditional or head.lower() in _SHELL_BODY_KEYWORDS
-        stripped = rest.strip()
+        conditional = conditional or parts[0].lower() in _SHELL_BODY_KEYWORDS
+        stripped = parts[1].strip() if len(parts) > 1 else ""
     return (f"!{stripped}" if bang and stripped else stripped), conditional
 
 
@@ -513,8 +540,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             quote = ch
             buf.append(ch)
             i += 1
-        elif ch == "#" and (i == 0 or line[i - 1].isspace() or line[i - 1] in ";&|"):
-            break  # a control operator ends a word, so `;#` starts a comment too
+        elif ch == "#" and (i == 0 or line[i - 1].isspace() or line[i - 1] in ";&|)}"):
+            break  # an operator or a closing bracket ends a word, so `;#` and `)#` comment
         elif line.startswith("||", i):
             flush()
             tails[-1] = True

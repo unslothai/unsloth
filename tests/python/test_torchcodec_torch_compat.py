@@ -1590,6 +1590,48 @@ def test_no_deps_rules_skip_a_requirement_pip_skips(monkeypatch):
         assert nv.rule_inst_005_transformers_tokenizers(applied, colab, "nb.ipynb", 0), applied
 
 
+def test_notebook_validator_splits_keywords_on_any_whitespace():
+    """A tab after `then` is the same command to the shell. Splitting on a literal space left
+    `then\\tpip` as one word, which parses as nothing and hides the install."""
+    nv = _load_notebook_validator_module()
+
+    tabbed = "!if true; then\tpip install git+https://example.com/pkg.git; fi"
+    assert [c for c, _ in nv._split_chained(tabbed)][-1] == (
+        "!pip install git+https://example.com/pkg.git"
+    )
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(tabbed, "nb.ipynb", 0))
+
+    spaced = "!if true; then pip install git+https://example.com/pkg.git; fi"
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(spaced, "nb.ipynb", 0))
+
+
+def test_notebook_validator_comments_after_a_closing_bracket():
+    """A `)` ends a word, so `)#` opens a comment and what follows is documentation."""
+    nv = _load_notebook_validator_module()
+
+    cell = "!(pip install unsloth)# alternative: pip install git+https://example.com/pkg.git"
+    assert [c for c, _ in nv._split_chained(cell)] == ["!pip install unsloth"]
+    assert nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0) == []
+
+
+def test_notebook_validator_declines_markers_it_cannot_judge():
+    """`Marker.evaluate` fills any field the environment omits from the running process, so a
+    marker naming one would answer for this machine and move between runners."""
+    nv = _load_notebook_validator_module()
+
+    environment = nv._marker_environment(COLAB_TORCH211)
+    for unknown in (
+        "torch>=2.12; platform_release < '5.0'",
+        "torch>=2.12; platform_version == 'x'",
+        "torch>=2.12; implementation_version > '3'",
+    ):
+        assert nv._requirement_applies(unknown, environment), unknown
+
+    # The fields the oracle can answer for are still evaluated.
+    assert not nv._requirement_applies("torch>=2.12; python_version < '3.10'", environment)
+    assert nv._requirement_applies("torch>=2.12; sys_platform == 'linux'", environment)
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
