@@ -1301,9 +1301,14 @@ def test_notebook_validator_reads_a_compound_only_line():
     assert nv.rule_inst_004_torchcodec_torch(guarded, COLAB_TORCH211, "nb.ipynb", 0) == []
 
     # An unguarded install on its own line still counts.
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch==2.12.0"', COLAB_TORCH211, "nb.ipynb", 0
-    )) == 1
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                '!pip install "torch==2.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+            )
+        )
+        == 1
+    )
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
