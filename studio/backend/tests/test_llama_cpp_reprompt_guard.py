@@ -1181,9 +1181,7 @@ def test_leading_thought_may_show_its_own_closer_in_an_example():
 def test_leading_thought_may_quote_its_closer_inline():
     """An inline code span is an example too, so `</think>` quoted in one does not
     end the thought."""
-    turn = (
-        "<think>Example: `</think>`. First, I will search.</think>The answer is Paris."
-    )
+    turn = "<think>Example: `</think>`. First, I will search.</think>The answer is Paris."
     assert not _gate_would_reprompt(turn, "", True)
 
 
