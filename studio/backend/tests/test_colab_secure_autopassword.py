@@ -765,6 +765,25 @@ def test_start_without_cloudflare_purges_legacy_plaintext_cache(monkeypatch):
     assert not cache.exists()
 
 
+def test_start_scrubs_supplied_password_before_migration_failure(monkeypatch):
+    # The environment value must not survive any start() return path: later
+    # notebook subprocesses would otherwise inherit the plaintext credential.
+    import os
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PASSWORD", "notebook-supplied-password")
+    monkeypatch.setattr(
+        colab,
+        "_handoff_or_purge_legacy_colab_credentials",
+        lambda: (_ for _ in ()).throw(
+            colab._ColabCredentialHandoffFailed("legacy cache unreadable")
+        ),
+    )
+
+    colab.start(cloudflare = False)
+
+    assert "UNSLOTH_STUDIO_PASSWORD" not in os.environ
+
+
 def test_notebook_text_warns_that_cell_output_is_saved():
     # The runtime card already says the notebook saves its output; the notebook's
     # own intro cell and code comment must not contradict it by promising the
@@ -1043,6 +1062,25 @@ def test_clear_legacy_cache_does_not_claim_uncheckable_path_is_absent(monkeypatc
 
     assert colab._clear_colab_login_credentials() is False
     assert cache.read_text(encoding = "utf-8") == original
+
+
+def test_legacy_cache_read_failure_blocks_migration(monkeypatch):
+    admin = _seed_admin(must_change_password = False)
+    colab._store_colab_login_credentials(admin, "bootstrap-secret-123")
+    cache = colab._colab_login_credentials_path()
+    cache_type = type(cache)
+    real_read_text = cache_type.read_text
+
+    def _read_text(self, *args, **kwargs):
+        if self == cache:
+            raise PermissionError("read denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(cache_type, "read_text", _read_text)
+
+    with pytest.raises(colab._ColabCredentialHandoffFailed, match = "could not be loaded"):
+        colab._handoff_or_purge_legacy_colab_credentials()
+    assert cache.exists()
 
 
 def test_upgrade_rerun_refuses_tunnel_when_live_cache_cannot_be_cleared(monkeypatch):

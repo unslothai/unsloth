@@ -106,14 +106,20 @@ def _load_colab_login_credentials() -> "tuple[str, str] | None":
     """Return stored Colab admin credentials from a previous ``start()`` run, if any."""
     path = _colab_login_credentials_path()
     try:
-        if not path.is_file():
-            return None
+        path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        logger.info(f"Could not inspect Colab login credentials ({e}).")
+        raise _ColabCredentialHandoffFailed("cached admin credentials could not be loaded") from e
+    try:
         lines = path.read_text(encoding = "utf-8").splitlines()
         if len(lines) >= 2 and lines[0] and lines[1]:
             return lines[0], lines[1]
     except (OSError, UnicodeDecodeError) as e:
         logger.info(f"Could not load Colab login credentials ({e}).")
-    return None
+        raise _ColabCredentialHandoffFailed("cached admin credentials could not be loaded") from e
+    raise _ColabCredentialHandoffFailed("cached admin credentials are malformed")
 
 
 def _clear_colab_login_credentials() -> bool:
@@ -667,7 +673,7 @@ def _clear_displayed_credential_marker(username: str) -> bool:
 _SUPPLIED_PASSWORD_ENV = "UNSLOTH_STUDIO_PASSWORD"
 
 
-def _consume_supplied_password_on_reuse() -> None:
+def _consume_supplied_password_on_reuse(supplied: "str | None" = None) -> None:
     """Apply-or-strip ``UNSLOTH_STUDIO_PASSWORD`` on start()'s server-reuse path.
 
     A normal launch goes through ``run_server`` -> ``run._apply_supplied_password``,
@@ -690,7 +696,10 @@ def _consume_supplied_password_on_reuse() -> None:
     display one. Never logs the value, and never exits the process: this runs inside
     a notebook cell.
     """
-    supplied = os.environ.pop(_SUPPLIED_PASSWORD_ENV, None) or None
+    if supplied is None:
+        supplied = os.environ.pop(_SUPPLIED_PASSWORD_ENV, None) or None
+    else:
+        os.environ.pop(_SUPPLIED_PASSWORD_ENV, None)
     if not supplied:
         return
     try:
@@ -1079,6 +1088,10 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     """
     import time
 
+    # Remove the plaintext before any migration, frontend, or health check can
+    # return. The captured value is applied explicitly below, so no later process
+    # spawned by this notebook kernel can inherit it from the environment.
+    supplied_password = os.environ.pop(_SUPPLIED_PASSWORD_ENV, None) or None
     logger.info("🦥 Starting Unsloth Studio...")
     use_cloudflare = _colab_wants_cloudflare(cloudflare)
     # Cache migration is independent of tunnel selection. In particular, the
@@ -1100,7 +1113,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         # cloudflared: otherwise the supplied password is ignored while the
         # bootstrap one is still pending, and the plaintext stays in os.environ for
         # every child process to inherit.
-        _consume_supplied_password_on_reuse()
+        _consume_supplied_password_on_reuse(supplied_password)
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
             # start_cloudflare_tunnel owns the shared-link credential: it auto-generates
@@ -1140,6 +1153,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
             frontend_path = frontend_path,
             silent = True,
             cloudflare = False,
+            password = supplied_password,
         )
     except SystemExit as exc:
         logger.error(f"❌ Unsloth Studio failed to start: {exc}")
