@@ -11,11 +11,9 @@ export type QueuedModelCapabilities = Pick<
   | "hasVideoInput"
 >;
 
-/**
- * Give a queued run an accurate private model entry without changing the
- * visible chat's model catalog. Status-derived capabilities override stale
- * catalog values, and a model loaded outside Unsloth gets a minimal entry.
- */
+/** Give a queued run an accurate private model entry without changing the visible chat's model
+ *  catalog. Status-derived capabilities override stale catalog values, and a model loaded outside
+ *  Unsloth gets a minimal entry. */
 export function mergeQueuedModelCapabilities(
   models: ChatModelRow[],
   checkpoint: string,

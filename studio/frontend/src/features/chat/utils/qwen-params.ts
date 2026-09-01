@@ -31,14 +31,9 @@ export function resolveQwenThinkingParams(
   return needsPresencePenalty ? { ...base, presencePenalty: 1.5 } : base;
 }
 
-/**
- * Apply Qwen3-family recommended sampling parameters when the Think toggle
- * changes. Qwen3.5, Qwen3.6, and Qwen3.8 also need a presence_penalty bump on
- * top of the Qwen3 defaults.
- *
- * Used by both the thread assistant UI and the shared chat composer so the
- * two call sites stay in sync.
- */
+/** Apply Qwen3-family recommended sampling parameters when the Think toggle changes. Qwen3.5,
+ *  Qwen3.6 and Qwen3.8 also need a presence_penalty bump on top of the Qwen3 defaults. Used by
+ *  both the thread assistant UI and the shared chat composer. */
 export function applyQwenThinkingParams(thinkingOn: boolean): void {
   const store = useChatRuntimeStore.getState();
   const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
@@ -46,7 +41,7 @@ export function applyQwenThinkingParams(thinkingOn: boolean): void {
   if (params === null || store.activePresetSource !== "builtin-default") {
     return;
   }
-  // Deliberately unmarked, unlike the post-load path applying the same table: the
-  // user asked for this mode here, so it must land even on a chat pinning sampling.
+  // Deliberately unmarked, unlike the post-load path applying the same table: the user asked for
+  // this mode here, so it must land even on a chat pinning sampling.
   store.setParams({ ...store.params, ...params });
 }

@@ -4,9 +4,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-// Client-side pin state for chats, keyed by stable chat id. Kept in
-// localStorage, not the chat DB. New pins are prepended so the most
-// recently pinned chat sorts first in the Pinned section.
+// Client-side pin state for chats, keyed by stable chat id. Kept in localStorage, not the chat DB.
+// New pins are prepended so the most recently pinned chat sorts first in the Pinned section.
 export interface PinnedChatsState {
   pinnedIds: string[];
   togglePin: (id: string) => void;

@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Notifies loaded chat runtimes when the Data tab deletes a stored attachment.
- * Without this, the active thread's in-memory repository still holds the
- * attachment, and any later repo-to-storage sync (e.g. deleting a message in
- * that thread) writes it back, undoing the deletion.
- */
+/** Notifies loaded chat runtimes when the Data tab deletes a stored attachment. Without this, the
+ *  active thread's in-memory repository still holds it, and any later repo-to-storage sync
+ *  writes it back, undoing the deletion. */
 
 import forge from "node-forge";
 
@@ -45,8 +42,7 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-/** Canonical payload used to detect whether an async hash still describes the
- * current message content. */
+/** Canonical payload used to detect whether an async hash still describes the current message content. */
 export function chatContentPartAttachmentSignature(
   part: unknown,
 ): string | null {
@@ -74,8 +70,8 @@ export function chatContentPartAttachmentSignature(
   return stableJson(payload);
 }
 
-/** Mirrors the backend's stable content-part identity without adding private
- * metadata to the message payload sent to inference. */
+/** Mirrors the backend's stable content-part identity without adding private metadata to the
+ *  message payload sent to inference. */
 export async function chatContentPartAttachmentIdFromSignature(
   signature: string,
 ): Promise<string> {
@@ -91,8 +87,8 @@ export async function chatContentPartAttachmentIdFromSignature(
         byte.toString(16).padStart(2, "0"),
       ).join("");
     } catch {
-      // Fall through to the pure-JS implementation below. Some embedded
-      // browsers expose crypto.subtle but reject it outside a secure context.
+      // Fall through to the pure-JS implementation below. Some embedded browsers expose crypto.subtle
+      // but reject it outside a secure context.
     }
   }
   if (hex === null) {

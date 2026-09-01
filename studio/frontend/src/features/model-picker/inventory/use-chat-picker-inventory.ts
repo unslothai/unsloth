@@ -56,7 +56,8 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     audio_type: row.audioType ?? null,
     tags: row.tags,
     library_name: row.libraryName,
-    // Carried through: the diffusion picker drops single-file checkpoint repos (loading one as a pipeline fails after the handoff), and undefined reads as "full pipeline".
+    // Carried through: the diffusion picker drops single-file checkpoint repos, since loading one as
+    // a pipeline fails after the handoff, and undefined reads as "full pipeline".
     single_file: row.singleFile ?? false,
   };
 }
@@ -120,9 +121,9 @@ export function useChatPickerInventory(
           (row) =>
             row.modelFormat !== "gguf" &&
             isCompleteCachedRow(row) &&
-            // An sd.cpp companion mirror holds a VAE / text encoders and no denoiser. It has no
-            // task, and a task of null is what every unclassified CHAT repo carries, so without
-            // this it lands in the chat On Device list as a load that cannot succeed.
+            // An sd.cpp companion mirror holds a VAE and text encoders and no denoiser. It has no task, and a
+            // task of null is what every unclassified CHAT repo carries, so without this it lands in the
+            // chat On Device list as a load that cannot succeed.
             !row.companion &&
             (!isHiddenModelId(row.repoId) ||
               allowedHiddenModelIdMatches(
@@ -139,9 +140,11 @@ export function useChatPickerInventory(
         .filter(
           (row) =>
             PICKER_LOCAL_SOURCES.has(row.source) &&
-            // Skip non-chat rows (a folder with only config.json classifies "unknown" -> canChat false); selecting one would load a weightless path.
-            // toLocalModelInfo drops capabilities, so this is the only place the guard can live. A row the backend classified as a generation task is
-            // exempt: canChat is about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
+            // Skip non-chat rows (a folder with only config.json classifies "unknown"); selecting one would
+            // load a weightless path. toLocalModelInfo drops capabilities, so this is the only place the
+            // guard can live. A row the backend classified as a generation task is exempt: canChat is about
+            // the chat loader, and dropping it here hid every on-device diffusion model from the pickers
+            // that CAN load it.
             (row.capabilities.canChat ||
               studioPageForTask(row.task) !== undefined) &&
             (!isHiddenModelId(row.modelId, row.repoId, row.path) ||

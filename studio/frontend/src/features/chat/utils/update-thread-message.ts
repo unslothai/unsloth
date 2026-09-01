@@ -8,10 +8,8 @@ type ThreadImportExport = {
 
 type ContentPart = { type: "text" | "reasoning" | "tool"; text: string };
 
-/**
- * Extracts only the editable text and reasoning from a message,
- * ignoring structured parts like tool calls that cannot be edited as plain text.
- */
+/** Extracts only the editable text and reasoning from a message, ignoring structured parts like
+ *  tool calls that cannot be edited as plain text. */
 export function extractTaggedText(content: any): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return "";
@@ -24,16 +22,14 @@ export function extractTaggedText(content: any): string {
       if (typeof part === 'string') return part;
       if (!part) return "";
 
-      // Only extract text from 'text' or 'reasoning' parts.
-      // Tool calls/responses are ignored here so they aren't accidentally
-      // deleted or corrupted by the user in the textarea.
+      // Only extract text from 'text' or 'reasoning' parts. Tool calls and responses are ignored so
+      // they are not accidentally deleted or corrupted in the textarea.
       const text = part.text || part.content || "";
       if (!text) return "";
 
       switch (part.type) {
         case 'reasoning':
-          // Trim the text first so we don't accumulate newlines
-          // around the tags on every save.
+          // Trim the text first so we don't accumulate newlines around the tags on every save.
           return `${open}THINK${close}\n${text.trim()}\n${open}/THINK${close}`;
         case 'text':
         default:
@@ -57,8 +53,7 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
     const index = match.index;
 
     if (index > lastIndex) {
-      // Trim the extracted content to remove any leading/trailing
-      // newlines created by the tag wrapping process.
+      // Trim the extracted content to remove any leading/trailing newlines created by the tag wrapping process.
       const content = text.substring(lastIndex, index).trim();
       if (content) parts.push({ type: currentType, text: content });
     }

@@ -52,8 +52,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     ggufContextLength != null ||
     (checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
 
-  // Off-backend this stays null, or the model compares unequal to its own defaults
-  // over a field it cannot show.
+  // Off-backend this stays null, or the model compares unequal to its own defaults over a field it cannot show.
   const effectiveMlxKvBits = isServedByMlx(isGguf, deviceType, chatOnlyReason)
     ? (mlxKvBits ?? null)
     : null;

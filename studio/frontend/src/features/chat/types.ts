@@ -38,33 +38,19 @@ export interface ThreadRecord {
   archived: boolean;
   createdAt: number;
   updatedAt?: number;
-  /**
-   * OpenAI shell tool container id from a prior response. When set, the
-   * next turn reuses it via `environment.type="container_reference"` so
-   * the model can read files it wrote earlier; else auto-creates one.
-   *
-   * Containers expire after ~20 min idle; on a stale id the backend
-   * emits `_toolEvent.type="container_invalidated"` and the chat-adapter
-   * clears this field so the next turn falls back to auto-create.
-   */
+  /** OpenAI shell tool container id from a prior response. When set, the next turn reuses it via
+   *  `environment.type="container_reference"` so the model can read files it wrote earlier; else
+   *  auto-creates one. Containers expire after ~20 min idle; on a stale id the backend emits
+   *  `container_invalidated` and the chat-adapter clears this field. */
   openaiCodeExecContainerId?: string | null;
-  /**
-   * Anthropic code_execution container id from a prior response. When
-   * set, the next turn sends a top-level `container` on /v1/messages so
-   * filesystem state (files, packages, variables) persists; else auto-
-   * creates one.
-   *
-   * Containers expire after ~1 hour; on a stale id the backend emits
-   * `_toolEvent.type="container_invalidated"` and the chat-adapter
-   * clears this field so the next turn falls back to auto-create.
-   */
+  /** Anthropic code_execution container id from a prior response. When set, the next turn sends a
+   *  top-level `container` on /v1/messages so filesystem state persists; else auto-creates one.
+   *  Containers expire after ~1 hour; on a stale id the backend emits `container_invalidated` and
+   *  the chat-adapter clears this field. */
   anthropicCodeExecContainerId?: string | null;
-  /**
-   * If this thread was created via fork-from-message, points back at
-   * the source thread + branch-point msg. Null/undefined for non-fork
-   * threads. Used by the sidebar "fork" badge and the parent thread's
-   * "N forks" indicator on the branch-point msg.
-   */
+  /** If this thread was created via fork-from-message, points back at the source thread and
+   *  branch-point message. Null or undefined for non-fork threads. Used by the sidebar "fork" badge
+   *  and the parent thread's "N forks" indicator. */
   forkedFromThreadId?: string | null;
   forkedFromMessageId?: string | null;
   /** this chat's own settings, applied when it is opened; absent means the global ones. */

@@ -34,8 +34,8 @@ export function referenceVideoTrimError(
   end: number | null,
   sourceDuration?: number,
 ): string | null {
-  // No interval inside a too-short source can reach the minimum, so say so here instead of
-  // letting the decoder refuse it later.
+  // No interval inside a too-short source can reach the minimum, so say so here instead of letting
+  // the decoder refuse it later.
   if (
     sourceDuration !== undefined &&
     sourceDuration + DURATION_EPSILON < H3_REFERENCE_MIN_SECONDS

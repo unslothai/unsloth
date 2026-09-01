@@ -140,14 +140,13 @@ export function consumeQueuedChatRunSettings(
   const index = threadId
     ? pendingSettings.findIndex((entry) => entry.threadIds.has(threadId))
     : -1;
-  // Never consume another chat's snapshot as a fallback. Multiple queued
-  // chats can start concurrently, so a "sole pending entry" is not proof that
-  // it belongs to this adapter run.
+  // Never consume another chat's snapshot as a fallback. Multiple queued chats can start
+  // concurrently, so a "sole pending entry" is not proof that it belongs to this adapter run.
   if (index < 0) {
     return null;
   }
-  // Tool calls can invoke the adapter multiple times for one assistant run.
-  // Keep the snapshot available until the owning prompt queue observes that
-  // the whole run is idle, then discard it through its registration id.
+  // Tool calls can invoke the adapter multiple times for one assistant run. Keep the snapshot
+  // available until the owning prompt queue observes that the whole run is idle, then discard it
+  // through its registration id.
   return pendingSettings[index].settings;
 }

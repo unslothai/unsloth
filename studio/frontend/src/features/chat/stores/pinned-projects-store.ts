@@ -4,9 +4,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-// Client-side pin state for projects, keyed by project id. Kept in
-// localStorage. Pinned projects drive the sidebar "Projects" section; new pins
-// are prepended so the most recently pinned project sorts first.
+// Client-side pin state for projects, keyed by project id, kept in localStorage. Pinned projects
+// drive the sidebar "Projects" section; new pins are prepended so the most recently pinned sorts
+// first.
 export interface PinnedProjectsState {
   pinnedIds: string[];
   togglePin: (id: string) => void;

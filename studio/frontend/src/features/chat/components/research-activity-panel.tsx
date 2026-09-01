@@ -80,7 +80,7 @@ const terminalStatuses = new Set<ResearchRunStatus>([
 const ACTIVITY_FOLLOW_SETTLE_MS = 450;
 const ACTIVITY_BOTTOM_THRESHOLD_PX = 24;
 // 2px, not 1, matching use-intent-aware-autoscroll: HiDPI subpixel rounding leaves a fractional
-// gap that a 1px threshold reads as unpinned, which would keep the follow loop running forever.
+// gap that a 1px threshold reads as unpinned, keeping the follow loop running forever.
 const ACTIVITY_PINNED_THRESHOLD_PX = 2;
 
 function useResearchActivityScroll(runId: string) {
@@ -121,8 +121,8 @@ function useResearchActivityScroll(runId: string) {
       if (remaining <= 0) return;
       settleTimer = window.setTimeout(() => {
         settleTimer = null;
-        // The timer lands on the deadline and its tick a frame later, so the window has closed by
-        // then; this grants that tick one last follow pass rather than dropping it to the reconcile.
+        // The timer lands on the deadline and its tick a frame later, so the window has closed by then;
+        // this grants that tick one last follow pass rather than dropping it to the reconcile.
         settleCheckDue = true;
         requestTick();
       }, remaining);
@@ -135,8 +135,8 @@ function useResearchActivityScroll(runId: string) {
         const pinned = distanceFromBottom() <= ACTIVITY_PINNED_THRESHOLD_PX;
         if (!pinned) element.scrollTop = element.scrollHeight;
         updateAtBottom(true);
-        // Chaining on the window alone forced a layout every frame for the whole run; growth that
-        // leaves the view unpinned is the signal, and a quiet frame defers to the settle check.
+        // Chaining on the window alone forced a layout every frame for the whole run; growth that leaves
+        // the view unpinned is the signal, and a quiet frame defers to the settle check.
         if (layoutChanged || !pinned) {
           layoutChanged = false;
           requestTick();
@@ -156,10 +156,10 @@ function useResearchActivityScroll(runId: string) {
     const detach = () => {
       detached = true;
       followUntil = 0;
-      // Cancel every pending follow step, not just the settle check. A frame queued before the
-      // detach still runs, falls through to the reconcile below, and reads a flick shorter than
-      // the bottom threshold as still-at-bottom: "Latest" never appears and nothing corrects it,
-      // since followLayout returns early from here on.
+      // Cancel every pending follow step, not just the settle check. A frame queued before the detach
+      // still runs, falls through to the reconcile below, and reads a flick shorter than the bottom
+      // threshold as still-at-bottom: "Latest" never appears and nothing corrects it.
+      // followLayout returns early from here on, so nothing corrects it.
       if (animationFrame !== null) {
         cancelAnimationFrame(animationFrame);
         animationFrame = null;
@@ -889,12 +889,10 @@ export function ResearchActivityPanel({
       style={
         variant === "panel"
           ? {
-              // The chat-model notice is an opaque absolute bar spanning the whole
-              // chat content area, the panel column included, directly under the
-              // header. Clear it the same way the header itself is cleared, or its
-              // first 2.25rem -- the telescope, the title, the status pill and the
-              // close button -- is painted over and unclickable. 0px whenever no
-              // notice is on screen, so this is the geometry it always had.
+              // The chat-model notice is an opaque absolute bar spanning the whole chat content area, the
+              // panel column included, directly under the header. Clear it the same way the header itself is
+              // cleared, or its first 2.25rem is painted over and unclickable. 0px whenever no notice is on
+              // screen, so this is the geometry it always had.
               height:
                 "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px) - var(--studio-chat-notice-height, 0px))",
               marginTop:

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure helpers that infer what a model can do (vision / reasoning / audio / media
-// generation) from its HF tags + pipeline tag, falling back to repo-name keywords.
-// No React/DOM deps so they stay easy to test.
+// Pure helpers that infer what a model can do (vision / reasoning / audio / media generation)
+// from its HF tags and pipeline tag, falling back to repo-name keywords. No React/DOM deps.
 
 export interface ModelCapabilities {
   vision: boolean;
@@ -42,8 +41,8 @@ const IMAGE_GEN_TAGS = new Set([
   "inpainting",
 ]);
 // Every tag here must be one the Video page can run, or a row draws a glyph promising something
-// no page in Unsloth delivers. video-to-video is deliberately absent: the backend takes a prompt
-// and reference IMAGES (routes/video.py), never a source video, so such a model has nowhere to go.
+// no page delivers. video-to-video is deliberately absent: the backend takes a prompt and
+// reference IMAGES (routes/video.py), never a source video.
 const VIDEO_GEN_TAGS = new Set([
   "text-to-video",
   "image-to-video",
@@ -66,13 +65,11 @@ const AUDIO_NAME_RE = new RegExp(
   `${SEP}(?:whisper|asr|tts|parakeet|parler|musicgen|bark|orpheus|csm|voice|speech|audio)${END}`,
   "i",
 );
-// Families, not the word "image": a local GGUF carries no tags, and "Z-Image-Turbo-GGUF" has to
+// Families, not the word "image": a local GGUF carries no tags, so "Z-Image-Turbo-GGUF" has to
 // read as an image generator from its name alone. Video is matched FIRST below, since
-// "HunyuanVideo" and "hunyuanimage" share a stem and the video families are the narrower set.
-//
-// These end on a letter boundary rather than END: a family stem runs straight into its version
-// ("flux1", "sd3", "Wan2.2"), so what must not follow is more WORD. Without it "fluxion-7b",
-// "ltxtra-2b" and "SVDQuant" all read as generators.
+// "HunyuanVideo" and "hunyuanimage" share a stem and the video families are narrower. These
+// end on a letter boundary rather than END, since a family stem runs into its version
+// ("flux1", "sd3"); without it "fluxion-7b" and "SVDQuant" read as generators.
 const FAMILY_END = "(?![a-z])";
 const IMAGE_GEN_NAME_RE = new RegExp(
   `${SEP}(?:flux|sdxl|sd3|stable[-_]?diffusion|z[-_]?image|qwen[-_]?image|hidream|ideogram|lumina|hunyuanimage|krea|kolors|playground|pixart)${FAMILY_END}`,
@@ -99,8 +96,7 @@ export function detectCapabilities(opts: {
   const tagSet = new Set((tags ?? []).map((t) => t.toLowerCase()));
   if (pipelineTag) tagSet.add(pipelineTag.toLowerCase());
   // Name part only. These two match model FAMILIES, and a family word turns up in owners too:
-  // "hunyuanvideo-community/HunyuanImage-2.1" is an image model published by a video org, and
-  // matching the whole id badges it as video.
+  // "hunyuanvideo-community/HunyuanImage-2.1" is an image model published by a video org.
   const name = id.split("/").pop() ?? id;
   const videoGen = hasAny(tagSet, VIDEO_GEN_TAGS) || VIDEO_GEN_NAME_RE.test(name);
   return {

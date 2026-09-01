@@ -31,13 +31,10 @@ export interface ReferenceMedia {
 /** How long to wait for a browser to report a clip's duration before giving up on it. */
 export const REFERENCE_DURATION_TIMEOUT_MS = 15_000;
 
-/** Read a clip's duration, resolving undefined when the browser cannot report one.
- *
- * An element firing neither loadedmetadata nor error would leave this pending forever, and
- * its picker slot with it, so the wait is bounded; callers already treat an unknown duration
- * as "no auto trim". The source stays a data URL because WebKit reports no metadata for an
- * object URL, and losing the duration costs more than the extra parse saves.
- */
+/** Read a clip's duration, resolving undefined when the browser cannot report one. An element
+ *  firing neither loadedmetadata nor error would leave this pending forever, and its picker slot
+ *  with it, so the wait is bounded; callers already treat an unknown duration as "no auto trim".
+ *  The source stays a data URL because WebKit reports no metadata for an object URL. */
 function readVideoDuration(dataUrl: string): Promise<number | undefined> {
   return new Promise((resolve) => {
     const media = document.createElement("video");
@@ -116,8 +113,8 @@ export function ReferenceMediaPicker({
     [gate, kind, onChange],
   );
 
-  // Tauri suppresses the webview's own drop events, so the handlers below never
-  // fire on the desktop app; this claims the OS drop for the button (#9036).
+  // Tauri suppresses the webview's own drop events, so the handlers below never fire on the desktop
+  // app; this claims the OS drop for the button (#9036).
   const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
     onFiles: (files) => readFile(files[0]),
     accept: kind === "video" ? CHAT_VIDEO_DROP_ACCEPT : CHAT_AUDIO_DROP_ACCEPT,

@@ -3,12 +3,9 @@
 
 // what a fresh /api/inference/status does to one load control/baseline pair
 
-/**
- * Generic in the value type because the rule is about the ECHO, not about batch
- * sizes: the string tuning controls beside them (load mode, draft cache dtype)
- * follow the same steady-echo, dirty-control and model-change logic. Defaults to
- * number, so existing call sites read unchanged.
- */
+/** Generic in the value type because the rule is about the ECHO, not about batch sizes: the string
+ *  tuning controls beside them follow the same steady-echo, dirty-control and model-change logic.
+ *  Defaults to number, so existing call sites read unchanged. */
 export interface BatchSizeSeedState<T extends number | string = number> {
   /** The editable control: what the next load or Apply would send. */
   value: T | null;
@@ -29,10 +26,9 @@ export function resolveBatchSizeSeed<T extends number | string = number>(options
   previous: BatchSizeSeedState<T>;
   /** No load of this tab's own is in flight (``!modelLoading``). */
   seedLoadParams: boolean;
-  /** The model/variant changed underneath this tab. Nothing staged against the
-   *  previous model may survive it, so the new model's echo is the whole truth:
-   *  the control adopts it even when a pending edit would otherwise hold, and
-   *  even when the new model happens to report the count the old one ran. */
+  /** The model/variant changed underneath this tab. Nothing staged against the previous model may
+   *  survive it, so the new model's echo is the whole truth: the control adopts it even when a
+   *  pending edit would otherwise hold, and even when the new model reports the old count. */
   modelChanged?: boolean;
 }): BatchSizeSeed<T> {
   const {
@@ -49,9 +45,9 @@ export function resolveBatchSizeSeed<T extends number | string = number>(options
   // a non-gguf has no batch flags; an absent field is an older backend saying nothing
   const effective = isGguf ? incoming : null;
   if (effective === undefined) {
-    // Nothing to adopt, and nothing staged or recorded against the model that just
-    // left may survive it: the baseline goes with the control, or a later rollback
-    // resends the departed model's batch as if the new server were running it.
+    // Nothing to adopt, and nothing staged or recorded against the model that just left may survive
+    // it: the baseline goes with the control, or a later rollback resends the departed model's batch
+    // as if the new server were running it.
     return modelChanged ? { value: null, loaded: null } : {};
   }
   // steady echo: an ordinary poll must not touch anything

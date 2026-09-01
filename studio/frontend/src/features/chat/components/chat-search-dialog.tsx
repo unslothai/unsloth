@@ -40,11 +40,10 @@ function haystackMatches(haystack: string, tokens: string[]): boolean {
   return tokens.every((token) => haystack.includes(token));
 }
 
-// We filter rows here (cmdk runs with shouldFilter=false) so we control the
-// two-tier behavior and avoid cmdk's fuzzy scorer keeping non-matches visible
-// (issue #5572): every whitespace token must be a substring. User messages are
-// searched first; expand to the full conversation only when user text alone
-// matches nothing anywhere (user messages are short, assistant replies can be huge).
+// We filter rows here (cmdk runs with shouldFilter=false) to control the two-tier behavior and
+// avoid cmdk's fuzzy scorer keeping non-matches visible (#5572): every whitespace token must
+// be a substring. User messages are searched first; expand to the full conversation only when
+// user text alone matches nothing anywhere.
 export function selectVisibleChats<
   T extends { userSearchText: string; searchText: string },
 >(items: T[], search: string): T[] {
@@ -75,8 +74,7 @@ export function ChatSearchDialog() {
   const [query, setQuery] = useState("");
   // Filtering scans every conversation's text, so keep it off the keystroke path.
   const deferredQuery = useDeferredValue(query);
-  // An empty query needs no scan, and the deferred value must not hold a previous filter
-  // over a reopened dialog.
+  // An empty query needs no scan, and the deferred value must not hold a previous filter over a reopened dialog.
   const activeQuery = query === "" ? "" : deferredQuery;
   const [rowLimit, setRowLimit] = useState(INITIAL_ROW_COUNT);
   // Centered, so the height is decided per open and only ever relaxed compact -> fixed.
@@ -84,9 +82,9 @@ export function ChatSearchDialog() {
     isCompactChatSearchList(true, chatSearchIndexHasRows()),
   );
 
-  // Reset in the opening render, not an effect: Radix mounts the portal as this render
-  // commits, so an effect would trim rows only after the previous set was in the DOM.
-  // Resetting on close instead would tear rows down inside the exit animation.
+  // Reset in the opening render, not an effect: Radix mounts the portal as this render commits, so
+  // an effect would trim rows only after the previous set was in the DOM. Resetting on close
+  // instead would tear rows down inside the exit animation.
   const [wasOpen, setWasOpen] = useState(isOpen);
   if (isOpen !== wasOpen) {
     setWasOpen(isOpen);
@@ -98,8 +96,7 @@ export function ChatSearchDialog() {
   } else if (
     compactList !== isCompactChatSearchList(compactList, items.length > 0)
   ) {
-    // Backstop for an open with no hint at all: the fixed height is taken when the first
-    // build lands.
+    // Backstop for an open with no hint at all: the fixed height is taken when the first build lands.
     setCompactList(false);
   }
 
@@ -117,8 +114,8 @@ export function ChatSearchDialog() {
     return () => clearTimeout(timer);
   }, [isOpen]);
 
-  // skipInTextFields keeps the composer's own ⌘K (and any browser find) intact
-  // while the user is typing, as the hand-rolled handler did.
+  // skipInTextFields keeps the composer's own Cmd-K and any browser find intact while the user is
+  // typing, as the hand-rolled handler did.
   useShortcut("searchChats", () => useChatSearchStore.getState().open(), {
     skipInTextFields: true,
   });
@@ -139,8 +136,8 @@ export function ChatSearchDialog() {
           />
           <CommandPrimitive.Input
             placeholder="Search chats..."
-            // Controlled: reopening inside the exit animation reuses the mounted tree, so
-            // cmdk would keep the previous text while the filter state is clear.
+            // Controlled: reopening inside the exit animation reuses the mounted tree, so cmdk would keep
+            // the previous text while the filter state is clear.
             value={query}
             onValueChange={setQuery}
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
@@ -177,8 +174,8 @@ export function ChatSearchDialog() {
                 key={item.id}
                 value={item.id}
                 onSelect={() => {
-                  // The list can trail the input by a render, so a row is activatable only
-                  // if the live query still matches it. Scanned on activation, not per key.
+                  // The list can trail the input by a render, so a row is activatable only if the live query still
+                  // matches it. Scanned on activation, not per key.
                   if (
                     query !== activeQuery &&
                     !selectVisibleChats(items, query).some(

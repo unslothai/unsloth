@@ -21,8 +21,9 @@ export type TrainFamilyOption = {
   base_repos: string[];
 };
 
-// The Train tab's base picker, in the top bar where Create shows the generation model. Training never runs on a GGUF, so
-// this lists only the trainable bases the panel's own selects offer, and picking one drives both.
+// The Train tab's base picker, in the top bar where Create shows the generation model. Training
+// never runs on a GGUF, so this lists only the trainable bases the panel's own selects offer,
+// and picking one drives both.
 export function TrainBaseSelector({
   families,
   familyName,
@@ -35,7 +36,8 @@ export function TrainBaseSelector({
   onSelect: (family: string, repo: string) => void;
 }) {
   const family = families.find((f) => f.name === familyName);
-  // Before /info answers there is nothing to pick from; the label still reads sensibly. The owner prefix is dropped as the model selector does, family as the description.
+  // Before /info answers there is nothing to pick from; the label still reads sensibly. The owner
+  // prefix is dropped as the model selector does, family as the description.
   const label = base ? base.split("/").pop() || base : "Select base model";
 
   return (

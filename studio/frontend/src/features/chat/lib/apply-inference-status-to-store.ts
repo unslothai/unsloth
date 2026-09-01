@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Barrel import (lint rule); the model-picker cycle is fine because the call
-// happens at runtime, not module eval.
+// Barrel import (lint rule); the model-picker cycle is fine because the call happens at runtime, not module eval.
 import { resolveResidentInitialConfig } from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
@@ -39,9 +38,8 @@ function sameArray<T>(a: T[] | null, b: T[] | null): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// Canonicalises backend / persisted speculative mode values onto the UI
-// modes. Re-exported from the store, which owns the vocabulary: a second
-// copy meant every new mode had to be added twice or the two would disagree.
+// Canonicalises backend / persisted speculative mode values onto the UI modes. Re-exported
+// from the store, which owns the vocabulary: a second copy would drift.
 export { normalizeSpeculativeType } from "../stores/chat-runtime-store";
 
 export function clampLocalReasoningEffort(
@@ -53,15 +51,9 @@ export function clampLocalReasoningEffort(
   return "low";
 }
 
-/**
- * Reasoning capability fields derived from a model load/status response.
- *
- * Centralises the effort-levels + can-disable derivation so every load path
- * (main load, status sync, shared/Compare composer, first-chat auto-load) agrees:
- * a hybrid GLM-style `enable_thinking_effort` model keeps its high|max|Off
- * controls no matter which path loaded it, instead of falling back to the
- * default low|medium|high and losing Max/Off.
- */
+/** Reasoning capability fields derived from a load/status response. Centralised so every
+ *  load path agrees: a hybrid `enable_thinking_effort` model keeps its high|max|Off
+ *  controls instead of falling back to low|medium|high and losing Max/Off. */
 export function reasoningCapsFromLoad(resp: {
   reasoning_style?: ReasoningStyle | null;
   reasoning_effort_levels?: string[] | null;
@@ -76,8 +68,8 @@ export function reasoningCapsFromLoad(resp: {
     resp.reasoning_effort_levels && resp.reasoning_effort_levels.length > 0
       ? (resp.reasoning_effort_levels as ReasoningEffort[])
       : (["low", "medium", "high"] as const);
-  // enable_thinking and enable_thinking_effort can both be turned off; only the
-  // pure gpt-oss-style reasoning_effort is always-on.
+  // enable_thinking and enable_thinking_effort can both be turned off; only the pure
+  // gpt-oss-style reasoning_effort is always-on.
   return {
     reasoningStyle,
     reasoningEffortLevels,
@@ -118,8 +110,8 @@ function ensureActiveModelInStoreList(
   }
   const summary: ChatModelRow = {
     id: checkpointId,
-    // active_model is already the clean public id; its leaf matches the catalog rows,
-    // and the fallback keeps a snapshot path out of the trigger.
+    // active_model is already the clean public id; its leaf matches the catalog rows, and the
+    // fallback keeps a snapshot path out of the trigger.
     name: modelDisplayName(status.active_model ?? checkpointId),
     isVision: status.is_vision ?? false,
     isLora: false,
@@ -131,9 +123,8 @@ function ensureActiveModelInStoreList(
 
 export type ApplyInferenceStatusOptions = {
   previousCheckpoint?: string;
-  /** activeGgufVariant BEFORE the caller's setCheckpoint synced it to the
-   * status -- without it a variant-only switch underneath the tab reads as
-   * steady state and the hydration reseed keeps the old quant's baselines. */
+  /** activeGgufVariant BEFORE the caller's setCheckpoint synced it: without it a variant-only
+   *  switch reads as steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
 };
 
@@ -145,9 +136,8 @@ export function applyActiveModelStatusToStore(
   const checkpointId = resolveInferenceCheckpointId(status);
   if (!checkpointId) return;
 
-  // Only reached with a model actually active, so this is the one place both
-  // the status poll and the readopt path can publish residency from. Without
-  // it a load would look unloaded until the next poll, up to 10s later.
+  // Only reached with a model active, so this is the one place both the status poll and the
+  // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
   useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
 
   const store = useChatRuntimeStore.getState();
@@ -162,10 +152,9 @@ export function applyActiveModelStatusToStore(
         modelId: checkpointId,
         presetSource: store.activePresetSource,
       }),
-      // The model's own remembered settings outrank the recommendation, or
-      // every poll would undo them, but not past the context it loaded with.
-      // context_length is reported for a safetensors load too, so this is not
-      // narrowed to GGUF; absent, there is nothing to cap against.
+      // The model's remembered settings outrank the recommendation, or every poll would undo them,
+      // but not past the context it loaded with. context_length is reported for safetensors too,
+      // so this is not narrowed to GGUF; absent, there is nothing to cap against.
       {
         fromModelDefaults: true,
         maxTokensCap: status.context_length ?? undefined,
@@ -183,8 +172,9 @@ export function applyActiveModelStatusToStore(
   const supportsReasoning = status.supports_reasoning ?? false;
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
-  // GLM-5.2-style models report their own effort levels (e.g. high|max);
-  // everything else keeps the default low/medium/high.
+  // GLM-5.2-style models report their own effort levels; everything else keeps the default
+  // low/medium/high.
+  // They report high|max.
   const reasoningEffortLevels =
     status.reasoning_effort_levels && status.reasoning_effort_levels.length > 0
       ? (status.reasoning_effort_levels as ReasoningEffort[])
@@ -216,19 +206,17 @@ export function applyActiveModelStatusToStore(
     status.chat_template === undefined
       ? prevState.defaultChatTemplate
       : status.chat_template;
-  // While a load is in flight, performLoad owns the load params. Seeding them
-  // from a stale poll here would clobber the values the load dialog just set.
+  // While a load is in flight performLoad owns the load params. Seeding from a stale poll here
+  // would clobber what the load dialog just set.
   const seedLoadParams = !prevState.modelLoading;
-  // A model/variant change underneath this tab. The controls in the store belong
-  // to the model that just left, so they are reseeded here the way every other
-  // load param at this site already is: the echo cannot stand in, since a new
-  // model can report the old count.
+  // A model/variant change underneath this tab. The store's controls belong to the model that
+  // just left, so they are reseeded here like every other load param: the echo cannot stand
+  // in, since a new model can report the old count.
   const slotsModelChanged = hydratingExistingModel;
-  // This model's remembered override, read only on a fresh store or a model
-  // change, so a steady poll cannot re-pin a control the user just blanked.
-  // Through the resident resolver, not the raw id: an API-driven load reports the
-  // snapshot path a cached repo loaded from, while its settings are keyed by the
-  // repo id, and the plain lookup misses that record.
+  // This model's remembered override, read only on a fresh store or a model change, so a
+  // steady poll cannot re-pin a control the user just blanked. Through the resident
+  // resolver, not the raw id: an API-driven load reports the snapshot path while settings
+  // are keyed by repo id, and the plain lookup misses that record.
   const slotsUnseeded =
     prevState.loadedNParallel === null && prevState.nParallel === null;
   // same rule for the batch-size pair
@@ -264,10 +252,8 @@ export function applyActiveModelStatusToStore(
     seedLoadParams,
     modelChanged: slotsModelChanged,
   });
-  // The llama-server tuning group follows the same rule, and resolveBatchSizeSeed
-  // is generic in the value type for exactly this: each one is an echo of what the
-  // load REQUESTED, which is what makes the steady-poll and dirty-control cases
-  // identical to the batch pair's.
+  // The llama-server tuning group follows the same rule, and resolveBatchSizeSeed is generic
+  // in the value type for exactly this: each is an echo of what the load REQUESTED.
   const loadModeSeed = resolveBatchSizeSeed<string>({
     incoming: status.requested_load_mode,
     isGguf: status.is_gguf ?? true,
@@ -302,14 +288,10 @@ export function applyActiveModelStatusToStore(
     seedLoadParams,
     modelChanged: slotsModelChanged,
   });
-  // A load sends its context pin as max_seq_length and status only exposes the
-  // resolved context plus the requested n_ctx, and a positive requested n_ctx
-  // does NOT mean a human asked for it: an Auto same-model reload under a custom
-  // preset reports one too. So the pin is re-seeded here from what this tab (or
-  // the model's saved config) actually recorded, never inferred from the echo
-  // alone, and the echo is trusted only where it is unambiguous. See
-  // resolveCtxPinSeed for the full rule, including the mid-load window where
-  // status still answers for the OUTGOING model.
+  // A load sends its context pin as max_seq_length while status exposes the resolved context
+  // plus the requested n_ctx, and a positive requested n_ctx does NOT mean a human asked
+  // for it. So the pin is re-seeded from what this tab or the saved config recorded, never
+  // inferred from the echo alone. See resolveCtxPinSeed for the full rule.
   const ctxPinFields = resolveCtxPinSeed({
     incoming: status.requested_context_length,
     isGguf: status.is_gguf ?? true,
@@ -318,9 +300,8 @@ export function applyActiveModelStatusToStore(
     remembered: remembered?.remembered
       ? (remembered.config.customContextLength ?? null)
       : null,
-    // Raw, not the normalised incomingGpuMode/incomingGpuLayers below: the rule
-    // needs "Manual with AUTO layers", and those normalise layers to null off
-    // manual, which would read as "no layers reported" rather than as Auto.
+    // Raw, not the normalised fields below: the rule needs "Manual with AUTO layers", and those
+    // normalise layers to null off manual, which would read as "no layers reported".
     gpuMemoryMode: status.gpu_memory_mode ?? null,
     gpuLayers: status.gpu_layers ?? null,
     loadedPin: prevState.loadedCustomContextLength ?? null,
@@ -349,8 +330,8 @@ export function applyActiveModelStatusToStore(
       },
       { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
     ) ||
-    // Only a pin this status will actually move counts: a difference it declines
-    // to apply (mid-load, or an echo it cannot read intent out of) is not one.
+    // Only a pin this status will actually move counts: a difference it declines to apply
+    // (mid-load, or an unreadable echo) is not one.
     (ctxPinFields.loadedCustomContextLength !== undefined &&
       prevState.loadedCustomContextLength !==
         ctxPinFields.loadedCustomContextLength);
@@ -372,8 +353,8 @@ export function applyActiveModelStatusToStore(
       indexKind: prevState.loadedGpuIndexKind,
     },
   );
-  // A same-model reload from another client advances every loaded baseline.
-  // Preserve each editable group only when this tab has an unapplied change.
+  // A same-model reload from another client advances every loaded baseline. Preserve each
+  // editable group only when this tab has an unapplied change.
   const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
   const gpuStatusFields = {
     ...incomingGpuFields,
@@ -425,13 +406,10 @@ export function applyActiveModelStatusToStore(
     specFallbackReason: status.spec_fallback_reason ?? null,
     mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
-    // The spec / KV seeds share the GPU-fields reseed mechanism below: a
-    // non-GGUF status leaves their loaded baselines null, so the "unseeded"
-    // guard re-fires every refresh -- hold them too while a staged pick's
-    // settings are being edited, or the refresh resets the staged edit.
-    // hydratingExistingModel reopens every load-param seed: when the active
-    // model changed underneath this tab (auto-switch, another client), the
-    // old model's baselines are stale and must adopt the new status.
+    // The spec / KV seeds share the GPU-fields reseed below: a non-GGUF status leaves their
+    // baselines null so the "unseeded" guard re-fires every refresh -- hold them too while a
+    // staged pick is being edited. hydratingExistingModel reopens every seed, since after an
+    // auto-switch the old model's baselines are stale.
     ...(seedLoadParams &&
       (prevState.loadedSpeculativeType === null || hydratingExistingModel) && {
         speculativeType: currentSpecType,
@@ -457,16 +435,10 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
-    // A load knob like tensorParallel above. Without a reseed a tab that never
-    // performed the load shows Vision ON over a model running with its projector
-    // off, and the next Reload silently puts the projector back. Seeded from
-    // disable_vision -- the request the load ran with -- not
-    // vision_disabled_by_user, which is also gated on the model HAVING a projector
-    // and so cannot round-trip a text-only GGUF.
-    //
-    // Unlike tensorParallel the guard is not just "unseeded": the baseline below is
-    // unguarded, so an external reload of the same model would move it and the image
-    // gate while leaving this control behind. See shouldSeedVisionSwitch.
+    // A load knob like tensorParallel above. Without a reseed a tab that never performed the
+    // load shows Vision ON over a projector-off server and the next Reload puts it back.
+    // Seeded from disable_vision, the request the load ran with, not vision_disabled_by_user,
+    // which cannot round-trip a text-only GGUF. See shouldSeedVisionSwitch.
     ...(seedLoadParams &&
       status.disable_vision !== undefined &&
       shouldSeedVisionSwitch({
@@ -476,21 +448,20 @@ export function applyActiveModelStatusToStore(
       }) && {
         disableVision: status.disable_vision,
       }),
-    // The rollback baseline, and unguarded like the mirror below rather than
-    // seeded once: it has to track the RUNNING server, or a switch that fails
-    // after a poll restores whatever the last seed happened to see.
+    // The rollback baseline, unguarded like the mirror below rather than seeded once: it must
+    // track the RUNNING server, or a switch failing after a poll restores a stale seed.
     ...(seedLoadParams &&
       status.disable_vision !== undefined && {
         loadedDisableVision: status.disable_vision,
       }),
-    // Unguarded, unlike the seed above: this mirrors the live load for the
-    // composer's image gate, not a user setting, so every poll must land.
+    // Unguarded, unlike the seed above: this mirrors the live load for the composer's image
+    // gate, not a user setting, so every poll must land.
     ...(seedLoadParams &&
       status.vision_disabled_by_user !== undefined && {
         loadedVisionDisabledByUser: status.vision_disabled_by_user,
       }),
-    // Hydration only, so a steady poll never rewrites settings the store owns.
-    // Width, verdict and request move together; a late reply can overwrite a newer one.
+    // Hydration only, so a steady poll never rewrites settings the store owns. Width, verdict
+    // and request move together; a late reply can overwrite a newer one.
     ...(seedLoadParams &&
       hydratingExistingModel &&
       status.mlx_kv_bits !== undefined &&
@@ -510,8 +481,8 @@ export function applyActiveModelStatusToStore(
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
           })),
-    // Recovery for a hydration this tab never saw, and only when nothing is
-    // staged: re-seeding over an earlier edit would discard it.
+    // Recovery for a hydration this tab never saw, and only when nothing is staged: re-seeding
+    // over an earlier edit would discard it.
     ...(seedLoadParams &&
       !hydratingExistingModel &&
       status.is_mlx === true &&
@@ -526,49 +497,39 @@ export function applyActiveModelStatusToStore(
         chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
       }),
-    // Baseline only, never the control: the echo is the RESOLVED count and would
-    // pin a blank "server default" control. The rollback re-sends the baseline,
-    // so without this a rollback after a tab reload loses the override.
+    // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
+    // "server default" control. The rollback re-sends the baseline, so without this a rollback
+    // after a tab reload loses the override.
     ...(seedLoadParams &&
       status.requested_parallel_slots != null &&
       (prevState.loadedNParallel === null || hydratingExistingModel) && {
         loadedNParallel: status.requested_parallel_slots,
       }),
-    // A slotless model must not keep the previous GGUF's baseline: the rollback
-    // re-sends it. /status omits the echo for non-GGUF and sends an explicit
-    // null for diffusion, so an absent field on a GGUF is an older backend.
+    // A slotless model must not keep the previous GGUF's baseline, since the rollback re-sends
+    // it. /status omits the echo for non-GGUF and nulls it for diffusion, so an absent field
+    // on a GGUF means an older backend.
     ...(seedLoadParams &&
       (status.is_gguf === false || status.requested_parallel_slots === null) && {
         loadedNParallel: null,
       }),
-    // Per-model: a change underneath this tab blanks the control like
-    // performLoad's cross-model reset, or the old count follows onto the new
-    // model. The baseline above still carries the rollback.
+    // Per-model: a change underneath this tab blanks the control like performLoad's cross-model
+    // reset, or the old count follows onto the new model. The baseline still has the rollback.
     ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
-    // AFTER that clear, which both a first hydration and a model change trip:
-    // either would leave the control blank while the model runs on a remembered
-    // override, so the next Apply would save the blank over it. Adopted only
-    // when the running count matches, proving it is this model's own.
+    // AFTER that clear, which both a first hydration and a model change trip: either would leave
+    // the control blank while the model runs on a remembered override, so the next Apply would
+    // save the blank over it. Adopted only when the running count matches.
     ...(seedLoadParams &&
       (slotsUnseeded || slotsModelChanged) &&
       rememberedNParallel != null &&
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
       }),
-    // What the running server was actually invoked with. Without this a tab opened
-    // while a model was already loaded knows nothing about its pass-through
-    // arguments (the switch path is where they were recorded), and a rollback after
-    // a failed switch restores that model without them: the failed target is left
-    // resident, so an omitted field cannot inherit across models either.
-    //
-    // Adopted from every settled status, not only a first read or a model change:
-    // another tab or an API client can reload the SAME model and variant with
-    // different arguments, or with none, and a baseline pinned at the first read
-    // would resend the old list from the rollback path and resurrect arguments that
-    // are not running. seedLoadParams is the guard that matters here, and it is the
-    // same one the rest of this block uses: while a load is in flight performLoad
-    // owns these values, so a poll that answers mid-switch cannot overwrite them.
-    // A backend that does not publish the field changes nothing.
+    // What the running server was actually invoked with. Without this a tab opened onto an
+    // already-loaded model knows nothing about its pass-through arguments, and a rollback
+    // after a failed switch restores that model without them. Adopted from every settled
+    // status, not just the first: another client can reload the SAME model with different
+    // arguments, and a pinned baseline would resurrect arguments that are not running.
+    // seedLoadParams still guards it, so a mid-switch poll cannot overwrite performLoad.
     ...(status.requested_llama_extra_args !== undefined &&
       (status.is_gguf ?? true) &&
       seedLoadParams && {
@@ -602,11 +563,9 @@ export function applyActiveModelStatusToStore(
     }),
     ...("value" in cacheRamSeed && { cacheRam: cacheRamSeed.value ?? null }),
     // A swap under this tab resets the controls too, but that clear belongs INSIDE
-    // resolveBatchSizeSeed (modelChanged), not after it: unlike the slot count above,
-    // the batch echo is the REQUESTED size, so a blanket null here would also discard
-    // the value the seed just adopted from the new model's own echo. The control would
-    // then read "default" while the server runs an explicit -b / -ub, and the next
-    // Reload or Apply, which omits a blank field, would silently revert it.
+    // resolveBatchSizeSeed (modelChanged), not after it: the batch echo is the REQUESTED size,
+    // so a blanket null here would discard what the seed just adopted from the new model,
+    // leaving "default" over an explicit -b / -ub that the next Apply would revert.
     ...(seedLoadParams &&
       (batchesUnseeded || slotsModelChanged) &&
       rememberedNBatch != null &&
@@ -619,19 +578,17 @@ export function applyActiveModelStatusToStore(
       rememberedNUbatch === status.requested_n_ubatch && {
         nUbatch: rememberedNUbatch,
       }),
-    // Re-seed on first hydration, model/variant changes, or a same-model backend
-    // placement change. gpuStatusFields preserves dirty local edits in the last
-    // case while advancing their loaded baselines.
+    // Re-seed on first hydration, model/variant changes, or a same-model backend placement
+    // change. gpuStatusFields preserves dirty local edits in the last case.
     ...(seedLoadParams &&
       (prevState.loadedGpuMemoryMode === null ||
         hydratingExistingModel ||
         gpuStatusChanged) &&
       gpuStatusFields),
     // The one load param that only ever seeded from null, so a switch left the previous model's
-    // template in the store, which the Hub settings page reads as the new model's loaded config:
-    // Apply then saves A's template under B. A same-model reload from another client moves it
-    // too, so the seed also follows a changed status the way the GPU group above does: baseline
-    // always, control only while it still sits on that baseline. See resolveChatTemplateSeed.
+    // template in the store and Apply saved A's template under B. A same-model reload moves it
+    // too, so the seed follows a changed status like the GPU group: baseline always, control
+    // only while it still sits on that baseline. See resolveChatTemplateSeed.
     ...resolveChatTemplateSeed({
       incoming: status.chat_template_override,
       previous: {
@@ -650,16 +607,14 @@ export function applyActiveModelStatusToStore(
     hydratingExistingModel &&
     storedReasoningEnabled === null
   ) {
-    // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
-    // [-_/.] so the version literal in "qwen3.5" / "qwen3.6" doesn't match
-    // first, and for "Qwen3.5-35B-A3B" the result is 35 (total params),
-    // not 3 (MoE active params). Mirrors the regex in
-    // use-chat-model-runtime.ts and the inline one in llama_cpp.py.
+    // Anchored regex: first "Xb"/"X.Xb" after start or [-_/.] so the version literal in
+    // "qwen3.5" does not match first, and "Qwen3.5-35B-A3B" yields 35 (total), not 3 (active).
+    // Mirrors use-chat-model-runtime.ts and the inline regex in llama_cpp.py.
     let reasoningDefault = true;
     const mid = checkpointId.toLowerCase();
     if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-      // Scan path segments right to left so the size nearest the leaf wins over
-      // a size-like parent dir; trailing boundary prevents matching "8bit".
+      // Scan path segments right to left so the size nearest the leaf wins over a size-like parent
+      // dir; the trailing boundary prevents matching "8bit".
       const sizeRe = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
       const sizeMatch = mid
         .replace(/\\/g, "/")
@@ -677,11 +632,9 @@ export function applyActiveModelStatusToStore(
     useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
   }
 
-  // Every status merge carries the base family recommendation, including the
-  // refresh immediately after performLoad. Layer the active Qwen mode over it
-  // so that refresh cannot undo performLoad's thinking table. This also covers
-  // startup/CLI/external adoption, while model memory still wins because this
-  // remains a defaults update.
+  // Every status merge carries the base family recommendation, including the refresh right
+  // after performLoad. Layer the active Qwen mode over it so that refresh cannot undo
+  // performLoad's thinking table. Model memory still wins: this is a defaults update.
   if (status.inference && supportsReasoning) {
     const current = useChatRuntimeStore.getState();
     const qwenParams = resolveQwenThinkingParams(
@@ -700,11 +653,8 @@ export function applyActiveModelStatusToStore(
   }
 }
 
-/**
- * Adopt the model already loaded on the inference server (e.g. via
- * ``unsloth studio run -m``) into the chat UI checkpoint without
- * triggering a new /api/inference/load.
- */
+/** Adopt the model already loaded on the inference server into the chat UI checkpoint without
+ *  triggering a new /api/inference/load. */
 export async function tryAdoptServerActiveModel(): Promise<boolean> {
   const store = useChatRuntimeStore.getState();
   if (store.params.checkpoint) {
@@ -718,8 +668,8 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
     // Status endpoint unavailable: fall back to the normal auto-load path.
     return false;
   }
-  // Not something chat can adopt; the sweep below picks a real chat model, which evicts
-  // it exactly as an image load would.
+  // Not something chat can adopt; the sweep below picks a real chat model, which evicts it
+  // exactly as an image load would.
   if (!status.active_model || isSpeechOnlyStatus(status)) {
     return false;
   }

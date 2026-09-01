@@ -11,15 +11,11 @@ function isSingleJsonObject(text: string): boolean {
   }
 }
 
-/**
- * One slot's accumulated argument text, cut into the top-level JSON objects it
- * holds: `complete` closed, `tail` is still being written.
- *
- * A second top-level `{` means the stream reused the slot for another parallel
- * call, which is what turns two calls into `{"url":"a"}{"url":"b"}`. Text that
- * is not a run of whole objects comes back whole in `tail`, leaving streams
- * this was never meant for alone.
- */
+/** One slot's accumulated argument text, cut into the top-level JSON objects it holds:
+ *  `complete` closed, `tail` still being written. A second top-level `{` means the stream
+ *  reused the slot for another parallel call, which is what turns two calls into
+ *  `{"url":"a"}{"url":"b"}`. Text that is not a run of whole objects comes back whole in
+ *  `tail`, leaving streams this was never meant for alone. */
 export function splitTopLevelJsonObjects(text: string): {
   complete: string[];
   tail: string;
@@ -77,13 +73,10 @@ export function splitTopLevelJsonObjects(text: string): {
   };
 }
 
-/**
- * `splitTopLevelJsonObjects` over a string that only ever grows. Rescanning per
- * fragment is O(N^2): a 20 KB argument sent a character at a time took about a
- * second and a half on the thread that paints the stream. `feed` takes the same
- * string extended, never a rewritten one, so a caller that splits a slot drops
- * its scan.
- */
+/** `splitTopLevelJsonObjects` over a string that only ever grows. Rescanning per fragment is
+ *  O(N^2): a 20 KB argument sent a character at a time took about a second and a half on the
+ *  thread that paints the stream. `feed` takes the same string extended, never a rewritten
+ *  one, so a caller that splits a slot drops its scan. */
 export function createBoundaryScan(): {
   feed: (text: string) => { complete: string[]; tail: string };
 } {
@@ -146,17 +139,11 @@ export function createBoundaryScan(): {
   };
 }
 
-/**
- * The `function.arguments` string to replay for a stored tool call.
- *
- * `argsText` is the text the provider streamed and is preferred so replay is
- * byte-exact. Text that does not parse would be replayed on every later request
- * in the thread, and strict chat templates reject the whole request rather than
- * one call, so it falls back to the structured args the part already carries.
- *
- * `{ _raw }` is the adapter's marker for text it could not parse, so a thread
- * carrying one replays as `{}` rather than as the blob.
- */
+/** The `function.arguments` string to replay for a stored tool call. `argsText` is what the
+ *  provider streamed and is preferred so replay is byte-exact. Text that does not parse would
+ *  be replayed on every later request in the thread, and strict chat templates reject the
+ *  whole request rather than one call, so it falls back to the structured args. `{ _raw }` is
+ *  the adapter's marker for unparsable text, so a thread carrying one replays as `{}`. */
 export function toolCallReplayArguments(
   argsText: string | undefined,
   args: unknown,
@@ -164,9 +151,8 @@ export function toolCallReplayArguments(
   if (
     typeof argsText === "string" &&
     argsText.length > 0 &&
-    // One object, because that is what `function.arguments` is. A run of them,
-    // an array, a scalar or a half-written object gets the whole request
-    // rejected, not just the one call.
+    // One object, because that is what `function.arguments` is. A run of them, an array, a scalar or
+    // a half-written object gets the whole request rejected, not just the one call.
     isSingleJsonObject(argsText)
   ) {
     return argsText;
@@ -178,20 +164,17 @@ export function toolCallReplayArguments(
   }
   const parsed = JSON.parse(serialized) as Record<string, unknown>;
   const keys = Object.keys(parsed);
-  // The adapter writes `{ _raw }` holding the exact text it could not parse,
-  // so a lone `_raw` whose value IS that text is the marker, and replaying it
-  // would send a parameter no tool declares. `_raw` is not reserved and an
-  // MCP server's schema is its own, so recognise it only when the surviving
-  // text proves it: a thread stored before `argsText` was kept has nothing to
-  // compare against, and guessing from the value's shape would discard the
-  // argument of a tool that really takes one. Guessing buys little anyway,
-  // since the wrapped form is one JSON object and raises no `Extra data`.
+  // The adapter writes `{ _raw }` holding the exact text it could not parse, so a lone `_raw`
+  // whose value IS that text is the marker, and replaying it would send a parameter no tool
+  // declares. `_raw` is not reserved and an MCP server's schema is its own, so recognise it only
+  // when the surviving text proves it: a thread stored before `argsText` was kept has nothing to
+  // compare against, and guessing from the value's shape would discard a real argument.
   if (
     keys.length === 1 &&
     keys[0] === "_raw" &&
     typeof parsed._raw === "string" &&
-    // Non-empty, or the equality proves nothing: the adapter only writes the
-    // marker for parsed text, so `{ _raw: "" }` is a real argument.
+    // Non-empty, or the equality proves nothing: the adapter only writes the marker for parsed text,
+    // so `{ _raw: "" }` is a real argument.
     parsed._raw.length > 0 &&
     parsed._raw === argsText
   ) {
