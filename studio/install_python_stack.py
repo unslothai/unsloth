@@ -62,12 +62,16 @@ if IS_WINDOWS:
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
 # torchcodec ships wheels only for manylinux_2_28_x86_64, macosx_12_0_arm64,
 # and win_amd64. On other hosts the audio extras must be filtered out (the
-# extras-no-deps step would otherwise fail), regardless of NO_TORCH.
-PLATFORM_LACKS_TORCHCODEC_WHEEL = (
-    (IS_LINUX and platform.machine() in {"aarch64", "arm64"})
-    or (IS_WINDOWS and platform.machine().lower() in {"arm64", "aarch64"})
-    or IS_MAC_INTEL
+# extras-no-deps step would otherwise fail), regardless of NO_TORCH. Named as the
+# platforms that HAVE a wheel: listing the ones that do not missed every Linux
+# architecture past Arm, ppc64le and s390x among them, and the pyproject markers
+# this mirrors are written the same way round.
+_PLATFORM_HAS_TORCHCODEC_WHEEL = (
+    (IS_LINUX and platform.machine() in {"x86_64", "AMD64"})
+    or (IS_WINDOWS and platform.machine().lower() in {"amd64", "x86_64"})
+    or IS_MAC_ARM
 )
+PLATFORM_LACKS_TORCHCODEC_WHEEL = not _PLATFORM_HAS_TORCHCODEC_WHEEL
 
 
 def _is_windows_arm64() -> bool:

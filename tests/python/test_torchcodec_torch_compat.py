@@ -1723,6 +1723,54 @@ def test_notebook_validator_ignores_marker_names_in_literals():
     assert nv._requirement_applies("torch>=2.12; platform_release < '5.0'", environment)
 
 
+def test_notebook_validator_strips_execution_prefixes():
+    """`command pip install ...` and `env FOO=1 pip install ...` install exactly as a bare
+    `pip install ...` does, so the prefix must not hide them."""
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!command pip install git+https://example.com/pkg.git",
+        "!env FOO=1 pip install git+https://example.com/pkg.git",
+        "!FOO=1 pip install git+https://example.com/pkg.git",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)
+        ), cell
+
+    # The replay reads them too, so a prefixed install still moves the version.
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        '!env FOO=1 pip install "torch==2.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
+
+
+def test_notebook_validator_quotes_inside_a_substitution():
+    """A `)` inside a quoted argument closes no substitution, so the body runs past it."""
+    nv = _load_notebook_validator_module()
+
+    cell = "!echo \"$(printf 'X)'; pip install git+https://example.com/pkg.git)\""
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0))
+
+    # A backtick body survives the assignment-prefix strip, since the bodies are read off the
+    # raw pieces.
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(
+        "!X=`pip install git+https://example.com/pkg.git`", "nb.ipynb", 0
+    ))
+
+
+def test_notebook_validator_tells_a_grouping_close_from_a_substitution_close():
+    """`)` ends a word when it closes a grouping and not when it closes a `$( )` inside one,
+    so only the first makes a following `#` a comment."""
+    nv = _load_notebook_validator_module()
+
+    # Bash prints `ok#suffix` here and runs the install.
+    embedded = "!echo $(printf ok)#suffix; pip install git+https://example.com/pkg.git"
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(embedded, "nb.ipynb", 0))
+
+    # A grouping close still opens a comment.
+    grouped = "!(pip install unsloth)# git+https://example.com/pkg.git"
+    assert nv.rule_inst_001_git_plus(grouped, "nb.ipynb", 0) == []
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it

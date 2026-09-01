@@ -462,6 +462,11 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
 # Words that introduce a compound command. A pip call behind one still runs, so it has to
 # parse. Whether it is certain depends on which word: `if pip install ...` is the test and is
 # reached whenever the line is, while a `then` or `do` body runs only if that test said so.
+# Words that run the command after them rather than being it. `command pip install ...` and
+# `env FOO=1 pip install ...` install exactly as a bare `pip install ...` does.
+_SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo", "builtin"})
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
+
 _SHELL_TEST_KEYWORDS = frozenset({"if", "while", "until", "for", "case"})
 _SHELL_BODY_KEYWORDS = frozenset({"then", "elif", "else", "do"})
 _SHELL_KEYWORDS = _SHELL_TEST_KEYWORDS | _SHELL_BODY_KEYWORDS | {"fi", "done", "esac"}
@@ -531,6 +536,13 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     if close is not None:
         stripped = stripped[close + 1 :].strip()
         conditional = True
+    while True:
+        parts = stripped.split(maxsplit = 1)
+        if not parts or not (
+            parts[0].lower() in _SHELL_EXEC_PREFIXES or _ENV_ASSIGNMENT_RE.match(parts[0])
+        ):
+            break
+        stripped = parts[1].strip() if len(parts) > 1 else ""
     return (f"!{stripped}" if bang and stripped else stripped), conditional
 
 
@@ -545,10 +557,20 @@ def _substitution_bodies(command: str) -> list[str]:
     while i < len(command):
         if command.startswith("$(", i):
             depth, j = 1, i + 2
+            quote = ""
             while j < len(command) and depth:
-                if command[j] == "(":
+                ch = command[j]
+                if ch == "\\" and quote != "'":
+                    j += 2  # an escaped character, whatever it is
+                    continue
+                if quote:
+                    if ch == quote:
+                        quote = ""
+                elif ch in "\"'":
+                    quote = ch  # a `)` in here closes nothing
+                elif ch == "(":
                     depth += 1
-                elif command[j] == ")":
+                elif ch == ")":
                     depth -= 1
                 j += 1
             bodies.append(command[i + 2 : j - 1 if depth == 0 else j])
@@ -592,6 +614,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # above it is in a fallback tail, so an inner list cannot clear an outer one.
     tails = [False]
     buf_conditional = False
+    # One entry per open `(`/`{`: True when it opened a grouping. A `)` closing a `$( )` is
+    # inside a word, so a `#` after it is a literal, not a comment.
+    groupings: list[bool] = []
+    grouping_closed = False
     i = 0
 
     def flush() -> None:
@@ -614,8 +640,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             quote = ch
             buf.append(ch)
             i += 1
-        elif ch == "#" and (i == 0 or line[i - 1].isspace() or line[i - 1] in ";&|)}"):
-            break  # an operator or a closing bracket ends a word, so `;#` and `)#` comment
+        elif ch == "#" and (
+            i == 0
+            or line[i - 1].isspace()
+            or line[i - 1] in ";&|"
+            or (line[i - 1] in ")}" and grouping_closed)
+        ):
+            break  # an operator, or a bracket that closed a grouping, ends a word
         elif line.startswith("||", i):
             flush()
             tails[-1] = True
@@ -640,13 +671,19 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             i += 1
         else:
             if ch in "({":
+                # `$(` opens a substitution, which lives inside a word; a bare `(` groups.
+                groupings.append(not (ch == "(" and buf and buf[-1] == "$"))
                 tails.append(False)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command
-            elif ch in ")}" and len(tails) > 1:
-                # The command in hand belongs to the level being closed, so its flag stays
-                # what it was; the pop only affects what comes after.
-                tails.pop()
+            elif ch in ")}":
+                grouping_closed = groupings.pop() if groupings else True
+                if len(tails) > 1:
+                    # The command in hand belongs to the level being closed, so its flag stays
+                    # what it was; the pop only affects what comes after.
+                    tails.pop()
+            if ch not in ")}":
+                grouping_closed = False
             buf.append(ch)
             i += 1
     flush()
@@ -658,9 +695,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         if text:
             commands.append((f"!{text}", flag or keyword))
     # `echo $(pip install x)` runs the install as surely as the echo, and the outer command is
-    # not pip, so the inner one has to be a command of its own.
-    for text, flag in list(commands):
-        for inner in _substitution_bodies(text):
+    # not pip, so the inner one has to be a command of its own. Read off the raw pieces: an
+    # assignment prefix like ``X=`pip install y` `` is stripped by the unwrap above.
+    for piece, flag in out:
+        for inner in _substitution_bodies(piece):
             commands.extend(
                 (inner_text, flag or inner_flag)
                 for inner_text, inner_flag in _split_chained(f"!{inner}")
