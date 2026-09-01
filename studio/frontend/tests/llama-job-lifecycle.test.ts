@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  boundedLlamaStatusRequest,
+  llamaStatusRequestIsStale,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
   ownedLlamaSwitchOutcome,
@@ -76,6 +78,22 @@ test("a completed update stays hidden when no update remains", () => {
     }),
     { applying: false, visible: false, running: false },
   );
+});
+
+test("status responses are ordered by request rather than second-precision job timestamps", () => {
+  assert.equal(llamaStatusRequestIsStale(2, 1), true);
+  assert.equal(llamaStatusRequestIsStale(2, 2), false);
+  assert.equal(llamaStatusRequestIsStale(2, 3), false);
+});
+
+test("a serialized status request releases after its deadline", async () => {
+  const started = Date.now();
+  const result = await boundedLlamaStatusRequest(
+    () => new Promise<string>(() => undefined),
+    10,
+  );
+  assert.equal(result, null);
+  assert.ok(Date.now() - started < 1000, "the bounded request never released");
 });
 
 test("an apply adopts an already-running update but never a switch", () => {

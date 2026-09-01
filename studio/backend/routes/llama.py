@@ -30,6 +30,7 @@ from auth.authentication import get_current_subject
 from loggers import get_logger
 from utils.llama_cpp_update import (
     get_backend_status,
+    get_update_job,
     get_update_status,
     start_backend_switch,
     start_update,
@@ -40,6 +41,7 @@ router = APIRouter()
 
 
 class LlamaUpdateJob(BaseModel):
+    job_id: Optional[str] = Field(None, description = "Opaque identity of the current job.")
     state: str = Field("idle", description = "idle | running | success | error")
     operation: Optional[Literal["update", "switch"]] = None
     requested_backend: Optional[Literal["auto", "cpu", "cuda", "rocm", "vulkan"]] = None
@@ -156,6 +158,16 @@ async def llama_update_status(
     status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
     resp = LlamaUpdateStatusResponse(**status)
     _log_llama_update_progress(resp.job)
+    return resp
+
+
+@router.get("/update-job-status", response_model = LlamaUpdateJob)
+async def llama_update_job_status(
+    current_subject: str = Depends(get_current_subject),
+) -> LlamaUpdateJob:
+    """Read updater progress without release or host compatibility probes."""
+    resp = LlamaUpdateJob(**get_update_job())
+    _log_llama_update_progress(resp)
     return resp
 
 

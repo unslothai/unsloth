@@ -67,3 +67,36 @@ export function llamaUpdatePresentation(
     running: true,
   };
 }
+
+export const LLAMA_JOB_STATUS_TIMEOUT_MS = 15_000;
+
+export function llamaStatusRequestIsStale(
+  latestAppliedRequest: number,
+  incomingRequest: number,
+): boolean {
+  return incomingRequest < latestAppliedRequest;
+}
+
+export async function boundedLlamaStatusRequest<T>(
+  request: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = LLAMA_JOB_STATUS_TIMEOUT_MS,
+): Promise<T | null> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timeout = globalThis.setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      request(controller.signal).catch(() => null),
+      deadline,
+    ]);
+  } finally {
+    if (timeout !== undefined) {
+      globalThis.clearTimeout(timeout);
+    }
+  }
+}
