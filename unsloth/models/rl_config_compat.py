@@ -37,6 +37,8 @@ import inspect
 __all__ = [
     "classify_config_kwarg",
     "filter_config_init_kwargs",
+    "TRANSFORMERS_CONFIG_RENAMES",
+    "TRANSFORMERS_REMOVED_FIELD_ADVICE",
     "TRL_CONFIG_RENAMES",
     "TRL_REMOVED_FIELD_ADVICE",
 ]
@@ -76,6 +78,56 @@ TRL_REMOVED_FIELD_ADVICE = {
     "tools": "pass tools through the dataset instead",
     "use_logits_to_keep": "the DPO trainer no longer uses this setting",
     "padding_value": "this value is no longer configurable",
+}
+
+
+# Every trl config subclasses `transformers.TrainingArguments`, so a field
+# transformers drops disappears from the trl configs at the same moment and
+# lands in exactly the same place as a trl removal. transformers 5.0.0 removed
+# 28 of them, `warmup_ratio` and `group_by_length` among them, so the tables
+# below carry the same policy across that boundary.
+#
+# Sourced from the "Trainer" section of transformers' own MIGRATION_GUIDE_V5.md,
+# with every target checked against the installed 5.16.1 `TrainingArguments`.
+# Note the guide says `warmup_step`; the field is `warmup_steps`, and it does
+# take the float that `warmup_ratio` used to.
+TRANSFORMERS_CONFIG_RENAMES = {
+    "warmup_ratio": "warmup_steps",
+    "no_cuda": "use_cpu",
+    "push_to_hub_token": "hub_token",
+    "per_gpu_train_batch_size": "per_device_train_batch_size",
+    "per_gpu_eval_batch_size": "per_device_eval_batch_size",
+    "include_tokens_per_second": "include_num_input_tokens_seen",
+}
+
+
+# The rest of the transformers 5 removals, where the replacement needs a
+# different value or no longer exists at all, so the value cannot be carried.
+TRANSFORMERS_REMOVED_FIELD_ADVICE = {
+    "group_by_length": 'set `train_sampling_strategy = "group_by_length"` instead',
+    "include_inputs_for_metrics": 'add "inputs" to the `include_for_metrics` list instead',
+    "tpu_metrics_debug": "use `debug` instead",
+    "push_to_hub_model_id": "set the full repository name in `hub_model_id` instead",
+    "push_to_hub_organization": "set the full repository name in `hub_model_id` instead",
+    "jit_mode_eval": "use `torch_compile` instead, torchscript is no longer recommended",
+    "torchdynamo": "use `torch_compile_backend` instead",
+    "fsdp_min_num_params": "use `fsdp_config` instead",
+    "fsdp_transformer_layer_cls_to_wrap": "use `fsdp_config` instead",
+    "fp16_backend": "transformers relies on torch.amp now, so this is no longer configurable",
+    "half_precision_backend": (
+        "transformers relies on torch.amp now, so this is no longer configurable"
+    ),
+    "fp16_opt_level": "the apex backend is gone, torch.amp is used instead",
+    "adafactor": 'pass `optim = "adafactor"` instead',
+    "save_safetensors": "safetensors is the only checkpoint format now",
+    "overwrite_output_dir": "use `resume_from_checkpoint` to control this instead",
+    "logging_dir": "set the TENSORBOARD_LOGGING_DIR environment variable instead",
+    "tpu_num_cores": "set the TPU_NUM_CORES environment variable instead",
+    "ray_scope": "set the RAY_SCOPE environment variable instead",
+    "use_mps_device": "mps is used automatically when it is detected",
+    "use_legacy_prediction_loop": "only `evaluation_loop` is used now",
+    "past_index": "this was only ever used by a few special architectures",
+    "mp_parameters": "this was a legacy SageMaker-only argument",
 }
 
 
@@ -164,6 +216,20 @@ def _default_notifier(message):
     print(message)
 
 
+def rename_source(key):
+    """Which project renamed `key`, so the message can name the right one.
+
+    A user told "TRL renamed `warmup_ratio`" would go looking in the wrong
+    changelog.
+    """
+    return "transformers" if key in TRANSFORMERS_CONFIG_RENAMES else "TRL"
+
+
+def removal_source(key):
+    """Which project retired `key`. Same reason as `rename_source`."""
+    return "transformers" if key in TRANSFORMERS_REMOVED_FIELD_ADVICE else "TRL"
+
+
 def classify_config_kwarg(config_class, key):
     """Say what `config_class` makes of `key`, without acting on it.
 
@@ -192,13 +258,17 @@ def classify_config_kwarg(config_class, key):
     if takes_var_keyword and not accepted:
         return "opaque", None
 
-    renamed = TRL_CONFIG_RENAMES.get(key)
-    if renamed is not None and renamed in accepted:
-        return "rename", renamed
+    # trl first: a name can be retired by trl while transformers still has it,
+    # and the trl entry is the one that describes this config.
+    for renames in (TRL_CONFIG_RENAMES, TRANSFORMERS_CONFIG_RENAMES):
+        renamed = renames.get(key)
+        if renamed is not None and renamed in accepted:
+            return "rename", renamed
 
-    advice = TRL_REMOVED_FIELD_ADVICE.get(key)
-    if advice is not None:
-        return "retired", advice
+    for table in (TRL_REMOVED_FIELD_ADVICE, TRANSFORMERS_REMOVED_FIELD_ADVICE):
+        advice = table.get(key)
+        if advice is not None:
+            return "retired", advice
 
     return "unknown", None
 
@@ -210,9 +280,13 @@ def filter_config_init_kwargs(
 ):
     """Return `kwargs` reduced to what `config_class.__init__` will accept.
 
-    Renames are applied where TRL documented one; everything else the config
-    rejects is dropped. Each decision is reported through `notify` (`print` by
-    default, which shows up reliably in a notebook).
+    Renames are applied where TRL or transformers documented one; everything else
+    the config rejects is dropped. Each decision is reported through `notify`
+    (`print` by default, which shows up reliably in a notebook).
+
+    The per-name decision is `classify_config_kwarg` above, shared with the
+    trainer-kwarg path in `unsloth/trainer.py`; the both-names-set arbitration
+    below stays here because only this caller can see the whole kwargs dict.
     """
     if not kwargs:
         return kwargs
@@ -233,31 +307,33 @@ def filter_config_init_kwargs(
         if key in accepted:
             continue
 
-        renamed = TRL_CONFIG_RENAMES.get(key)
-        if renamed is not None and renamed in accepted:
+        verdict, detail = classify_config_kwarg(config_class, key)
+
+        if verdict == "rename":
+            renamed = detail
             # The new name is a mirrored parameter, so it is already in the dict
             # carrying either the caller's value or the class default. Only
             # overwrite the default: an explicitly set new name wins.
             existing = kwargs.get(renamed, _MISSING)
+            who = rename_source(key)
             if existing is _MISSING or _is_untouched(config_class, renamed, existing):
                 forwarded[renamed] = value
                 notify(
-                    f"Unsloth: TRL renamed `{key}` to `{renamed}`. Forwarding your "
+                    f"Unsloth: {who} renamed `{key}` to `{renamed}`. Forwarding your "
                     f"value to `{renamed}` - update your code when convenient."
                 )
             else:
                 notify(
-                    f"Unsloth: `{key}` was renamed to `{renamed}` by TRL and this "
+                    f"Unsloth: `{key}` was renamed to `{renamed}` by {who} and this "
                     f"{config_name} accepts only the new name. You set both, so "
                     f"`{key}` is ignored and your `{renamed}` is kept."
                 )
             continue
 
-        advice = TRL_REMOVED_FIELD_ADVICE.get(key)
-        if advice:
+        if verdict == "retired":
             notify(
-                f"Unsloth: `{key}` is not supported by the installed TRL's "
-                f"{config_name} and will be IGNORED - {advice}."
+                f"Unsloth: `{key}` is not supported by the installed "
+                f"{removal_source(key)}'s {config_name} and will be IGNORED - {detail}."
             )
         else:
             notify(

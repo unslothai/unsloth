@@ -188,7 +188,8 @@ def _wrapped():
     )
     if "trl" not in ns:
         pytest.skip("trl not installed")
-    ns["classify_config_kwarg"] = _classify_config_kwarg()
+    for name in ("classify_config_kwarg", "rename_source", "removal_source"):
+        ns[name] = getattr(_rl_config_compat(), name)
 
     class T(_FakeTrainer):
         pass
@@ -387,8 +388,8 @@ class _RecordingTrainer:
         self.train_dataset = train_dataset
 
 
-def _classify_config_kwarg():
-    """`rl_config_compat.classify_config_kwarg`, loaded by file spec.
+def _rl_config_compat():
+    """The `rl_config_compat` module, loaded by file spec.
 
     Same reason as tests/test_rl_config_compat.py: importing it through the
     package would run unsloth/__init__.py and drag in torch and unsloth_zoo.
@@ -399,7 +400,7 @@ def _classify_config_kwarg():
     spec = importlib.util.spec_from_file_location("_rl_config_compat_for_guard", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.classify_config_kwarg
+    return module
 
 
 def _wrapped_recording(trainer_base = None):
@@ -412,9 +413,10 @@ def _wrapped_recording(trainer_base = None):
     )
     if "trl" not in ns:
         pytest.skip("trl not installed")
-    # `_route_unknown_trainer_kwargs` imports this relatively, which cannot work
-    # in the bare namespace `_load` builds, so hand it over directly.
-    ns["classify_config_kwarg"] = _classify_config_kwarg()
+    # `_route_unknown_trainer_kwargs` imports these relatively, which cannot work
+    # in the bare namespace `_load` builds, so hand them over directly.
+    for name in ("classify_config_kwarg", "rename_source", "removal_source"):
+        ns[name] = getattr(_rl_config_compat(), name)
 
     class T(trainer_base or _RecordingTrainer):
         pass

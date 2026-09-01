@@ -31,6 +31,8 @@ def _load_module():
 _MODULE = _load_module()
 filter_config_init_kwargs = _MODULE.filter_config_init_kwargs
 TRL_CONFIG_RENAMES = _MODULE.TRL_CONFIG_RENAMES
+TRANSFORMERS_CONFIG_RENAMES = _MODULE.TRANSFORMERS_CONFIG_RENAMES
+TRANSFORMERS_REMOVED_FIELD_ADVICE = _MODULE.TRANSFORMERS_REMOVED_FIELD_ADVICE
 
 
 @dataclasses.dataclass
@@ -189,6 +191,56 @@ def test_rename_targets_are_real_fields_of_the_modern_config():
     for old, new in TRL_CONFIG_RENAMES.items():
         assert old not in modern, old
         assert new in modern, new
+
+
+def test_the_transformers_tables_do_not_overlap_or_contradict_the_trl_ones():
+    """One name must not be both a rename and a retirement, or the verdict would
+    depend on which table happened to be consulted first."""
+    renames = set(TRANSFORMERS_CONFIG_RENAMES) | set(TRL_CONFIG_RENAMES)
+    advice = set(TRANSFORMERS_REMOVED_FIELD_ADVICE) | set(_MODULE.TRL_REMOVED_FIELD_ADVICE)
+    assert not (renames & advice), sorted(renames & advice)
+    assert not (set(TRANSFORMERS_CONFIG_RENAMES) & set(TRL_CONFIG_RENAMES))
+
+
+def test_transformers_rename_targets_are_real_fields_of_the_installed_version():
+    """The whole point of a rename is that the value lands somewhere real.
+
+    Skipped on transformers 4, where the old names still exist and the table is
+    never consulted; this is the transformers 5 guard.
+    """
+    transformers = pytest.importorskip("transformers")
+    TrainingArguments = transformers.TrainingArguments
+    fields = {f.name for f in dataclasses.fields(TrainingArguments)}
+    if "warmup_ratio" in fields:
+        pytest.skip("transformers 4 still declares the pre-5.0 argument names")
+
+    for old, new in TRANSFORMERS_CONFIG_RENAMES.items():
+        assert old not in fields, f"{old} is still a field, so it must not be renamed"
+        assert new in fields, f"{old} renames to {new}, which does not exist"
+
+    for retired in TRANSFORMERS_REMOVED_FIELD_ADVICE:
+        assert retired not in fields, f"{retired} still exists, so it is not retired"
+
+
+def test_a_transformers_5_removal_is_carried_across_on_a_real_config():
+    """`warmup_ratio` is the one every notebook sets, so it gets its own test."""
+    transformers = pytest.importorskip("transformers")
+    fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
+    if "warmup_ratio" in fields:
+        pytest.skip("transformers 4 still declares warmup_ratio")
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        output_dir: str = "out"
+        warmup_steps: float = 0.0
+
+    messages = []
+    kept = filter_config_init_kwargs(
+        ModernSFTConfig, {"output_dir": "out", "warmup_ratio": 0.1},
+        notify = messages.append,
+    )
+    assert kept == {"output_dir": "out", "warmup_steps": 0.1}
+    assert any("warmup_steps" in m for m in messages)
 
 
 def test_a_default_factory_field_is_compared_not_crashed_on():

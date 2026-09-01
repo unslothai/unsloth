@@ -739,11 +739,15 @@ def _route_unknown_trainer_kwargs(
         return {}, {}
 
     try:
-        from .models.rl_config_compat import classify_config_kwarg
+        from .models.rl_config_compat import (
+            classify_config_kwarg, removal_source, rename_source,
+        )
     except Exception:
         # tests/ loads this function by AST into a bare namespace, where there is
         # no package to import from; it supplies the classifier directly instead.
         classify_config_kwarg = globals().get("classify_config_kwarg")
+        rename_source = globals().get("rename_source", lambda key: "TRL")
+        removal_source = globals().get("removal_source", lambda key: "TRL")
         if classify_config_kwarg is None:
             # Vendored next to this file and stdlib-only, so reaching here in a
             # real install should not happen. Keep the value on the trainer
@@ -766,13 +770,13 @@ def _route_unknown_trainer_kwargs(
         elif verdict == "rename":
             to_config[detail] = value
             notify(
-                f"Unsloth: TRL renamed `{key}` to `{detail}`. Forwarding your "
-                f"value to `{detail}` - update your code when convenient."
+                f"Unsloth: {rename_source(key)} renamed `{key}` to `{detail}`. "
+                f"Forwarding your value to `{detail}` - update your code when convenient."
             )
         elif verdict == "retired":
             notify(
-                f"Unsloth: `{key}` is not supported by the installed TRL's "
-                f"{config_name} and will be IGNORED - {detail}."
+                f"Unsloth: `{key}` is not supported by the installed "
+                f"{removal_source(key)}'s {config_name} and will be IGNORED - {detail}."
             )
         else:
             to_trainer[key] = value
