@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearHighlights,
   indexReaches,
+  mutatesSearchableText,
   paintHighlights,
   paintWindow,
   rangeForMatch,
@@ -104,21 +105,6 @@ function ordinalOfStart(matches: FindMatch[], start: number): number {
   return -1;
 }
 
-/**
- * True when a mutation touched text the index covers, rather than the bar's own chrome. `some()`
- * short-circuits on the first qualifying record, so this costs a `closest` call only on the batches
- * the bar itself produced.
- */
-function mutatesSearchableText(record: MutationRecord): boolean {
-  const target = record.target;
-  const element =
-    target.nodeType === 1
-      ? (target as Element)
-      : (target.parentElement ?? null);
-  if (!element) return true;
-  return element.closest(`[${FIND_SKIP_ATTRIBUTE}]`) === null;
-}
-
 export function useFindInPage(query: string): FindResults {
   const [results, setResults] = useState<{
     count: number;
@@ -200,11 +186,15 @@ export function useFindInPage(query: string): FindResults {
       // The anchor decides WHICH matches survive the cap, and it only costs anything when the cap
       // bites: a common letter in a long thread otherwise keeps the top of the document and walks
       // the reader away from every occurrence beside them.
+      //
+      // Passed as a thunk so that stays true. `viewportOffset` walks the document reading rects,
+      // and an argument is evaluated whether or not the callee wants it, so spelling it inline ran
+      // a binary search over layout on every keystroke of every query, however few matches it had.
       const matches = findMatches(
         index,
         queryRef.current,
         MAX_MATCHES + 1,
-        viewportOffset(index),
+        () => viewportOffset(index),
       );
       cappedRef.current = matches.length > MAX_MATCHES;
       if (cappedRef.current) matches.length = MAX_MATCHES;

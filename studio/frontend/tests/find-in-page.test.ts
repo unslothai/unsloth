@@ -17,6 +17,7 @@ import {
   FIND_HIGHLIGHT,
   FIND_HIGHLIGHT_ACTIVE,
   MAX_PAINTED_RANGES,
+  mutatesSearchableText,
   paintWindow,
   resolvePortalSurfaces,
   selectRangeFallback,
@@ -355,8 +356,55 @@ test("content-visibility skipping is not treated as invisibility", () => {
   assert.deepEqual(asked[0], {
     contentVisibilityAuto: false,
     opacityProperty: false,
+    checkOpacity: false,
     visibilityProperty: true,
+    checkVisibilityCSS: true,
   });
+});
+
+test("both spellings of every visibility option are asked for", () => {
+  // `visibilityProperty` and `opacityProperty` are renames of `checkVisibilityCSS` and
+  // `checkOpacity`, and an engine reads only the name it knows. Web IDL drops an unrecognised
+  // dictionary member silently, so sending the modern name alone is not a fallback - it is a
+  // no-op on Chrome 105-120 and Firefox 106-121, which have `checkVisibility` but not the rename,
+  // and which would then index and highlight `visibility: hidden` text.
+  const seen: Record<string, unknown>[] = [];
+  const probe = {
+    ...el("DIV", [text("readme")]),
+    checkVisibility: (options?: Record<string, unknown>) => {
+      if (options) seen.push(options);
+      return true;
+    },
+  };
+  buildTextIndex(el("DIV", [probe]));
+  assert.equal(seen.length, 1);
+  const options = seen[0];
+  for (const [modern, historic] of [
+    ["visibilityProperty", "checkVisibilityCSS"],
+    ["opacityProperty", "checkOpacity"],
+  ]) {
+    assert.equal(modern in options, true, `${modern} is missing`);
+    assert.equal(historic in options, true, `${historic} is missing`);
+    // The two names mean the same thing, so they must never disagree.
+    assert.equal(options[modern], options[historic], `${modern} != ${historic}`);
+  }
+});
+
+test("an engine that honours only the historic option names still hides hidden text", () => {
+  // Simulates Chrome 105-120 / Firefox 106-121: `checkVisibility` exists, but the modern option
+  // names are unknown to it and therefore ignored.
+  const legacyEngine = (style: { visibility?: string }) => ({
+    checkVisibility: (options?: Record<string, unknown>) =>
+      !(
+        options?.checkVisibilityCSS === true && style.visibility === "hidden"
+      ),
+  });
+  const hidden = {
+    ...el("SPAN", [text("invisible")]),
+    ...legacyEngine({ visibility: "hidden" }),
+  };
+  const index = buildTextIndex(el("DIV", [hidden]));
+  assert.equal(index.text.includes("invisible"), false);
 });
 
 test("an inline SVG is skipped despite reporting a lowercase tag", () => {
@@ -403,7 +451,13 @@ test("a portaled surface with nothing to contribute leaves no separator behind",
 function withStyles(
   styles: Map<
     unknown,
-    { display?: string; whiteSpace?: string; clip?: string; clipPath?: string }
+    {
+      display?: string;
+      visibility?: string;
+      whiteSpace?: string;
+      clip?: string;
+      clipPath?: string;
+    }
   >,
   body: () => void,
 ): void {
@@ -416,6 +470,207 @@ function withStyles(
     view.getComputedStyle = saved;
   }
 }
+
+// --- the observer's own filter -----------------------------------------------------------------
+
+/** The two bits of `Element` the filter touches, so a record can be handed over without a DOM. */
+function skipNode(options: {
+  skipped?: boolean;
+  parent?: ReturnType<typeof skipNode> | null;
+}): { nodeType: number; parentElement: Element | null; closest: (s: string) => Element | null } {
+  const node = {
+    nodeType: 1,
+    skipped: options.skipped ?? false,
+    parent: options.parent ?? null,
+    get parentElement() {
+      return node.parent as unknown as Element | null;
+    },
+    closest(): Element | null {
+      let at: typeof node | null = node;
+      while (at) {
+        if (at.skipped) return at as unknown as Element;
+        at = at.parent as typeof node | null;
+      }
+      return null;
+    },
+  };
+  return node as unknown as ReturnType<typeof skipNode>;
+}
+
+function record(
+  target: ReturnType<typeof skipNode>,
+  type = "childList",
+  attributeName: string | null = null,
+) {
+  return { target, type, attributeName } as unknown as Parameters<
+    typeof mutatesSearchableText
+  >[0];
+}
+
+test("the selection fallback hands the caret back to the field", async () => {
+  // Moving the document selection into ordinary text takes the caret with it on WebKit and Blink:
+  // `activeElement` still reports the field, but every keystroke after that is swallowed, so the
+  // query freezes at one character and the bar cannot be typed into. Measured with the highlight
+  // registry removed: the field held "u" and never grew. Gecko keeps the two apart and is fine.
+  //
+  // This matters precisely where the fallback runs, which is an engine with no highlight registry:
+  // Firefox below 140, or whatever WebKitGTK the desktop build was handed.
+  const engine = await readFile(
+    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
+    "utf8",
+  );
+  const fallback = engine.slice(engine.indexOf("export function selectRangeFallback"));
+  const body = fallback.slice(0, fallback.indexOf("\n}"));
+  assert.match(body, /holdCaret\(\)/);
+  assert.match(body, /releaseCaret\(/);
+  // The caret has to be taken BEFORE the selection moves and given back after, or there is nothing
+  // left to restore.
+  assert.ok(
+    body.indexOf("holdCaret()") < body.indexOf("selection.addRange"),
+    "the caret must be captured before the selection is moved",
+  );
+  assert.ok(
+    body.indexOf("releaseCaret(") > body.indexOf("selection.addRange"),
+    "the caret must be restored after the selection is moved",
+  );
+});
+
+test("adding the skip attribute is what reindexes, not only removing it", () => {
+  // `closest` matches the element it starts at. So the moment an element is marked skippable, the
+  // very record announcing it answers "inside skipped content" and is thrown away - and the region
+  // stays in the index, counted and painted, until some unrelated mutation happens by. Removal
+  // always worked, which is what hid this: the attribute is in the observer's `attributeFilter`
+  // precisely so both directions land.
+  const parent = skipNode({});
+  const marked = skipNode({ skipped: true, parent });
+  assert.equal(
+    mutatesSearchableText(record(marked, "attributes", FIND_SKIP_ATTRIBUTE)),
+    true,
+    "gaining the attribute must schedule a rebuild",
+  );
+
+  const unmarked = skipNode({ skipped: false, parent });
+  assert.equal(
+    mutatesSearchableText(record(unmarked, "attributes", FIND_SKIP_ATTRIBUTE)),
+    true,
+    "losing the attribute must still schedule a rebuild",
+  );
+});
+
+test("ordinary mutations inside skipped content are still ignored", () => {
+  // The whole point of the filter: the bar floats inside the region it searches, so its own counter
+  // re-rendering must not order a re-index of itself.
+  const bar = skipNode({ skipped: true });
+  const inside = skipNode({ parent: bar });
+  assert.equal(mutatesSearchableText(record(inside)), false);
+  assert.equal(mutatesSearchableText(record(bar)), false);
+});
+
+test("a mutation in ordinary content always reindexes", () => {
+  const thread = skipNode({});
+  const message = skipNode({ parent: thread });
+  assert.equal(mutatesSearchableText(record(message)), true);
+  assert.equal(mutatesSearchableText(record(message, "characterData")), true);
+});
+
+test("a detached target counts as a change rather than being dropped", () => {
+  // No parent to ask, so the conservative answer is the safe one.
+  const orphan = skipNode({ skipped: true, parent: null });
+  assert.equal(
+    mutatesSearchableText(record(orphan, "attributes", FIND_SKIP_ATTRIBUTE)),
+    true,
+  );
+});
+
+test("an attribute that is not the skip flag is judged from the target itself", () => {
+  // Only the skip attribute changes where the question is asked from. `inert` flipping on a panel
+  // inside skipped chrome is still chrome.
+  const bar = skipNode({ skipped: true });
+  const inside = skipNode({ parent: bar });
+  assert.equal(mutatesSearchableText(record(inside, "attributes", "inert")), false);
+});
+
+test("a display:contents wrapper that is itself invisible keeps its own text out", () => {
+  // `skipsSubtree` lets a boxless wrapper through on purpose: `checkVisibility` calls anything with
+  // no box invisible, and the shell and the training page both wrap visible content in one. But
+  // `visibility` inherits, and only ELEMENT children are re-checked on the way down - a direct text
+  // child is never asked. So text under a `display: contents` wrapper that is also
+  // `visibility: hidden` was indexed, counted and painted while nobody could see it.
+  const ghost = el("SPAN", [text("invisible")]);
+  (ghost as { checkVisibility?: () => boolean }).checkVisibility = () => false;
+  withStyles(
+    new Map([[ghost, { display: "contents", visibility: "hidden" }]]),
+    () => {
+      const index = buildTextIndex(el("DIV", [ghost]));
+      assert.equal(index.text.includes("invisible"), false);
+      assert.deepEqual(findMatches(index, "invisible"), []);
+    },
+  );
+});
+
+test("a visible display:contents wrapper is still searched", () => {
+  // The other half of the same rule: the rescue has to keep working, or most of what there is to
+  // search disappears with it.
+  const wrapper = el("SPAN", [text("findable")]);
+  (wrapper as { checkVisibility?: () => boolean }).checkVisibility = () => false;
+  withStyles(new Map([[wrapper, { display: "contents" }]]), () => {
+    const index = buildTextIndex(el("DIV", [wrapper]));
+    assert.equal(index.text.includes("findable"), true);
+    assert.equal(findMatches(index, "findable").length, 1);
+  });
+});
+
+test("an element child that restores visibility inside a hidden contents wrapper is kept", () => {
+  // Scoped to the wrapper's OWN text, not its subtree: `visibility: visible` paints again, and the
+  // walk does not turn back, so that child has to survive.
+  const inner = el("SPAN", [text("restored")]);
+  const ghost = el("SPAN", [text("invisible"), inner]);
+  (ghost as { checkVisibility?: () => boolean }).checkVisibility = () => false;
+  withStyles(
+    new Map<unknown, { display?: string; visibility?: string }>([
+      [ghost, { display: "contents", visibility: "hidden" }],
+      [inner, { display: "inline", visibility: "visible" }],
+    ]),
+    () => {
+      const index = buildTextIndex(el("DIV", [ghost]));
+      assert.equal(index.text.includes("invisible"), false);
+      assert.equal(index.text.includes("restored"), true);
+    },
+  );
+});
+
+test("the match window anchor is resolved only once the cap bites", () => {
+  // `viewportOffset` walks the document reading rects, and an argument is evaluated whether or not
+  // the callee wants it. Spelled inline it therefore ran on every keystroke of every query, however
+  // few matches it had, which is the opposite of what its own comment promises. As a thunk it is
+  // paid only where it changes the answer: when the cap actually cuts the list short.
+  const index = buildTextIndex(el("P", [text("a a a a a a a a")]));
+
+  let asked = 0;
+  const anchor = () => {
+    asked += 1;
+    return 6;
+  };
+
+  const underCap = findMatches(index, "a", 100, anchor);
+  assert.equal(underCap.length, 8);
+  assert.equal(asked, 0, "an under-cap query must not read layout");
+
+  const capped = findMatches(index, "a", 3, anchor);
+  assert.equal(asked, 1, "a capped query resolves the anchor exactly once");
+  // A thunk and the number it returns must pick the same window.
+  assert.deepEqual(capped, findMatches(index, "a", 3, 6));
+});
+
+test("a numeric anchor still means what it always did", () => {
+  // The thunk is additive. Every existing caller passes a number and must be unaffected.
+  const index = buildTextIndex(el("P", [text("b b b b b b b b")]));
+  assert.deepEqual(findMatches(index, "b", 3, 0), findMatches(index, "b", 3));
+  assert.deepEqual(
+    findMatches(index, "b", 3, 10),
+    findMatches(index, "b", 3, () => 10),
+  );
+});
 
 test("two spans the CSS renders as blocks do not run together", () => {
   // No tag name says these are blocks, and Tailwind stacks them all over the app: a source's title

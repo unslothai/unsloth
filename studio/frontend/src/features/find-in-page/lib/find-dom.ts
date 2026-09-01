@@ -152,6 +152,38 @@ export function indexReaches(
 }
 
 /**
+ * True when a mutation touched text the index covers, rather than the bar's own chrome. `some()`
+ * short-circuits on the first qualifying record, so this costs a `closest` call only on the batches
+ * the bar itself produced.
+ *
+ * Lives here rather than beside its caller so a test can hand it a record: the hook imports React
+ * and cannot be loaded under `node --test`.
+ */
+export function mutatesSearchableText(record: {
+  target: { nodeType: number; parentElement: Element | null };
+  type: string;
+  attributeName: string | null;
+}): boolean {
+  const target = record.target;
+  const element =
+    target.nodeType === 1
+      ? (target as unknown as Element)
+      : (target.parentElement ?? null);
+  if (!element) return true;
+  // When the skip attribute itself is what changed, ask from the PARENT. `closest` matches the
+  // element it starts at, so an element that has just been marked skippable answers with itself and
+  // its own record is filtered out - the one record that exists to say a region left the index.
+  // Removing the attribute reindexed fine, adding it never did, though the observer asks for both.
+  // A detached target has no parent to ask, so it counts as a change.
+  const from =
+    record.type === "attributes" && record.attributeName === FIND_SKIP_ATTRIBUTE
+      ? element.parentElement
+      : element;
+  if (!from) return true;
+  return from.closest(`[${FIND_SKIP_ATTRIBUTE}]`) === null;
+}
+
+/**
  * A live `Range` over one match, or null when the index has drifted from the document.
  *
  * Drift is expected, not exceptional: a streaming reply rewrites text nodes under the index. A
@@ -220,10 +252,72 @@ export function clearHighlights(): void {
   api.registry.delete(FIND_HIGHLIGHT_ACTIVE);
 }
 
+/** The caret inside a focused text field, so moving the document selection can give it back. */
+type CaretHold = {
+  field: HTMLInputElement | HTMLTextAreaElement;
+  start: number | null;
+  end: number | null;
+};
+
+/**
+ * The find field's caret, captured before the document selection is moved out from under it.
+ *
+ * Moving the selection into ordinary text while a field is focused takes the caret with it on
+ * WebKit and Blink: `activeElement` still reports the field, but every keystroke after that is
+ * swallowed, so the query freezes at one character and the bar cannot be typed into at all. Gecko
+ * keeps the two apart and does not need this. WebKit is the case that matters, because an engine
+ * with no highlight registry is either Firefox below 140 or the WebKitGTK the desktop build was
+ * handed, and the second one lands here.
+ */
+function holdCaret(): CaretHold | null {
+  // Read through `globalThis`: the node suite drives this with a hand-rolled window and has no
+  // document, and the constructors below are not defined there either.
+  const scope = globalThis as {
+    document?: { activeElement?: unknown };
+    HTMLInputElement?: unknown;
+    HTMLTextAreaElement?: unknown;
+  };
+  const active = scope.document?.activeElement;
+  if (
+    typeof scope.HTMLInputElement !== "function" ||
+    typeof scope.HTMLTextAreaElement !== "function"
+  ) {
+    return null;
+  }
+  if (
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement
+  ) {
+    return {
+      field: active,
+      start: active.selectionStart,
+      end: active.selectionEnd,
+    };
+  }
+  return null;
+}
+
+/** Put the caret back where it was, so the next keystroke reaches the field. */
+function releaseCaret(held: CaretHold | null): void {
+  if (!held) return;
+  const { field, start, end } = held;
+  field.focus({ preventScroll: true });
+  if (start === null || end === null) return;
+  try {
+    field.setSelectionRange(start, end);
+  } catch {
+    // Some input types refuse a range. Focus is the half that matters.
+  }
+}
+
 /**
  * Show the active match by selecting it, for an engine with no highlight registry. This is what a
  * browser's own find does, so the tint is the platform's. A selection is one range, so on those
  * engines the bar counts every match and tints one.
+ *
+ * The caret is handed back afterwards, which is what keeps the field typable. Whether the selection
+ * survives that is the engine's call: Gecko keeps both, WebKit and Blink drop the selection to give
+ * the caret back. Losing the tint is a worse look; losing the field is a broken feature.
  */
 export function selectRangeFallback(range: Range | null): void {
   if (typeof window === "undefined") return;
@@ -241,9 +335,11 @@ export function selectRangeFallback(range: Range | null): void {
     selection.removeAllRanges();
     return;
   }
+  const held = holdCaret();
   selection.removeAllRanges();
   selection.addRange(range);
   ownedSelection = currentRange(selection) ?? range;
+  releaseCaret(held);
 }
 
 /** The range this put on screen, or null when the selection is the reader's own. */

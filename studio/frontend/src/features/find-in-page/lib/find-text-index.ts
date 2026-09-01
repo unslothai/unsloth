@@ -122,6 +122,9 @@ export interface FindElementLike {
     contentVisibilityAuto?: boolean;
     opacityProperty?: boolean;
     visibilityProperty?: boolean;
+    /** Historic spellings of the two above, still the only ones older engines read. */
+    checkOpacity?: boolean;
+    checkVisibilityCSS?: boolean;
   }): boolean;
 }
 
@@ -208,11 +211,20 @@ export function skipsSubtree(element: FindElementLike): boolean {
   // README (hub.css) and of a maths-bearing thread from the index. Nothing would put it back
   // either: scrolling renders the subtree without mutating the DOM, so the observer never fires.
   // Opacity is off too, so a message still fading in stays findable.
+  //
+  // Both spellings of each option go in. `visibilityProperty` and `opacityProperty` are renames;
+  // the original names are `checkVisibilityCSS` and `checkOpacity`, and an engine reads only the
+  // one it knows. Web IDL drops a dictionary member it does not recognise silently, so passing the
+  // modern name alone is not a fallback, it is a no-op on Chrome 105-120 and Firefox 106-121,
+  // which have the method but not the rename. Those builds would report `visibility: hidden` text
+  // as visible and index, count and highlight it.
   if (
     element.checkVisibility?.({
       contentVisibilityAuto: false,
       opacityProperty: false,
+      checkOpacity: false,
       visibilityProperty: true,
+      checkVisibilityCSS: true,
     }) !== false
   ) {
     return clippedAway(computedStyle(element));
@@ -226,9 +238,29 @@ export function skipsSubtree(element: FindElementLike): boolean {
 
 interface ResolvedStyle {
   display?: string;
+  visibility?: string;
   whiteSpace?: string;
   clip?: string;
   clipPath?: string;
+}
+
+/**
+ * True when this element keeps its own text off the screen while still being descended into.
+ *
+ * Only `display: contents` reaches this. `skipsSubtree` lets that case through on purpose, because
+ * a boxless wrapper is absent rather than hidden and its children are usually painted normally. But
+ * `visibility` inherits, so a `contents` wrapper that is also `visibility: hidden` paints neither
+ * itself nor its text, and its DIRECT TEXT children never pass through `skipsSubtree` at all -
+ * only element children are re-checked. Without this they are indexed, counted and highlighted.
+ *
+ * Deliberately about the element's own text, not the subtree: a descendant that sets
+ * `visibility: visible` is painted again, and is still reached because the walk does not turn back.
+ */
+function hidesOwnText(style: ResolvedStyle | null): boolean {
+  return (
+    style?.display === "contents" &&
+    (style.visibility === "hidden" || style.visibility === "collapse")
+  );
 }
 
 /**
@@ -323,11 +355,15 @@ export function buildTextIndex(
       style?.whiteSpace === undefined
         ? inherited
         : preservesWhitespace(style.whiteSpace);
+    // Asked once per element, not per text node: a boxless wrapper that is also invisible paints
+    // none of its own text, and that text is the one thing `skipsSubtree` never gets to judge.
+    const ownTextHidden = hidesOwnText(style);
     const children = element.childNodes;
     for (let i = 0; i < children.length; i += 1) {
       if (full) return;
       const child = children[i];
       if (child.nodeType === TEXT_NODE) {
+        if (ownTextHidden) continue;
         const node = child as FindTextNodeLike;
         const data = node.data;
         if (data.length === 0) continue;
@@ -493,17 +529,25 @@ function collectMatches(
  * So when the cap bites, the kept matches are the ones nearest where the reader is.
  *
  * Costs nothing until it bites. Under the cap this is the same single pass it always was.
+ *
+ * `anchor` may be a thunk, and the caller that knows where the reader is passes one. Working out
+ * the viewport offset means reading layout, and as a plain argument it was evaluated on every
+ * keystroke however few matches there were, which is the one thing this comment promised it did
+ * not do. A number still works and still means the same thing.
  */
 export function findMatches(
   index: FindTextIndex,
   query: string,
   limit = MAX_MATCHES,
-  anchor = 0,
+  anchor: number | (() => number) = 0,
 ): FindMatch[] {
   const needle = normalizeQuery(query);
   if (needle === null) return [];
   const head = collectMatches(index, needle, limit, 0);
-  if (head.length < limit || anchor <= 0) return head;
+  // Before resolving the anchor, so an under-cap query never pays for it.
+  if (head.length < limit) return head;
+  const at = typeof anchor === "function" ? anchor() : anchor;
+  if (at <= 0) return head;
 
   // Capped, so where the window sits matters. Two more passes over a string, no allocation in the
   // first: cheap next to the tens of thousands of matches this only happens for.
@@ -511,7 +555,7 @@ export function findMatches(
   let before = 0;
   eachMatch(index, needle, (start) => {
     total += 1;
-    if (start < anchor) before += 1;
+    if (start < at) before += 1;
     return true;
   });
   // Centred on the reader, then pushed back inside the list at either end.
