@@ -514,6 +514,32 @@ class PreemptionController:
             if self._epoch_winner == gen_id:
                 self._epoch_winner = None
 
+    def room_for(self, gen_id: str, want: int) -> bool:
+        """Whether a paused generation may start again yet.
+
+        Against the LIVE total, which is the whole point. Resuming on the admission
+        queue's accounting instead let a chat back in while the cache was still over its
+        watermark, so the next sweep evicted it again immediately: 44 preemptions across
+        four chats, one of them producing 611 characters in 374 seconds. A resume that is
+        undone by the next sweep is worse than waiting, because it pays a prefill for
+        nothing.
+
+        The winner is excluded from nobody's arithmetic here: it is counted like any
+        other holder, so a resume waits for it to finish rather than squeezing in beside
+        it. That is the approved policy, "let the longest chat continue, then continue
+        the rest once it frees its room".
+        """
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return True
+            ceiling = max(0, self._budget - self._buffer_locked())
+            live = sum(
+                p.tokens
+                for gid, p in self._participants.items()
+                if p.holds_kv and gid != gen_id
+            )
+            return live + max(0, int(want or 0)) <= ceiling
+
     def observe(self, gen_id: str, generated: int) -> List["Participant"]:
         """Live growth during generation, and the eviction check that follows it.
 
@@ -823,6 +849,18 @@ class ControllerPreemptionPolicy:
         # generated, so it needs more room than it was preempted holding.
         want = max(0, int(participant.tokens or 0))
         _log.info("llama preemption awaiting-room: gen_id=%s want=%s", self._gen_id, want)
+        # Wait for the cache to actually have room before taking the lease back. Without
+        # this the queue hands a resume out on its own optimistic accounting and the next
+        # watermark sweep evicts the same chat again, which is thrash, not scheduling.
+        deadline = time.monotonic() + timeout
+        while not self._controller.room_for(self._gen_id, want):
+            if time.monotonic() >= deadline:
+                _log.info(
+                    "llama preemption gave-up: gen_id=%s want=%s (no room within %ss)",
+                    self._gen_id, want, timeout,
+                )
+                return False
+            time.sleep(0.1)
         try:
             future = asyncio.run_coroutine_threadsafe(
                 lease.resume_async(want, timeout_s = timeout), self._loop

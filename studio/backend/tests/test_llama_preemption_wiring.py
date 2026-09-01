@@ -798,3 +798,59 @@ class TestTheStreamActuallyReportsGrowth:
         source = Path(inference.__file__).read_text()
         assert "on_tokens = _gguf_observe_tokens," in source
         assert ".observe(completion_id, generated)" in source
+
+
+class TestResumingDoesNotThrash:
+    """44 preemptions across four chats, one producing 611 characters in 374 seconds.
+
+    Observed 2026-09-01 the first time the cache was deliberately overcommitted. Eviction
+    was gated on the LIVE total while resume was gated on the admission queue's optimistic
+    charge, so a chat was let back in while the cache was still over its watermark and the
+    next sweep threw it straight back out. A resume undone by the next sweep is worse than
+    waiting: it pays a prefill for nothing.
+    """
+
+    def test_no_room_while_the_others_still_hold_it(self):
+        controller = PreemptionController("thrash-1")
+        controller.configure(budget = 16384, kv_unified = True)
+        for index in range(2):
+            controller.register(f"c{index}", tokens = 7000, signal = PreemptSignal())
+        assert controller.room_for("c0", 12000) is False, (
+            "a resume was permitted while the cache was already over its watermark"
+        )
+
+    def test_room_appears_once_a_holder_stops(self):
+        """The approved policy: the longest chat continues, and the rest resume once it
+        frees its room."""
+        controller = PreemptionController("thrash-2")
+        controller.configure(budget = 16384, kv_unified = True)
+        for index in range(2):
+            controller.register(f"c{index}", tokens = 7000, signal = PreemptSignal())
+        assert controller.room_for("c0", 12000) is False
+        controller.set_state("c1", ParticipantState.PAUSED)
+        assert controller.room_for("c0", 12000) is True
+
+    def test_a_generation_does_not_count_against_its_own_resume(self):
+        controller = PreemptionController("thrash-3")
+        controller.configure(budget = 16384, kv_unified = True)
+        controller.register("solo", tokens = 9000, signal = PreemptSignal())
+        assert controller.room_for("solo", 9000) is True
+
+    def test_the_gate_is_off_when_preemption_is(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
+        controller = PreemptionController("thrash-4")
+        controller.configure(budget = 16384, kv_unified = True)
+        for index in range(4):
+            controller.register(f"c{index}", tokens = 9000, signal = PreemptSignal())
+        assert controller.room_for("c0", 9000) is True, (
+            "with preemption off nothing should wait on its watermark"
+        )
+
+    def test_the_resume_path_consults_it(self):
+        import inspect
+
+        source = inspect.getsource(ControllerPreemptionPolicy.await_resume)
+        assert "room_for" in source, (
+            "await_resume takes the lease back without checking the live cache"
+        )
+        assert "gave-up" in source, "giving up after the timeout must be visible"
