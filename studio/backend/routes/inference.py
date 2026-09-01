@@ -33264,10 +33264,7 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     # have started.
     progress = get_active_diffusion_engine().generate_progress(current_workspace_subject())
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
-    if (
-        _diffusion_persist_active.get(current_workspace_subject(), 0) > 0
-        and not progress["active"]
-    ):
+    if _diffusion_persist_active.get(current_workspace_subject(), 0) > 0 and not progress["active"]:
         progress = {**progress, "active": True}
     return DiffusionGenerateProgressResponse(**progress)
 
