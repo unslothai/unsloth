@@ -397,7 +397,10 @@ def check_format_response(
                 try:
                     from huggingface_hub import HfApi
 
-                    api = HfApi(token = hf_token)
+                    # No token on the constructor: list_repo_files below is given the
+                    # credential explicitly and that argument wins, so passing it twice
+                    # only adds a second way for the call to be built wrong.
+                    api = HfApi()
                     repo_files = api.list_repo_files(
                         request.dataset_name,
                         repo_type = "dataset",

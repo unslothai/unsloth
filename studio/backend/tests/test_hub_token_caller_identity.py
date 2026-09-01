@@ -402,3 +402,27 @@ def test_the_config_inspection_target_skips_the_cache_for_anonymous():
     target = models_routes._model_config_inspection_target("org/private", True, None, False)
 
     assert target == "org/private", "the anonymous caller was pointed at the cache"
+
+
+def test_resolving_the_hub_token_never_returns_an_unresolved_dependency():
+    """Callers that invoke the route function directly leave a ``Depends`` in the slot.
+
+    The backend's own tests do exactly that, so returning ``header_token`` unchanged put
+    a ``Depends`` object into the cache fingerprint and 500ed the whole variants route.
+    """
+    from fastapi import Depends
+
+    unresolved = Depends(lambda: None)
+
+    resolved = models_routes._resolve_hub_token(unresolved, None)
+
+    assert resolved is None, "an unresolved dependency reached the Hub call"
+
+
+def test_resolving_the_hub_token_keeps_the_anonymous_sentinel():
+    """Rebuilding the sentinel must not quietly restore ambient access."""
+    assert models_routes._resolve_hub_token(False, None) is False
+    assert models_routes._resolve_hub_token(False, "  ") is False
+    assert models_routes._resolve_hub_token(None, None) is None
+    assert models_routes._resolve_hub_token(False, "hf_query") == "hf_query"
+    assert models_routes._resolve_hub_token("hf_header", "hf_query") == "hf_header"

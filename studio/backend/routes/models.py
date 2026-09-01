@@ -202,15 +202,16 @@ def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> 
 
     Header first, as it was before these routes resolved their token through a
     dependency: the header is the caller's real credential and a stale query parameter
-    must not displace it. The dependency's own value goes last so the anonymous sentinel
-    survives when neither explicit token is present -- an ``or`` chain that ended on the
-    query value would fall through ``False`` to ``None`` and hand back the ambient token.
+    must not displace it. With neither explicit token present the sentinel is rebuilt
+    rather than the header handed back as-is: an ``or`` chain ending on the query value
+    would fall through ``False`` to ``None`` and restore the ambient token, while
+    returning ``header_token`` itself would return whatever a caller that bypassed
+    FastAPI's injection left in the parameter -- an unresolved ``Depends`` object.
     """
-    return (
-        _normalize_hf_token(header_token)
-        or _normalize_hf_token(query_token)
-        or header_token
-    )
+    explicit = _normalize_hf_token(header_token) or _normalize_hf_token(query_token)
+    if explicit:
+        return explicit
+    return False if is_anonymous(header_token) else None
 
 try:
     from utils.models import (
