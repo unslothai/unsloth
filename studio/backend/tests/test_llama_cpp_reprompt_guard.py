@@ -1136,6 +1136,18 @@ def test_unclosed_leading_reasoning_is_all_hidden():
         assert _gate_would_reprompt(turn, "", True), opener
 
 
+def test_reasoning_marker_inside_an_example_is_not_reasoning():
+    """A closer shown in a code example is the example. Cutting the turn at it left
+    the finished fence unrecognised and re-prompted the answer away."""
+    text = "First, let me show.\n```xml\n</think>\n```\nI will explain the token."
+    assert _has_answer_artifact(text)
+    assert not _gate_would_reprompt(text, "", True)
+    # A real prefilled closer, outside any artifact, is still where reasoning ends.
+    assert not _gate_would_reprompt(
+        "First, I will search.</think>The answer is Paris.", "", True
+    )
+
+
 def test_bracketed_reasoning_only_turn_still_gets_nudged():
     """`[THINK]...[/THINK]` IS the whole turn for a Magistral-style model and the
     strip takes it, so the raw text is classified rather than losing the nudge."""

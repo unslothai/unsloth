@@ -1051,6 +1051,27 @@ def _strip_markup_outside_fences(text: str) -> str:
     return _CLOSED_MARKUP_ARTIFACT.sub(_keep_examples, text)
 
 
+def _artifact_spans(text: str) -> "list[tuple[int, int]]":
+    """Spans of the complete fences and complete markup in ``text``."""
+    return [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)] + [
+        m.span() for m in _CLOSED_MARKUP_ARTIFACT.finditer(text)
+    ]
+
+
+def _find_outside_artifacts(text: str, needle: str) -> int:
+    """First index of ``needle`` that is not inside a complete artifact, or -1.
+
+    A reasoning marker shown in a code example is the example, not reasoning.
+    """
+    spans = _artifact_spans(text)
+    at = text.find(needle)
+    while at >= 0:
+        if not any(start <= at < end for start, end in spans):
+            return at
+        at = text.find(needle, at + 1)
+    return -1
+
+
 def _text_outside_think(text: str) -> str:
     """``text`` with a LEADING reasoning block dropped, leaving what the user was told.
 
@@ -1068,7 +1089,7 @@ def _text_outside_think(text: str) -> str:
         ("<think", "</think>"),
         ("[THINK]", "[/THINK]"),
     ):
-        close = text.find(closer)
+        close = _find_outside_artifacts(text, closer)
         if close < 0:
             # A leading block with no closer runs to the end: a thought the window
             # cut off has no closing tag, and none of it was shown.
@@ -29960,13 +29981,21 @@ class LlamaCppBackend:
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
                         )
+                        # For the PENDING flag, only prose counts: the name also appears
+                        # as an identifier in code the model is answering with.
+                        _announces_render_html = re.search(
+                            r"(?i)\brender[_\s-]?html\b",
+                            _CLOSED_MARKUP_ARTIFACT.sub(
+                                "", _CLOSED_CODE_FENCE.sub("", _stripped)
+                            ),
+                        )
                         _render_html_already_done_intent = (
                             _tool_succeeded("render_html") and _names_render_html
                         )
                         # Markup drafted for a canvas tool that has not run yet is not a
                         # finished answer, so the artifact exemption does not apply to it.
                         _render_html_pending_intent = bool(
-                            _names_render_html
+                            _announces_render_html
                             and "render_html" in _enabled_tool_names
                             and not _tool_succeeded("render_html")
                         )
