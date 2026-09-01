@@ -1020,20 +1020,17 @@ def _flatten_kv_entries(cache):
 def _kv_prefix_coverage(cache):
     """Tokens the whole cache holds, or None when no entry can attest to it.
 
-    Hybrid models interleave recurrent layers with attention layers, and a
-    recurrent entry carries no offset because it holds a fixed-size state
-    rather than a token sequence. An attention sibling's offset counts for the
-    entries beside it, because a state that cannot be rewound is only ever
-    served at the exact prefix it was built from. When nothing carries an
-    offset the cache stays unverifiable, which is what keeps purely recurrent
-    models out: their state cannot say how far it advanced.
+    A recurrent entry has no offset: it holds fixed-size state, not a token
+    sequence. An attention sibling attests for it, because state that cannot be
+    rewound is only ever served at the prefix it was built from. Nothing
+    attesting leaves the cache unverifiable, which is what keeps mamba/rwkv out.
     """
     covered = None
     for entry in _flatten_kv_entries(cache):
         offset = getattr(entry, "offset", None)
         if offset is None:
-            # Upstream trims a stored cache to a prefix once every entry says it
-            # can be. A sibling's offset only attests for state that cannot be.
+            # Upstream trims once every entry says it can, so only state that
+            # cannot be rewound may be attested for.
             if getattr(entry, "is_trimmable", lambda: False)():
                 return None
             continue

@@ -1618,8 +1618,7 @@ def test_mlx_prompt_cache_covers_hybrid_recurrent_layouts(monkeypatch):
         return entry
 
     def recurrent():
-        # A GatedDeltaNet layer keeps a convolution state and a recurrent state,
-        # neither of which grows with the prompt.
+        # A GatedDeltaNet layer: conv + recurrent state, neither grows with the prompt.
         entry = ArraysCache(size = 2)
         entry[0] = mx.zeros((1, 4, 4), dtype = mx.float16)
         entry[1] = mx.zeros((1, 2, 4, 4), dtype = mx.float16)
@@ -1635,12 +1634,10 @@ def test_mlx_prompt_cache_covers_hybrid_recurrent_layouts(monkeypatch):
     nested = [CacheList(recurrent(), attention(KVCache(), 30))]
     assert _kv_prefix_coverage(nested) == 30
 
-    # Storing these is only safe while upstream cannot shorten them, so pin it:
-    # an mlx-lm that made them trimmable must fail here, not reuse stale state.
+    # Pin it: an mlx-lm that made these trimmable must fail here, not reuse stale state.
     assert can_trim_prompt_cache(hybrid) is False
     assert can_trim_prompt_cache(nested) is False
 
-    # An offsetless entry that says it can be trimmed is refused outright.
     class _TrimmableOpaqueState:
         def is_trimmable(self):
             return True
