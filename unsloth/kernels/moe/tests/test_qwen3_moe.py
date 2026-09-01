@@ -176,7 +176,6 @@ def test_qwen3_moe(
         char = "=",
         num_chars = 100,
     ):
-
         with annotated_context("Checking HF vs torch grouped gemm MoE forward outputs..."):
             check_fwd(ref_result, grouped_result, atol, rtol, verbose = False)
 

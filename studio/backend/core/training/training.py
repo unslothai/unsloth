@@ -1150,7 +1150,6 @@ class TrainingBackend:
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
-
     def reserve_start_request(
         self, start_request_id: str, job_id: str
     ) -> tuple[str, TrainingStartRequestRecord]:
@@ -2583,7 +2582,6 @@ class TrainingBackend:
             return self._create_loss_plot(progress, self.current_theme)
         return None
 
-
     class _TrainerShim:
         """Minimal shim so routes that access backend.trainer.* still work."""
 
@@ -2612,7 +2610,6 @@ class TrainingBackend:
     def trainer(self):
         """Compatibility shim for routes that access backend.trainer.*"""
         return self._TrainerShim(self)
-
 
     def _safe_handle_event(self, event: dict) -> None:
         """Apply one event, swallowing any handler error.
@@ -3323,7 +3320,6 @@ class TrainingBackend:
                     "Training event pump: queue drain failed; finalizing with drained events"
                 )
                 return events
-
 
     def _create_loss_plot(
         self,

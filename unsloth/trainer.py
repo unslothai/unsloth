@@ -939,9 +939,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_unsupported_model
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
-            or (
-                os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
-            )
+            or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
         if blocked:

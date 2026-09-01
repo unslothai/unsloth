@@ -114,12 +114,7 @@ _TRACEBACK_ECHO_PREFIX = "| "
 # Trojan Source (CVE-2021-42574) name; json.dumps already escapes these (ensure_ascii), so only
 # the echo would emit them raw. Deliberately NOT all of category Cf: U+200B-200D, U+00AD and
 # U+FEFF occur in ordinary text (ZWNJ in Persian/Arabic, ZWJ in emoji) and reorder nothing.
-_BIDI_CONTROLS = frozenset(
-    "؜"
-    "‎‏"
-    "‪‫‬‭‮"
-    "⁦⁧⁨⁩"
-)
+_BIDI_CONTROLS = frozenset("؜‎‏‪‫‬‭‮⁦⁧⁨⁩")
 
 
 def _escape_unprintable(text: str) -> str:

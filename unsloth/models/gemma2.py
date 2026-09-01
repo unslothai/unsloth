@@ -380,9 +380,7 @@ def Gemma2Attention_fast_forward_inference(
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
-    RH_K = RH_Q[
-        :, :n_kv_heads, :, :
-    ]
+    RH_K = RH_Q[:, :n_kv_heads, :, :]
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
     RH_K[:, :, :, :h].neg_()
@@ -413,9 +411,7 @@ def Gemma2Attention_fast_forward_inference(
 
     # Gemma2 uses manual matmul for all batch sizes since SDPA lacks softcapping (tanh logit scaling);
     # if PyTorch adds a softcap param, consider SDPA for bsz > 1 to match llama/qwen3.
-    Qn *= (
-        self.scalar
-    )
+    Qn *= self.scalar
     # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805 (comment 2153349963).
     A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
 

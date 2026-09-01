@@ -126,7 +126,6 @@ del maybe_set_windows_rocm_bnb_version
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 
-
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 

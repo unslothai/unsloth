@@ -468,7 +468,6 @@ def LlamaAttention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-
     # Must be done 2 steps before hitting full on a short KV cache, or it errors.
     if position_ids.dim() == 1:
         position_ids = position_ids[:, None]
@@ -495,9 +494,7 @@ def LlamaAttention_fast_forward_inference(
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
-    RH_K = RH_Q[
-        :, :n_kv_heads, :, :
-    ]
+    RH_K = RH_Q[:, :n_kv_heads, :, :]
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
     RH_K[:, :, :, :h].neg_()
@@ -536,9 +533,7 @@ def LlamaAttention_fast_forward_inference(
     else:
         is_causal = False
     if bsz == 1:
-        Qn *= (
-            self.scalar
-        )
+        Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805.
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
@@ -2169,7 +2164,6 @@ def unsloth_fast_generate(self, *args, **kwargs):
     ):
         output = self._old_generate(*args, **kwargs)
 
-
     if restore_training_mode:
         FastLlamaModel.for_training(
             self,
@@ -3366,7 +3360,6 @@ class FastLlamaModel:
                         modules_to_save = ["lm_head"]
                     elif "lm_head" not in modules_to_save:
                         modules_to_save.append("lm_head")
-
 
         # Fixing untrained tokens here is wrong: it can cause reserved tokens to pop out.
 

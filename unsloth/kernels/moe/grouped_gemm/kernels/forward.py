@@ -118,11 +118,9 @@ def _grouped_gemm_forward_kernel(
                     )
                     expert_token_offsets = expert_token_idx[:, None]
 
-
                     # Masks for permuted load and store
                     row_mask = gather_offsets < m_size
                     row_mask = row_mask[:, None]
-
 
                 # Only (PERMUTE_X and not PERMUTE_Y) and (not PERMUTE_X and PERMUTE_Y) occur, so load/store offsets
                 # are flipped between the two cases, with the strides adjusted.
@@ -144,12 +142,8 @@ def _grouped_gemm_forward_kernel(
 
                 if PERMUTE_Y:
                     if not USE_TMA_LOAD_X:
-                        load_idx = (
-                            indices_to_gather[:, None] * K
-                        )
-                    store_idx = (
-                        expert_token_offsets * N
-                    )
+                        load_idx = indices_to_gather[:, None] * K
+                    store_idx = expert_token_offsets * N
 
                 # topk weights are always loaded in expert order: pre-multiplication scales hidden states before
                 # the first gemm and post-multiplication after the second, both grouped by expert.

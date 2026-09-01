@@ -2417,8 +2417,6 @@ def patch_regional_compilation():
     return
 
 
-
-
 def prepare_model_for_kbit_training(
     model: Any,
     use_gradient_checkpointing: Optional = True,
@@ -2443,6 +2441,7 @@ from peft.utils.integrations import dequantize_module_weight
 if Version(peft_version) < Version("0.12.0"):
     # Fix up incorrect downcasting of LoRA weights
     from peft.tuners.lora.layer import LoraLayer
+
     # Prefer filesystem markers (harder to misidentify) before env-key matching
     try:
         source = inspect.getsource(LoraLayer.update_layer)
@@ -4110,8 +4109,6 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
-
-
 
 
 def is_moe_model(model) -> bool:

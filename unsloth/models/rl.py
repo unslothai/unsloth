@@ -3561,7 +3561,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
             init = init.replace(replacer, replacer + vllm_setter)
 
-
     vllm_part = re.findall(
         r"(\n[\s]{8}" r"if (self|args)\.use_vllm\:.*?" r"\n[\s]{8}" "else:\n)",
         init,
@@ -3573,9 +3572,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         new_vllm_part = re.sub(
             r"^\s*\#[^\n]*\n?", "", vllm_part, flags = re.MULTILINE
         )  # to also remove whole comment line instead of just starting at #
-        new_vllm_part = re.sub(
-            r"\s*\#.*$", "", new_vllm_part, flags = re.MULTILINE
-        )
+        new_vllm_part = re.sub(r"\s*\#.*$", "", new_vllm_part, flags = re.MULTILINE)
 
         sampling_params = re.findall(
             r"\n[\s]{4,}(self\.[^\s]{1,}[\s]{0,}\=[\s]{0,}SamplingParams\(.+?\))",

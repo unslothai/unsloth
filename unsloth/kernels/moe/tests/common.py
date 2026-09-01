@@ -265,7 +265,6 @@ def remove_feature_flags(
     return pruned_configs
 
 
-
 TOPK = [1, 4]
 NUM_EXPERTS = [4, 16]
 

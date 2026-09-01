@@ -1078,14 +1078,8 @@ def patch_ipykernel_hf_xet():
         return
 
     ipykernel_version = Version(importlib_version("ipykernel"))
-    if (
-        (Version(importlib_version("hf_xet")) == Version("1.1.10"))
-        and (
-            (ipykernel_version == Version("7.0.0"))
-            or (
-                ipykernel_version == Version("7.0.1")
-            )
-        )
+    if (Version(importlib_version("hf_xet")) == Version("1.1.10")) and (
+        (ipykernel_version == Version("7.0.0")) or (ipykernel_version == Version("7.0.1"))
     ):
         print(
             "#### Unsloth: `hf_xet==1.1.10` and `ipykernel==7.0.0` or `ipykernel==7.0.1` breaks progress bars. Using ASCII progress bars.\n"

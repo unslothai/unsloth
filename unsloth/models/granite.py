@@ -358,9 +358,7 @@ def GraniteAttention_fast_forward_inference(
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
-    RH_K = RH_Q[
-        :, :n_kv_heads, :, :
-    ]
+    RH_K = RH_Q[:, :n_kv_heads, :, :]
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
     RH_K[:, :, :, :h].neg_()

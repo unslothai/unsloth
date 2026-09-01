@@ -327,9 +327,7 @@ def get_lora_parameters(proj):
     With QAT enabled, also fake-quantizes the base layer and lora weights.
     """
     # For DPO or disabled adapters.
-    base_layer = getattr(
-        proj, "base_layer", proj
-    )
+    base_layer = getattr(proj, "base_layer", proj)
     W = base_layer.weight
 
     # Optionally apply fake quantization to base layer weights for QAT.
@@ -386,9 +384,7 @@ def get_lora_parameters(proj):
 
 def get_lora_parameters_bias(proj):
     # For DPO or disabled adapters.
-    base_layer = getattr(
-        proj, "base_layer", proj
-    )
+    base_layer = getattr(proj, "base_layer", proj)
     W = base_layer.weight
 
     # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed

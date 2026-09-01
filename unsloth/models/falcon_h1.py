@@ -277,17 +277,12 @@ def FalconH1Attention_fast_forward_inference(
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
     Kn.mul_(self.config.key_multiplier)
     Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
-    Qn = Qn.view(
-        bsz, 1, n_heads, head_dim
-    )
-    Kn = Kn.view(
-        bsz, 1, n_kv_heads, head_dim
-    )
+    Qn = Qn.view(bsz, 1, n_heads, head_dim)
+    Kn = Kn.view(bsz, 1, n_kv_heads, head_dim)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
     Qn = Qn.transpose(1, 2)
     Kn = Kn.transpose(1, 2)
-
 
     # Must happen 2 steps before hitting full on a short KV cache, or it errors.
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
@@ -306,9 +301,7 @@ def FalconH1Attention_fast_forward_inference(
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
-    RH_K = RH_Q[
-        :, :n_kv_heads, :, :
-    ]
+    RH_K = RH_Q[:, :n_kv_heads, :, :]
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
     RH_K[:, :, :, :h].neg_()
@@ -340,9 +333,7 @@ def FalconH1Attention_fast_forward_inference(
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
     if bsz == 1:
-        Qn *= (
-            self.scalar
-        )
+        Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
         # (comment 2153349963).
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])

@@ -157,19 +157,13 @@ def _grouped_gemm_dX_kernel(
                         # Permuted on load in the forward pass (typically the first grouped GEMM in the MoE
                         # MLP), so load
                         # contiguous and permute on store.
-                        load_a_idx = (
-                            indices_to_gather[:, None] * N
-                        )
-                        store_idx = (
-                            expert_token_offsets * K
-                        )
+                        load_a_idx = indices_to_gather[:, None] * N
+                        store_idx = expert_token_offsets * K
                     else:
                         # Permuted on store in the forward pass (typically the second grouped GEMM), so permute
                         # on load and
                         # store contiguous.
-                        load_a_idx = (
-                            expert_token_offsets * N
-                        )
+                        load_a_idx = expert_token_offsets * N
                         store_idx = indices_to_gather[:, None] * K
                 else:
                     # Offsets relative to the CURRENT expert; m_start then advances to this expert's start token.
@@ -390,9 +384,7 @@ def _grouped_gemm_dW_kernel(
 
                         if PERMUTE_X or PERMUTE_Y:
                             # These will be used for loading and storing in permuted order
-                            gather_offsets = (
-                                tile_m_idx + block_range_m
-                            )
+                            gather_offsets = tile_m_idx + block_range_m
 
                             indices_to_gather = m_start + tl.max_contiguous(
                                 tl.multiple_of(gather_offsets % m_size, BLOCK_SIZE_M),
@@ -416,9 +408,7 @@ def _grouped_gemm_dW_kernel(
                                 )  # Permute on load: token to expert order, /TOPK for the original count.
                                 dY_row_load_idx = m_offsets[:, None] * N
                             else:
-                                x_row_load_idx = (
-                                    indices_to_gather[:, None] * K
-                                )
+                                x_row_load_idx = indices_to_gather[:, None] * K
                                 dY_row_load_idx = expert_token_offsets * N
 
                         else:
@@ -457,9 +447,7 @@ def _grouped_gemm_dW_kernel(
                     dW_desc.store([expert_idx, n_offset, k_offset], y)
                 else:
                     tl.store(
-                        dW_ptr
-                        + store_row_offs[:, None] * K
-                        + (k_offset + block_range_k)[None, :],
+                        dW_ptr + store_row_offs[:, None] * K + (k_offset + block_range_k)[None, :],
                         y,
                         mask = nk_mask,
                     )

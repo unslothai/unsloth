@@ -1442,8 +1442,6 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             # transformers <= 4.48 does not support logits_to_keep, so drop the logits here; see
             # huggingface/trl#2770.
 
-
-
     function = inspect.getsource(_get_per_token_logps)
     return function
 
@@ -2265,8 +2263,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # transformers <= 4.48 does not support logits_to_keep, so drop the logits here; see
             # huggingface/trl#2770.
-
-
 
     function = inspect.getsource(_get_per_token_logps_and_entropies)
     if trl_version < Version("1.7.0"):

@@ -200,7 +200,6 @@ def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: 
     return str(ema_dir)
 
 
-
 _CACHE_VERSION = "1"
 
 
@@ -388,7 +387,6 @@ class PersistentConditioningCache:
             return tuple(out)
         except Exception:  # noqa: BLE001 -- a corrupt entry is re-encoded, never fatal
             return None
-
 
 
 # Buckets snap to 64 pixels: the DiT families divide by 8 in the VAE and 2 again in latent patching,

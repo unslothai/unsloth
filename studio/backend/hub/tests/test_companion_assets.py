@@ -91,16 +91,12 @@ def _install(monkeypatch, *repos):
     return scans
 
 
-
-
 def test_two_quants_of_one_family_resolve_to_a_single_companion_base():
     """Both quants derive the same base id, so the cache holds one copy, not two."""
     scans = [SimpleNamespace(repos = [_gguf_repo(("Q2_K", Q2_K_BYTES), ("Q4_K_M", Q4_K_M_BYTES))])]
     required = companion_assets.required_companion_bases(scans)
     assert BASE_REPO.lower() in required
     assert required[BASE_REPO.lower()] == {GGUF_REPO}
-
-
 
 
 def test_deleting_one_of_two_quants_retains_the_companions(monkeypatch):
@@ -131,8 +127,6 @@ def test_whole_repo_delete_reclaims_every_quant(monkeypatch):
     impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
     assert impact["reclaimed_bytes"] == Q2_K_BYTES + Q4_K_M_BYTES
     assert [f["repo_id"] for f in impact["freeable_companions"]] == [BASE_REPO]
-
-
 
 
 def test_shared_base_cannot_be_deleted_while_a_quant_is_installed(monkeypatch):
@@ -209,8 +203,6 @@ def test_the_guard_leaves_ordinary_repos_alone(monkeypatch):
     """Only a known companion base takes the extra check, so a chat GGUF is untouched by it."""
     assert not companion_assets.is_companion_base("unsloth/Qwen3-8B-GGUF")
     assert companion_assets.is_companion_base(BASE_REPO)
-
-
 
 
 def test_orphan_listing_is_empty_while_a_quant_is_installed(monkeypatch):
