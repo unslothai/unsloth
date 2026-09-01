@@ -304,12 +304,9 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(q8)
 
     def test_nested_fallback_is_skipped_for_other_architectures(self, tmp_path):
-        """The fallback is qwen4exp only. Qwen3.8-27B (qwen35) publishes an MTP/
-        copy for the four quants whose head was dropped and bakes the head into the
-        other 20; llama.cpp prefers a -md drafter over an embedded head, so on
-        UD-Q4_K_XL the sidecar and the head accept identically (143 of 223) for
-        byte-identical output. Pricing it would reserve for a file the load will
-        not open."""
+        """The fallback is qwen4exp only. Qwen3.8-27B bakes the head into 20 of
+        its 24 quants, and llama.cpp prefers a -md drafter over an embedded one, so
+        pricing the sidecar would reserve for a file the load will not open."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen35")
         _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
@@ -319,8 +316,8 @@ class TestDrafterDiscoveryMatchesTheLoader:
 
     def test_nested_fallback_is_skipped_for_a_qwen4exp_with_its_own_head(self, tmp_path):
         """Architecture is not the whole gate: a qwen4exp GGUF converted with the
-        block kept needs no sidecar either. Nothing published does this today, so
-        this pins the intent rather than a live case."""
+        block kept needs no sidecar either. Nothing published does this, so this
+        pins the intent."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(
             snap / "model-Q4_K_M.gguf",
@@ -333,9 +330,8 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got is None
 
     def test_a_zero_head_count_still_takes_the_nested_fallback(self, tmp_path):
-        """A published qwen4exp quant carries no nextn_predict_layers at all, but
-        unsloth/Qwen3.8-27B-GGUF writes the key on every quant and sets it to 0 on
-        the four with no head, so presence of the key must not read as a head."""
+        """Qwen3.8-27B writes the key on every quant and sets it to 0 on the four
+        with no head, so presence of the key must not read as a head."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(
             snap / "model-UD-IQ1_S.gguf",
@@ -348,9 +344,8 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(nested)
 
     def test_a_root_mirror_is_taken_by_every_architecture(self, tmp_path):
-        """Only the nested fallback is gated. Publishing a root mtp- companion
-        beside the weights is a deliberate statement that the companion is the one
-        to use, and that is how Gemma 4 ships."""
+        """Only the nested fallback is gated. A root mtp- companion beside the
+        weights says it is the one to use, which is how Gemma 4 ships."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", {**_MLA_NO_HEAD, "nextn_predict_layers": 1})
         companion = _write_gguf(snap / "mtp-model.gguf", _MLA_NO_HEAD)
@@ -359,10 +354,9 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(companion)
 
     def test_a_non_drafter_parked_under_mtp_is_not_launched(self, tmp_path):
-        """_is_mtp_only_drafter_path accepts everything under MTP/ by design, to
-        keep companions out of variant menus. Too broad for choosing what to
-        launch: detect_mtp_file says so in as many words, and an mmproj or an
-        imatrix would be handed to --model-draft."""
+        """Everything under MTP/ classifies as a drafter, which keeps companions
+        out of variant menus and is too broad for choosing what to launch: an
+        mmproj or an imatrix would be handed to --model-draft."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         _write_gguf(snap / "MTP" / "mmproj-BF16.gguf", _MLA_NO_HEAD)
@@ -373,8 +367,8 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got is None, f"would launch a non-drafter as the draft model: {got} ({size} bytes)"
 
     def test_the_older_mtp_suffix_naming_still_resolves(self, tmp_path):
-        """Gemma 4 published <model>-MTP.gguf before the mtp- prefix; the local
-        scan still accepts it, so the hub path must too."""
+        """Gemma 4 published <model>-MTP.gguf before the mtp- prefix, and the
+        local scan still accepts it, so the hub path must too."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         old = _write_gguf(snap / "MTP" / "model-Q8_0-MTP.gguf", _MLA_NO_HEAD)
@@ -383,11 +377,10 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(old)
 
     def test_an_incomplete_nested_split_does_not_shadow_a_complete_head(self, tmp_path):
-        """llama.cpp resolves the sibling shards from the first one's directory, so
+        """llama.cpp resolves sibling shards from the first one's directory, so
         half a set is unusable and _download_companion_gguf answers None to it.
-        Ranked first and rejected afterwards, it would disable speculation with a
-        usable lower-ranked head sitting right there -- which is why the local scan
-        settles launchability at collection rather than at emission."""
+        Ranked first and rejected after, it would disable speculation with a usable
+        lower-ranked head present."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         _write_gguf(snap / "MTP" / "mtp-model-Q8_0-00001-of-00002.gguf", _MLA_NO_HEAD)

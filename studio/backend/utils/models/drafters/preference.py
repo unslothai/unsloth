@@ -3,17 +3,11 @@
 
 """Ranking keys that decide which sidecar a load prefers.
 
-The download, the snapshot reuse and the offline cache lookup all order
-candidates with these, so a repo resolves to the same file whichever of those
-paths reaches it first.
-
-The local-folder scan does NOT: detect_mtp_file ranks with its own
-``_smallest_first``, which is size-first on purpose, so a folder holding several
-copies costs the least disk. These keys are speed-first instead, because the hub
-path is choosing what to spend a download on. The two therefore agree on the
-family and can differ on the copy, which is a deliberate difference and not an
-oversight -- an earlier version of this docstring claimed the local scan shared
-them, and it never has.
+The download, the snapshot reuse and the offline cache lookup share them, so a
+repo resolves the same way whichever reaches it first. The local scan does not:
+detect_mtp_file ranks size-first (``_smallest_first``) because a folder holding
+several copies costs disk, while these rank speed-first because the hub path is
+choosing what to spend a download on. Same family, sometimes a different copy.
 """
 
 from pathlib import Path
@@ -68,16 +62,10 @@ def mtp_precision_rank(name: str) -> int:
 def mtp_preference_key(name: str) -> tuple[int, int, str]:
     """Sort key picking the preferred MTP head by name alone.
 
-    A head that omits its own token_embd/output and borrows the target's wins the
-    tie. It is 1.35 GB smaller at Q8_0 (2.79 against 4.14) and drafts no worse:
-    on the shipped prebuilt against Qwen3.8-Flash-Next UD-IQ1_S the shared and
-    full Q8_0 heads accept identically, 159 of 284, and shared Q4_K_M beats full
-    Q4_K_M (0.560 against 0.541) because it borrows the target's real embeddings
-    instead of carrying its own quantized copies.
-
-    The borrow is not a portability risk here, because only ``_pick_mtp``'s
-    qwen4exp path reaches a repo publishing both forms, and qwen4exp MTP and the
-    borrow live in the same fork -- a build that can draft one carries the other.
+    A head borrowing the target's token_embd/output wins the tie: 1.35 GB smaller
+    at Q8_0 and no worse, accepting identically (159 of 284) on the shipped
+    prebuilt. Only the qwen4exp path reaches a repo publishing both forms, and
+    qwen4exp MTP and the borrow ship in one fork, so the borrow always resolves.
     """
     borrows = 0 if "shared" in Path(name).name.lower() else 1
     return mtp_precision_rank(name), borrows, Path(name).name.lower()

@@ -45,11 +45,10 @@ def _drafter_pairing_stem(name: str, *, kind: str) -> str:
         stem,
         flags = re.IGNORECASE,
     )
-    # An MTP head that borrows the target's token_embd/output is published as
-    # mtp-<model>-shared-<quant>.gguf, so -shared is a marker of the head's FORM,
-    # not part of the family. Left in, the stem is <model>-shared and never
-    # prefixes <model>-<quant>, so the local scan could not pair the very head the
-    # hub picker prefers. MTP only: no other kind publishes a borrowed form.
+    # A borrowed MTP head is published as mtp-<model>-shared-<quant>.gguf, so
+    # -shared marks the head's FORM, not the family. Left in, the stem is
+    # <model>-shared, which never prefixes <model>-<quant>, so the local scan could
+    # not pair the head the hub picker prefers. MTP only: no other kind borrows.
     if kind == "mtp":
         stem = re.sub(r"-shared$", "", stem)
     return stem

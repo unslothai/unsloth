@@ -2764,14 +2764,12 @@ _MTP_SHARD_SUFFIX_RE = re.compile(r"-[0-9]{5}-of-[0-9]{5}$")
 def _is_published_mtp_drafter_name(path: str) -> bool:
     """Does *path*'s BASENAME name a published MTP head?
 
-    ``_is_mtp_only_drafter_path`` accepts anything under a directory called
-    ``MTP/``, which is right for excluding companions from variant menus and far
-    too broad for choosing what to launch: an mmproj, an imatrix or a stray weight
-    copy parked there would be handed to ``--model-draft``. Same rule the local
-    scan applies in ``detect_mtp_file`` -- ``mtp-<model>`` or the older
-    ``<model>-MTP`` -- with the shard suffix stripped first, since a split copy of
-    the old scheme is ``<model>-Q8_0-MTP-00001-of-00002.gguf``, whose stem does not
-    end in ``-mtp``."""
+    ``_is_mtp_only_drafter_path`` accepts anything under ``MTP/``, which is right
+    for excluding companions from menus and too broad for choosing what to launch:
+    an mmproj, an imatrix or a stray weight copy would go to ``--model-draft``.
+    Same rule as ``detect_mtp_file`` -- ``mtp-<model>`` or the older
+    ``<model>-MTP`` -- shard suffix stripped first, since an old-scheme split copy
+    is ``<model>-Q8_0-MTP-00001-of-00002.gguf``, whose stem lacks ``-mtp``."""
     lower = Path(path).name.lower()
     if not lower.endswith(".gguf"):
         return False
@@ -2793,12 +2791,10 @@ def _pick_mtp(candidates: list[str], *, allow_nested: bool = True) -> Optional[s
     names = drop_shadowed_appledouble_names(list(candidates))
 
     def _launchable(name: str) -> bool:
-        # Settled before ranking, not after, exactly as detect_mtp_file settles it
-        # at collection: llama.cpp resolves the sibling shards from the first one's
-        # directory, so half a set is unusable, and _download_companion_gguf answers
-        # None to it rather than fetching. Ranked first and rejected afterwards, an
-        # incomplete set would shadow a complete lower-ranked head and disable
-        # speculation with a usable one sitting right there.
+        # Settled before ranking, as detect_mtp_file settles it at collection:
+        # llama.cpp resolves sibling shards from the first one's directory, so half
+        # a set is unusable and _download_companion_gguf answers None to it. Ranked
+        # first and rejected after, it would shadow a complete lower-ranked head.
         return split_listing_is_complete(names, name)
 
     # Root first, so a repo mirroring one head at the root (Gemma 4) still resolves to it
@@ -2833,15 +2829,14 @@ def _pick_mtp(candidates: list[str], *, allow_nested: bool = True) -> Optional[s
 
 
 def _pick_mtp_root_only(candidates: list[str]) -> Optional[str]:
-    """``_pick_mtp`` for everything except Qwen3.8-Flash-Next: the behaviour every
-    model had before the ``MTP/`` fallback existed.
+    """``_pick_mtp`` for everything but qwen4exp: the behaviour every model had
+    before the ``MTP/`` fallback existed.
 
     llama.cpp loads the draft model whenever one is passed, so a sidecar displaces
-    an embedded head rather than supplementing it. On Qwen3.8-27B UD-Q4_K_XL the
-    two draft identically -- 143 of 223 accepted and byte-identical output on both
-    -- so fetching the 1.37 GB ``MTP/`` copy buys nothing the file already has.
-    A root mirror is still taken: publishing one beside the weights is a deliberate
-    statement that the mirror is the one to use."""
+    an embedded head rather than adding to it. On Qwen3.8-27B UD-Q4_K_XL the two
+    draft identically (143 of 223, byte-identical output), so the 1.37 GB copy buys
+    nothing. A root mirror is still taken: publishing one beside the weights says
+    it is the one to use."""
     return _pick_mtp(candidates, allow_nested = False)
 
 
@@ -12509,20 +12504,19 @@ class LlamaCppBackend:
     def _gguf_path_wants_nested_mtp(cls, gguf_path: str) -> bool:
         """May this target take a drafter from the ``MTP/`` folder?
 
-        Only ``qwen4exp`` (Qwen3.8-Flash-Next), and only when it carries no head of
-        its own. Both come from one header read, using the same probe-instance
-        trick as ``_gguf_path_is_diffusion``: this runs before the load reads the
-        model's metadata into ``self``, and must not overwrite the live model's.
+        Only ``qwen4exp``, and only with no head of its own. Both come from one
+        header read, via the same probe-instance trick as
+        ``_gguf_path_is_diffusion``: this runs before the load reads metadata into
+        ``self`` and must not overwrite the live model's.
 
-        The architecture is the gate rather than the head count because a repo can
-        publish an ``MTP/`` folder for a subset of its quants. Qwen3.8-27B does:
-        it writes ``qwen35.nextn_predict_layers`` on all 24, sets it to 0 on the
-        four whose head was dropped and 1 on the rest, and ships one sidecar for
-        the four. Keying on the head count alone would hand that sidecar to those
-        four, which is a wider behaviour change than this is meant to be.
+        Architecture gates it rather than the head count alone, because a repo can
+        publish an ``MTP/`` folder for a subset of its quants: Qwen3.8-27B writes
+        ``qwen35.nextn_predict_layers`` on all 24, 0 on the four whose head was
+        dropped, and ships one sidecar for those four. Head count alone would hand
+        it to them, a wider change than intended.
 
-        Fails closed on an unreadable header: the fallback is the new path, so an
-        unknown file should take the one every model took before it existed."""
+        Fails closed on an unreadable header, onto the path every model took before
+        this fallback existed."""
         try:
             probe = object.__new__(cls)
             probe._model_identifier = "mtp-head-probe"
@@ -13994,11 +13988,10 @@ class LlamaCppBackend:
         fresh copy can't be fetched. Prefers a repo-root ``mtp-*.gguf`` across all
         cached snapshots; else an existing ``MTP/`` copy. None if none is cached.
 
-        Ranked with the same keys ``_pick_mtp`` uses, or offline and online disagree
-        about the same cache: lexical order put ``mtp-Qwen3.8-Flash-Next-BF16.gguf``
-        first, so a cached user got the 7.77 GB head that measures slowest while a
-        fresh install downloaded the 2.79 GB shared Q8_0 one, which is the split
-        this change exists to close.
+        Ranked with ``_pick_mtp``'s keys, or offline and online disagree about one
+        cache: lexical order put ``mtp-Qwen3.8-Flash-Next-BF16.gguf`` first, so a
+        cached user got the 7.77 GB slowest head while a fresh install downloaded
+        the 2.79 GB shared Q8_0 one.
 
         ``allow_nested=False`` drops the ``MTP/`` half, so a non-qwen4exp target
         resolves the same way offline as online (``_pick_mtp_root_only``)."""
@@ -14020,26 +14013,23 @@ class LlamaCppBackend:
                 snap_roots: list[str] = []
                 snap_subdirs: list[str] = []
                 for f in _gguf_snapshot_files(snap):
-                    # MTP only: a DSpark drafter needs --spec-type draft-dspark, so
-                    # it must never be launched as an MTP one. The nested tier needs
-                    # a published drafter NAME as well, since everything under MTP/
-                    # classifies as one and an mmproj or imatrix parked there would
-                    # otherwise be handed to --model-draft.
+                    # MTP only: a DSpark drafter needs --spec-type draft-dspark.
+                    # The nested tier needs a published drafter NAME too, since
+                    # everything under MTP/ classifies as one and an mmproj or
+                    # imatrix there would otherwise go to --model-draft.
                     if "/" not in f:
                         if _is_mtp_only_drafter_path(f):
                             snap_roots.append(f)
                     elif _is_mtp_only_drafter_path(f) and _is_published_mtp_drafter_name(f):
                         snap_subdirs.append(f)
-                # Root lexical, nested by preference: the two tiers exactly as
-                # _pick_mtp orders them.
+                # Root lexical, nested by preference: the tiers as _pick_mtp orders them.
                 roots.extend(snap / f for f in sorted(snap_roots))
                 subdirs.extend(snap / f for f in sorted(snap_subdirs, key = mtp_preference_key))
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.
             for cand in roots + subdirs if allow_nested else roots:
                 # Half a split set is not a drafter, and offline there is no fetch
-                # to complete it -- the same whole-set rule _download_companion_gguf
-                # applies to its own cache hit.
+                # to complete it: the rule _download_companion_gguf applies too.
                 if cand.is_file() and _drafter_split_is_complete(cand):
                     return str(cand)
         except Exception as e:
@@ -14065,9 +14055,8 @@ class LlamaCppBackend:
         neither and this returns None. Returns the local path, or None.
 
         ``allow_nested=False`` skips the ``MTP/`` fallback, which is what every
-        architecture but qwen4exp gets: a repo can publish a folder for a subset of
-        its quants, as Qwen3.8-27B does, and elsewhere the sidecar would only
-        displace a head the file already carries.
+        architecture but qwen4exp gets: elsewhere the sidecar would only displace a
+        head the file already carries.
         """
 
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
@@ -17920,14 +17909,12 @@ class LlamaCppBackend:
                     # manually.
                     #
                     # The MTP/ fallback is qwen4exp only, whose published GGUFs
-                    # carry no head at all. Every other architecture keeps the
-                    # root-mirror behaviour it had before the fallback existed:
-                    # Qwen3.8-27B bakes the head into 20 of its 24 quants, and
-                    # llama.cpp prefers a -md drafter over an embedded head, so on
-                    # UD-Q4_K_XL the sidecar and the head accept identically (143
-                    # of 223) for byte-identical output -- 1.37 GB to displace what
-                    # is already loaded. Read from the file rather than from self,
-                    # whose metadata is this load's only below.
+                    # carry no head at all; every other arch keeps its root-mirror
+                    # behaviour. Qwen3.8-27B bakes the head into 20 of 24 quants,
+                    # and llama.cpp prefers a -md drafter over an embedded one, so
+                    # on UD-Q4_K_XL the two accept identically (143 of 223) for
+                    # byte-identical output: 1.37 GB to displace what is loaded.
+                    # Read from the file, not self, whose metadata is set below.
                     if (
                         not mtp_draft_path
                         and _spec_canon in ("auto", "mtp", "mtp+ngram")

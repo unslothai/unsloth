@@ -1444,8 +1444,8 @@ def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monke
     """Offline reuse must name the file the online picker names.
 
     Lexical order put mtp-Qwen3.8-Flash-Next-BF16.gguf first, so a cached user got
-    the 7.77 GB head that measures slowest while a fresh install downloaded the
-    2.79 GB shared Q8_0 one -- the download/reuse split this path exists to close.
+    the 7.77 GB slowest head while a fresh install downloaded the 2.79 GB shared
+    Q8_0 one.
     """
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -1474,9 +1474,8 @@ def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monke
 
 
 def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monkeypatch):
-    """Everything under MTP/ classifies as an mtp drafter, which is right for
-    excluding companions from menus and wrong for choosing what to launch: an
-    mmproj or an imatrix would be handed to --model-draft."""
+    """Everything under MTP/ classifies as an mtp drafter: right for excluding
+    companions from menus, wrong for choosing what to launch."""
     import core.inference.llama_cpp as llama_cpp_module
 
     snap = tmp_path / "snap"
@@ -1495,9 +1494,9 @@ def test_a_shared_head_pairs_with_its_target_in_the_local_scan(tmp_path):
     """-shared marks the head's FORM, not its family.
 
     mtp-<model>-shared-<quant>.gguf left a pairing stem of <model>-shared, which
-    never prefixes <model>-<quant>, so detect_mtp_file could not pair the borrowed
-    head that the hub picker now prefers -- and a local checkout of the very files
-    Studio had just downloaded resolved differently from the download.
+    never prefixes <model>-<quant>, so detect_mtp_file could not pair the head the
+    hub picker prefers: a local checkout of the files Studio had just downloaded
+    resolved differently from the download.
     """
     from utils.models.drafters.common import _drafter_matches_weight, _drafter_pairing_stem
     from utils.models.model_config import detect_mtp_file
