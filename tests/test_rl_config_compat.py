@@ -9,6 +9,7 @@ The module is loaded by file spec because `import unsloth.models.rl_config_compa
 would run `unsloth/__init__.py` first and drag in torch, numpy and unsloth_zoo.
 """
 
+import ast
 import dataclasses
 import importlib.util
 from pathlib import Path
@@ -257,6 +258,87 @@ def test_a_transformers_5_removal_is_carried_across_on_a_real_config():
     assert any("warmup_steps" in m for m in messages)
 
 
+def test_a_rename_survives_a_default_unsloth_overrode_on_the_generated_config():
+    """The bug this guards: `rl.py` mirrors the base parameter under its OWN
+    default (`warmup_steps = 0.1`, `per_device_train_batch_size = 4`), so
+    comparing against TRL's declared default reads Unsloth's injected value as
+    caller intent and silently trains at the injected number instead.
+    """
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        output_dir: str = "out"
+        warmup_steps: float = 0.0  # what TRL declares
+
+    class UnslothSFTConfig(ModernSFTConfig):
+        def __init__(self, output_dir = "out", warmup_steps = 0.1, **kwargs):
+            pass  # what rl.py generates: same field, different default
+
+    messages = []
+    kept = filter_config_init_kwargs(
+        ModernSFTConfig,
+        {"output_dir": "out", "warmup_steps": 0.1, "warmup_ratio": 0.03},
+        notify = messages.append,
+        mirrored_from = UnslothSFTConfig,
+    )
+    assert kept["warmup_steps"] == 0.03, "the caller's warmup_ratio was thrown away"
+    assert not any("ignored" in m for m in messages)
+
+
+def test_a_value_the_caller_really_set_still_beats_the_rename():
+    """The other half: `mirrored_from` must not turn every collision into a win."""
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        warmup_steps: float = 0.0
+
+    class UnslothSFTConfig(ModernSFTConfig):
+        def __init__(self, warmup_steps = 0.1, **kwargs):
+            pass
+
+    kept, messages = [], []
+    kept = filter_config_init_kwargs(
+        ModernSFTConfig,
+        {"warmup_steps": 0.25, "warmup_ratio": 0.03},
+        notify = messages.append,
+        mirrored_from = UnslothSFTConfig,
+    )
+    assert kept["warmup_steps"] == 0.25
+    assert any("ignored" in m for m in messages)
+
+
+def test_the_renames_rl_py_overrides_the_default_of_are_the_known_ones():
+    """The systemic check behind the `mirrored_from` fix.
+
+    A rename whose target `rl.py` also assigns a default is only correct because
+    the config path passes `mirrored_from`; without it the injected default reads
+    as caller intent and the rename is dropped. Three are in that position today.
+    A fourth appearing means someone added an `rl.py` default or a rename without
+    checking the interaction, so it should fail here rather than in training.
+    """
+    overridden = _rl_py_overridden_defaults()
+    # The entries the audit found, so a matcher that silently stops working fails.
+    assert {"warmup_steps", "per_device_train_batch_size", "include_num_input_tokens_seen"} <= (
+        overridden
+    ), sorted(overridden)
+
+    needing_mirror = {
+        old for old, new in TRANSFORMERS_CONFIG_RENAMES.items() if new in overridden
+    } | {old for old, new in TRL_CONFIG_RENAMES.items() if new in overridden}
+    assert needing_mirror == {
+        "warmup_ratio",
+        "per_gpu_train_batch_size",
+        "per_gpu_eval_batch_size",
+    }, sorted(needing_mirror)
+
+
+def test_a_rename_target_normalised_in_post_init_is_not_a_rename():
+    """`setattr` on an existing config skips `__post_init__`, so a field that
+    normalises its own value cannot be migrated by assignment."""
+    assert "include_tokens_per_second" in TRANSFORMERS_REMOVED_FIELD_ADVICE
+    assert "include_tokens_per_second" not in TRANSFORMERS_CONFIG_RENAMES
+
+
 def test_a_default_factory_field_is_compared_not_crashed_on():
     """Reading a `default_factory` default must not raise while resolving a rename."""
 
@@ -277,11 +359,41 @@ def test_a_default_factory_field_is_compared_not_crashed_on():
 RL_SOURCE = (REPO_ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
 
 
+def _rl_py_overridden_defaults():
+    """Config parameters whose default `rl.py` rewrites in the generated `__init__`.
+
+    Both spellings it uses: the `replacements = {...}` literals and the later
+    `replacements["warmup_steps"] = 0.1` version-conditional assignments.
+    """
+    names = set()
+    for node in ast.walk(ast.parse(RL_SOURCE)):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "replacements"
+                and isinstance(node.value, ast.Dict)
+            ):
+                names.update(
+                    k.value for k in node.value.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                )
+            elif (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "replacements"
+                and isinstance(target.slice, ast.Constant)
+            ):
+                names.add(target.slice.value)
+    return names
+
+
 def test_the_generated_config_routes_super_through_the_filter():
     assert "_unsloth_config_arguments = dict({RLConfig_call_args}{RLConfig_kwargs})" in RL_SOURCE
     assert (
         "super().__init__(**_unsloth_filter_config_init_kwargs("
-        "{RLConfig_name}, _unsloth_config_arguments))"
+        "{RLConfig_name}, _unsloth_config_arguments, mirrored_from = __class__))"
     ) in RL_SOURCE
     # The raw splat is what the fix removes; it must not come back.
     assert "super().__init__({RLConfig_call_args}{RLConfig_kwargs})" not in RL_SOURCE
@@ -295,8 +407,11 @@ def test_the_generated_file_imports_the_filter_with_a_safe_fallback():
     # An import failure must degrade to the historical passthrough, never to a
     # NameError inside a generated trainer.
     assert (
-        "def _unsloth_filter_config_init_kwargs(config_class, kwargs): return kwargs" in RL_SOURCE
+        "def _unsloth_filter_config_init_kwargs(config_class, kwargs, **kw): return kwargs"
+        in RL_SOURCE
     )
+    # ...and an older Unsloth, whose filter has no `mirrored_from`, must not see it.
+    assert '"mirrored_from" not in inspect.signature(' in RL_SOURCE
 
 
 if __name__ == "__main__":

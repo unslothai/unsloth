@@ -90,12 +90,17 @@ TRANSFORMERS_CONFIG_RENAMES = {
     "push_to_hub_token": "hub_token",
     "per_gpu_train_batch_size": "per_device_train_batch_size",
     "per_gpu_eval_batch_size": "per_device_eval_batch_size",
-    "include_tokens_per_second": "include_num_input_tokens_seen",
 }
 
 
 # transformers 5 removals whose value cannot be carried across.
 TRANSFORMERS_REMOVED_FIELD_ADVICE = {
+    # Not a rename: `include_num_input_tokens_seen` is `str | bool` and normalises
+    # a bool to "no"/"all" in `__post_init__`, which the trainer's `setattr` path
+    # does not run, so a migrated `False` would read as truthy.
+    "include_tokens_per_second": (
+        'set `include_num_input_tokens_seen = "all"` instead'
+    ),
     "group_by_length": 'set `train_sampling_strategy = "group_by_length"` instead',
     "include_inputs_for_metrics": 'add "inputs" to the `include_for_metrics` list instead',
     "tpu_metrics_debug": "use `debug` instead",
@@ -193,9 +198,36 @@ def _field_default(config_class, name):
     return _MISSING
 
 
-def _is_untouched(config_class, name, value):
-    """True if `value` is indistinguishable from `name`'s declared default."""
-    default = _field_default(config_class, name)
+def _init_default(config_class, name):
+    """The default `config_class.__init__` gives `name`, ignoring the field list.
+
+    `Unsloth<X>Config` inherits its dataclass fields but overrides some defaults
+    in its own `__init__` signature (`rl.py` sets `per_device_train_batch_size`
+    to 4, and `warmup_steps`/`warmup_ratio` to 0.1). Reading `dataclasses.fields`
+    there returns TRL's default instead of the one the caller actually got.
+    """
+    try:
+        parameter = inspect.signature(config_class.__init__).parameters.get(name)
+    except (TypeError, ValueError):
+        return _MISSING
+    if parameter is None or parameter.default is inspect.Parameter.empty:
+        return _MISSING
+    return parameter.default
+
+
+def _is_untouched(config_class, name, value, mirrored_from = None):
+    """True if `value` is indistinguishable from `name`'s declared default.
+
+    `mirrored_from` is the class whose `__init__` supplied `value`, which is not
+    `config_class` when a generated config mirrors a base class parameter under a
+    different default. Comparing against the wrong one reads a default Unsloth
+    injected as a value the caller chose, and then refuses to apply the rename.
+    """
+    default = _MISSING
+    if mirrored_from is not None:
+        default = _init_default(mirrored_from, name)
+    if default is _MISSING:
+        default = _field_default(config_class, name)
     if default is _MISSING:
         return False
     try:
@@ -247,12 +279,17 @@ def filter_config_init_kwargs(
     config_class,
     kwargs,
     notify = None,
+    mirrored_from = None,
 ):
     """Return `kwargs` reduced to what `config_class.__init__` will accept.
 
     Renames are applied where TRL or transformers documented one; everything else
     the config rejects is dropped. Each decision is reported through `notify`
     (`print` by default, which shows up reliably in a notebook).
+
+    `mirrored_from` is the generated config class whose `__init__` built `kwargs`.
+    It is what tells an untouched mirrored parameter apart from a real one, so
+    omitting it only costs a rename that loses to its own target's default.
     """
     if not kwargs:
         return kwargs
@@ -282,7 +319,9 @@ def filter_config_init_kwargs(
             # overwrite the default: an explicitly set new name wins.
             existing = kwargs.get(renamed, _MISSING)
             who = rename_source(key)
-            if existing is _MISSING or _is_untouched(config_class, renamed, existing):
+            if existing is _MISSING or _is_untouched(
+                config_class, renamed, existing, mirrored_from = mirrored_from
+            ):
                 forwarded[renamed] = value
                 notify(
                     f"Unsloth: {who} renamed `{key}` to `{renamed}`. Forwarding your "
