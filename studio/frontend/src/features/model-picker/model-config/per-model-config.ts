@@ -4,12 +4,14 @@
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   cachedRepoOverrideIdentity,
+  ggufQuantLabel,
   ggufVariantFromStorageKey,
   modelIdFromStorageKey,
   modelStorageKey,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   publicModelId,
+  splitQuantSuffix,
 } from "./model-identity";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import {
@@ -1350,12 +1352,36 @@ function cachedRepoAliasModelIds(
 }
 
 /**
- * Delete this model's config and every other spelling of the same cached quant.
+ * The filename label a standalone .gguf used to be keyed by, or null when there is none.
  *
- * The server's forget clears both spellings of a cached repo (cached_repo_alias_keys), and the
- * panel forgets under whichever one the server row carries. Deleting only that one leaves the
- * record adoptLegacyConfigKey moved to the other, and the model's next save mirrors it straight
- * back over the forget.
+ * Mirrors _legacy_standalone_gguf_key in studio/backend/routes/settings.py: a loose file has
+ * no quant to choose between so it is keyed by the bare path now, but the picker once keyed
+ * it by the label its filename derives, and an upgraded browser still holds that record.
+ * Only for the bare spelling: a key that already names a quant said which entry it meant.
+ */
+function legacyStandaloneGgufVariant(
+  modelId: string,
+  ggufVariant?: string | null,
+): string | null {
+  if (normalizeGgufVariantIdentity(ggufVariant)) {
+    return null;
+  }
+  const trimmed = modelId.trim();
+  if (!trimmed.toLowerCase().endsWith(".gguf") || splitQuantSuffix(trimmed)) {
+    return null;
+  }
+  const filename = trimmed.replace(/\\/g, "/").split("/").pop() ?? trimmed;
+  return ggufQuantLabel(filename) || null;
+}
+
+/**
+ * Delete this model's config and every other spelling the server's forget clears.
+ *
+ * A remove on the route drops both spellings of a cached repo (cached_repo_alias_keys) and the
+ * label a standalone .gguf was keyed by before (_legacy_standalone_gguf_key), while the panel
+ * forgets under whichever one the server row happens to carry. Deleting only that one leaves
+ * the record adoptLegacyConfigKey moved, or the one resolveChatModelSwitchTarget still promotes,
+ * and the model's next save mirrors it straight back over the forget.
  */
 export function deletePerModelConfigAliases(
   modelId: string,
@@ -1364,6 +1390,10 @@ export function deletePerModelConfigAliases(
   let deleted = deletePerModelConfig(modelId, ggufVariant);
   for (const aliasId of cachedRepoAliasModelIds(modelId, ggufVariant)) {
     deleted = deletePerModelConfig(aliasId, ggufVariant) && deleted;
+  }
+  const legacyVariant = legacyStandaloneGgufVariant(modelId, ggufVariant);
+  if (legacyVariant) {
+    deleted = deletePerModelConfig(modelId, legacyVariant) && deleted;
   }
   return deleted;
 }

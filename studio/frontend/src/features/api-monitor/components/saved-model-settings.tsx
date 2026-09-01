@@ -14,7 +14,13 @@ import {
 } from "@/features/model-picker/api/model-overrides";
 import { deletePerModelConfigAliases } from "@/features/model-picker/model-config/per-model-config";
 import { Trash2 } from "lucide-react";
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { forgetModelOverride } from "../forget-model-override";
 
@@ -98,12 +104,25 @@ export function SavedModelSettingsPanel(): ReactElement {
   const [forgetting, setForgetting] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  // Each forget refetches, and a row disables only its own button, so two of them
+  // overlap. The reads answer in whatever order the network gives, and the older one
+  // saw the row the newer forget removed: last issued has to win, or a row the server
+  // no longer holds is painted back and stays until the panel remounts.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
-      setOverrides(await fetchModelOverrides());
+      const next = await fetchModelOverrides();
+      if (seq !== loadSeq.current) {
+        return;
+      }
+      setOverrides(next);
       setError(null);
     } catch (err: unknown) {
+      if (seq !== loadSeq.current) {
+        return;
+      }
       setError(
         err instanceof Error
           ? err.message

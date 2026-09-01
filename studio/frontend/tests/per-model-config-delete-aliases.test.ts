@@ -23,12 +23,17 @@ const {
 } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
+const { ggufQuantLabel } = await import(
+  "../src/features/model-picker/model-config/model-identity.ts"
+);
 
 const REPO_ID = "unsloth/Repo-GGUF";
 // What the loader opens and an older release keyed the row by.
 const SNAPSHOT_PATH =
   "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
 const OTHER_PATH = "/home/u/models/Repo-Q4_K_M.gguf";
+// A loose file is keyed by its bare path now; the picker once keyed it by this label.
+const LOOSE_PATH = "/home/u/models/Qwen3-4B-Q4_K_M.gguf";
 const QUANT = "Q4_K_M";
 
 function config(maxSeqLength: number) {
@@ -96,4 +101,35 @@ test("a bare entry with no quant has no other spelling to reach", () => {
   assert.equal(deletePerModelConfigAliases(SNAPSHOT_PATH, null), true);
 
   assert.equal(resolveInitialConfig(REPO_ID, null).remembered, true);
+});
+
+test("a bare-path forget also drops the label a loose .gguf used to be keyed by", () => {
+  store.clear();
+  const label = ggufQuantLabel("Qwen3-4B-Q4_K_M.gguf");
+  savePerModelConfig(LOOSE_PATH, label, config(32768));
+
+  assert.equal(deletePerModelConfigAliases(LOOSE_PATH, null), true);
+
+  // resolveChatModelSwitchTarget promotes exactly this record, and the next save
+  // would mirror it back to the server the row was just removed from.
+  assert.equal(resolveInitialConfig(LOOSE_PATH, label).remembered, false);
+  assert.equal(listPerModelConfigs().length, 0);
+});
+
+test("forgetting one quant of a loose .gguf leaves the bare-path record alone", () => {
+  store.clear();
+  savePerModelConfig(LOOSE_PATH, null, config(4096));
+
+  assert.equal(deletePerModelConfigAliases(LOOSE_PATH, "Q4_K_M"), true);
+
+  assert.equal(resolveInitialConfig(LOOSE_PATH, null).remembered, true);
+});
+
+test("a repo id is not read as a loose file", () => {
+  store.clear();
+  savePerModelConfig(REPO_ID, "Q4_K_M", config(32768));
+
+  assert.equal(deletePerModelConfigAliases(REPO_ID, null), true);
+
+  assert.equal(resolveInitialConfig(REPO_ID, "Q4_K_M").remembered, true);
 });
