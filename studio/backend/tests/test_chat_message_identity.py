@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat message identity and tree integrity (#9984).
-
-A user turn is identified by its id, never by its text. Two sends that happen to say the same
-thing are two turns; a regenerate is one turn with a second reply. `chat_messages.parent_id`
-has no foreign key, so nothing but these tests stops a write from stranding a subtree, and a
-dangling parent makes the whole thread unimportable rather than just that turn.
-"""
+"""A user turn is identified by its id, never by its text (#9984)."""
 
 import itertools
 import random
@@ -58,7 +52,7 @@ def _stored(thread_id = THREAD):
 
 
 def _walk(stored, message_id):
-    """Every parent link resolves, and no chain loops."""
+    """Raises unless every ancestor of message_id is stored, without looping."""
     seen = set()
     current = message_id
     while current is not None and current != "":
@@ -75,9 +69,6 @@ def _assert_no_dangling_parents(thread_id = THREAD):
     for message_id in stored:
         _walk(stored, message_id)
     return stored
-
-
-# Genuine repeat sends
 
 
 @pytest.mark.parametrize("parented", [False, True], ids = ["flat_thread", "branched_thread"])
@@ -105,9 +96,6 @@ def test_an_edit_that_lands_on_the_same_text_keeps_both_branches(db):
     db.upsert_chat_message(_msg("u2", "user", "root", "same", 1100))
 
     assert sorted(_stored()) == ["root", "u1", "u2"]
-
-
-# Identity is never rewritten
 
 
 def test_upsert_never_rewrites_an_id(db):
@@ -138,17 +126,8 @@ def test_sync_keeps_every_message_and_its_links(db):
     assert sorted(_assert_no_dangling_parents()) == ["a1", "a2", "u1", "u2"]
 
 
-# The reported sequence: attachment, Stop mid-reply, Regenerate x3
-
-
 def _regenerate_sequence(regenerations = 3):
-    """What assistant-ui's LocalRuntime actually persists.
-
-    `MessageRuntime.reload()` calls `startRun({ parentId })`, which mints a new assistant
-    message and leaves the user turn alone; the cancelled reply is still appended from
-    `performRoundtrip`'s finally, under the same parent. So a regenerate adds an assistant
-    sibling and nothing else.
-    """
+    """A regenerate adds an assistant sibling and nothing else (MessageRuntime.reload)."""
     yield _msg("u-doc", "user", None, "summarise the attached spec", 1000, _doc())
     for attempt in range(regenerations + 1):
         yield _msg(f"a-{attempt}", "assistant", "u-doc", f"attempt {attempt}", 1100 + attempt)
@@ -172,16 +151,13 @@ def test_stop_then_regenerate_stores_the_document_once(db):
 
 
 def test_regenerating_through_sync_does_not_multiply_the_user_turn(db):
-    """The same sequence via the whole-thread write the delete and export paths use."""
+    """The same sequence via the whole-thread write."""
     records = list(_regenerate_sequence())
     for end in range(1, len(records) + 1):
         db.sync_chat_messages(THREAD, records[:end])
         _assert_no_dangling_parents()
 
     assert sum(1 for m in _stored().values() if m["role"] == "user") == 1
-
-
-# Import and delete, the other two callers of sync_chat_messages
 
 
 def test_importing_a_conversation_with_repeated_turns_keeps_them_all(db):
@@ -200,6 +176,7 @@ def test_importing_a_conversation_with_repeated_turns_keeps_them_all(db):
     assert len(_assert_no_dangling_parents()) == len(records)
 
 
+# delete-thread-message.ts also goes through sync_chat_messages.
 def test_deleting_one_message_leaves_the_rest_of_the_tree_linked(db):
     records = [
         _msg("u1", "user", None, "hi", 1000),
@@ -215,14 +192,11 @@ def test_deleting_one_message_leaves_the_rest_of_the_tree_linked(db):
     assert sorted(_assert_no_dangling_parents()) == ["a1", "a2", "u1"]
 
 
-# Randomised sequences
-
-
 _OPERATIONS = ("send", "regenerate", "stop_regenerate", "edit_resend", "resync")
 
 
 def _apply(operation, state, counter):
-    """Drive studio_db the way the runtime does, and return what changed."""
+    """One runtime action, written straight through to studio_db."""
     if operation == "send" or not state["records"]:
         user_id = f"u{next(counter)}"
         record = _msg(user_id, "user", state["head"], "continue", next(counter))
@@ -255,11 +229,7 @@ def _apply(operation, state, counter):
 
 @pytest.mark.parametrize("seed", range(60))
 def test_no_sequence_of_operations_strands_a_message(db, seed):
-    """The invariant the schema cannot give us: parent_id has no foreign key.
-
-    Text repeats on purpose here. Every operation reuses the same body, so any content-keyed
-    write would collapse turns and this would fail on both counts.
-    """
+    """parent_id has no foreign key, so only this stops a write stranding a subtree."""
     rng = random.Random(seed)
     counter = itertools.count(1)
     state = {"records": [], "head": None, "last_user": None}
@@ -272,11 +242,8 @@ def test_no_sequence_of_operations_strands_a_message(db, seed):
     assert set(_stored()) == written, "a message vanished without an explicit delete"
 
 
-# Old installs
-
-
 def test_a_legacy_flat_thread_still_accepts_new_turns(db):
-    """Pre-branching Studio wrote every row with parent_id NULL. Those DBs are still opened."""
+    """Pre-branching Studio wrote parent_id NULL throughout, and those DBs are still opened."""
     for index in range(4):
         db.upsert_chat_message(_msg(f"legacy-u{index}", "user", None, "continue", 1000 + index))
         db.upsert_chat_message(_msg(f"legacy-a{index}", "assistant", None, "ok", 1050 + index))
