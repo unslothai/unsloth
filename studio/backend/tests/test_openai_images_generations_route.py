@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 import core.inference.diffusion as diffusion_module
 import core.inference.diffusion_engine_router as engine_router
 import core.inference.image_gallery as gallery_module
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.api_monitor import api_monitor
 from core.inference.diffusion_families import (
     DiffusionModelReplacedError,
@@ -202,6 +202,10 @@ def _make_client(backend):
     install_api_error_handlers(app)
     app.include_router(router, prefix = "/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # The OpenAI-compatible surface is the programmatic one, so its Hub reads resolve
+    # through the API-key boundary. Overridden alongside get_current_subject because
+    # the real dependency reads the bearer these fixtures do not send.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: True
     return TestClient(app), store, _save
 
 
@@ -433,6 +437,10 @@ def _signed_link_app(monkeypatch, backend, png: "object"):
     app.include_router(router, prefix = "/v1")
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # The OpenAI-compatible surface is the programmatic one, so its Hub reads resolve
+    # through the API-key boundary. Overridden alongside get_current_subject because
+    # the real dependency reads the bearer these fixtures do not send.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: True
     monkeypatch.setattr(gallery_module, "owned_image_path", lambda i: png if i == "img0" else None)
     return TestClient(app)
 
