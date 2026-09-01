@@ -192,7 +192,8 @@ trap 'rm -rf "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE" "$_E2E_DIR" "$_FAKE_SMI_
 # these assertions pass for the wrong reason -- so the ROCm assertion below is the guard.
 {
     for _fn in _run_bounded _cvd_hides_nvidia _has_amd_rocm_gpu _has_usable_nvidia_gpu \
-               _ensure_rocm_probe_env _probe_amd_gfx_arch _amd_gpu_present_via_pci \
+               _ensure_rocm_probe_env _probe_amd_gfx_arch _amd_gfx_select_ordinals \
+               _amd_gpu_present_via_pci \
                _infer_amd_gfx_arch_from_gpu_name _infer_linux_amd_gfx_arch \
                _amd_arch_index_family_for_gfx _trim_index_path_slashes \
                _nvidia_cu126_verdict _cap_cuda_family_for_pre_turing \
@@ -375,14 +376,16 @@ _index_for_mixed_host() {  # \$1 = ROCR_VISIBLE_DEVICES ("" to leave it unset)
     rm -rf "$_imh_dir"
 }
 
-# The mock really does hide the dGPU under the mask, else the assertions below are vacuous.
-_mixed_masked=$( _mx_check=$(_make_mixed_host)
-    PATH="$_mx_check:$_TOOLS_DIR" "$_SH" -c "
-        unset UNSLOTH_ROCM_GFX_ARCH HSA_OVERRIDE_GFX_VERSION
-        ROCR_VISIBLE_DEVICES=0; export ROCR_VISIBLE_DEVICES
-        . '$_E2E_FUNCS'; _probe_amd_gfx_arch visible | sort -u | tr '\n' ' '" 2>/dev/null
-    rm -rf "$_mx_check" )
-assert_eq "the mask really hides the dGPU" "gfx1033 " "$_mixed_masked"
+# The probe now reports the PHYSICAL inventory and the gate applies the masks itself, so
+# assert the selection helper rather than the probe: ordinal 0 of the deduplicated list is
+# the APU. If this ever stopped selecting, the gate assertions below would pass vacuously.
+_sel_check=$("$_SH" -c '
+    . "$1"
+    _amd_gfx_select_ordinals "gfx1033
+gfx1033
+gfx1100
+gfx1100" 0 | tr "\n" " "' _ "$_E2E_FUNCS" 2>/dev/null)
+assert_eq "ordinal 0 selects the APU" "gfx1033 " "$_sel_check"
 
 # Unmasked, both are visible and the healthy dGPU keeps the host on ROCm.
 assert_eq "mixed host unmasked keeps rocm" \
@@ -411,15 +414,16 @@ _index_for_mixed_host_hip() {  # $1 = var name, $2 = value
     rm -rf "$_imhh_dir"
 }
 
-# The mock must NOT filter on a HIP mask -- that is the whole premise. If it ever did,
-# the assertions below would pass without the gate doing anything.
-_hip_unfiltered=$( _hp=$(_make_mixed_host)
-    PATH="$_hp:$_TOOLS_DIR" "$_SH" -c "
-        unset UNSLOTH_ROCM_GFX_ARCH HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES
-        HIP_VISIBLE_DEVICES=0; export HIP_VISIBLE_DEVICES
-        . '$_E2E_FUNCS'; _probe_amd_gfx_arch visible | sort -u | tr '\n' ' '" 2>/dev/null
-    rm -rf "$_hp" )
-assert_eq "rocminfo ignores the HIP mask (premise)" "gfx1033 gfx1100 " "$_hip_unfiltered"
+# The probe must report BOTH agents regardless of any mask -- that is the premise the
+# gate's own ordinal resolution rests on.
+_probe_full=$( _pf=$(_make_mixed_host)
+    PATH="$_pf:$_TOOLS_DIR" "$_SH" -c "
+        unset UNSLOTH_ROCM_GFX_ARCH HSA_OVERRIDE_GFX_VERSION
+        HIP_VISIBLE_DEVICES=0; ROCR_VISIBLE_DEVICES=0
+        export HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
+        . '$_E2E_FUNCS'; _probe_amd_gfx_arch physical | sort -u | tr '\n' ' '" 2>/dev/null
+    rm -rf "$_pf" )
+assert_eq "the probe reports the whole host (premise)" "gfx1033 gfx1100 " "$_probe_full"
 
 assert_eq "HIP_VISIBLE_DEVICES=0 (APU only) -> cpu" \
     "https://download.pytorch.org/whl/cpu" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES 0)"
@@ -441,6 +445,64 @@ assert_eq "HIP_VISIBLE_DEVICES=9 out of range -> rocm" \
 assert_eq "single Deck under a HIP mask -> cpu" \
     "https://download.pytorch.org/whl/cpu" \
     "$(export HIP_VISIBLE_DEVICES=0; _index_for_rocminfo_host gfx1033)"
+
+echo "=== amd-smi is the inventory (no rocminfo): it honours NEITHER mask ==="
+# _probe_amd_gfx_arch falls back to amd-smi when rocminfo is absent, and amd-smi reads the
+# driver, so it applies neither ROCR_VISIBLE_DEVICES nor the HIP pair. Leaving the masks in
+# the probe's environment therefore filtered nothing on such a host and the hidden dGPU
+# still set _amd_gfx_good. Resolving the ordinals in the gate is what makes the verdict
+# identical whichever tool answered.
+_make_amdsmi_host() {  # mixed host whose ONLY inventory tool is amd-smi
+    _as_dir=$(mktemp -d)
+    cat > "$_as_dir/amd-smi" <<'ASMI'
+#!/bin/sh
+# Reads the driver: the physical inventory, whatever the masks say.
+cat <<'O'
+GPU: 0
+    ASIC:
+        TARGET_GRAPHICS_VERSION: gfx1033
+GPU: 1
+    ASIC:
+        TARGET_GRAPHICS_VERSION: gfx1100
+O
+ASMI
+    printf '#!/bin/sh\necho 7.2.0\n' > "$_as_dir/hipconfig"
+    chmod +x "$_as_dir/amd-smi" "$_as_dir/hipconfig"
+    printf '%s' "$_as_dir"
+}
+
+_index_for_amdsmi_host() {  # $1 = var name, $2 = value ("" for no mask)
+    _ifa_dir=$(_make_amdsmi_host)
+    PATH="$_ifa_dir:$_TOOLS_DIR" "$_SH" -c "
+        unset UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY
+        unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
+        unset CUDA_VISIBLE_DEVICES
+        if [ -n '$1' ]; then $1='$2'; export $1; fi
+        _ARCH=x86_64
+        . '$_E2E_FUNCS'
+        get_torch_index_url
+    " 2>/dev/null | tail -1
+    rm -rf "$_ifa_dir"
+}
+
+# Premise: there is no rocminfo on this host, so amd-smi is what answers.
+_amdsmi_probe=$( _ap=$(_make_amdsmi_host)
+    PATH="$_ap:$_TOOLS_DIR" "$_SH" -c "
+        unset UNSLOTH_ROCM_GFX_ARCH HSA_OVERRIDE_GFX_VERSION
+        ROCR_VISIBLE_DEVICES=0; export ROCR_VISIBLE_DEVICES
+        . '$_E2E_FUNCS'; _probe_amd_gfx_arch physical | sort -u | tr '\n' ' '" 2>/dev/null
+    rm -rf "$_ap" )
+assert_eq "amd-smi answers with the whole host (premise)" "gfx1033 gfx1100 " "$_amdsmi_probe"
+
+assert_eq "amd-smi host unmasked keeps rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_amdsmi_host '' '')"
+# The reported case: ROCR selects the APU, amd-smi cannot apply it, the gate must.
+assert_eq "amd-smi host + ROCR=0 (APU only) -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_amdsmi_host ROCR_VISIBLE_DEVICES 0)"
+assert_eq "amd-smi host + HIP=0 (APU only) -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_amdsmi_host HIP_VISIBLE_DEVICES 0)"
+assert_eq "amd-smi host + ROCR=1 (dGPU only) -> rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_amdsmi_host ROCR_VISIBLE_DEVICES 1)"
 
 echo "=== Structural: the gate precedes the version-keyed index selection ==="
 _gate_line=$(grep -n 'Archs measured to compute INCORRECTLY under ROCm' "$INSTALL_SH" | head -1 | cut -d: -f1)

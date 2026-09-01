@@ -3682,11 +3682,15 @@ _hsa_spoofed_physical_gfx() {
 #                set (unslothai#7331); dropping it is the one way to read the silicon.
 #                Mirrors _detect_amd_gfx_codes(ignore_hsa_override = True) in
 #                studio/install_python_stack.py.
-#     visible    strip ONLY HSA_OVERRIDE_GFX_VERSION, so the masks stay in force and the
-#                answer is what ROCm will actually expose to torch. For a caller deciding
-#                which wheels this run should get, that is the question -- the physical
-#                inventory can contain a healthy GPU the mask has hidden from the runtime.
 #   amd-smi reads the driver, so stripping either variable there is a no-op.
+#
+# A caller that needs the VISIBLE set asks for "physical" and then applies the masks
+# itself with _amd_gfx_select_ordinals, rather than leaving them in the environment for
+# the probe to honour. Leaving them there only works if the tool that answers happens to
+# implement the one you care about: rocminfo applies ROCR_VISIBLE_DEVICES and ignores the
+# HIP pair, and the amd-smi fallback reads the driver and applies NEITHER, so on a host
+# with no rocminfo the "masked" answer was the full inventory. Resolving both by ordinal
+# here gives the same answer whichever tool replied.
 #
 # shellcheck disable=SC2086  # $_pg_strip is a LIST of variable names for unset; POSIX sh
 # has no arrays, and quoting it would unset one variable whose name contains spaces.
@@ -3694,7 +3698,6 @@ _probe_amd_gfx_arch() {
     _ensure_rocm_probe_env
     case "${1:-}" in
         physical) _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION" ;;
-        visible)  _pg_strip="HSA_OVERRIDE_GFX_VERSION" ;;
         *)        _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" ;;
     esac
     _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
@@ -3708,6 +3711,33 @@ _probe_amd_gfx_arch() {
         fi
     fi
     printf '%s\n' "$_pg"
+}
+
+# Keep the entries a visible-device mask selects out of a gfx token list.
+#   $1 = newline-separated gfx tokens (as _probe_amd_gfx_arch prints them)
+#   $2 = the mask value, a comma-separated ordinal list
+# Prints the surviving tokens, or nothing when the mask selects none.
+#
+# Ordinals index the DEDUPLICATED list: rocminfo prints each agent's token more than once
+# (its Name line and its ISA Info line), so indexing the raw stream lands on the wrong
+# device. This is the same selection _runtime_gfx makes further down, and deduplicating
+# is why the two agree.
+#
+# An empty mask, "-1", or a value with no usable ordinal selects nothing, and the caller
+# decides what that means. The layers compose in this order: ROCR filters the HSA agent
+# list, then HIP ordinals index whatever survived that, so apply ROCR first.
+_amd_gfx_select_ordinals() {
+    [ -n "${2:-}" ] || return 0
+    [ "$2" != "-1" ] || return 0
+    printf '%s\n' "$1" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' | awk -v mask="$2" '
+        BEGIN {
+            _n = split(mask, _w, /,/)
+            for (_i = 1; _i <= _n; _i++) {
+                gsub(/^[ \t]+|[ \t]+$/, "", _w[_i])
+                if (_w[_i] ~ /^[0-9]+$/) _sel[_w[_i] + 0] = 1
+            }
+        }
+        NF && !_seen[$0]++ { if ((_ord++) in _sel) print }'
 }
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
@@ -4078,35 +4108,24 @@ get_torch_index_url() {
         # Falls back to the physical read when nothing is visible (a mask that hides
         # every device), so an all-hidden host keeps the behaviour it has today rather
         # than reading as "no AMD at all".
-        _amd_gfx_gate_probe=$(_probe_amd_gfx_arch visible 2>/dev/null || true)
-        # Leaving the masks in the environment only filters the ones the PROBE honours.
-        # rocminfo is an HSA tool: ROCR_VISIBLE_DEVICES removes agents from its output,
-        # HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias do not. torch is a HIP
-        # application and obeys exactly the ones rocminfo ignores, so a HIP mask naming
-        # only the APU left the dGPU in this list while the runtime could not reach it --
-        # the same hole as the ROCR case above, one layer down. Resolve those ordinals
-        # ourselves against the list rocminfo did filter, which is the order they index.
-        #
-        # Ordinals index the DEDUPLICATED list because rocminfo prints each agent's token
-        # more than once (its Name line and its ISA Info line); this mirrors the
-        # _runtime_gfx selection further down, which deduplicates for the same reason.
-        # An out-of-range or unparsable ordinal selects nothing and falls through to the
-        # physical read below, as does "-1" or an empty value -- those mean no visible
-        # device at all, where ROCm wheels are inert rather than dangerous.
+        _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+        # Apply BOTH mask layers by ordinal rather than leaving either to the probe.
+        # rocminfo honours ROCR_VISIBLE_DEVICES and ignores the HIP pair; the amd-smi
+        # fallback reads the driver and honours neither, so on a host with no rocminfo an
+        # environment-masked probe returned the full inventory and the hidden dGPU still
+        # set _amd_gfx_good. Doing it here gives the same answer whichever tool replied.
+        # ROCR first, then HIP: HIP ordinals index the set that survived ROCr.
+        _amd_gfx_rocr_mask="${ROCR_VISIBLE_DEVICES:-}"
+        if [ -n "$_amd_gfx_gate_probe" ] && [ -n "$_amd_gfx_rocr_mask" ] \
+           && [ "$_amd_gfx_rocr_mask" != "-1" ]; then
+            _amd_gfx_gate_probe=$(_amd_gfx_select_ordinals "$_amd_gfx_gate_probe" \
+                "$_amd_gfx_rocr_mask")
+        fi
         _amd_gfx_hip_mask="${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-}}"
         if [ -n "$_amd_gfx_gate_probe" ] && [ -n "$_amd_gfx_hip_mask" ] \
            && [ "$_amd_gfx_hip_mask" != "-1" ]; then
-            _amd_gfx_gate_probe=$(printf '%s\n' "$_amd_gfx_gate_probe" \
-                | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-                | awk -v mask="$_amd_gfx_hip_mask" '
-                    BEGIN {
-                        _n = split(mask, _w, /,/)
-                        for (_i = 1; _i <= _n; _i++) {
-                            gsub(/^[ \t]+|[ \t]+$/, "", _w[_i])
-                            if (_w[_i] ~ /^[0-9]+$/) _sel[_w[_i] + 0] = 1
-                        }
-                    }
-                    NF && !_seen[$0]++ { if ((_ord++) in _sel) print }')
+            _amd_gfx_gate_probe=$(_amd_gfx_select_ordinals "$_amd_gfx_gate_probe" \
+                "$_amd_gfx_hip_mask")
         fi
         if [ -z "$_amd_gfx_gate_probe" ]; then
             _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
