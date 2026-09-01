@@ -691,9 +691,7 @@ def _playwright_jobs():
     for name, jid, job in _jobs():
         steps = job.get("steps") or []
         installs = [
-            m.group(1)
-            for step in steps
-            for m in _PW_INSTALL.finditer(str(step.get("run", "")))
+            m.group(1) for step in steps for m in _PW_INSTALL.finditer(str(step.get("run", "")))
         ]
         cache_steps = [
             step
