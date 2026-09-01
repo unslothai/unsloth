@@ -113,6 +113,10 @@ function ensureTokenChangeSubscription(): void {
     return;
   }
   tokenChangeSubscribed = true;
+  // Seeded here, not left null for the first callback to fill: zustand's subscribe does
+  // not fire on install, so a Settings replacement of the token that was already stored
+  // would be read as initialization and the superseded credential would keep its window.
+  lastKnownStoredToken = useHfTokenStore.getState().token?.trim() ?? "";
   useHfTokenStore.subscribe((state) => {
     const next = state.token?.trim() ?? "";
     if (lastKnownStoredToken != null && lastKnownStoredToken !== next) {

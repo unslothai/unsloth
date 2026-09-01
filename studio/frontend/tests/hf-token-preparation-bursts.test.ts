@@ -27,11 +27,12 @@ type ConfirmToken = {
 const SESSION_CLEARED = "unsloth:auth-session-cleared";
 
 // The store the module subscribes to, so a test can drive a Settings token change.
-function tokenStoreStub() {
+function tokenStoreStub(initial: string | null = null) {
   let listener: ((state: { token: string }) => void) | null = null;
+  let current = initial;
   return {
     store: {
-      getState: () => ({ token: null, clearToken: () => {} }),
+      getState: () => ({ token: current, clearToken: () => {} }),
       subscribe: (fn: (state: { token: string }) => void) => {
         listener = fn;
         return () => {
@@ -40,6 +41,7 @@ function tokenStoreStub() {
       },
     },
     change(token: string) {
+      current = token;
       listener?.({ token });
     },
   };
@@ -208,4 +210,21 @@ test("a logout mid-validation does not let the reply repopulate the cache", asyn
 
   await mod.prepareHfTokenForUse("hf_valid");
   assert.equal(calls.n, 2, "the in-flight reply repopulated the cleared cache");
+});
+
+
+test("replacing the token that was already stored drops its window", async () => {
+  // zustand does not fire subscribe on install, so without seeding lastKnownStoredToken
+  // the first replacement reads as initialization and the old credential keeps its slot.
+  const calls = { n: 0 };
+  const tokenStore = tokenStoreStub("hf_old");
+  const mod = load("valid", calls, tokenStore);
+
+  await mod.prepareHfTokenForUse("hf_old");
+  assert.equal(calls.n, 1);
+
+  tokenStore.change("hf_new");
+
+  await mod.prepareHfTokenForUse("hf_old");
+  assert.equal(calls.n, 2, "the superseded credential kept its window");
 });
