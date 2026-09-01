@@ -12,6 +12,7 @@ Needs no GPU, network, or libraries beyond pytest and pydantic.
 
 import io
 import json
+import re
 import struct
 import sys
 import types as _types
@@ -36,6 +37,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 # structlog
 _structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **kw: __import__("logging").getLogger(
+    a[0] if a else __name__
+)
 sys.modules.setdefault("structlog", _structlog_stub)
 
 # httpx -- stub only names referenced at import / class-definition time
@@ -420,16 +424,20 @@ class TestRouteCompleteness:
             ), f"GGUF LoadResponse block #{i} missing runtime fields:\n{block[:200]}"
         assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
-    def test_non_gguf_load_responses_omit_field(self):
-        """Non-GGUF LoadResponse blocks do not set native_context_length (defaults to None)."""
+    def test_non_gguf_load_responses_report_the_native_window(self):
+        """Non-GGUF LoadResponse blocks carry native_context_length and max_context_length.
+
+        These once had to be absent, back when only GGUF knew its own window; a non-GGUF
+        block that leaves them off now defaults them to None and blanks the control.
+        """
         blocks = self._find_construction_blocks("LoadResponse")
         non_gguf = [b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b]
-        # Non-GGUF paths shouldn't reference native_context_length
-        # (Pydantic defaults it to None, so omitting it is correct).
+        assert non_gguf, "Expected at least one non-GGUF LoadResponse block"
         for block in non_gguf:
-            assert (
-                "native_context_length" not in block
-            ), f"Non-GGUF LoadResponse should not set native_context_length:\n{block[:200]}"
+            for field in ("native_context_length", "max_context_length"):
+                assert re.search(
+                    rf"{field} = _positive_int_or_none\(\s*_model_info\.get\(", block
+                ), f"Non-GGUF LoadResponse should read {field} from _model_info:\n{block[:200]}"
 
     def test_non_gguf_load_responses_set_runtime_context_length(self):
         """Non-GGUF LoadResponse blocks report runtime context_length."""
@@ -584,3 +592,25 @@ class TestCrossPlatform:
         json2 = resp.model_dump_json()
         assert json1 == json2
         assert '"native_context_length":131072' in json1
+
+
+def test_the_status_route_reports_what_a_self_sizing_load_asked_for():
+    """The UI re-seeds its context pin from it, because the resolved window cannot say
+    whether anyone chose that length; without it a pin is invisible after a refresh."""
+    route_src = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
+    # 0 is "size it yourself"; None is "records no request", and the UI tells them apart.
+    # Either spelling of the recorded request, since the route stamps one and the MLX
+    # mirror carries the other, but always through the non-negative reader.
+    assert (
+        "requested_context_length = _nonnegative_int_or_none(\n"
+        '                model_info.get("requested_context_length")\n'
+        '                if model_info.get("requested_context_length") is not None\n'
+        '                else model_info.get("max_seq_length_requested")\n'
+        "            )," in route_src
+    )
+    # The parent cannot recompute the group once the worker holds the model: it mirrors all.
+    src = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text("utf-8")
+    assert '"native_context_length",\n                "max_context_length",' in src

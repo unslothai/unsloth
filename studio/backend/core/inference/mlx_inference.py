@@ -7,11 +7,15 @@ instead of torch/transformers for model loading and generation.
 
 import json
 import os
+import re
 import threading
 from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
-from core.inference.runtime_context import runtime_context_length
+from core.inference.runtime_context import (
+    MAX_REQUESTABLE_CONTEXT,
+    runtime_context_length,
+)
 from core.inference.chat_template_helpers import (
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
@@ -102,6 +106,77 @@ def _mlx_vlm_model_config(model):
         if model_type is not None:
             return cfg, model_type
     return (configs[0] if configs else None), None
+
+
+# Matched on the context-bearing term, not a field list: mlx-lm alone spells it four ways.
+# max_length is a generation default and n_sequences a batch count, so neither qualifies.
+_MLX_CONTEXT_KEY = re.compile(
+    r"(?:position(?:s|_embeddings)|(?:^|_)ctx|context_len(?:gth)?"
+    r"|seq(?:uence)?_len(?:gth)?|model_max_length)$"
+)
+# A vision tower's token count reads like a length but bounds one image, not the window.
+_MLX_CONTEXT_KEY_EXCLUDE = re.compile(r"(?:^|_)image_")
+# Below one cache block is not a window; above, configs carry sentinel "unlimited" lengths.
+_MLX_MIN_PLAUSIBLE_CONTEXT = 256
+_MLX_MAX_PLAUSIBLE_CONTEXT = 1 << 24
+
+
+def _mlx_config_candidates(model):
+    """Config-ish objects that may carry text-tower dims, most specific first."""
+    language_model = getattr(model, "language_model", None)
+    config, _ = _mlx_vlm_model_config(model)
+    text_config = None
+    if config is not None:
+        text_config = (
+            config.get("text_config")
+            if isinstance(config, dict)
+            else getattr(config, "text_config", None)
+        )
+    return [
+        cfg
+        for cfg in (
+            getattr(language_model, "args", None),
+            text_config,
+            getattr(model, "args", None),
+            config,
+        )
+        if cfg is not None
+    ]
+
+
+def _positive_int(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError, OverflowError):
+        # json.loads accepts Infinity: unusable, but must not abort the load.
+        return None
+    return value_int if value_int > 0 else None
+
+
+def mlx_native_context_length(model):
+    """The window the model was trained for, or None when it isn't readable.
+
+    The widest plausible length across every config wins, so a stub text config the
+    blocks were never built from cannot shorten the window the weights support --
+    mlx-vlm's Phi-3-V carries a 4096 text config beside the 131072 its attention uses.
+    """
+    lengths = []
+    for cfg in _mlx_config_candidates(model):
+        try:
+            items = cfg.items() if isinstance(cfg, dict) else vars(cfg).items()
+        except TypeError:
+            continue
+        lengths += [
+            length
+            for name, value in items
+            if _MLX_CONTEXT_KEY.search(str(name))
+            and not _MLX_CONTEXT_KEY_EXCLUDE.search(str(name))
+            and (length := _positive_int(value)) is not None
+            and _MLX_MIN_PLAUSIBLE_CONTEXT <= length <= _MLX_MAX_PLAUSIBLE_CONTEXT
+        ]
+    return max(lengths) if lengths else None
 
 
 def _ascii_registry_key(value):
@@ -482,6 +557,12 @@ MLX_KV_QUANT_NO_REUSE = (
 )
 MLX_KV_QUANT_VLM_CACHE_NOTE = (
     "On vision models, quantization starts once the cache reaches {start} tokens."
+)
+# RotatingKVCache.to_quantized raises and mlx-lm converts from the first token, so the
+# two are resolved here rather than failing generation on its first step.
+MLX_KV_QUANT_PINNED_CONTEXT = (
+    "Context Length is set for this model, which limits the KV cache, and the installed "
+    "mlx-lm cannot quantize a limited cache. Reset it to quantize instead."
 )
 
 
@@ -952,7 +1033,50 @@ def _install_template_override(override, tokenizer, processor, probe):
     return status
 
 
-def _kv_quant_status(requested_bits, model, is_vlm):
+def _kv_entry_is_bounded(entry, window):
+    """Whether this cache entry declares a cap that holds it at or below *window*.
+
+    Only a declared cap counts, and only up to the requested size. mlx-vlm's Florence2
+    hands back a class that concatenates forever and declares nothing; a model that
+    declares a cap wider than the request is bounded, but not at what was asked for.
+    """
+    cap = getattr(entry, "max_size", None) or getattr(entry, "chunk_size", None)
+    if not cap or cap > window:
+        return False
+    # Retaining as much as it holds means it never rotates: the write index resets past
+    # the buffer end and updates stop landing.
+    return cap > getattr(entry, "keep", 0)
+
+
+def _kv_window_enforced(model, is_vlm, window):
+    """Whether a cache built for this model at *window* is bounded in every layer.
+
+    Both runtimes defer to a model's own make_cache when it has one and ignore
+    max_kv_size there. Returns None when no cache could be built to judge.
+    """
+    language_model = getattr(model, "language_model", model) if is_vlm else model
+    try:
+        if is_vlm:
+            from mlx_vlm.models import cache as vlm_cache
+            entries = vlm_cache.make_prompt_cache(language_model, max_kv_size = window)
+        else:
+            from mlx_lm.models import cache as lm_cache
+            entries = lm_cache.make_prompt_cache(language_model, max_kv_size = window)
+        # Inside the guard with the build: an unjudgeable shape must read as unknown,
+        # since load_model calls this unguarded and a raise would fail the load.
+        flattened = list(_flatten_kv_entries(entries))
+        return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
+    except Exception as exc:
+        logger.debug("MLX context limit probe failed: %s", exc)
+        return None
+
+
+def _kv_quant_status(
+    requested_bits,
+    model,
+    is_vlm,
+    context_pinned = False,
+):
     """Resolve a requested bit width against this model into a status dict."""
     status = {
         "requested_kv_bits": requested_bits,
@@ -962,6 +1086,11 @@ def _kv_quant_status(requested_bits, model, is_vlm):
         "note": "",
     }
     if requested_bits is None:
+        return status
+    if context_pinned:
+        status["eligibility"] = "refused"
+        status["reason"] = MLX_KV_QUANT_PINNED_CONTEXT
+        logger.info("MLX KV quantization not applied: %s", MLX_KV_QUANT_PINNED_CONTEXT)
         return status
     verdict, reason, retainable = _kv_quant_eligibility(model, is_vlm, requested_bits)
     status["eligibility"] = verdict
@@ -1045,11 +1174,17 @@ def _kv_prefix_coverage(cache):
 
 
 class _MLXPromptCacheHistory:
-    def __init__(self, max_entries, max_bytes):
+    def __init__(
+        self,
+        max_entries,
+        max_bytes,
+        max_kv_size = None,
+    ):
         api = _mlx_prompt_cache_api()
         if api is None:
             raise RuntimeError("mlx-lm is too old for LRUPromptCache")
         lru_cls, make, can_trim, trim = api
+        self._max_kv_size = max_kv_size
         self._make_prompt_cache = make
         self._can_trim = can_trim
         self._trim = trim
@@ -1069,7 +1204,9 @@ class _MLXPromptCacheHistory:
             if cache is not None:
                 covered = len(head) - len(rest)
                 return cache, list(tokens[covered:])
-        return self._make_prompt_cache(model), list(tokens)
+        if self._max_kv_size is None:
+            return self._make_prompt_cache(model), list(tokens)
+        return self._make_prompt_cache(model, max_kv_size = self._max_kv_size), list(tokens)
 
     def insert(self, key, tokens, cache):
         # An over-budget entry evicts itself and every other conversation.
@@ -1326,6 +1463,13 @@ def _mlx_sampling_processors(
     return processors or None
 
 
+# Families that mlx_vlm inlined before should_add_special_tokens existed: their template
+# already emits the markers, so tokenization must not add them again. Deliberately not the
+# current helper's list, which carries laguna -- only 0.6.9 stopped tokenizing laguna with
+# the markers, and 0.6.0-0.6.8 are what this stands in for.
+_VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_unified")
+
+
 class MLXInferenceBackend:
     def __init__(self):
         self.models = {}
@@ -1354,6 +1498,7 @@ class MLXInferenceBackend:
         # than from per-request kwargs. Bound now so a load that fails before
         # installing leaves readers a dict rather than raising.
         self._kv_quant = _kv_quant_status(None, None, False)
+        self._kv_cache_window = None
         self._template_override = _template_override_status(None, None, None)[1]
 
         self._prompt_cache_history = None
@@ -1371,6 +1516,7 @@ class MLXInferenceBackend:
             self._prompt_cache_history = _MLXPromptCacheHistory(
                 PROMPT_CACHE_ENTRIES,
                 max_bytes,
+                self._kv_cache_window,
             )
         except Exception as exc:
             self._prompt_cache_unavailable = True
@@ -1392,10 +1538,7 @@ class MLXInferenceBackend:
         if history is None:
             return prompt, None, None, None, 0
         try:
-            tokenizer = self._tokenizer
-            bos = getattr(tokenizer, "bos_token", None)
-            add_special_tokens = bos is None or not prompt.startswith(bos)
-            tokens = list(tokenizer.encode(prompt, add_special_tokens = add_special_tokens))
+            tokens = self._encode_prompt(prompt)
             if not tokens:
                 return prompt, None, None, None, 0
             key = f"{self.active_model_name}|{adapter_state!r}"
@@ -1413,6 +1556,28 @@ class MLXInferenceBackend:
         """
         kv_bits = (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
         return {} if kv_bits is None else {"kv_bits": kv_bits}
+
+    def _kv_window_generate_kwargs(self):
+        """The cache bound for a generation that builds its own cache, empty when unset.
+
+        Both runtimes read it only when no prompt_cache is passed, so this covers the
+        request that reaches generation without one rather than duplicating the bound.
+        """
+        window = getattr(self, "_kv_cache_window", None)
+        return {} if window is None else {"max_kv_size": window}
+
+    def _encode_prompt(self, prompt):
+        """The tokens a generation sends for this prompt.
+
+        A template that already emitted the BOS would otherwise get a second one, shifting
+        every cached-prefix comparison and overstating a counted prompt by one.
+        """
+        bos = getattr(self._tokenizer, "bos_token", None)
+        return list(
+            self._tokenizer.encode(
+                prompt, add_special_tokens = bos is None or not prompt.startswith(bos)
+            )
+        )
 
     def _configure_memory_limits(self):
         """Apply Metal memory caps before loading a model.
@@ -1444,6 +1609,79 @@ class MLXInferenceBackend:
             memory_limit_gb,
             wired_limit_gb,
         )
+
+    def _resolve_context_lengths(self, model, max_seq_length):
+        """Resolve (served, native, ceiling) for a freshly loaded model.
+
+        Mirrors the GGUF resolution order: whatever the load attached or was asked for is
+        honored verbatim, while asking for nothing takes the trained window. The served
+        length is what bounds the KV cache, where the architecture allows it.
+
+        The served value is held to the same ceiling a request is (LoadRequest bounds
+        max_seq_length at MAX_REQUESTABLE_CONTEXT), because it drives the cache and the
+        usage bar's denominator. Llama-4 Scout declares 10,485,760, ten times that: served
+        unclamped would make the bar meaningless and name a length no control can ask for.
+        The native window is reported as read, since it is metadata about the model.
+        """
+        native = mlx_native_context_length(model)
+        served = runtime_context_length(model, max_seq_length) or native
+        if served:
+            served = min(int(served), MAX_REQUESTABLE_CONTEXT)
+            logger.info("MLX context: served=%s native=%s", served, native)
+        return served, native, native
+
+    def _kv_cache_window_enforceable(self, served):
+        """Whether a cache built for this model would really cap at *served*.
+
+        A probe that could not run counts as not enforceable: claiming a bound nobody
+        confirmed is what makes the setting look like it works.
+        """
+        if not served or served <= 0:
+            return False
+        enforced = _kv_window_enforced(self._model, self._is_vlm, int(served))
+        if enforced is False:
+            logger.warning(
+                "MLX context limit of %d tokens is not enforced: this model builds at "
+                "least one cache layer that declares no limit at that length.",
+                int(served),
+            )
+        elif enforced is None:
+            logger.warning(
+                "MLX context limit of %d tokens is not enforced: no cache could be built "
+                "to confirm it.",
+                int(served),
+            )
+        return enforced
+
+    def _resolve_kv_policy(self, is_vlm, kv_bits, max_seq_length, served):
+        """The quantization status and cache window this load will run with.
+
+        Rotation is what keeps a long conversation inside the window, so nothing here can
+        refuse a request; the model simply stops attending to the oldest tokens.
+
+        Quantization cannot coexist with a bound -- a rotating cache has no conversion,
+        and mlx-lm converts from the first token -- so an enforceable pin, an explicit
+        instruction about memory, outranks it. A window the backend chose for itself
+        yields to an explicitly requested quantization, and so does a pin that cannot be
+        enforced, which would otherwise spend the quantization and bound nothing.
+        """
+        pinned = _positive_int(max_seq_length) is not None
+        # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True
+        # installs a bound; the other two stay apart so a client can tell them apart.
+        confirmed = self._kv_cache_window_enforceable(served)
+        enforceable = confirmed is True
+        quant = _kv_quant_status(
+            _normalize_mlx_kv_bits(kv_bits),
+            self._model,
+            is_vlm,
+            pinned and enforceable,
+        )
+        if not enforceable or (quant["kv_bits"] is not None and not pinned):
+            # No bound installed, so False wherever the probe answered at all; None only
+            # where nothing could be built to judge.
+            return quant, None, None if confirmed is None else False
+        logger.info("MLX KV cache limited to %d tokens", int(served))
+        return quant, int(served), True
 
     def load_model(
         self,
@@ -1561,10 +1799,15 @@ class MLXInferenceBackend:
             is_vision,
             config_audio_type = getattr(config, "audio_type", None),
         )
+        _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
+            self._model, max_seq_length
+        )
         # Classify before the first generation: an ineligible cache would otherwise
         # raise inside maybe_quantize_kv_cache mid-stream, after converting the
         # leading entries.
-        self._kv_quant = _kv_quant_status(_normalize_mlx_kv_bits(kv_bits), self._model, is_vision)
+        self._kv_quant, self._kv_cache_window, _ctx_enforced = self._resolve_kv_policy(
+            is_vision, kv_bits, max_seq_length, _served_ctx
+        )
         if self._kv_quant["kv_bits"] is not None:
             logger.info(
                 "MLX KV cache quantization: %s-bit (%s eligibility)",
@@ -1628,7 +1871,17 @@ class MLXInferenceBackend:
             "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
             "audio_type": _audio_type,
             "has_audio_input": is_audio_input_type(_audio_type),
-            "context_length": runtime_context_length(self._model, max_seq_length),
+            "context_length": _served_ctx,
+            # Parity with llama.cpp's requested_n_ctx: the served window cannot say
+            # whether anything was asked for, and that decides reuse and "pinned".
+            "requested_context_length": _positive_int(max_seq_length) or 0,
+            # Nothing measures the machine, so window and ceiling coincide.
+            "native_context_length": _native_ctx,
+            "max_context_length": _max_ctx,
+            # Whether the served window actually bounds the cache: True confirmed on a
+            # real cache, False confirmed unbounded, None nothing could be built to judge.
+            # Without it the API reports a limit a client cannot tell from an enforced one.
+            "context_length_enforced": _ctx_enforced,
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],
@@ -1748,6 +2001,126 @@ class MLXInferenceBackend:
         logger.info("Model %s unloaded", model_name)
         return True
 
+    def _render_text_prompt(
+        self,
+        messages,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+        continue_final_message = False,
+    ):
+        """Render the prompt a text generation sends, with its template metadata.
+
+        Shared with counting, so a count cannot price a prompt the model never sees.
+        """
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+            render_with_native_template_fallback,
+        )
+
+        prompt = apply_chat_template_for_generation(
+            self._tokenizer,
+            messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+        )
+        if prompt is None:
+            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
+
+        # Parity with the transformers backend: if the template dropped the requested
+        # tools, fall back to the native template so MLX text models keep advertising
+        # them. self._tokenizer is this entry's tokenizer, so probe and native render
+        # share a renderer. (VLM renders via the processor for image tokens.)
+        model_info = self.models.get(self.active_model_name, {})
+        return render_with_native_template_fallback(
+            formatted_prompt = prompt,
+            tokenizer = self._tokenizer,
+            model_info = model_info,
+            active_model_name = self.active_model_name,
+            messages = messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+            hf_token = model_info.get("hf_token"),
+            return_metadata = True,
+        )
+
+    @staticmethod
+    def _with_system_prompt(messages, system_prompt):
+        """The conversation a request carrying this system prompt turns into.
+
+        Shared with generation, which takes the system prompt beside the messages rather
+        than inside them.
+        """
+        full_messages = []
+        if system_prompt:
+            full_messages.append({"role": "system", "content": system_prompt})
+        full_messages.extend(messages)
+        return full_messages
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+    ) -> int:
+        """Prompt tokens this model would receive for these messages.
+
+        Renders and tokenizes exactly as generation does.
+        """
+        if self._model is None:
+            raise RuntimeError("No model loaded")
+        full_messages = self._with_system_prompt(messages, system_prompt)
+
+        if self._is_vlm:
+            # Through the processor, which is what a vision generation renders with; the
+            # text renderer would not recover the template failures it recovers from.
+            # images=None: an image anywhere in the conversation makes the structured-item
+            # check raise, and the caller declines rather than pricing a prompt without it.
+            prompt, _ = self._render_vlm_prompt(
+                full_messages,
+                None,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            )
+            # Whether the markers belong to the template or to tokenization is a per-model
+            # answer mlx_vlm makes for every generation; ask it rather than guess, or the
+            # count is off by whatever the generation's own choice would have added.
+            _model_type = getattr(getattr(self._model, "config", None), "model_type", None)
+            try:
+                from mlx_vlm.utils import should_add_special_tokens
+                add_special = should_add_special_tokens(_model_type, self._processor)
+            except Exception:
+                # The rule those releases inline, which Studio's runtime gate still accepts.
+                add_special = (
+                    getattr(self._processor, "chat_template", None) is None
+                    if _model_type in _VLM_INLINE_SPECIAL_TOKEN_FAMILIES
+                    else True
+                )
+            return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
+
+        render_result = self._render_text_prompt(
+            full_messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
+        return len(self._encode_prompt(render_result.prompt))
+
     def generate_chat_response(
         self,
         messages,
@@ -1779,10 +2152,7 @@ class MLXInferenceBackend:
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
-        full_messages = []
-        if system_prompt:
-            full_messages.append({"role": "system", "content": system_prompt})
-        full_messages.extend(messages)
+        full_messages = self._with_system_prompt(messages, system_prompt)
 
         # Inject image into the last user message for VLM
         if self._is_vlm and image is not None:
@@ -1878,43 +2248,15 @@ class MLXInferenceBackend:
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
-        from core.inference.chat_template_helpers import (
-            apply_chat_template_for_generation,
-            detect_think_prefill,
-            render_with_native_template_fallback,
-        )
+        from core.inference.chat_template_helpers import detect_think_prefill
 
-        prompt = apply_chat_template_for_generation(
-            self._tokenizer,
+        render_result = self._render_text_prompt(
             messages,
             tools = tools,
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
-        )
-        if prompt is None:
-            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
-
-        # Parity with the transformers backend: if the template dropped the
-        # requested tools, fall back to the native template so MLX text models
-        # keep advertising them. self._tokenizer is this entry's tokenizer, so
-        # probe and native render share a renderer. (VLM renders via the
-        # processor for image tokens and is not wired here.)
-        model_info = self.models.get(self.active_model_name, {})
-        render_result = render_with_native_template_fallback(
-            formatted_prompt = prompt,
-            tokenizer = self._tokenizer,
-            model_info = model_info,
-            active_model_name = self.active_model_name,
-            messages = messages,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            continue_final_message = continue_final_message,
-            hf_token = model_info.get("hf_token"),
-            return_metadata = True,
         )
         prompt = render_result.prompt
         reasoning_channel_markers = render_result.reasoning_channel_markers
@@ -2000,6 +2342,7 @@ class MLXInferenceBackend:
                     sampler = sampler,
                 )
                 gen_kwargs.update(self._kv_quant_generate_kwargs())
+                gen_kwargs.update(self._kv_window_generate_kwargs())
                 if prompt_cache is not None:
                     gen_kwargs["prompt_cache"] = prompt_cache
                 if logits_processors is not None:
@@ -2102,32 +2445,22 @@ class MLXInferenceBackend:
         if stopped:
             self._mark_stopped()
 
-    def _generate_vlm(
+    def _render_vlm_prompt(
         self,
         messages,
-        image,
-        temperature,
-        top_p,
-        top_k,
-        min_p,
-        max_new_tokens,
-        repetition_penalty,
-        cancel_event,
+        images,
         *,
         tools = None,
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
         continue_final_message = False,
-        presence_penalty = 0.0,
-        seed = None,
-        frequency_penalty = 0.0,
-        logit_bias = None,
-        _adapter_state = None,
-        stop = None,
     ):
-        from mlx_vlm import stream_generate as vlm_stream
+        """Render the prompt a vision generation sends, and the target that rendered it.
 
+        Shared with counting, as _render_text_prompt is for text models, so a count cannot
+        price a prompt the model never sees. A text-only conversation passes images=None.
+        """
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
             chat_render_target,
@@ -2139,8 +2472,6 @@ class MLXInferenceBackend:
         # to authorize against the same template this line selects (#7066).
         chat_target = chat_render_target(self._processor)
 
-        # mlx_vlm's stream_generate handles pixel_values (None for text-only)
-        images = [image] if image is not None else None
         attached_images = 0 if images is None else len(images)
         structured_images = sum(
             _count_vlm_images(message.get("content"))
@@ -2222,6 +2553,44 @@ class MLXInferenceBackend:
             prompt = recovered_prompt
         elif prompt_issue:
             raise RuntimeError(f"VLM chat template returned {prompt_issue}.") from prompt_error
+        return prompt, chat_target
+
+    def _generate_vlm(
+        self,
+        messages,
+        image,
+        temperature,
+        top_p,
+        top_k,
+        min_p,
+        max_new_tokens,
+        repetition_penalty,
+        cancel_event,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+        continue_final_message = False,
+        presence_penalty = 0.0,
+        seed = None,
+        frequency_penalty = 0.0,
+        logit_bias = None,
+        _adapter_state = None,
+        stop = None,
+    ):
+        from mlx_vlm import stream_generate as vlm_stream
+
+        images = [image] if image is not None else None
+        prompt, chat_target = self._render_vlm_prompt(
+            messages,
+            images,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+        )
 
         from core.inference.chat_template_helpers import detect_think_prefill
 
@@ -2247,6 +2616,7 @@ class MLXInferenceBackend:
             min_p = float(min_p or 0.0),
         )
         vlm_kwargs.update(self._kv_quant_generate_kwargs())
+        vlm_kwargs.update(self._kv_window_generate_kwargs())
         if seed is not None:
             # generate_step builds its temperature/top_p/min_p/top_k sampler only
             # when sampler is None, so a seeded request must supply the whole
@@ -2420,6 +2790,7 @@ class MLXInferenceBackend:
                     # Greedy; the knobs below are load-time state, not caller kwargs.
                     temperature = 0.0,
                     **self._kv_quant_generate_kwargs(),
+                    **self._kv_window_generate_kwargs(),
                 ):
                     final_response = response
                     sampled += response.text if hasattr(response, "text") else str(response)

@@ -457,6 +457,7 @@ jobs:
             --ignore=tests/studio/test_hardware_dispatch_matrix.py \
             --ignore=tests/studio/test_is_mlx_dispatch_gate.py \
             --ignore=tests/studio/test_xpu_spoof_pipeline.py \
+            --ignore=tests/studio/test_mlx_context_platform_matrix.py \
             --ignore=tests/vllm_compat \
             --ignore=tests/version_compat \
             -m 'not server and not e2e' \
@@ -477,7 +478,8 @@ jobs:
           python -m pytest -q --tb=short \
             tests/studio/test_hardware_dispatch_matrix.py \
             tests/studio/test_is_mlx_dispatch_gate.py \
-            tests/studio/test_xpu_spoof_pipeline.py
+            tests/studio/test_xpu_spoof_pipeline.py \
+            tests/studio/test_mlx_context_platform_matrix.py
 
       - name: Event-loop latency tests (wall clock, run without CPU contention)
         env:

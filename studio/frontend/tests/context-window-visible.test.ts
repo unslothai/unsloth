@@ -15,7 +15,7 @@ import { hasKnownContextWindow } from "../src/features/chat/lib/context-window-k
 const RESIDENT = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF";
 
 const base = {
-  ggufContextLength: 32768,
+  loadedContextLength: 32768,
   modelLoading: false,
   isExternalModel: false,
   residentCheckpoint: RESIDENT as string | null | undefined,
@@ -30,14 +30,14 @@ test("a load in flight has no window to name", () => {
   assert.equal(hasKnownContextWindow({ ...base, modelLoading: true }), false);
 });
 
-// selecting an API model nulls ggufContextLength, so a stale length must be refused on its own
+// selecting an API model nulls loadedContextLength, so a stale length must be refused on its own
 test("an API model shows no window even with a stale length in the store", () => {
   assert.equal(hasKnownContextWindow({ ...base, isExternalModel: true }), false);
 });
 
 test("a non-GGUF local model has no window either", () => {
   assert.equal(
-    hasKnownContextWindow({ ...base, ggufContextLength: null }),
+    hasKnownContextWindow({ ...base, loadedContextLength: null }),
     false,
   );
 });
@@ -95,6 +95,31 @@ test("a counted chat states the ratio", () => {
 // a prompt already over the window pins at 100 rather than overflowing the fill
 test("usage past the window clamps to 100 percent", () => {
   assert.equal(deriveContextUsageBar({ used: 40000, total: 32768 })?.percent, 100);
+});
+
+// llama.cpp stops at the window; MLX runs straight past it, so the advice differs, and
+// which side of the limit a chat is on cannot be read from the clamped percent
+test("the limit advice follows the backend and the unclamped ratio", () => {
+  const at = { used: 40000, total: 32768 };
+  assert.equal(deriveContextUsageBar(at)?.advice, "stops-at-limit");
+  // The MLX branches are about the ratio, so they state the bound they assume: an
+  // unconfirmed window advises on its own terms (see mlx-context-helpers).
+  assert.equal(
+    deriveContextUsageBar({ ...at, isMlx: true, contextEnforced: true })?.advice,
+    "mlx-past-limit",
+  );
+  assert.equal(
+    deriveContextUsageBar({
+      used: 30000,
+      total: 32768,
+      isMlx: true,
+      contextEnforced: true,
+    })?.advice,
+    "mlx-near-limit",
+  );
+  assert.equal(deriveContextUsageBar({ used: 4096, total: 32768 })?.advice, "none");
+  // no window and no count: nothing to advise against
+  assert.equal(deriveContextUsageBar({ used: 40000, total: null })?.advice, "none");
 });
 
 // external providers: usage is known, the window is not

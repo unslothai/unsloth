@@ -46,7 +46,7 @@ BOUND_NAMES = {
     "aui",
     "checkpoint",
     "enabled",
-    "ggufContextLength",
+    "loadedContextLength",
     "isLoading",
     "mainThreadId",
     "runActive",
@@ -165,7 +165,7 @@ const state: any = {
   contextUsageByThreadId: {},
   params: { checkpoint: "", systemPrompt: "", systemVariables: "", maxTokens: 4096 },
   activeGgufVariant: null,
-  ggufContextLength: null,
+  loadedContextLength: null,
   modelLoading: false,
   runningByThreadId: {},
   // The subset decoding on the local llama-server: the recount must not share it with a decode.
@@ -404,14 +404,14 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   // Read through the store the way the component's selectors do.
   const activeThreadId = state.activeThreadId;
   const checkpoint = state.params.checkpoint;
-  const ggufContextLength = state.ggufContextLength;
+  const loadedContextLength = state.loadedContextLength;
   const modelLoading = state.modelLoading;
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   const scope: any = {
     activeThreadId,
     checkpoint,
     enabled,
-    ggufContextLength,
+    loadedContextLength,
     modelLoading,
     runActive,
   };
@@ -452,7 +452,7 @@ export function renderNewChatSwitch(props: any): void {
   // The component reads these through useChatRuntimeStore selectors, so a
   // re-render sees whatever the store holds right now.
   const checkpoint = state.params.checkpoint;
-  const ggufContextLength = state.ggufContextLength;
+  const loadedContextLength = state.loadedContextLength;
   const modelLoading = state.modelLoading;
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   const scope: any = {
@@ -463,7 +463,7 @@ export function renderNewChatSwitch(props: any): void {
     nonce,
     paused,
     checkpoint,
-    ggufContextLength,
+    loadedContextLength,
     modelLoading,
     runActive,
   };
@@ -500,7 +500,7 @@ export async function adoptResidentModel(props: any): Promise<void> {
   // The real hydration writes the whole status; the recount only reads the window.
   const applyActiveModelStatusToStore = (status: any, _options: any): void => {
     set({
-      ggufContextLength: status.is_gguf ? (status.context_length ?? null) : null,
+      loadedContextLength: status.is_gguf ? (status.context_length ?? null) : null,
     });
   };
   const syncModelCapabilities = (_id: string, _status: any): void => {};
@@ -577,7 +577,7 @@ def _run(script: str) -> dict:
 LOADED_MODEL = """
     seed({
       params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
-      ggufContextLength: 8192,
+      loadedContextLength: 8192,
       modelLoading: false,
     });
 """
@@ -892,7 +892,7 @@ def test_a_count_that_is_not_a_finite_number_never_reaches_the_bar(reply):
 NO_LOCAL_MODEL = """
     seed({
       params: { checkpoint: "", systemPrompt: "", systemVariables: "" },
-      ggufContextLength: null,
+      loadedContextLength: null,
     });
 """
 
@@ -1676,7 +1676,7 @@ def test_adopting_the_resident_gguf_reprices_the_open_thread():
             // On an external provider, showing the usage that provider's last turn wrote.
             seed({
               params: { checkpoint: "openai:gpt-4o", systemPrompt: "", systemVariables: "" },
-              ggufContextLength: null,
+              loadedContextLength: null,
               activeThreadId: "thread-a",
               contextUsage: { promptTokens: 900, completionTokens: 30, totalTokens: 930, cachedTokens: 0 },
             });
@@ -1739,7 +1739,7 @@ DEEP_LINK_HYDRATING_AFTER_THE_LOADER = """
     // /api/inference/status answers while the thread is still not active.
     seed({
       params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
-      ggufContextLength: 8192,
+      loadedContextLength: 8192,
       modelLoading: false,
     });
     renderThreadContextUsageRecount();

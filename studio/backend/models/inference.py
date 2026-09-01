@@ -27,6 +27,7 @@ from core.inference.llama_server_args import (
     PARALLEL_MAX,
     PARALLEL_MIN,
 )
+from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
@@ -54,8 +55,11 @@ class LoadRequest(BaseModel):
     max_seq_length: int = Field(
         0,
         ge = 0,
-        le = 1048576,
-        description = "Maximum sequence length (0 = model default for GGUF)",
+        le = MAX_REQUESTABLE_CONTEXT,
+        description = (
+            "Maximum sequence length. Send 0 to let a backend that sizes its own window "
+            "(llama.cpp or MLX) choose the context itself."
+        ),
     )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
@@ -427,7 +431,7 @@ class ValidateModelRequest(BaseModel):
     )
     # Intended load settings so validate's coexistence check matches the follow-up
     # /load; defaults preserve old behavior for callers that omit them.
-    max_seq_length: int = Field(0, ge = 0, le = 1048576)
+    max_seq_length: int = Field(0, ge = 0, le = MAX_REQUESTABLE_CONTEXT)
     load_in_4bit: bool = Field(True)
     cache_type_kv: Optional[str] = Field(None)
     tensor_parallel: bool = Field(False)
@@ -1063,11 +1067,24 @@ class _InferenceRuntimeFields(BaseModel):
         None, description = "Runtime context length in tokens for the loaded model"
     )
     max_context_length: Optional[int] = Field(
-        None, description = "Maximum context length currently available on this hardware"
+        None,
+        description = (
+            "The ceiling to show for this model: llama.cpp estimates what the machine can "
+            "hold, while MLX reports the model's own window. Neither reserves memory, and "
+            "an explicit request above it is still honored."
+        ),
     )
     native_context_length: Optional[int] = Field(
         None,
-        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+        description = "Model's native context length, from GGUF metadata or the MLX model config",
+    )
+    context_length_enforced: Optional[bool] = Field(
+        None,
+        description = (
+            "Whether context_length actually bounds the runtime's KV cache. True confirmed, "
+            "false confirmed unbounded, null the backend does not answer. MLX builds a cache "
+            "to check, since a model with its own make_cache ignores the requested size."
+        ),
     )
     supports_reasoning: bool = Field(
         False,
@@ -1464,10 +1481,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     requested_context_length: Optional[int] = Field(
         None,
         description = (
-            "The max_seq_length the active load was invoked with (0 = Auto). Lets the "
-            "UI re-seed a Manual + Auto-layers context pin on hydration, and lets a CLI "
-            "attach tell a no-op from a reload, where context_length only exposes the "
-            "resolved value. None when the running model predates this field."
+            "The context length the active load was invoked with: 0 means the load asked "
+            "the backend to choose, and null means the serving backend records no request "
+            "at all. Both local backends size their own window, so context_length reports "
+            "only what was resolved and cannot say whether anyone chose it; this is what "
+            "lets a client restore the user's choice after a reload."
         ),
     )
     load_in_4bit: Optional[bool] = Field(
@@ -1819,6 +1837,50 @@ class ThinkingConfig(BaseModel):
     """
 
     type: Literal["disabled", "enabled"] = "disabled"
+
+
+def resolve_thinking_onto_enable_thinking(request):
+    """Map Anthropic-style ``thinking`` onto the internal ``enable_thinking``.
+
+    ``enable_thinking`` wins when both are given. Shared with counting, which must resolve
+    the reasoning preamble exactly as the completion does.
+    """
+    if request.thinking is not None and request.enable_thinking is None:
+        request.enable_thinking = request.thinking.type == "enabled"
+    return request
+
+
+class ReasoningControlsRequest(BaseModel):
+    """The reasoning controls a request may carry, resolved the way a completion does.
+
+    ChatCompletionRequest shares the resolution above rather than inheriting: pydantic
+    orders inherited fields ahead of a subclass's own, reordering its OpenAPI properties
+    and validation errors.
+    """
+
+    enable_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
+    )
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = Field(
+        None,
+        description = "[x-unsloth] Reasoning effort level ('none'|'minimal'|'low'|'medium'|'high'|'max'|'xhigh'). OpenAI `/v1/responses` accepts model-dependent subsets; Anthropic adaptive thinking uses `max` as the top tier on Claude 4.6 Opus/Sonnet (inbound `xhigh` is mapped to `max`) and `xhigh` on Claude 4.7 Opus; local Harmony/gpt-oss templates support low|medium|high.",
+    )
+    preserve_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
+    )
+    thinking: Optional[ThinkingConfig] = Field(
+        None,
+        description = "[Anthropic-compatible] Thinking configuration. "
+        "Use {type: 'disabled'} to disable thinking, {type: 'enabled'} to enable.",
+    )
+
+    @model_validator(mode = "after")
+    def _map_thinking_to_enable_thinking(self):
+        return resolve_thinking_onto_enable_thinking(self)
 
 
 # Recognized permission_mode values. The field accepts a plain string rather than
@@ -2408,17 +2470,7 @@ class ChatCompletionRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
-        """Map Anthropic-style ``thinking`` parameter to internal ``enable_thinking``.
-
-        ``thinking: {type: 'enabled'}`` sets ``enable_thinking = True`` and
-        ``thinking: {type: 'disabled'}`` sets ``enable_thinking = False``.
-        ``enable_thinking`` takes precedence when both are provided so that
-        callers who already use the internal field are unaffected. Invalid
-        ``thinking`` shapes are rejected at validation time (422).
-        """
-        if self.thinking is not None and self.enable_thinking is None:
-            self.enable_thinking = self.thinking.type == "enabled"
-        return self
+        return resolve_thinking_onto_enable_thinking(self)
 
     @field_validator("permission_mode", mode = "before")
     @classmethod
@@ -2482,8 +2534,8 @@ class ChatCompletionRequest(BaseModel):
         return self
 
 
-class ChatCountTokensRequest(BaseModel):
-    """Count prompt tokens for a local GGUF chat without generating."""
+class ChatCountTokensRequest(ReasoningControlsRequest):
+    """Count prompt tokens for a local chat without generating."""
 
     model_config = {"extra": "allow"}
 
@@ -2498,18 +2550,6 @@ class ChatCountTokensRequest(BaseModel):
     tools: Optional[list[dict]] = Field(
         None,
         description = "Optional OpenAI tool definitions included in the prompt",
-    )
-    enable_thinking: Optional[bool] = Field(
-        None,
-        description = "[x-unsloth] Render the template in thinking mode, as a completion would",
-    )
-    reasoning_effort: Optional[str] = Field(
-        None,
-        description = "[x-unsloth] Reasoning effort level the completion would request",
-    )
-    preserve_thinking: Optional[bool] = Field(
-        None,
-        description = "[x-unsloth] Keep historical <think> blocks in the rendered prompt",
     )
     enable_tools: Optional[bool] = Field(
         None,
@@ -2528,6 +2568,14 @@ class ChatCountTokensRequest(BaseModel):
         description = (
             "[x-unsloth] Offer the deep_research handoff tool. Its schema is in the prompt "
             "whenever the composer armed research, so the count carries it too."
+        ),
+    )
+    thread_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] The thread being counted. A thread with a conversation archive puts "
+            "search_conversation and its compaction nudge in the prompt, so the count needs "
+            "the same id the completion sends to price them."
         ),
     )
     rag_scope: Optional[dict] = Field(
@@ -2549,10 +2597,11 @@ class ChatCountTokensRequest(BaseModel):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level the completion would send. Only 'full' changes "
-        "the prompt: it swaps the python/terminal descriptions for the unsandboxed pair and adds a "
-        "sentence to the tool nudge, so a count that omits it prices a prompt the completion will "
-        "not send.",
+        description = "[x-unsloth] Permission level the completion would send. 'full' swaps the "
+        "python/terminal descriptions for the unsandboxed pair and adds a sentence to the tool "
+        "nudge; 'ask' holds the tool loop's first-pass retrieval behind its confirmation gate, so "
+        "a pending turn under a retrieval scope is countable. A count that omits this prices a "
+        "prompt the completion will not send, or declines one it could have priced.",
     )
     bypass_permissions: Optional[bool] = Field(
         None,
@@ -2560,10 +2609,28 @@ class ChatCountTokensRequest(BaseModel):
         "left to extra='allow') so an omitted flag reads as None instead of raising AttributeError.",
     )
 
+    confirm_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Whether the completion's tool loop would gate each call. "
+        "Declared so it is typed and folded into permission_mode as it is on a completion.",
+    )
+    max_tool_calls_per_message: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "[x-unsloth] Tool-call budget the completion would send. Zero suppresses the "
+        "tool loop, so a count that never sees it prices a catalog the relay does not render.",
+    )
+
     @field_validator("permission_mode", mode = "before")
     @classmethod
     def _coerce_permission_mode(cls, value: Any) -> Any:
         return _normalize_permission_mode(value)
+
+    # The very function the completion request runs, not a copy: a count renders replayed
+    # tool history through the same templates, which read the id off the result message.
+    _resolve_missing_tool_call_ids = model_validator(mode = "after")(
+        ChatCompletionRequest._resolve_missing_tool_call_ids
+    )
 
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "ChatCountTokensRequest":
@@ -2573,6 +2640,11 @@ class ChatCountTokensRequest(BaseModel):
             self.bypass_permissions = True
         elif self.bypass_permissions:
             self.permission_mode = "full"
+        elif self.permission_mode is None and self.confirm_tool_calls is True:
+            # The same reading a completion gives it: gating every call is the
+            # pre-permission-mode way of asking for "ask", and the loop's retrieval
+            # gate turns on that. No provider clause -- this endpoint is local only.
+            self.permission_mode = "ask"
         return self
 
 

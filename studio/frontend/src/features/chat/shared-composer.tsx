@@ -111,13 +111,16 @@ import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
-  normalizeMaxSeqLength,
+  isServedByMlx,
+  savedContextPin,
   resolveInitialConfig,
   type PerModelConfig,
+  loadedContextFields,
 } from "@/features/model-picker";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
+import { usePlatformStore } from "@/config/env";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -128,7 +131,14 @@ import {
   loadModel,
   validateModel,
 } from "./api/chat-api";
-import { resolveFitMaxSeqLength, resolveExplicitCtxPin } from "./presets/preset-policy";
+import {
+  loadedContextForParams,
+  resolveExplicitCtxPin,
+  resolveFitMaxSeqLength,
+  retainedContextPin,
+  unpinnedLoadContext,
+  replayMaxTokensCap,
+} from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
@@ -1303,6 +1313,7 @@ export function SharedComposer({
         const targetIsGguf =
           (sel.ggufVariant ?? null) != null ||
           sel.id.toLowerCase().endsWith(".gguf");
+        const platform = usePlatformStore.getState();
         let resolvedIsDiffusion = sel.isDiffusion;
         // Set when the preflight could not classify the GGUF, so a false
         // resolvedIsDiffusion below must not be read as "ordinary".
@@ -1378,16 +1389,19 @@ export function SharedComposer({
             // The load still works; a real overrides outage surfaces there.
           }
         }
-        // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit
-        // context loads at native (0 -> n_ctx_train), not the session maxSeqLength,
-        // which would silently shrink the shown context.
-        // A non-GGUF pane with no saved maxSeqLength falls back to the app default,
-        // not the active model's shared runtime snapshot: else comparing a saved
-        // 128K model against an unconfigured one loads the latter at 128K and OOMs.
+        // Mirror single-view resolveLoadMaxSeqLength: a pane with no explicit context
+        // hands sizing to whichever local backend serves it, not the session
+        // maxSeqLength, which would silently shrink the shown context. One no local
+        // backend serves falls back to the app default rather than the active model's
+        // runtime snapshot, else comparing a saved 128K model against an unconfigured
+        // one loads the latter at 128K and OOMs.
         const effectiveMaxSeqLength =
-          ownConfig.customContextLength ??
-          normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
-          (targetIsGguf ? 0 : DEFAULT_MAX_SEQ_LENGTH);
+          savedContextPin(ownConfig) ??
+          unpinnedLoadContext(
+            targetIsGguf,
+            isServedByMlx(targetIsGguf, platform.deviceType, platform.chatOnlyReason),
+            DEFAULT_MAX_SEQ_LENGTH,
+          );
         const effectiveChatTemplateOverride = cleanCompareChatTemplate(
           ownConfig.chatTemplateOverride,
         );
@@ -1618,9 +1632,15 @@ export function SharedComposer({
           // remembered settings, and a budget kept from a larger context does
           // not fit the one it just loaded with.
           {
-            maxTokensCap: resp.is_gguf
-              ? (resp.context_length ?? undefined)
-              : effectiveMaxSeqLength,
+            // The reported window leads and the request stands in only for a backend
+            // that sizes nothing, as on the interactive load: an unpinned pane sends
+            // the auto-size sentinel, and capping a budget at 0 asks for no output.
+            maxTokensCap: replayMaxTokensCap(
+              loadedContextFields(resp).loadedContextLength ??
+                (!resp.is_gguf && effectiveMaxSeqLength > 0
+                  ? effectiveMaxSeqLength
+                  : null),
+            ),
           },
         );
         store.setModelRequiresTrustRemoteCode(
@@ -1629,11 +1649,17 @@ export function SharedComposer({
         // This pane's own saved Context Length, not compareMaxSeqLength: the wire
         // value is Auto-resolved for a same-model reload, so pinning it would
         // convert Auto into a number the user never set (see resolveExplicitCtxPin).
-        // Non-GGUF compare loads send a sequence length rather than an n_ctx, so
-        // their baseline clears.
+        // A non-GGUF pane keeps an MLX pin instead of clearing its baseline.
         const keepCustomCtx = targetIsGguf
           ? resolveExplicitCtxPin(effectiveCustomContextLength)
-          : null;
+          : retainedContextPin({
+              isMlx: isServedByMlx(
+                targetIsGguf,
+                platform.deviceType,
+                platform.chatOnlyReason,
+              ),
+              requestedContextLength: compareMaxSeqLength,
+            });
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
         const committedSlots =
@@ -1686,11 +1712,11 @@ export function SharedComposer({
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          // The context baseline this pane loaded with (see keepCustomCtx above),
-          // so a later Apply/Reset can't silently revert a Manual+Auto pin.
+          // The context baseline this pane loaded with (see keepCustomCtx above), so a
+          // later Apply/Reset can't silently revert the pin it was serving.
           loadedCustomContextLength: keepCustomCtx,
           // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick
-          // plus loaded baselines) so the GPU controls round-trip. (gguf context,
+          // plus loaded baselines) so the GPU controls round-trip. (The context group,
           // customContextLength and native-path token/expiry clear in the tail below.)
           ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the
@@ -1706,13 +1732,7 @@ export function SharedComposer({
           // active model the UI and later reload/save use the context it actually
           // loaded with, not the previous/default one.
           customContextLength: keepCustomCtx,
-          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
-          ggufNativeContextLength: resp.is_gguf
-            ? (resp.native_context_length ?? null)
-            : null,
-          ggufMaxContextLength: resp.is_gguf
-            ? (resp.max_context_length ?? null)
-            : null,
+          ...loadedContextFields(resp),
           // Compare selections load by repo/variant, never from the file picker,
           // so they carry no native lease. Clear any prior picked file's
           // token/expiry so the reload path never sends a stale lease.
@@ -1722,9 +1742,14 @@ export function SharedComposer({
         });
         if (!targetIsGguf) {
           // Non-GGUF panes carry their context in params.maxSeqLength.
+          const paneParams = useChatRuntimeStore.getState().params;
           store.setParams({
-            ...useChatRuntimeStore.getState().params,
-            maxSeqLength: effectiveMaxSeqLength,
+            ...paneParams,
+            maxSeqLength: loadedContextForParams(
+              loadedContextFields(resp).loadedContextLength,
+              effectiveMaxSeqLength,
+              paneParams.maxSeqLength,
+            ),
           });
         }
         loadedFromConfig = config != null;

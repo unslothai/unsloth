@@ -492,12 +492,24 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            try:
-                _context_length = _entry.get("context_length")
-                if _context_length is not None:
-                    model_info["context_length"] = int(_context_length)
-            except Exception as _ctx_exc:
-                logger.warning("context_length forward failed: %s", _ctx_exc)
+            # The whole group: the parent reports all four and can recompute none of
+            # them once the worker holds the model.
+            for _ctx_field in (
+                "context_length",
+                "native_context_length",
+                "max_context_length",
+                "requested_context_length",
+            ):
+                try:
+                    _ctx_value = _entry.get(_ctx_field)
+                    if _ctx_value is not None:
+                        model_info[_ctx_field] = int(_ctx_value)
+                except Exception as _ctx_exc:
+                    logger.warning("%s forward failed: %s", _ctx_field, _ctx_exc)
+            # Tri-state, so it is forwarded as it is rather than coerced: None means the
+            # backend does not answer, which is not the same as a confirmed False.
+            if _entry.get("context_length_enforced") is not None:
+                model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])
             # Backend post-load audio classification outranks pre-load config.
             model_info.update(
                 {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
@@ -739,6 +751,52 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
                 "stack": traceback.format_exc(limit = 20),
             },
         )
+
+
+def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
+    """Count prompt tokens for the loaded model and reply with the total."""
+    try:
+        count = backend.count_chat_tokens(
+            cmd.get("messages") or [],
+            cmd.get("system_prompt") or "",
+            tools = cmd.get("tools"),
+            enable_thinking = cmd.get("enable_thinking"),
+            reasoning_effort = cmd.get("reasoning_effort"),
+            preserve_thinking = cmd.get("preserve_thinking"),
+        )
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "count_tokens_response",
+                "request_id": cmd.get("request_id"),
+                "error": str(exc),
+            },
+        )
+        return
+    _send_response(
+        resp_queue,
+        {
+            "type": "count_tokens_response",
+            # Echoed so the dispatcher can address the caller's mailbox; an unaddressed
+            # reply is dropped and the caller waits out its timeout.
+            "request_id": cmd.get("request_id"),
+            "input_tokens": int(count),
+            "model": backend.active_model_name,
+        },
+    )
+
+
+def _decline_count_tokens(cmd: dict, resp_queue: Any) -> None:
+    """Answer a count this backend cannot serve; dropping it costs the caller its timeout."""
+    _send_response(
+        resp_queue,
+        {
+            "type": "count_tokens_response",
+            "request_id": cmd.get("request_id"),
+            "error": "Counting is not supported on the transformers backend.",
+        },
+    )
 
 
 def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
@@ -1166,6 +1224,8 @@ def run_inference_process(
                             ),
                         },
                     )
+                elif cmd_type == "count_tokens":
+                    _handle_count_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -1417,6 +1477,9 @@ def run_inference_process(
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+            elif cmd_type == "count_tokens":
+                _decline_count_tokens(cmd, resp_queue)
 
             elif cmd_type == "share_object":
                 _handle_share_object(backend, cmd, resp_queue)

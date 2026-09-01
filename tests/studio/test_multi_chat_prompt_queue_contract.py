@@ -476,15 +476,15 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "liveRuntime.params.checkpoint" in auto_load_merge
     assert "liveRuntime.supportsTools" in auto_load_merge
     assert "liveRuntime.supportsReasoning" in auto_load_merge
-    assert "liveRuntime.ggufContextLength" in auto_load_merge
+    assert "liveRuntime.loadedContextLength" in auto_load_merge
     assert "isExternalModelId(visibleState.params.checkpoint)" in CHAT_ADAPTER
     assert "resolveInferenceCheckpointId(status)" in CHAT_ADAPTER
     assert "skipAdoptServerModel: true" in CHAT_ADAPTER
     assert "snapshotVisibleModelState(" in CHAT_ADAPTER
     assert "restoreVisibleModelState(visibleExternalState)" in CHAT_ADAPTER
-    assert '"ggufContextLength"' in CHAT_ADAPTER
-    assert '"ggufMaxContextLength"' in CHAT_ADAPTER
-    assert '"ggufNativeContextLength"' in CHAT_ADAPTER
+    assert '"loadedContextLength"' in CHAT_ADAPTER
+    assert '"maxContextLength"' in CHAT_ADAPTER
+    assert '"nativeContextLength"' in CHAT_ADAPTER
     assert '"loadedIsMultimodal"' in CHAT_ADAPTER
     assert '"loadedIsDiffusion"' in CHAT_ADAPTER
     assert (
