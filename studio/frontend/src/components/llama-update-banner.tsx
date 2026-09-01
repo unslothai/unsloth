@@ -201,7 +201,14 @@ export function LlamaUpdateBanner({
           </div>
         </div>
 
-        {!applying && changelogOpen && installedTag && latestTag ? (
+        {/* changelogAvailable, not just changelogOpen: if the install turns into
+            a source build while the panel is open, the toggle unmounts and the
+            panel would otherwise be left on screen with no way to close it. */}
+        {!applying &&
+        changelogAvailable &&
+        changelogOpen &&
+        installedTag &&
+        latestTag ? (
           <LlamaUpdateChangelogPanel
             installedTag={installedTag}
             latestTag={latestTag}

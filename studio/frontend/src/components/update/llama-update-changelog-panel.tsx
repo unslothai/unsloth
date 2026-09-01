@@ -12,10 +12,20 @@ import {
   UPDATE_NOTES_SURFACE_CLASS,
 } from "@/components/update/update-notes-layout";
 import { useLlamaUpdateChangelog } from "@/hooks/use-llama-update-changelog";
-import type { ReactElement, ReactNode } from "react";
+import { openLink } from "@/lib/open-link";
+import type { MouseEvent, ReactElement, ReactNode } from "react";
 
 const LINK_CLASS =
   "font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70";
+
+// A bare target="_blank" has nowhere to go in the Tauri webview, which creates no
+// window of its own. openLink() hands the URL to the system browser there and
+// falls back to window.open on the web, matching MarkdownPreview.
+function handleExternalClick(event: MouseEvent<HTMLAnchorElement>): void {
+  if (openLink(event.currentTarget.href)) {
+    event.preventDefault();
+  }
+}
 
 function Message({
   children,
@@ -50,6 +60,7 @@ export function LlamaUpdateChangelogPanel({
       href={changelog.releaseUrl}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={handleExternalClick}
       className={UPDATE_NOTES_LINK_CLASS}
       data-testid="llama-update-release-link"
     >
@@ -66,6 +77,13 @@ export function LlamaUpdateChangelogPanel({
       <div className={UPDATE_NOTES_SURFACE_CLASS}>
         {state === "loading" || state === "idle" ? (
           <Message>Loading new changes...</Message>
+        ) : state === "unavailable" ? (
+          // Definitive, so no Retry: this build predates the itemised release
+          // notes and re-asking GitHub cannot change the answer.
+          <Message>
+            This build predates itemised release notes, so its changes cannot be
+            compared.
+          </Message>
         ) : state === "error" ? (
           <Message
             action={
@@ -105,12 +123,15 @@ export function LlamaUpdateChangelogPanel({
                     <span>
                       {" ("}
                       {change.links.map((link, linkIndex) => (
-                        <span key={link.url}>
+                        // A bullet can cite the same URL twice under different
+                        // labels, so the URL alone is not a unique key.
+                        <span key={`${linkIndex}-${link.url}`}>
                           {linkIndex > 0 ? ", " : ""}
                           <a
                             href={link.url}
                             target="_blank"
                             rel="noopener noreferrer"
+                            onClick={handleExternalClick}
                             className={LINK_CLASS}
                           >
                             {link.label}
@@ -134,7 +155,10 @@ export function LlamaUpdateChangelogPanel({
           <Message>No new carried changes are listed for this build.</Message>
         )}
       </div>
-      {state === "ready" && releaseLink ? (
+      {/* Also shown when the comparison failed: the release page is usually
+          readable even when the two bodies could not be diffed, and it is the
+          only way left to see what changed. */}
+      {state !== "loading" && state !== "idle" && releaseLink ? (
         <div className={UPDATE_NOTES_FOOTER_CLASS}>{releaseLink}</div>
       ) : null}
     </div>

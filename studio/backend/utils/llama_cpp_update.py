@@ -49,7 +49,11 @@ from utils.llama_cpp_freshness import (
     reset_caches,
     update_download_size_bytes,
 )
-from utils.llama_cpp_changelog import changelog_for_update
+from utils.llama_cpp_changelog import (
+    changelog_for_update,
+    release_page_url,
+    unavailable_reason,
+)
 from utils.prebuilt import update_flow as _flow
 from utils.prebuilt.llama_backend import (
     REQUESTABLE_BACKENDS,
@@ -405,6 +409,9 @@ def get_update_changelog(*, force_refresh: bool = False) -> dict:
     empty["latest_tag"] = latest
     if not freshness.get("behind") or not installed_full or not latest:
         return empty
+    # Offer the release page even when the comparison fails. Most installs predate
+    # the itemised body, and the notes are readable on GitHub in every one of them.
+    empty["release_url"] = release_page_url(repo, latest)
     try:
         result = changelog_for_update(
             repo,
@@ -416,7 +423,11 @@ def get_update_changelog(*, force_refresh: bool = False) -> dict:
         logger.debug("llama changelog comparison failed", error = str(exc))
         result = None
     if result is None:
-        empty["error"] = "release_notes_unavailable"
+        try:
+            empty["error"] = unavailable_reason(repo, installed_full, latest)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("llama changelog reason lookup failed", error = str(exc))
+            empty["error"] = "release_notes_unavailable"
         return empty
     return {**empty, **result, "matched": True}
 

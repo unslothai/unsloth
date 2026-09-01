@@ -25,7 +25,18 @@ interface LlamaUpdateChangelog {
   error: string | null;
 }
 
-export type LlamaUpdateChangelogState = "idle" | "loading" | "ready" | "error";
+// "unavailable" is a definitive answer, not a failure to get one: this pair of
+// releases cannot be compared and never will be, so the panel must not offer a
+// Retry that re-runs two GitHub lookups to reach the same conclusion.
+export type LlamaUpdateChangelogState =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "unavailable"
+  | "error";
+
+// The backend reports this when a release predates the itemised body format.
+const PERMANENT_ERRORS = new Set(["notes_not_itemised"]);
 
 function githubUrl(value: unknown): string | null {
   return typeof value === "string" && value.startsWith("https://github.com/")
@@ -121,7 +132,13 @@ export function useLlamaUpdateChangelog({
             return;
           }
           setChangelog(parsed);
-          setState(parsed.matched ? "ready" : "error");
+          setState(
+            parsed.matched
+              ? "ready"
+              : parsed.error && PERMANENT_ERRORS.has(parsed.error)
+                ? "unavailable"
+                : "error",
+          );
         })
         .catch(() => {
           if (requestIdRef.current !== requestId) {

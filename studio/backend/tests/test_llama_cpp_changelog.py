@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import http.client
 import sys
+import time
 from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -154,3 +156,194 @@ def test_cpp_identifiers_keep_literal_underscores():
     entry = changes._entry("ggml-cuda: keep ROCm_Host and GGML_CUDA_ENABLE_UNIFIED_MEMORY=0")
 
     assert entry["summary"] == ("ggml-cuda: keep ROCm_Host and GGML_CUDA_ENABLE_UNIFIED_MEMORY=0")
+
+
+def test_repo_with_a_dot_segment_never_reaches_github(monkeypatch):
+    # "." is inside the repo character class, so "owner/.." matched the shape check
+    # and would have walked out of /repos/ on any normalizing proxy.
+    called = False
+
+    def fail(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(changes.urllib.request, "urlopen", fail)
+
+    for repo in ("../etc", "owner/..", "..", "../rate_limit"):
+        assert changes._fetch_release(repo, "b1") is None
+    assert called is False
+
+
+def test_pull_and_issue_urls_share_one_identity_namespace():
+    # GitHub numbers issues and pull requests from the same sequence, so the same
+    # reference written three ways must match itself.
+    from_pull = changes._identities(
+        "Fix a crash ([ggml-org/llama.cpp#900](https://github.com/ggml-org/llama.cpp/pull/900))"
+    )
+    from_issue = changes._identities(
+        "Fix a crash ([the issue](https://github.com/ggml-org/llama.cpp/issues/900))"
+    )
+    from_text = changes._identities("Fix a crash, ggml-org#900")
+
+    assert from_pull & from_issue
+    assert from_issue & from_text
+
+
+def test_a_title_containing_the_metadata_delimiter_is_not_truncated():
+    entry = changes._entry(
+        "vulkan: handle ([a],[b]) tuples "
+        "([unslothai/llama.cpp#5](https://github.com/unslothai/llama.cpp/pull/5))"
+    )
+
+    assert entry["summary"] == "vulkan: handle ([a],[b]) tuples"
+    assert [link["url"] for link in entry["links"]] == [
+        "https://github.com/unslothai/llama.cpp/pull/5"
+    ]
+
+
+def test_a_bullet_with_no_summary_does_not_suppress_a_later_real_one(monkeypatch):
+    releases = {
+        "old": {"body": "Automated prebuild, merged with:\n\n- Unrelated carry\n"},
+        "new": {
+            "body": (
+                "Automated prebuild, merged with:\n\n"
+                "- Unrelated carry\n"
+                "- [ ](https://github.com/unslothai/llama.cpp/pull/900)\n"
+                "- Real change for PR 900 "
+                "([unslothai/llama.cpp#900](https://github.com/unslothai/llama.cpp/pull/900))\n"
+            ),
+        },
+    }
+    monkeypatch.setattr(
+        changes,
+        "_release_for_tag",
+        lambda _repo, tag, *, force_refresh = False: releases[tag],
+    )
+
+    result = changes.changelog_for_update("unslothai/llama.cpp", "old", "new")
+
+    assert [item["summary"] for item in result["changes"]] == [
+        "Real change for PR 900"
+    ]
+
+
+def test_a_missing_target_body_fails_closed(monkeypatch):
+    # Distinct from a prose-only target, which legitimately means "carries nothing".
+    releases = {"old": {"body": OLD_BODY}, "new": {}}
+    monkeypatch.setattr(
+        changes,
+        "_release_for_tag",
+        lambda _repo, tag, *, force_refresh = False: releases[tag],
+    )
+
+    assert changes.changelog_for_update("unslothai/llama.cpp", "old", "new") is None
+
+
+def test_forced_refresh_is_floored_to_one_fetch_per_interval(monkeypatch):
+    calls = []
+    monkeypatch.setattr(changes, "_release_memo", {})
+    monkeypatch.setattr(changes, "_release_failed_at", {})
+    monkeypatch.setattr(changes, "_release_forced_at", {})
+    monkeypatch.setattr(
+        changes,
+        "_fetch_release",
+        lambda _repo, tag, timeout = 5.0: calls.append(tag) or {"body": "- x"},
+    )
+
+    for _ in range(10):
+        changes._release_for_tag("unslothai/llama.cpp", "b1", force_refresh = True)
+
+    # Without the floor this was ten uncached GitHub round trips per ten clicks.
+    assert len(calls) == 1
+
+
+def test_an_expired_body_is_not_resurrected_by_a_recent_failure(monkeypatch):
+    key = ("unslothai/llama.cpp", "b1")
+    stale = time.monotonic() - (changes.RELEASE_CACHE_TTL_SECONDS * 2)
+    monkeypatch.setattr(changes, "_release_memo", {key: (stale, {"body": "- ancient"})})
+    monkeypatch.setattr(changes, "_release_failed_at", {key: time.monotonic()})
+    monkeypatch.setattr(changes, "_release_forced_at", {})
+
+    assert changes._release_for_tag(*key) is None
+
+
+def test_release_page_url_is_github_or_nothing():
+    assert changes.release_page_url("unslothai/llama.cpp", "b1/2") == (
+        "https://github.com/unslothai/llama.cpp/releases/tag/b1%2F2"
+    )
+    assert changes.release_page_url("owner/..", "b1") is None
+    assert changes.release_page_url("unslothai/llama.cpp", "") is None
+
+
+def test_unavailable_reason_separates_permanent_from_transient(monkeypatch):
+    # A release that predates the bullet format can never be compared, so the
+    # banner must not offer a Retry for it.
+    releases = {
+        "prose": {"body": "Automated Unsloth llama.cpp prebuild for upstream b9000."},
+        "itemised": {"body": OLD_BODY},
+    }
+    monkeypatch.setattr(
+        changes,
+        "_release_for_tag",
+        lambda _repo, tag, *, force_refresh = False: releases.get(tag),
+    )
+
+    assert changes.unavailable_reason(
+        "unslothai/llama.cpp", "prose", "itemised"
+    ) == "notes_not_itemised"
+    assert changes.unavailable_reason(
+        "unslothai/llama.cpp", "missing", "itemised"
+    ) == "release_notes_unavailable"
+
+
+def test_a_bodyless_target_is_transient_not_permanent(monkeypatch):
+    # Only the installed side can be permanently uncomparable. The target is the
+    # newest release, so a missing body is a publishing gap that may be filled in,
+    # and the banner must keep offering Retry for it.
+    releases = {"itemised": {"body": OLD_BODY}, "bodyless": {}}
+    monkeypatch.setattr(
+        changes,
+        "_release_for_tag",
+        lambda _repo, tag, *, force_refresh = False: releases.get(tag),
+    )
+
+    assert changes.unavailable_reason(
+        "unslothai/llama.cpp", "itemised", "bodyless"
+    ) == "release_notes_unavailable"
+
+
+def test_a_truncated_response_does_not_escape_to_the_caller(monkeypatch):
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size = -1):
+            raise http.client.IncompleteRead(b"partial")
+
+    monkeypatch.setattr(
+        changes.urllib.request, "urlopen", lambda *_a, **_k: _Response()
+    )
+
+    # IncompleteRead is an HTTPException, not an OSError.
+    assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
+
+
+def test_an_oversized_release_body_is_rejected(monkeypatch):
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size = -1):
+            return b"x" * (changes.MAX_RELEASE_BYTES + 1)
+
+    monkeypatch.setattr(
+        changes.urllib.request, "urlopen", lambda *_a, **_k: _Response()
+    )
+
+    assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
