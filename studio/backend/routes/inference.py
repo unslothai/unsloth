@@ -3326,6 +3326,7 @@ def _detect_safetensors_features(
     backend,
     chat_template: Optional[str],
     tools = None,
+    prefer_tool_use: bool = True,
 ) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
@@ -3334,7 +3335,9 @@ def _detect_safetensors_features(
     feature_template = chat_template
     try:
         from core.inference.chat_template_helpers import _selected_template_strings_from_value
-        selected_templates = _selected_template_strings_from_value(chat_template, tools)
+        selected_templates = _selected_template_strings_from_value(
+            chat_template, tools, prefer_tool_use = prefer_tool_use
+        )
         if selected_templates:
             feature_template = selected_templates[0]
     except Exception:
@@ -17937,6 +17940,32 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
     )
 
 
+def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
+    """Which user turn, counted among user turns, the selected image came from.
+
+    ``_extract_content_parts`` takes the newest user image from ANYWHERE in the thread,
+    while the renderers attach it to the newest user turn. When those differ the old
+    picture is rendered as though it accompanied the new question, so the route has to say
+    which turn owned it (#10092). Ordinal rather than index: the passthrough rebuild folds
+    system/developer turns together, so absolute positions do not survive it.
+    """
+    ordinal = None
+    seen = 0
+    for msg in messages:
+        if msg.role != "user":
+            continue
+        if isinstance(msg.content, list):
+            for part in msg.content:
+                if part.type != "image_url":
+                    continue
+                url = getattr(getattr(part, "image_url", None), "url", "") or ""
+                if url.startswith("data:") and url.partition(",")[2]:
+                    ordinal = seen
+                    break
+        seen += 1
+    return ordinal
+
+
 def _images_in_last_user_message(messages: list) -> int:
     """Image parts on the newest user turn.
 
@@ -22830,9 +22859,15 @@ async def produce_openai_chat_completions(
         else None
     )
     _sf_supports_tools = (
-        _detect_safetensors_features(backend, _sf_image_tpl, tools = _sf_template_tools).get(
-            "supports_tools", False
-        )
+        _detect_safetensors_features(
+            backend,
+            _sf_image_tpl,
+            tools = _sf_template_tools,
+            # A ProcessorMixin render does not implicitly select the "tool_use" branch the
+            # way a tokenizer does, so classifying from it would advertise a catalog the
+            # prompt never shows. Same rule _renders_tool_schema applies (#10092).
+            prefer_tool_use = False,
+        ).get("supports_tools", False)
         if _sf_image_tpl is not None
         else _sf_features.get("supports_tools", False)
     )
@@ -22916,6 +22951,29 @@ async def produce_openai_chat_completions(
             ),
             system_prompt,
         )
+        # The selected image may have come from an earlier user turn than the one being
+        # answered, and flattening drops the part that recorded where. Mark the owning turn
+        # so the renderers' newest-user-turn scan does not move the picture onto a later
+        # question; messages_with_attached_image leaves an attachment already in place.
+        if image is not None:
+            _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
+            if _sf_image_ordinal is not None:
+                _sf_seen_users = 0
+                for _sf_idx, _sf_msg in enumerate(gen_kwargs["messages"]):
+                    if not isinstance(_sf_msg, dict) or _sf_msg.get("role") != "user":
+                        continue
+                    if _sf_seen_users == _sf_image_ordinal:
+                        _sf_body = _sf_msg.get("content")
+                        if isinstance(_sf_body, str):
+                            gen_kwargs["messages"][_sf_idx] = {
+                                **_sf_msg,
+                                "content": [
+                                    {"type": "image"},
+                                    {"type": "text", "text": _sf_body},
+                                ],
+                            }
+                        break
+                    _sf_seen_users += 1
         gen_kwargs["system_prompt"] = ""
         # tool_choice="none": keep history templating but advertise no tools
         # (heal_gate is off, markup would relay as prose). A forced function

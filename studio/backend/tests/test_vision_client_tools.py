@@ -771,3 +771,117 @@ def test_mlx_selects_structured_system_content_for_a_processor_render():
         mlx.messages_with_attached_image = original
 
     assert seen.get("structured_system_content") is True
+
+
+def test_a_named_processor_template_is_classified_without_tool_use():
+    """A ProcessorMixin render does not implicitly select the "tool_use" branch the way a
+    tokenizer does. Classifying the capability gate from it advertised a catalog the
+    prompt never shows, so image tool requests still came back as prose (#10092)."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import routes.inference as inf
+    import test_sf_client_tools_passthrough as passthrough
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    # Only the tool_use branch advertises tools, and a processor never selects it.
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
+        "processor_template": {
+            "default": _PROCESSOR_TEMPLATE_NO_TOOLS,
+            "tool_use": _CHATML_WITH_TOOLS,
+        },
+    }
+    payload = _image_request(tools = [passthrough.LOOKUP_TOOL], stream = False)
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._install(monkeypatch, backend)
+        # Honour prefer_tool_use through the real selector, so the branch this gate picks
+        # is what decides. A stub that ignored the flag could not fail.
+        from core.inference.chat_template_helpers import (
+            _selected_template_strings_from_value,
+        )
+
+        def _features(
+            _b,
+            template,
+            tools = None,
+            prefer_tool_use = True,
+        ):
+            selected = _selected_template_strings_from_value(
+                template, tools, prefer_tool_use = prefer_tool_use
+            )
+            body = selected[0] if selected else (template if isinstance(template, str) else "")
+            return {"supports_tools": body == _CHATML_WITH_TOOLS}
+
+        monkeypatch.setattr(inf, "_detect_safetensors_features", _features)
+
+        async def _run():
+            return await inf.openai_chat_completions(
+                payload, request = passthrough._Request(), current_subject = "u"
+            )
+
+        asyncio.run(_run())
+    finally:
+        monkeypatch.undo()
+
+    assert backend.calls, "generation never ran"
+    # The default branch is what renders, and it advertises nothing.
+    assert not backend.calls[0]["tools"]
+
+
+def test_a_historical_image_stays_on_the_turn_that_sent_it():
+    """_extract_content_parts takes the newest user image from anywhere in the thread while
+    the renderers attach it to the newest user turn, so an old picture was rendered as
+    though it accompanied a later, different question (#10092)."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import routes.inference as inf
+    import test_sf_client_tools_passthrough as passthrough
+    from models.inference import ChatCompletionRequest, ChatMessage
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    payload = ChatCompletionRequest(
+        model = "default",
+        tools = [passthrough.LOOKUP_TOOL],
+        stream = False,
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "IMAGE_QUESTION about the picture"},
+                    {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+                ],
+            ),
+            ChatMessage(role = "assistant", content = "it is a dot"),
+            ChatMessage(role = "user", content = "LATER_QUESTION unrelated to it"),
+        ],
+    )
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._call(payload, monkeypatch, backend)
+    finally:
+        monkeypatch.undo()
+
+    assert backend.calls, "generation never ran"
+    sent = backend.calls[0]["messages"]
+    owning = [m for m in sent if m.get("role") == "user"][0]
+    later = [m for m in sent if m.get("role") == "user"][-1]
+    assert isinstance(owning["content"], list), owning
+    assert any(p.get("type") == "image" for p in owning["content"])
+    assert not isinstance(later["content"], list) or not any(
+        p.get("type") == "image" for p in later["content"]
+    )
