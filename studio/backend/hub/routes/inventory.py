@@ -99,6 +99,12 @@ async def get_gguf_variants(
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
+    # Before any filesystem probe: local_path is caller-supplied and reaches
+    # list_local_gguf_variants, so without this a managed account could point it
+    # at another account's model directory and read back the filenames,
+    # quantizations, sizes and vision metadata it found there.
+    from routes.inference import _reject_uncontained_local_path
+    _reject_uncontained_local_path(local_path, "list GGUF variants for")
     return await gguf_variants.get_gguf_variants_response(
         repo_id,
         prefer_local_cache = prefer_local_cache,

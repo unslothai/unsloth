@@ -212,6 +212,10 @@ async def download_dataset_response(
         hub_cache = cache_paths.hub_cache,
     )
 
+    # Recorded before the launch, on the request's own thread, so the cancel route
+    # can tell this account's download from another's.
+    download_lifecycle.note_download_initiator(key)
+
     state = download_lifecycle.launch_worker(
         _registry,
         key,
@@ -255,6 +259,10 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
         )
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
+
+    # Only the account that started it, or the owner: the registry is keyed by
+    # repository alone, so naming one was enough to abort somebody else's pull.
+    download_lifecycle.require_download_cancel_permission(key)
 
     state = download_lifecycle.cancel_worker(
         _registry,

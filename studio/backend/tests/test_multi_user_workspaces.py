@@ -1555,7 +1555,7 @@ def test_the_diffusion_dataset_interlock_only_blocks_the_running_account():
     service._lock = threading.RLock()
     service._reserved = True
     service._proc = None
-    service._dataset_mutations = 0
+    service._dataset_mutations = {}
     service._active_workspace_subject = "alice"
 
     token = _bind("bob")
@@ -3066,5 +3066,84 @@ def test_a_managed_account_cannot_reach_a_private_mcp_address_at_connect_time():
     token = _bind(LEGACY_WORKSPACE_SUBJECT)
     try:
         mcp_client._revalidate_http_destination("http://127.0.0.1:8080/mcp")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_one_accounts_dataset_mutation_does_not_block_another_from_training():
+    import threading as _threading
+
+    from core.training.diffusion_training_service import (
+        DatasetMutationInFlight,
+        DiffusionTrainingService,
+    )
+
+    service = DiffusionTrainingService.__new__(DiffusionTrainingService)
+    service._lock = _threading.RLock()
+    service._reserved = False
+    service._proc = None
+    service._gpu_admissions = 0
+    service._active_workspace_subject = None
+    service._dataset_mutations = {}
+
+    token = _bind("bob")
+    try:
+        with service.dataset_mutation():
+            # Counted together, Bob's long import refused Alice's unrelated start
+            # for its whole duration.
+            token_alice = _bind("alice")
+            try:
+                assert service._dataset_mutations == {"bob": 1}
+                assert (
+                    service._dataset_mutations.get(current_workspace_subject()) is None
+                )
+            finally:
+                reset_workspace_subject(token_alice)
+
+            # Bob's own start is still refused, which is the interlock's point.
+            with pytest.raises(DatasetMutationInFlight):
+                service.reserve()
+    finally:
+        reset_workspace_subject(token)
+
+    # Popped, not left at zero, so the map cannot grow per account seen.
+    assert service._dataset_mutations == {}
+
+
+def test_only_the_account_that_started_a_download_may_cancel_it(monkeypatch):
+    from fastapi import HTTPException
+
+    from hub.services import download_lifecycle
+
+    monkeypatch.setattr(download_lifecycle, "_download_initiators", {}, raising = False)
+
+    token = _bind("alice")
+    try:
+        download_lifecycle.note_download_initiator("alice-job")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # The registry is keyed by repository alone, so naming one was enough to
+        # abort somebody else's large or gated pull.
+        with pytest.raises(HTTPException) as exc:
+            download_lifecycle.require_download_cancel_permission("alice-job")
+        assert exc.value.status_code == 403
+        # A job with no recorded initiator, from before a restart, stays
+        # cancellable rather than stranded.
+        download_lifecycle.require_download_cancel_permission("unknown-job")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("alice")
+    try:
+        download_lifecycle.require_download_cancel_permission("alice-job")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        download_lifecycle.require_download_cancel_permission("alice-job")
     finally:
         reset_workspace_subject(token)

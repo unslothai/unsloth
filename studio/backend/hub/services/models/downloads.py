@@ -331,6 +331,10 @@ async def download_model_response(
     protected_blob_hashes = _registry.peer_blob_hashes(key) if variant else frozenset()
 
     label = f"{repo_id}{f' [{variant}]' if variant else ''}"
+    # Recorded before the launch, on the request's own thread, so the cancel route
+    # can tell this account's download from another's.
+    download_lifecycle.note_download_initiator(key)
+
     state = download_lifecycle.launch_worker(
         _registry,
         key,
@@ -384,6 +388,10 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
+
+    # Only the account that started it, or the owner: the registry is keyed by
+    # repository alone, so naming one was enough to abort somebody else's pull.
+    download_lifecycle.require_download_cancel_permission(key)
 
     state = download_lifecycle.cancel_worker(
         _registry,

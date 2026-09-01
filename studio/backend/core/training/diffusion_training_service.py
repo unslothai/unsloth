@@ -439,7 +439,11 @@ class DiffusionTrainingService:
         # Set by reserve() while a start is in flight (before the route frees GPU models) so the load guards refuse a concurrent load. Cleared by unreserve().
         self._reserved = False
         # Dataset mutations in flight. A start refuses while any is open and a mutation refuses once a start is reserved, both under _lock, so neither slips through the other's check-then-act window.
-        self._dataset_mutations = 0
+        # Per workspace. The dataset roots are per account, so one account's
+        # import or caption pass says nothing about whether another's images are
+        # stable; counted together, a long mutation in any workspace refused
+        # every other account's training start for its whole duration.
+        self._dataset_mutations: dict[str, int] = {}
         # "Stop without saving" for the CURRENT job, remembered in the parent. The trainer
         # reports it on its completion event, but a child that is killed or OOMs after the
         # request never emits one -- and the unexpected-exit path then recorded a resumable
@@ -496,7 +500,9 @@ class DiffusionTrainingService:
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise RuntimeError("A diffusion training job is already running.")
-            if self._dataset_mutations:
+            from utils.workspace_context import current_workspace_subject
+
+            if self._dataset_mutations.get(current_workspace_subject()):
                 raise DatasetMutationInFlight(
                     "The training images are being changed right now. Wait for that to finish, "
                     "then start the run."
@@ -549,12 +555,21 @@ class DiffusionTrainingService:
                     "Training images cannot be changed while diffusion training is active. "
                     "Stop the run before uploading, importing, editing captions, or deleting images."
                 )
-            self._dataset_mutations += 1
+            mutating = current_workspace_subject()
+            self._dataset_mutations[mutating] = (
+                self._dataset_mutations.get(mutating, 0) + 1
+            )
         try:
             yield
         finally:
             with self._lock:
-                self._dataset_mutations = max(0, self._dataset_mutations - 1)
+                remaining = self._dataset_mutations.get(mutating, 0) - 1
+                if remaining > 0:
+                    self._dataset_mutations[mutating] = remaining
+                else:
+                    # Popped rather than left at zero so the map cannot grow one
+                    # entry per account the process has ever seen.
+                    self._dataset_mutations.pop(mutating, None)
 
     @contextlib.contextmanager
     def gpu_load_admission(self):

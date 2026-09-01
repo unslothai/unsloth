@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 import sys
 import time
 import threading
@@ -1302,6 +1303,50 @@ def launch_worker(
         allow_ambient_token = allow_ambient_token,
     )
     return registry.get_job(key).state
+
+
+# Job key -> the workspace that started that download. The registry itself is
+# install-wide and keyed by repository, which is deliberate (the bytes land in the
+# shared cache and serve everyone), but that made a cancel reachable by anybody
+# who could name the repository, so one account could repeatedly abort another's
+# large or gated download.
+_download_initiators: dict[str, str] = {}
+_download_initiators_lock = threading.Lock()
+
+
+def note_download_initiator(key: str) -> None:
+    """Record the workspace starting this download, for the cancel check."""
+    from utils.workspace_context import current_workspace_subject
+    with _download_initiators_lock:
+        _download_initiators[key] = current_workspace_subject()
+
+
+def forget_download_initiator(key: str) -> None:
+    with _download_initiators_lock:
+        _download_initiators.pop(key, None)
+
+
+def require_download_cancel_permission(key: str) -> None:
+    """Only the account that started a download, or the owner, may cancel it.
+
+    An unknown key is left cancellable: a download from before a restart has no
+    recorded initiator, and refusing those would strand jobs nobody could stop.
+    """
+    from auth.storage import is_installation_owner
+    from utils.workspace_context import current_workspace_subject
+
+    if is_installation_owner():
+        return
+    with _download_initiators_lock:
+        initiator = _download_initiators.get(key)
+    if initiator is None or initiator == current_workspace_subject():
+        return
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code = 403,
+        detail = "Another account started this download.",
+    )
 
 
 def cancel_worker(
