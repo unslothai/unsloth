@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -246,5 +247,26 @@ test("the resolver is total over the three shapes", () => {
       { id: "dangling", parentId: "gone" },
     ]),
     [null, "p", null, "root", "gone"],
+  );
+});
+
+test("the research save keeps a stored root instead of reparenting it", () => {
+  // createOpenAIStreamAdapter's research branch needs a live runtime, a resolved thread and a
+  // bound assistant message, so it is asserted on the source the way the other chat-adapter
+  // invariants are. `??` here would send a stored null through to the displayed predecessor,
+  // writing the edited-prompt root back under the branch it was split from -- permanently,
+  // since this is the write path.
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    adapter,
+    /parentId:\s*\n?\s*storedUserMessage && storedUserMessage\.parentId !== undefined\s*\n?\s*\? storedUserMessage\.parentId\s*\n?\s*: userMessageParentId,/,
+  );
+  assert.doesNotMatch(
+    adapter,
+    /storedUserMessage\?\.parentId \?\? userMessageParentId/,
   );
 });

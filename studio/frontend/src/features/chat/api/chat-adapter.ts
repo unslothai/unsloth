@@ -4507,7 +4507,14 @@ export function createOpenAIStreamAdapter(
           await saveStoredChatMessage({
             id: userMessage.id,
             threadId: resolvedThreadId,
-            parentId: storedUserMessage?.parentId ?? userMessageParentId,
+            // A stored null is a root the user made by editing the first prompt, so it has
+            // to survive; only a record with no parent recorded at all falls back to the
+            // displayed predecessor. `??` cannot tell those apart and reparents the root,
+            // merging the two branches in storage for good.
+            parentId:
+              storedUserMessage && storedUserMessage.parentId !== undefined
+                ? storedUserMessage.parentId
+                : userMessageParentId,
             role: "user",
             content: userMessage.content,
             ...(userMessage.attachments?.length
