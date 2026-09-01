@@ -952,15 +952,16 @@ def _has_unclosed_code_fence(text: str) -> bool:
                 continue
             # A list marker is a container, so its fence is block level and skips the
             # rest. CommonMark has no mid-PROSE fence, but models open one, and only a
-            # bare info string tells that opener from prose. Bare, after something
-            # closed, it is a literal ("wrap it in ```"); before, it still opens.
+            # bare info string tells that opener from prose. Once something HAS
+            # closed, an inline run is a mention ("wrap it in ```", "the marker is
+            # ```python"); a real second block starts at column 0 and is unaffected.
             in_list = _LIST_MARKER_ONLY.match(prefix) is not None
             if not in_list:
                 if indented_quote:
                     continue
                 if trailing and not _FENCE_INFO_STRING_RE.fullmatch(trailing):
                     continue
-                if not trailing and closed_any:
+                if closed_any:
                     continue
             active_char, active_len, active_quote = ch, len(fence), quote_depth
             # A list marker IS the container, so its width is the baseline. Mid-sentence
@@ -1113,7 +1114,9 @@ def _text_outside_think(text: str) -> str:
     # looking at bare closers: a leading block may name another marker in its body.
     for lead, _opener, closer in pairs:
         if lead.match(stripped):
-            close = _find_outside_artifacts(text, closer)
+            # Plain scan: an artifact can span from a tag named in the thought to
+            # one in the answer, and that span must not swallow the block's closer.
+            close = text.find(closer)
             # No closer: a thought the window cut off runs to the end, and none of
             # it was shown.
             return text[close + len(closer) :] if close >= 0 else ""

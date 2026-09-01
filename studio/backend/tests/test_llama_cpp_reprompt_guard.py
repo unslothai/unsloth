@@ -1158,6 +1158,26 @@ def test_leading_block_wins_over_a_marker_named_in_its_body():
     assert not _gate_would_reprompt(turn, "", True)
 
 
+def test_a_thought_naming_a_tag_does_not_swallow_its_own_closer():
+    """An artifact can span from a tag named inside the thought to one in the answer.
+    The leading block's closer is found by a plain scan so that span cannot hide it."""
+    turn = (
+        "<think>First, I will search for data to put in <html>.</think>"
+        "Here is the page: <html><body>Hi</body></html>"
+    )
+    assert not _gate_would_reprompt(turn, "", True)
+
+
+def test_delimiter_mention_after_a_closed_block_is_prose():
+    """Once a block has closed, an inline delimiter is a mention whether or not it
+    carries a language token. A real second block starts at column 0."""
+    for tail in ("Wrap it in ```", "The opening marker is ```python"):
+        text = f"First, I will show it.\n```python\nx = 1\n```\n{tail}"
+        assert _has_answer_artifact(text), tail
+        assert not _would_reprompt(text), tail
+    assert _would_reprompt("First, let me show it.\n```python\nx=1\n```\n```python\nimport")
+
+
 def test_info_string_may_hold_the_other_delimiter():
     """```markdown title=~~~ is an opener whose info string mentions tildes; only a
     later run of the SAME delimiter closes an inline span."""
