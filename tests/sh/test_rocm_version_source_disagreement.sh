@@ -46,6 +46,12 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     sed -n '/^_infer_linux_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_amd_arch_index_family_for_gfx()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_probe_arches()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_agreed_index_family()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_sole_index_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -284,6 +290,23 @@ MOCK
     chmod +x "$_MOCK_DIR/rpm"
 }
 
+# $1 = rocm-core version, $2 = rocm-runtime version. A partial upgrade can leave these
+# at different versions; both are AMD packages from the same repo, so neither outranks
+# the other by provenance the way rocm-core outranks the distro's libhsa-runtime64-1.
+add_rpm_split_components() {
+    cat > "$_MOCK_DIR/rpm" <<MOCK
+#!/bin/sh
+for _a in "\$@"; do
+    case "\$_a" in
+        rocm-core)    echo "$1" ;;
+        rocm-runtime) echo "$2" ;;
+    esac
+done
+exit 0
+MOCK
+    chmod +x "$_MOCK_DIR/rpm"
+}
+
 add_wedged_rpm() {
     # Stands in for `rpm -q` wedged on the rpmdb (stale BerkeleyDB __db locks on
     # rpm < 4.16, i.e. RHEL 8 / SLES 15; the rpm 6.0.x deadlock against dnf).
@@ -503,14 +526,15 @@ assert_eq "the named override reaches this path -> rocm6.4" "$_BASE/rocm6.4" "$_
 # ── 9. Every source missing: warn, do not die ───────────────────────────────
 # rocminfo alone, a fresh AMD host with no ROCm userspace. Under set -e the whole
 # detection must still succeed.
+# gfx1100 has its own repo.amd.com index, so since unslothai#8731 an unreadable version
+# routes on the arch rather than settling for CPU.
 reset_sources
 assert_eq "no version source at all -> cpu" "$_BASE/cpu" "$(run_index)"
 assert_eq "no version source at all -> exit 0 under set -e" "0" "$(run_status_under_set_e)"
 _warn=$(run_warnings)
-assert_contains "no-version host still reaches its actionable warning" \
-    "no ROCm/HIP install was found" "$_warn"
-assert_contains "no-version warning still lists the detection sources" \
-    "Minimum required for version detection" "$_warn"
+assert_contains "no-version host still reaches an actionable warning" \
+    "routing to AMD per-arch wheels" "$_warn"
+assert_contains "no-version warning names the arch it routed on" "gfx1100" "$_warn"
 
 # 10. Sources present but every one of them unparseable: same contract.
 reset_sources
@@ -519,8 +543,8 @@ add_hipconfig "unknown"
 add_version_file "not-a-version"
 assert_eq "unparseable sources -> cpu" "$_BASE/cpu" "$(run_index)"
 assert_eq "unparseable sources -> exit 0 under set -e" "0" "$(run_status_under_set_e)"
-assert_contains "unparseable sources reach the no-version warning" \
-    "no ROCm/HIP install was found" "$(run_warnings)"
+assert_contains "unparseable sources are treated as no version at all" \
+    "routing to AMD per-arch wheels" "$(run_warnings)"
 
 # 11. A source reporting major 0 is garbage, not a version below every other.
 reset_sources
@@ -593,6 +617,18 @@ else
     assert_eq "the rpm probe is bounded, not left to block the installer" \
         "under 20s" "$((_t1 - _t0))s (outer bound fired)"
 fi
+
+# A stale rocm-core beside a newer runtime must not decide the host's version. Ranking
+# the names by argument order read this box as ROCm 5.7 and sent a supported runtime to
+# CPU wheels, which is the failure #8731 is about, reached by a different route.
+reset_sources
+add_rpm_split_components "5.7.1" "6.4.1"
+assert_eq "a stale rocm-core beside a newer rocm-runtime resolves to the newer" \
+    "$_BASE/rocm6.4" "$(run_index)"
+reset_sources
+add_rpm_split_components "6.4.1" "5.7.1"
+assert_eq "and the ordering is by version, not by which name was queried first" \
+    "$_BASE/rocm6.4" "$(run_index)"
 
 reset_sources
 add_version_file "6.5.0-1"
