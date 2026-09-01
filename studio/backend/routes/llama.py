@@ -196,9 +196,25 @@ async def llama_update(
 @router.get("/update-changelog", response_model = LlamaUpdateChangelogResponse)
 async def llama_update_changelog(
     force_refresh: bool = Query(False, description = "Retry the exact release lookups."),
+    installed_tag: Optional[str] = Query(
+        None,
+        max_length = 200,
+        description = "Installed tag the caller is displaying; ignored unless it still matches.",
+    ),
+    latest_tag: Optional[str] = Query(
+        None,
+        max_length = 200,
+        description = "Target the caller is displaying, so a newer one cached meanwhile "
+        "does not retarget the comparison.",
+    ),
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateChangelogResponse:
-    result = await asyncio.to_thread(get_update_changelog, force_refresh = force_refresh)
+    result = await asyncio.to_thread(
+        get_update_changelog,
+        force_refresh = force_refresh,
+        installed_tag = installed_tag,
+        latest_tag = latest_tag,
+    )
     return LlamaUpdateChangelogResponse(**result)
 
 

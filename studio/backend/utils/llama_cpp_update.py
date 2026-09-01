@@ -377,11 +377,17 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     return _merge_whisper_status(status, force_refresh = force_refresh)
 
 
-def get_update_changelog(*, force_refresh: bool = False) -> dict:
+def get_update_changelog(
+    *,
+    force_refresh: bool = False,
+    installed_tag: Optional[str] = None,
+    latest_tag: Optional[str] = None,
+) -> dict:
     """Only carried changes added after the installed llama.cpp release.
 
     Separate from the polled status endpoint so opening the banner, not every
-    3s poll, pays for the two exact release lookups.
+    3s poll, pays for the two exact release lookups. installed_tag/latest_tag
+    name the pair the caller is displaying; see the target selection below.
     """
     empty = {
         "matched": False,
@@ -409,6 +415,15 @@ def get_update_changelog(*, force_refresh: bool = False) -> dict:
     empty["latest_tag"] = latest
     if not freshness.get("behind") or not installed_full or not latest:
         return empty
+    # Answer about the pair the caller is displaying, not whatever the shared
+    # latest-release memo now holds. Any other Studio surface's forced status
+    # check advances that memo process-wide, and the frontend rejects a response
+    # whose tags differ from the ones it asked about -- leaving an error whose
+    # Retry rereads the same memo and fails the same way, until that surface's
+    # own hourly recheck. Only honoured while the install itself still matches.
+    if latest_tag and installed_tag and installed_tag == empty["installed_tag"]:
+        latest = latest_tag
+        empty["latest_tag"] = latest
     # Offer the release page even when the comparison fails. Most installs predate
     # the itemised body, and the notes are readable on GitHub in every one of them.
     empty["release_url"] = release_page_url(repo, latest)

@@ -119,8 +119,17 @@ export function useLlamaUpdateChangelog({
       const requestId = requestIdRef.current;
       setState("loading");
       setChangelog(null);
-      const query = refresh ? "?force_refresh=true" : "";
-      authFetch(`/api/llama/update-changelog${query}`)
+      // Name the pair being displayed. Another Studio surface's forced status
+      // check advances the backend's shared latest-release memo, and without
+      // this the answer would be about a target this banner has not adopted --
+      // which the check below then rejects, for up to an hour.
+      const query = new URLSearchParams();
+      query.set("installed_tag", installedTag);
+      query.set("latest_tag", latestTag);
+      if (refresh) {
+        query.set("force_refresh", "true");
+      }
+      authFetch(`/api/llama/update-changelog?${query}`)
         .then(async (response) => {
           if (!response.ok) {
             throw new Error(`Changelog request failed: ${response.status}`);

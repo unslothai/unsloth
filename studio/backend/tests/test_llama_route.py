@@ -141,7 +141,11 @@ def test_changelog_response_exposes_structured_links():
 def test_changelog_handler_runs_off_event_loop(monkeypatch):
     seen = {}
 
-    def fake_changelog(force_refresh = False):
+    def fake_changelog(
+        force_refresh = False,
+        installed_tag = None,
+        latest_tag = None,
+    ):
         seen["thread"] = threading.current_thread()
         seen["refresh"] = force_refresh
         return {"matched": True, "installed_tag": "b1", "latest_tag": "b2"}

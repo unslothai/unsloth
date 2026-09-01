@@ -1287,3 +1287,73 @@ def test_update_changelog_retry_keeps_the_banner_target(monkeypatch, tmp_path):
 
     assert result["latest_tag"] == "b10715-mix-new"
     assert result["matched"] is True
+
+
+def test_update_changelog_answers_the_pair_the_caller_asked_about(monkeypatch, tmp_path):
+    # Another Studio surface's forced status check advances the process-wide
+    # latest-release memo. Without honouring the caller's pair the panel answers
+    # about a target its own banner has not adopted, which it rejects.
+    binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b10800-mix-newer",
+    )
+    seen = {}
+
+    def fake_changelog(
+        repo,
+        installed,
+        latest,
+        *,
+        force_refresh = False,
+    ):
+        seen.update(installed = installed, latest = latest)
+        return {
+            "changes": [],
+            "total_changes": 0,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/x",
+        }
+
+    monkeypatch.setattr(upd, "changelog_for_update", fake_changelog)
+
+    result = upd.get_update_changelog(installed_tag = "b10698", latest_tag = "b10715-mix-new")
+
+    assert result["latest_tag"] == "b10715-mix-new"
+    assert seen["latest"] == "b10715-mix-new"
+    assert result["matched"] is True
+
+    # The release page offered on the failure path points at that same target.
+    monkeypatch.setattr(upd, "changelog_for_update", lambda *_a, **_k: None)
+    failed = upd.get_update_changelog(installed_tag = "b10698", latest_tag = "b10715-mix-new")
+
+    assert failed["release_url"].endswith("b10715-mix-new")
+
+
+def test_update_changelog_ignores_a_pair_from_a_different_install(monkeypatch, tmp_path):
+    # The tree was swapped underneath the caller, so its pair is meaningless.
+    # Answer with the server's own view and let the frontend re-key on it.
+    binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b10800-mix-newer",
+    )
+    monkeypatch.setattr(
+        upd,
+        "changelog_for_update",
+        lambda *_args, **_kwargs: {
+            "changes": [],
+            "total_changes": 0,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/x",
+        },
+    )
+
+    result = upd.get_update_changelog(installed_tag = "b9000", latest_tag = "b10715-mix-new")
+
+    assert result["installed_tag"] == "b10698"
+    assert result["latest_tag"] == "b10800-mix-newer"
