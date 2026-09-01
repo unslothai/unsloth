@@ -613,10 +613,8 @@ def _run_llama_phase(
     backend = None
     model_was_active = False
     mtmd_guard = ExitStack()
-    # The installer now exits 0 for a transient failure it answered by keeping the
-    # existing tree, so success no longer implies the release changed. Read the same way
-    # as the post-install check so the two tags compare. Mainly a macOS case: the update
-    # path passes no pin there, so it does not disqualify itself from the keep branch.
+    # The installer exits 0 for a transient failure it answered by keeping the tree, so
+    # success no longer implies a new release. Read as the post-install check reads it.
     prior_marker = read_install_marker(_find_binary())
     prior_tag = (prior_marker or {}).get("release_tag") or (prior_marker or {}).get("tag")
     try:
@@ -733,10 +731,8 @@ def _run_llama_phase(
         if backend_request is not None:
             message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
         elif kept_existing:
-            # The phase only runs when a newer release was offered, so this is a failed
-            # update the installer answered by keeping the tree, not a current install.
-            # Naming the old release either way sends the user looking for a fix that
-            # shipped in the new one.
+            # The phase only runs when a newer release was offered, so naming the kept
+            # release as current would send the user looking for a fix it does not have.
             message = (
                 f"llama.cpp could not be updated right now, so the existing {new_tag} "
                 "install was kept. Try again later."

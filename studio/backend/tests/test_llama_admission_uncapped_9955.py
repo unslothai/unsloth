@@ -266,9 +266,23 @@ class TestTheReservationItProduces:
         payload.max_tokens = resolved.max_tokens
         assert _cost(payload, resolved.extra_prompt_tokens) == SHARE - HEADROOM
 
-    def test_the_unresolved_reservation_was_the_whole_cache(self):
-        """The regression itself, for contrast: uncapped, one request owns everything."""
-        assert _cost(_uncapped()) == CTX
+    def test_without_a_resolved_cap_the_reservation_is_only_an_estimate(self):
+        """What is left to close after #10070, which is why the cap is a bound.
+
+        #10070 stopped charging an unstated cap the whole cache, so the queue no longer
+        serialises on its own: the reservation is the prompt plus a flat allowance. But
+        the request is still SENT ``max_tokens = backend_ctx``, so that allowance is an
+        estimate of what it will generate, not a limit on what it may -- as
+        `_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS` says itself, a plain chat has
+        nothing to re-cost it. Resolving the cap turns the estimate into a bound, which
+        is what makes the reservation above land on a share and stay there.
+        """
+        flat = routes_inference._OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        payload = _uncapped()
+        prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
+        assert _cost(payload) == prompt + flat
+        # Charged well under a share, while generation stays free to fill the window.
+        assert prompt + flat < SHARE
 
     def test_every_slot_is_used(self):
         """1/6 busy becomes 6/6. The reporter's case, end to end."""
