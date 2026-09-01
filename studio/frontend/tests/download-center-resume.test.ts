@@ -61,6 +61,14 @@ test("a failed or cancelled row offers Resume in Downloads", () => {
     /const resumable = !job\.external && RESUMABLE_STATES\.has\(job\.state\)/,
   );
   assert.match(PANEL, /downloadManager\s*\.requestStart/);
+  assert.match(PANEL, /outcome === "busy" && mounted\.current/);
+  assert.match(PANEL, /This repository is already downloading/);
+  assert.match(PANEL, /disabled=\{resumePending\}/);
+  assert.match(
+    PANEL,
+    /disabled=\{job\.state === "cancelling" \|\| resumePending\}/,
+  );
+  assert.match(PANEL, /if \(mounted\.current\) setResumePending\(false\)/);
   // Playwright and AppImage cancel/retry smokes wait on this exact copy.
   assert.match(PANEL, /Cancelled\. Partial files kept\./);
 });
@@ -152,8 +160,12 @@ test("a completed job is still not persisted", () => {
   assert.equal(persisted.state.jobs[key], undefined);
 });
 
-test("hydration keeps failed and cancelled jobs instead of dropping them", () => {
-  assert.match(HYDRATE, /if \(RESUMABLE_STATES.has\(job.state\)\) continue;/);
+test("hydration revalidates failed and cancelled jobs before keeping them", () => {
+  assert.match(HYDRATE, /revalidateHydratedResumableJob\(job\.key, job\)/);
+  assert.match(
+    HYDRATE,
+    /RESUMABLE_STATES\.has\(current\.state\)[\s\S]*idleProbeVerdict\([\s\S]*?progressResp\.target_present[\s\S]*?=== "gone"[\s\S]*?removeJob\(key\)/,
+  );
 });
 
 test("an idle transfer with files on disk becomes a resumable error, not gone", () => {

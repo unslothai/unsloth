@@ -9,6 +9,7 @@ import {
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
@@ -148,6 +149,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
     (state) => conflictInfoForOwner(state.conflicts[jobKey], "downloads"),
   );
   const mounted = useRef(true);
+  const [resumePending, setResumePending] = useState(false);
   useEffect(
     () => {
       mounted.current = true;
@@ -193,18 +195,30 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
               <button
                 type="button"
                 aria-label="Resume download"
+                disabled={resumePending}
                 onClick={() => {
+                  if (resumePending) return;
+                  setResumePending(true);
                   void downloadManager
                     .requestStart(resumeRequestFromJob(job), "downloads")
                     .then((outcome) => {
+                      if (outcome === "busy" && mounted.current) {
+                        toast.info("This repository is already downloading", {
+                          description:
+                            "Wait for the active download to finish, then try Resume again.",
+                        });
+                      }
                       if (outcome === "conflict" && !mounted.current) {
                         downloadManager.cancelConflict(jobKey, "downloads");
                       }
+                    })
+                    .finally(() => {
+                      if (mounted.current) setResumePending(false);
                     });
                 }}
                 className={cn(
                   "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
-                  "hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.06]",
+                  "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.06]",
                 )}
               >
                 <HugeiconsIcon
@@ -224,7 +238,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
             <button
               type="button"
               aria-label={active ? "Cancel download" : "Dismiss"}
-              disabled={job.state === "cancelling"}
+              disabled={job.state === "cancelling" || resumePending}
               onClick={() =>
                 active
                   ? void downloadManager.cancel(job.key)

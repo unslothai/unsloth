@@ -206,6 +206,31 @@ async function probeHydratedIdleProgress(
   }
 }
 
+async function revalidateHydratedResumableJob(
+  key: string,
+  job: ManagedDownload,
+): Promise<void> {
+  try {
+    const progressResp = await withHydrationTimeout((signal) =>
+      apiGetProgress(job, signal),
+    );
+    const current = getState().jobs[key];
+    if (!current || !RESUMABLE_STATES.has(current.state)) return;
+    if (
+      idleProbeVerdict(
+        progressResp.downloaded_bytes,
+        progressResp.cache_path,
+        progressResp.target_present,
+        progressResp.cache_measured,
+      ) === "gone"
+    ) {
+      removeJob(key);
+    }
+  } catch {
+    // An unavailable or unreadable cache is not evidence that the partial is gone.
+  }
+}
+
 async function settleHydratedJob(
   key: string,
   req: DownloadRequest,
@@ -294,7 +319,10 @@ export function hydrateDownloadManager(): void {
     // Failed and cancelled rows stay in Downloads so they can be resumed
     // after a restart. Complete jobs are not persisted, and anything else
     // is not a card the list should keep.
-    if (RESUMABLE_STATES.has(job.state)) continue;
+    if (RESUMABLE_STATES.has(job.state)) {
+      void revalidateHydratedResumableJob(job.key, job);
+      continue;
+    }
     if (!ACTIVE_STATES.has(job.state)) {
       removeJob(job.key);
       continue;
