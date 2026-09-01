@@ -30,13 +30,21 @@ TOOLS_WITH_MCP_FILESYSTEM = TOOLS + [
 RAG_SCOPE = {"project_id": "p1"}
 
 
-def _rag_nudge(*, nudge: str, tools: list[dict], rag_scope, max_tool_calls = None) -> str:
+def _rag_nudge(
+    *,
+    nudge: str,
+    tools: list[dict],
+    rag_scope,
+    max_tool_calls = None,
+    tool_choice = None,
+) -> str:
     return asyncio.run(
         inference._apply_rag_nudge(
             nudge,
             tools,
             rag_scope = rag_scope,
             max_tool_calls = max_tool_calls,
+            tool_choice = tool_choice,
         )
     )
 
@@ -117,6 +125,17 @@ def test_rag_nudge_unchanged_when_tool_budget_is_zero():
     assert _rag_nudge(nudge = "keep", tools = TOOLS, rag_scope = RAG_SCOPE, max_tool_calls = 0) == "keep"
 
 
+def test_rag_nudge_honors_named_tool_choice():
+    web_choice = {"type": "function", "function": {"name": "web_search"}}
+    kb_choice = {"type": "function", "function": {"name": "search_knowledge_base"}}
+    assert _rag_nudge(
+        nudge = "keep", tools = TOOLS_WITH_WEB, rag_scope = RAG_SCOPE, tool_choice = web_choice
+    ) == "keep"
+    assert inference._RAG_GROUNDING_NUDGE in _rag_nudge(
+        nudge = "", tools = TOOLS_WITH_WEB, rag_scope = RAG_SCOPE, tool_choice = kb_choice
+    )
+
+
 def _fake_search_factory(captured):
     def fake_search(**kw):
         captured.update(kw)
@@ -170,6 +189,13 @@ def test_build_rag_autoinject_project_scope_honors_explicit_off(_stub_retrieval)
         CONVERSATION,
         {"project_id": "p1", "autoinject": False},
     )
+    assert result is None
+    assert _stub_retrieval == {}
+
+
+def test_build_rag_autoinject_project_scope_honors_environment_off(monkeypatch, _stub_retrieval):
+    monkeypatch.setenv("RAG_AUTOINJECT", "0")
+    result = inf_tools.build_rag_autoinject(CONVERSATION, {"project_id": "p1"})
     assert result is None
     assert _stub_retrieval == {}
 

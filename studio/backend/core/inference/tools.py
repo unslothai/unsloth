@@ -11191,16 +11191,6 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     whole_doc_requested = (
         bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
     )
-    # Project-only scopes pre-retrieve by default: the Search pill only gates
-    # web_search, so grounding must not depend on the model calling the tool.
-    # `requested is not False` keeps that a default rather than an override --
-    # Auto-retrieve Off is a separate control whose own UI promises "On and Off
-    # force it either way", and a run persisted by an older build carries the
-    # same explicit flag. A thread attachment keeps the caller's autoinject flag
-    # so the whole-doc fallback (thread first, then project companion) still
-    # runs instead of a combined search.
-    if requested is not False and project_id and not rag_scope.get("kb_id") and not thread_id:
-        enabled = True
     if not enabled and not whole_doc_requested:
         return None
     query = _last_user_text(conversation)

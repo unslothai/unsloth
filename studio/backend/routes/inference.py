@@ -4821,10 +4821,14 @@ async def _apply_rag_nudge(
     list rather than the model's context.
 
     Returns ``nudge`` unchanged when RAG isn't active or the caller disabled tools."""
+    from core.inference.chat_template_helpers import forced_tool_name
+
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
+    forced_name = forced_tool_name(tool_choice)
     if (
         max_tool_calls == 0
         or tool_choice == "none"
+        or (forced_name and forced_name != "search_knowledge_base")
         or "search_knowledge_base" not in tool_names
         or not rag_scope
     ):
