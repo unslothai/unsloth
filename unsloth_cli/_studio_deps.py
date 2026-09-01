@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio dependency checks shared by the CLI commands.
+"""Unsloth dependency checks shared by the CLI commands.
 
 The wheel ships studio/ and studio.backend*, so train / export / chat /
 inference / studio all work after a plain `pip install unsloth` right up to the
@@ -294,7 +294,7 @@ def _verify_install_supports(module, parameter: str) -> bool:
         return False
 
 
-def install_state(extra_roots: Sequence[Path] = ()) -> dict:
+def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
     """verify_install() result, or incomplete when the helper cannot be loaded.
 
     studio/install_manifest.py ships in the same wheel as this file, so a tree
@@ -341,8 +341,21 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
             kwargs = {"root": root, "req_root": req_root, "installed": installed}
             if _verify_install_supports(module, "installed_conflicts"):
                 kwargs["installed_conflicts"] = installed_conflicts
+            if deep and _verify_install_supports(module, "deep"):
+                kwargs["deep"] = True
+                # Without that venv's site-packages the scan answers for this
+                # interpreter's tree. Guarded separately: a module new enough
+                # for `deep` may predate `scan_paths`.
+                if _verify_install_supports(module, "scan_paths"):
+                    paths = [str(path) for path in _venv_site_packages(root)]
+                    if paths:
+                        kwargs["scan_paths"] = paths
             return module.verify_install(**kwargs)
-        state = module.verify_install(root = root)
+        # Off for `desktop-capabilities`: the Tauri preflight times it out at
+        # 10s, and a probe that overruns repairs a healthy venv. `verify-install`
+        # is untimed, so it opts in.
+        deep_kwargs = {"deep": True} if (deep and _verify_install_supports(module, "deep")) else {}
+        state = module.verify_install(root = root, **deep_kwargs)
         if foreign and not state["deps_ok"]:
             # The manifest came from another venv but the dependency walk ran
             # here, so it says nothing about that venv.
@@ -643,13 +656,13 @@ def running_outside_managed_venv(extra_roots: Sequence[Path] = ()) -> bool:
         # Not a venv at all. On Colab setup.sh deliberately installs the backend
         # into the system Python, whose distro-packaged RECORDs legitimately list
         # files the distro never installed (PEP 627), so a file check here
-        # describes the distro rather than Studio.
+        # describes the distro rather than Unsloth.
         return True
     return _managed_root(extra_roots) is not None
 
 
 def _missing_studio_packages() -> List[str]:
-    """Studio packages studio.txt asks for and the venv does not have."""
+    """Unsloth packages studio.txt asks for and the venv does not have."""
     module = load_install_manifest_module()
     if module is None:
         return []
@@ -703,6 +716,6 @@ def studio_backend_imports(feature: str = "This command", *, studio_only: bool =
         if not from_studio:
             typer.echo(f"  Install it:      pip install {needed}", err = True)
         if from_studio or others:
-            typer.echo("  Studio install:  unsloth studio update", err = True)
+            typer.echo("  Unsloth install:  unsloth studio update", err = True)
             typer.echo('  Plain pip:       pip install "unsloth[studio]"', err = True)
         raise typer.Exit(code = 1) from None

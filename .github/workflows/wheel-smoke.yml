@@ -21,6 +21,7 @@ on:
   pull_request:
     paths:
       - 'pyproject.toml'
+      - 'MANIFEST.in'
       - 'studio/**'
       - 'unsloth/**'
       - 'unsloth_cli/**'
@@ -29,6 +30,7 @@ on:
     branches: [main]
     paths:
       - 'pyproject.toml'
+      - 'MANIFEST.in'
       - 'studio/**'
       - 'unsloth/**'
       - 'unsloth_cli/**'
@@ -119,6 +121,46 @@ jobs:
               sys.exit(0 if all(checks.values()) else 1)
           PY
 
+      - name: No test suites in wheel or sdist
+        # tests/security/fixtures embeds a real supply-chain IOC literal, which got
+        # the published sdist flagged by antivirus vendors (discussion #9577).
+        run: |
+          python - <<'PY'
+          import glob, sys, tarfile, zipfile
+
+          def is_test(path):
+              return "tests" in path.strip("/").split("/")
+
+          def report(label, names):
+              offenders = sorted(n for n in names if is_test(n))
+              ioc = sorted(n for n in names if "malicious_" in n)
+              print(f"{label}: {len(offenders)} test paths, {len(ioc)} IOC fixtures")
+              for n in offenders[:20]:
+                  print(f"    {n}")
+              if len(offenders) > 20:
+                  print(f"    ... and {len(offenders) - 20} more")
+              for n in ioc:
+                  print(f"    IOC {n}")
+              return not offenders and not ioc
+
+          ok = True
+          wheels = glob.glob("dist/unsloth-*.whl")
+          sdists = glob.glob("dist/unsloth-*.tar.gz")
+          if not wheels or not sdists:
+              print("FAIL: expected one wheel and one sdist in dist/")
+              sys.exit(2)
+          with zipfile.ZipFile(wheels[0]) as z:
+              ok &= report(f"wheel {wheels[0]}", z.namelist())
+          with tarfile.open(sdists[0]) as t:
+              # Every sdist member carries an "unsloth-<version>/" prefix.
+              ok &= report(
+                  f"sdist {sdists[0]}",
+                  [n.split("/", 1)[1] for n in t.getnames() if "/" in n],
+              )
+          print("PASS" if ok else "FAIL: test files are being shipped")
+          sys.exit(0 if ok else 1)
+          PY
+
       - name: Unsloth backend import smoke
         # Imports `studio.backend.main:app` from the freshly-installed wheel in
         # a clean venv. This catches the class of bug that 2026.5.1 shipped with:
@@ -137,7 +179,7 @@ jobs:
           cd /tmp
           /tmp/v/bin/python -c "from studio.backend.main import app; print('Unsloth backend OK:', app.title)"
 
-      - name: CLI without the Studio stack guides instead of tracebacking
+      - name: CLI without the Unsloth stack guides instead of tracebacking
         # The smoke above installs studio.txt first, so it cannot catch a wheel
         # that ships studio/ without declaring what it imports (#4701, #5260,
         # #7147). Drop only structlog to reuse that venv without a re-download.

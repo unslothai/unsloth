@@ -66,6 +66,7 @@ import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -131,13 +132,17 @@ import {
   useSelectedChatArtifact,
 } from "./artifacts/store";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
+import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
   ResearchActivityPanel,
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
 import { ChatModelNotice } from "./components/chat-model-notice";
-import { chatModelSwitchMeta } from "./components/chat-model-notice-switch";
+import {
+  chatModelSwitchMeta,
+  type ChatModelSwitchTarget,
+} from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -178,7 +183,13 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsFastMode,
 } from "./provider-capabilities";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceBackgrounded,
+  useShortcut,
+} from "@/features/settings";
 import {
   ChatActiveContext,
   ChatRuntimeProvider,
@@ -198,18 +209,23 @@ import {
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   PENDING_CHAT_ATTACHMENT_KEY,
-  hasGgufSource,
-  isDownloadableHubRepo,
   loadOptionalBool,
   readPendingAttachmentTargetClaim,
   threadScopedOverride,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import {
+  type ComparePairReadState,
+  checkpointCompareClass,
+  comparePairReadState,
+  resolveComparePaneThreadIds,
+} from "./utils/compare-pane-threads";
 import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
@@ -534,12 +550,95 @@ function modelMatchesDeleted(
  * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
  * compare that uses the fast simultaneous adapter-toggle path.
  */
-function useIsLoraCompare(): boolean {
-  return useChatRuntimeStore((s) => {
-    const cp = s.params.checkpoint;
-    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
-    return selected?.exportType === "lora";
-  });
+function useIsLoraCompare(): boolean | null {
+  return useChatRuntimeStore((s) =>
+    checkpointCompareClass({
+      checkpoint: s.params.checkpoint,
+      isExternal: isExternalModelId(s.params.checkpoint),
+      residentUnknown: s.residentCheckpoint === undefined,
+      models: s.models,
+      loras: s.loras,
+      inventorySettled: s.loraInventorySettled,
+    }),
+  );
+}
+
+/** `pending` while the pair is still being read, so neither component hydrates first. */
+function useCompareVariant(pairId: string): {
+  state: ComparePairReadState;
+  retry: () => void;
+} {
+  const checkpointIsLora = useIsLoraCompare();
+  const [read, setRead] = useState<{
+    pairId: string;
+    state: ComparePairReadState;
+  }>();
+  const [storageRetry, setStorageRetry] = useState<{
+    pairId: string;
+    count: number;
+  }>();
+  const settled = read?.pairId === pairId ? read.state : undefined;
+  const retryCount = storageRetry?.pairId === pairId ? storageRetry.count : 0;
+
+  useEffect(() => {
+    if (settled) return;
+    let isActive = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (state: ComparePairReadState) => {
+      if (!isActive || state.status === "pending") return;
+      if (state.status === "retry") {
+        retryTimer = setTimeout(() => {
+          if (isActive) setStorageRetry({ pairId, count: retryCount + 1 });
+        }, 250);
+        return;
+      }
+      setRead({ pairId, state });
+    };
+    listStoredChatThreads({ pairId })
+      .then((threads) =>
+        settle(comparePairReadState({ threads }, checkpointIsLora, retryCount)),
+      )
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          console.error("Could not read a comparison's stored threads", error);
+        }
+        settle(
+          comparePairReadState({ failed: true }, checkpointIsLora, retryCount),
+        );
+      });
+    return () => {
+      isActive = false;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+    };
+  }, [pairId, checkpointIsLora, retryCount, settled]);
+
+  const retry = useCallback(() => {
+    setRead(undefined);
+    setStorageRetry({ pairId, count: 0 });
+  }, [pairId]);
+
+  return { state: settled ?? { status: "pending" }, retry };
+}
+
+/**
+ * The pair read failed. Its persisted shape is unknown, and picking a renderer from the
+ * loaded checkpoint would relabel existing histories, so offer the read again instead.
+ */
+function CompareUnreadable({
+  onRetry,
+}: {
+  onRetry: () => void;
+}): ReactElement {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col items-center justify-center gap-3 p-6 text-center">
+      <p className="text-sm text-muted-foreground">
+        Could not load this comparison's history.
+      </p>
+      <Button variant="outline" size="sm" onClick={onRetry}>
+        Try again
+      </Button>
+    </div>
+  );
 }
 
 const CompareContent = memo(function CompareContent({
@@ -565,9 +664,15 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  const isLoraCompare = useIsLoraCompare();
+  const { state: compareRead, retry: retryCompareRead } =
+    useCompareVariant(pairId);
 
-  return isLoraCompare ? (
+  if (compareRead.status === "unreadable") {
+    return <CompareUnreadable onRetry={retryCompareRead} />;
+  }
+  if (compareRead.status !== "ready") return <></>;
+
+  return compareRead.variant === "lora" ? (
     <LoraCompareContent
       pairId={pairId}
       onExitCompare={onExitCompare}
@@ -730,9 +835,12 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
+  const [pairLoraModelId, setPairLoraModelId] = useState<string>();
   const [threadsSettled, setThreadsSettled] = useState(false);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const checkpointIsLora = useIsLoraCompare();
 
   // Global on purpose: a first compare run starts before either thread exists, so there is
   // no pair id to scope BY -- it files its handles under "__default" until initialize()
@@ -740,7 +848,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   // `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a thread that is
   // still generating.
   const anyRunning = useChatRuntimeStore(
-    (s) => Object.keys(s.runningByThreadId).length > 0,
+    (s) => Object.keys(s.localRunByThreadId).length > 0,
   );
   // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive
   // across the switch into compare, so `anyRunning` is true on arrival for a reason that has
@@ -756,8 +864,16 @@ const LoraCompareContent = memo(function LoraCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+        // No model1/model2 fallback: useCompareVariant never routes a generalized
+        // pair here, so adopting one could only mislabel it and write adapter
+        // answers into its histories.
+        const baseThread = threads.find((t) => t.modelType === "base");
+        const loraThread = threads.find((t) => t.modelType === "lora");
+        setBaseThreadId(baseThread?.id);
+        setLoraThreadId(loraThread?.id);
+        setPairLoraModelId(
+          loraThread?.modelId?.trim() || baseThread?.modelId?.trim() || undefined,
+        );
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -783,6 +899,16 @@ const LoraCompareContent = memo(function LoraCompareContent({
     threadsSettled,
   ]);
 
+  const sendUnavailableReason = !threadsSettled
+    ? "Loading comparison history."
+    : checkpointIsLora === null
+      ? "Checking the loaded model."
+      : !checkpointIsLora ||
+          (pairLoraModelId !== undefined &&
+            !modelIdsMatch(pairLoraModelId, checkpoint))
+        ? "Load the LoRA saved with this comparison before sending."
+        : undefined;
+
   return (
     <CompareShell
       handlesRef={handlesRef}
@@ -793,6 +919,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
             onExitCompare={onExitCompare}
             model1ThreadId={baseThreadId}
             model2ThreadId={loraThreadId}
+            sendUnavailableReason={sendUnavailableReason}
+            requireStableCheckpoint={true}
           />
         ) : (
           <></>
@@ -984,16 +1112,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setModel1ThreadId(
-          threads.find(
-            (t) => t.modelType === "model1" || t.modelType === "base",
-          )?.id,
-        );
-        setModel2ThreadId(
-          threads.find(
-            (t) => t.modelType === "model2" || t.modelType === "lora",
-          )?.id,
-        );
+        const pair = resolveComparePaneThreadIds(threads);
+        setModel1ThreadId(pair.first);
+        setModel2ThreadId(pair.second);
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -1131,6 +1252,7 @@ function createThreadNonce(): string {
 // Chat export formats, mirroring the sidebar chat menu.
 type ProjectChatExportFormat =
   | "raw-jsonl"
+  | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
   | typeof CONVERSATION_MARKDOWN_FORMAT;
@@ -1138,7 +1260,8 @@ const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ProjectChatExportFormat;
 }> = [
-  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "Training JSONL", format: "raw-jsonl" },
+  { label: "Message JSONL", format: "messages-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
   {
@@ -1153,6 +1276,8 @@ async function exportProjectConversation(
 ): Promise<void> {
   const exports = await import("./prompt-storage/prompt-storage-dialog");
   if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
+  if (format === "messages-jsonl")
+    return exports.exportConversationMessagesJsonl(threadId);
   if (format === "csv") return exports.exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
     return exports.exportConversationMarkdown(threadId);
@@ -2164,6 +2289,8 @@ export function ChatPage({
   }, [active, navigate, search.thread]);
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  // Controlled, so the chord can open the switcher and not just its trigger.
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when
@@ -2485,7 +2612,7 @@ export function ChatPage({
     const storedWebFetchToolsEnabled =
       threadScopedOverride("webFetchToolsEnabled") ??
       loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    // Studio runs Search and Code itself for any provider that advertises the
+    // Unsloth runs Search and Code itself for any provider that advertises the
     // capability, so a self-hosted connection has no hosted builtin to key off.
     // Keying the pill state on the hosted flags alone discarded the user's saved
     // preference on every reload and sent enable_tools: false, even though the
@@ -2496,7 +2623,7 @@ export function ChatPage({
         selection.modelId,
       ) === true;
     const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
-    // Read out of the placement rule, not off the Studio-tools flag: a model on
+    // Read out of the placement rule, not off the Unsloth-tools flag: a model on
     // a sandbox-owning provider that cannot use it runs nothing either way, and
     // offering the pill there restored a preference that sent no tools at all.
     const canRunCode = codeToolCanRun({
@@ -2727,14 +2854,8 @@ export function ChatPage({
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
-      const wantManagerDownload =
-        isDownloadableHubRepo(selection) && !selection.isDownloaded;
+      const wantManagerStaging = wantsDownloadManagerStaging(selection);
       if (store.modelLoading) {
-        const wantBackgroundDownload =
-          wantManagerDownload ||
-          (selection.source === "hub" &&
-            hasGgufSource(selection) &&
-            !selection.isDownloaded);
         const isLoadingThisPick =
           !!loadingModel &&
           normalizeModelRef(loadingModel.id) ===
@@ -2744,7 +2865,7 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantBackgroundDownload) {
+        } else if (wantManagerStaging) {
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
@@ -2775,12 +2896,7 @@ export function ChatPage({
         }
         return;
       }
-      const wantManagerStage =
-        wantManagerDownload ||
-        (selection.source === "hub" &&
-          hasGgufSource(selection) &&
-          !selection.isDownloaded);
-      if (wantManagerStage) {
+      if (wantManagerStaging) {
         setPendingHubAutoLoad((current) =>
           current &&
           current.selection.id === selection.id &&
@@ -3018,7 +3134,8 @@ export function ChatPage({
   const handleCheckpointChange = useCallback(
     (
       value: string,
-      meta?: ModelSelectorChangeMeta,
+      // Partial: the switch-back carries only what the resolver cannot recover.
+      meta?: Partial<ModelSelectorChangeMeta>,
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
@@ -3294,6 +3411,9 @@ export function ChatPage({
     })();
   }, [ejectModel, resetArtifacts]);
 
+  // Pins the picker open so a stray click cannot dismiss the step under it.
+  // Tour steps only: the effect below shuts anything left pinned once the tour
+  // is gone, so anyone else calling this would get a flash and nothing more.
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
     setModelSelectorOpen(true);
@@ -3303,6 +3423,13 @@ export function ChatPage({
     setModelSelectorLocked(false);
     setModelSelectorOpen(false);
   }, []);
+
+  /** The chord's opener: no pin, so the picker stays dismissible. */
+  const toggleModelSelector = useCallback(() => {
+    // Pinned means a tour step is standing on it, and that step owns it.
+    if (modelSelectorLocked) return;
+    setModelSelectorOpen((open) => !open);
+  }, [modelSelectorLocked]);
 
   const handleModelSelectorOpenChange = useCallback(
     (open: boolean) => {
@@ -3318,6 +3445,119 @@ export function ChatPage({
   const closeSettings = useCallback(
     () => setSettingsOpen(false),
     [setSettingsOpen],
+  );
+
+  // --- Chat page shortcuts ----------------------------------------------
+  // The controls these drive are owned by this page.
+  // Both controls are the header's, and the header drops them in Compare,
+  // where each pane carries its own picker instead. Without the check the
+  // chord would toggle state nothing renders.
+  const headerPickersShown = active && view.mode !== "compare";
+  // This page stays mounted under a dialog, so `enabled` still says yes while
+  // the header is inert. Without a press-time check the chord opens a popover
+  // on the covered surface, or leaves the picker to reappear when the dialog
+  // closes. Backgrounded, not "not in the foreground": the composer travels
+  // with this header, and an unrendered layout is not a covered one.
+  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut(
+    "openModelPicker",
+    () => {
+      if (chatCovered()) return;
+      toggleModelSelector();
+    },
+    { enabled: headerPickersShown },
+  );
+  // The same condition the switcher renders by, so the chord cannot open a
+  // control that is not there and the reset below cannot miss a way it goes.
+  const projectSwitcherShown = headerPickersShown && Boolean(currentProjectId);
+  useShortcut(
+    "openProjectPicker",
+    () => {
+      if (chatCovered()) return;
+      setProjectPickerOpen(true);
+    },
+    { enabled: projectSwitcherShown },
+  );
+  // A picker left open would come back on the next visit as a ghost of the
+  // last one. Off-route is one way to leave it: this page stays mounted. So is
+  // entering Compare, and so is a standalone chat taking the project away,
+  // both of which unmount the switcher while the page is still on screen.
+  // Adjusted during render, as React prescribes for state that has to follow a
+  // value it derives from.
+  if (!projectSwitcherShown && projectPickerOpen) {
+    setProjectPickerOpen(false);
+  }
+
+  /** Step the effort level, clamped at both ends unless we are cycling. */
+  const shiftReasoningEffort = useCallback(
+    (delta: number, wrap: boolean) => {
+      const state = useChatRuntimeStore.getState();
+      const levels = state.reasoningEffortLevels;
+      // Levels stay populated for an enable_thinking model, whose request path
+      // drops the effort. Same test as the composer's effort menu.
+      const isEffort =
+        state.reasoningStyle === "reasoning_effort" ||
+        state.reasoningStyle === "enable_thinking_effort";
+      if (!state.supportsReasoning || !isEffort || levels.length === 0) {
+        toast.info("This model has no reasoning effort setting");
+        return;
+      }
+      const current = levels.indexOf(state.reasoningEffort);
+      // Loading a model that drops the level in force leaves the effort set to
+      // one that is gone, and indexOf gives -1. The first press picks the
+      // lowest level offered rather than counting a step off a missing index.
+      if (current === -1) {
+        state.setReasoningEffort(levels[0]);
+        return;
+      }
+      const from = current;
+      const next = wrap
+        ? (from + delta + levels.length) % levels.length
+        : Math.min(Math.max(from + delta, 0), levels.length - 1);
+      if (levels[next] === state.reasoningEffort) return;
+      state.setReasoningEffort(levels[next]);
+    },
+    [],
+  );
+  useShortcut(
+    "cycleReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(1, true);
+    },
+    { enabled: active },
+  );
+  useShortcut(
+    "increaseReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(1, false);
+    },
+    { enabled: active },
+  );
+  useShortcut(
+    "decreaseReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(-1, false);
+    },
+    { enabled: active },
+  );
+
+  const fastModeSupported = providerSupportsFastMode(
+    activeExternalProviderType,
+    parseExternalModelId(inferenceParams.checkpoint)?.modelId ?? null,
+  );
+  useShortcut(
+    "toggleFastMode",
+    () => {
+      if (chatCovered()) return;
+      const state = useChatRuntimeStore.getState();
+      const next = !state.params.fastMode;
+      state.setParams({ ...state.params, fastMode: next });
+      toast.success(next ? "Fast mode on" : "Fast mode off");
+    },
+    { enabled: active && fastModeSupported },
   );
   const { isMobile, pinned } = useSidebar();
 
@@ -3533,10 +3773,10 @@ export function ChatPage({
   // `/api/models/list` nor the external ids, so without it the switch loads on
   // different arguments than the menu would.
   const handleSwitchBackToChatModel = useCallback(
-    (modelId: string) => {
+    (target: ChatModelSwitchTarget) => {
       handleCheckpointChange(
-        modelId,
-        chatModelSwitchMeta(modelId, loraModels),
+        target.modelId,
+        chatModelSwitchMeta(target, loraModels),
       );
     },
     [handleCheckpointChange, loraModels],
@@ -3704,6 +3944,11 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
+      {/* The MCP servers dialog: its chord has to work before MCP is switched
+          on, and the pill that used to own it only renders once it is. Mounted
+          through the route change, not gated on `active`, so it can close
+          itself on the way out instead of returning with the tab. */}
+      <McpServersDialogMount />
       {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is on screen; the
           thread viewport adds it to the top padding it reserves for the header, so
           without it the first message reads under an opaque bar. Declared on the
@@ -3732,7 +3977,7 @@ export function ChatPage({
           <body> costs 0.10 ms either way, so the cost is the thread being under
           the subject and nothing else. Chromium only: WebKitGTK and Firefox are
           flat across all four selector forms, so this neither helps nor hurts
-          the engine Studio uses on Linux.
+          the engine Unsloth uses on Linux.
 
           ChatModelNotice renders a direct child of this element (see below), so
           the child combinator matches exactly what the descendant form matched.
@@ -3826,6 +4071,8 @@ export function ChatPage({
                   isLoading={projectsLoading}
                   onSelectProject={openProjectLanding}
                   onViewAllProjects={openProjectsList}
+                  open={projectPickerOpen}
+                  onOpenChange={setProjectPickerOpen}
                 />
                 {currentProject && activeThreadId ? (
                   <>
@@ -3996,6 +4243,7 @@ export function ChatPage({
           <ChatModelNotice
             threadId={view.threadId ?? newChatThreadId ?? undefined}
             checkpoint={inferenceParams.checkpoint}
+            activeGgufVariant={activeGgufVariant}
             selectableModelIds={selectableModelIds}
             onSwitch={handleSwitchBackToChatModel}
           />

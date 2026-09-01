@@ -279,8 +279,8 @@ def test_what_reading_the_queue_surface_gives_up(page):
 def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     """The fixtures above are hand-written, so they can drift into asserting themselves.
 
-    What makes them a claim about Studio is that the app still renders BOTH Queue buttons and still
-    names the queue surface, so this reads that out of the shipped TSX. If Studio stops rendering
+    What makes them a claim about Unsloth is that the app still renders BOTH Queue buttons and still
+    names the queue surface, so this reads that out of the shipped TSX. If Unsloth stops rendering
     the queued-idle button the conflation is gone and this file should go with it; if it renames
     the queue surface, `dom.promptQueue()` goes quiet and the conflation is back.
     """

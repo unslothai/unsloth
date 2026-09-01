@@ -311,7 +311,7 @@ def test_explicit_cache_prompt_flag_overrides_env(monkeypatch, tmp_path):
 
 
 def test_user_cache_prompt_overrides_studio_no_cache_flag(monkeypatch, tmp_path):
-    # User extras follow Studio's flags, so an explicit --cache-prompt wins.
+    # User extras follow Unsloth's flags, so an explicit --cache-prompt wins.
     backend = _resume_backend(tmp_path)
     backend._prompt_cache_disabled = True
     backend._extra_args = ["--cache-prompt"]

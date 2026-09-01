@@ -16,7 +16,7 @@ import { markdownBlockFallback } from "./markdown-block-fallback";
  * the app happens to have at that moment. A rejected lazy import rethrows during
  * render, and until this boundary existed the nearest catcher was TanStack
  * Router's `CatchBoundaryImpl`: one chunk that would not load replaced the whole
- * of Studio with "Something went wrong!", unmounted the assistant-ui runtime
+ * of Unsloth with "Something went wrong!", unmounted the assistant-ui runtime
  * with it, and left the reply's own stream with nothing consuming it. The reply
  * that was already on screen went too.
  *

@@ -24,6 +24,41 @@ export interface StreamedToolCallPart {
 }
 
 /**
+ * The id for a card drawn from a delta the provider gave no id to: the slot's
+ * own `tool_call_<index>` when free, else the lowest `tool_call_<n>` that is.
+ * The backend's `_mint_streamed_card_id` walks the same deltas under the same
+ * rule, so its `tool_start` reaches this card instead of opening a second one.
+ * `reserved` holds ids the provider sent, so one spelled `tool_call_0` keeps
+ * it. No colon: a replayed id must satisfy `^[a-zA-Z0-9_-]+$`.
+ */
+export function mintStreamedToolCallId(
+  parts: StreamedToolCallPart[],
+  deltaIndex: number | undefined,
+  reserved: Set<string>,
+): string {
+  const isTaken = (candidate: string) =>
+    reserved.has(candidate) || parts.some((part) => part.toolCallId === candidate);
+  const preferred = deltaIndex === undefined ? "" : `tool_call_${deltaIndex}`;
+  if (preferred && !isTaken(preferred)) return preferred;
+  let position = 0;
+  while (isTaken(`tool_call_${position}`)) position += 1;
+  return `tool_call_${position}`;
+}
+
+/**
+ * Let a card drawn by the deltas answer to its own id. Without it,
+ * `resolveToolCallPartId` mints `<backend id>:<uuid>` when the backend first
+ * names an id-less call, `tool_start` finds no card and pushes one, and the
+ * turn persists two parts per call.
+ */
+export function bindStreamedToolCallCard(
+  ids: Map<string, string>,
+  partId: string,
+): void {
+  if (!ids.has(partId)) ids.set(partId, partId);
+}
+
+/**
  * Newest part holding `deltaIndex`, or -1. `unownedOnly` restricts the match to
  * a slot no provider id has claimed yet.
  */

@@ -394,7 +394,7 @@ def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
 # text and a caller's own system prompt may already use it. Matching on the tag alone
 # stripped that caller-owned section on every reset, reintroduced its bullet lines as
 # lower-authority quoted user history, and deleted whatever was not bullet-shaped, which
-# silently rewrites the caller's policy. Only a block Studio itself rendered carries this
+# silently rewrites the caller's policy. Only a block Unsloth itself rendered carries this
 # header, so only that one is claimed.
 _BLOCK = re.compile(
     re.escape(_OPEN) + r"\n" + re.escape(_HEADER) + r"(.*?)" + re.escape(_CLOSE) + r"\s*",
@@ -461,7 +461,7 @@ def _recap(
 
 
 def _without_block(messages: list[dict]) -> list[dict]:
-    """``messages`` with any block Studio rendered removed from the system turn.
+    """``messages`` with any block Unsloth rendered removed from the system turn.
 
     The no-X fallback drops the block and re-measures before refusing. Handing it
     `fitted` alone did not drop anything when the INCOMING system message already carried
@@ -516,6 +516,11 @@ def fit_checkpoint_context(
     keeps_boundary: bool = False,
     can_reset: bool = False,
     searchable: bool = True,
+    estimate_message: Callable[[dict], int] = estimate_message_tokens,
+    # Signature compatibility with `fit_rolling_context`. A checkpoint reset already
+    # drops to the latest turn plus X; an extra bite of the window would only shrink
+    # the standing-instruction block, which is the half worth keeping.
+    headroom_ratio: Optional[float] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat by resetting the epoch, keeping the newest turn and a carried-forward X.
 
@@ -599,6 +604,7 @@ def fit_checkpoint_context(
             1.0,
             protected_message_ids = protected_message_ids,
             min_dropped = sticky_dropped,
+            estimate_message = estimate_message,
         )
         if replayed:
             fitted = candidate
@@ -615,7 +621,10 @@ def fit_checkpoint_context(
     # user groups.
     if current_tokens > prompt_target and _resolved(can_reset):
         candidate, reset_dropped = truncate_oldest_messages(
-            messages, 0.0, protected_message_ids = protected_message_ids
+            messages,
+            0.0,
+            protected_message_ids = protected_message_ids,
+            estimate_message = estimate_message,
         )
         if reset_dropped:
             fitted = candidate

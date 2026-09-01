@@ -960,7 +960,7 @@ def test_expanded_popup_fits_a_short_viewport(banner):
 
 
 def test_relative_release_body_links_point_at_the_repository():
-    """Repository-relative links would resolve against Studio's own origin."""
+    """Repository-relative links would resolve against Unsloth's own origin."""
     src = LINKS.read_text(encoding = "utf-8")
     assert "https://github.com/unslothai/unsloth/blob/main/" in src
     assert "https://raw.githubusercontent.com/unslothai/unsloth/main/" in src
@@ -1094,7 +1094,7 @@ def test_a_comment_marker_in_prose_cannot_swallow_later_releases(notes_module):
     """A note that mentions `<!--` used to put the parser into comment state for
     the rest of the file, hiding every release below it."""
     text = (
-        "## 2026.8.0\n\n- Studio strips <!-- markers from pasted prompts.\n\n"
+        "## 2026.8.0\n\n- Unsloth strips <!-- markers from pasted prompts.\n\n"
         "## 2026.7.5\n\n- SECRET: an older release\n"
     )
     assert [e.version for e in parse_sections(notes_module, text)] == ["2026.8.0", "2026.7.5"]
@@ -1257,8 +1257,17 @@ def test_link_resolver_leaves_raw_blocks_and_escapes_alone():
 def test_code_span_closers_ignore_backslashes():
     """Escapes are not processed inside a code span, so a run after one closes."""
     src = CODE_SPANS.read_text(encoding = "utf-8")
-    body = src[src.index("export function codeSpans") :]
-    assert body.count("escaped(text") == 1, "only an opener can be escaped"
+    # Counted over the whole module rather than from an exported wrapper: the
+    # scanner has already moved above `codeSpans` once, and a slice anchored on
+    # a wrapper reads as "no opener is escaped either" when that happens.
+    calls = [
+        " ".join(line.split())
+        for line in src.splitlines()
+        if "escaped(" in line and not line.lstrip().startswith("function escaped(")
+    ]
+    assert len(calls) == 1, f"only an opener can be escaped, called at {calls}"
+    # And that one call guards the run that opens a span, not the one closing it.
+    assert '!== "`" || escaped(' in calls[0]
 
 
 # The card's incompressible height, a fixed part plus a part that follows
@@ -1347,7 +1356,7 @@ def test_the_rail_offset_is_not_computed():
 
 
 def test_desktop_notes_are_not_keyed_by_the_pinned_backend_version():
-    """The banner asks with the Studio version it offers. `pypi_version` stays
+    """The banner asks with the Unsloth version it offers. `pypi_version` stays
     in latest.json as the backend pin preflight checks, not a notes key."""
     banner = TAURI_BANNER.read_text(encoding = "utf-8")
     assert "info?.version?.replace(LEADING_V" in banner
@@ -1579,7 +1588,7 @@ def test_a_link_indented_under_a_bullet_still_resolves(run_scanner):
     """CommonMark measures indentation from the container (spec 0.31.2 section
     5.2), so under "- Details:" a four-space line is two columns in: a paragraph
     holding a link. Measuring from the margin called it code (section 4.4) and
-    left the destination relative to Studio's own origin."""
+    left the destination relative to Unsloth's own origin."""
     resolved = run_scanner("links", "- Details:\n\n    [guide](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in resolved
     # The same prose one column further in really is code, and stays untouched.
@@ -1987,10 +1996,10 @@ def test_a_comment_closed_on_its_own_line_still_closes(run_scanner):
     and the popup showed the author's internal note."""
     closer = run_scanner(
         "preview",
-        "- DoRA training is available in Studio. <!-- TODO confirm the exact\n"
+        "- DoRA training is available in Unsloth. <!-- TODO confirm the exact\n"
         "  flag name before release\n-->\n",
     )
-    assert preview_leads(closer) == ["DoRA training is available in Studio."]
+    assert preview_leads(closer) == ["DoRA training is available in Unsloth."]
     # A continuation may open with emphasis, which is text and not a block.
     starred = run_scanner(
         "preview",
@@ -2209,7 +2218,7 @@ def test_only_a_paragraph_of_its_own_opens_an_install_block(notes_module):
     assert "To update Unsloth, run the installer." in stripped
     assert "- a real fix" in stripped
 
-    for line in ("* Update Studio icons by @someone", "> To update Unsloth, run it"):
+    for line in ("* Update Unsloth icons by @someone", "> To update Unsloth, run it"):
         body = f"Intro.\n\n{line}\n\n## Fixes\n\n- a real fix\n"
         assert "a real fix" in notes_module.strip_release_body(body), line
 

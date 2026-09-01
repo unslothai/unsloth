@@ -61,7 +61,7 @@
 //
 // ── AND A NOTE ON ANY SCAN THAT CAN RETURN ZERO ──────────────────────────────────────────────
 //
-// `styleProbe` below walks a hand-written selector list. If Studio renames a class the list goes
+// `styleProbe` below walks a hand-written selector list. If Unsloth renames a class the list goes
 // quiet, matches nothing, and its digest becomes the hash of an empty string -- identical on both
 // arms, reported as a MATCH. A scan of nothing must never be reported as agreement, so
 // `compare_styles` refuses a zero-element probe instead of matching it, and `elements` travels
@@ -91,7 +91,7 @@
 //                       happens to be scrolled, which the film varies deliberately.
 //   record identifiers  thread ids, message ids and attachment ids are minted by the BACKEND when
 //                       the fixture seeds the thread. The two arms of an A/B are two separate
-//                       Studio installs with two separate databases, so these can never agree and
+//                       Unsloth installs with two separate databases, so these can never agree and
 //                       carry no information about the frontend.
 //   absolute URLs       `src`/`href` carry the arm's own origin, and the two arms are on two
 //                       ports by construction. `http://127.0.0.1:5830/x` and `...:5831/x` are the
@@ -811,7 +811,7 @@
         // That is the failure this whole file's neighbours were written against: measuring at a
         // moment whose meaning is not stable across the things being compared. It is the same
         // mistake as a census taken on a `data-state` flip, and it is worse here because the
-        // renderer amplifies it. Mid-stream, Studio does not show a PREFIX of the finished reply:
+        // renderer amplifies it. Mid-stream, Unsloth does not show a PREFIX of the finished reply:
         // `parseIncompleteMarkdown` runs remend over the tail and closes whatever construct is
         // half-arrived, KaTeX renders the repaired formula (and, while it will not parse, writes
         // the parse error and its character offset into a `title`), Shiki re-tokenises the repaired
@@ -925,7 +925,7 @@
           in_flight,
           streaming: running,
           // THE POSITIVE CONTROL, and it is not decoration. `streamingMessages()` walks selectors
-          // written against Studio's markup: rename `data-status` and it goes quiet, matches
+          // written against Unsloth's markup: rename `data-status` and it goes quiet, matches
           // nothing, and every reading silently becomes "nothing was streaming" -- which is the
           // strongest claim this capture can make about the stream and would be supported by no
           // observation at all. The app says a reply is running through a different control (the
