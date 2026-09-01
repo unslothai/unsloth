@@ -12417,10 +12417,9 @@ class LlamaCppBackend:
         if not drafter_path:
             return 0
         try:
-            # No tied-output charge: this drafter is CPU-pinned by definition, so its
-            # input and output layers resolve to the one CPU buffer-type context and
-            # llama.cpp hands back the original token_embd rather than allocating a
-            # second matrix (llama-model-loader.cpp:1437-1443).
+            # No tied-output charge: CPU-pinned by definition, so both layers land in
+            # the one CPU buffer-type context and llama.cpp hands back the original
+            # token_embd instead of a second matrix (llama-model-loader.cpp:1437-1443).
             weights = self._get_gguf_size_bytes(drafter_path)
         except Exception:
             weights = 0
@@ -19254,10 +19253,9 @@ class LlamaCppBackend:
                         _shared_gpu_ids = {
                             idx for idx, _free, total in _visible_gpu_mem if total <= 0
                         }
-                        # A row whose type the registry could not read reports a heap
-                        # like a dGPU, so total > 0 leaves it out of the set above. The
-                        # global term already refuses it; without this the per-candidate
-                        # search hands the same device the discount right back.
+                        # An unreadable type reports a heap like a dGPU, so total > 0
+                        # leaves it out of the set above and the per-candidate search
+                        # would hand back the discount the global term just refused.
                         _unclassified_gpu_ids = {
                             int(row["index"])
                             for row in (_vulkan_probe_rows or ())
@@ -24369,10 +24367,9 @@ class LlamaCppBackend:
                         # once, so re-fit on that raw footprint. Original Auto policy:
                         # a fully-offloaded fitted context when one exists, else the
                         # useful offload context. A hand-set context is never reduced.
-                        # Gated on the restored bytes alone, not on the remaining
-                        # device being a KNOWN APU: an unclassified one restores the
-                        # same discount, and skipping the re-fit there would launch the
-                        # crashed selection's context against the larger footprint.
+                        # The restored bytes alone, not a KNOWN APU: an unclassified
+                        # device restores the same discount, and skipping the re-fit
+                        # launches the crashed context against the larger footprint.
                         if (
                             not explicit_ctx
                             and _retry_restored_discount > 0
