@@ -1617,9 +1617,7 @@ def compare_and_set_settings(
     try:
         parsed = ConditionalChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
-        raise HTTPException(
-            status_code = 400, detail = safe_validation_errors(exc.errors())
-        ) from exc
+        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
     try:
         settings, applied = upsert_chat_settings_merge_if_current(
             parsed.expected.model_dump(exclude_unset = True),
