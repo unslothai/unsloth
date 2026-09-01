@@ -527,3 +527,71 @@ def test_the_done_event_wins_where_it_has_a_value(monkeypatch):
         if e["type"] == "tool_start"
     ]
     assert starts[0]["arguments"]["query"] == "second"
+
+
+def test_every_query_in_the_call_reaches_the_card(monkeypatch):
+    # `queries` is an array in the spec: one search action can run several. Only
+    # showing the first silently drops the rest.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_multi",
+                "action": {
+                    "type": "search",
+                    "queries": ["tiger population", "tiger conservation 2026"],
+                },
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    starts = [
+        e
+        for e in _tool_events(_drive_stream(sse_events, ["web_search"], monkeypatch))
+        if e["type"] == "tool_start"
+    ]
+    assert starts[0]["arguments"]["query"] == ("tiger population, tiger conservation 2026")
+
+
+def test_queries_wins_over_the_deprecated_query(monkeypatch):
+    # The spec marks `query` deprecated in favour of `queries`, so a stream
+    # carrying both must be read from the current field.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_both",
+                "action": {
+                    "type": "search",
+                    "query": "stale",
+                    "queries": ["current"],
+                },
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    starts = [
+        e
+        for e in _tool_events(_drive_stream(sse_events, ["web_search"], monkeypatch))
+        if e["type"] == "tool_start"
+    ]
+    assert starts[0]["arguments"]["query"] == "current"
+
+
+def test_a_search_action_with_no_query_at_all_is_tolerated(monkeypatch):
+    # Neither field is required by the spec.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {"type": "web_search_call", "id": "ws_bare", "action": {"type": "search"}},
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    events = _tool_events(_drive_stream(sse_events, ["web_search"], monkeypatch))
+    starts = [e for e in events if e["type"] == "tool_start"]
+    ends = [e for e in events if e["type"] == "tool_end"]
+    assert "query" not in starts[0]["arguments"]
+    assert starts[0]["arguments"]["action_type"] == "search"
+    assert ends[0]["result"] == ""

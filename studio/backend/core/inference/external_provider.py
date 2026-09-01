@@ -401,24 +401,31 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
 def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     """Normalize an OpenAI web_search_call action into card arguments.
 
-    gpt-5.x agentic search emits three action types: `search` carries a query,
-    `open_page` a url, `find_in_page` a url and a pattern. Reading only
-    `action.query` renders the last two as an empty `Searching ""` card.
-    https://developers.openai.com/api/docs/guides/tools-web-search
+    gpt-5.x agentic search emits three action types, discriminated by
+    `action.type`: `search` carries queries, `open_page` a url, `find_in_page` a
+    url and a pattern. Reading only `action.query` renders the last two as an
+    empty `Searching ""` card. Shapes per WebSearchToolCall in
+    https://github.com/openai/openai-openapi (openapi.yaml).
     """
     if not isinstance(item, dict):
         return {}
     action = item.get("action") if isinstance(item.get("action"), dict) else {}
     action_type = action.get("type") if isinstance(action.get("type"), str) else ""
-    query = action.get("query") if isinstance(action.get("query"), str) else ""
-    if not query:
-        # Older shapes put the query in a list, or on the item itself.
-        for source in (action.get("queries"), item.get("queries")):
-            if isinstance(source, list) and source and isinstance(source[0], str) and source[0]:
-                query = source[0]
+    # `queries` is the current field and holds every query the call ran; the
+    # singular `query` is deprecated in the spec, so it is only the fallback.
+    # Neither is required, so a search action can carry no query at all.
+    query = ""
+    for source in (action.get("queries"), item.get("queries")):
+        if isinstance(source, list):
+            joined = ", ".join(q for q in source if isinstance(q, str) and q)
+            if joined:
+                query = joined
                 break
-        if not query and isinstance(item.get("query"), str):
-            query = item["query"]
+    if not query:
+        for legacy in (action.get("query"), item.get("query")):
+            if isinstance(legacy, str) and legacy:
+                query = legacy
+                break
     url = action.get("url") if isinstance(action.get("url"), str) else ""
     pattern = action.get("pattern") if isinstance(action.get("pattern"), str) else ""
     arguments: dict[str, Any] = {}
