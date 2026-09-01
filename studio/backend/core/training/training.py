@@ -1137,12 +1137,23 @@ class TrainingBackend:
         self.current_theme: str = "light"
 
         self.current_job_id: Optional[str] = None
-        self.current_start_request_id: Optional[str] = None
-        self._start_requests: dict[str, TrainingStartRequestRecord] = {}
-        self._start_cancel_tombstones: dict[str, tuple[float, TrainingStartRequestRecord]] = {}
-        self._start_cancel_tombstone_reservations: dict[str, int] = {}
-        self._pending_start_request_id: Optional[str] = None
-        self._status_start_request_id: Optional[str] = None
+        # The active run's registry key. current_start_request_id below is a view
+        # onto it, so the two cannot drift: the cancel path decides ownership from
+        # the key, and a bare id assignment that left it stale would let another
+        # account's identical id read as this run's owner.
+        self._current_start_key: Optional[tuple[str, str]] = None
+        # Keyed by (workspace, start request id). The id is chosen by the client,
+        # so two accounts can legitimately present the same one; keyed on the id
+        # alone, either could overwrite the other's pending record and then settle
+        # the wrong start. The pending-start interlock below stays install-wide,
+        # because it guards one GPU rather than one account's bookkeeping.
+        self._start_requests: dict[tuple[str, str], TrainingStartRequestRecord] = {}
+        self._start_cancel_tombstones: dict[
+            tuple[str, str], tuple[float, TrainingStartRequestRecord]
+        ] = {}
+        self._start_cancel_tombstone_reservations: dict[tuple[str, str], int] = {}
+        self._pending_start_key: Optional[tuple[str, str]] = None
+        self._status_start_key: Optional[tuple[str, str]] = None
         self._output_dir: Optional[str] = None
         self._resume_source_run_id: Optional[str] = None
         self._terminal_finalize_payload: Optional[dict] = None
@@ -1186,37 +1197,58 @@ class TrainingBackend:
         with self._lock:
             return self._active_workspace_subject in (None, subject)
 
+    @property
+    def current_start_request_id(self) -> Optional[str]:
+        """The active run's start request id, without its workspace."""
+        return None if self._current_start_key is None else self._current_start_key[1]
+
+    @current_start_request_id.setter
+    def current_start_request_id(self, value: Optional[str]) -> None:
+        # Binds to the assigning workspace. The one caller that must NOT rebind,
+        # the spawn-failure rollback, restores _current_start_key directly.
+        self._current_start_key = None if value is None else self._start_key(value)
+
     @staticmethod
     def _record_for_caller(
         record: Optional[TrainingStartRequestRecord],
     ) -> Optional[TrainingStartRequestRecord]:
         """A record only if it belongs to the calling workspace.
 
-        Records written before this field carry "", which is the owner's legacy
-        behaviour and stays visible to the owner alone.
+        Redundant now that the registries are keyed by workspace, and kept as the
+        second half of the belt: a record reached by any other route (a snapshot,
+        a legacy "" subject from before this field) is still checked.
         """
         if record is None:
             return None
         owner = record.subject or LEGACY_WORKSPACE_SUBJECT
         return record if owner == current_workspace_subject() else None
 
+    @staticmethod
+    def _start_key(start_request_id: str, subject: Optional[str] = None) -> tuple[str, str]:
+        """Registry key for a client-chosen start request id."""
+        return (subject or current_workspace_subject(), start_request_id)
+
     def reserve_start_request(
         self, start_request_id: str, job_id: str
     ) -> tuple[str, TrainingStartRequestRecord]:
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            existing = self._record_for_caller(self._start_requests.get(start_request_id))
+            existing = self._record_for_caller(self._start_requests.get(key))
             if existing is not None:
                 return "existing", existing
-            cancelled = self._start_cancel_tombstones.get(start_request_id)
+            cancelled = self._start_cancel_tombstones.get(key)
             if cancelled is not None and self._record_for_caller(cancelled[1]) is not None:
                 record = cancelled[1]
-                self._start_cancel_tombstones[start_request_id] = (
+                self._start_cancel_tombstones[key] = (
                     time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                     record,
                 )
                 return "existing", record
-            if self._pending_start_request_id is not None:
+            # Install-wide on purpose: the interlock protects the one GPU, so a
+            # second account's start waits behind the first exactly as a second
+            # start by the same account does.
+            if self._pending_start_key is not None:
                 record = TrainingStartRequestRecord(
                     start_request_id = start_request_id,
                     job_id = job_id,
@@ -1228,7 +1260,7 @@ class TrainingBackend:
                     error = "Training start already pending",
                     subject = current_workspace_subject(),
                 )
-                self._start_requests[start_request_id] = record
+                self._start_requests[key] = record
                 self._prune_start_requests_locked()
                 return "conflict", record
 
@@ -1239,9 +1271,9 @@ class TrainingBackend:
                 message = "Training start is being validated",
                 subject = current_workspace_subject(),
             )
-            self._start_requests[start_request_id] = record
-            self._pending_start_request_id = start_request_id
-            self._status_start_request_id = start_request_id
+            self._start_requests[key] = record
+            self._pending_start_key = key
+            self._status_start_key = key
             self._prune_start_requests_locked()
             return "reserved", record
 
@@ -1251,16 +1283,17 @@ class TrainingBackend:
         Returns the record a retry would replay (live or cancellation-tombstoned), refreshing
         the tombstone TTL as the reserve path does so a retry keeps a cancellation alive, or
         None when the id is unknown and the caller is free to reserve it."""
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            existing = self._record_for_caller(self._start_requests.get(start_request_id))
+            existing = self._record_for_caller(self._start_requests.get(key))
             if existing is not None:
                 return existing
-            cancelled = self._start_cancel_tombstones.get(start_request_id)
+            cancelled = self._start_cancel_tombstones.get(key)
             if cancelled is None or self._record_for_caller(cancelled[1]) is None:
                 return None
             record = cancelled[1]
-            self._start_cancel_tombstones[start_request_id] = (
+            self._start_cancel_tombstones[key] = (
                 time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                 record,
             )
@@ -1277,8 +1310,9 @@ class TrainingBackend:
     ) -> Optional[TrainingStartRequestRecord]:
         if state not in {"accepted", "rejected"}:
             raise ValueError(f"Invalid training start request state: {state}")
+        key = self._start_key(start_request_id)
         with self._lock:
-            existing = self._start_requests.get(start_request_id)
+            existing = self._start_requests.get(key)
             if existing is None:
                 return None
             if existing.state != "pending":
@@ -1290,9 +1324,9 @@ class TrainingBackend:
                 error = error,
                 error_code = error_code,
             )
-            self._start_requests[start_request_id] = record
-            if self._pending_start_request_id == start_request_id:
-                self._pending_start_request_id = None
+            self._start_requests[key] = record
+            if self._pending_start_key == key:
+                self._pending_start_key = None
             return record
 
     def cancel_start_request(
@@ -1301,19 +1335,20 @@ class TrainingBackend:
         from .lifecycle import training_lifecycle_guard
 
         reserved_cancel_tombstone = False
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            existing = self._start_requests.get(start_request_id)
+            existing = self._start_requests.get(key)
             if existing is None:
-                cancelled_tombstone = self._start_cancel_tombstones.get(start_request_id)
+                cancelled_tombstone = self._start_cancel_tombstones.get(key)
                 if cancelled_tombstone is not None:
                     record = cancelled_tombstone[1]
-                    self._start_cancel_tombstones[start_request_id] = (
+                    self._start_cancel_tombstones[key] = (
                         time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                         record,
                     )
                     return "cancelled", record
-                self._reserve_start_cancel_tombstone_locked(start_request_id)
+                self._reserve_start_cancel_tombstone_locked(key)
                 cancelled = TrainingStartRequestRecord(
                     start_request_id = start_request_id,
                     job_id = "",
@@ -1321,32 +1356,36 @@ class TrainingBackend:
                     message = "Training start was cancelled",
                     error = "Training start was cancelled",
                     error_code = _START_CANCELLED_ERROR_CODE,
+                    # Without this the record reads as the legacy owner's, and the
+                    # account that just cancelled could not see its own tombstone.
+                    subject = key[0],
                 )
-                self._commit_start_cancel_tombstone_locked(start_request_id, cancelled)
+                self._commit_start_cancel_tombstone_locked(key, cancelled)
                 return "cancelled", cancelled
 
+            # By key, not by id: another account presenting the same id must not
+            # read as the owner of the run.
             owns_current = (
-                self.current_start_request_id == start_request_id
-                and self.current_job_id == existing.job_id
+                self._current_start_key == key and self.current_job_id == existing.job_id
             )
             if existing.state == "rejected" and (
                 not owns_current or existing.error_code == _START_CANCELLED_ERROR_CODE
             ):
                 if existing.error_code == _START_CANCELLED_ERROR_CODE:
                     self._reserve_start_cancel_tombstone_locked(
-                        start_request_id,
+                        key,
                         reclaim_capacity = True,
                     )
-                    self._start_requests.pop(start_request_id, None)
-                    self._commit_start_cancel_tombstone_locked(start_request_id, existing)
-                if self._status_start_request_id == start_request_id:
-                    self._status_start_request_id = None
+                    self._start_requests.pop(key, None)
+                    self._commit_start_cancel_tombstone_locked(key, existing)
+                if self._status_start_key == key:
+                    self._status_start_key = None
                 return "cancelled", existing
 
             if existing.state == "pending" and not owns_current:
                 # Not the active run, so it does not get the owner's over-cap slot: start
                 # plus cancel could otherwise be repeated to grow the table without bound.
-                self._reserve_start_cancel_tombstone_locked(start_request_id)
+                self._reserve_start_cancel_tombstone_locked(key)
                 cancelled = replace(
                     existing,
                     state = "rejected",
@@ -1354,46 +1393,46 @@ class TrainingBackend:
                     error = "Training start was cancelled",
                     error_code = _START_CANCELLED_ERROR_CODE,
                 )
-                self._start_requests.pop(start_request_id, None)
-                self._commit_start_cancel_tombstone_locked(start_request_id, cancelled)
-                if self._pending_start_request_id == start_request_id:
-                    self._pending_start_request_id = None
-                if self._status_start_request_id == start_request_id:
-                    self._status_start_request_id = None
+                self._start_requests.pop(key, None)
+                self._commit_start_cancel_tombstone_locked(key, cancelled)
+                if self._pending_start_key == key:
+                    self._pending_start_key = None
+                if self._status_start_key == key:
+                    self._status_start_key = None
                 return "cancelled", cancelled
 
             reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
-                start_request_id,
+                key,
                 reclaim_capacity = owns_current,
             )
 
         try:
             with training_lifecycle_guard():
                 with self._lock:
-                    cancelled_tombstone = self._start_cancel_tombstones.get(start_request_id)
+                    cancelled_tombstone = self._start_cancel_tombstones.get(key)
                     if cancelled_tombstone is not None:
                         record = cancelled_tombstone[1]
-                        self._start_cancel_tombstones[start_request_id] = (
+                        self._start_cancel_tombstones[key] = (
                             time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                             record,
                         )
                         return "cancelled", record
-                    latest = self._start_requests.get(start_request_id)
+                    latest = self._start_requests.get(key)
                     if latest is None:
                         return "superseded", existing
                     existing = latest
                     owns_current = (
-                        self.current_start_request_id == start_request_id
+                        self._current_start_key == key
                         and self.current_job_id == existing.job_id
                     )
                     if not reserved_cancel_tombstone:
                         reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
-                            start_request_id,
+                            key,
                             reclaim_capacity = owns_current,
                         )
                     if existing.error_code == _START_CANCELLED_ERROR_CODE:
-                        if self._status_start_request_id == start_request_id:
-                            self._status_start_request_id = None
+                        if self._status_start_key == key:
+                            self._status_start_key = None
                         return "cancelled", existing
                     if not owns_current or self._run_finished_locked():
                         return "superseded", existing
@@ -1408,21 +1447,18 @@ class TrainingBackend:
                 return "superseded", existing
 
             with self._lock:
-                cancelled_tombstone = self._start_cancel_tombstones.get(start_request_id)
+                cancelled_tombstone = self._start_cancel_tombstones.get(key)
                 if cancelled_tombstone is not None:
                     record = cancelled_tombstone[1]
-                    self._start_cancel_tombstones[start_request_id] = (
+                    self._start_cancel_tombstones[key] = (
                         time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                         record,
                     )
                     return "cancelled", record
-                latest = self._start_requests.get(start_request_id)
+                latest = self._start_requests.get(key)
                 if latest is None:
                     return "superseded", existing
-                if (
-                    self.current_start_request_id != start_request_id
-                    or self.current_job_id != expected_job_id
-                ):
+                if self._current_start_key != key or self.current_job_id != expected_job_id:
                     return "superseded", latest
                 cancelled = replace(
                     latest,
@@ -1431,26 +1467,26 @@ class TrainingBackend:
                     error = "Training start was cancelled",
                     error_code = _START_CANCELLED_ERROR_CODE,
                 )
-                self._start_requests.pop(start_request_id, None)
-                self._commit_start_cancel_tombstone_locked(start_request_id, cancelled)
+                self._start_requests.pop(key, None)
+                self._commit_start_cancel_tombstone_locked(key, cancelled)
                 reserved_cancel_tombstone = False
                 self.current_start_request_id = None
-                if self._pending_start_request_id == start_request_id:
-                    self._pending_start_request_id = None
-                if self._status_start_request_id == start_request_id:
-                    self._status_start_request_id = None
+                if self._pending_start_key == key:
+                    self._pending_start_key = None
+                if self._status_start_key == key:
+                    self._status_start_key = None
                 return "cancelled", cancelled
         finally:
             if reserved_cancel_tombstone:
                 with self._lock:
-                    self._release_start_cancel_tombstone_locked(start_request_id)
+                    self._release_start_cancel_tombstone_locked(key)
 
     def _start_request_allows_spawn_locked(
         self, start_request_id: Optional[str], job_id: str
     ) -> bool:
         if start_request_id is None:
             return True
-        record = self._start_requests.get(start_request_id)
+        record = self._start_requests.get(self._start_key(start_request_id))
         return bool(record is not None and record.state == "pending" and record.job_id == job_id)
 
     def get_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
@@ -1460,30 +1496,31 @@ class TrainingBackend:
         transfers at start_training(), so between reserving and starting, the
         account that reserved this id would otherwise be told it does not exist.
         """
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            record = self._record_for_caller(self._start_requests.get(start_request_id))
+            record = self._record_for_caller(self._start_requests.get(key))
             if record is not None:
                 return record
-            cancelled = self._start_cancel_tombstones.get(start_request_id)
+            cancelled = self._start_cancel_tombstones.get(key)
             return self._record_for_caller(cancelled[1]) if cancelled is not None else None
 
     def status_start_request(self) -> Optional[TrainingStartRequestRecord]:
         with self._lock:
-            if self._status_start_request_id is None:
+            if self._status_start_key is None:
                 return None
-            return self._start_requests.get(self._status_start_request_id)
+            return self._record_for_caller(self._start_requests.get(self._status_start_key))
 
     def training_status_identity(self) -> TrainingStatusIdentitySnapshot:
         with self._lock:
             current_start_request = (
-                self._start_requests.get(self.current_start_request_id)
-                if self.current_start_request_id is not None
+                self._start_requests.get(self._current_start_key)
+                if self._current_start_key is not None
                 else None
             )
             status_start_request = (
-                self._start_requests.get(self._status_start_request_id)
-                if self._status_start_request_id is not None
+                self._start_requests.get(self._status_start_key)
+                if self._status_start_key is not None
                 else None
             )
             return TrainingStatusIdentitySnapshot(
@@ -1512,35 +1549,36 @@ class TrainingBackend:
                         self._new_job_spawn_id = None
 
     def acknowledge_start_request(self, start_request_id: str) -> bool:
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            record = self._start_requests.get(start_request_id)
-            if record is None and start_request_id in self._start_cancel_tombstones:
+            record = self._start_requests.get(key)
+            if record is None and key in self._start_cancel_tombstones:
                 return True
             if record is None or record.state == "pending":
                 return False
-            if self._status_start_request_id == start_request_id:
-                self._status_start_request_id = None
+            if self._status_start_key == key:
+                self._status_start_key = None
             return True
 
     def _prune_start_cancel_tombstones_locked(self) -> None:
         now = time.monotonic()
-        for request_id, (expires_at, _) in tuple(self._start_cancel_tombstones.items()):
+        for tombstone_key, (expires_at, _) in tuple(self._start_cancel_tombstones.items()):
             if expires_at <= now:
-                del self._start_cancel_tombstones[request_id]
+                del self._start_cancel_tombstones[tombstone_key]
 
     def _reserve_start_cancel_tombstone_locked(
         self,
-        start_request_id: str,
+        key: tuple[str, str],
         *,
         reclaim_capacity: bool = False,
     ) -> bool:
         self._prune_start_cancel_tombstones_locked()
-        if start_request_id in self._start_cancel_tombstones:
+        if key in self._start_cancel_tombstones:
             return False
-        reservation_count = self._start_cancel_tombstone_reservations.get(start_request_id, 0)
+        reservation_count = self._start_cancel_tombstone_reservations.get(key, 0)
         if reservation_count:
-            self._start_cancel_tombstone_reservations[start_request_id] = reservation_count + 1
+            self._start_cancel_tombstone_reservations[key] = reservation_count + 1
             return True
         if (
             len(self._start_cancel_tombstones) + len(self._start_cancel_tombstone_reservations)
@@ -1554,35 +1592,35 @@ class TrainingBackend:
             # live cancellation and let its delayed /start spawn the job we just cancelled.
             # Overshoot instead: only the owner of the active start reaches this, and there
             # is at most one of those, so the table stays bounded.
-        self._start_cancel_tombstone_reservations[start_request_id] = 1
+        self._start_cancel_tombstone_reservations[key] = 1
         return True
 
     def _commit_start_cancel_tombstone_locked(
-        self, start_request_id: str, record: TrainingStartRequestRecord
+        self, key: tuple[str, str], record: TrainingStartRequestRecord
     ) -> None:
-        self._start_cancel_tombstone_reservations.pop(start_request_id, None)
-        self._start_cancel_tombstones[start_request_id] = (
+        self._start_cancel_tombstone_reservations.pop(key, None)
+        self._start_cancel_tombstones[key] = (
             time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
             record,
         )
 
-    def _release_start_cancel_tombstone_locked(self, start_request_id: str) -> None:
-        reservation_count = self._start_cancel_tombstone_reservations.get(start_request_id, 0)
+    def _release_start_cancel_tombstone_locked(self, key: tuple[str, str]) -> None:
+        reservation_count = self._start_cancel_tombstone_reservations.get(key, 0)
         if reservation_count <= 1:
-            self._start_cancel_tombstone_reservations.pop(start_request_id, None)
+            self._start_cancel_tombstone_reservations.pop(key, None)
         else:
-            self._start_cancel_tombstone_reservations[start_request_id] = reservation_count - 1
+            self._start_cancel_tombstone_reservations[key] = reservation_count - 1
 
     def _prune_start_requests_locked(self) -> None:
         overflow = len(self._start_requests) - _MAX_TRACKED_START_REQUESTS
         if overflow <= 0:
             return
-        for request_id, record in tuple(self._start_requests.items()):
+        for request_key, record in tuple(self._start_requests.items()):
             if overflow <= 0:
                 break
-            if record.state == "pending" or request_id == self.current_start_request_id:
+            if record.state == "pending" or request_key == self._current_start_key:
                 continue
-            del self._start_requests[request_id]
+            del self._start_requests[request_key]
             overflow -= 1
 
     def start_training(
@@ -1784,7 +1822,7 @@ class TrainingBackend:
                     from utils.process_lifetime import adopt_pid
 
                     previous_job_id = None
-                    previous_start_request_id = None
+                    previous_start_key = None
                     with self._lock:
                         if not self._start_request_allows_spawn_locked(
                             start_request_id,
@@ -1796,7 +1834,7 @@ class TrainingBackend:
                             )
                             return False
                         previous_job_id = self.current_job_id
-                        previous_start_request_id = self.current_start_request_id
+                        previous_start_key = self._current_start_key
                         proc.start()
                         self.current_job_id = job_id
                         self.current_start_request_id = start_request_id
@@ -1821,18 +1859,19 @@ class TrainingBackend:
                                     and self.current_start_request_id == start_request_id
                                 ):
                                     self.current_job_id = previous_job_id
-                                    self.current_start_request_id = previous_start_request_id
+                                    self._current_start_key = previous_start_key
                                 if start_request_id is not None:
-                                    record = self._start_requests.get(start_request_id)
+                                    key = self._start_key(start_request_id)
+                                    record = self._start_requests.get(key)
                                     if record is not None and record.state == "pending":
-                                        self._start_requests[start_request_id] = replace(
+                                        self._start_requests[key] = replace(
                                             record,
                                             state = "rejected",
                                             message = "Failed to start training subprocess",
                                             error = "Failed to adopt training subprocess",
                                         )
-                                        if self._pending_start_request_id == start_request_id:
-                                            self._pending_start_request_id = None
+                                        if self._pending_start_key == key:
+                                            self._pending_start_key = None
                         return False
             except Exception:
                 logger.error("Failed to start training subprocess", exc_info = True)
@@ -2051,7 +2090,7 @@ class TrainingBackend:
                 self.grad_norm_history.clear()
                 self.grad_norm_step_history.clear()
                 self._needs_xet_respawn = False
-                self._status_start_request_id = None
+                self._status_start_key = None
             return "reset"
 
     def _start_stop_watchdog(

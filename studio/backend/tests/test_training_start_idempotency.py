@@ -138,7 +138,7 @@ def test_cancel_tombstone_capacity_fails_without_eviction(monkeypatch):
 def test_expired_cancel_tombstone_releases_request_id():
     backend = TrainingBackend()
     _, record = backend.cancel_start_request("request-expired")
-    backend._start_cancel_tombstones["request-expired"] = (0.0, record)
+    backend._start_cancel_tombstones[backend._start_key("request-expired")] = (0.0, record)
 
     reservation, pending = backend.reserve_start_request("request-expired", "job-new")
 
@@ -1043,7 +1043,7 @@ def test_owner_cancel_at_capacity_keeps_other_live_cancellations():
     outcome, _ = backend.cancel_start_request("owner")
 
     assert outcome == "cancelled"
-    assert "victim-race" in backend._start_cancel_tombstones
+    assert backend._start_key("victim-race") in backend._start_cancel_tombstones
     # The delayed start for the cancelled id must not spawn.
     assert backend.reserve_start_request("victim-race", "job-victim")[0] == "existing"
     # Unregistered ids keep hitting the hard cap.

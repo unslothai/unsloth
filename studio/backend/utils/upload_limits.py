@@ -56,9 +56,18 @@ def validate_upload_limit_mb(value: Any) -> int:
 
 
 def get_upload_limit_mb() -> int:
+    """The upload cap, which is installation-wide.
+
+    MaxBodyMiddleware asks for this before anything has authenticated, so it can
+    only ever read the owner's database. Stored per account, a managed user could
+    raise their own limit in Settings, watch it save, and still be refused at the
+    owner's value by the middleware, with no way to tell why. Installation-wide is
+    the honest shape for a limit only the install can enforce, so the write is
+    gated on the owner and the read goes to the same place the middleware reads.
+    """
     try:
-        from storage.studio_db import get_app_setting
-        stored = get_app_setting(UPLOAD_LIMIT_SETTING_KEY, None)
+        from storage.studio_db import get_install_setting
+        stored = get_install_setting(UPLOAD_LIMIT_SETTING_KEY, None)
     except Exception:
         stored = None
     return _coerce_upload_limit_mb(stored) or default_upload_limit_mb()
@@ -66,9 +75,9 @@ def get_upload_limit_mb() -> int:
 
 def set_upload_limit_mb(value: Any) -> int:
     parsed = validate_upload_limit_mb(value)
-    from storage.studio_db import upsert_app_settings
+    from storage.studio_db import upsert_install_settings
 
-    upsert_app_settings({UPLOAD_LIMIT_SETTING_KEY: parsed})
+    upsert_install_settings({UPLOAD_LIMIT_SETTING_KEY: parsed})
     return parsed
 
 

@@ -1110,8 +1110,10 @@ def test_a_training_start_request_id_cannot_replay_another_accounts_outcome():
     backend._lock = threading.RLock()
     backend._start_requests = {}
     backend._start_cancel_tombstones = {}
-    backend._pending_start_request_id = None
-    backend._status_start_request_id = None
+    backend._start_cancel_tombstone_reservations = {}
+    backend._pending_start_key = None
+    backend._status_start_key = None
+    backend._current_start_key = None
 
     token = _bind("alice")
     try:
@@ -1130,6 +1132,9 @@ def test_a_training_start_request_id_cannot_replay_another_accounts_outcome():
     token = _bind("alice")
     try:
         assert backend.peek_start_request("same-id").job_id == "job-alice"
+        # The registry is keyed by workspace, so Bob's rejection cannot land on
+        # top of Alice's pending record and be replayed to her as her own outcome.
+        assert set(backend._start_requests) == {("alice", "same-id")}
     finally:
         reset_workspace_subject(token)
 
@@ -1679,3 +1684,94 @@ def test_only_the_owner_can_load_a_model_that_runs_its_own_code(
         _reject_remote_code_from_a_managed_account(True)
     finally:
         reset_workspace_subject(owner)
+
+
+def test_a_second_accounts_start_request_id_cannot_settle_the_first_ones():
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend.__new__(TrainingBackend)
+    backend._lock = threading.RLock()
+    backend._start_requests = {}
+    backend._start_cancel_tombstones = {}
+    backend._start_cancel_tombstone_reservations = {}
+    backend._pending_start_key = None
+    backend._status_start_key = None
+    backend._current_start_key = None
+
+    token = _bind("alice")
+    try:
+        assert backend.reserve_start_request("same-id", "job-alice")[0] == "reserved"
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # The pending interlock is install-wide (one GPU), so Bob is refused. His
+        # rejection must land under his own key, not on top of Alice's pending
+        # record, or Alice's resolve reads his outcome as hers.
+        outcome, record = backend.reserve_start_request("same-id", "job-bob")
+        assert outcome == "conflict" and record.state == "rejected"
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("alice")
+    try:
+        settled = backend.resolve_start_request(
+            "same-id", state = "accepted", message = "Training is starting"
+        )
+        assert settled.state == "accepted" and settled.job_id == "job-alice"
+    finally:
+        reset_workspace_subject(token)
+
+    assert set(backend._start_requests) == {("alice", "same-id"), ("bob", "same-id")}
+
+
+def test_the_research_supervisor_reads_the_account_list_off_the_event_loop():
+    import asyncio as _asyncio
+
+    from core.research_runs import ResearchSupervisor
+
+    supervisor = ResearchSupervisor.__new__(ResearchSupervisor)
+    supervisor._workspaces_cache = None
+    supervisor._workspaces_cache_expires = 0.0
+    calls = []
+
+    def _workspaces():
+        # Stands in for the auth.db open, which applies a five second busy
+        # timeout: on the loop it would stall every request and inference stream.
+        calls.append(threading.current_thread())
+        return ["unsloth", "alice"]
+
+    supervisor._workspaces = _workspaces
+
+    async def _run():
+        loop_thread = threading.current_thread()
+        first = await supervisor._workspaces_async()
+        second = await supervisor._workspaces_async()
+        return first, second, loop_thread
+
+    first, second, loop_thread = _asyncio.run(_run())
+    assert first == second == ["unsloth", "alice"]
+    # Once, not twice: an idle supervisor stops touching the database at all.
+    assert len(calls) == 1
+    assert calls[0] is not loop_thread
+
+
+def test_the_upload_cap_is_installation_wide(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from utils import upload_limits
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    owner = _bind("unsloth")
+    try:
+        upload_limits.set_upload_limit_mb(2048)
+    finally:
+        reset_workspace_subject(owner)
+
+    token = _bind("alice")
+    try:
+        # MaxBodyMiddleware resolves this before anything has authenticated, so a
+        # per-account value could be saved and then never honoured. Both sides now
+        # read the same place.
+        assert upload_limits.get_upload_limit_mb() == 2048
+    finally:
+        reset_workspace_subject(token)

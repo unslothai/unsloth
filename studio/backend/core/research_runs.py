@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -71,6 +72,9 @@ _URL_BLOCK = re.compile(
 )
 _WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 _MAX_ERROR_CHARS = 500
+# How long the supervisor may reuse its account list before re-reading auth.db.
+# Bounds how late a newly created account's queue is first polled.
+_WORKSPACE_LIST_TTL_S = 10.0
 _MAX_CONTEXT_CHARS = 12_000
 _MAX_CONTEXT_MESSAGE_CHARS = 4_000
 _MAX_SYNTHESIS_EVIDENCE_CHARS = 32_000
@@ -941,6 +945,9 @@ class ResearchSupervisor:
         self._lost_leases: set[str] = set()
         # Round-robin cursor so a busy owner queue cannot starve managed accounts.
         self._next_workspace = 0
+        # Cached account list for the polling pass. See _workspaces_async.
+        self._workspaces_cache: list[str] | None = None
+        self._workspaces_cache_expires = 0.0
 
     def _workspaces(self) -> list[str]:
         """Every workspace whose queue this supervisor polls, owner included.
@@ -953,6 +960,26 @@ class ResearchSupervisor:
             return known_workspace_subjects()
         except Exception:
             return [LEGACY_WORKSPACE_SUBJECT]
+
+    async def _workspaces_async(self) -> list[str]:
+        """The polled workspaces, resolved off the event loop and cached briefly.
+
+        _workspaces() opens auth.db, which applies a five second busy timeout and
+        runs journal_mode=WAL. Reached once per idle polling pass that is a
+        blocking file open on the loop, so an auth write here or in another
+        process could stall every request and inference stream for the lock wait
+        with no research job in sight. The cache means an idle supervisor stops
+        touching the database at all; its TTL is simply how late a newly created
+        account may be picked up, which the docstring above already allows for.
+        """
+        now = time.monotonic()
+        cached = self._workspaces_cache
+        if cached is not None and now < self._workspaces_cache_expires:
+            return cached
+        subjects = await asyncio.to_thread(self._workspaces)
+        self._workspaces_cache = subjects
+        self._workspaces_cache_expires = now + _WORKSPACE_LIST_TTL_S
+        return subjects
 
     def start(self) -> None:
         from utils.workspace_context import run_in_workspace
@@ -1173,7 +1200,7 @@ class ResearchSupervisor:
         """The next queued run from any workspace, and the subject that owns it."""
         from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, run_in_workspace
 
-        subjects = self._workspaces()
+        subjects = await self._workspaces_async()
         if not subjects:
             return None, LEGACY_WORKSPACE_SUBJECT
         start = self._next_workspace % len(subjects)
