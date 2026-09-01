@@ -251,7 +251,12 @@ def test_vision_downgrade_preserves_multi_gpu_intent():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_layer_min_gpus = max(_layer_min_gpus, len(gpus))" in src
     assert src.count("min_gpus = _layer_min_gpus") >= 2
-    assert "range(_auto_min_gpus, len(ranked) + 1)" in src
+    # The auto-context enumeration starts at _auto_min_gpus. It is built by
+    # _ranked_candidate_subsets rather than by an inline range, so the floor is
+    # the argument rather than the loop bound; the helper is nested inside
+    # load_model, so its own loop is in this source too.
+    assert "_auto_subsets = _ranked_candidate_subsets(ranked, _auto_min_gpus)" in src
+    assert "for count in range(min_count, len(ranked) + 1):" in src
     auto = src.find("_auto_min_gpus = max(")
     assert auto != -1 and "_layer_min_gpus" in src[auto : auto + 200]
 
@@ -480,7 +485,11 @@ def test_auto_context_layer_loops_capped_to_usable_gpus():
         "range(max(1, _layer_min_gpus), len(ranked) + 1)" not in src
     ), "auto-context loops must cap _layer_min_gpus to usable GPUs, not use it raw"
     assert "_auto_min_gpus" in src
-    assert "range(_auto_min_gpus, len(ranked) + 1)" in src
+    # Same floor, now passed as the minimum subset size rather than spelled as a
+    # loop bound. The raw-_layer_min_gpus check above is what actually guards
+    # #6659, and it is unaffected by where the enumeration lives.
+    assert "_auto_subsets = _ranked_candidate_subsets(ranked, _auto_min_gpus)" in src
+    assert "for count in range(min_count, len(ranked) + 1):" in src
     # the eligibility threshold is the per-device layer overhead, not bare > 0
     auto = src.find("_auto_min_gpus = max(")
     assert auto != -1
