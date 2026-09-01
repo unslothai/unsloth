@@ -4807,6 +4807,22 @@ case "$TORCH_INDEX_URL" in
                 || _amd_probed_family=""
             _amd_probed_gfx_first=$(_amd_sole_index_arch "$_amd_probe_out") \
                 || _amd_probed_gfx_first=""
+            # A measured-bad arch anywhere in the probed inventory disqualifies the whole
+            # family, at the source rather than at each consumer. gfx1033 shares
+            # gfx103X-all with gfx1030-gfx1036, so on a mixed 103X host
+            # _amd_agreed_index_family AGREES on that family while _amd_sole_index_arch
+            # declines (two arches), and the shared-family arm below then rewrote the cpu
+            # index the gate had just chosen back to ROCm wheels -- for a host containing
+            # the one arch that must never receive them. Clearing both here covers every
+            # arm that reads them, including the inferred-gfx one, where an inferred
+            # gfx1030 beside a probed gfx1033 reaches the same family by a different path.
+            case " $(printf '%s\n' "$_amd_probe_out" | sed 's/:.*$//' \
+                     | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
+                *" gfx1033 "*)
+                    echo "[WARN] AMD gfx1033 (Van Gogh) is in the probed inventory -- not routing torch to the shared $_amd_probed_family index (studio/ROCM_RDNA2_APU.md)." >&2
+                    _amd_probed_family=""
+                    _amd_probed_gfx_first="" ;;
+            esac
             if [ -n "${_amd_probed_family:-}" ] && \
                [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
                 _amd_no_rocm_version_reroute=true

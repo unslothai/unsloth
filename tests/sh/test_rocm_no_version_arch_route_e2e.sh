@@ -463,6 +463,25 @@ assert_eq "a real gfx1100 corroborated by the kernel keeps its own family" \
     "$_AMD/gfx110X-all/" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
 
 
+# gfx1033 (Van Gogh) shares gfx103X-all with gfx1030-gfx1036, so a mixed 103X host is the
+# one shape where _amd_agreed_index_family AGREES while _amd_sole_index_arch declines --
+# and the shared-family arm then rewrote the cpu index the miscomputing gate had just
+# chosen back to ROCm wheels, for a host containing the arch that must never receive them.
+fedora_no_version_host gfx1033 gfx1030
+assert_eq "a mixed gfx1033 + gfx1030 host does not reroute to the shared family" \
+    "$_BASE/cpu" "$(run_index)"
+fedora_no_version_host gfx1033 gfx1030
+assert_eq "and names no arch for setup.sh to build" "" "$(run_gfx)"
+# The same family without the bad arch still reroutes: this is a gfx1033 rule, not a
+# "distrust shared families" rule.
+fedora_no_version_host gfx1030 gfx1032
+assert_eq "gfx1030 + gfx1032 still take the shared gfx103X-all index" \
+    "$_AMD/gfx103X-all/" "$(run_index)"
+# A lone Deck was already covered by the gate itself; assert it here too so the reroute
+# cannot regrow its own path back to ROCm.
+fedora_no_version_host gfx1033
+assert_eq "a lone gfx1033 does not reroute" "$_BASE/cpu" "$(run_index)"
+
 mock_kfd_two() {   # $1 $2 = gfx_target_version per KFD node
     : > "$_F_KFD"
     for _i in 1 2; do
