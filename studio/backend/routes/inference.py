@@ -627,15 +627,12 @@ def _choice_seed(
     """A seed of its own per choice, so a seeded request samples n times rather
     than repeating one run. Shared by both drains so they cannot disagree.
 
-    llama-server reads the seed as a uint32 and draws at random for exactly one
-    value, LLAMA_DEFAULT_SEED (0xFFFFFFFF). Every seed congruent to it is that
-    sentinel, not just ``-1``: the schemas above also accept ``4294967295`` and
-    ``2**64-1``. Tested in that domain to match ``_apply_seeded_llama_request``,
-    since a literal ``-1`` left choice 0 random and cached while choice 1 was
-    offset into a fixed, uncached seed. Every other negative is an ordinary fixed
-    seed and must be offset, or all n choices repeat one run; offsetting in the
-    same domain cannot land on the sentinel. MLX maps every seed onto its key
-    domain, so nothing is exempt there.
+    llama-server reads the seed as a uint32 and draws at random for exactly one value,
+    LLAMA_DEFAULT_SEED (0xFFFFFFFF), so every congruent seed is that sentinel, not just
+    ``-1`` (the schemas above also accept ``4294967295``); testing a literal ``-1`` left
+    choice 0 random and cached while choice 1 was offset into a fixed, uncached seed. Every
+    other negative is an ordinary fixed seed and must be offset, and offsetting in the same
+    domain cannot land on the sentinel. MLX maps every seed onto its key domain.
     """
     if seed is None or not choice_index:
         return seed
@@ -1703,6 +1700,49 @@ _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
     _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 )
 
+# An ESTIMATE where the rest of the sizing is a bound: a run that generates more is
+# undercharged until something re-costs it, which a tool loop does every round boundary and
+# a plain chat cannot yet, so on a full cache a long uncapped generation can still overrun.
+_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS = (
+    _positive_int_or_none(os.environ.get("UNSLOTH_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS")) or 1024
+)
+
+
+def _openai_llama_admission_context_window(llama_backend) -> Optional[int]:
+    """One slot, which under ``--no-kv-unified`` is 1/N of the aggregate budget."""
+    return _positive_int_or_none(getattr(llama_backend, "context_length", None))
+
+
+def _openai_llama_admission_output_allowance(
+    cap: Optional[int],
+    *,
+    budget: int,
+    prompt_tokens: int,
+    context_window: Optional[int] = None,
+    share: Optional[int] = None,
+) -> int:
+    """KV to reserve for what a request may still generate.
+
+    A cap at or above the window is not a cap: `_build_passthrough_payload` sends
+    max_tokens = backend_ctx and "Max" sends the context length, so both mean unstated, and
+    charging the window for either serialises the queue. Measured against the per-request
+    window, since the budget is N times larger under --no-kv-unified.
+
+    Invariant when a ``share`` is known: an unstated request costs at most its fair share of
+    the cache, so ``capacity`` of them always fit. A flat allowance breaks that on a small
+    cache, where 1024 is most of a share on its own (4096 over four slots admitted three).
+    A prompt already past its share keeps the flat allowance, since it does not fit either
+    way and a zero allowance would only hide that it will still generate.
+    """
+    window = context_window or budget
+    if cap is not None and cap < window:
+        return cap
+    # Clamped to the WINDOW: a request cannot occupy more KV than its own slot holds.
+    allowance = min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
+    if share is not None and share > prompt_tokens:
+        allowance = min(allowance, share - prompt_tokens)
+    return allowance
+
 
 def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
     """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
@@ -1877,6 +1917,7 @@ def _openai_llama_admission_tokens(
     tool_loop: bool = False,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
+    context_window: Optional[int] = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -1919,16 +1960,14 @@ def _openai_llama_admission_tokens(
             getattr(payload, "max_completion_tokens", None),
         )
     )
-    if cap is None:
-        # No cap at all. _build_passthrough_payload then sends max_tokens = backend_ctx,
-        # so generation may run until the window is full, and reserving nothing let short
-        # uncapped prompts hold tiny commitments while each consumed most of the cache.
-        # The honest reservation is the rest of the budget, which does serialise
-        # concurrent uncapped requests. That is the true cost of not naming a cap: the
-        # alternative is admitting two runs that llama.cpp will then kill.
-        output_tokens = max(0, budget - prompt_tokens)
-    else:
-        output_tokens = cap
+    # Reserving the rest of the budget for either made concurrency 1 for the default chat.
+    output_tokens = _openai_llama_admission_output_allowance(
+        cap,
+        budget = budget,
+        prompt_tokens = prompt_tokens,
+        context_window = context_window,
+        share = max(1, budget // max(1, capacity)),
+    )
     # A tool loop opens at its own estimate with an equal share as the floor, and re-costs
     # as it grows (generate_chat_completion_with_tools on_conversation_grew ->
     # lease.recost_waiting). The floor keeps re-costing rare: under its share a run never
@@ -1987,6 +2026,7 @@ def _openai_llama_admission_reserve(
             tool_loop = tool_loop,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
+            context_window = _openai_llama_admission_context_window(llama_backend),
         )
         if payload is not None
         else None,
@@ -2052,12 +2092,16 @@ def _openai_llama_admission_recost(
             message_image_parts = message_image_parts,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         )
-        if output_tokens is None:
-            # No cap named, so generation is bounded only by the window, as the opening
-            # estimate assumes. Charging zero here dropped an uncapped loop to its share
-            # on round zero while its generations could still fill most of the cache.
-            output_tokens = max(0, budget - prompt_tokens)
+        # Reading "Max" literally here would put the run back on the whole cache at its
+        # first round boundary.
         share = max(1, budget // max(1, capacity))
+        output_tokens = _openai_llama_admission_output_allowance(
+            output_tokens,
+            budget = budget,
+            prompt_tokens = prompt_tokens,
+            context_window = _openai_llama_admission_context_window(llama_backend),
+            share = share,
+        )
         want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
         lease.recost_waiting(
             want,

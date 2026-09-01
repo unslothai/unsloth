@@ -3371,11 +3371,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Distro package-manager fallbacks. Mirrors install.sh::get_torch_index_url
-    # and _detect_rocm_version() in install_python_stack.py so package-managed
-    # ROCm hosts without /opt/rocm/.info/version still report a usable version
-    # and the <= host version filter in resolve_upstream_asset_choice picks
-    # the correct upstream prebuilt instead of the newest-regardless fallback.
+    # Distro package-manager fallbacks. Deliberately diverges from install.sh and
+    # _detect_rocm_version(): stops at the first answer, no "installed" status word gate.
     for _cmd in (
         ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
         ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],
@@ -6467,7 +6464,6 @@ def write_prebuilt_metadata(
         # the arch, and a stale copy would outlive its GPU.
         **({"rocm_gfx": rocm_gfx} if rocm_gfx and _persisted_backend == "auto" else {}),
         "asset_sha256": choice.expected_sha256,
-        # Records whether this install includes the paired Windows cudart archive.
         "runtime_asset": choice.runtime_name,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -6635,10 +6631,7 @@ def _marker_selection_patch(
     sms = [str(s).strip() for s in (choice.supported_sms or []) if str(s).strip()]
     if sms and marker.get("supported_sms") != sms:
         patch["supported_sms"] = sms
-    # Same shape as the targets above: the paired cudart archive is in the fingerprint but
-    # not readable back out of it, so an install predating the field only gains it here.
-    # Set, never cleared: reuse requires a fingerprint match, so a bundle with no pair is
-    # one the marker already describes as pair-less.
+    # Set, never cleared: reuse needs a fingerprint match, so a pair-less bundle matches.
     if choice.runtime_name and marker.get("runtime_asset") != choice.runtime_name:
         patch["runtime_asset"] = choice.runtime_name
     return patch
@@ -6924,7 +6917,7 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
         kind for kind in install_kinds_for_backend(backend) if kind.startswith(platform_prefix)
     )
     if not kinds:
-        # Unknown markers still owe the payload shared by every kind on this platform.
+        # An unknown backend still owes the payload every kind on this platform shares.
         kinds = sorted(kind for kind in INSTALL_KIND_BACKENDS if kind.startswith(platform_prefix))
     if not kinds:
         return True
@@ -6945,16 +6938,14 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     return _runtime_payload_has(install_dir, host, [list(group) for group in sorted(shared)])
 
 
-# Broken image, not something intervening: SIGKILL is absent because it is an OOM.
+# SIGKILL is absent: that is an OOM, not a broken image.
 _BROKEN_IMAGE_SIGNALS = frozenset(
     {signal.SIGSEGV, signal.SIGILL, signal.SIGFPE}
     | ({signal.SIGBUS} if hasattr(signal, "SIGBUS") else set())
 )
 # Windows' "%1 is not a valid Win32 application", its answer to a corrupt image.
 _ERROR_BAD_EXE_FORMAT = 193
-# A Windows loader failure is not a signal: CreateProcess succeeds and the process exits
-# the NTSTATUS (0xC0000135 missing DLL), which Python reports as a large POSITIVE code.
-# Unreachable on POSIX, where an exit status is 0-255, so no host guard is needed.
+# A Windows loader failure is not a signal: it exits the NTSTATUS (0xC0000135) positive.
 _NTSTATUS_FAILURE_FLOOR = 0xC0000000
 
 
@@ -6964,23 +6955,20 @@ def _binary_image_runs(
     host: HostInfo,
     runtime_line: str | None = None,
 ) -> bool:
-    """Whether the OS will actually start ``path``.
-
-    ``os.access`` asks "may I execute this", not "is this an executable": a truncated file
-    keeps its mode bits and ``ldd`` on a non-ELF only says it is not a dynamic executable.
-    execve sees it -- measured on Linux, zero-byte and non-ELF both raise ENOEXEC.
-
-    The exit code is NOT the verdict: llama-quantize answers ``--version`` by printing its
-    table and exiting non-zero, the same reason ``macos_dyld_load_issues`` reads output. So
-    a timeout, a failed spawn or an ordinary non-zero exit all read as healthy, because a
-    false positive here spends a source build on a working install.
-    """
+    """Whether the OS will actually start ``path``. ``os.access`` asks "may I execute this", not
+    "is this an executable": a truncated file keeps its mode bits and ``ldd`` on a non-ELF only
+    says it is not a dynamic executable, while execve raises ENOEXEC (measured on Linux, for
+    zero-byte and non-ELF alike). The exit code is NOT the verdict: llama-quantize answers
+    ``--version`` by printing its table and exiting non-zero, the same reason
+    ``macos_dyld_load_issues`` reads output. So a timeout, a failed spawn or an ordinary
+    non-zero exit all read as healthy, since a false positive spends a source build on a
+    working install."""
     try:
         result = run_capture(
             [str(path), "--version"],
             timeout = 60,
-            # runtime_line as validate_prebuilt_choice passes it: it is what puts the
-            # CUDA toolkit on PATH, and a pair-less Windows install dies 0xC0000135 without it.
+            # runtime_line puts the CUDA toolkit on PATH; a pair-less Windows install
+            # cannot start without it.
             env = binary_env(path, install_dir, host, runtime_line = runtime_line),
         )
     except OSError as exc:
@@ -7019,9 +7007,8 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         preflight_macos_installed_binaries(binaries, install_dir, host)
     except Exception:
         return False
-    # Root copies first: _find_llama_server_binary searches <install>/llama-server BEFORE
-    # build/bin, so that is what inference launches. resolve() collapses the usual symlink;
-    # when symlinking was unavailable it is a separate file that can rot alone.
+    # Root copies first: _find_llama_server_binary reaches them first, and without a
+    # symlink they can rot alone.
     probes: list[Path] = []
     seen: set[Path] = set()
     for binary in [install_dir / p.name for p in binaries] + binaries:
@@ -7035,8 +7022,6 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
             continue
         seen.add(key)
         probes.append(binary)
-    # Last, because it is the only check that spawns anything: neither preflight runs on
-    # Windows, and on Linux ldd cannot see a file that is not an executable image at all.
     return all(
         _binary_image_runs(binary, install_dir, host, recorded_runtime_line) for binary in probes
     )
@@ -8004,18 +7989,14 @@ def install_prebuilt(
 ) -> None:
     choice: AssetChoice | None = None
     # Anything this RUN asked for that keeping the old tree would silently ignore. Read
-    # from the parameters before the body mutates them (force_cpu becomes True further
-    # down for a stored "cpu" choice, which is the opposite of a request made here).
-    # backend_mandatory joins it in the handler, because it is only known after the
-    # marker is read; it starts False, so a failure before that keeps today's behaviour.
+    # before the body mutates force_cpu, which it sets True for a stored "cpu" choice.
     explicit_version_request = (
         normalized_requested_llama_tag(llama_tag) != "latest"
         or bool((published_release_tag or "").strip())
         or (bool((published_repo or "").strip()) and published_repo != DEFAULT_PUBLISHED_REPO)
-        # --cpu-fallback only ever arrives from setup.sh's deliberate arm64 recovery, so
-        # it is a mechanism this run chose. --has-rocm and --rocm-gfx are NOT: both setup
-        # entrypoints forward their DETECTED GPU on every AMD host, so counting them here
-        # would take the keep path away from essentially every AMD update.
+        # --cpu-fallback is setup.sh's deliberate arm64 recovery, so it counts. --has-rocm
+        # and --rocm-gfx do not: both entrypoints forward a DETECTED GPU on every AMD host,
+        # so counting them would take the keep path away from all of them.
         or force_cpu
     )
     # The failure handler can run before selection assigns these.
@@ -8284,8 +8265,7 @@ def install_prebuilt(
         # A stored choice that could not be served was already replaced by "auto"
         # above, so a concrete name here is one this run must not walk away from.
         preserve_backend = backend in CONCRETE_BACKENDS and host is not None and not host.is_macos
-        # A stored preference may reuse a matching install. A backend requested on this
-        # run must still be satisfied by this run.
+        # A stored preference may reuse a matching install; one requested on this run may not.
         satisfied_stored_backend = (
             preserve_backend
             and not backend_mandatory
@@ -8294,9 +8274,7 @@ def install_prebuilt(
         if (
             (not preserve_backend or satisfied_stored_backend)
             and not explicit_version_request
-            # A backend named on this run is a live instruction even when it is "auto":
-            # that asks for re-detection, and answering it with the tree already on disk
-            # leaves both the old backend and its marker exactly as they were.
+            # Even "auto" is a live instruction: it asks for re-detection.
             and not backend_mandatory
             and host is not None
             and _existing_install_runs(install_dir, host)

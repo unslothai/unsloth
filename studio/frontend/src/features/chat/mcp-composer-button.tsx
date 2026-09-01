@@ -241,7 +241,6 @@ export function McpComposerButton({
     }
   }
 
-  // Keep the tooltip anchor pointer-events-none so it cannot swallow row clicks.
   const renderRow = (opts: {
     key: string;
     label: string;
@@ -285,6 +284,7 @@ export function McpComposerButton({
           <TooltipTrigger asChild={true}>
             <span
               aria-hidden={true}
+              // pointer-events-none so the anchor cannot swallow row clicks.
               className="pointer-events-none absolute inset-y-0 right-0 w-0"
             />
           </TooltipTrigger>
@@ -400,10 +400,8 @@ export function McpComposerButton({
 export function McpServersDialogMount() {
   const open = useMcpServersDialogStore((s) => s.open);
   const setOpen = useMcpServersDialogStore((s) => s.setOpen);
-  // Server configuration does not require tool support from the loaded model.
   const chatActive = useChatActive();
   useShortcut("openMcpServers", () => setOpen(true), { enabled: chatActive });
-  // Clear the shared open state when leaving chat.
   useEffect(() => {
     if (!chatActive && open) setOpen(false);
   }, [chatActive, open, setOpen]);
