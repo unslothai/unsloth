@@ -75,6 +75,40 @@ export function resolveFindScope(): Element | null {
   );
 }
 
+/**
+ * The index offset nearest the top of the reader's viewport, or 0 when nothing can be measured.
+ *
+ * Binary search over the segments, the same shape as the one over matches: a dozen or so rect reads
+ * whatever the size of the document. Only asked when a query is common enough to hit the match cap,
+ * which is what needs to know where the reader is.
+ */
+export function viewportOffset(index: FindTextIndex): number {
+  const segments = index.segments;
+  if (segments.length === 0) return 0;
+  let lo = 0;
+  let hi = segments.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const segment = segments[mid];
+    const range = rangeForMatch(index, {
+      start: segment.start,
+      end: segment.start + 1,
+    });
+    if (!range) return 0;
+    const top = rangeTop(range);
+    if (top === null) return 0;
+    if (top >= scrollViewportTop(range)) {
+      found = mid;
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  // Everything is above the fold, so the reader is at the end of it.
+  return found === -1 ? index.text.length : segments[found].start;
+}
+
 /** What the walk will actually read, asked of one element: inside the scope, and under nothing the
  *  walk turns back at. The shell keeps every workspace mounted and marks the off-route ones `inert`,
  *  so being in the document is not the same as being searchable. */

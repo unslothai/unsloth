@@ -27,6 +27,7 @@ import {
   FIND_SKIP_ATTRIBUTE,
   MAX_INDEX_CHARS,
   MAX_MATCHES,
+  MAX_NODE_CHARS,
   buildTextIndex,
   endPositionAt,
   findMatches,
@@ -228,15 +229,27 @@ test("an expanding fold does not make the rest of its run case-sensitive", () =>
   assert.equal(startPositionAt(index.segments, match.start)?.offset, 0);
 });
 
-test("a text node bigger than the ceiling contributes its prefix", () => {
+test("a text node bigger than its share contributes its prefix", () => {
   // One Bash step's log arrives as one text node. Dropping it whole indexed nothing at all.
-  const node = text(`unsloth ${"x".repeat(MAX_INDEX_CHARS + 10)}`);
+  const node = text(`unsloth ${"x".repeat(MAX_NODE_CHARS + 10)}`);
   const index = buildTextIndex(el("DIV", [el("P", [node])]));
   assert.equal(index.truncated, true);
-  assert.equal(index.text.length, MAX_INDEX_CHARS);
+  assert.equal(index.text.length, MAX_NODE_CHARS);
   assert.equal(findMatches(index, "unsloth").length, 1);
   // The prefix maps back to the node it came from, so a match in it is reachable.
   assert.equal(startPositionAt(index.segments, 0)?.node, node);
+});
+
+test("an oversized node does not take the whole budget with it", () => {
+  // It used to: the node claimed every remaining character, the walk stopped, and the messages the
+  // reader was looking at were not in the index at all. A share each, and the walk goes on.
+  const log = el("PRE", [text("x".repeat(MAX_INDEX_CHARS + 1000))]);
+  const onScreen = el("P", [text("the message in front of the reader says unsloth")]);
+  const index = buildTextIndex(el("DIV", [log, onScreen]));
+  assert.equal(index.truncated, true);
+  assert.equal(findMatches(index, "in front of the reader").length, 1);
+  // The log is still there, up to its share.
+  assert.equal(index.text.startsWith("x".repeat(MAX_NODE_CHARS)), true);
 });
 
 test("an element the engine is not painting is skipped", () => {
@@ -323,7 +336,10 @@ test("an inline SVG is skipped despite reporting a lowercase tag", () => {
 
 /** Run `body` with `getComputedStyle` answering from `styles`, and `{}` for anything else. */
 function withStyles(
-  styles: Map<unknown, { display?: string; whiteSpace?: string }>,
+  styles: Map<
+    unknown,
+    { display?: string; whiteSpace?: string; clip?: string; clipPath?: string }
+  >,
   body: () => void,
 ): void {
   const view = globalThis as { getComputedStyle?: unknown };
@@ -476,11 +492,12 @@ test("the ceiling holds across a block boundary", () => {
   // A node landing exactly on the ceiling used to let the next block's separator push `length`
   // past it, and the negative `room` that followed made `slice(0, room)` take all but the last
   // character of the following node: a 500,000 character overshoot on a 4,000,000 cap.
+  // Filled a node at a time now that no single one may take the lot, landing exactly on the cap.
+  const blocks = Array.from({ length: MAX_INDEX_CHARS / MAX_NODE_CHARS }, () =>
+    el("P", [text("x".repeat(MAX_NODE_CHARS))]),
+  );
   const index = buildTextIndex(
-    el("DIV", [
-      el("P", [text("x".repeat(MAX_INDEX_CHARS))]),
-      el("P", [text("y".repeat(500_000))]),
-    ]),
+    el("DIV", [...blocks, el("P", [text("y".repeat(500_000))])]),
   );
   assert.equal(index.text.length, MAX_INDEX_CHARS);
   assert.equal(index.truncated, true);
@@ -987,6 +1004,79 @@ test("the shell unmounting is what calls it, not the bar closing", async () => {
   assert.match(store, /close: \(\) => set\(\{ open: false \}\),/);
 });
 
+test("the capped window follows the reader, not the top of the document", () => {
+  // A single common letter in a long thread has far more matches than the cap. Keeping the first
+  // `limit` of them keeps only the top of the document, so a reader at the bottom is walked away
+  // from every occurrence beside them, to one they were not looking for.
+  const body = `${"q".repeat(20_000)} needle ${"q".repeat(20_000)}`;
+  const index = buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  const anchor = index.text.indexOf("needle");
+  const limit = 100;
+
+  const fromTheTop = findMatches(index, "q", limit);
+  assert.equal(fromTheTop.length, limit);
+  assert.equal(fromTheTop[fromTheTop.length - 1].end <= anchor, true);
+
+  const aroundTheReader = findMatches(index, "q", limit, anchor);
+  assert.equal(aroundTheReader.length, limit);
+  // Half either side, so the walk goes forward from where the reader is and back the other way.
+  assert.equal(
+    aroundTheReader.some((match) => match.start < anchor),
+    true,
+  );
+  assert.equal(
+    aroundTheReader.some((match) => match.start > anchor),
+    true,
+  );
+  const nearest = aroundTheReader.find((match) => match.start > anchor);
+  assert.ok(nearest && nearest.start - anchor < 20);
+});
+
+test("the window is only computed when the cap bites", () => {
+  // Under the cap this is the single pass it always was, whatever the anchor says.
+  const index = buildTextIndex(el("DIV", [el("P", [text("q q q q q")])]));
+  assert.deepEqual(
+    findMatches(index, "q", 100, 8),
+    findMatches(index, "q", 100, 0),
+  );
+});
+
+test("the window stops at the ends of the list", () => {
+  const body = `needle ${"q".repeat(500)}`;
+  const index = buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  // Anchored at the very start: nothing to keep before it, so the window is the first `limit`.
+  const atTheTop = findMatches(index, "q", 50, 1);
+  assert.equal(atTheTop[0].start, index.text.indexOf("q"));
+  // Anchored past the end: the window is the last `limit`, not a slice running off it.
+  const atTheEnd = findMatches(index, "q", 50, index.text.length);
+  assert.equal(atTheEnd.length, 50);
+  assert.equal(atTheEnd[atTheEnd.length - 1].end, index.text.length);
+});
+
+test("clipped accessibility text is not searchable", () => {
+  // Tailwind's `sr-only` keeps a real box at full opacity and clips it to nothing, so
+  // `checkVisibility` calls it visible. The app has 46 of them; counted, they are matches with a
+  // highlight clipped away along with the text.
+  const label = el("SPAN", [text("Data input")]);
+  const shown = el("SPAN", [text("Data output")]);
+  withStyles(
+    new Map([
+      [label, { clipPath: "inset(50%)" }],
+      [shown, { clipPath: "none" }],
+    ]),
+    () => {
+      const index = buildTextIndex(el("DIV", [label, shown]));
+      assert.equal(index.text.includes("data input"), false);
+      assert.equal(index.text.includes("data output"), true);
+    },
+  );
+  // The legacy spelling of the same idiom.
+  const legacy = el("SPAN", [text("Data input")]);
+  withStyles(new Map([[legacy, { clip: "rect(0px, 0px, 0px, 0px)" }]]), () => {
+    assert.equal(buildTextIndex(el("DIV", [legacy])).text, "");
+  });
+});
+
 test("the counter says '+' only when the cap actually cut something off", () => {
   // `findMatches` stops at the limit it is given, so a count equal to the cap cannot say whether it
   // is the total or a floor: a page holding exactly MAX_MATCHES read as "more than MAX_MATCHES".
@@ -1015,7 +1105,10 @@ test("the cap flag is what the bar renders, not the count", async () => {
     ),
     "utf8",
   );
-  assert.match(engine, /findMatches\(index, queryRef\.current, MAX_MATCHES \+ 1\)/);
+  assert.match(
+    engine,
+    /findMatches\(\s*\n\s*index,\s*\n\s*queryRef\.current,\s*\n\s*MAX_MATCHES \+ 1,/,
+  );
   assert.match(engine, /cappedRef\.current = matches\.length > MAX_MATCHES;/);
   // Trimmed back to the cap, so nothing downstream sees the probe match.
   assert.match(engine, /if \(cappedRef\.current\) matches\.length = MAX_MATCHES;/);

@@ -93,6 +93,8 @@ function Conversation({ extra, older }: { extra: string[]; older: string[] }) {
       >
         <p>unsloth inside a skipped subtree</p>
       </div>
+      {/* A screen-reader label: a real box at full opacity, clipped to nothing. */}
+      <span className="sr-only">unsloth data input handle</span>
       {/* A collapsible, as a Hub README renders one. Opening it changes the `open` attribute and
           nothing else, while its body goes from skipped to searchable. */}
       <details data-collapsible="">

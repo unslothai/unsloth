@@ -18,6 +18,7 @@ import {
   rangeForMatch,
   resolveFindScope,
   rangeTop,
+  viewportOffset,
   scrollRangeIntoView,
   scrollViewportTop,
   selectRangeFallback,
@@ -170,7 +171,16 @@ export function useFindInPage(query: string): FindResults {
       // One past the cap. `findMatches` stops at the limit it is given, so a count that equals the
       // cap cannot say whether it is the total or a floor, and the counter would read "5000+" for a
       // page holding exactly 5000. The extra one is thrown away; only its existence is kept.
-      const matches = findMatches(index, queryRef.current, MAX_MATCHES + 1);
+      //
+      // The anchor decides WHICH matches survive the cap, and it only costs anything when the cap
+      // bites: a common letter in a long thread otherwise keeps the top of the document and walks
+      // the reader away from every occurrence beside them.
+      const matches = findMatches(
+        index,
+        queryRef.current,
+        MAX_MATCHES + 1,
+        viewportOffset(index),
+      );
       cappedRef.current = matches.length > MAX_MATCHES;
       if (cappedRef.current) matches.length = MAX_MATCHES;
       matchesRef.current = matches;

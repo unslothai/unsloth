@@ -25,6 +25,11 @@ export const MAX_INDEX_CHARS = 4_000_000;
  *  and a single letter in a long thread has thousands. */
 export const MAX_MATCHES = 5_000;
 
+/** Ceiling on what ONE text node may contribute. A Bash step's log arrives as a single text node,
+ *  and left to itself it spends the whole budget on the top of the document, so the messages the
+ *  reader is looking at are not indexed at all. A share each, and the walk goes on. */
+export const MAX_NODE_CHARS = 100_000;
+
 /** Elements whose subtree holds no findable text. Form controls carry theirs in `value`; a `Range`
  *  over `SVG` or `CANVAS` content is not paintable on every engine. */
 const SKIP_TAGS: ReadonlySet<string> = new Set([
@@ -213,7 +218,7 @@ export function skipsSubtree(element: FindElementLike): boolean {
       visibilityProperty: true,
     }) !== false
   ) {
-    return false;
+    return clippedAway(computedStyle(element));
   }
   // `display: contents` generates no box, and no box is the first thing `checkVisibility` calls
   // invisible, so a wrapper whose children are all on screen answers false. The shell uses one
@@ -225,6 +230,21 @@ export function skipsSubtree(element: FindElementLike): boolean {
 interface ResolvedStyle {
   display?: string;
   whiteSpace?: string;
+  clip?: string;
+  clipPath?: string;
+}
+
+/**
+ * The two spellings of the visually-hidden idiom, which Tailwind's `sr-only` uses and nothing else
+ * does: a real box, full opacity, clipped to nothing. `checkVisibility` calls that visible, so
+ * without this the app's 46 screen-reader labels are counted and walked to under a highlight
+ * clipped away with them.
+ */
+function clippedAway(style: ResolvedStyle | null): boolean {
+  return (
+    style?.clipPath === "inset(50%)" ||
+    style?.clip === "rect(0px, 0px, 0px, 0px)"
+  );
 }
 
 /**
@@ -282,7 +302,10 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
   const parts: string[] = [];
   const segments: TextSegment[] = [];
   let length = 0;
+  /** The index does not hold everything: a node was clipped, or the ceiling was reached. */
   let truncated = false;
+  /** The ceiling was reached, which is the only thing that stops the walk. */
+  let full = false;
   // Written lazily, so a run of empty blocks costs nothing and no separator lands at either end.
   let pendingSeparator = false;
 
@@ -301,17 +324,18 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
         : preservesWhitespace(style.whiteSpace);
     const children = element.childNodes;
     for (let i = 0; i < children.length; i += 1) {
-      if (truncated) return;
+      if (full) return;
       const child = children[i];
       if (child.nodeType === TEXT_NODE) {
         const node = child as FindTextNodeLike;
-        const full = node.data;
-        if (full.length === 0) continue;
+        const data = node.data;
+        if (data.length === 0) continue;
         // Checked before the separator is written, not after: a separator emitted with the ceiling
         // already reached pushes `length` past it, and the negative `room` that follows turns
         // `slice(0, room)` into "all but the last character" of the next node.
         if (length >= MAX_INDEX_CHARS) {
           truncated = true;
+          full = true;
           return;
         }
         if (pendingSeparator) {
@@ -321,23 +345,24 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
             length += 1;
           }
         }
-        const room = MAX_INDEX_CHARS - length;
-        if (room <= 0) {
+        // A share of the budget, not all of it. Taking the prefix that fits keeps a document made
+        // of one huge node findable, but taking the WHOLE remaining budget for it left everything
+        // after it out, the messages on screen included.
+        const take = Math.min(MAX_INDEX_CHARS - length, MAX_NODE_CHARS);
+        if (take <= 0) {
           truncated = true;
+          full = true;
           return;
         }
-        // A single node can be bigger than the whole ceiling: one Bash step's log arrives as one
-        // text node. Take the prefix that fits rather than dropping the node, or a document made
-        // of one such node would index to nothing at all.
-        const raw = full.length > room ? full.slice(0, room) : full;
-        if (raw.length < full.length) truncated = true;
+        const raw = data.length > take ? data.slice(0, take) : data;
+        // Clipping a node is not the end of the walk: its siblings still have to be indexed.
+        if (raw.length < data.length) truncated = true;
         parts.push(foldChunk(raw));
         segments.push({ node, start: length, length: raw.length, preserved });
         length += raw.length;
-        if (truncated) return;
       } else if (child.nodeType === ELEMENT_NODE) {
         visit(child as FindElementLike, preserved);
-        if (truncated) return;
+        if (full) return;
       }
     }
     if (block) pendingSeparator = true;
@@ -389,24 +414,25 @@ function whitespacePattern(needle: string): RegExp | null {
  * Every occurrence of `query`, left to right, capped at `limit`. Non-overlapping, like every
  * browser's own find, which is what makes the walk terminate on a self-overlapping query.
  */
-export function findMatches(
+/**
+ * Walk every match for `needle` in document order, stopping when `visit` says so.
+ *
+ * One place, so the two ways of matching stay one behaviour. The flexible run is for prose, where
+ * the source newline of a soft wrap renders as a space; inside a `<pre>` the whitespace on screen
+ * IS the whitespace in the node, so a query for "foo bar" must not land on "foo   bar" there.
+ * Measured: the platform's own find draws the same line.
+ */
+function eachMatch(
   index: FindTextIndex,
-  query: string,
-  limit = MAX_MATCHES,
-): FindMatch[] {
-  const needle = normalizeQuery(query);
-  if (needle === null) return [];
-  const out: FindMatch[] = [];
+  needle: string,
+  visit: (start: number, end: number) => boolean,
+): void {
   const pattern = whitespacePattern(needle);
   if (pattern) {
     for (;;) {
       const hit = pattern.exec(index.text);
-      if (hit === null) return out;
+      if (hit === null) return;
       const end = hit.index + hit[0].length;
-      // The flexible run is for prose, where the source newline of a soft wrap renders as a space.
-      // Inside a `<pre>` the whitespace on screen is the whitespace in the node, so a query for
-      // "foo bar" must not land on "foo   bar" there. Measured: the platform's own find draws the
-      // same line, matching across a wrap in a paragraph and not inside a code fence.
       if (
         touchesPreserved(index.segments, hit.index, end) &&
         hit[0] !== needle
@@ -414,19 +440,73 @@ export function findMatches(
         pattern.lastIndex = hit.index + 1;
         continue;
       }
-      out.push({ start: hit.index, end });
-      if (out.length >= limit) return out;
+      if (!visit(hit.index, end)) return;
       pattern.lastIndex = end;
     }
   }
   let from = 0;
   for (;;) {
     const at = index.text.indexOf(needle, from);
-    if (at === -1) return out;
-    out.push({ start: at, end: at + needle.length });
-    if (out.length >= limit) return out;
+    if (at === -1) return;
+    if (!visit(at, at + needle.length)) return;
     from = at + needle.length;
   }
+}
+
+/** `limit` matches starting from the `skip`-th one. */
+function collectMatches(
+  index: FindTextIndex,
+  needle: string,
+  limit: number,
+  skip: number,
+): FindMatch[] {
+  const out: FindMatch[] = [];
+  let seen = 0;
+  eachMatch(index, needle, (start, end) => {
+    seen += 1;
+    if (seen <= skip) return true;
+    out.push({ start, end });
+    return out.length < limit;
+  });
+  return out;
+}
+
+/**
+ * Matches for `query`, at most `limit` of them, as a window around `anchor`.
+ *
+ * The window is what `anchor` is for. A single common letter in a long thread has tens of thousands
+ * of matches, and keeping the first `limit` of them keeps only the top of the document: a reader at
+ * the bottom is walked away from every occurrence beside them, to a match they were not looking for.
+ * So when the cap bites, the kept matches are the ones nearest where the reader is.
+ *
+ * Costs nothing until it bites. Under the cap this is the same single pass it always was.
+ */
+export function findMatches(
+  index: FindTextIndex,
+  query: string,
+  limit = MAX_MATCHES,
+  anchor = 0,
+): FindMatch[] {
+  const needle = normalizeQuery(query);
+  if (needle === null) return [];
+  const head = collectMatches(index, needle, limit, 0);
+  if (head.length < limit || anchor <= 0) return head;
+
+  // Capped, so where the window sits matters. Two more passes over a string, no allocation in the
+  // first: cheap next to the tens of thousands of matches this only happens for.
+  let total = 0;
+  let before = 0;
+  eachMatch(index, needle, (start) => {
+    total += 1;
+    if (start < anchor) before += 1;
+    return true;
+  });
+  // Centred on the reader, then pushed back inside the list at either end.
+  const start = Math.min(
+    Math.max(before - (limit >> 1), 0),
+    Math.max(total - limit, 0),
+  );
+  return start === 0 ? head : collectMatches(index, needle, limit, start);
 }
 
 /** True when `[start, end)` reaches into a run whose whitespace is kept rather than collapsed. */
