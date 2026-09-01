@@ -785,8 +785,13 @@ const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
  *  pinned it to fl2va and its transformer_ref partition was unreachable even with the weights
  *  sitting on disk. Matched on the final path segment, the same way a local checkpoint's family
  *  is read off its filename elsewhere. */
-function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boolean {
+function isH3PipelinePick(
+  repoId: string,
+  kind: VideoLoadOptions["kind"],
+  familyOverride?: string,
+): boolean {
   if (kind !== "pipeline") return false;
+  if (familyOverride?.trim().toLowerCase() === "minimax-h3") return true;
   const id = repoId.toLowerCase();
   if (id === H3_BF16_REPO.toLowerCase()) return true;
   const leaf = id.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? "";
@@ -1255,7 +1260,7 @@ function VideoGenerator({
   const familyDefaultFrames = status?.defaults?.num_frames;
   const defaultFlowShift = status?.defaults?.flow_shift ?? null;
   const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
-  const presetRepoId = status?.repo_id ?? "";
+  const presetRepoId = status?.family ?? status?.repo_id ?? "";
   const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
     const resolution = resolutionPresets[0] ?? [768, 512];
     const recommended =
@@ -1347,7 +1352,9 @@ function VideoGenerator({
       // is whether the user takes the form after THIS pick, not after the one it replaced.
       const claimedAt = videoFormClaimId();
       pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(repoId);
+      const explicitFamily = familyOverride.trim();
+      const defaultsKey = explicitFamily !== "auto" ? explicitFamily : repoId;
+      const recommended = defaultsFor(defaultsKey);
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -1362,7 +1369,7 @@ function VideoGenerator({
       modelSeeded.current = true;
       familySeeded.current = true;
     },
-    [claimVideoRecipe, videoFormClaimId],
+    [claimVideoRecipe, familyOverride, videoFormClaimId],
   );
 
   useEffect(() => {
@@ -2734,7 +2741,7 @@ function VideoGenerator({
       pick.opts.filename ? `${pick.repoId}/${pick.opts.filename}` : pick.repoId,
     );
     // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
-    if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
+    if (isH3PipelinePick(pick.repoId, pick.opts.kind, familyOverride)) {
       setPendingH3Load({
         repoId: pick.repoId,
         opts: pick.opts,
@@ -2753,6 +2760,7 @@ function VideoGenerator({
     active,
     applyVideoModelDefaults,
     routeSearch?.model,
+    familyOverride,
     routeSearch?.quant,
     routeSearch?.ggufQuant,
     loadOrStage,
@@ -2845,7 +2853,7 @@ function VideoGenerator({
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
         // Without it these distilled entries fall through to the generic LTX 40-step/CFG-4 defaults instead of the 8-step schedule.
         applyVideoModelDefaults(spec.filename ? `${id}/${spec.filename}` : id);
-        if (isH3PipelinePick(id, spec.kind)) {
+        if (isH3PipelinePick(id, spec.kind, familyOverride)) {
           setPendingH3Load({
             repoId: id,
             opts: { kind: spec.kind, filename: spec.filename },
@@ -2961,7 +2969,7 @@ function VideoGenerator({
       applyVideoModelDefaults(id);
       // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
       // it needs the same partition question: without it the load silently takes fl2va.
-      if (isH3PipelinePick(id, "pipeline")) {
+      if (isH3PipelinePick(id, "pipeline", familyOverride)) {
         setPendingH3Load({
           repoId: id,
           opts: { kind: "pipeline" },
@@ -2983,6 +2991,7 @@ function VideoGenerator({
       beginPick,
       busy,
       handleLoad,
+      familyOverride,
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,

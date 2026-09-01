@@ -4165,7 +4165,7 @@ class DiffusionStatusResponse(BaseModel):
     family: Optional[str] = Field(None, description = "Detected diffusion family")
     supported_families: List[str] = Field(
         default_factory = list,
-        description = "Canonical family names accepted by family_override",
+        description = "Canonical family overrides whose pipelines are available on this host",
     )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
@@ -4968,7 +4968,7 @@ class VideoStatusResponse(BaseModel):
     family: Optional[str] = Field(None, description = "Detected video family")
     supported_families: List[str] = Field(
         default_factory = list,
-        description = "Canonical family names accepted by family_override",
+        description = "Canonical family overrides whose pipelines are available on this host",
     )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")

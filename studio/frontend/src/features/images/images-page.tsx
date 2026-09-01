@@ -131,7 +131,11 @@ import {
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
-import { DEFAULT_GEN, defaultsFor } from "./image-generation-defaults";
+import {
+  DEFAULT_GEN,
+  defaultsFor,
+  defaultsKeyFor,
+} from "./image-generation-defaults";
 
 import {
   type ControlNetSpecInput,
@@ -1397,7 +1401,7 @@ export function ImagesPage({
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
     const recommended =
       pendingModelDefaults ??
-      defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
+      defaultsFor(status?.family ?? status?.base_repo ?? status?.repo_id ?? "");
     return {
       negativePrompt: "",
       width: 1024,
@@ -1407,7 +1411,7 @@ export function ImagesPage({
       batchSize: 1,
       runs: 1,
     };
-  }, [pendingModelDefaults, status?.base_repo, status?.repo_id]);
+  }, [pendingModelDefaults, status?.base_repo, status?.family, status?.repo_id]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
     // Same rule restoreSettings follows: a negative prompt that is in effect has to be visible, or
@@ -1444,7 +1448,7 @@ export function ImagesPage({
       // is whether the user takes the form after THIS pick, not after the one it replaced.
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(repoId);
+      const recommended = defaultsFor(defaultsKeyFor(repoId, familyOverride));
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -1453,7 +1457,7 @@ export function ImagesPage({
         revert.appliedGuidance = recommended.guidance;
       }
     },
-    [claimImageRecipe, imageFormClaimId],
+    [claimImageRecipe, familyOverride, imageFormClaimId],
   );
 
   const dismissLoadToast = useCallback(() => {
@@ -2359,13 +2363,20 @@ export function ImagesPage({
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
     }
-    // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
-    // Status is the authority for a resident model, so this is not a pick's optimistic claim.
-    const d = defaultsFor(status?.base_repo ?? repoId);
+    // The family is authoritative for an opaque local pipeline, whose repo_id and base_repo are
+    // both filesystem paths. It also identifies a GGUF whose repo has no family substring.
+    const d = defaultsFor(status?.family ?? status?.base_repo ?? repoId);
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-  }, [imagePresets.storedRecipe, status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
+  }, [
+    imagePresets.storedRecipe,
+    status?.base_repo,
+    status?.family,
+    status?.loaded,
+    status?.model_kind,
+    status?.repo_id,
+  ]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,

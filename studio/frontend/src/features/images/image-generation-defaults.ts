@@ -45,3 +45,12 @@ export function defaultsFor(repoId: string): {
     ? { steps: matched.steps, guidance: matched.guidance }
     : DEFAULT_GEN;
 }
+
+/** The explicit family is the only semantic key for an opaque local pipeline path. */
+export function defaultsKeyFor(
+  repoId: string,
+  familyOverride: string | null | undefined,
+): string {
+  const family = familyOverride?.trim();
+  return family && family.toLowerCase() !== "auto" ? family : repoId;
+}

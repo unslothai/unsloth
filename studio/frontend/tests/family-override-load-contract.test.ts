@@ -24,3 +24,16 @@ for (const [name, page] of [
     );
   });
 }
+
+test("image defaults use explicit and resolved family keys for opaque paths", () => {
+  const text = source("../src/features/images/images-page.tsx");
+  assert.ok(text.includes("defaultsFor(defaultsKeyFor(repoId, familyOverride))"));
+  assert.ok(
+    text.includes("defaultsFor(status?.family ?? status?.base_repo ?? repoId)"),
+  );
+});
+
+test("video defaults use the explicit family for opaque paths", () => {
+  const text = source("../src/features/video/video-page.tsx");
+  assert.ok(text.includes('const defaultsKey = explicitFamily !== "auto" ? explicitFamily : repoId'));
+});

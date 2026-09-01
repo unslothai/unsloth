@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { defaultsFor } from "../src/features/images/image-generation-defaults.ts";
+import {
+  defaultsFor,
+  defaultsKeyFor,
+} from "../src/features/images/image-generation-defaults.ts";
 
 test("distinguishes Klein base checkpoints from distilled checkpoints", () => {
   for (const size of ["4B", "9B"]) {
@@ -33,6 +36,16 @@ test("keeps the existing family defaults and fallback", () => {
     steps: 9,
     guidance: 0,
   });
+});
+
+test("an explicit family supplies defaults for an opaque local path", () => {
+  const opaque = "/models/my-private-finetune";
+  assert.equal(defaultsKeyFor(opaque, "qwen-image"), "qwen-image");
+  assert.deepEqual(defaultsFor(defaultsKeyFor(opaque, "qwen-image")), {
+    steps: 20,
+    guidance: 4,
+  });
+  assert.equal(defaultsKeyFor(opaque, "auto"), opaque);
 });
 
 test("routed image picks apply and transactionally roll back model defaults", () => {

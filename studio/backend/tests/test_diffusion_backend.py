@@ -44,6 +44,7 @@ from core.inference.diffusion_families import (
     family_prequant_repo,
     load_identity,
     mirror_repo,
+    pipeline_available_family_names,
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -157,6 +158,20 @@ def test_supported_family_names():
     # Every listed name is a valid family_override (round-trips through detect_family).
     for name in names:
         assert detect_family("some/unknown-repo", override = name) is not None
+
+
+def test_pipeline_available_names_filter_the_override_selector(monkeypatch):
+    import core.inference.diffusion_families as families
+
+    monkeypatch.setattr(
+        families,
+        "family_pipeline_available",
+        lambda fam: fam.name not in {"krea-2", "flux.2-klein"},
+    )
+    assert set(supported_family_names()) - set(pipeline_available_family_names()) == {
+        "krea-2",
+        "flux.2-klein",
+    }
 
 
 def test_resolve_base_repo():

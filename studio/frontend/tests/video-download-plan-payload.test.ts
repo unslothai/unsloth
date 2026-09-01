@@ -95,7 +95,7 @@ test("a routed H3 pipeline pick asks for the task instead of loading a default",
   );
   assert.ok(routeEffect.length > 0, "the routed pick branch must exist");
   assert.ok(
-    routeEffect.includes("isH3PipelinePick(pick.repoId, pick.opts.kind)"),
+    routeEffect.includes("isH3PipelinePick(pick.repoId, pick.opts.kind, familyOverride)"),
     "the routed branch must intercept an H3 pipeline pick",
   );
   const intercept = routeEffect.indexOf("isH3PipelinePick(");
@@ -107,7 +107,10 @@ test("a routed H3 pipeline pick asks for the task instead of loading a default",
   assert.ok(routeEffect.includes("setPendingH3Load({"));
   // One predicate, so the two entry points cannot drift apart again.
   assert.ok(source.includes("function isH3PipelinePick("));
-  assert.ok(source.includes("isH3PipelinePick(id, spec.kind)"));
+  assert.ok(source.includes("isH3PipelinePick(id, spec.kind, familyOverride)"));
+  assert.ok(
+    source.includes('familyOverride?.trim().toLowerCase() === "minimax-h3"'),
+  );
 });
 
 test("reapply preserves the loaded H3 task", () => {

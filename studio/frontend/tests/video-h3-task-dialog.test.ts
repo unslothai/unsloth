@@ -50,9 +50,20 @@ test("an on-device copy of the pipeline reaches the same dialog", () => {
   assert.match(predicate, /H3_BF16_REPO\.split\("\/"\)\[1\]\.toLowerCase\(\)/);
   // And the generic local-pipeline branch consults it, not only the curated branch.
   assert.equal(
-    source.split('isH3PipelinePick(id, "pipeline")').length - 1,
+    source.split('isH3PipelinePick(id, "pipeline", familyOverride)').length - 1,
     1,
     "the local-pipeline branch must intercept an H3 pick exactly once",
+  );
+});
+
+test("an opaque pipeline explicitly identified as H3 reaches the dialog", () => {
+  const predicate = source.slice(
+    source.indexOf("function isH3PipelinePick("),
+    source.indexOf("// What a pick optimistically replaced"),
+  );
+  assert.match(
+    predicate,
+    /familyOverride\?\.trim\(\)\.toLowerCase\(\) === "minimax-h3"/,
   );
 });
 
