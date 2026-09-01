@@ -311,13 +311,13 @@ def is_available() -> bool:
     if binary is None:
         return False
     if not slim_runtime_intact(binary):
-        # No PyAV means every transcription 501s on decode.
         return False
     if runtime_inference_failure() is not None:
         return False
     try:
         import av  # noqa: F401
     except Exception:
+        # No PyAV means every transcription 501s on decode.
         return False
     return True
 
