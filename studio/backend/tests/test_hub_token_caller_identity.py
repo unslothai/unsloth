@@ -298,7 +298,9 @@ def test_the_media_load_models_still_reject_the_sentinel():
 )
 def test_the_stt_routes_keep_the_caller_boundary(route_line, expected):
     """The STT pair is converted: it downloads a whole repo and has no pydantic sink."""
-    source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
+    source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     marker = source.index(f'"/{route_line}"')
     signature = source[marker : marker + 400]
     assert ("Depends(get_request_hf_token)" in signature) is expected

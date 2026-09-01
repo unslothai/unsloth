@@ -98,6 +98,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
     auth_pkg = types.ModuleType("auth")
     auth_mod = types.ModuleType("auth.authentication")
     auth_mod.get_current_subject = lambda: None
+    # routes/models.py imports this alongside get_current_subject; a stub missing it
+    # fails the import with "unknown location", which reads like a path problem.
+    auth_mod.allow_ambient_hf_token = lambda: True
     monkeypatch.setitem(sys.modules, "auth", auth_pkg)
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
 
