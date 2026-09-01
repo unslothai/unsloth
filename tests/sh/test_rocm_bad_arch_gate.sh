@@ -127,10 +127,12 @@ _REROUTE_FILE=$(mktemp)
 trap 'rm -f "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE"' EXIT
 {
     awk '/^_amd_arch_index_family_for_gfx\(\)/,/^}/' "$INSTALL_SH"
+    awk '/^_amd_probe_arches\(\)/,/^}/' "$INSTALL_SH"
+    awk '/^_amd_sole_index_arch\(\)/,/^}/' "$INSTALL_SH"
     awk '/^_infer_linux_amd_gfx_arch\(\)/,/^}/' "$INSTALL_SH"
     echo '_reroute() {'
-    awk '/_linux_inferred_gfx=\$\(_infer_linux_amd_gfx_arch/,/^            if \[ -n "\$_linux_inferred_gfx" \]; then$/' "$INSTALL_SH"
-    echo '    _amd_arch_index_family_for_gfx "$_linux_inferred_gfx" || echo cpu'
+    awk '/_linux_inferred_gfx=\$\(_infer_linux_amd_gfx_arch/,/^            if \[ -n "\$_amd_family" \]; then$/' "$INSTALL_SH"
+    echo '    echo "$_amd_family"'
     echo '    else echo cpu'   # gated out: no arch survives, so no reroute happens
     echo '    fi'
     echo '}'

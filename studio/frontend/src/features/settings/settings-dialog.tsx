@@ -456,7 +456,7 @@ export function SettingsDialog() {
                 )}
               </div>
               {results ? (
-                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 pb-1 max-sm:hidden">
+                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 py-1 max-sm:hidden">
                   {results.length === 0 ? (
                     <p className="px-3 py-2 text-sm text-muted-foreground">
                       {t("settings.dialog.searchNoResults")}
@@ -508,8 +508,8 @@ export function SettingsDialog() {
                   // The tab list is the sidebar's flexible row: a short window
                   // leaves it taller than the sidebar, and the dialog clips its
                   // overflow, so scroll it rather than losing the last tabs.
-                  "hover-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 pb-1",
-                  "max-sm:flex-none max-sm:flex-row max-sm:overflow-x-auto max-sm:pb-0",
+                  "hover-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  "max-sm:flex-none max-sm:flex-row max-sm:overflow-x-auto max-sm:py-0",
                   results !== null && "max-sm:flex hidden",
                 )}
               >
