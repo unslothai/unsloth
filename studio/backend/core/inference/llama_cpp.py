@@ -29985,9 +29985,7 @@ class LlamaCppBackend:
                         # as an identifier in code the model is answering with.
                         _announces_render_html = re.search(
                             r"(?i)\brender[_\s-]?html\b",
-                            _CLOSED_MARKUP_ARTIFACT.sub(
-                                "", _CLOSED_CODE_FENCE.sub("", _stripped)
-                            ),
+                            _CLOSED_MARKUP_ARTIFACT.sub("", _CLOSED_CODE_FENCE.sub("", _stripped)),
                         )
                         _render_html_already_done_intent = (
                             _tool_succeeded("render_html") and _names_render_html

@@ -1143,9 +1143,7 @@ def test_reasoning_marker_inside_an_example_is_not_reasoning():
     assert _has_answer_artifact(text)
     assert not _gate_would_reprompt(text, "", True)
     # A real prefilled closer, outside any artifact, is still where reasoning ends.
-    assert not _gate_would_reprompt(
-        "First, I will search.</think>The answer is Paris.", "", True
-    )
+    assert not _gate_would_reprompt("First, I will search.</think>The answer is Paris.", "", True)
 
 
 def test_bracketed_reasoning_only_turn_still_gets_nudged():
