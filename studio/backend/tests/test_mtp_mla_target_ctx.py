@@ -200,12 +200,68 @@ class TestMlaTargetCtxReserve:
         assert other._estimate_mtp_overhead_bytes(ctx) == (
             b._mtp_draft_kv_bytes(ctx) + b._estimate_kv_cache_bytes(ctx, "f16")
         )
-        # The hyphenated port builds no NextN graph, so it keeps the safe default.
+        # The "glm5-next" port builds no NextN graph, so it keeps the safe default.
         hyphenated = _make_mla_backend()
         hyphenated._architecture = "glm5-next"
         assert hyphenated._estimate_mtp_overhead_bytes(ctx) == other._estimate_mtp_overhead_bytes(
             ctx
         )
+
+
+class TestKdaRollbackReserve:
+    """A KDA hybrid pays draft rollback copies the Mamba helper cannot see.
+
+    Dims are GLM-5.3-Flash UD-IQ1_S as shipped (34 recurrent layers of 46,
+    kda.head_dim 128, head_count 64, ssm.conv_kernel 4). llama.cpp allocates
+    582.25 MiB for `1 seqs 3 rs_seq`, i.e. 4 x 145.5625 MiB, so the MTP share
+    is the 3 extra copies and the reserve must carry them.
+    """
+
+    MIB = 1024**2
+    PER_SEQ = 145.5625  # MiB, and the size llama.cpp logs per context checkpoint
+
+    def _kda(self):
+        b = _make_mla_backend()
+        b._architecture = "glm5next"
+        # Every 4th block is DSA, and so is blk.45 (NextN): 34 recurrent of 46.
+        b._n_kv_heads_by_layer = [1 if ((i + 1) % 4 == 0 or i == 45) else 0 for i in range(46)]
+        b._n_layers = 46
+        b._n_heads = 64
+        b._kda_head_dim = 128
+        b._ssm_conv_kernel = 4
+        return b
+
+    def test_base_state_matches_llama_cpp(self):
+        b = self._kda()
+        assert b._mamba_recurrent_state_bytes(1) == 0  # no SSM fields: the gap
+        assert b._recurrent_state_bytes(1) / self.MIB == pytest.approx(self.PER_SEQ)
+
+    def test_rollback_copies_are_reserved(self):
+        b = self._kda()
+        base = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 0)
+        with_draft = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 3)
+        assert (with_draft - base) / self.MIB == pytest.approx(3 * self.PER_SEQ)
+
+    def test_rollback_scales_with_slots(self):
+        b = self._kda()
+        one = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 3, n_parallel = 1)
+        four = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 3, n_parallel = 4)
+        assert four > one
+
+    def test_mamba_path_unchanged(self):
+        # A Mamba hybrid still prices rollback with its own helper; the KDA
+        # fallback must not double-count or shadow it.
+        b = _make_mla_backend()
+        b._ssm_inner_size = 6144
+        b._ssm_state_size = 128
+        b._ssm_group_count = 1
+        b._ssm_conv_kernel = 4
+        b._full_attention_interval = 4
+        assert b._mamba_recurrent_state_bytes(1) > 0
+        delta = b._estimate_mtp_overhead_bytes(
+            65536, spec_draft_n_max = 2
+        ) - b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 0)
+        assert delta == 2 * b._mamba_recurrent_state_bytes(1)
 
 
 class TestMlaFitPreventsOom:

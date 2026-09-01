@@ -11880,9 +11880,14 @@ class LlamaCppBackend:
         # drafter file pays it exactly like the embedded head: ``target_rollback``
         # decides, not ``drafter_path`` (see _TARGET_ROLLBACK_SPEC_TYPES). The
         # dominant hidden cost on Qwen3.5/3.8 at multiple parallel slots.
+        # Linear-attention hybrids (KDA) pay the same per-token rollback and are
+        # sized by the other helper, so fall through to it rather than pricing
+        # them at zero. llama.cpp logs the sum as `1 seqs N rs_seq`.
         target_recurrent_copies = 0
         if target_rollback and spec_draft_n_max > 0:
-            base_recurrent = self._mamba_recurrent_state_bytes(n_parallel)
+            base_recurrent = self._mamba_recurrent_state_bytes(
+                n_parallel
+            ) or self._recurrent_state_bytes(n_parallel)
             target_recurrent_copies = base_recurrent * spec_draft_n_max
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
