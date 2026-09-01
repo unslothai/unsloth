@@ -617,6 +617,7 @@ def _h3_te_canonical(repo_id: Optional[str]) -> str:
 # defaults to the hosted quantized artifact, which preserves the sample; the DENOISER keeps the released weights,
 # because both hosted checkpoints re-roll it. These helpers are the one place the tri-state is read, so the plan, the
 # estimate, the pull and the load cannot disagree.
+# ── MiniMax-H3 modular precision tri-state ────────────────────────────────────
 def _h3_precision_unset(value: Optional[str]) -> bool:
     """True when the caller left this precision to the backend."""
     return value is None or str(value).strip().lower() in ("", "auto")
@@ -879,6 +880,7 @@ def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
 # ── dual-DiT (Wan2.2-A14B MoE) helpers ──────────────────────────────────────── The optimisation helpers and the
 # quantiser all act on ``pipe.transformer``. Wan2.2-A14B is a dual-expert MoE (transformer = high-noise, transformer_2 =
 # low-noise), so present the second DiT AS ``pipe.transformer`` via a thin proxy.
+# ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
 def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
     """Attribute names of the denoiser(s) on ``pipe`` to optimise. Just
     ("transformer",) for a single-DiT family; also "transformer_2" for an MoE family
@@ -1082,6 +1084,7 @@ class VideoBackend:
         return target
 
 
+    # ── validation ───────────────────────────────────────────────────────────
     def validate_load_request(
         self,
         repo_id: str,
@@ -1114,6 +1117,7 @@ class VideoBackend:
         # everything below reaches into diffusers (assert_pipeline_class_available, the transformer_class probe), so a
         # refusal placed after them would be unreachable on any install whose diffusers cannot even be imported -- and
         # these two are exactly the picks that cost the most to discover late.
+        # ── modular-workflow refusals, before anything heavier.
         if fam.modular_workflow and kind == "single_file":
             # A modular workflow has no single-file assembly: its components each load through their own from_pretrained
             # from the modular index, and nothing consumes a lone .safetensors DiT. Today that only surfaces inside the
@@ -1298,6 +1302,7 @@ class VideoBackend:
         return fam
 
 
+    # ── background load + progress ───────────────────────────────────────────
     def begin_load(
         self,
         repo_id: str,
@@ -3383,6 +3388,7 @@ class VideoBackend:
         return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO)
 
 
+    # ── the load itself ──────────────────────────────────────────────────────
     def load_pipeline(
         self,
         repo_id: str,
@@ -3523,6 +3529,7 @@ class VideoBackend:
         # ── memory plan: family-table resident estimate + frames-aware headroom. Settled, not raw: this plan is the one
         # the unified-memory refusal below judges, so the previous pipeline's cached-but-free allocator buffers must not
         # read as occupied.
+        # ── memory plan: family-table resident estimate + frames-aware headroom.
         device_memory = settled_snapshot_device_memory(target)
         components = fam.bf16_components_gb
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
@@ -3657,6 +3664,7 @@ class VideoBackend:
         # above).
         raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
+        # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
         # cache_dir pins every loader call to the live cache root, so a mid-session change cannot split one model across
         # roots.
@@ -4423,6 +4431,7 @@ class VideoBackend:
         # what has been pinning it. Seeding here rather than casting after load_components is the entire point: a
         # runtime cast has to materialise the dense encoder first, so its PEAK is the bfloat16 size it was meant to
         # avoid, and on this workflow it would also have to download the 62 GB dense component.
+        # ── hosted quantized conditioner, for the same reason and in the same place.
         text_encoder_quant_engaged: Optional[str] = None
         text_encoder_quant_reason = "released bfloat16 components"
         # Base-gated, through the same resolver the plan and the pre-fetch use, so a derivative base that keeps its own
@@ -4722,6 +4731,7 @@ class VideoBackend:
         # and attention_backend null. Called here rather than by moving the dispatch, because the compile decision below
         # needs ``denoiser_pinned``, which only exists after the offload. ``effective_speed`` itself was resolved above
         # the offload, because the pin reads it.
+        # ── the speed layer this workflow used to skip entirely.
         if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not denoiser_pinned:
             # Compile ONLY over a resident denoiser: inside the rotation the compiled graph fights the onload hooks,
             # measured 69-85 s against 30-115 s eager on the same job at a 135.7 GB peak. The rest of the tier
@@ -4889,6 +4899,7 @@ class VideoBackend:
         )
 
 
+    # ── generation ───────────────────────────────────────────────────────────
     def loaded_family(self) -> Optional[VideoFamily]:
         """The resident pipeline's family, or None when nothing is loaded.
 
@@ -6177,6 +6188,7 @@ class VideoBackend:
             return True
 
 
+    # ── teardown + status ────────────────────────────────────────────────────
     def _teardown_state_locked(self) -> None:
         """Free the committed state. The caller holds _generate_lock (no generation
         in flight) AND _lock, so the whole teardown is one atomic step: a generation

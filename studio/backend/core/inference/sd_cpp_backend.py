@@ -1198,6 +1198,7 @@ class SdCppDiffusionBackend:
             return server_binary
 
 
+    # ── Background load + progress ─────────────────────────────────────────
     def begin_load(
         self,
         repo_id: str,
@@ -2123,6 +2124,7 @@ class SdCppDiffusionBackend:
             return _with_mirrors(repos)
 
 
+    # ── Generate ───────────────────────────────────────────────────────────
     def generate(
         self,
         *,
@@ -2636,6 +2638,7 @@ class SdCppDiffusionBackend:
             return True
 
 
+    # ── Unload / status ──────────────────────────────────────────────────────
     def unload(self) -> dict[str, Any]:
         with self._lock:
             # Under the lock: begin_load rebinds this attribute, so an unlocked read could set an event the current load

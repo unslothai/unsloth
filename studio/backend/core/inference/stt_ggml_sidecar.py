@@ -348,6 +348,7 @@ def ensure_engine_available() -> str:
 # CUDA-from-PyTorch runtime dirs the selection gated on, else the backend cannot resolve a runtime that lives only in
 # wheels. Mirrors llama's binary_env(); the scrub/WSL/dedupe helpers live in utils.prebuilt.
 # Module-level aliases keep the historical patch points for tests and callers.
+# ---------------------------------------------------------------------------
 _wsl_system_rocm_lib_dirs = wsl_system_rocm_lib_dirs
 _dedupe_existing_dirs = dedupe_existing_dirs
 
@@ -394,6 +395,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
 
 # --------------------------------------------------------------------------- Model file download (single files;
 # deliberately outside the Model Hub flow) ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 def _cached_model_path(
     model_id: str,
     *,
@@ -685,6 +687,7 @@ def cancel_model_download() -> bool:
 
 
 
+# ---------------------------------------------------------------------------
 def _pcm_to_wav_bytes(decoded_audio) -> bytes:
     """Wrap decoded float32 mono 16 kHz PCM into an in-memory 16-bit WAV."""
     import numpy as np
@@ -702,6 +705,7 @@ def _pcm_to_wav_bytes(decoded_audio) -> bytes:
 
 
 
+# ---------------------------------------------------------------------------
 class GgmlSttSidecar:
     """Owns one whisper-server subprocess and proxies dictation to it."""
 
@@ -754,6 +758,7 @@ class GgmlSttSidecar:
         return process is not None and process.poll() is None
 
 
+    # -- idle unload ------------------------------------------------------
     def _cancel_idle_unload_locked(self) -> None:
         self._idle_generation += 1
         if self._idle_timer is not None:
@@ -778,6 +783,7 @@ class GgmlSttSidecar:
             self._release_locked()
 
 
+    # -- process lifecycle -------------------------------------------------
     def _release_locked(self) -> None:
         self._cancel_idle_unload_locked()
         process = self._process
@@ -1045,6 +1051,7 @@ class GgmlSttSidecar:
         return b"whisper" in body.lower()
 
 
+    # -- transcription ------------------------------------------------------
     def transcribe(
         self,
         audio: bytes,

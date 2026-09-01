@@ -234,6 +234,7 @@ def trim_h3_video_vae(vae: Any, *, workflow: str) -> dict[str, int]:
 
 # ── canvas geometry ──────────────────────────────────────────────────────────  MiniMax-H3's upstream canvas rule,
 # shared by both engines.
+# ── canvas geometry ──────────────────────────────────────────────────────────
 H3_CANVAS_SHORT_EDGE = 768
 H3_CANVAS_MAX_PIXELS = 768 * 1344
 H3_CANVAS_MULTIPLE = 32
@@ -295,6 +296,7 @@ def fit_h3_keyframe(image: Any, width: int, height: int, *, anchor: str) -> Any:
 
 # ── omni references (Ref2VA) ─────────────────────────────────────────────────  Ref2VA uses a separate transformer
 # partition selected at load time.
+# ── omni references (Ref2VA) ─────────────────────────────────────────────────
 H3_TASK_KEYFRAMES = "fl2va"
 H3_TASK_REFERENCES = "ref2va"
 

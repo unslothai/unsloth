@@ -465,6 +465,7 @@ class SdCppServer:
                 self._stdout_thread = None
 
 
+    # ── generation ───────────────────────────────────────────────────────────
     def img_gen(
         self,
         payload: dict[str, Any],

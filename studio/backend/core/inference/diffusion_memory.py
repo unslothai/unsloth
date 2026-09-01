@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 
+# ── memory modes (operator intent) ───────────────────────────────────────────
 MEMORY_MODE_AUTO = "auto"
 MEMORY_MODE_FAST = "fast"
 MEMORY_MODE_BALANCED = "balanced"
@@ -129,6 +130,7 @@ class MemoryPlan:
 
 
 
+# ── hardware snapshot ─────────────────────────────────────────────────────────
 def snapshot_device_memory(target: Any) -> DeviceMemory:
     """Free / total memory for ``target``'s device. Never raises: a probe failure yields None
     counts, which the planner treats as "budget unknown" (stay resident)."""
@@ -329,6 +331,7 @@ def _system_memory_mib() -> tuple[Optional[int], Optional[int]]:
 
 
 
+# ── size estimates ────────────────────────────────────────────────────────────
 def file_size_mib(path: Any) -> Optional[int]:
     """On-disk size of ``path`` in MiB, or None if it can't be stat'd."""
     try:
@@ -545,6 +548,7 @@ def _sum_required(*values: Optional[int]) -> Optional[int]:
 
 
 
+# ── the planner ───────────────────────────────────────────────────────────────
 def plan_diffusion_memory(
     *,
     target: Any,
@@ -709,6 +713,7 @@ def plan_diffusion_memory(
 
 
 
+# ── apply to a built pipeline ─────────────────────────────────────────────────
 def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
     """Component name -> (module, group-offload type) for what streaming keeps off the device.
 
@@ -1021,6 +1026,7 @@ def _apply_group_offload(
 # never checked against anything. This is the second half: a per-generation re-check, with the real dimensions.
 # Opt-in escape hatch, mirroring the load-time one: the activation estimate is coarse, so an operator who believes it is
 # wrong keeps a way through.
+# ── generate-time activation guard ────────────────────────────────────────────
 OVERSIZED_GENERATE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE"
 
 

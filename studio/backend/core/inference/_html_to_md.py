@@ -354,6 +354,7 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
+    # ------------------------------------------------------------------
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
 
@@ -406,6 +407,7 @@ class _MarkdownRenderer(HTMLParser):
         else:
             self._out.append(text)
 
+    # ------------------------------------------------------------------
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
         body prose. ATX headings carry their own ``#`` here and so score zero."""
@@ -502,6 +504,7 @@ class _MarkdownRenderer(HTMLParser):
     # ------------------------------------------------------------------ Tag handlers
     # ------------------------------------------------------------------ Structural bookkeeping shared by every start
     # tag (skip/hidden/scope).
+    # ------------------------------------------------------------------
     def _truncate_open_tags(self, index: int) -> None:
         """Drop the open-tag stack above *index*, keeping the closable count."""
         for name in self._open_tags[index:]:
@@ -854,6 +857,7 @@ class _MarkdownRenderer(HTMLParser):
             self._in_table = False
             self._emit("\n")
 
+    # ------------------------------------------------------------------
     def _text_suppressed(self) -> bool:
         if self._skip_depth or self._hidden_marks:
             return True

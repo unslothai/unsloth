@@ -168,6 +168,7 @@ RAG_SEARCH_CAP_NUDGE = (
 # Verbs naming work this turn.
 # ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ── Verbs naming work this turn. Narrow on
 # purpose: "install"/"add"/"open" belong to advice for the user, which must not be re-prompted.
+# ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ──
 _ACTION_VERB = (
     r"(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e"
     r"|review|inspect|read|gather|examine|retrieve|browse|consult|verify"
@@ -2918,6 +2919,7 @@ def _gemma_parse_mapping(text: str, start: int):
 
 
 
+# ── DeepSeek R1 / V3 / V3.1 ─────────────────────────────────────────
 def _find_outside_json_strings(text: str, needle: str, start: int) -> int:
     """Index of ``needle`` at/after ``start`` OUTSIDE any JSON string, or -1: a
     marker inside an argument string must not be taken as the structural terminator."""
@@ -3081,6 +3083,7 @@ def _parse_deepseek_tool_calls(
 
 
 
+# ── GLM 4.5 / 4.6 / 4.7 ─────────────────────────────────────────────
 def _parse_glm_tool_calls(
     content: str,
     *,
@@ -3190,6 +3193,7 @@ def _parse_glm_tool_calls(
 
 
 
+# ── Kimi K2 / Moonshot ──────────────────────────────────────────────
 def _parse_kimi_tool_calls(
     content: str,
     *,

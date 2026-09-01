@@ -55,6 +55,7 @@ _AMBIGUOUS = MediaModelPick("", "")
 
 
 
+# ── resolving a name to a downloaded model ──────────────────────────
 def _resolve_load_dir(p: Path) -> Path:
     """The directory holding the weights, unwrapping an HF cache repo to its snapshot.
 
@@ -369,6 +370,7 @@ def available_media_model_ids(task: str) -> list[str]:
 
 
 
+# ── recognising the resident model ──────────────────────────────────
 def published_token(pick: MediaModelPick) -> str:
     """The ``gguf_variant`` the backend will publish once *pick* is loaded, lowercased."""
     from hub.utils.gguf import extract_quant_token

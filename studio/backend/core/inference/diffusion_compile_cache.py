@@ -82,6 +82,7 @@ def cache_root() -> Path:
     return Path(root) if root else _DEFAULT_ROOT
 
 
+# --------------------------------------------------------------------------- fingerprint
 def _triton_version() -> Optional[str]:
     try:
         import triton  # noqa: PLC0415
@@ -165,6 +166,7 @@ def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
+# ----------------------------------------------------------------------------- lifecycle
 @dataclasses.dataclass
 class CacheContext:
     """Per-load cache state carried between ``begin`` and ``save``/``restore``.

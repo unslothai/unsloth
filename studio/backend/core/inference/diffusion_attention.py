@@ -124,6 +124,7 @@ def _is_cuda_nvidia(target: Any) -> bool:
 # whole B x heads x N x N score matrix. That is how a 3.4 GB Q4_K_M video model asked a 16 GB card for a single 66.54
 # GiB allocation 70 seconds into a generation.  So do not read the flags. Run one tiny attention per backend and record
 # what happens.
+# ── what the native SDPA dispatch can actually run (#8225) ───────────────────
 SDPA_FLASH = "flash"
 SDPA_MEM_EFFICIENT = "mem_efficient"
 SDPA_CUDNN = "cudnn"
@@ -716,6 +717,7 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
 # with dynamic=True) but not on ``max`` (dynamic=False), where each length is its own graph and a fullgraph region
 # hard-errors once dynamo's recompile limit is reached. The caller therefore only installs the trim on a tier that
 # compiles dynamically; see the call site in video.py.
+# --------------------------------------------------------------------------------------
 _HUNYUAN15_TRANSFORMER_CLS = "HunyuanVideo15Transformer3DModel"
 _HUNYUAN15_PROCESSOR_CLS = "HunyuanVideo15AttnProcessor2_0"
 _NULL_ATTN_FLAG = "_unsloth_null_attn_mask"

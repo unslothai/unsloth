@@ -1797,6 +1797,7 @@ class InferenceOrchestrator:
     # (whisper-server, llama-server, and the Transformers spawn child), not the chat worker. Their lifecycle goes
     # through here all the same, so one object knows everything that is resident and Voice settings and Model Hub cannot
     # report different things about one model.
+    # --- Dictation models -------------------------------------------------
     def load_stt_model(
         self,
         model: Optional[str],
@@ -2806,6 +2807,7 @@ class InferenceOrchestrator:
         return is_gpt_oss_model_name(model_name or self.active_model_name or "")
 
 
+# ========== GLOBAL INSTANCE ==========
 _inference_backend = None
 # Guards the lazy construction below. The first build runs hardware detection, seconds cold, and first-paint routes call
 # this getter from executor threads. Unlocked, several would see None and each build an orchestrator, orphaning all but

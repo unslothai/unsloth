@@ -979,6 +979,7 @@ class AnthropicPassthroughEmitter:
         # ── Reasoning ── llama-server splits <think> into reasoning_content whenever it can parse the model's reasoning
         # format (it does so for tool-calling turns, which is every Claude Code turn). Reading only `content` drops the
         # entire thinking trace, so the model appears not to think at all.
+        # ── Reasoning ──
         reasoning = delta.get("reasoning_content")
         if reasoning:
             if not self._reasoning_as_thinking:
@@ -1014,11 +1015,13 @@ class AnthropicPassthroughEmitter:
         # verbatim from here
         # ── Structured tool calls take precedence over healing ── Grammar mode worked: flush anything the healer held
         # (it preceded the call in the model's output) and relay verbatim from here on.
+        # ── Structured tool calls take precedence over healing ──
         if delta.get("tool_calls") and self._healer is not None and not self._healer.dormant:
             for kind, value in self._healer.structured_tool_call_seen():
                 if kind == "text" and value:
                     events.extend(self._emit_text_delta(value))
 
+        # ── Text content ──
         content = delta.get("content")
         if content and self._healer is not None and not self._healer.dormant:
             # Route text through the healer: held/promoted portions become synthetic tool_use blocks, the rest streams
@@ -1031,6 +1034,7 @@ class AnthropicPassthroughEmitter:
         elif content:
             events.extend(self._emit_text_delta(content))
 
+        # ── Tool calls (streaming deltas) ──
         tool_calls = delta.get("tool_calls") or []
         for tc in tool_calls:
             tc_idx = tc.get("index", 0)
@@ -1088,6 +1092,7 @@ class AnthropicPassthroughEmitter:
                     )
                 )
 
+        # ── Finish reason ──
         if finish_reason:
             self._stop_reason = openai_finish_to_anthropic_stop(finish_reason)
 

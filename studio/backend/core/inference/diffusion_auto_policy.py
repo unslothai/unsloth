@@ -380,6 +380,7 @@ def resolve_dense_quant_candidate(
 # dense bf16 DiT) instead produced a perfectly good image at a precision nobody asked for, which is exactly what made a
 # successful render worthless as proof that the requested precision ran. Escape hatch for anyone who relied on the old
 # behaviour; unset (the default) fails closed.
+# ── strict precision (fail closed on a declined EXPLICIT request) ────────────
 _PRECISION_FALLBACK_ENV = "UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK"
 
 
@@ -417,6 +418,7 @@ def precision_refusal_message(
 # ── resolved-record (status surface) ───────────────────────────────────────── How the engaged value relates to what
 # the caller asked for. Additive on the status payload: every honored request and every auto decision reports "applied",
 # so a client that ignores the field sees exactly today's behaviour.
+# ── resolved-record (status surface) ─────────────────────────────────────────
 RESOLVED_APPLIED = "applied"  # the ask was honored (or there was no ask)
 RESOLVED_FELL_BACK = "fell_back"  # an explicit ask was declined and something ELSE engaged
 RESOLVED_UNSUPPORTED = "unsupported"  # an explicit ask cannot run on this host / model at all

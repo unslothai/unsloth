@@ -178,6 +178,7 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 # on its own hosted INT8 checkpoint, and the two rotations have to agree with the same comfy-kitchen definition down to
 # the normalizer -- two copies of a matrix nobody re-derives at review time is exactly how they would stop agreeing.
 # Both stay importable from here.
+# ── ConvRot INT8 ──────────────────────────────────────────────────────────────
 @lru_cache(maxsize = None)
 def _int8_convrot_linear_class() -> Any:
     """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports
@@ -279,6 +280,7 @@ def _terminator_layer_class() -> Any:
 # flattening of the Qwen3-VL tree; transformers nests the language model and the vision tower under ``model.``. Verified
 # exhaustive on 2026-08-09: all 902 hosted names map into ``MiniMaxAI/MiniMax-H3``
 # ``text_encoder/model.safetensors.index.json``, with nothing left over on this side.
+# ── name mapping ──────────────────────────────────────────────────────────────
 def h3_te_remap_key(key: str) -> str:
     """A hosted checkpoint tensor name in transformers' ``Qwen3VLForConditionalGeneration`` naming."""
     if key.startswith("visual."):

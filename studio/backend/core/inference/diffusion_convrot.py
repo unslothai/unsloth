@@ -59,6 +59,7 @@ from typing import Any, Iterable, Optional
 # ── the metadata contract, carried in the prequant checkpoint's own ``metadata`` dict ────────── The rotation KIND. A
 # value this module does not implement is refused, so a future scheme can be added without a released Unsloth silently
 # treating it as this one.
+# ── the metadata contract, carried in the prequant checkpoint's own ``metadata`` dict ──────────
 CONVROT_KIND = "convrot_hadamard_v1"
 # mirrors the adaLN curve contract next door: a form tag plus the parameters to reproduce the form
 # Key naming mirrors the adaLN curve contract next door (``adaln_form`` / ``curve_dim`` / ``curve_grid``): a form tag
@@ -98,6 +99,7 @@ def is_power_of_four(size: Any) -> bool:
 # ── the rotation itself ─────────────────────────────────────────────────────────────────────── Mirrors comfy-kitchen's
 # ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``, in a few lines of torch rather than a dependency on
 # a wheel Unsloth does not ship.
+# ── the rotation itself ───────────────────────────────────────────────────────────────────────
 _HADAMARD_CACHE: dict = {}
 
 
@@ -221,6 +223,7 @@ def _install_rotation(module: Any, group_size: int) -> None:
 
 
 
+# ── the metadata contract ─────────────────────────────────────────────────────────────────────
 def declares_rotation(metadata: Any) -> bool:
     """True when ``metadata`` claims its weights were rotated offline.
 
@@ -273,6 +276,7 @@ def rotation_metadata(group_size: int, fqns: Iterable[str]) -> dict:
 
 
 
+# ── the two halves ────────────────────────────────────────────────────────────────────────────
 def rotatable_fqns(
     transformer: Any,
     filter_fn: Any,
