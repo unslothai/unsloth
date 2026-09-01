@@ -196,6 +196,22 @@ from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
+
+def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> HfTokenArg:
+    """Pick the credential for a route that still accepts the legacy ``?hf_token=``.
+
+    Header first, as it was before these routes resolved their token through a
+    dependency: the header is the caller's real credential and a stale query parameter
+    must not displace it. The dependency's own value goes last so the anonymous sentinel
+    survives when neither explicit token is present -- an ``or`` chain that ended on the
+    query value would fall through ``False`` to ``None`` and hand back the ambient token.
+    """
+    return (
+        _normalize_hf_token(header_token)
+        or _normalize_hf_token(query_token)
+        or header_token
+    )
+
 try:
     from utils.models import (
         scan_trained_models,
@@ -4453,7 +4469,7 @@ async def get_gguf_variants(
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
     try:
-        hf_token = _normalize_hf_token(hf_token) or hf_token_header
+        hf_token = _resolve_hub_token(hf_token_header, hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
 
         answer = await hub_gguf_variants.get_gguf_variants_answer(

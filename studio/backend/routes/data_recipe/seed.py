@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, UploadFile, File as FastAPIFile, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
+from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
@@ -317,7 +318,10 @@ def _read_preview_rows_from_multi_files(
 
 
 @router.post("/seed/inspect", response_model = SeedInspectResponse)
-def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
+def inspect_seed_dataset(
+    payload: SeedInspectRequest,
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
+) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
     if not dataset_name or dataset_name.count("/") < 1:
         raise HTTPException(
@@ -338,9 +342,12 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
+    # Derived from the caller, like every other Hub-reaching route. Hardcoding False here
+    # would take the ambient fallback away from a UI session too, so an install whose
+    # Hugging Face token lives in the environment would lose gated seed inspection.
     token = hf_token_arg(
         _normalize_optional_text(payload.hf_token),
-        allow_ambient_token = False,
+        allow_ambient_token = allow_ambient_token,
     )
     preview_size = int(payload.preview_size)
 
