@@ -199,6 +199,19 @@ test("Hub rows can still tell a partial apart from an absent model", () => {
   );
 });
 
+test("a partial alone does not open the picker on the On Device tab", () => {
+  // hasDownloadedModels picks the first run tab. The cached lists carry partials so they can be
+  // seen and removed, but a machine whose only cached row is a cancelled download has nothing to
+  // load, and that tab would open on one unusable row.
+  const start = PICKERS.indexOf("export function hasDownloadedModels()");
+  assert.ok(start > 0, "hasDownloadedModels exists");
+  const body = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
+  assert.match(body, /_cachedGgufCache\.some\(\(c\) => !c\.partial\)/);
+  assert.match(body, /_cachedModelsCache\.some\(\(c\) => !c\.partial\)/);
+  // Local sources have no partial concept, so they stay a plain emptiness check.
+  assert.match(body, /_lmStudioCache\.length > 0/);
+});
+
 test("a torn quant inside the expander keeps its own menu", () => {
   // The expander lists torn quants, but the menu was gated on v.downloaded, so the one row that
   // holds bytes you might want back had no reveal and no delete. A partial still occupies disk.

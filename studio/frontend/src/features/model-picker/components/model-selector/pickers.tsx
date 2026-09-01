@@ -2447,11 +2447,16 @@ let _scanFoldersCache: ScanFolderInfo[] = [];
 
 /** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or
  * custom-folder model) is known. Reads the module caches, which persist across
- * popover mounts, so the selector can default to the On Device tab. */
+ * popover mounts, so the selector can default to the On Device tab.
+ *
+ * Partials do not count. The cached lists carry them so they can be seen and
+ * removed, but a machine whose only cached row is a cancelled download has
+ * nothing to load, and opening on that tab shows one unusable row instead of
+ * the list that would get the user a model. */
 export function hasDownloadedModels(): boolean {
   return (
-    _cachedGgufCache.length > 0 ||
-    _cachedModelsCache.length > 0 ||
+    _cachedGgufCache.some((c) => !c.partial) ||
+    _cachedModelsCache.some((c) => !c.partial) ||
     _lmStudioCache.length > 0 ||
     _localDirCache.length > 0 ||
     _customFolderCache.length > 0
