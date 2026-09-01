@@ -16,6 +16,7 @@ Run with: ``PYTHONPATH=studio/backend python -m pytest studio/backend/tests/test
 import io
 import os
 import sys
+import types
 
 import pytest
 
@@ -130,7 +131,11 @@ def captured_popen(monkeypatch):
         cap["kwargs"] = kwargs
         return _FakeProc()
 
-    monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
+    # Keep the fake local to the executor. Patching the shared subprocess module
+    # also intercepts psutil's macOS ``ps`` probe and overwrites this capture.
+    subprocess_proxy = types.SimpleNamespace(**vars(tools.subprocess))
+    subprocess_proxy.Popen = fake_popen
+    monkeypatch.setattr(tools, "subprocess", subprocess_proxy)
     return cap
 
 
