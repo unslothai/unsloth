@@ -429,6 +429,9 @@ function resolveFitMaxSeqLength(
 function localMaxTokensCeiling(loadedContextLength: number | null, fallback: number) {
   return Math.max(64, loadedContextLength ?? fallback);
 }
+function replayMaxTokensCap(loadedContextLength: number | null | undefined) {
+  return loadedContextLength == null ? undefined : Math.max(64, loadedContextLength);
+}
 function unreportedWindowMaxTokens(g: boolean, held: number) { return g ? held : 4096; }
 function resolveManualAutoCtxPin(..._a: any[]) { return null; }
 async function ensureGpuDeviceCache() {}

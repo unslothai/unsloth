@@ -440,6 +440,19 @@ export function localMaxTokensCeiling(
   return Math.max(MAX_TOKENS_MIN, loadedContextLength ?? unreportedWindowFallback);
 }
 
+/** The cap a load hands `getReplayedParams`, floored the same way the ceiling above is.
+ *
+ *  That clamp only lowers Max Tokens, so a raw window below the control's minimum would
+ *  leave the value outside its own slider. `undefined` means nothing sized a window.
+ */
+export function replayMaxTokensCap(
+  loadedContextLength: number | null | undefined,
+): number | undefined {
+  return loadedContextLength == null
+    ? undefined
+    : Math.max(MAX_TOKENS_MIN, loadedContextLength);
+}
+
 /** The app-level request to fall back on when the target has no pin of its own.
  *
  *  `params.maxSeqLength` holds a REQUEST only while the backend serving it does not size

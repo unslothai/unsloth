@@ -566,10 +566,11 @@ test("a remembered budget is capped by a non-GGUF load", () => {
   );
   // One cap for both sites: the load response and the Qwen3 thinking defaults.
   // The reported window leads, and the request stands in only for a backend that
-  // sizes nothing -- a self-sizing one is sent the auto-size sentinel.
+  // sizes nothing -- a self-sizing one is sent the auto-size sentinel. Through the
+  // floor, so a window below the control's own minimum cannot become the cap.
   assert.match(
     runtime,
-    /const loadedContextCap =\s*loadedFields\.loadedContextLength \?\?\s*\(!loadResponse\.is_gguf && effectiveMaxSeqLength > 0\s*\? effectiveMaxSeqLength\s*: undefined\);/,
+    /const loadedContextCap = replayMaxTokensCap\(\s*loadedFields\.loadedContextLength \?\?\s*\(!loadResponse\.is_gguf && effectiveMaxSeqLength > 0\s*\? effectiveMaxSeqLength\s*: null\),\s*\);/,
   );
   assert.equal(
     runtime.match(/maxTokensCap: loadedContextCap/g)?.length,
@@ -583,7 +584,7 @@ test("a remembered budget is capped by a non-GGUF load", () => {
   );
   assert.match(
     adapter,
-    /\? \(loadedContextFields\(loadResp\)\.loadedContextLength \?\? undefined\)\s*: loadedWindow,/,
+    /maxTokensCap: replayMaxTokensCap\(\s*candidate\.kind === "gguf"\s*\? loadedContextFields\(loadResp\)\.loadedContextLength\s*: loadedWindow,\s*\),/,
   );
 
   // Compare loads the same way: a pane with no context pin sends the sentinel, and
@@ -594,7 +595,7 @@ test("a remembered budget is capped by a non-GGUF load", () => {
   );
   assert.match(
     composer,
-    /maxTokensCap:\s*loadedContextFields\(resp\)\.loadedContextLength \?\?\s*\(!resp\.is_gguf && effectiveMaxSeqLength > 0/,
+    /maxTokensCap: replayMaxTokensCap\(\s*loadedContextFields\(resp\)\.loadedContextLength \?\?\s*\(!resp\.is_gguf && effectiveMaxSeqLength > 0/,
   );
 
   const status = readFileSync(

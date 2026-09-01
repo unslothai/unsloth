@@ -2491,6 +2491,9 @@ type ChatRuntimeStore = {
   /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
    *  loadedContextLength is, so a context never arrives unattributed. */
   loadedIsGguf: boolean | null;
+  /** The backend's own is_mlx for the loaded model; null until one loads. The platform
+   *  cannot answer it: the worker serves native-audio checkpoints off the MLX path. */
+  loadedIsMlx: boolean | null;
   /** Whether loadedContextLength actually bounds the cache. Null where the backend does
    *  not answer, which is not the same as a confirmed false. */
   loadedContextEnforced: boolean | null;
@@ -3745,6 +3748,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   maxContextLength: null,
   nativeContextLength: null,
   loadedIsGguf: null,
+  loadedIsMlx: null,
   loadedContextEnforced: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,

@@ -136,6 +136,7 @@ import {
   resolveFitMaxSeqLength,
   retainedContextPin,
   unpinnedLoadContext,
+  replayMaxTokensCap,
 } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
@@ -1650,11 +1651,12 @@ export function SharedComposer({
             // The reported window leads and the request stands in only for a backend
             // that sizes nothing, as on the interactive load: an unpinned pane sends
             // the auto-size sentinel, and capping a budget at 0 asks for no output.
-            maxTokensCap:
+            maxTokensCap: replayMaxTokensCap(
               loadedContextFields(resp).loadedContextLength ??
-              (!resp.is_gguf && effectiveMaxSeqLength > 0
-                ? effectiveMaxSeqLength
-                : undefined),
+                (!resp.is_gguf && effectiveMaxSeqLength > 0
+                  ? effectiveMaxSeqLength
+                  : null),
+            ),
           },
         );
         store.setModelRequiresTrustRemoteCode(

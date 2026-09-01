@@ -163,6 +163,7 @@ import {
   resolveFitMaxSeqLength,
   resolveExplicitCtxPin,
   retainedContextPin,
+  replayMaxTokensCap,
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -2288,6 +2289,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "maxContextLength",
   "nativeContextLength",
   "loadedIsGguf",
+  "loadedIsMlx",
   "modelRequiresTrustRemoteCode",
   "supportsReasoning",
   "reasoningAlwaysOn",
@@ -3412,10 +3414,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // A budget remembered from a larger context does not fit this load. The
           // window, not the request: a backend that sizes its own was sent the
           // auto-size sentinel, which as a budget is zero.
-          maxTokensCap:
+          maxTokensCap: replayMaxTokensCap(
             candidate.kind === "gguf"
-              ? (loadedContextFields(loadResp).loadedContextLength ?? undefined)
+              ? loadedContextFields(loadResp).loadedContextLength
               : loadedWindow,
+          ),
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio
@@ -3818,8 +3821,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
             fromModelDefaults: true,
-            maxTokensCap:
-              loadedContextFields(loadResp).loadedContextLength ?? undefined,
+            maxTokensCap: replayMaxTokensCap(
+              loadedContextFields(loadResp).loadedContextLength,
+            ),
           },
         );
         const defaultModel: ChatModelRow = {

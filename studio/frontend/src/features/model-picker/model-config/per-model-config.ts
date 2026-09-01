@@ -145,6 +145,22 @@ export function isServedByMlx(
   );
 }
 
+/** Whether MLX serves the RESIDENT model.
+ *
+ *  The platform cannot answer it alone: the worker picks NativeAudioBackend for a
+ *  native-audio checkpoint before the MLX fast-path, so those load on Apple Silicon
+ *  without MLX serving them. `loadedIsMlx` is the backend's own answer, and null there
+ *  means nothing is loaded yet, where the platform is still the best available one.
+ */
+export function residentIsServedByMlx(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason: string | null | undefined,
+  loadedIsMlx: boolean | null | undefined,
+): boolean {
+  return isServedByMlx(isGguf, deviceType, chatOnlyReason) && loadedIsMlx !== false;
+}
+
 export function presetLoadSettingNames(
   isGguf: boolean,
   deviceType: string | null | undefined,
@@ -205,6 +221,7 @@ export function loadedContextFields(resp: {
   maxContextLength: number | null;
   nativeContextLength: number | null;
   loadedIsGguf: boolean | null;
+  loadedIsMlx: boolean | null;
   loadedContextEnforced: boolean | null;
 } {
   if (!resp) {
@@ -213,6 +230,7 @@ export function loadedContextFields(resp: {
       maxContextLength: null,
       nativeContextLength: null,
       loadedIsGguf: null,
+      loadedIsMlx: null,
       loadedContextEnforced: null,
     };
   }
@@ -225,6 +243,7 @@ export function loadedContextFields(resp: {
       maxContextLength: null,
       nativeContextLength: null,
       loadedIsGguf: false,
+      loadedIsMlx: resp.is_mlx ?? null,
       loadedContextEnforced: null,
     };
   }
@@ -233,6 +252,9 @@ export function loadedContextFields(resp: {
     maxContextLength: resp.max_context_length ?? loaded,
     nativeContextLength: resp.native_context_length ?? null,
     loadedIsGguf: isGguf,
+    // The backend's own answer, so a checkpoint the worker serves off the MLX path
+    // (native audio) is not taken for MLX by the platform alone.
+    loadedIsMlx: resp.is_mlx ?? null,
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),

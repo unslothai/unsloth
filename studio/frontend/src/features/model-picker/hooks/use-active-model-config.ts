@@ -7,7 +7,7 @@ import { useMemo } from "react";
 import {
   type PerModelConfig,
   isServedByLlamaCpp,
-  isServedByMlx,
+  residentIsServedByMlx,
 } from "../model-config/per-model-config";
 
 export interface ActiveModelConfigState {
@@ -18,11 +18,10 @@ export interface ActiveModelConfigState {
 
 export function useActiveModelConfig(): ActiveModelConfigState {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint) || null;
-  const deviceType = usePlatformStore((s) => s.deviceType);
-  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const maxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
@@ -60,17 +59,16 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     checkpoint,
   });
   const platform = usePlatformStore();
-  const isMlx = isServedByMlx(
+  const isMlx = residentIsServedByMlx(
     isGguf,
     platform.deviceType,
     platform.chatOnlyReason,
+    loadedIsMlx,
   );
 
   // Off-backend this stays null, or the model compares unequal to its own defaults
   // over a field it cannot show.
-  const effectiveMlxKvBits = isServedByMlx(isGguf, deviceType, chatOnlyReason)
-    ? (mlxKvBits ?? null)
-    : null;
+  const effectiveMlxKvBits = isMlx ? (mlxKvBits ?? null) : null;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {

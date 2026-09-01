@@ -20,6 +20,7 @@ const {
   isServedByLlamaCpp,
   isServedByMlx,
   loadedContextFields,
+  residentIsServedByMlx,
 } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
@@ -28,6 +29,7 @@ const {
   loadedContextForParams,
   resolveLoadMaxSeqLength,
   localMaxTokensCeiling,
+  replayMaxTokensCap,
   resolveExplicitCtxPin,
   resolveFitMaxSeqLength,
   retainedContextPin,
@@ -56,6 +58,7 @@ test("an MLX response carries a window without a native one", () => {
     maxContextLength: 8192,
     nativeContextLength: null,
     loadedIsGguf: false,
+    loadedIsMlx: true,
     loadedContextEnforced: null,
   });
   // Transformers, which sizes nothing, still contributes no window.
@@ -64,6 +67,7 @@ test("an MLX response carries a window without a native one", () => {
     maxContextLength: null,
     nativeContextLength: null,
     loadedIsGguf: false,
+    loadedIsMlx: null,
     loadedContextEnforced: null,
   });
   assert.equal(loadedContextFields(null).loadedIsGguf, null);
@@ -205,4 +209,41 @@ test("an outgoing self-sizing window does not become the next model's request", 
     }),
     4096,
   );
+});
+
+test("the backend's own is_mlx vetoes the platform for a resident model", () => {
+  const MAC = ["mac", null] as const;
+  // A native-audio checkpoint loads on Apple Silicon through NativeAudioBackend, which
+  // the worker picks before the MLX fast-path, so its settings are not MLX's to clear.
+  assert.equal(residentIsServedByMlx(false, ...MAC, false), false);
+  assert.equal(residentIsServedByMlx(false, ...MAC, true), true);
+  // Nothing loaded yet: the platform is still the best answer available.
+  assert.equal(residentIsServedByMlx(false, ...MAC, null), true);
+  assert.equal(residentIsServedByMlx(false, ...MAC, undefined), true);
+  // The veto adds to the platform rule rather than replacing it.
+  assert.equal(residentIsServedByMlx(true, ...MAC, true), false);
+  assert.equal(residentIsServedByMlx(false, "linux", null, true), false);
+  // And the response carries that answer, so the store never has to infer it.
+  assert.equal(loadedContextFields({ is_gguf: false, is_mlx: true, context_length: 8192 }).loadedIsMlx, true);
+  assert.equal(
+    loadedContextFields({ is_gguf: false, is_mlx: false, context_length: 2048 }).loadedIsMlx,
+    false,
+  );
+  // Omitted is unknown, not a denial: an older backend answers nothing here.
+  assert.equal(loadedContextFields({ is_gguf: false, context_length: 2048 }).loadedIsMlx, null);
+  assert.equal(loadedContextFields({ is_gguf: true, context_length: 4096 }).loadedIsMlx, null);
+  assert.equal(loadedContextFields(null).loadedIsMlx, null);
+});
+
+test("a cap never lands below the Max Tokens control's own minimum", () => {
+  // MLX honours a tiny positive request verbatim, and the cap only lowers Max Tokens, so
+  // a raw window here would clamp the value outside its slider.
+  assert.equal(replayMaxTokensCap(32), 64);
+  assert.equal(replayMaxTokensCap(64), 64);
+  assert.equal(replayMaxTokensCap(32768), 32768);
+  // Nothing sized a window: no cap at all, which is not a cap of zero.
+  assert.equal(replayMaxTokensCap(null), undefined);
+  assert.equal(replayMaxTokensCap(undefined), undefined);
+  // The same floor the displayed ceiling already used, so the pair cannot disagree.
+  assert.equal(replayMaxTokensCap(32), localMaxTokensCeiling(32, 32));
 });

@@ -93,6 +93,7 @@ import {
   unpinnedLoadContext,
   resolveLoadMaxSeqLength,
   resolveExplicitCtxPin,
+  replayMaxTokensCap,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -1761,11 +1762,12 @@ export function useChatModelRuntime() {
             // The reported window, or where nothing sized one the requested length.
             // The request answers only for a backend that sizes nothing: a self-sizing
             // one was sent the sentinel, which as a budget is zero.
-            const loadedContextCap =
+            const loadedContextCap = replayMaxTokensCap(
               loadedFields.loadedContextLength ??
-              (!loadResponse.is_gguf && effectiveMaxSeqLength > 0
-                ? effectiveMaxSeqLength
-                : undefined);
+                (!loadResponse.is_gguf && effectiveMaxSeqLength > 0
+                  ? effectiveMaxSeqLength
+                  : null),
+            );
             setParams(
               {
                 ...mergeBackendRecommendedInference({
