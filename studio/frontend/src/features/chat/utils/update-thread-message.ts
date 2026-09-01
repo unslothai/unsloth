@@ -1,6 +1,36 @@
 import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/react";
 import { saveChatMessage } from "../api/chat-api";
+import type { MessageRecord } from "../types";
 import { exportedItemToRecord } from "./delete-thread-message";
+
+// Mirrors studio_db._SERVER_MANAGED_LINK_KEYS: the fields that say a run, not the user, owns
+// this turn. A manual edit asks the backend to hand the turn over, and it refuses to detach the
+// run while the record still claims server ownership -- the save is answered 409 and the catch
+// below rolls the edit back out of the thread. Timing, incomplete and context usage are what
+// the reply is displayed with rather than who owns it, so they stay.
+const SERVER_OWNED_METADATA_KEYS = [
+  "researchRunId",
+  "researchRun",
+  "researchStatus",
+  "researchPlanRevision",
+  "serverManaged",
+  "generationRunId",
+  "generationSeq",
+  "generationStatus",
+  "generationSettled",
+];
+
+function withoutServerOwnership(record: MessageRecord): MessageRecord {
+  const metadata = record.metadata as Record<string, unknown> | undefined;
+  if (!metadata) return record;
+  const kept = Object.fromEntries(
+    Object.entries(metadata).filter(
+      ([key]) => !SERVER_OWNED_METADATA_KEYS.includes(key),
+    ),
+  );
+  const { metadata: _owned, ...rest } = record;
+  return Object.keys(kept).length > 0 ? { ...rest, metadata: kept } : rest;
+}
 
 type ThreadImportExport = {
   export: () => ExportedMessageRepository;
@@ -139,7 +169,9 @@ export async function updateThreadMessage(args: {
   if (remoteId && !isIncognito && editedMessage) {
     try {
       await saveChatMessage(
-        exportedItemToRecord(remoteId, originalParentId, editedMessage),
+        withoutServerOwnership(
+          exportedItemToRecord(remoteId, originalParentId, editedMessage),
+        ),
         { allowGenerationEdit: true },
       );
     } catch (e) {

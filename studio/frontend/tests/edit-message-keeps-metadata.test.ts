@@ -186,3 +186,65 @@ test("the turn keeps its timestamp when the export carries epoch millis", async 
 
   assert.equal(h.saved[0].createdAt, 2000);
 });
+
+// A reply the durable generation path produced is stored with the run's ownership fields, and
+// the thread hands them straight back on `metadata.custom` after a reload. Sending them back
+// tells the backend the run still owns the turn, so it refuses to detach it and answers the
+// edit 409 -- reproduced against studio_db: the same payload without these keys saves and keeps
+// `timing`/`contextUsage`, with them it raises ChatMessageProtectedError.
+const GENERATION_OWNERSHIP = {
+  serverManaged: true,
+  generationRunId: "run-1",
+  generationSeq: 3,
+  generationStatus: "completed",
+  generationSettled: true,
+};
+
+async function saveOwnedReply(custom: Record<string, unknown>) {
+  const h = harness();
+  const exported = thread([{ type: "text", text: "the original reply" }]);
+  exported.messages[1].message.metadata = { custom };
+
+  await h.module.updateThreadMessage({
+    thread: { export: () => exported, import: () => {} },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText: "an edited reply",
+    isIncognito: false,
+  });
+
+  assert.equal(h.saved.length, 1, "the edit was never written");
+  return h.saved[0];
+}
+
+test("editing a generated reply drops the run's claim on the turn", async () => {
+  const record = await saveOwnedReply({ ...CUSTOM, ...GENERATION_OWNERSHIP });
+
+  assert.deepEqual(record.metadata, CUSTOM);
+  assert.deepEqual(
+    Object.keys(GENERATION_OWNERSHIP).filter(
+      (key) => key in (record.metadata as Record<string, unknown>),
+    ),
+    [],
+  );
+  assert.deepEqual(record.content, [{ type: "text", text: "an edited reply" }]);
+});
+
+test("a research report's ownership is dropped the same way", async () => {
+  const record = await saveOwnedReply({
+    ...CUSTOM,
+    serverManaged: true,
+    researchRunId: "research-1",
+    researchStatus: "completed",
+    researchPlanRevision: 2,
+    researchRun: { id: "research-1" },
+  });
+
+  assert.deepEqual(record.metadata, CUSTOM);
+});
+
+test("a reply whose only metadata was the run's claim writes none", async () => {
+  const record = await saveOwnedReply({ ...GENERATION_OWNERSHIP });
+
+  assert.equal("metadata" in record, false);
+});
