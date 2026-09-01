@@ -254,9 +254,7 @@ def code_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
 # A shell line that runs pip somewhere in it. Anchored on the `!` so a `pip install` inside a
 # Python string is not a cell, and open after it so a chained or compound command is:
 # `!echo start; pip install x` and `!if ...; then pip install x; fi` both install.
-_PIP_CELL_RE = re.compile(
-    r"^[ \t]*!.*\b(?:uv\s+)?pip\s+(?:install|uninstall)\b", re.MULTILINE
-)
+_PIP_CELL_RE = re.compile(r"^[ \t]*!.*\b(?:uv\s+)?pip\s+(?:install|uninstall)\b", re.MULTILINE)
 
 
 def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
