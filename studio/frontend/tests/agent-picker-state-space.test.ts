@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Exhaustive sweep of the API-examples agent picker's decision space. The component
-// runs pickCompatibleAgent in an effect that re-runs on its own output, so the two
-// properties that matter are not "the answer is X" but "it settles" and "it never
-// settles somewhere unrunnable". Enumerating every reachable input is cheap here
-// because the decision is a pure function.
+// The effect re-runs on its own output, so what matters is that it settles, runnably.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -17,8 +13,7 @@ import {
   pickCompatibleAgent,
 } from "../src/features/settings/components/agent-command.ts";
 
-// Mirrors DEFAULT_AGENTS in usage-examples.tsx and CODING_AGENTS in
-// studio/backend/utils/coding_agents.py minus HIDDEN_AGENTS ("pi").
+// DEFAULT_AGENTS in usage-examples.tsx = CODING_AGENTS minus HIDDEN_AGENTS ("pi").
 const VISIBLE_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes"];
 
 function powerset<T>(items: readonly T[]): T[][] {
@@ -28,11 +23,9 @@ function powerset<T>(items: readonly T[]): T[][] {
   );
 }
 
-// Every ordering is not enumerated: the backend returns CODING_AGENTS order and the
-// frontend only filters it, so subsets preserve that order.
+// Orderings are not enumerated: the frontend only filters the backend's order.
 const DETECTED_SETS = powerset(VISIBLE_AGENTS);
 
-// The component loop: apply the decision until it reports "nothing to change".
 function settle(
   detected: readonly string[],
   start: string,
@@ -63,7 +56,7 @@ test("every reachable state settles, and settles in one step", () => {
     for (const start of VISIBLE_AGENTS) {
       for (const isGguf of [true, false]) {
         const { steps } = settle(detected, start, isGguf, VISIBLE_AGENTS);
-        // More than one step would be a visible flip between paints, not just churn.
+        // >1 step is a visible flip between paints, not just churn.
         assert.ok(
           steps <= 2,
           `took ${steps} steps: detected=${JSON.stringify(detected)} start=${start}`,
@@ -90,8 +83,6 @@ test("the settled agent always runs on the active model", () => {
 });
 
 test("the settled agent is always one the panel offers", () => {
-  // Under version skew the backend can return a narrower list than DEFAULT_AGENTS;
-  // naming an agent with no chip to click would be worse than naming a wrong one.
   for (const offered of DETECTED_SETS.filter((s) => s.length > 0)) {
     for (const detected of [[], offered]) {
       for (const start of offered) {
@@ -120,7 +111,6 @@ test("settling is idempotent", () => {
 });
 
 test("a GGUF model never steers away from a detected GGUF-only agent", () => {
-  // The re-steer has to work in both directions or the picker is one-way sticky.
   for (const detected of DETECTED_SETS) {
     const firstGgufOnly = detected.find((a) => GGUF_ONLY_AGENTS.includes(a));
     if (firstGgufOnly === undefined) continue;
@@ -144,7 +134,6 @@ test("the pre-PR rule and the current rule differ only where Claude was unrunnab
         const b = before(detected, start, isGguf) ?? start;
         const a = pickCompatibleAgent(detected, start, isGguf, VISIBLE_AGENTS) ?? start;
         if (a !== b) {
-          // Every difference must be one that removes an unrunnable answer.
           assert.ok(
             !agentRunsOnActiveModel(b, isGguf),
             `changed a runnable answer: ${b} -> ${a} (isGguf=${isGguf})`,
@@ -155,14 +144,11 @@ test("the pre-PR rule and the current rule differ only where Claude was unrunnab
       }
     }
   }
-  // The change is not a no-op either.
   assert.ok(deltas.length > 0);
 });
 
 test("UNIVERSAL_AGENT is an agent the panel actually offers", () => {
-  // Pins the coupling to studio/backend/utils/coding_agents.py CODING_AGENTS and to
-  // HIDDEN_AGENTS in ../src/features/settings/api/coding-agents.ts. Dropping opencode
-  // from either should break here rather than in the UI.
+  // Dropping opencode from CODING_AGENTS should break here, not in the UI.
   assert.ok(VISIBLE_AGENTS.includes(UNIVERSAL_AGENT));
   assert.ok(agentRunsOnActiveModel(UNIVERSAL_AGENT, false));
   assert.ok(agentRunsOnActiveModel(UNIVERSAL_AGENT, true));
@@ -177,8 +163,6 @@ test("fallbackAgent stays inside a narrowed offered list", () => {
 });
 
 test("a panel offering only GGUF-only agents leaves the pick alone", () => {
-  // Reachable only under frontend/backend skew, but the honest answer is "no change":
-  // there is nothing runnable to move to, so moving would just relabel the problem.
   for (const start of ["claude", "codex"]) {
     assert.equal(pickCompatibleAgent([], start, false, ["claude", "codex"]), null);
     assert.equal(

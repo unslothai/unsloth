@@ -21,9 +21,6 @@ test("only the llama-server-only agents are gated on GGUF", () => {
 });
 
 test("a safetensors model never falls back to a GGUF-only agent", () => {
-  // The old fallback was the literal default, "claude". Now that `unsloth start
-  // claude` refuses a non-GGUF model, resetting to it would hand the user a
-  // second command the CLI rejects.
   assert.equal(fallbackAgent(false), "opencode");
   assert.equal(fallbackAgent(true), "claude");
 });
@@ -52,13 +49,11 @@ test("a compatible current pick is left alone", () => {
 });
 
 test("nothing detected still corrects a pick that cannot run", () => {
-  // The non-loopback reset clears the detected list and drops back to the
-  // default agent, so this is the only place that correction can happen.
+  // The non-loopback reset clears the detected list, so this is the only correction point.
   assert.equal(pickCompatibleAgent([], "claude", false), "opencode");
 });
 
 test("loading a GGUF re-steers back to the GGUF-only agents", () => {
-  // Both directions, so the picker is not one-way sticky.
   assert.equal(pickCompatibleAgent(["claude", "codex"], "opencode", true), "claude");
   assert.equal(pickCompatibleAgent(["codex", "opencode"], "codex", false), "opencode");
 });

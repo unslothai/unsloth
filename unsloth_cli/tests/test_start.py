@@ -3485,10 +3485,7 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
 
 
 def test_connect_gguf_only_agents_reject_non_gguf_model(fake_studio, monkeypatch):
-    # Codex and Claude Code both talk to llama-server-only endpoints (/v1/responses and
-    # /v1/messages), so a resident transformers model is refused for both, each naming
-    # itself. opencode is the control: it speaks /v1/chat/completions, which serves this
-    # model fine, so the gate must not touch it.
+    # opencode is the control: /v1/chat/completions serves this model, so it must pass.
     inner = start._http_json
 
     def http_json(
@@ -4405,8 +4402,7 @@ def test_startup_failure_output_redacts_minted_key(monkeypatch, tmp_path, capsys
 
 
 def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch):
-    # Listing unavailable: the check falls back to post-connect and must still tear down an
-    # auto-started server instead of leaving it to atexit.
+    # Listing unavailable, so the post-connect check decides and must still tear down.
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
@@ -8087,12 +8083,7 @@ def test_codex_attach_check_defers_when_raw_name_exists_locally(monkeypatch, tmp
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "models/qwen")
 
 
-# ---------------------------------------------------------------------------
-# Claude Code shares the GGUF-only gate with Codex: /v1/messages is served by
-# llama-server alone, so a safetensors or MLX model opens Claude Code and then
-# fails every request. These lock the gate in for `claude` and lock Codex's own
-# wording in place while the helpers are shared.
-# ---------------------------------------------------------------------------
+# These also pin Codex's wording, now that the helpers are shared.
 
 
 def test_gguf_agents_name_themselves_and_their_own_subcommand(monkeypatch, capsys):
@@ -8132,8 +8123,6 @@ def test_claude_preflight_rejects_non_gguf_repo(monkeypatch, capsys):
 
 
 def test_claude_command_preflights_before_starting_a_server(fake_studio, monkeypatch, tmp_path):
-    # A complete, GGUF-free hub listing is decided before anything is launched, so no server
-    # is started for a model Claude Code could never use.
     _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
     started = {"called": False}
@@ -8149,8 +8138,6 @@ def test_claude_command_preflights_before_starting_a_server(fake_studio, monkeyp
 
 
 def test_claude_preload_gate_rejects_before_an_evicting_load(fake_studio, monkeypatch):
-    # The whole point of the attach-time gate: refuse while the resident model is still
-    # serving, rather than evicting it for a model /v1/messages cannot answer with.
     inner = start._http_json
     probed = []
 
@@ -8223,7 +8210,6 @@ def test_claude_post_connect_failure_tears_down_auto_served(fake_studio, monkeyp
 
 
 def test_claude_post_connect_failure_spares_an_attached_server(fake_studio, monkeypatch):
-    # The server was already running, so this command does not own it and must leave it up.
     down = []
     monkeypatch.setattr(start, "_shutdown_server", lambda server: down.append(server))
     inner = start._http_json
@@ -8247,12 +8233,7 @@ def test_claude_post_connect_failure_spares_an_attached_server(fake_studio, monk
     assert down == []
 
 
-# ---------------------------------------------------------------------------
-# _require_gguf_for_agent tolerance. The gate is the last thing between a loaded
-# server and the agent launch, and its callers tear the server down on any
-# exception, so only a definite "is_gguf": false may reject. Everything else is a
-# question the server did not answer.
-# ---------------------------------------------------------------------------
+# Tolerance: callers tear the server down on any exception, so only "is_gguf": false rejects.
 
 
 def _status_raises(monkeypatch, exc):
@@ -8298,7 +8279,7 @@ def test_require_gguf_never_rejects_on_an_http_error(monkeypatch, capsys, code, 
     ],
 )
 def test_require_gguf_never_rejects_on_a_transport_failure(monkeypatch, capsys, exc):
-    # None of these may surface as a traceback either: only HTTPError was caught before.
+    # Nor as a traceback: only HTTPError was caught before.
     _status_raises(monkeypatch, exc)
     assert _require_claude_gguf() is None
     assert capsys.readouterr().err == ""
@@ -8318,8 +8299,7 @@ def test_require_gguf_never_rejects_on_a_transport_failure(monkeypatch, capsys, 
 def test_require_gguf_treats_an_unreadable_answer_as_unknown(monkeypatch, capsys, body):
     monkeypatch.setattr(start, "_http_json", lambda *a, **k: body)
     assert _require_claude_gguf() is None
-    # The old code said "needs a GGUF model" here, which is a claim about the user's
-    # model that the server never made.
+    # The old code claimed "needs a GGUF model", which the server never said.
     assert "needs a GGUF model" not in capsys.readouterr().err
 
 
@@ -8346,8 +8326,7 @@ def test_require_gguf_still_rejects_a_definite_no(monkeypatch, capsys, agent, la
 
 
 def test_require_gguf_does_not_swallow_a_real_exit(monkeypatch):
-    # Guards the exception tuple against being loosened to `except Exception`, which
-    # would turn a broken stub -- or a _fail() reached from inside -- into a pass.
+    # Guards the exception tuple against being loosened to `except Exception`.
     _status_raises(monkeypatch, typer.Exit(code = 1))
     with pytest.raises(typer.Exit):
         _require_claude_gguf()
@@ -8361,8 +8340,7 @@ def test_require_gguf_does_not_swallow_a_bug(monkeypatch):
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, monkeypatch, agent):
-    # The regression this tolerance exists for: a 500 from get_status used to reject and
-    # then run _shutdown_auto_served() on a server that had just loaded a GGUF.
+    # The regression: a 500 from get_status used to reject, then shut down a loaded GGUF.
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
@@ -8404,7 +8382,6 @@ def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, m
     )
     assert result.exit_code == 0, result.output
     assert "needs a GGUF model" not in result.output
-    # The whole point: the gate no longer kills a server that had just loaded fine.
     assert started.get("down") is None
 
 

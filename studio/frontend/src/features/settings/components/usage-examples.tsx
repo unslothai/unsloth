@@ -591,25 +591,15 @@ export function UsageExamples({
   // True once the user has picked an agent themselves; guards the detection
   // effect below from clobbering that choice if it resolves afterward.
   const agentPickedByUserRef = useRef(storedPrefs.apiExampleAgent != null);
-  // Narrower than the ref above, which is also true for a preference merely restored
-  // from storage. A pick made by hand in THIS session is never second-guessed; one
-  // restored from an older Studio, taken before Claude Code was gated on GGUF, is.
+  // Narrower than the ref above, which is also true for a merely restored preference.
   const agentClickedThisSessionRef = useRef(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
   const localAgentDetection = canUseLocalAgentDetection(base);
-  // activeGgufVariant alone only covers an HF-repo GGUF pick (a specific
-  // quant variant string) -- a direct local .gguf file (custom folder /
-  // LM Studio / drag-drop) is just as much a GGUF the CLI preflight would
-  // accept, but never has a "variant" to report, and would otherwise read as
-  // non-GGUF here. activeNativePathToken covers the drag-drop/picked-file
-  // case; ggufContextLength is only ever populated when the backend's
-  // /api/inference/status last reported is_gguf: true for the active model
-  // (see applyActiveModelStatusToStore), so together these three cover every
-  // path a model can be GGUF through, matching the same is_gguf-or-equivalent
-  // check hasGgufSource applies to a staged pick.
+  // Three signals: a hub pick reports a variant, a drag-dropped file only a path token,
+  // and ggufContextLength is set only when /api/inference/status said is_gguf.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
@@ -638,9 +628,7 @@ export function UsageExamples({
       // longer targets a loopback base -- don't leave it selected, but
       // never touch a choice the user made by hand.
       if (!agentPickedByUserRef.current) {
-        // The derived effect below corrects this to a runnable agent if the
-        // active model is not a GGUF; reading isGguf here would close over a
-        // stale value, since fetching is all this effect reruns for.
+        // The effect below corrects this; isGguf read here would be a stale closure.
         setAgent(DEFAULT_AGENT);
       }
       return;
@@ -664,10 +652,7 @@ export function UsageExamples({
     };
   }, [localAgentDetection]);
 
-  // A restored agent this build no longer offers cannot build a command -- and neither
-  // can one that cannot run the active model, which is how a preference saved before
-  // Claude Code was gated on GGUF arrives here. Both drop the stale preference and fall
-  // back; a pick made by hand in this session is left alone either way.
+  // Drop a restored preference this build no longer offers, or that cannot run the model.
   useEffect(() => {
     if (!agentPickedByUserRef.current) return;
     if (agentClickedThisSessionRef.current) return;
@@ -676,9 +661,7 @@ export function UsageExamples({
       return;
     }
     const reset = fallbackAgent(isGguf, availableAgents);
-    // null means nothing offered runs on this model; swapping in another unrunnable
-    // agent would only move the problem, so leave the pick and let the CLI say why.
-    if (reset === null) return;
+    if (reset === null) return; // nothing offered runs; moving would not help
     agentPickedByUserRef.current = false;
     setStoredAgent(null);
     setAgent(reset);
@@ -691,20 +674,8 @@ export function UsageExamples({
     setStoredAgent,
   ]);
 
-  // Single source of truth for the auto-picked agent, re-derived whenever
-  // the detected list or the loaded model's GGUF-ness changes -- in either
-  // direction. `codex` and `claude` both need a GGUF model (unsloth_cli's
-  // _require_gguf_for_agent exits otherwise), so they are only preferred once
-  // the loaded model actually qualifies; loading a GGUF model *after* a
-  // non-GGUF-gated fallback picked something else re-steers back to them
-  // just as loading a non-GGUF model steers away. Never overrides a choice
-  // the user made by hand. pickCompatibleAgent returns null when the current
-  // pick is already fine, which is also what an empty detected list yields
-  // unless the current pick itself cannot run the active model -- the case
-  // that reaches here from the non-loopback reset above.
-  // The guard is "detection has not answered yet", not "the list is empty":
-  // empty is also a valid answer (nothing installed), and acting on a list that
-  // has not resolved flips the shown command between paints.
+  // The guard is "detection has not answered", not "the list is empty": empty is a valid
+  // answer, and acting on an unresolved list flips the command between paints.
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
     if (localAgentDetection && !agentsLoaded) return;
