@@ -9,6 +9,7 @@ import errno
 import os
 import shutil
 import site
+import stat
 import subprocess
 import sys
 import threading
@@ -21,6 +22,26 @@ _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 _BWRAP_PROBE_BIN = os.path.realpath(os.path.abspath(shutil.which("true") or "/usr/bin/true"))
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
 _NIX_STORE = "/nix/store"
+
+_LINUX_ACCELERATOR_DEVICE_PATHS = (
+    "/dev/dxg",
+    "/dev/dri",
+    "/dev/kfd",
+    "/dev/accel",
+    "/dev/nvidia-caps",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+)
+
+
+class SandboxProfilePathError(ValueError):
+    """A legal host path cannot be safely represented in a sandbox profile."""
+
+
+class UnsafeSandboxWorkdirError(RuntimeError):
+    """The writable workdir would expose an inode outside its path boundary."""
 
 _sandbox_available_cache: bool | None = None
 # Absolute path to ``bwrap``, resolved once at probe time so the runtime
@@ -240,8 +261,66 @@ def _safe_subpath(p: str) -> str:
     contain none of these, so rejecting them is safer than escaping.
     """
     if any(c in p for c in ('"', "\\", "\n", "\r", "\x00")):
-        raise ValueError(f"path unsafe for Seatbelt profile: {p!r}")
+        raise SandboxProfilePathError(f"path unsafe for Seatbelt profile: {p!r}")
     return p
+
+
+def _assert_no_external_hardlinks(workdir: str) -> None:
+    """Reject regular files whose inode has links outside *workdir*.
+
+    A path-scoped writable bind/profile still exposes every inode reachable by
+    an in-tree hard link. Count all in-tree aliases and compare them with the
+    filesystem link count; internal-only hard links remain valid, while a
+    pre-existing link to a host file fails closed before sandbox launch.
+    """
+    wd = os.path.realpath(workdir)
+    inode_counts: dict[tuple[int, int], int] = {}
+    inode_links: dict[tuple[int, int], int] = {}
+    representatives: dict[tuple[int, int], str] = {}
+    stack = [wd]
+
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise UnsafeSandboxWorkdirError(
+                f"cannot inspect sandbox workdir safely: {directory!r}: {exc}"
+            ) from exc
+
+        for entry in entries:
+            try:
+                # DirEntry.stat reports st_nlink=0 on some Windows/Python
+                # combinations; os.lstat returns the filesystem link count.
+                entry_stat = os.lstat(entry.path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise UnsafeSandboxWorkdirError(
+                    f"cannot inspect sandbox workdir safely: {entry.path!r}: {exc}"
+                ) from exc
+            if stat.S_ISDIR(entry_stat.st_mode):
+                stack.append(entry.path)
+                continue
+            if not stat.S_ISREG(entry_stat.st_mode) or entry_stat.st_nlink <= 1:
+                continue
+            key = (entry_stat.st_dev, entry_stat.st_ino)
+            inode_counts[key] = inode_counts.get(key, 0) + 1
+            inode_links[key] = max(inode_links.get(key, 0), entry_stat.st_nlink)
+            representatives.setdefault(key, entry.path)
+
+    external = [
+        representatives[key] for key, count in inode_counts.items() if count < inode_links[key]
+    ]
+    if external:
+        sample = ", ".join(repr(path) for path in external[:3])
+        suffix = " ..." if len(external) > 3 else ""
+        raise UnsafeSandboxWorkdirError(
+            "sandbox workdir contains regular files hard-linked outside its boundary: "
+            f"{sample}{suffix}"
+        )
 
 
 def _path_is_within(
@@ -450,6 +529,7 @@ def _python_read_paths() -> list[str]:
 
 def _macos_seatbelt_profile(workdir: str) -> str:
     """Build a Seatbelt profile string for ``sandbox-exec -p``."""
+    _assert_no_external_hardlinks(workdir)
     python_read_paths = _python_read_paths()
     wd = _safe_subpath(os.path.realpath(workdir))
     py_subpaths = [f'(subpath "{_safe_subpath(p)}")' for p in python_read_paths]
@@ -701,6 +781,7 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     is wrapped with a small Python that re-applies RLIMIT_NPROC inside
     the userns (see :func:`_linux_inner_rlimit_wrapper`).
     """
+    _assert_no_external_hardlinks(workdir)
     wd = os.path.realpath(workdir)
     top_ro_dirs = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
     # Narrow /etc to runtime essentials; deny sshd_config, machine-id, etc.
@@ -729,6 +810,24 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         "--tmpfs",
         "/tmp",
     ]
+    # ``--dev /dev`` creates only a minimal synthetic tree. Restore the host's
+    # accelerator device nodes while retaining its DAC/cgroup permissions; the
+    # child env separately preserves the operator's visible-device selectors.
+    for device_path in _LINUX_ACCELERATOR_DEVICE_PATHS:
+        args.extend(["--dev-bind-try", device_path, device_path])
+    try:
+        with os.scandir("/dev") as entries:
+            nvidia_devices = sorted(
+                entry.path
+                for entry in entries
+                if entry.name.startswith("nvidia")
+                and entry.name.removeprefix("nvidia").isdigit()
+                and not entry.is_symlink()
+            )
+    except OSError:
+        nvidia_devices = []
+    for device_path in nvidia_devices:
+        args.extend(["--dev-bind-try", device_path, device_path])
     # -try variants skip missing paths so the same argv works on
     # usrmerge distros (/lib, /lib64 are symlinks into /usr or absent).
     for d in top_ro_dirs:

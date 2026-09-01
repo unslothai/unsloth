@@ -7,6 +7,8 @@ import importlib.util
 import os
 from pathlib import Path
 
+import pytest
+
 
 def _load_sandbox_module():
     path = Path(__file__).resolve().parents[1] / "core" / "inference" / "sandbox.py"
@@ -118,6 +120,54 @@ def test_linux_ca_mounts_exclude_private_key_directories(tmp_path, monkeypatch):
     assert "/etc/pki/tls/private" not in targets
     assert "/etc/ssl/certs" in targets
     assert "/etc/pki/tls/certs" in targets
+
+
+def test_linux_restores_accelerator_devices_after_synthetic_dev(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+    device_targets = {
+        argv[index + 2]
+        for index, token in enumerate(argv)
+        if token == "--dev-bind-try" and index + 2 < len(argv)
+    }
+
+    assert "/dev/dxg" in device_targets
+    assert "/dev/dri" in device_targets
+    assert "/dev/kfd" in device_targets
+    assert "/dev/nvidiactl" in device_targets
+    assert "/dev/nvidia-uvm" in device_targets
+
+
+def test_external_workdir_hardlink_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    outside = tmp_path / "outside.txt"
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    outside.write_text("host data")
+    try:
+        os.link(outside, workdir / "linked.txt")
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "hard-linked outside"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_internal_only_workdir_hardlinks_remain_allowed(tmp_path):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    original = workdir / "original.txt"
+    original.write_text("session data")
+    try:
+        os.link(original, workdir / "alias.txt")
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
+
+    sandbox._assert_no_external_hardlinks(str(workdir))
 
 
 def test_linux_reapplies_nested_runtime_after_writable_workdir(tmp_path, monkeypatch):

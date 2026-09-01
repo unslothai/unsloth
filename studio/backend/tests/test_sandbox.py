@@ -112,6 +112,16 @@ def _run_bash(command: str, sid: str) -> str:
     return _bash_exec(command, session_id = sid, timeout = 30)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux" or not os.path.exists("/dev/dxg"),
+    reason = "WSL GPU device is not present on this host",
+)
+def test_wsl_gpu_device_remains_visible_inside_sandbox(sandboxed_workdir):
+    sid, _workdir = sandboxed_workdir
+    out = _run_python("import os; print(os.path.exists('/dev/dxg'))", sid)
+    assert "True" in out, out
+
+
 def test_workdir_write_succeeds(sandboxed_workdir):
     sid, wd = sandboxed_workdir
     code = 'from pathlib import Path\nPath("hi.txt").write_text("ok")\nprint("done")\n'
@@ -487,6 +497,44 @@ def test_strict_mode_off_falls_back_unsandboxed(tmp_path, monkeypatch):
     assert "hello-unsandboxed" in out, out
 
 
+def test_unrepresentable_profile_path_uses_configured_fallback(monkeypatch):
+    from core.inference import tools
+
+    inner = ["python", "-c", "print(1)"]
+
+    def unsafe_profile(_inner, _workdir):
+        raise tools.SandboxProfilePathError("quoted path")
+
+    monkeypatch.setattr(tools, "build_sandbox_argv", unsafe_profile)
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_STRICT", raising = False)
+    argv, sandboxed = tools._sandbox_argv_or_fallback(inner, "/tmp/legal\"path", True)
+    assert argv == inner
+    assert sandboxed is False
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_STRICT", "1")
+    argv, sandboxed = tools._sandbox_argv_or_fallback(inner, "/tmp/legal\"path", True)
+    assert argv is None
+    assert sandboxed is False
+
+
+def test_safe_env_preserves_accelerator_visibility_selectors(tmp_path, monkeypatch):
+    from core.inference import tools
+
+    selectors = {
+        "CUDA_VISIBLE_DEVICES": "2,0",
+        "HIP_VISIBLE_DEVICES": "1",
+        "ROCR_VISIBLE_DEVICES": "GPU-deadbeef",
+        "NVIDIA_VISIBLE_DEVICES": "GPU-cafebabe",
+        "ONEAPI_DEVICE_SELECTOR": "level_zero:gpu:0",
+        "ZE_AFFINITY_MASK": "0.1",
+    }
+    for name, value in selectors.items():
+        monkeypatch.setenv(name, value)
+
+    env = tools._build_safe_env(str(tmp_path))
+    assert {name: env[name] for name in selectors} == selectors
+
+
 # ---------------------------------------------------------------------------
 # Interpreter path normalization: a launcher path with `..` in sys.executable
 # must be collapsed before it reaches bwrap, which binds only the realpath
@@ -523,7 +571,7 @@ def test_sandbox_path_uses_normalized_interpreter_dir(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
-def test_linux_bwrap_argv_wraps_inner_argv_with_nproc_setter(monkeypatch):
+def test_linux_bwrap_argv_wraps_inner_argv_with_nproc_setter(monkeypatch, tmp_path):
     """The bwrap argv must wrap inner_argv with a small Python that
     re-applies RLIMIT_NPROC inside the userns. Without this, the
     LLM-controlled child inherits the host's unlimited NPROC because
@@ -532,7 +580,9 @@ def test_linux_bwrap_argv_wraps_inner_argv_with_nproc_setter(monkeypatch):
 
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "77")
-    argv = sandbox._linux_bwrap_argv(["/usr/bin/python3", "-c", "print(1)"], "/tmp")
+    argv = sandbox._linux_bwrap_argv(
+        ["/usr/bin/python3", "-c", "print(1)"], str(tmp_path)
+    )
     sep = argv.index("--")
     inner = argv[sep + 1 :]
     # Inner argv now starts with a python wrapper, not the user's argv.
@@ -549,12 +599,12 @@ def test_linux_bwrap_argv_wraps_inner_argv_with_nproc_setter(monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
-def test_linux_bwrap_nproc_falls_back_to_default_when_env_invalid(monkeypatch):
+def test_linux_bwrap_nproc_falls_back_to_default_when_env_invalid(monkeypatch, tmp_path):
     sandbox = _load_sandbox_module()
 
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "not-a-number")
-    argv = sandbox._linux_bwrap_argv(["/usr/bin/python3", "-c", "1"], "/tmp")
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/python3", "-c", "1"], str(tmp_path))
     inner = argv[argv.index("--") + 1 :]
     assert "nproc = 10000" in inner[3]
 

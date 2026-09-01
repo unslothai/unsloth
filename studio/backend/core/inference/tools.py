@@ -78,6 +78,7 @@ from core.inference.mcp_client import (
     stdio_mcp_enabled,
 )
 from core.inference.sandbox import (
+    SandboxProfilePathError,
     build_sandbox_argv,
     opted_in_user_site_path,
     sandbox_available,
@@ -6829,8 +6830,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
-    TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
-    SystemRoot and a minimal PATHEXT) reach the child; all credential vars
+    TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH, non-secret accelerator
+    visibility selectors (+VIRTUAL_ENV or Windows SystemRoot and a minimal PATHEXT)
+    reach the child; all credential vars
     (HF_TOKEN, AWS_*, etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
     operator's cached creds, and the temp vars at _sandbox_temp_dir just inside
     it. PYTHONPATH carries the sandbox sitecustomize shim directory plus the
@@ -6901,6 +6903,19 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     }
     if venv:
         env["VIRTUAL_ENV"] = venv
+    # Device nodes are restored inside the Linux sandbox; retain the standard
+    # non-secret selectors so a job pinned to particular GPUs stays pinned.
+    for selector in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+        "NVIDIA_VISIBLE_DEVICES",
+        "ONEAPI_DEVICE_SELECTOR",
+        "ZE_AFFINITY_MASK",
+    ):
+        if selector in os.environ:
+            env[selector] = os.environ[selector]
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
@@ -7388,6 +7403,23 @@ def _strict_sandbox_required() -> bool:
     """
     value = os.environ.get("UNSLOTH_STUDIO_SANDBOX_STRICT", "").strip().lower()
     return value in _TRUTHY_ENV_VALUES
+
+
+def _sandbox_argv_or_fallback(
+    inner_argv: list[str],
+    workdir: str,
+    sandboxed: bool,
+) -> tuple[list[str] | None, bool]:
+    """Build the platform wrapper, honoring strict mode for unsafe paths."""
+    if not sandboxed:
+        return inner_argv, False
+    try:
+        return build_sandbox_argv(inner_argv, workdir), True
+    except SandboxProfilePathError as exc:
+        logger.warning("OS sandbox cannot represent a runtime path safely: %s", exc)
+        if _strict_sandbox_required():
+            return None, False
+        return inner_argv, False
 
 
 # Per-session working directories so each chat thread gets its own sandbox.
@@ -16131,7 +16163,9 @@ def _python_exec(
         sandboxed = (not disable_sandbox) and sandbox_available()
         if not disable_sandbox and not sandboxed and _strict_sandbox_required():
             return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
-        argv = build_sandbox_argv(inner_argv, workdir) if sandboxed else inner_argv
+        argv, sandboxed = _sandbox_argv_or_fallback(inner_argv, workdir, sandboxed)
+        if argv is None:
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
 
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
@@ -16302,7 +16336,9 @@ def _bash_exec(
         sandboxed = (not disable_sandbox) and sandbox_available()
         if not disable_sandbox and not sandboxed and _strict_sandbox_required():
             return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
-        argv = build_sandbox_argv(inner_argv, workdir) if sandboxed else inner_argv
+        argv, sandboxed = _sandbox_argv_or_fallback(inner_argv, workdir, sandboxed)
+        if argv is None:
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
 
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
