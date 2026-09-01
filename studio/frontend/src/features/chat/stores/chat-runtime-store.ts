@@ -31,6 +31,7 @@ import {
   type Preset,
   getPresetSource,
 } from "../presets/preset-policy";
+import { normalizeModelIdentity } from "../../hub/lib/model-identity";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
@@ -341,11 +342,28 @@ function loadLastExternalCheckpoint(): string | null {
   }
 }
 
-// The external pick restored from localStorage is this browser's stale
-// selection, not a model anything adopted this session. Chat settings are
-// installation-wide, so it must not claim a global snapshot another browser
-// may have written for a different model.
-let restoredExternalCheckpoint: string | null = null;
+/**
+ * Two checkpoints naming the same model.
+ *
+ * normalizeModelIdentity, not toLowerCase: it folds case for repository ids and
+ * the case-insensitive path forms while preserving it for POSIX paths, where
+ * /home/u/Models/qwen3.8 and /home/u/models/qwen3.8 are two different files.
+ */
+function sameCheckpointIdentity(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  if (!(left && right)) {
+    return false;
+  }
+  return normalizeModelIdentity(left) === normalizeModelIdentity(right);
+}
+
+// A checkpoint that arrived without any adoption signal: restored from
+// localStorage at startup, or picked by the user while the settings GET was
+// still in flight. Chat settings are installation-wide, so neither may claim a
+// global snapshot another browser wrote for a different model.
+let unownedCheckpointBeforeHydration: string | null = null;
 
 function saveLastExternalCheckpoint(value: string | null): void {
   if (typeof window === "undefined") return;
@@ -3158,6 +3176,7 @@ export function noteLoadedModelReasoningMode(
   fromLoad = false,
 ): void {
   const state = useChatRuntimeStore.getState();
+  const previous = loadedModelReasoningMode;
   loadedModelReasoningMode = {
     checkpoint,
     // A thread pin is not a shared model default. When one is active, retain
@@ -3173,11 +3192,11 @@ export function noteLoadedModelReasoningMode(
     // there would drop the load's claim before hydration could read it.
     fromLoad:
       fromLoad ||
-      (loadedModelReasoningMode?.checkpoint.toLowerCase() ===
-        checkpoint.toLowerCase() &&
-        loadedModelReasoningMode.reasoningMutationVersion ===
+      (previous !== null &&
+        sameCheckpointIdentity(previous.checkpoint, checkpoint) &&
+        previous.reasoningMutationVersion ===
           scalarSettingMutationVersions.reasoningEnabled &&
-        loadedModelReasoningMode.fromLoad),
+        previous.fromLoad),
   };
 }
 
@@ -3826,14 +3845,15 @@ function loadEstablishedReasoningMode(
   state: ChatRuntimeStore,
   requireLoad = false,
 ): { enabled: boolean } | null {
+  const loaded = loadedModelReasoningMode;
   if (
-    loadedModelReasoningMode?.checkpoint.toLowerCase() ===
-      state.params.checkpoint.toLowerCase() &&
-    loadedModelReasoningMode.reasoningMutationVersion ===
+    loaded !== null &&
+    sameCheckpointIdentity(loaded.checkpoint, state.params.checkpoint) &&
+    loaded.reasoningMutationVersion ===
       scalarSettingMutationVersions.reasoningEnabled &&
-    (!requireLoad || loadedModelReasoningMode.fromLoad)
+    (!requireLoad || loaded.fromLoad)
   ) {
-    return { enabled: loadedModelReasoningMode.enabled };
+    return { enabled: loaded.enabled };
   }
   return null;
 }
@@ -3852,9 +3872,10 @@ function qwenMigrationThinkingOn(
   // this browser happened to hold. Only once a load or status actually reported
   // this checkpoint, though: supportsReasoning starts false, and "not asked
   // yet" is not "cannot".
-  const statusSeen =
-    loadedModelReasoningMode?.checkpoint.toLowerCase() ===
-    state.params.checkpoint.toLowerCase();
+  const statusSeen = sameCheckpointIdentity(
+    loadedModelReasoningMode?.checkpoint,
+    state.params.checkpoint,
+  );
   if (statusSeen && !state.supportsReasoning) {
     return false;
   }
@@ -3950,8 +3971,10 @@ function applyLegacyQwenDefaultsAfterPresetChange(
       return state;
     }
     const checkpoint = state.params.checkpoint;
-    const includeOwnedGlobal =
-      ownedGlobalCheckpoint?.toLowerCase() === checkpoint.toLowerCase();
+    const includeOwnedGlobal = sameCheckpointIdentity(
+      ownedGlobalCheckpoint,
+      checkpoint,
+    );
     const localSettings = localQwenMigrationSettings(state);
     const migration = migrateLegacyQwenDefaults(
       localSettings,
@@ -3963,7 +3986,7 @@ function applyLegacyQwenDefaultsAfterPresetChange(
     if (!migration.patch) return state;
 
     const activeModelId = migration.migratedModelIds.find(
-      (modelId) => modelId.toLowerCase() === checkpoint.toLowerCase(),
+      (modelId) => sameCheckpointIdentity(modelId, checkpoint),
     );
     const activePatch = activeModelId
       ? migration.patch.inferenceParamsByModel?.[activeModelId]
@@ -4029,9 +4052,10 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     ) {
       return;
     }
-    const includeOwnedGlobal =
-      ownedGlobalCheckpoint?.toLowerCase() ===
-      checkpoint.toLowerCase();
+    const includeOwnedGlobal = sameCheckpointIdentity(
+      ownedGlobalCheckpoint,
+      checkpoint,
+    );
     const migration = migrateLegacyQwenDefaults(
       confirmed,
       checkpoint,
@@ -4105,9 +4129,10 @@ function scheduleLegacyQwenDefaultsRetry(
       return;
     }
     const localSettings = localQwenMigrationSettings(state);
-    const includeOwnedGlobal =
-      scheduledOwnedGlobalCheckpoint?.toLowerCase() ===
-      state.params.checkpoint.toLowerCase();
+    const includeOwnedGlobal = sameCheckpointIdentity(
+      scheduledOwnedGlobalCheckpoint,
+      state.params.checkpoint,
+    );
     const hasLocalCandidate =
       migrateLegacyQwenDefaults(
         localSettings,
@@ -4139,7 +4164,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // useChatModelRuntime and intentionally NOT persisted here.
   params: (() => {
     const persistedExternal = loadLastExternalCheckpoint();
-    restoredExternalCheckpoint = persistedExternal;
+    unownedCheckpointBeforeHydration = persistedExternal;
     return persistedExternal
       ? { ...DEFAULT_INFERENCE_PARAMS, checkpoint: persistedExternal }
       : DEFAULT_INFERENCE_PARAMS;
@@ -4357,7 +4382,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         const globalBelongsToActiveCheckpoint =
           modelLoadedBeforeHydration !== checkpoint &&
           modelLeftBeforeHydration === null &&
-          restoredExternalCheckpoint !== checkpoint;
+          !sameCheckpointIdentity(unownedCheckpointBeforeHydration, checkpoint);
         const remembersPerModel = qwenMigrationRemembersPerModel(
           settings,
           get(),
@@ -4817,6 +4842,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Clear stale per-turn usage on model change; the relaxed external-provider
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
+      // An interactive pick during hydration has no adoption signal either, so
+      // the previous session's global does not become this model's.
+      if (checkpointChanged && !state.settingsHydrated) {
+        unownedCheckpointBeforeHydration = modelId;
+      }
       // Remember what the outgoing model was running with before replacing it.
       // Not for a restore: the model it steps off is the one a background load
       // put there, and its load defaults are not settings the user chose.

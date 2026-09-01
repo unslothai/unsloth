@@ -419,3 +419,34 @@ test("an empty stored model map does not fence off the migration", async () => {
   assert.equal(global.presencePenalty, 1.5);
   assert.equal(global.minP, 0);
 });
+
+test("case-distinct POSIX paths keep separate reasoning-mode records", async () => {
+  // Two different files on a case-sensitive filesystem. The mode recorded for
+  // one must not gate hydration or pick the migration table for the other.
+  const upper = "/home/u/Models/qwen3.8-27b";
+  const lower = "/home/u/models/qwen3.8-27b";
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    reasoningEnabled: true,
+    inferenceParamsByModel: { [lower]: LEGACY_SNAPSHOT },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: lower },
+    paramsByModel: { [lower]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: false,
+    supportsReasoning: true,
+    settingsHydrated: false,
+  }));
+  // The load was for the other path entirely.
+  noteLoadedModelReasoningMode(upper, false, true);
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  // No record for this checkpoint, so the persisted toggle stands.
+  assert.equal(useChatRuntimeStore.getState().reasoningEnabled, true);
+});
