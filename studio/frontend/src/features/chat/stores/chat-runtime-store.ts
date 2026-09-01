@@ -4845,7 +4845,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
-  setCheckpoint: (modelId, ggufVariant, options) =>
+  setCheckpoint: (modelId, ggufVariant, options) => {
+    let scheduleQwenMigration = false;
     set((state) => {
       // Persist external selections so they survive a refresh. Local ids are
       // NOT persisted -- they're re-derived from the backend on mount, and a
@@ -4869,6 +4870,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (checkpointChanged && !state.settingsHydrated) {
         unownedCheckpointBeforeHydration = modelId;
       }
+      scheduleQwenMigration = checkpointChanged && state.settingsHydrated;
       // Remember what the outgoing model was running with before replacing it.
       // Not for a restore: the model it steps off is the one a background load
       // put there, and its load defaults are not settings the user chose.
@@ -4965,7 +4967,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // loop disables Deep Research; a capable one keeps the user's choice.
         ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
-    }),
+    });
+    // An external pick is the whole story for that model: no load and no status
+    // follows it, so nothing else would ever schedule the migration and the
+    // replayed legacy row would keep being sent until a reload. Never with
+    // ownership, since selecting a model says nothing about whose global the
+    // installation's snapshot is. The scheduler's own dry run makes this cheap
+    // when there is no legacy row to repair.
+    if (scheduleQwenMigration) {
+      scheduleLegacyQwenDefaultsRetry(null);
+    }
+  },
   // Re-apply the incoming thread's own usage rather than blanking the bar: a run that finished
   // in the background never wrote the visible value, and a still-mounted runtime skips the
   // history loader on the way back.

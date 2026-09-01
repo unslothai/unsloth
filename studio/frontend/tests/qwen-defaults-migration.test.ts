@@ -173,10 +173,17 @@ test("normalizes a case-insensitive saved key to the active checkpoint", () => {
     migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
     1.5,
   );
+  // The alias is migrated rather than dropped. The server merge only sets keys,
+  // so a spelling removed here would stay legacy there and a later status
+  // naming it would replay the stale row.
   assert.equal(
-    migrated.settings.inferenceParamsByModel?.[lowerCaseKey],
-    undefined,
+    migrated.settings.inferenceParamsByModel?.[lowerCaseKey]?.presencePenalty,
+    1.5,
   );
+  assert.deepEqual(migrated.patch?.inferenceParamsByModel?.[lowerCaseKey], {
+    minP: 0,
+    presencePenalty: 1.5,
+  });
   assert.deepEqual(
     migrated.patch?.inferenceParamsByModel?.[QWEN38],
     {

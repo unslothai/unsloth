@@ -158,6 +158,14 @@ function migrateStoredModelDefaults(
         modelId === normalizedModelId
           ? changedDefaults(entry, currentDefaults)
           : migratedEntry;
+      if (modelId !== normalizedModelId) {
+        // The server merge only sets keys, so the spelling being normalized
+        // away survives there. Leaving it legacy means a later status naming
+        // that spelling replays the stale row, so migrate the alias too rather
+        // than pointing two keys at different values.
+        migratedByModel[modelId] = migratedEntry;
+        patchByModel[modelId] = changedDefaults(entry, currentDefaults);
+      }
     } else {
       migratedByModel[modelId] = entry;
     }

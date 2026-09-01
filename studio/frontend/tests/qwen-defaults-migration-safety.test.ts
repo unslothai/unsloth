@@ -529,3 +529,35 @@ test("case-distinct POSIX ownership claims still conflict", async () => {
   assert.equal(global.presencePenalty, 0);
   assert.equal(global.minP, 0.01);
 });
+
+test("selecting an external Qwen migrates its dormant row", async () => {
+  // No load and no status follows an external pick, so setCheckpoint is the
+  // only chance to repair the row it just replayed.
+  const external = `external::openrouter::${encodeURIComponent(
+    "Qwen/Qwen3.8-27B",
+  )}`;
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [external]: LEGACY_SNAPSHOT },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, checkpoint: "unsloth/Llama-3.2-3B-Instruct-GGUF" },
+    paramsByModel: { [external]: { ...LEGACY_SNAPSHOT } },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: true,
+    settingsHydrated: true,
+  }));
+
+  useChatRuntimeStore.getState().setCheckpoint(external, null);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const row = serverRow(external);
+  assert.equal(row.presencePenalty, 1.5);
+  assert.equal(row.minP, 0);
+  assert.equal(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
+});
