@@ -883,9 +883,6 @@ _FENCE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w.+#-]*")
 # A fence on a list-marker line is block level, so the prose rules below do not apply.
 _LIST_MARKER_ONLY = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+$")
 _ONE_QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
-# A balanced inline code span on one line: `</think>` shown as an example is the
-# example, exactly as a fenced one is.
-_INLINE_CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)[^\r\n]*?(?<!`)\1(?!`)")
 
 
 def _has_unclosed_code_fence(text: str) -> bool:
@@ -1116,28 +1113,27 @@ def _text_outside_think(text: str) -> str:
     )
     # Whichever opener actually starts the turn owns it, so settle that before
     # looking at bare closers: a leading block may name another marker in its body.
-    fences = None
     for lead, _opener, closer in pairs:
         if lead.match(stripped):
-            # Fences only. A closer shown in a complete example is the example, but
-            # a MARKUP span can run from a tag named in the thought to one in the
-            # answer, and that must not be allowed to swallow the real closer.
-            if fences is None:
-                fences = [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)] + [
-                    m.span() for m in _INLINE_CODE_SPAN.finditer(text)
-                ]
-            close = _find_outside_artifacts(text, closer, fences)
+            # First closer, plainly. `routes/inference.py` `_split_think_segments`
+            # reads a leading block the same way and solves a closer quoted inside
+            # the trace with the generator's recorded length, not by guessing which
+            # markup is an example: every such guess here let a span run from the
+            # thought into the answer and swallow the real boundary.
+            close = text.find(closer)
             # No closer: a thought the window cut off runs to the end, and none of
             # it was shown.
             return text[close + len(closer) :] if close >= 0 else ""
     # No leading opener, so a closer with none before it is a prefilled template's:
     # it emits the opening marker itself and only the closer is generated.
     spans = None
-    for _lead, opener, closer in pairs:
+    for lead, _opener, closer in pairs:
         if closer in text and spans is None:
             spans = _artifact_spans(text)
         close = _find_outside_artifacts(text, closer, spans)
-        if close >= 0 and opener not in text[:close]:
+        # Boundary-aware, so "<think-card>" named in the trace is not read as an
+        # opener that would leave the prefilled block unstripped.
+        if close >= 0 and not lead.search(text[:close]):
             return text[close + len(closer) :]
     return text
 

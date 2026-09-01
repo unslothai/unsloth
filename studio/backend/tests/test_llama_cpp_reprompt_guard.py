@@ -1158,30 +1158,21 @@ def test_leading_block_wins_over_a_marker_named_in_its_body():
     assert not _gate_would_reprompt(turn, "", True)
 
 
+def test_prefilled_opener_detection_respects_a_tag_boundary():
+    """`<think-card>` named in a prefilled trace is not a `<think>` opener, so the
+    block is still stripped at its closer."""
+    assert not _gate_would_reprompt(
+        "First, I will inspect <think-card> markup.</think>The answer is Paris.", "", True
+    )
+
+
 def test_a_thought_naming_a_tag_does_not_swallow_its_own_closer():
-    """An artifact can span from a tag named inside the thought to one in the answer.
-    The leading block's closer is found by a plain scan so that span cannot hide it."""
+    """A leading block ends at its first closer, plainly, so nothing derived from the
+    surrounding markup can span the boundary and hide it."""
     turn = (
         "<think>First, I will search for data to put in <html>.</think>"
         "Here is the page: <html><body>Hi</body></html>"
     )
-    assert not _gate_would_reprompt(turn, "", True)
-
-
-def test_leading_thought_may_show_its_own_closer_in_an_example():
-    """A closer inside a complete fence is the example, so the thought ends at its
-    real closer. Fences only: a markup span can bridge the thought and the answer."""
-    turn = (
-        "<think>Example:\n```xml\n</think>\n```\nFirst, I will search.</think>"
-        "The answer is Paris."
-    )
-    assert not _gate_would_reprompt(turn, "", True)
-
-
-def test_leading_thought_may_quote_its_closer_inline():
-    """An inline code span is an example too, so `</think>` quoted in one does not
-    end the thought."""
-    turn = "<think>Example: `</think>`. First, I will search.</think>The answer is Paris."
     assert not _gate_would_reprompt(turn, "", True)
 
 
