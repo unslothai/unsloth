@@ -1154,6 +1154,7 @@ class InferenceBackend:
                     cancel_event = cancel_event,
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
+                    tools = tools,
                 )
                 return
             else:
@@ -1299,6 +1300,7 @@ class InferenceBackend:
         cancel_event = None,
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
+        tools = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1401,8 +1403,13 @@ class InferenceBackend:
         try:
             # Re-emit an open <think> prefill swallowed by skip_prompt (see
             # generate_stream).
+            # An image request carries client tools too, so the wrapper has to survive here
+            # for the same reason it does on the text path.
+            _preserve_tool_tokens = bool(tools)
             think_prefix = detect_think_prefill(
-                prompt_text, getattr(raw_tokenizer, "all_special_tokens", None)
+                prompt_text,
+                getattr(raw_tokenizer, "all_special_tokens", None),
+                preserves_think_close = _preserve_tool_tokens,
             )
             import threading
 
@@ -1422,6 +1429,7 @@ class InferenceBackend:
                 timeout = 0.2,
                 cancel_event = cancel_event,
                 use_harmony = self._is_gpt_oss_model(),
+                preserve_tool_tokens = _preserve_tool_tokens,
             )
 
             generation_kwargs = dict(
@@ -1905,7 +1913,14 @@ class InferenceBackend:
             think_prefix = (
                 ""
                 if self._is_gpt_oss_model()
-                else detect_think_prefill(prompt, getattr(tokenizer, "all_special_tokens", None))
+                else detect_think_prefill(
+                    prompt,
+                    getattr(tokenizer, "all_special_tokens", None),
+                    # Both streamers below keep </think> when they decode through
+                    # NativeToolTokenDecoder, so the opener has to be re-emitted.
+                    preserves_think_close = preserve_tool_tokens
+                    or reasoning_channel_markers is not None,
+                )
             )
 
             streamer = self._make_text_streamer(

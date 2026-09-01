@@ -612,3 +612,49 @@ def test_a_completed_non_call_peer_ends_the_blocked_chain():
     assert blocked_bare_json_chain_may_continue(f'{blocked}; {{"name":"web_', EXEC_ENABLED) is True
     peer = '{"name":"web_search","parameters":{"query":"x"}}'
     assert blocked_bare_json_chain_may_continue(f"{blocked};{peer}", EXEC_ENABLED) is True
+
+
+def test_a_prefilled_think_opener_is_re_emitted_when_the_closer_survives():
+    """``detect_think_prefill`` drops the opener when ``</think>`` is a special token.
+
+    That was right while the streamer stripped the closer. Preserving tool provenance keeps
+    it, so the same rule now produces the mirrored bug: reasoning that streams with a stray
+    ``</think>`` and no opening tag.
+    """
+    from core.inference.chat_template_helpers import detect_think_prefill
+
+    prompt = "user turn\n<think>\n"
+    specials = ["<think>", "</think>", "<eos>"]
+    assert detect_think_prefill(prompt, specials) == ""  # closer stripped: unchanged
+    assert detect_think_prefill(prompt, specials, preserves_think_close = True) == "<think>\n"
+    # Unrelated cases are untouched by the new flag.
+    assert detect_think_prefill(prompt, ["<eos>"]) == "<think>\n"
+    assert (
+        detect_think_prefill("a<think>\n\n</think>\n", specials, preserves_think_close = True) == ""
+    )
+    assert detect_think_prefill("plain", specials, preserves_think_close = True) == ""
+
+
+def test_the_transformers_vision_streamer_preserves_tool_tokens():
+    """An image request carries client tools, and its streamer is built separately.
+
+    Without the flag the Gemma/Qwen wrapper is stripped on that route only, so a genuine call
+    reaches the guard markerless and is returned as prose. Read from source rather than driven:
+    the real boundary needs a loaded Transformers VLM, and importing the module needs torch.
+    """
+    import ast
+    import pathlib
+
+    tree = ast.parse(
+        (pathlib.Path(__file__).resolve().parents[1] / "core/inference/inference.py").read_text()
+    )
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_generate_vision_response"
+    )
+    assert "tools" in {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+    body = ast.unparse(fn)
+    assert "preserve_tool_tokens=_preserve_tool_tokens" in body
+    assert "preserves_think_close=_preserve_tool_tokens" in body
+    assert "_preserve_tool_tokens = bool(tools)" in body

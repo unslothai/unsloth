@@ -2268,7 +2268,11 @@ class MLXInferenceBackend:
         # An open <think> prefilled by the template lives in the prompt, not
         # the generated tokens; re-emit it so the frontend renders the block.
         think_prefix = detect_think_prefill(
-            prompt, getattr(self._tokenizer, "all_special_tokens", None)
+            prompt,
+            getattr(self._tokenizer, "all_special_tokens", None),
+            # Matches the native_token_decoder condition below: when it runs, </think>
+            # survives, so the prefilled opener has to be re-emitted with it.
+            preserves_think_close = bool(tools) or reasoning_channel_markers is not None,
         )
         if seed is None:
             sampler = make_sampler(
@@ -2610,7 +2614,11 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import detect_think_prefill
 
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
-        prefill = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
+        prefill = detect_think_prefill(
+            prompt,
+            getattr(chat_target, "all_special_tokens", None),
+            preserves_think_close = bool(tools) and bool(self._tokenizer),
+        )
         vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
