@@ -625,3 +625,146 @@ def test_local_action_references_use_the_nested_checkout_path():
         "the repo out into a subdirectory, so the runner cannot find the action:\n  "
         + "\n  ".join(offenders)
     )
+
+
+# --- Playwright browser caches -------------------------------------------------------
+#
+# The engines are ~470 MB each and four workflows download them. They are keyed by
+# `ms-playwright-<os>-<version>-<engine token>-<generation>`, and the engine token exists
+# so a chromium-only job cannot restore a three-engine entry and skip a download it needed
+# (see tests/studio/test_ui_shard_engines.py, which enforces the token against the SHARDS).
+#
+# What that guard cannot see is the other direction, ACROSS jobs: two jobs installing the
+# same engines on the same runner under two different keys. Nothing breaks, which is why
+# it survived. Measured 2026-09-01, four live entries holding two distinct payloads:
+#
+#     467 MiB  ms-playwright-Linux-1.62.0-cfw-v1     ui-indicator
+#     467 MiB  ms-playwright-Linux-1.62.0-cfw-v2     ui-smoke chat/banner   <- same bytes
+#     269 MiB  ms-playwright-Linux-1.62.0-c-v2       studio-frontend-ci
+#     269 MiB  ms-playwright-Linux-1.62.0-sbench-v1  studiobench            <- same bytes
+#
+# Both duplicates came from the same mistake: a key was rewritten in one call site and not
+# in its twin. #9283 moved ui-smoke to `-<engine_key>-v2` and left ui-indicator on
+# `-cfw-v1` four hundred lines below its last hunk; #9296 minted `-sbench-v1` three days
+# after `-c-v2` already meant "chromium on Linux". Each cost a second copy of identical
+# bytes and a download the sibling job had already paid for.
+#
+# Derived from the workflows: adding a fifth Playwright consumer with a novel token fails
+# HERE rather than quietly buying another copy.
+
+_PW_EXPR = re.compile(r"\$\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
+# `install-deps` cannot match: `install` must be followed by whitespace.
+_PW_INSTALL = re.compile(r"playwright\s+install\s+([^\n|&;]+)")
+
+PW_ENGINES = ("chromium", "firefox", "webkit")
+
+
+def _matrix_rows(job) -> list[dict]:
+    """One substitution map per concrete matrix row, or a single empty map if unmatrixed.
+
+    Only `include:` is expanded. Every Playwright consumer here either has no matrix or
+    declares its engines in an include list, and inventing combinations from a bare
+    `matrix.<key>: [...]` product would compare rows that never run together.
+    """
+    include = ((job.get("strategy") or {}).get("matrix") or {}).get("include")
+    if isinstance(include, list) and include:
+        return [
+            {f"matrix.{k}": str(v) for k, v in row.items()}
+            for row in include
+            if isinstance(row, dict)
+        ]
+    return [{}]
+
+
+def _resolve(text: str, row: dict) -> str:
+    """Substitute this row's `matrix.*` values, leaving every other expression intact.
+
+    `runner.os` and `steps.pw.outputs.version` stay unresolved on purpose: they are
+    identical across these jobs, so leaving them literal makes two keys comparable as
+    strings without pretending to know what the runner will produce.
+    """
+    return _PW_EXPR.sub(lambda m: row.get(m.group(1), m.group(0)), text)
+
+
+def _playwright_jobs():
+    """(label, engines, restore_keys, save_keys) for every job that caches the engines."""
+    for name, jid, job in _jobs():
+        steps = job.get("steps") or []
+        installs = [
+            m.group(1)
+            for step in steps
+            for m in _PW_INSTALL.finditer(str(step.get("run", "")))
+        ]
+        cache_steps = [
+            step
+            for step in steps
+            if "actions/cache" in str(step.get("uses", ""))
+            and "ms-playwright" in str((step.get("with") or {}).get("key", ""))
+        ]
+        if not cache_steps:
+            continue
+        for row in _matrix_rows(job):
+            engines = {
+                word
+                for spec in installs
+                for word in _resolve(spec, row).split()
+                if word in PW_ENGINES
+            }
+            restore, save = [], []
+            for step in cache_steps:
+                key = _resolve(str((step.get("with") or {}).get("key", "")), row)
+                (restore if "/restore@" in str(step["uses"]) else save).append(key)
+            shard = row.get("matrix.shard") or row.get("matrix.engine_key")
+            label = f"{name}:{jid}" + (f"[{shard}]" if shard else "")
+            yield label, frozenset(engines), restore, save
+
+
+def test_playwright_caches_key_the_same_engines_the_same_way():
+    """One engine set, one key -- in both directions.
+
+    A key naming engines it does not hold is the dangerous direction and is already
+    covered per-shard. This is the wasteful one: two keys holding the same engines means
+    a second copy of the same bytes and a download nobody needed to pay for twice.
+    """
+    by_engines, by_key = {}, {}
+    for label, engines, restore, save in _playwright_jobs():
+        assert engines, (
+            f"{label} caches ~/.cache/ms-playwright but no step names an engine to "
+            f"install, so this guard cannot tell what the entry holds"
+        )
+        for key in restore + save:
+            by_engines.setdefault(engines, {}).setdefault(key, []).append(label)
+            by_key.setdefault(key, {}).setdefault(engines, []).append(label)
+
+    split = {
+        " ".join(sorted(engines)): {k: sorted(set(v)) for k, v in keys.items()}
+        for engines, keys in by_engines.items()
+        if len(keys) > 1
+    }
+    assert not split, (
+        "these engine sets are cached under more than one key, so each extra key is a "
+        f"duplicate copy of the same browsers: {split}"
+    )
+
+    shared = {
+        key: {" ".join(sorted(e)): sorted(set(v)) for e, v in engines.items()}
+        for key, engines in by_key.items()
+        if len(engines) > 1
+    }
+    assert not shared, (
+        "these keys are used for more than one engine set, so a job can restore a hit "
+        f"that is missing an engine it will try to launch: {shared}"
+    )
+
+
+def test_every_playwright_cache_saves_under_the_key_it_restored():
+    """A save that drifts from its restore refills a key nothing reads, forever."""
+    offenders = [
+        f"{label}: restores {sorted(set(restore))}, saves {sorted(set(save))}"
+        for label, _engines, restore, save in _playwright_jobs()
+        if save and sorted(set(restore)) != sorted(set(save))
+    ]
+    assert not offenders, (
+        "these jobs save the Playwright engines under a key they did not restore:\n  "
+        + "\n  ".join(offenders)
+    )
