@@ -654,7 +654,7 @@ def test_variant_expander_refreshes_after_delete():
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
-    memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows", src, re.S)
+    memo = re.search(r"const localModels = useMemo\(.*?\[\s*inventory\.localRows", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
 

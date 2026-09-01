@@ -451,6 +451,23 @@ def test_hub_inventory_types_opaque_diffusers_pipeline_structurally(tmp_path):
     assert row.artifact_kind == "diffusers_pipeline"
 
 
+def test_hub_inventory_distinguishes_modular_pipeline_roots(tmp_path):
+    from hub.services.models.common import (
+        _classify_local_path,
+        _diffusers_pipeline_artifact_kind,
+    )
+
+    pipeline = tmp_path / "opaque-modular-model"
+    _touch(pipeline / "modular_model_index.json")
+    _touch(pipeline / "transformer" / "diffusion_pytorch_model.safetensors")
+
+    [row] = _classify_local_path(pipeline, "custom")
+
+    assert row.model_format == "unknown"
+    assert row.artifact_kind == "diffusers_modular_pipeline"
+    assert _diffusers_pipeline_artifact_kind(None) is None
+
+
 def test_hub_inventory_does_not_confuse_transformers_or_adapter_with_pipeline(tmp_path):
     from hub.services.models.common import _classify_local_path
 

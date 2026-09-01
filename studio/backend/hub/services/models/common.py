@@ -103,13 +103,30 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
 
-def _is_diffusers_pipeline_dir(path: Path) -> bool:
+def _diffusers_pipeline_artifact_kind(
+    path: Optional[Path],
+) -> Optional[LocalArtifactKind]:
+    """Return the root-manifest contract for a Diffusers pipeline directory.
+
+    Conventional and Modular Diffusers manifests are not interchangeable: the image loader
+    requires ``model_index.json``, while the video loader also accepts
+    ``modular_model_index.json``. Keep the distinction in inventory instead of making each
+    consumer re-probe the filesystem (which cached rows cannot do in the frontend).
+    """
+    if path is None:
+        return None
     try:
-        return (path / "model_index.json").is_file() or (
-            path / "modular_model_index.json"
-        ).is_file()
+        if (path / "model_index.json").is_file():
+            return "diffusers_pipeline"
+        if (path / "modular_model_index.json").is_file():
+            return "diffusers_modular_pipeline"
     except OSError:
-        return False
+        pass
+    return None
+
+
+def _is_diffusers_pipeline_dir(path: Path) -> bool:
+    return _diffusers_pipeline_artifact_kind(path) is not None
 
 
 def _local_inventory_id(
@@ -986,9 +1003,7 @@ def _classify_local_path(
                 source = source,
                 model_format = model_format,
                 artifact_kind = (
-                    "diffusers_pipeline"
-                    if scan_path.is_dir() and _is_diffusers_pipeline_dir(scan_path)
-                    else None
+                    _diffusers_pipeline_artifact_kind(scan_path) if scan_path.is_dir() else None
                 ),
                 display_name = display_name,
                 model_id = model_id,
@@ -1023,9 +1038,7 @@ def _classify_local_path(
                 source = source,
                 model_format = fallback_format,
                 artifact_kind = (
-                    "diffusers_pipeline"
-                    if scan_path.is_dir() and _is_diffusers_pipeline_dir(scan_path)
-                    else None
+                    _diffusers_pipeline_artifact_kind(scan_path) if scan_path.is_dir() else None
                 ),
                 display_name = display_name,
                 model_id = model_id,

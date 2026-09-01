@@ -26,16 +26,17 @@ from hub.utils.snapshot_filters import (
 from hub.services.models.common import (
     _capabilities_for_format,
     _classify_non_gguf_model_format,
+    _diffusers_pipeline_artifact_kind,
     _gguf_variant_state_summary,
     _is_adapter_weight_name,
     _is_checkpoint_weight_name,
-    _local_transformers_can_chat,
     _is_training_artefact_name,
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
     _is_mtp_drafter_path,
     _is_transformers_safetensors_weight_name,
+    _local_transformers_can_chat,
     _local_inventory_id,
     _local_path_can_chat,
     _runtime_for_format,
@@ -1197,11 +1198,8 @@ def _scan_cached_models(
                     # artifact even when its repo name/card cannot identify a family. Keep this
                     # structural fact separate from task inference: an explicit family choice may
                     # use it, while components and loose checkpoints remain ineligible.
-                    "artifact_kind": (
-                        "diffusers_pipeline"
-                        if hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
-                        else "unknown"
-                    ),
+                    "artifact_kind": _diffusers_pipeline_artifact_kind(load_snapshot)
+                    or "unknown",
                     "task": row_task,
                     "audio_type": audio_type,
                     "partial": snapshot_partial,

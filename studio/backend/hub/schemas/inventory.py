@@ -14,6 +14,7 @@ ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
 ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
 LocalArtifactKind = Literal[
     "diffusers_pipeline",
+    "diffusers_modular_pipeline",
     "transformers_model",
     "single_file_checkpoint",
     "gguf",

@@ -13,6 +13,7 @@ import { familyOverrideOptions } from "../src/features/model-picker/components/m
 const row = (
   artifactKind:
     | "diffusers_pipeline"
+    | "diffusers_modular_pipeline"
     | "transformers_model"
     | "single_file_checkpoint"
     | "gguf"
@@ -23,21 +24,22 @@ const row = (
 
 test("only an opaque pipeline directory qualifies under an explicit family", () => {
   assert.equal(
-    isFamilyOverrideLocalCandidate(row("diffusers_pipeline"), "z-image"),
+    isFamilyOverrideLocalCandidate(row("diffusers_pipeline"), "z-image", "image"),
     true,
   );
   assert.equal(
-    isFamilyOverrideLocalCandidate(row("diffusers_pipeline"), "auto"),
+    isFamilyOverrideLocalCandidate(row("diffusers_pipeline"), "auto", "image"),
     false,
   );
   assert.equal(
-    isFamilyOverrideLocalCandidate(row("diffusers_pipeline"), undefined),
+    isFamilyOverrideLocalCandidate(row("diffusers_pipeline"), undefined, "image"),
     false,
   );
   assert.equal(
     isFamilyOverrideLocalCandidate(
       row("diffusers_pipeline", "text-to-image"),
       "z-image",
+      "image",
     ),
     false,
   );
@@ -49,7 +51,7 @@ test("the same structural contract qualifies an opaque cached snapshot", () => {
     artifact_kind: "diffusers_pipeline" as const,
     task: null,
   };
-  assert.equal(isFamilyOverrideLocalCandidate(cachedSnapshot, "z-image"), true);
+  assert.equal(isFamilyOverrideLocalCandidate(cachedSnapshot, "z-image", "image"), true);
 });
 
 test("components, shards, adapters and ordinary model directories never qualify", () => {
@@ -61,7 +63,7 @@ test("components, shards, adapters and ordinary model directories never qualify"
     "unknown",
   ] as const) {
     assert.equal(
-      isFamilyOverrideLocalCandidate(row(kind), "z-image"),
+      isFamilyOverrideLocalCandidate(row(kind), "z-image", "image"),
       false,
       kind,
     );
@@ -70,15 +72,39 @@ test("components, shards, adapters and ordinary model directories never qualify"
 
 test("an opaque pipeline stays hidden until the explicit contract applies", () => {
   assert.equal(
-    localArtifactPassesOverrideGate(row("diffusers_pipeline"), "auto"),
+    localArtifactPassesOverrideGate(row("diffusers_pipeline"), "auto", "image"),
     false,
   );
   assert.equal(
-    localArtifactPassesOverrideGate(row("diffusers_pipeline"), "z-image"),
+    localArtifactPassesOverrideGate(row("diffusers_pipeline"), "z-image", "image"),
     true,
   );
   assert.equal(
-    localArtifactPassesOverrideGate(row("transformers_model"), "auto"),
+    localArtifactPassesOverrideGate(row("transformers_model"), "auto", "image"),
+    true,
+  );
+});
+
+test("a modular-only root is eligible for video but never for images", () => {
+  const modular = row("diffusers_modular_pipeline");
+  assert.equal(
+    isFamilyOverrideLocalCandidate(modular, "z-image", "image"),
+    false,
+  );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(modular, "ltx-video", "video"),
+    true,
+  );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(modular, "auto", "video"),
+    false,
+  );
+  assert.equal(
+    localArtifactPassesOverrideGate(modular, "z-image", "image"),
+    false,
+  );
+  assert.equal(
+    localArtifactPassesOverrideGate(modular, "ltx-video", "video"),
     true,
   );
 });

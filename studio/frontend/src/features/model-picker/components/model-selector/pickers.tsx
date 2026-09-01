@@ -2733,6 +2733,24 @@ export function HubModelPicker({
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
+  const familyOverrideMediaKind = useMemo<"image" | "video" | null>(() => {
+    const tasks = task ? (typeof task === "string" ? [task] : task) : [];
+    if (
+      tasks.some((entry) =>
+        (VIDEO_GEN_TASKS as readonly string[]).includes(entry),
+      )
+    ) {
+      return "video";
+    }
+    if (
+      tasks.some((entry) =>
+        (IMAGE_GEN_TASKS as readonly string[]).includes(entry),
+      )
+    ) {
+      return "image";
+    }
+    return null;
+  }, [task]);
   // What the backend actually holds, not the dropdown highlight, which can be a
   // staged pick. The selection alone was wrong: an image or video load evicts
   // the chat model and leaves the pick untouched, so its rows kept the "Loaded"
@@ -3925,7 +3943,12 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
-            ) || isFamilyOverrideLocalCandidate(c, familyOverride)) &&
+            ) ||
+              isFamilyOverrideLocalCandidate(
+                c,
+                familyOverride,
+                familyOverrideMediaKind,
+              )) &&
             // Diffusion pickers: unsloth repos plus any repo the backend can LOAD. Gate on a curated ARTIFACT (what loadSpecFor resolves), not a group-key match: a base / uncurated-quant sibling matches the group by key but dead-ends at the trust gate.
             // An unsloth repo must also be a full pipeline: the fall-through loads uncataloged rows as "pipeline", and from_pretrained on a single-file checkpoint repo fails. Curated single-file artifacts stay, since loadSpecFor carries their filename.
             (!task ||
@@ -3969,6 +3992,7 @@ export function HubModelPicker({
       activeCatalogArtifactIds,
       isMac,
       familyOverride,
+      familyOverrideMediaKind,
     ],
   );
   // Task-scoped loads put the whole pipeline on ONE device, so quant fit uses the device the load lands on (the lowest visible ordinal), not the multi-GPU sum or the largest card: sizing against the bigger card OOMs the smaller one. Chat keeps the sum.
@@ -4002,7 +4026,11 @@ export function HubModelPicker({
         lmStudioModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            localArtifactPassesOverrideGate(m, familyOverride) &&
+            localArtifactPassesOverrideGate(
+              m,
+              familyOverride,
+              familyOverrideMediaKind,
+            ) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
             // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
@@ -4024,7 +4052,11 @@ export function HubModelPicker({
               catalog,
               activeCatalogArtifactIds,
             ) ||
-              isFamilyOverrideLocalCandidate(m, familyOverride)) &&
+              isFamilyOverrideLocalCandidate(
+                m,
+                familyOverride,
+                familyOverrideMediaKind,
+              )) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -4042,6 +4074,7 @@ export function HubModelPicker({
       catalog,
       activeCatalogArtifactIds,
       familyOverride,
+      familyOverrideMediaKind,
     ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF (any host) and MLX (Mac only), so raw checkpoints there are hidden (mirrors the cached
@@ -4052,7 +4085,11 @@ export function HubModelPicker({
         localDirModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            localArtifactPassesOverrideGate(m, familyOverride) &&
+            localArtifactPassesOverrideGate(
+              m,
+              familyOverride,
+              familyOverrideMediaKind,
+            ) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
             // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
@@ -4073,7 +4110,11 @@ export function HubModelPicker({
               catalog,
               activeCatalogArtifactIds,
             ) ||
-              isFamilyOverrideLocalCandidate(m, familyOverride)) &&
+              isFamilyOverrideLocalCandidate(
+                m,
+                familyOverride,
+                familyOverrideMediaKind,
+              )) &&
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
@@ -4097,6 +4138,7 @@ export function HubModelPicker({
       catalog,
       activeCatalogArtifactIds,
       familyOverride,
+      familyOverrideMediaKind,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -4105,7 +4147,11 @@ export function HubModelPicker({
         customFolderModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            localArtifactPassesOverrideGate(m, familyOverride) &&
+            localArtifactPassesOverrideGate(
+              m,
+              familyOverride,
+              familyOverrideMediaKind,
+            ) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
             // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
@@ -4126,7 +4172,11 @@ export function HubModelPicker({
               catalog,
               activeCatalogArtifactIds,
             ) ||
-              isFamilyOverrideLocalCandidate(m, familyOverride)) &&
+              isFamilyOverrideLocalCandidate(
+                m,
+                familyOverride,
+                familyOverrideMediaKind,
+              )) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -4144,6 +4194,7 @@ export function HubModelPicker({
       catalog,
       activeCatalogArtifactIds,
       familyOverride,
+      familyOverrideMediaKind,
     ],
   );
 

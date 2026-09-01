@@ -162,7 +162,9 @@ export function useChatPickerInventory(
             (row.capabilities.canChat ||
               studioPageForTask(row.task) !== undefined ||
               (options.includeOpaqueDiffusersPipelines &&
-                row.artifactKind === "diffusers_pipeline")) &&
+                (row.artifactKind === "diffusers_pipeline" ||
+                  row.artifactKind ===
+                    "diffusers_modular_pipeline"))) &&
             (!isHiddenModelId(row.modelId, row.repoId, row.path) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,

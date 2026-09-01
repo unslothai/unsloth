@@ -130,6 +130,7 @@ export interface LocalModelInfo {
 
 export type LocalArtifactKind =
   | "diffusers_pipeline"
+  | "diffusers_modular_pipeline"
   | "transformers_model"
   | "single_file_checkpoint"
   | "gguf"

@@ -180,6 +180,7 @@ export function resolvedSeedKey(
     part(resolved.transformer_quant, true),
     part(resolved.memory_mode, true),
     part(resolved.attention_backend, false),
+    part(resolved.family_override, true),
   ].join("|");
 }
 

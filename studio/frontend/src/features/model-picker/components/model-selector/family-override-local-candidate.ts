@@ -8,20 +8,27 @@ type FamilyOverrideArtifact = {
   task?: string | null;
 };
 
+export type FamilyOverrideMediaKind = "image" | "video";
+
 /** An on-device row that may bypass media-task classification after an explicit family choice.
  *
  * This is intentionally structural: model_format cannot distinguish a complete pipeline from
- * one safetensors component. The backend only assigns diffusers_pipeline after finding the
- * pipeline index at the directory root.
+ * one safetensors component. The backend reports whether the root contains a conventional or
+ * Modular Diffusers manifest; each page admits only the contracts its loader accepts.
  */
 export function isFamilyOverrideLocalCandidate(
   model: FamilyOverrideArtifact,
   familyOverride: string | null | undefined,
+  mediaKind: FamilyOverrideMediaKind | null | undefined,
 ): boolean {
+  const manifestIsLoadable =
+    model.artifact_kind === "diffusers_pipeline" ||
+    (mediaKind === "video" &&
+      model.artifact_kind === "diffusers_modular_pipeline");
   return (
     Boolean(familyOverride && familyOverride !== "auto") &&
     model.task == null &&
-    model.artifact_kind === "diffusers_pipeline"
+    manifestIsLoadable
   );
 }
 
@@ -29,10 +36,14 @@ export function isFamilyOverrideLocalCandidate(
 export function localArtifactPassesOverrideGate(
   model: FamilyOverrideArtifact,
   familyOverride: string | null | undefined,
+  mediaKind: FamilyOverrideMediaKind | null | undefined,
 ): boolean {
+  const isPipelineRoot =
+    model.artifact_kind === "diffusers_pipeline" ||
+    model.artifact_kind === "diffusers_modular_pipeline";
   return (
     model.task != null ||
-    model.artifact_kind !== "diffusers_pipeline" ||
-    isFamilyOverrideLocalCandidate(model, familyOverride)
+    !isPipelineRoot ||
+    isFamilyOverrideLocalCandidate(model, familyOverride, mediaKind)
   );
 }

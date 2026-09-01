@@ -600,10 +600,12 @@ export interface LocalModelInfo {
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
-  /** Structural scanner contract. Only diffusers_pipeline proves this directory is a pipeline
-   * root; file format alone cannot distinguish a checkpoint from an encoder or shard. */
+  /** Structural scanner contract. Diffusers manifest kinds prove this directory is a pipeline
+   * root and distinguish conventional from Modular loading; file format alone cannot distinguish
+   * a checkpoint from an encoder or shard. */
   artifact_kind?:
     | "diffusers_pipeline"
+    | "diffusers_modular_pipeline"
     | "transformers_model"
     | "single_file_checkpoint"
     | "gguf"
