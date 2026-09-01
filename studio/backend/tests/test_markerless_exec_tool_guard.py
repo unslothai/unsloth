@@ -744,14 +744,16 @@ def test_a_disabled_closed_peer_ends_the_blocked_chain():
         assert blocked_bare_json_chain_may_continue(f"{blocked}; {peer}", EXEC_ENABLED) is True
     # ...but a run of blocked peers is walked through, so trailing prose still settles it
     # rather than holding the whole explanation to EOS (a cancel there would lose it).
-    assert blocked_bare_json_chain_may_continue(
-        f"{blocked}; {blocked}; here is why.", EXEC_ENABLED
-    ) is False
+    assert (
+        blocked_bare_json_chain_may_continue(f"{blocked}; {blocked}; here is why.", EXEC_ENABLED)
+        is False
+    )
     assert blocked_bare_json_chain_may_continue(f"{blocked}; {blocked}", EXEC_ENABLED) is True
     promotable = '{"name":"web_search","parameters":{}}'
-    assert blocked_bare_json_chain_may_continue(
-        f"{blocked}; {blocked}; {promotable}", EXEC_ENABLED
-    ) is True
+    assert (
+        blocked_bare_json_chain_may_continue(f"{blocked}; {blocked}; {promotable}", EXEC_ENABLED)
+        is True
+    )
 
 
 class _NoSpecialIds:
