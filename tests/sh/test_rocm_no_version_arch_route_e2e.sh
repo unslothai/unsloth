@@ -428,6 +428,39 @@ else
     echo "  SKIP: no /bin/sh to cross-check"
 fi
 
+# HSA_OVERRIDE_GFX_VERSION=11.0.0 is the standard Strix Halo workaround, so ROCr reports
+# the spoofed gfx1100 on a physical gfx1151. The reroute derives BOTH the wheel family and
+# the exported arch from that probe, so without the correction this host takes gfx110X-all
+# wheels and hands setup.sh a gfx1100 to build llama.cpp for.
+mock_strix_cpuinfo() { printf 'model name\t: AMD Ryzen AI Max+ 395 w/ Radeon 8060S\n' > "$_F_CPUINFO"; }
+mock_kfd_gfx() {   # $1 = gfx_target_version, which the override cannot reach
+    : > "$_F_KFD"
+    mkdir -p "$_F_SYSKFD/kfd/topology/nodes/1"
+    printf 'cpu_cores_count 0\nsimd_count 128\nvendor_id 4098\ndevice_id 29824\ngfx_target_version %s\n' \
+        "$1" > "$_F_SYSKFD/kfd/topology/nodes/1/properties"
+}
+
+fedora_no_version_host gfx1100
+mock_strix_cpuinfo; mock_kfd_gfx 110501
+assert_eq "an HSA-spoofed Strix Halo routes to the arch it really is" \
+    "$_AMD/gfx1151/" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
+fedora_no_version_host gfx1100
+mock_strix_cpuinfo; mock_kfd_gfx 110501
+assert_eq "and hands setup.sh the physical arch, not the spoof" \
+    "gfx1151" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_gfx)"
+
+# Controls. Without the override the same probe is the truth, and the correction must not
+# fire on a real gfx1100 that merely sits in a Ryzen AI Max chassis.
+fedora_no_version_host gfx1100
+mock_strix_cpuinfo; mock_kfd_gfx 110501
+assert_eq "with no override the probed arch is taken at face value" \
+    "$_AMD/gfx110X-all/" "$(run_index)"
+fedora_no_version_host gfx1100
+mock_strix_cpuinfo; mock_kfd_gfx 110000
+assert_eq "a real gfx1100 corroborated by the kernel keeps its own family" \
+    "$_AMD/gfx110X-all/" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
+
+
 echo ""
 echo "  passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

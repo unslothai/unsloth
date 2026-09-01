@@ -3764,13 +3764,16 @@ _rocm_tag_from_rpm() {
     # _run_bounded no-ops where `timeout` is absent, so this adds no dependency.
     # Fedora ships rocm-core but nothing except the `rocm` metapackage requires it, so a
     # host running rocm-hip/rocm-runtime answered nothing (unslothai#8731). All names in
-    # ONE query, since looping
-    # would pay the timeout above once per name; rpm reports misses on stdout, so take
-    # the first line starting with a digit and let argument order rank the names.
+    # ONE query, since looping would pay the timeout above once per name; rpm reports
+    # misses on stdout, so keep only lines starting with a digit. Every installed
+    # component is emitted, not just the first: these are all AMD packages from the same
+    # repo, so a partial upgrade can leave rocm-core 5.7 beside rocm-runtime 6.4, and
+    # ranking by argument order would read that host as 5.7 and send a supported runtime
+    # to CPU wheels. _highest_rocm_tag ranks them, as it does across the other sources.
     _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core rocm-runtime rocm-hip 2>/dev/null \
-        | awk '/^[0-9]/{print; exit}') || return 0
+        | awk '/^[0-9]/{print}') || return 0
     [ -n "$_rt_ver" ] || return 0
-    printf '%s\n' "$_rt_ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
+    printf '%s\n' "$_rt_ver" | awk -F'[.-]' 'NF{print "rocm"$1"."$2}' || return 0
 }
 
 # Highest "rocmX.Y" line on stdin (major >= 1), or nothing when no line is usable.
@@ -4583,6 +4586,16 @@ case "$TORCH_INDEX_URL" in
            [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
            ! _has_usable_nvidia_gpu && _has_amd_rocm_gpu; then
             _amd_probe_out=$(_probe_amd_gfx_arch)
+            # HSA_OVERRIDE_GFX_VERSION=11.0.0 is the standard Strix Halo workaround, and
+            # ROCr then reports the spoofed gfx1100. The llama.cpp path corrects that
+            # further down, which is too late for this branch: both the wheel family and
+            # the exported arch are derived from this probe, so an uncorrected gfx1151
+            # would take gfx110X-all wheels and export gfx1100 to setup.sh.
+            _amd_spoof_inferred=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
+            _amd_spoof_physical=$(_hsa_spoofed_physical_gfx "$_amd_spoof_inferred" "$_amd_probe_out")
+            if [ -n "${_amd_spoof_physical:-}" ]; then
+                _amd_probe_out="$_amd_spoof_physical"
+            fi
             _amd_probed_family=$(_amd_agreed_index_family "$_amd_probe_out") \
                 || _amd_probed_family=""
             _amd_probed_gfx_first=$(_amd_sole_index_arch "$_amd_probe_out") \

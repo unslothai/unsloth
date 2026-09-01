@@ -252,6 +252,23 @@ MOCK
     chmod +x "$_MOCK_DIR/rpm"
 }
 
+# $1 = rocm-core version, $2 = rocm-runtime version. A partial upgrade can leave these
+# at different versions; both are AMD packages from the same repo, so neither outranks
+# the other by provenance the way rocm-core outranks the distro's libhsa-runtime64-1.
+add_rpm_split_components() {
+    cat > "$_MOCK_DIR/rpm" <<MOCK
+#!/bin/sh
+for _a in "\$@"; do
+    case "\$_a" in
+        rocm-core)    echo "$1" ;;
+        rocm-runtime) echo "$2" ;;
+    esac
+done
+exit 0
+MOCK
+    chmod +x "$_MOCK_DIR/rpm"
+}
+
 add_wedged_rpm() {
     # Stands in for `rpm -q` wedged on the rpmdb (stale BerkeleyDB __db locks on
     # rpm < 4.16, i.e. RHEL 8 / SLES 15; the rpm 6.0.x deadlock against dnf).
@@ -527,6 +544,18 @@ else
     assert_eq "the rpm probe is bounded, not left to block the installer" \
         "under 20s" "$((_t1 - _t0))s (outer bound fired)"
 fi
+
+# A stale rocm-core beside a newer runtime must not decide the host's version. Ranking
+# the names by argument order read this box as ROCm 5.7 and sent a supported runtime to
+# CPU wheels, which is the failure #8731 is about, reached by a different route.
+reset_sources
+add_rpm_split_components "5.7.1" "6.4.1"
+assert_eq "a stale rocm-core beside a newer rocm-runtime resolves to the newer" \
+    "$_BASE/rocm6.4" "$(run_index)"
+reset_sources
+add_rpm_split_components "6.4.1" "5.7.1"
+assert_eq "and the ordering is by version, not by which name was queried first" \
+    "$_BASE/rocm6.4" "$(run_index)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
