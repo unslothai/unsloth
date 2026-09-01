@@ -2786,7 +2786,8 @@ class TestInstallShStructure:
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         torch_url_pos = source.find("TORCH_INDEX_URL=$(get_torch_index_url)")
-        backend_pos = source.find("UNSLOTH_TORCH_BACKEND")
+        # The export itself, not the first mention: a comment above the block mentions it too.
+        backend_pos = source.find("export UNSLOTH_TORCH_BACKEND=")
         assert backend_pos > 0, "UNSLOTH_TORCH_BACKEND must be set in install.sh"
         assert (
             backend_pos > torch_url_pos
