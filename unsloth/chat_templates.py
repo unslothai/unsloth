@@ -1901,8 +1901,6 @@ def get_chat_template(
     is_mlx_backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None) == "mlx"
     if use_zoo_tokenizer_patch is None:
         use_zoo_tokenizer_patch = is_mlx_backend
-    old_tokenizer = tokenizer
-
     # mlx-lm's TokenizerWrapper._tokenizer is the HF tokenizer, not the Rust
     # backend the vocab-edit paths below need; unwrap here, re-wrap before return.
     _mlx_tokenizer_wrapper = None
@@ -1912,8 +1910,20 @@ def get_chat_template(
             _mlx_tokenizer_wrapper = tokenizer
             tokenizer = _inner_tokenizer
 
+    # Vision processors likewise keep the fast tokenizer behind `.tokenizer`.
+    # Run every tokenizer-sensitive path on that object, then put it back before return.
+    _processor = None
+    _inner_tokenizer = getattr(tokenizer, "tokenizer", None)
+    if _inner_tokenizer is not None and hasattr(_inner_tokenizer, "is_fast"):
+        _processor = tokenizer
+        tokenizer = _inner_tokenizer
+    old_tokenizer = tokenizer
+
     IS_GEMMA = False
-    if tokenizer.__class__.__name__.startswith("Gemma"):
+    if (
+        tokenizer.__class__.__name__.startswith("Gemma")
+        or _processor is not None and _processor.__class__.__name__.startswith("Gemma")
+    ):
         if chat_template == "chatml": chat_template = "gemma_chatml"
         IS_GEMMA = True
 
@@ -1930,12 +1940,7 @@ def get_chat_template(
 
     # We first check if the tokenizer is a fast one. If not, we cannot convert this!
     is_fast_tokenizer = getattr(tokenizer, "is_fast", False)
-    # Vision models hand us a processor, which keeps padding_side on the tokenizer it
-    # wraps rather than on itself, so reading it here is an AttributeError. Unwrap the
-    # same way models/vision.py does when it forces the inference padding side.
     old_padding_side = getattr(tokenizer, "padding_side", None)
-    if old_padding_side is None:
-        old_padding_side = getattr(getattr(tokenizer, "tokenizer", None), "padding_side", None)
 
     same_padding_token = False
     type_chat_template = None
@@ -1994,6 +1999,18 @@ def get_chat_template(
             # For Gemma :)
 
             string_vocab = tokenizer._tokenizer.to_str()
+
+            # Gemma 4 replaced the legacy turn/eos pieces used by older Gemma tokenizers.
+            # Pick the mapping from the vocabulary rather than the processor class, since
+            # older Transformers releases may expose newer checkpoints through an older
+            # processor type.
+            if (
+                type_chat_template == "gemma_chatml"
+                and '"<start_of_turn>"' not in string_vocab
+                and '"<|turn>"' in string_vocab
+                and '"<turn|>"' in string_vocab
+            ):
+                token_mapping = {"<|turn>" : "<|im_start|>", "<turn|>" : "<|im_end|>"}
 
             skipped = 0
             # Only mirror applied mappings into the spm model; a skipped one would
@@ -2150,6 +2167,23 @@ def get_chat_template(
     if old_unk_token != new_unk_token: tokenizer.unk_token = old_unk_token
     if not same_padding_token:
         if old_pad_token != new_pad_token: tokenizer.pad_token = old_pad_token
+
+    # Token mutation may construct a new fast tokenizer. Restore it to the processor and
+    # keep the token aliases that FastModel exposes on processors in sync with it.
+    if _processor is not None:
+        _processor.tokenizer = tokenizer
+        for attribute in (
+            "chat_template",
+            "padding_side",
+            "bos_token", "bos_token_id",
+            "eos_token", "eos_token_id",
+            "pad_token", "pad_token_id",
+            "unk_token", "unk_token_id",
+        ):
+            value = getattr(tokenizer, attribute, None)
+            if value is not None:
+                setattr(_processor, attribute, value)
+        tokenizer = _processor
 
     # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
