@@ -181,7 +181,8 @@ def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
         return True
     if lb != ib:
         return lb > ib
-    # Same base build, different tags: offer a mix (latest carries a suffix)
+    # Same base build, different tags: offer a mix (latest carries a suffix), but never offer a bare base
+    # over a mix install at the same base.
     return latest != f"b{lb}"
 
 

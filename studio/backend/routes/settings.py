@@ -1759,9 +1759,12 @@ def update_openai_auto_switch_override(
             # id would leave two keys for one model, making every other casing ambiguous.
             target_id = resolve_model_override_key(payload.model_id) or payload.model_id
             if payload.fill_absent_fields:
-                # A fill retires nothing below.
+                # A fill retires nothing below, so it must not create the higher-priority spelling of a row
+                # the server already holds.
                 target_id = _fill_target_id(target_id)
-            # An explicit clear keeps a row even when nothing else is set.
+            # An explicit clear keeps a row even when nothing else is set, so long as a fallback would
+            # otherwise answer for this model: "no launch flags" and "nothing stored" are the same thing
+            # everywhere else, and different here. Written on the quant's own key, so no other quant moves.
             keep_empty = (
                 payload.llama_extra_args == []
                 and not payload.fill_absent_fields
