@@ -1733,6 +1733,19 @@ def _openai_llama_admission_output_allowance(
     cache, where 1024 is most of a share on its own (4096 over four slots admitted three).
     A prompt already past its share keeps the flat allowance, since it does not fit either
     way and a zero allowance would only hide that it will still generate.
+
+    Under a known ``share`` the charge is the WHOLE share, not the smaller of the share and
+    the flat allowance. Charging less than is permitted is what made the reservation
+    unsafe: a small prompt was charged ``prompt + 1024`` and then allowed to generate up to
+    its share, so admitting it beside a large-prompt request let the permitted total pass
+    the cache even though the charged total fit. Measured on a 262144 cache over four
+    slots, prompts of 1 / 65537 / 189139 / 1 charged 258774 and permitted 385750.
+    Charging exactly what is permitted makes ``sum(charged) <= budget`` imply
+    ``sum(prompt + permitted) <= budget``.
+
+    This costs no concurrency. ``capacity * share <= budget`` by construction, so a full
+    ``capacity`` of unstated requests still fit; the flat allowance never admitted more
+    than that, it only undercharged the ones it did admit.
     """
     window = context_window or budget
     if cap is not None and cap < window:
@@ -1740,7 +1753,7 @@ def _openai_llama_admission_output_allowance(
     # Clamped to the WINDOW: a request cannot occupy more KV than its own slot holds.
     allowance = min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
     if share is not None and share > prompt_tokens:
-        allowance = min(allowance, share - prompt_tokens)
+        allowance = min(share - prompt_tokens, max(0, window - prompt_tokens))
     return allowance
 
 
