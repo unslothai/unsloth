@@ -1353,12 +1353,16 @@ def test_a_delete_that_cannot_retire_leaves_the_name_reserved_from_the_start(
     # both absent for a create racing the delete.
     conn = auth_storage.get_connection()
     try:
-        assert conn.execute(
-            "SELECT 1 FROM retired_usernames WHERE username = ?", ("casey",)
-        ).fetchone() is not None
-        assert conn.execute(
-            "SELECT 1 FROM auth_user WHERE username = ?", ("casey",)
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM retired_usernames WHERE username = ?", ("casey",)
+            ).fetchone()
+            is not None
+        )
+        assert (
+            conn.execute("SELECT 1 FROM auth_user WHERE username = ?", ("casey",)).fetchone()
+            is None
+        )
     finally:
         conn.close()
 
@@ -1387,9 +1391,10 @@ def test_a_create_cannot_slip_past_a_tombstone_it_did_not_see(
         )
     conn = auth_storage.get_connection()
     try:
-        assert conn.execute(
-            "SELECT 1 FROM auth_user WHERE username = ?", ("casey",)
-        ).fetchone() is None
+        assert (
+            conn.execute("SELECT 1 FROM auth_user WHERE username = ?", ("casey",)).fetchone()
+            is None
+        )
     finally:
         conn.close()
 
@@ -1411,9 +1416,12 @@ def test_roots_that_cannot_be_resolved_keep_the_name_reserved(
     assert auth_storage._retire_workspace_directory("casey") is False
     conn = auth_storage.get_connection()
     try:
-        assert conn.execute(
-            "SELECT 1 FROM retired_usernames WHERE username = ?", ("casey",)
-        ).fetchone() is not None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM retired_usernames WHERE username = ?", ("casey",)
+            ).fetchone()
+            is not None
+        )
     finally:
         conn.close()
 

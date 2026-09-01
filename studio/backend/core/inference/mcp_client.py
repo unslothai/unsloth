@@ -892,12 +892,14 @@ def _url_close_key(url: str, subject: Optional[str] = None) -> str:
     # secrets and these maps are never pruned; key by digest so closed/edited
     # configs don't retain them in memory forever. Scoped by workspace so editing
     # one account's row does not invalidate another's identical command.
-    return hashlib.sha256(
-        repr((subject or current_workspace_subject(), url)).encode()
-    ).hexdigest()
+    return hashlib.sha256(repr((subject or current_workspace_subject(), url)).encode()).hexdigest()
 
 
-def _cfg_close_key(url: str, headers: Optional[dict], subject: Optional[str] = None) -> str:
+def _cfg_close_key(
+    url: str,
+    headers: Optional[dict],
+    subject: Optional[str] = None,
+) -> str:
     return hashlib.sha256(
         repr((subject or current_workspace_subject(), url, _headers_key(headers))).encode()
     ).hexdigest()

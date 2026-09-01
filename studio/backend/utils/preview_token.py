@@ -82,11 +82,15 @@ def verify_preview_ref(ref: str, token: Optional[str]) -> bool:
     else:
         # A link minted before the workspace was signed in. Only the owner could
         # have made one, so it verifies against the old ref-only payload.
-        expected = base64.urlsafe_b64encode(
-            hmac.new(
-                get_or_create_preview_link_secret(),
-                f"preview:{_PREVIEW_TOKEN_VERSION}:{ref}".encode("utf-8"),
-                hashlib.sha256,
-            ).digest()
-        ).rstrip(b"=").decode("ascii")
+        expected = (
+            base64.urlsafe_b64encode(
+                hmac.new(
+                    get_or_create_preview_link_secret(),
+                    f"preview:{_PREVIEW_TOKEN_VERSION}:{ref}".encode("utf-8"),
+                    hashlib.sha256,
+                ).digest()
+            )
+            .rstrip(b"=")
+            .decode("ascii")
+        )
     return hmac.compare_digest(expected.encode("ascii"), provided)

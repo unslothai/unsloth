@@ -320,7 +320,10 @@ class ChatGenerationLeaseSweeper:
         return settled
 
     async def _force_cancel_after_grace(
-        self, supervisor: Any, run_id: str, subject: str | None = None
+        self,
+        supervisor: Any,
+        run_id: str,
+        subject: str | None = None,
     ) -> None:
         """Escalate from the cooperative cancel to cancelling the producer task.
 
@@ -563,7 +566,11 @@ class ChatGenerationSupervisor:
         from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT
         return self._subjects.get(run_id, LEGACY_WORKSPACE_SUBJECT) == subject
 
-    def cancel(self, run_id: str, subject: str | None = None) -> None:
+    def cancel(
+        self,
+        run_id: str,
+        subject: str | None = None,
+    ) -> None:
         """Cancel a run. With ``subject``, only if that workspace owns it.
 
         The downstream registries are workspace-scoped now, so the body runs in
