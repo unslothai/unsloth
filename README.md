@@ -178,6 +178,16 @@ Headless starts:
 ```bash
 UNSLOTH_STUDIO_PASSWORD='your-strong-password' unsloth studio --secure   # via env var
 ```
+If you do not supply one, a public launch (`--secure`, `--cloudflare`, or Colab)
+generates a strong admin password and shows it once. On a terminal launch it goes
+to the console only, and the Studio server never writes it to disk or to the
+server log. In Colab it is rendered into the notebook cell instead, and Colab
+saves cell output with the notebook, so clear that cell before sharing or
+exporting the notebook. Copy it when it appears: it is not shown again, and
+recovering from a lost one means `unsloth studio reset-password`. A launch with
+no console at all (a detached service with redirected output) refuses to start
+rather than rotate a password nobody could read, as does a relaunch after a
+generated password was committed but never reached you.
 Reset your password:
 ```bash
 unsloth studio reset-password

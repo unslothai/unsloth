@@ -440,12 +440,21 @@ def identity(nonce: str, request: Request) -> dict:
 @router.get("/status", response_model = AuthStatusResponse)
 def auth_status() -> AuthStatusResponse:
     """Auth initialization state; ``default_username`` is exposed for first-boot UI prefill only."""
+    from auth.bootstrap_timeout import bootstrap_deadline_remaining_seconds
+
+    requires_change = (
+        storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
+        if storage.is_initialized()
+        else True
+    )
+    # Only while the default password stands: that is what the deadline fires on.
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
-        requires_password_change = storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
-        if storage.is_initialized()
-        else True,
+        requires_password_change = requires_change,
+        bootstrap_deadline_seconds = (
+            bootstrap_deadline_remaining_seconds() if requires_change else None
+        ),
     )
 
 

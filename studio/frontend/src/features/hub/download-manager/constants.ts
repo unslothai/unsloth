@@ -115,6 +115,31 @@ export function isResolvedTransport(
   );
 }
 
+export type MismatchStartAction = ResolvedTransport | "conflict";
+
+/** When a partial on disk was written by a different transport than this start
+ * resolved to, pick whether to continue or ask the user.
+ *
+ * Xet cannot byte-resume. Auto and HTTP follow the stall watchdog's HTTP
+ * fallback instead of parking the start on a Hub dialog Chat/Video cannot
+ * resolve. Only an explicit Xet preference versus a resumable HTTP partial is
+ * a real choice (keep resumable bytes, or restart on Xet). */
+export function mismatchStartAction(
+  preferred: TransportMode,
+  resolved: ResolvedTransport,
+  lastTransport: ResolvedTransport,
+  resumable = true,
+): MismatchStartAction {
+  if (lastTransport === resolved) return resolved;
+  if (lastTransport === TRANSPORT.HTTP) {
+    if (preferred === TRANSPORT.XET && resolved === TRANSPORT.XET) {
+      return resumable ? "conflict" : resolved;
+    }
+    return TRANSPORT.HTTP;
+  }
+  return TRANSPORT.HTTP;
+}
+
 export const DOWNLOAD_KIND = {
   MODEL: "model",
   DATASET: "dataset",

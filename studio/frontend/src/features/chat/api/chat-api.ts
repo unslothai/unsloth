@@ -504,6 +504,9 @@ export interface CachedGgufRepo {
    * for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte. False on a GGUF repo row by design:
+   *  transport is per quant, so the repo cannot answer for all of them. */
+  partial_resumable?: boolean;
   capabilities?: CachedRepoCapabilities | null;
 }
 
@@ -643,6 +646,8 @@ export interface CachedModelRepo {
   audio_type?: string | null;
   /** True when the snapshot is incomplete (a cancelled/partial download): such a repo must not count as downloaded, or a click re-downloads the full weights. */
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte, rather than restarting its file. */
+  partial_resumable?: boolean;
   /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
   single_file?: boolean;
   /** True for an sd.cpp companion mirror (VAE / text encoders, no denoiser): listed so it can be seen and deleted, never offered as a load. */
