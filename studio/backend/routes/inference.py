@@ -51,6 +51,7 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils import signed_media_links
 from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
     current_workspace_subject,
     reset_workspace_subject,
     set_workspace_subject,
@@ -6709,6 +6710,37 @@ async def _lease_ollama_model_ref(
     return lease.path
 
 
+def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
+    """A managed account may only name a local path inside its own roots.
+
+    Without a native-path lease the requested model_path is passed to the loader
+    verbatim, so an absolute host path is a read of any file the backend can
+    reach, including another account's workspace. Hub repo ids are untouched:
+    they are not paths, and their download lands in the shared cache.
+    """
+    if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT:
+        return
+    if not isinstance(model_path, str) or not model_path.strip():
+        return
+    candidate = model_path.strip()
+    try:
+        if not Path(os.path.expanduser(candidate)).exists():
+            return
+    except OSError:
+        return
+    from routes.models import _is_sizable_local_path
+
+    if _is_sizable_local_path(candidate):
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            f"This account can only {operation} models inside its own workspace "
+            "or the shared model cache."
+        ),
+    )
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest,
     *,
@@ -6730,6 +6762,7 @@ def _resolve_model_identifier_for_request(
                 ) from exc
         return resolved_ollama_path, Path(resolved_ollama_path).name, False
     if not request.native_path_lease:
+        _reject_uncontained_local_path(request.model_path, operation)
         return request.model_path, request.model_path, False
     try:
         grant = verify_native_path_lease(
