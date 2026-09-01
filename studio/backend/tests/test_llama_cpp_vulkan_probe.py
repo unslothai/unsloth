@@ -375,9 +375,7 @@ def test_an_unreadable_vulkan_type_is_shared_only_where_it_must_be(
 ):
     rows = [{"index": 0, "is_igpu": False, "type_known": type_known}]
     assert (
-        LlamaCppBackend._vulkan_rows_target_igpus(
-            rows, [0], conservative_on_unknown = conservative
-        )
+        LlamaCppBackend._vulkan_rows_target_igpus(rows, [0], conservative_on_unknown = conservative)
         is expected
     )
 
