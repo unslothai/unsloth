@@ -116,13 +116,15 @@ test("a bare-path forget also drops the label a loose .gguf used to be keyed by"
   assert.equal(listPerModelConfigs().length, 0);
 });
 
-test("forgetting one quant of a loose .gguf leaves the bare-path record alone", () => {
+test("the same forget from the legacy side drops the bare-path record too", () => {
   store.clear();
   savePerModelConfig(LOOSE_PATH, null, config(4096));
 
+  // Both spellings name one file, and _bare_model_id splits a path key the same way, so
+  // the server's remove takes the bare path here as well.
   assert.equal(deletePerModelConfigAliases(LOOSE_PATH, "Q4_K_M"), true);
 
-  assert.equal(resolveInitialConfig(LOOSE_PATH, null).remembered, true);
+  assert.equal(resolveInitialConfig(LOOSE_PATH, null).remembered, false);
 });
 
 test("a repo id is not read as a loose file", () => {
@@ -132,4 +134,38 @@ test("a repo id is not read as a loose file", () => {
   assert.equal(deletePerModelConfigAliases(REPO_ID, null), true);
 
   assert.equal(resolveInitialConfig(REPO_ID, "Q4_K_M").remembered, true);
+});
+
+test("forgetting a repo's last quant also drops the bare record a load falls back to", () => {
+  store.clear();
+  savePerModelConfig(REPO_ID, null, config(4096));
+  savePerModelConfig(REPO_ID, QUANT, config(32768));
+
+  assert.equal(deletePerModelConfigAliases(REPO_ID, QUANT), true);
+
+  assert.equal(resolveInitialConfig(REPO_ID, null).remembered, false);
+  assert.equal(listPerModelConfigs().length, 0);
+});
+
+test("forgetting one quant of several leaves the bare record for the rest", () => {
+  store.clear();
+  savePerModelConfig(REPO_ID, null, config(4096));
+  savePerModelConfig(REPO_ID, QUANT, config(32768));
+  savePerModelConfig(REPO_ID, "Q8_0", config(16384));
+
+  assert.equal(deletePerModelConfigAliases(REPO_ID, QUANT), true);
+
+  // The bare record is what Q8_0 inherits; taking it would forget a quant nobody asked about.
+  assert.equal(resolveInitialConfig(REPO_ID, null).remembered, true);
+  assert.equal(resolveInitialConfig(REPO_ID, "Q8_0").remembered, true);
+});
+
+test("forgetting a bare row does not reach into the model's quants", () => {
+  store.clear();
+  savePerModelConfig(REPO_ID, null, config(4096));
+  savePerModelConfig(REPO_ID, QUANT, config(32768));
+
+  assert.equal(deletePerModelConfigAliases(REPO_ID, null), true);
+
+  assert.equal(resolveInitialConfig(REPO_ID, QUANT).remembered, true);
 });

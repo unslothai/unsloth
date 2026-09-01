@@ -1375,6 +1375,33 @@ function legacyStandaloneGgufVariant(
 }
 
 /**
+ * Whether a quant of *modelId* other than the one being forgotten still has a record.
+ *
+ * Mirrors _other_quants_remain: such a quant has its own settings and never reads the bare
+ * entry, so this asks whether this forget is the last one for the model, not whether anyone
+ * is inheriting. If it is not the last, the bare record stays -- an inheriting quant is
+ * exactly what it is there for.
+ */
+function otherQuantsRemain(modelId: string, ggufVariant: string): boolean {
+  const own = normalizeModelIdentity(modelId);
+  for (const key of Object.keys(readMap())) {
+    const storedId = modelIdFromStorageKey(key);
+    const storedVariant = normalizeGgufVariantIdentity(
+      ggufVariantFromStorageKey(key),
+    );
+    if (
+      storedId &&
+      storedVariant &&
+      storedVariant !== ggufVariant &&
+      normalizeModelIdentity(storedId) === own
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Delete this model's config and every other spelling the server's forget clears.
  *
  * A remove on the route drops both spellings of a cached repo (cached_repo_alias_keys) and the
@@ -1394,6 +1421,13 @@ export function deletePerModelConfigAliases(
   const legacyVariant = legacyStandaloneGgufVariant(modelId, ggufVariant);
   if (legacyVariant) {
     deleted = deletePerModelConfig(modelId, legacyVariant) && deleted;
+  }
+  // The bare record backs every quant with no record of its own, and a load falls back to
+  // it, so clearing only the qualified key hands the same settings straight back. Only once
+  // this is the model's last quant, though: forgetting Q4 must not strip Q8.
+  const variant = normalizeGgufVariantIdentity(ggufVariant);
+  if (variant && !otherQuantsRemain(modelId, variant)) {
+    deleted = deletePerModelConfig(modelId, null) && deleted;
   }
   return deleted;
 }
