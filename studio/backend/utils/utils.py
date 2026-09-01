@@ -40,6 +40,25 @@ def hf_env_offline() -> bool:
     return False
 
 
+
+def anonymous_and_offline(hf_token) -> bool:
+    """The one condition under which a Hub-reaching request can only be answered by disk.
+
+    ``token=False`` denies authentication, not the cache: offline, huggingface_hub and
+    datasets both resolve a previously downloaded private repo without ever authorizing.
+    A caller holding the anonymous sentinel has no network to establish access over, so
+    every downstream read is a disk read it never earned.
+
+    Guarding this at the route entry rather than at each call site is deliberate. The
+    per-site version was fixed six times -- the snapshot walk, the config probes, the
+    embedding marker, the GGUF listing, the preview slices, AutoConfig -- and each fix
+    only moved the boundary to the next reader. This states the rule once, before any of
+    them run, so a path nobody has enumerated is covered too.
+    """
+    from hub.utils.hf_tokens import is_anonymous
+
+    return is_anonymous(hf_token) and hf_env_offline()
+
 def canonical_model_repo_id(model_name: str) -> str:
     """Normalize a Hugging Face model repository ID selected in Unsloth."""
     return model_name.strip()

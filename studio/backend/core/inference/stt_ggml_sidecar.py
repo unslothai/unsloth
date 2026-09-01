@@ -43,6 +43,7 @@ from typing import Iterator, Optional
 
 from loggers import get_logger
 
+from hub.utils.hf_tokens import normalize_token
 from core.inference.stt_sidecar import (
     STT_KEEP_ALIVE_SECONDS,
     SttAudioDecodeError,
@@ -585,7 +586,9 @@ class _GgmlDownloadState:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
             try:
-                meta = get_hf_file_metadata(hf_hub_url(repo_id, filename), token = hf_token or None)
+                meta = get_hf_file_metadata(
+                    hf_hub_url(repo_id, filename), token = normalize_token(hf_token)
+                )
                 total_bytes = int(meta.size or 0)
             except (AttributeError, TypeError, ValueError) as exc:
                 raise RuntimeError("could not resolve GGML download metadata") from exc
@@ -629,7 +632,7 @@ class _GgmlDownloadState:
             ]
             process = spawn_download(
                 args,
-                hf_token = hf_token or None,
+                hf_token = normalize_token(hf_token),
                 hub_cache = hub_cache,
             )
             with self._lock:

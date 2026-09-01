@@ -50,7 +50,8 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_hf_token, get_request_hf_token
+from hub.utils.hf_tokens import HfTokenArg
 from hub.services.models.ollama import (
     acquire_ollama_model_ref,
     is_ollama_manifest_ref,
@@ -17258,7 +17259,7 @@ async def stt_status(
 async def stt_download(
     payload: SttLoadRequest,
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Start a background download of a dictation model.
 
@@ -17375,7 +17376,7 @@ async def stt_load(
 async def stt_validate(
     payload: SttLoadRequest,
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Verify a Hub repository is a Whisper checkpoint before downloading it."""
     from core.inference.stt_sidecar import (
