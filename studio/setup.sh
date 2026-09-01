@@ -958,12 +958,18 @@ VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
 if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
-    _uv_cache_probe="$UV_CACHE_DIR/.unsloth-write-probe.$$"
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null || ! (: > "$_uv_cache_probe") 2>/dev/null; then
+    # mktemp, not a $$-derived name: this branch exists for a cache directory another
+    # account can write, and there a predictable path can be pre-created as a symlink,
+    # which `: >` would follow and truncate -- as root, any file on the box. mktemp
+    # creates O_EXCL with an unpredictable suffix, so it cannot follow one, and failing
+    # to create IS the writability answer this probe wanted.
+    _uv_cache_probe=""
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
         echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
         unset UV_CACHE_DIR
     fi
-    rm -f "$_uv_cache_probe" 2>/dev/null || true
+    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
     unset _uv_cache_probe
 fi
 VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"

@@ -688,13 +688,19 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
-    _uv_cache_probe="$UV_CACHE_DIR/.unsloth-write-probe.$$"
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null || ! (: > "$_uv_cache_probe") 2>/dev/null; then
+    # mktemp, not a $$-derived name: this branch exists for a cache directory another
+    # account can write, and there a predictable path can be pre-created as a symlink,
+    # which `: >` would follow and truncate -- as root, any file on the box. mktemp
+    # creates O_EXCL with an unpredictable suffix, so it cannot follow one, and failing
+    # to create IS the writability answer this probe wanted.
+    _uv_cache_probe=""
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
         echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
         echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
         unset UV_CACHE_DIR
     fi
-    rm -f "$_uv_cache_probe" 2>/dev/null || true
+    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
     unset _uv_cache_probe
 fi
 _VENV_ROLLBACK_DIR=""
@@ -3700,7 +3706,17 @@ _probe_amd_gfx_arch() {
         physical) _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION" ;;
         *)        _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" ;;
     esac
-    _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    # "physical" asks what silicon is present, so it does NOT take the operator's declared
+    # arch: a stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Van Gogh would otherwise answer
+    # the miscomputing gate with a healthy arch and hand it ROCm wheels, the same way an
+    # HSA_OVERRIDE spoof did. The override stays authoritative for ordinary routing, and
+    # still answers when no probe tool can be run at all -- there the declared arch is the
+    # only information the host has.
+    if [ "${1:-}" = "physical" ]; then
+        _pg=""
+    else
+        _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    fi
     if [ -z "$_pg" ] && command -v rocminfo >/dev/null 2>&1; then
         _pg=$( (unset $_pg_strip; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
     fi
@@ -3715,29 +3731,41 @@ _probe_amd_gfx_arch() {
 
 # Keep the entries a visible-device mask selects out of a gfx token list.
 #   $1 = newline-separated gfx tokens (as _probe_amd_gfx_arch prints them)
-#   $2 = the mask value, a comma-separated ordinal list
-# Prints the surviving tokens, or nothing when the mask selects none.
+#   $2 = the mask value, a comma-separated list
+# Prints the surviving tokens. Exit 0 when every token resolved, 2 when at least one did
+# NOT -- ROCR_VISIBLE_DEVICES also accepts UUIDs ("0,GPU-DEADBEEFDEADBEEF"), and a probe
+# that reports arches names no UUID, so such a token identifies a device but not a
+# position in this list. Mirrors _rocr_visible_subset() in install_python_stack.py, which
+# reports the same "unresolved" rather than guessing; the caller decides what to do with
+# it, and for the miscomputing gate the answer is to decline ROCm.
 #
-# Ordinals index the DEDUPLICATED list: rocminfo prints each agent's token more than once
-# (its Name line and its ISA Info line), so indexing the raw stream lands on the wrong
-# device. This is the same selection _runtime_gfx makes further down, and deduplicating
-# is why the two agree.
+# Ordinals index the DEDUPLICATED list, because rocminfo prints each agent's token more
+# than once (its Name line and its ISA Info line). That is exact only while the visible
+# archs are distinct: two devices of one arch collapse to a single entry and every later
+# ordinal shifts. The gate is safe under that anyway -- a shifted ordinal either lands on
+# a bad arch (CPU, the conservative answer) or runs off the end and resolves to nothing,
+# which the caller also treats as "cannot prove a healthy GPU is visible".
 #
-# An empty mask, "-1", or a value with no usable ordinal selects nothing, and the caller
-# decides what that means. The layers compose in this order: ROCR filters the HSA agent
-# list, then HIP ordinals index whatever survived that, so apply ROCR first.
+# The layers compose in this order: ROCR filters the HSA agent list, then HIP ordinals
+# index whatever survived that, so apply ROCR first.
 _amd_gfx_select_ordinals() {
     [ -n "${2:-}" ] || return 0
     [ "$2" != "-1" ] || return 0
-    printf '%s\n' "$1" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' | awk -v mask="$2" '
-        BEGIN {
-            _n = split(mask, _w, /,/)
-            for (_i = 1; _i <= _n; _i++) {
-                gsub(/^[ \t]+|[ \t]+$/, "", _w[_i])
-                if (_w[_i] ~ /^[0-9]+$/) _sel[_w[_i] + 0] = 1
+    _ago_out=$(printf '%s\n' "$1" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
+        | awk -v mask="$2" '
+            BEGIN {
+                _n = split(mask, _w, /,/)
+                for (_i = 1; _i <= _n; _i++) {
+                    gsub(/^[ \t]+|[ \t]+$/, "", _w[_i])
+                    if (_w[_i] ~ /^[0-9]+$/) _sel[_w[_i] + 0] = 1
+                }
             }
-        }
-        NF && !_seen[$0]++ { if ((_ord++) in _sel) print }'
+            NF && !_seen[$0]++ { if ((_ord++) in _sel) print }')
+    printf '%s\n' "$_ago_out"
+    case "$2" in
+        *[!0-9,\ ]*) return 2 ;;
+    esac
+    return 0
 }
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
@@ -4115,17 +4143,26 @@ get_torch_index_url() {
         # environment-masked probe returned the full inventory and the hidden dGPU still
         # set _amd_gfx_good. Doing it here gives the same answer whichever tool replied.
         # ROCR first, then HIP: HIP ordinals index the set that survived ROCr.
-        _amd_gfx_rocr_mask="${ROCR_VISIBLE_DEVICES:-}"
-        if [ -n "$_amd_gfx_gate_probe" ] && [ -n "$_amd_gfx_rocr_mask" ] \
-           && [ "$_amd_gfx_rocr_mask" != "-1" ]; then
-            _amd_gfx_gate_probe=$(_amd_gfx_select_ordinals "$_amd_gfx_gate_probe" \
-                "$_amd_gfx_rocr_mask")
-        fi
-        _amd_gfx_hip_mask="${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-}}"
-        if [ -n "$_amd_gfx_gate_probe" ] && [ -n "$_amd_gfx_hip_mask" ] \
-           && [ "$_amd_gfx_hip_mask" != "-1" ]; then
-            _amd_gfx_gate_probe=$(_amd_gfx_select_ordinals "$_amd_gfx_gate_probe" \
-                "$_amd_gfx_hip_mask")
+        _amd_gfx_mask_unresolved=false
+        _amd_gfx_masked=false
+        for _amd_gfx_layer in "${ROCR_VISIBLE_DEVICES:-}" \
+                              "${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-}}"; do
+            [ -n "$_amd_gfx_layer" ] || continue
+            [ "$_amd_gfx_layer" != "-1" ] || continue
+            _amd_gfx_masked=true
+            [ -n "$_amd_gfx_gate_probe" ] || continue
+            _amd_gfx_sel=$(_amd_gfx_select_ordinals "$_amd_gfx_gate_probe" "$_amd_gfx_layer") \
+                || _amd_gfx_mask_unresolved=true
+            _amd_gfx_gate_probe="$_amd_gfx_sel"
+        done
+        # A mask was in force and resolved to nothing we can name -- a UUID token, or an
+        # ordinal past the end of a list dedup may have shortened. Falling back to the
+        # full inventory here is what let a hidden healthy dGPU keep ROCm on a host whose
+        # only visible target was the APU, so prove it instead: keep the physical read for
+        # the all-good case, and let the bad-arch check below decide. _amd_gfx_masked
+        # records that a mask spoke at all, so an unresolvable one cannot read as "no mask".
+        if [ "$_amd_gfx_masked" = true ] && [ -z "$_amd_gfx_gate_probe" ]; then
+            _amd_gfx_mask_unresolved=true
         fi
         if [ -z "$_amd_gfx_gate_probe" ]; then
             _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
@@ -4146,6 +4183,19 @@ get_torch_index_url() {
                 echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
                 echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
                 echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
+                echo "$_base/cpu"; return
+            fi
+            # A healthy arch is only a reason to keep ROCm if it is one the runtime can
+            # actually reach. When a mask was in force and could not be resolved to a
+            # device -- a UUID token, or an ordinal past the end of a dedup-shortened list
+            # -- "good" came from the physical inventory, which is exactly the hidden GPU
+            # the mask may have taken away. Decline rather than guess: the cost of being
+            # wrong here is silent NaNs, and the cost of being wrong the other way is CPU
+            # wheels on a host that can pin UNSLOTH_TORCH_INDEX_URL to get ROCm back.
+            if [ "$_amd_gfx_mask_unresolved" = true ]; then
+                echo "[WARN] AMD gfx1033 (Van Gogh) is present and a visible-device mask names devices this installer cannot resolve -- installing CPU-only PyTorch." >&2
+                echo "[WARN] It cannot prove an unaffected GPU is visible, and gfx1033 computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md)." >&2
+                echo "[WARN] Use ordinals in ROCR_VISIBLE_DEVICES, or pin UNSLOTH_TORCH_INDEX_URL, if you want ROCm anyway." >&2
                 echo "$_base/cpu"; return
             fi
             echo "[WARN] AMD gfx1033 (Van Gogh) is present, but another AMD GPU on this host is not affected -- keeping ROCm PyTorch." >&2
