@@ -1449,11 +1449,9 @@ def _is_start_title(token: str) -> bool:
 # ``~/.bashrc``, ``~/.ssh/config``, ``~/.ssh/known_hosts``, ``/etc/hosts``,
 # ``~/.npm/`` cache, project-local rc files, ``~/.bash_history``,
 # ``~/.cache/``) MUST stay out of this list — those still flow through.
-# SSH private-key alternatives require a filename-end boundary so that
-# the matching public key ``~/.ssh/id_rsa.pub`` (legitimate developer
-# action) is NOT blocked. Non-key entries deliberately omit the end
-# anchor: ``.aws/credentials.bak`` etc. are still credentials.
-_SSH_KEY_END = r"(?=$|[\s'\";&|)<>])"
+# SSH private-key alternatives allow only the exact matching ``.pub`` public
+# key. Backup suffixes still contain private credentials and must remain gated.
+_SSH_KEY_END = r"(?!\.pub(?=$|[\s'\";&|)<>]))(?=$|[.\s'\";&|)<>])"
 _HOME_SENSITIVE_LITERAL_PATHS = (
     ".aws/credentials",
     ".docker/config.json",
@@ -1641,6 +1639,21 @@ _BASH_DIR_EXFIL_COMMANDS = (
     "scp",
     "sftp",
 )
+_BASH_FIND_CONTENT_READERS = (
+    "cat",
+    "head",
+    "tail",
+    "less",
+    "more",
+    "grep",
+    "sed",
+    "awk",
+    "strings",
+    "base64",
+    "xxd",
+    "od",
+    "hexdump",
+)
 _BASH_SENSITIVE_DIR_NAMES = (
     r"\.ssh",
     r"\.aws",
@@ -1687,7 +1700,7 @@ _BASH_FIND_EXFIL_RE = re.compile(
     + r"|(?<![A-Za-z0-9_./~$%-])/(?:etc(?:/ssh)?|var/spool/cron|proc/(?:self|thread-self|\d+))"
     + r"(?=/?(?:\s|$)))"
     + r"[^;&|\n]*?(?<!\w)(?:-exec|-execdir)\b[^;&|\n]*?\b(?:"
-    + "|".join(re.escape(c) for c in _BASH_DIR_EXFIL_COMMANDS)
+    + "|".join(re.escape(c) for c in (*_BASH_DIR_EXFIL_COMMANDS, *_BASH_FIND_CONTENT_READERS))
     + r")\b",
     re.IGNORECASE,
 )
@@ -1750,6 +1763,7 @@ def _glob_can_reach_sensitive_path(pattern: str) -> bool:
 
 
 _BRACE_EXPANSION_RE = re.compile(r"\{([^{}]*,[^{}]*)\}")
+_BRACE_SEQUENCE_RE = re.compile(r"\{(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?\}")
 
 
 _TILDE_USER_PREFIX_RE = re.compile(r"^~[^/]+/")
@@ -1944,6 +1958,17 @@ def _expand_brace_projections(text: str, limit: int = 1024) -> set[str]:
                 if len(out) >= limit:
                     break
                 nxt = cur[: brace.start()] + alt + cur[brace.end() :]
+                if nxt not in out:
+                    out.add(nxt)
+                    queue.append(nxt)
+            continue
+        sequence = _BRACE_SEQUENCE_RE.search(cur)
+        if sequence:
+            values = _brace_range(sequence.group(1), sequence.group(2), sequence.group(3))
+            for value in values:
+                if len(out) >= limit:
+                    break
+                nxt = cur[: sequence.start()] + value + cur[sequence.end() :]
                 if nxt not in out:
                     out.add(nxt)
                     queue.append(nxt)
@@ -15511,6 +15536,27 @@ def _check_signal_escape_patterns(code: str):
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
     )
+    _DATAFRAME_READER_NAMES = frozenset(
+        {
+            "read_csv",
+            "read_table",
+            "read_excel",
+            "read_json",
+            "read_parquet",
+            "read_pickle",
+            "read_feather",
+            "read_orc",
+            "read_hdf",
+            "read_sas",
+            "read_stata",
+            "read_xml",
+            "read_fwf",
+            "read_sql",
+            "fromfile",
+            "loadtxt",
+            "genfromtxt",
+        }
+    )
     _UPLOAD_HTTP_METHODS = (
         "requests.post",
         "requests.put",
@@ -15680,6 +15726,17 @@ def _check_signal_escape_patterns(code: str):
         "/etc/ssh/",
     )
     _SENSITIVE_FILE_RE = re.compile(r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$")
+
+    def _matches_complete_file_policy(path: str) -> bool:
+        candidates = {path, _normalize_path_separators(path)}
+        if "\\" in path:
+            candidates.add(path.replace("\\", "/"))
+        return any(
+            any(candidate.startswith(prefix) for prefix in _SENSITIVE_FILE_PREFIXES)
+            or _SENSITIVE_FILE_RE.match(candidate)
+            or _find_sensitive_paths(candidate)
+            for candidate in candidates
+        )
 
     def _normalize_host(host: str) -> str:
         if not host:
@@ -16009,6 +16066,11 @@ def _check_signal_escape_patterns(code: str):
                 return self.network_call_aliases.get(func.id, func.id)
             if not isinstance(func, ast.Attribute):
                 return ""
+            if isinstance(func.value, ast.Call):
+                constructor = self._canonical_network_callable(func.value.func)
+                instance_module = self._constructor_instance_module(constructor)
+                if instance_module is not None:
+                    return f"{instance_module}.{func.attr}"
             parts: list[str] = []
             cur: ast.AST = func
             while isinstance(cur, ast.Attribute):
@@ -16028,7 +16090,27 @@ def _check_signal_escape_patterns(code: str):
         def _extract_url_literal(self, node: ast.AST) -> "str | None":
             if isinstance(node, ast.Name):
                 return self.request_url_bindings.get(node.id)
+            if isinstance(node, ast.Call):
+                constructor = self._canonical_network_callable(node.func)
+                if constructor == "urllib.request.Request":
+                    if node.args:
+                        return self._extract_url_literal(node.args[0])
+                    for kw in node.keywords or []:
+                        if kw.arg in ("url", "full_url"):
+                            return self._extract_url_literal(kw.value)
             return _extract_string_literal(node)
+
+        @staticmethod
+        def _constructor_instance_module(constructor: str) -> "str | None":
+            if constructor == "requests.Session":
+                return "requests"
+            if constructor in ("httpx.Client", "httpx.AsyncClient"):
+                return "httpx"
+            if constructor == "urllib3.PoolManager":
+                return "urllib3"
+            if constructor == "aiohttp.ClientSession":
+                return "aiohttp.ClientSession"
+            return None
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -16062,6 +16144,10 @@ def _check_signal_escape_patterns(code: str):
                         node.module == "codecs" and alias.name == "open"
                     ):
                         self.file_reader_aliases.add(alias.asname or alias.name)
+            elif node.module in ("pandas", "numpy"):
+                for alias in node.names:
+                    if alias.name in _DATAFRAME_READER_NAMES:
+                        self.file_reader_aliases.add(alias.asname or alias.name)
             if node.module in self.network_module_aliases:
                 for alias in node.names:
                     canonical = f"{node.module}.{alias.name}"
@@ -16080,15 +16166,7 @@ def _check_signal_escape_patterns(code: str):
             if not isinstance(value, ast.Call):
                 return
             constructor = self._canonical_network_callable(value.func)
-            instance_module = None
-            if constructor == "requests.Session":
-                instance_module = "requests"
-            elif constructor in ("httpx.Client", "httpx.AsyncClient"):
-                instance_module = "httpx"
-            elif constructor == "urllib3.PoolManager":
-                instance_module = "urllib3"
-            elif constructor == "aiohttp.ClientSession":
-                instance_module = "aiohttp.ClientSession"
+            instance_module = self._constructor_instance_module(constructor)
             if instance_module:
                 for tgt in targets:
                     if isinstance(tgt, ast.Name):
@@ -16158,6 +16236,10 @@ def _check_signal_escape_patterns(code: str):
                     for tgt in node.targets:
                         if isinstance(tgt, ast.Name):
                             self.network_call_aliases[tgt.id] = canonical
+                if attr in _DATAFRAME_READER_NAMES:
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.file_reader_aliases.add(tgt.id)
                 if recv in shutil_module_aliases and attr in _SHUTIL_COPY_NAMES:
                     for tgt in node.targets:
                         if isinstance(tgt, ast.Name):
@@ -16369,7 +16451,7 @@ def _check_signal_escape_patterns(code: str):
                 # through to runtime allow/deny without the static gate
                 # eagerly binding the name.
                 for kw in node.keywords or []:
-                    if kw.arg in ("url", "address"):
+                    if kw.arg in ("url", "address", "base_url"):
                         v = kw.value
                         if isinstance(v, ast.Tuple) and v.elts:
                             if host_arg is None:
@@ -16387,15 +16469,14 @@ def _check_signal_escape_patterns(code: str):
                         file_path = urllib.parse.unquote(parsed_url.path)
                         if re.match(r"^/[A-Za-z]:/", file_path):
                             file_path = file_path[1:]
-                        matched_paths = _find_sensitive_paths(file_path)
-                        if matched_paths:
+                        if _matches_complete_file_policy(file_path):
                             sensitive_file_reads.append(
                                 {
                                     "type": "sensitive_file_read",
                                     "line": getattr(node, "lineno", -1),
                                     "description": (
-                                        "Blocked: access to sensitive file path(s): "
-                                        + ", ".join(sorted(matched_paths))
+                                        "Blocked: file URL targets a host identity / "
+                                        f"credential file: {file_path}"
                                     ),
                                 }
                             )
@@ -16460,25 +16541,7 @@ def _check_signal_escape_patterns(code: str):
             # ``pandas.read_csv`` / ``np.fromfile`` / ``numpy.loadtxt``).
             # Matched by suffix so the receiver alias does not need to
             # be tracked separately.
-            _DATAFRAME_READERS = (
-                ".read_csv",
-                ".read_table",
-                ".read_excel",
-                ".read_json",
-                ".read_parquet",
-                ".read_pickle",
-                ".read_feather",
-                ".read_orc",
-                ".read_hdf",
-                ".read_sas",
-                ".read_stata",
-                ".read_xml",
-                ".read_fwf",
-                ".read_sql",
-                ".fromfile",
-                ".loadtxt",
-                ".genfromtxt",
-            )
+            _DATAFRAME_READERS = tuple(f".{name}" for name in _DATAFRAME_READER_NAMES)
             looks_like_dataframe_reader = isinstance(node.func, ast.Attribute) and any(
                 fq.endswith(s) for s in _DATAFRAME_READERS
             )

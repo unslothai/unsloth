@@ -2623,7 +2623,7 @@ class TestCurrentHeadReviewRegressions:
         "cmd",
         [
             "find ~/.ssh -type f",
-            r"find ~/.ssh -type f -exec grep -l needle {} \;",
+            r"find ~/.ssh -type f -exec stat {} \;",
         ],
     )
     def test_sensitive_find_inspection_allowed(self, cmd):
@@ -2806,3 +2806,108 @@ class TestCurrentHeadReviewRegressions:
     )
     def test_posix_escapes_and_windows_separators_blocked(self, cmd):
         assert _find_sensitive_paths(cmd), f"backslash path projection leaked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import urllib3\n"
+                "urllib3.PoolManager().request("
+                "'GET', 'http://169.254.169.254/latest')"
+            ),
+            ("import requests\nrequests.Session().get('http://169.254.169.254/latest')"),
+        ],
+    )
+    def test_fresh_client_calls_blocked(self, code):
+        assert _is_blocked(code), "fresh client metadata request leaked"
+
+    def test_fresh_client_trusted_call_allowed(self):
+        code = "import requests\nrequests.Session().get('https://google.com/')"
+        assert not _is_blocked(code), "fresh trusted client request blocked"
+
+    def test_inline_request_object_url_checked(self):
+        code = (
+            "import urllib.request\n"
+            "urllib.request.urlopen(urllib.request.Request("
+            "'http://169.254.169.254/latest'))"
+        )
+        assert _is_blocked(code), "inline Request metadata URL leaked"
+
+    def test_file_url_complete_policy_blocks_passwd(self):
+        code = "import urllib.request\nurllib.request.urlopen('file:///etc/passwd').read()"
+        assert _is_blocked(code), "file URL bypassed /etc/passwd policy"
+
+    def test_find_exec_content_reader_blocked(self):
+        cmd = r"find ~/.ssh -name id_rsa -exec cat {} \;"
+        assert _find_sensitive_paths(cmd), "find -exec private-key reader leaked"
+
+    def test_find_exec_metadata_reader_allowed(self):
+        cmd = r"find ~/.ssh -type f -exec stat {} \;"
+        assert not _find_sensitive_paths(cmd), "find metadata-only action blocked"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc/shado{v..w}",
+            "cat /proc/{0..1}/environ",
+        ],
+    )
+    def test_bash_brace_sequences_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"brace sequence sensitive path leaked: {cmd!r}"
+
+    def test_bash_benign_brace_sequence_allowed(self):
+        assert not _find_sensitive_paths("cat /etc/host{s..t}")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import httpx\n"
+                "c = httpx.Client(base_url='http://169.254.169.254')\n"
+                "c.get('/latest')"
+            ),
+            (
+                "import aiohttp\n"
+                "c = aiohttp.ClientSession(base_url='http://169.254.169.254')\n"
+                "c.get('/latest')"
+            ),
+        ],
+    )
+    def test_client_metadata_base_urls_blocked(self, code):
+        assert _is_blocked(code), "client metadata base URL leaked"
+
+    def test_client_trusted_base_url_allowed(self):
+        code = "import httpx\nc = httpx.Client(base_url='https://google.com')\nc.get('/search')"
+        assert not _is_blocked(code), "trusted client base URL blocked"
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "~/.ssh/id_rsa.bak",
+            "~/.ssh/id_ed25519.old",
+            "/home/u/.ssh/id_rsa.copy",
+        ],
+    )
+    def test_suffixed_private_key_backups_blocked(self, path):
+        assert _find_sensitive_paths(f"cat {path}"), f"private-key backup leaked: {path!r}"
+        assert _is_blocked(f"open({path!r}).read()"), f"private-key backup open leaked: {path!r}"
+
+    def test_exact_ssh_public_key_still_allowed(self):
+        path = "/home/u/.ssh/id_rsa.pub"
+        assert not _find_sensitive_paths(f"cat {path}")
+        assert not _is_blocked(f"open({path!r}).read()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            ("from pandas import read_csv\nread_csv('/home/u/.aws/credentials')"),
+            "import pandas as pd\nr = pd.read_csv\nr('/etc/shadow')",
+            "from numpy import fromfile as reader\nreader('/etc/shadow')",
+        ],
+    )
+    def test_imported_and_rebound_dataframe_readers_blocked(self, code):
+        assert _is_blocked(code), "bare dataframe reader sensitive path leaked"
+
+    def test_imported_dataframe_reader_benign_path_allowed(self):
+        code = "from pandas import read_csv\nread_csv('data.csv')"
+        assert not _is_blocked(code), "bare dataframe reader benign path blocked"
