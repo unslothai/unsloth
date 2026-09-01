@@ -2009,6 +2009,24 @@ def _openai_llama_admission_tokens(
     return max(1, min(budget, prompt_tokens + output_tokens))
 
 
+def _llama_preemption_log(event: str, *, level: str = "info", **fields) -> None:
+    """One line per preemption decision.
+
+    Added after a live run where the honest answer to "did preemption engage" was that
+    nobody could tell: there was no instrumentation, so an empty grep proved only that
+    nothing had been written. Every branch that decides something logs it, including the
+    branches that decide to do nothing, because "armed but never fired" and "never armed"
+    look identical from the outside and have completely different fixes.
+    """
+    try:
+        log = getattr(logger, level, logger.info)
+        detail = " ".join(f"{k}={v}" for k, v in fields.items() if v is not None)
+        log("llama preemption %s: %s", event, detail)
+    except Exception:
+        # Instrumentation must never be able to fail a generation.
+        pass
+
+
 def _openai_llama_preemption_arm(
     *,
     request: Optional[Request],
@@ -2031,6 +2049,10 @@ def _openai_llama_preemption_arm(
         return None
     lease = reservation.lease_nowait()
     if lease is None:
+        # Queued, not yet granted. It holds no cache, so there is nothing to preempt and
+        # nothing to preempt FOR.
+        _llama_preemption_log("not-armed", reason = "no-lease-yet", gen_id = gen_id,
+                              level = "debug")
         return None
     key = str(getattr(llama_backend, "base_url", "llama-server"))
     controller = get_preemption_controller(key)
@@ -2039,15 +2061,49 @@ def _openai_llama_preemption_arm(
         # Only under one shared pool can a preempted slot's cells be purged for someone
         # else; see try_clear_idle_slots, which is gated on exactly this.
         kv_unified = bool(getattr(llama_backend, "_kv_cache_unified", False)),
+        # A drafter puts up to --spec-draft-n-max tokens per slot into the cache before
+        # they are accepted or rejected, and admission never sees them. Unreserved, they
+        # are what pushes a nearly-full cache onto llama-server's shrinking-batch retry,
+        # where upstream #24840 throws on the speculative indices.
+        draft_tokens = (
+            int(getattr(llama_backend, "_spec_draft_n_max", 0) or 0)
+            if getattr(llama_backend, "_speculative_type", None)
+            else 0
+        ),
+        slots = _openai_llama_admission_capacity(request, llama_backend),
     )
     if not controller.active:
+        # The three reasons are worth telling apart: no shared cache, no budget, or the
+        # rollout switch. All three fall back to the wire clamp.
+        _llama_preemption_log(
+            "not-armed",
+            reason = (
+                "no-kv-unified" if not getattr(llama_backend, "_kv_cache_unified", False)
+                else "no-budget" if not _openai_llama_admission_budget(llama_backend)
+                else "switched-off"
+            ),
+            gen_id = gen_id,
+        )
         return None
     charged = int(getattr(lease, "tokens", 0) or 0)
     controller.register(gen_id, lease = lease, tokens = charged)
     # Whoever has to stop so this one fits. Setting the signal is all that happens here;
     # the victims notice at their own next safe point, which is the only place a pause
     # is allowed to land.
-    controller.plan_preemptions(needed = charged)
+    victims = controller.plan_preemptions(needed = charged)
+    snapshot = controller.snapshot()
+    _llama_preemption_log(
+        "armed",
+        gen_id = gen_id,
+        charged = charged,
+        committed = snapshot.committed,
+        budget = snapshot.budget,
+        buffer = snapshot.buffer,
+        decoding = snapshot.decoding,
+        paused = snapshot.paused,
+        winner = snapshot.winner,
+        preempted = ",".join(v.gen_id for v in victims) if victims else "none",
+    )
     return ControllerPreemptionPolicy(controller, gen_id, signal, loop = loop)
 
 

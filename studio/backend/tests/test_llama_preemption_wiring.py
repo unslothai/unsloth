@@ -240,3 +240,89 @@ class TestTheRouteActuallyArmsIt:
         assert source.count("_gguf_preempt_policy_hold.bind(") == 1, (
             "the policy is never bound, so it stays inert forever"
         )
+
+
+class TestSpeculativeDraftsAreReserved:
+    """Drafts occupy cells nobody is charged for.
+
+    Measured 2026-09-01 on `-c 16384 --parallel 4 --kv-unified --spec-type draft-mtp
+    --spec-draft-n-max 2`: the cache filled, llama-server halved n_batch 128 -> 64 -> 32
+    -> 16 -> 8 -> 4 hunting for room, and at that width the speculative indices fell
+    outside the sub-batch and it threw. That is upstream ggml-org/llama.cpp#24840, whose
+    retry path shifts `slot.i_batch` by the offset but never `slot.spec_i_batch`. We
+    cannot patch it, so the fix here is to keep the cache off that retry path.
+    """
+
+    def test_drafts_are_added_on_top_of_the_ratio(self):
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        plain = preemption_buffer_tokens(16384)
+        drafted = preemption_buffer_tokens(16384, draft_tokens = 2, slots = 4)
+        assert drafted == plain + 8, "every slot may hold n_draft unaccounted tokens"
+
+    def test_no_speculation_reserves_nothing_extra(self):
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        assert preemption_buffer_tokens(16384, draft_tokens = 0, slots = 4) == (
+            preemption_buffer_tokens(16384)
+        )
+
+    def test_a_huge_draft_window_cannot_swallow_a_small_cache(self):
+        """Still never a ceiling of zero, which would preempt everyone forever."""
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        buffer = preemption_buffer_tokens(512, draft_tokens = 64, slots = 8)
+        assert buffer <= 256
+        assert 512 - buffer > 0
+
+    def test_the_controller_reserves_them(self):
+        controller = PreemptionController("spec")
+        controller.configure(
+            budget = 16384, kv_unified = True, draft_tokens = 2, slots = 4
+        )
+        assert controller.snapshot().buffer == 828
+
+    @pytest.mark.asyncio
+    async def test_the_route_passes_the_backends_draft_settings(self):
+        import routes.inference as inference
+
+        queue = get_llama_admission_queue("http://127.0.0.1:9/")
+        reservation = queue.reserve(
+            capacity = 4, config = LlamaAdmissionConfig(), budget = 16384, tokens = 4096
+        )
+        backend = _backend(url = "http://127.0.0.1:9/")
+        backend._speculative_type = "draft-mtp"
+        backend._spec_draft_n_max = 2
+        inference._openai_llama_preemption_arm(
+            request = None,
+            llama_backend = backend,
+            reservation = reservation,
+            gen_id = "spec-armed",
+            signal = PreemptSignal(),
+            loop = None,
+        )
+        snapshot = get_preemption_controller("http://127.0.0.1:9/").snapshot()
+        assert snapshot.buffer == 828, (
+            f"the drafter's tokens were not reserved (buffer {snapshot.buffer})"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_backend_without_speculation_reserves_nothing_extra(self):
+        import routes.inference as inference
+
+        queue = get_llama_admission_queue("http://127.0.0.1:10/")
+        reservation = queue.reserve(
+            capacity = 4, config = LlamaAdmissionConfig(), budget = 16384, tokens = 4096
+        )
+        backend = _backend(url = "http://127.0.0.1:10/")
+        backend._speculative_type = None
+        backend._spec_draft_n_max = 2
+        inference._openai_llama_preemption_arm(
+            request = None,
+            llama_backend = backend,
+            reservation = reservation,
+            gen_id = "no-spec",
+            signal = PreemptSignal(),
+            loop = None,
+        )
+        assert get_preemption_controller("http://127.0.0.1:10/").snapshot().buffer == 820

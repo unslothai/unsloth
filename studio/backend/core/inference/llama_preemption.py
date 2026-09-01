@@ -22,6 +22,7 @@ KV cache is exhausted.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import sys
 import threading
@@ -33,6 +34,8 @@ from core.inference.llama_admission import LlamaAdmissionLease, _bool_env
 
 
 _SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
+
+_log = logging.getLogger(__name__)
 
 
 # Off falls back to step 1's wire clamp alone, which is the behaviour that predates any
@@ -317,18 +320,34 @@ def preemption_enabled() -> bool:
     return _bool_env(PREEMPT_ENV, DEFAULT_PREEMPT_ENABLED)
 
 
-def preemption_buffer_tokens(budget: int) -> int:
+def preemption_buffer_tokens(budget: int, *, draft_tokens: int = 0, slots: int = 1) -> int:
     """Tokens held clear of ``budget``. Zero for an unknown budget, which disables it.
 
     Never the whole cache. The 256-token floor is larger than a very small ``-c``, and a
     buffer that swallows the budget leaves a ceiling of zero, which reads as "no room
     for anyone" and would preempt every participant on every call, forever. Capped at
     half so a tiny cache degrades to a smaller buffer rather than to a livelock.
+
+    **Speculative decoding is charged on top.** A drafter puts up to
+    ``--spec-draft-n-max`` tokens into the cache per slot BEFORE they are accepted or
+    rejected, and admission never sees them: they are not part of any request's prompt or
+    output. With every slot drafting at once that is ``draft_tokens * slots`` cells this
+    module would otherwise believe were free. Observed 2026-09-01: the cache filled,
+    llama-server halved n_batch 128 -> 4 looking for room, and at that width the
+    speculative indices fell outside the sub-batch and it threw
+    ``speculative batch index 4 is not inside the current sub-batch [0, 4)``
+    (upstream ggml-org/llama.cpp#24840, where the retry path shifts ``slot.i_batch`` by
+    the offset but never ``slot.spec_i_batch``). Reserving the drafts keeps the cache off
+    the retry path that exposes it.
     """
     if budget <= 0:
         return 0
     scaled = int(math.ceil(budget * DEFAULT_PREEMPT_BUFFER_RATIO))
-    return min(max(DEFAULT_PREEMPT_BUFFER_MIN_TOKENS, scaled), max(1, budget // 2))
+    reserve = max(DEFAULT_PREEMPT_BUFFER_MIN_TOKENS, scaled)
+    reserve += max(0, int(draft_tokens or 0)) * max(1, int(slots or 1))
+    # Still never the whole cache: a large draft window on a small -c must degrade to a
+    # tight buffer, not to a ceiling of zero.
+    return min(reserve, max(1, budget // 2))
 
 
 @dataclass(**_SLOTS)
@@ -379,7 +398,10 @@ class PreemptionController:
     they are, ask whether there is room, and are told who must stop.
     """
 
-    __slots__ = ("key", "_lock", "_participants", "_seq", "_epoch_winner", "_budget", "_kv_unified")
+    __slots__ = (
+        "key", "_lock", "_participants", "_seq", "_epoch_winner", "_budget",
+        "_kv_unified", "_draft_tokens", "_slots",
+    )
 
     def __init__(self, key: str):
         self.key = key
@@ -397,8 +419,19 @@ class PreemptionController:
         # platform, including Windows full-offload (--cache-ram 0, #5692) where the clamp
         # would otherwise be the only protection.
         self._kv_unified = False
+        # Speculative drafts occupy cells no request is charged for; see
+        # preemption_buffer_tokens.
+        self._draft_tokens = 0
+        self._slots = 1
 
-    def configure(self, *, budget: Optional[int] = None, kv_unified: Optional[bool] = None) -> None:
+    def configure(
+        self,
+        *,
+        budget: Optional[int] = None,
+        kv_unified: Optional[bool] = None,
+        draft_tokens: Optional[int] = None,
+        slots: Optional[int] = None,
+    ) -> None:
         """Re-read the cache this backend actually allocated.
 
         Called per request like ``LlamaAdmissionQueue.reserve`` re-reads ``_budget``: a
@@ -410,6 +443,10 @@ class PreemptionController:
                 self._budget = max(0, int(budget or 0))
             if kv_unified is not None:
                 self._kv_unified = bool(kv_unified)
+            if draft_tokens is not None:
+                self._draft_tokens = max(0, int(draft_tokens or 0))
+            if slots is not None:
+                self._slots = max(1, int(slots or 1))
 
     @property
     def active(self) -> bool:
@@ -495,6 +532,11 @@ class PreemptionController:
         with self._lock:
             return self._committed_locked()
 
+    def _buffer_locked(self) -> int:
+        return preemption_buffer_tokens(
+            self._budget, draft_tokens = self._draft_tokens, slots = self._slots
+        )
+
     def _prune_locked(self) -> None:
         """Drop participants whose lease is finished with the cache.
 
@@ -553,7 +595,7 @@ class PreemptionController:
         with self._lock:
             if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
                 return []
-            buffer = preemption_buffer_tokens(self._budget)
+            buffer = self._buffer_locked()
             ceiling = max(0, self._budget - buffer)
             total = self._committed_locked()
             want = max(0, int(needed or 0))
@@ -592,7 +634,7 @@ class PreemptionController:
             return PreemptionSnapshot(
                 key = self.key,
                 budget = self._budget,
-                buffer = preemption_buffer_tokens(self._budget),
+                buffer = self._buffer_locked(),
                 committed = self._committed_locked(),
                 decoding = states.count(ParticipantState.DECODING),
                 paused = states.count(ParticipantState.PAUSED),
@@ -685,6 +727,11 @@ class ControllerPreemptionPolicy:
         guarantees that by calling this from its except branch, after teardown.
         """
         self._resumes = checkpoint.resumes
+        _log.info(
+            "llama preemption paused: gen_id=%s resumes=%s kept_chars=%s charged=%s",
+            self._gen_id, checkpoint.resumes, len(checkpoint.visible_text or ""),
+            checkpoint.charged_tokens,
+        )
         participant = self._controller.participant(self._gen_id)
         if participant is None:
             return
@@ -701,6 +748,9 @@ class ControllerPreemptionPolicy:
     def await_resume(self, timeout: Optional[float] = None) -> bool:
         if self._resumes >= DEFAULT_MAX_PREEMPT_RESUMES:
             # Churning on one chat helps nobody; let it finish and take its room back.
+            _log.warning(
+                "llama preemption resume-cap: gen_id=%s resumes=%s", self._gen_id, self._resumes
+            )
             return False
         participant = self._controller.participant(self._gen_id)
         if participant is None:
@@ -713,16 +763,26 @@ class ControllerPreemptionPolicy:
         # Re-stated, not remembered: a resumed run carries the partial it already
         # generated, so it needs more room than it was preempted holding.
         want = max(0, int(participant.tokens or 0))
+        _log.info("llama preemption awaiting-room: gen_id=%s want=%s", self._gen_id, want)
         try:
             future = asyncio.run_coroutine_threadsafe(
                 lease.resume_async(want, timeout_s = timeout), self._loop
             )
             # The future's own timeout is a backstop for a loop that never runs the
             # coroutine at all; resume_async is already bounded by timeout_s.
-            return bool(future.result(timeout = None if timeout is None else timeout + 5.0))
-        except Exception:
+            got = bool(future.result(timeout = None if timeout is None else timeout + 5.0))
+            _log.info(
+                "llama preemption %s: gen_id=%s want=%s",
+                "resumed" if got else "gave-up", self._gen_id, want,
+            )
+            return got
+        except Exception as exc:
             # Includes the future timing out. Whatever the cause, the honest answer is
             # that the room did not come back, and the caller finishes the turn.
+            _log.warning(
+                "llama preemption resume-failed: gen_id=%s want=%s error=%s",
+                self._gen_id, want, exc,
+            )
             return False
 
     def on_resumed(self) -> None:
