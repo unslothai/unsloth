@@ -266,7 +266,9 @@ def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
         if first and first[0].strip().startswith("%%capture"):
             out.append((i, src))
             continue
-        if _PIP_CELL_RE.search(src):
+        # Glued, since a `\\` continuation can put the `!` and the pip call on different
+        # physical lines.
+        if any(_PIP_CELL_RE.search(line) for _, line in _glue_line_continuations(src)):
             out.append((i, src))
     return out
 
@@ -741,15 +743,25 @@ def _git_source_repository(source: str) -> str:
     path = path.split("@", 1)[0].rstrip("/")  # drop a trailing @ref
     if path.endswith(".git"):
         path = path[: -len(".git")]
-    return f"{host.lower()}/{path.lower()}"
+    # Resolve `.` and `..` the way a URL client does, or
+    # `github.com/unslothai/unsloth/../../attacker/repo` reads as an allowlisted prefix.
+    segments: list[str] = []
+    for segment in path.split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if segments:
+                segments.pop()
+            continue
+        segments.append(segment)
+    return "/".join([host.lower(), *(segment.lower() for segment in segments)])
 
 
 def _git_source_is_allowed(source: str) -> bool:
+    """Exact repository match. Every allowlist entry is one `host/org/repo`, and pip puts a
+    subdirectory in the URL fragment rather than on the path, so nothing needs a prefix."""
     repository = _git_source_repository(source)
-    return any(
-        repository == allowed.lower() or repository.startswith(f"{allowed.lower()}/")
-        for allowed in GIT_PLUS_ALLOWLIST
-    )
+    return any(repository == allowed.lower() for allowed in GIT_PLUS_ALLOWLIST)
 
 
 def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
@@ -797,12 +809,13 @@ def rule_inst_002_no_deps_transitive(
 ) -> list[Finding]:
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
+    environment = _marker_environment(colab)
     for inv in unconditional_pip_invocations(install_cell):
         if "--no-deps" not in inv.flags:
             continue
         for raw in inv.packages:
             sp = parse_spec(raw)
-            if sp is None:
+            if sp is None or not _requirement_applies(raw, environment):
                 continue
             v = explicit_pin(sp)
             if v is None:
@@ -1242,13 +1255,14 @@ def rule_inst_005_transformers_tokenizers(
     if not tf or tok is None:
         return findings
     # Find the transformers pin and check for --no-deps.
+    environment = _marker_environment(colab)
     transformers_line_no_deps = False
     for inv in unconditional_pip_invocations(install_cell):
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or sp.name != "transformers":
                 continue
-            if explicit_pin(sp) is None:
+            if explicit_pin(sp) is None or not _requirement_applies(raw, environment):
                 continue
             if "--no-deps" in inv.flags:
                 transformers_line_no_deps = True

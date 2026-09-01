@@ -1526,6 +1526,67 @@ def test_torchao_floor_ignores_a_requirement_pip_skips():
         assert nv.rule_inst_003_peft_torchao(cell, colab, "nb.ipynb", 0) == [], cell
 
 
+def test_git_allowlist_resolves_dot_segments_and_matches_exactly():
+    """`unslothai/unsloth/../../attacker/repo` reads as an allowlisted prefix and resolves to
+    somebody else's repository. Every entry is one `host/org/repo`, and pip puts a
+    subdirectory in the fragment, so the match is exact."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._git_source_repository(
+        "git+https://github.com/unslothai/unsloth/../../attacker/repo.git"
+    ) == "github.com/attacker/repo"
+    assert not nv._git_source_is_allowed(
+        "git+https://github.com/unslothai/unsloth/../../attacker/repo.git"
+    )
+    assert not nv._git_source_is_allowed("git+https://github.com/unslothai/unsloth/extra.git")
+
+    # The real forms still match: a ref, credentials, a fragment.
+    for allowed in (
+        "git+https://github.com/unslothai/unsloth.git",
+        "git+https://user:pw@github.com/state-spaces/mamba.git@v2.0",
+        "git+https://github.com/unslothai/unsloth-zoo.git#subdirectory=x",
+    ):
+        assert nv._git_source_is_allowed(allowed), allowed
+
+    smuggled = "!pip install git+https://github.com/unslothai/unsloth/../../attacker/repo.git"
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(smuggled, "nb.ipynb", 0))
+
+
+def test_install_cell_discovery_glues_continuations():
+    """A `\\` continuation can put the `!` and the pip call on different physical lines, and
+    discovery reads lines."""
+    nv = _load_notebook_validator_module()
+
+    source = "!echo ready && \\\n  pip install git+https://example.com/pkg.git"
+    assert nv.install_cells(_one_cell_notebook(source))
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(source, "nb.ipynb", 0))
+
+
+def test_no_deps_rules_skip_a_requirement_pip_skips(monkeypatch):
+    """R-INST-002 and R-INST-005 read the raw pins themselves, so a marker-false `--no-deps`
+    requirement must not be treated as installed by either."""
+    nv = _load_notebook_validator_module()
+    monkeypatch.setattr(
+        nv,
+        "pypi_metadata",
+        lambda name, version: {"info": {"requires_dist": ["tokenizers (>=0.30.0)"]}}
+        if name.lower() == "transformers"
+        else None,
+    )
+    colab = {"transformers": "5.0.0", "tokenizers": "0.22.2"}
+
+    skipped = '!pip install --no-deps "transformers==5.5.0; python_version < \'3.10\'"'
+    assert nv.rule_inst_002_no_deps_transitive(skipped, colab, "nb.ipynb", 0) == []
+    assert nv.rule_inst_005_transformers_tokenizers(skipped, colab, "nb.ipynb", 0) == []
+
+    for applied in (
+        '!pip install --no-deps "transformers==5.5.0; python_version >= \'3.10\'"',
+        '!pip install --no-deps "transformers==5.5.0"',
+    ):
+        assert nv.rule_inst_002_no_deps_transitive(applied, colab, "nb.ipynb", 0), applied
+        assert nv.rule_inst_005_transformers_tokenizers(applied, colab, "nb.ipynb", 0), applied
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
