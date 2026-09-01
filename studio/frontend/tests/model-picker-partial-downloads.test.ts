@@ -81,11 +81,18 @@ test("the mark promises a resume only when the transport can give one", () => {
     /resumable\n?\s*\? "Partial download\. Select to resume it/,
   );
   assert.ok(
-    badge.includes("The interrupted file starts over."),
-    "and the other branch says what continuing costs",
+    badge.includes('"Partial download. Select to continue it, or delete it."'),
+    "and the other branch neither promises nor forbids reusing the bytes",
   );
+  // False is not the same as "restart": a GGUF repo row reports false because transport is per
+  // quant, and an older backend without the field collapses to it too. Neither is grounds to
+  // tell the user a multi-GB file starts over, so that claim stays out of the picker.
+  assert.ok(!badge.includes("starts over"));
   // Undefined has to read as the cautious branch, since that is what an unplumbed row passes.
   assert.ok(!badge.includes("resumable === false"));
+  // The reason false cannot be read as a verdict, kept where it is documented.
+  const chatApi = read("../src/features/chat/api/chat-api.ts");
+  assert.ok(chatApi.includes("False on a GGUF repo row by design:"));
   // The Hub's split is where this wording comes from, so it is pinned too.
   const hub = read("../src/features/hub/catalog/use-download-card-state.ts");
   assert.ok(hub.includes('return partialResumable ? "Resume" : "Continue";'));

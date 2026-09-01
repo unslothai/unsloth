@@ -662,7 +662,7 @@ function PartialBadge({ resumable }: { resumable?: boolean }) {
       <TooltipContent side="top" className="tooltip-compact">
         {resumable
           ? "Partial download. Select to resume it, or delete it."
-          : "Partial download. Select to continue it, or delete it. The interrupted file starts over."}
+          : "Partial download. Select to continue it, or delete it."}
       </TooltipContent>
     </Tooltip>
   );
@@ -4358,6 +4358,7 @@ export function HubModelPicker({
   // repos pin whole and leave the Unsloth / Other models groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
 
   // Candidate pins whose repo still exists in the cache. Per-quant validation
@@ -5565,9 +5566,8 @@ export function HubModelPicker({
                       hfToken || undefined,
                       c.cache_path || undefined,
                     );
-                    if (pinnedSet.has(pinKey(c.repo_id))) {
-                      togglePinned(c.repo_id);
-                    }
+                    // Every quant goes with the repo, so every quant pin goes too.
+                    unpinRepo(c.repo_id);
                   },
                   onDeleted: refreshCachedLists,
                 }}
@@ -5717,9 +5717,9 @@ export function HubModelPicker({
                   hfToken || undefined,
                   c.cache_path || undefined,
                 );
-                if (pinnedSet.has(pinKey(c.repo_id))) {
-                  togglePinned(c.repo_id);
-                }
+                // Repo-wide, so the quant pins go too: one id can hold a GGUF copy as well,
+                // and this delete takes that with it.
+                unpinRepo(c.repo_id);
               },
               onDeleted: refreshCachedLists,
             }}
