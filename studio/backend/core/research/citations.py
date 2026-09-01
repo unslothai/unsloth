@@ -65,6 +65,16 @@ def _trim_url_tail(raw: str) -> str:
     return raw[:end]
 
 
+def strip_model_source_list(report: str) -> str:
+    """Drop a model-authored Sources/References section.
+
+    ``_validate_report_sources`` removes it from the delivered report, so the synthesis
+    recovery compares its two drafts through this as well: a draft must not win on padding
+    that is about to be deleted."""
+    heading = _SOURCES_HEADING.search(report)
+    return report[: heading.start()] if heading else report
+
+
 def _validate_report_sources(report: str, sources: list[dict]) -> str:
     """Canonicalize citations and remove model-authored source lists."""
     source_by_url = {
@@ -73,9 +83,7 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
     source_urls = list(source_by_url)
     placeholders: dict[str, str] = {}
 
-    heading = _SOURCES_HEADING.search(report)
-    if heading:
-        report = report[: heading.start()]
+    report = strip_model_source_list(report)
 
     def citation(url: str) -> str | None:
         source = source_by_url.get(url)

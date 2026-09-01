@@ -37,6 +37,7 @@ from core.research.parsing import (
     _recover_report_from_reasoning,
     _report_after_boundary,
     _streamed_titles,
+    unclosed_code_fence,
 )
 from core.research.citations import (
     _allowed_document_citations,
@@ -44,6 +45,7 @@ from core.research.citations import (
     _document_source_citation,
     _validate_report_document_sources,
     _validate_report_sources,
+    strip_model_source_list,
 )
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
 from core.research.prompts import (
@@ -162,25 +164,10 @@ def _synthesis_needs_recovery(report: str, finish_reason: str | None) -> bool:
     return finish_reason == "length" or not report
 
 
-_CODE_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-
-
-def _close_open_code_fence(report: str) -> str:
-    """Close a fence a truncated report left open.
-
-    An unterminated fence runs to the end of the document in CommonMark, so anything
-    appended below it renders as code instead of as itself."""
-    fence: str | None = None
-    for line in report.splitlines():
-        marker = _CODE_FENCE_RE.match(line)
-        if marker is None:
-            continue
-        ticks, info = marker.group(1), marker.group(2)
-        if fence is None:
-            fence = ticks
-        elif ticks[0] == fence[0] and len(ticks) >= len(fence) and not info.strip():
-            fence = None
-    return f"{report}\n{fence}" if fence else report
+# Finish reasons that mean the model stopped before it was done, so the text is a fragment
+# rather than a report. "content_filter" is external_provider's mapping for a refusal and
+# for Gemini's SAFETY / RECITATION / PROHIBITED_CONTENT / BLOCKLIST stops.
+_UNFINISHED_FINISH_REASONS = frozenset({"length", "content_filter"})
 
 
 def _auto_scrape_default() -> int:
@@ -2625,12 +2612,20 @@ class ResearchSupervisor:
             synthesis_reasoning += recovery_reasoning
             recovered = _select_synthesis_report(recovered_report, recovery_reasoning)
             # A second attempt at the SAME report under the same budget, not a correction of
-            # the first. Reaching here means the first draft is empty or cut off, so a
-            # recovery that ran to a natural stop wins outright -- `length` is the one finish
-            # reason that means the text is unfinished -- and only between two drafts of equal
-            # standing does the longer one win.
-            recovered_whole = bool(recovered) and recovery_finish_reason != "length"
-            take_recovery = recovered_whole or len(recovered) >= len(report)
+            # the first. Reaching here means the first draft is empty or unfinished, so a
+            # recovery that ran to a natural stop wins outright, and only between two drafts
+            # of equal standing does the longer one win. Both tests read the drafts through
+            # strip_model_source_list because _validate_report_sources deletes that section
+            # below: a draft must not win on padding that is about to be removed.
+            comparable_recovered = strip_model_source_list(recovered)
+            comparable_report = strip_model_source_list(report)
+            recovered_whole = (
+                bool(comparable_recovered)
+                and recovery_finish_reason not in _UNFINISHED_FINISH_REASONS
+            )
+            take_recovery = (
+                recovered_whole or len(comparable_recovered) >= len(comparable_report)
+            )
             requested_max_tokens = recovery_max_tokens
             if take_recovery:
                 report = recovered
@@ -2659,7 +2654,10 @@ class ResearchSupervisor:
         if truncation_notice:
             # Running out of budget mid-code-block is one of the ways a report gets cut off,
             # and an unterminated fence would swallow the notice as more code.
-            report = _close_open_code_fence(report.rstrip())
+            report = report.rstrip()
+            fence = unclosed_code_fence(report)
+            if fence:
+                report = f"{report}\n{fence}"
             report = f"{report}\n\n> **Incomplete report.** {truncation_notice}."
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])
         if synthesis_reasoning and synthesis_reasoning not in reasoning:

@@ -198,3 +198,57 @@ def test_a_report_that_closed_its_own_fence_gains_no_stray_one(research_home, mo
 
     assert finished["report"].count("```") == 2
     assert "Incomplete report." in finished["report"]
+
+
+def test_a_filtered_recovery_does_not_outrank_a_longer_draft(research_home, monkeypatch):
+    """`content_filter` is external_provider's mapping for a refusal and for Gemini's
+    SAFETY/RECITATION stops, so that text is a fragment, not a finished report."""
+    refusal = "I can't help with that."
+
+    finished = _run_synthesis(
+        monkeypatch,
+        synthesis = (FIRST_DRAFT, "", "length", {"completion_tokens": 16384}),
+        recovery = (refusal, "", "content_filter", None),
+    )
+
+    assert finished["status"] == "completed"
+    assert FIRST_DRAFT in finished["report"]
+    assert refusal not in finished["report"]
+
+
+def test_a_recovery_padded_with_a_source_list_does_not_win_on_length(
+    research_home, monkeypatch
+):
+    """_validate_report_sources deletes a model-authored source list after the draft is
+    chosen, so counting it would trade a real report for one that reduces to nothing."""
+    padding = "## Sources\n\n" + "".join(f"- [ref {n}](https://e.test/{n})\n" for n in range(200))
+
+    finished = _run_synthesis(
+        monkeypatch,
+        synthesis = (FIRST_DRAFT, "", "length", {"completion_tokens": 16384}),
+        recovery = (SHORTER_DRAFT + "\n\n" + padding, "", "length", {"completion_tokens": 16384}),
+    )
+
+    # The padded recovery would win a raw-length tiebreak, which is the whole point.
+    assert len(SHORTER_DRAFT + "\n\n" + padding) > len(FIRST_DRAFT)
+    assert finished["status"] == "completed"
+    assert FIRST_DRAFT in finished["report"]
+
+
+def test_a_fence_whose_info_string_holds_backticks_is_not_treated_as_open(
+    research_home, monkeypatch
+):
+    """A backtick fence's info string may not contain backticks, so this line opens
+    nothing; appending a closer would itself open a fence and swallow the notice."""
+    not_a_fence = "## Findings\n\n```python `example`\n\nDemand outran supply and"
+
+    finished = _run_synthesis(
+        monkeypatch,
+        synthesis = (not_a_fence, "", "length", {"completion_tokens": 16384}),
+        recovery = ("", "", "stop", None),
+    )
+
+    report = finished["report"]
+    assert "Incomplete report." in report
+    assert report.count("```") == 1
+    assert "> **Incomplete report.**" in report.rpartition("`example`")[2]
