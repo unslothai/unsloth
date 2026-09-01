@@ -1256,3 +1256,35 @@ def test_update_changelog_uses_full_installed_release_identity(monkeypatch, tmp_
         "latest": "b10715-mix-new",
         "force_refresh": True,
     }
+
+
+def test_update_changelog_retry_keeps_the_banner_target(monkeypatch, tmp_path):
+    # Retry must compare the pair the banner is showing. Refreshing the latest
+    # pointer moves it, and the frontend rejects any response whose tags differ
+    # from the ones it asked about, so the panel would stay stuck on the error.
+    binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    published = {"tag": "b10715-mix-new"}
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: published["tag"],
+    )
+    # The banner rendered this target on its last hourly status check.
+    assert freshness.latest_published_release("unslothai/llama.cpp") == "b10715-mix-new"
+    published["tag"] = "b10800-mix-newer"  # published while the banner sat open
+    monkeypatch.setattr(
+        upd,
+        "changelog_for_update",
+        lambda *_args, **_kwargs: {
+            "changes": [{"summary": "New model", "links": []}],
+            "total_changes": 1,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/new",
+        },
+    )
+
+    result = upd.get_update_changelog(force_refresh = True)
+
+    assert result["latest_tag"] == "b10715-mix-new"
+    assert result["matched"] is True

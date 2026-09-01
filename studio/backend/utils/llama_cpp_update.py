@@ -398,11 +398,10 @@ def get_update_changelog(*, force_refresh: bool = False) -> dict:
         return empty
     repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
     installed_full = marker.get("release_tag") or marker.get("tag")
-    if force_refresh and repo:
-        try:
-            latest_published_release(repo, force_refresh = True)
-        except Exception as exc:  # pragma: no cover - network defensive
-            logger.debug("llama changelog refresh failed", error = str(exc))
+    # force_refresh reaches only the two exact release lookups below. Refreshing
+    # the latest-release pointer would retarget the comparison at a release the
+    # banner has not adopted yet (its status check is hourly), and the frontend
+    # rejects any response whose tags differ from the ones it asked about.
     freshness = check_prebuilt_freshness(binary)
     latest = freshness.get("latest_tag")
     empty["installed_tag"] = freshness.get("installed_tag")

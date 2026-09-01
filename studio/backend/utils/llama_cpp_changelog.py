@@ -195,7 +195,13 @@ def changelog_for_update(
     if installed is None or latest is None:
         return None
 
-    old_identities = set().union(*(_identities(item) for item in _bullets(installed.get("body"))))
+    # Releases before b9625-mix-2d6bd50 (2026-06-14) name their carried PRs in
+    # prose, so the bullet list is empty even for a build that carries them.
+    # Comparing against nothing would relabel every one of them as new.
+    installed_bullets = _bullets(installed.get("body"))
+    if not installed_bullets:
+        return None
+    old_identities = set().union(*(_identities(item) for item in installed_bullets))
     new_items = []
     seen = set()
     for item in _bullets(latest.get("body")):

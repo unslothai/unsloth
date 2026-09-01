@@ -93,6 +93,52 @@ def test_text_identity_filters_old_unlinked_bullets(monkeypatch):
     assert result["changes"] == [{"summary": "Add a new backend", "links": []}]
 
 
+def test_delta_fails_closed_when_installed_notes_have_no_bullets(monkeypatch):
+    # Every release published before b9625-mix-2d6bd50 (2026-06-14) describes its
+    # carried PRs in prose, so the bullet list is empty even though the build does
+    # carry them. Comparing against nothing would relabel #24423 as new.
+    releases = {
+        "b9596-mix-e6f2453": {
+            "body": (
+                "Automated Unsloth llama.cpp prebuild for upstream b9596 "
+                "+ PR #24423 @ 10a2613 (unslothai/llama.cpp@7bbfff8)."
+            )
+        },
+        "b10715-mix-new": {"body": LATEST_BODY},
+    }
+    monkeypatch.setattr(
+        changes,
+        "_release_for_tag",
+        lambda _repo, tag, *, force_refresh = False: releases[tag],
+    )
+
+    result = changes.changelog_for_update(
+        "unslothai/llama.cpp", "b9596-mix-e6f2453", "b10715-mix-new"
+    )
+
+    assert result is None
+
+
+def test_delta_reports_no_changes_when_target_drops_every_carried_pr(monkeypatch):
+    # The mirror case is NOT a failure: the target is always the newest release, so
+    # a bullet-less body there means the build carries nothing.
+    releases = {
+        "old": {"body": OLD_BODY},
+        "new": {"body": "Automated Unsloth llama.cpp prebuild for upstream b10800."},
+    }
+    monkeypatch.setattr(
+        changes,
+        "_release_for_tag",
+        lambda _repo, tag, *, force_refresh = False: releases[tag],
+    )
+
+    result = changes.changelog_for_update("unslothai/llama.cpp", "old", "new")
+
+    assert result is not None
+    assert result["changes"] == []
+    assert result["total_changes"] == 0
+
+
 def test_invalid_repo_never_reaches_github(monkeypatch):
     called = False
 
