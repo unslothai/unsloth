@@ -67,13 +67,25 @@ def _cc_needs_msvc_headers(cc: str) -> bool:
         return os.path.basename(str(cc)).lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe")
 
 
+def _triton_cc() -> str:
+    """triton-windows 3.8.0.post28, what a bare `pip install triton-windows` gives you today, has no
+    `get_cc` at all: it was renamed `_find_compiler(language)`, whose "c" branch is the old body.
+    Without this the newest release never reaches the compiler question and answers from the wheel
+    layout instead."""
+    try:
+        from triton.runtime.build import get_cc  # noqa: PLC0415
+    except ImportError:
+        from triton.runtime.build import _find_compiler  # noqa: PLC0415
+        return _find_compiler("c")
+    return get_cc()
+
+
 def _needs_msvc_headers() -> bool:
-    """Only cl and clang-cl need them; `get_cc()` otherwise picks bundled TinyCC, which carries its own.
+    """Only cl and clang-cl need them; Triton otherwise picks bundled TinyCC, which carries its own.
     The fallback needs both halves: an in-place ROCm-to-XPU repair leaves the compiler on disk without
     the Triton that selects it. Unanswerable means ungated: gating wrongly breaks a working box."""
     try:
-        from triton.runtime.build import get_cc  # noqa: PLC0415
-        cc = get_cc()
+        cc = _triton_cc()
     except Exception:  # noqa: BLE001
         logger.debug("Triton's compiler selection is unavailable", exc_info = True)
         return _triton_is_triton_windows() and _rocm_clang_cl_present()
@@ -83,8 +95,7 @@ def _needs_msvc_headers() -> bool:
 def _toolchain_summary() -> str:
     """0 include dirs means no Visual Studio; several with no `stdlib.h` means a partial SDK."""
     try:
-        from triton.runtime.build import get_cc  # noqa: PLC0415
-        cc = os.path.basename(get_cc())
+        cc = os.path.basename(_triton_cc())
     except Exception:  # noqa: BLE001
         cc = "unknown"
     try:

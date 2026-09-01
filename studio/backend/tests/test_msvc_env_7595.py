@@ -242,6 +242,47 @@ def test_a_raising_predicate_does_not_escape(tmp_path, monkeypatch):
     assert _msvc_env.crt_headers_reachable() is True
 
 
+def _fake_triton_38(monkeypatch, inc_dirs, cc):
+    """triton-windows 3.8.0.post28: `get_cc` is gone, `_find_compiler(language)` replaces it."""
+    _fake_triton(monkeypatch, inc_dirs, cc = cc)
+    build = sys.modules["triton.runtime.build"]
+    monkeypatch.delattr(build, "get_cc")
+    build._find_compiler = lambda language: cc
+    return build
+
+
+def test_the_get_cc_rename_is_followed(tmp_path, monkeypatch):
+    """3.8.0.post28 is what a bare `pip install triton-windows` resolves to, and it has no `get_cc`.
+    Falling through to the wheel-layout guess stops asking Triton which compiler it will run."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton_38(monkeypatch, [], cc = "tcc.exe")
+    monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
+    monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: True)
+    assert _msvc_env._triton_cc() == "tcc.exe"
+    assert _msvc_env._needs_msvc_headers() is False
+    assert _msvc_env.crt_headers_reachable() is True
+
+
+def test_the_get_cc_rename_still_gates_clang_cl(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton_38(monkeypatch, [], cc = "clang-cl.exe")
+    assert _msvc_env._needs_msvc_headers() is True
+    assert _msvc_env.crt_headers_reachable() is False
+
+
+def test_neither_compiler_name_present_falls_back(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("INCLUDE", str(tmp_path))
+    _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
+    build = sys.modules["triton.runtime.build"]
+    monkeypatch.delattr(build, "get_cc")
+    monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: False)
+    assert _msvc_env._needs_msvc_headers() is False
+    assert _msvc_env.crt_headers_reachable() is True
+
+
 def test_triton_is_triton_windows_reads_the_distribution_name(monkeypatch):
     import importlib.metadata as md
 
