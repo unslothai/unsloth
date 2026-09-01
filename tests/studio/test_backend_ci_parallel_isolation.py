@@ -36,6 +36,7 @@ ISOLATED = [
     ("tests/studio/test_hardware_dispatch_matrix.py", "mutates hardware.py globals"),
     ("tests/studio/test_is_mlx_dispatch_gate.py", "mutates hardware.py globals"),
     ("tests/studio/test_xpu_spoof_pipeline.py", "mutates hardware.py globals"),
+    ("tests/studio/test_mlx_context_platform_matrix.py", "mutates hardware.py globals"),
 ]
 
 

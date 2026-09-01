@@ -711,6 +711,83 @@ def _ensure_warnings_issued(model):
         pass
 
 
+def _route_unknown_trainer_kwargs(
+    config_class,
+    unknown,
+    notify = None,
+    already_supplied = None,
+):
+    """Split names neither side declares into `(to_config, to_trainer)` using
+    `rl_config_compat`'s rename/retire policy, which otherwise only runs when a
+    config is built; unrecognised names go back to the trainer call to raise there.
+
+    `already_supplied` uses presence, not a default comparison, because `kwargs`
+    holds only what the caller typed, so an explicit new name is never overwritten.
+    """
+    if not unknown:
+        return {}, {}
+
+    try:
+        from .models.rl_config_compat import (
+            classify_config_kwarg,
+            removal_source,
+            rename_source,
+            rename_value_is_unset,
+        )
+    except Exception:
+        # tests/ AST-load this function into a bare namespace with no package to
+        # import from, and supply the classifier through globals() instead.
+        classify_config_kwarg = globals().get("classify_config_kwarg")
+        rename_source = globals().get("rename_source", lambda key: "TRL")
+        removal_source = globals().get("removal_source", lambda key: "TRL")
+        rename_value_is_unset = globals().get(
+            "rename_value_is_unset", lambda cls, name, value: False
+        )
+        if classify_config_kwarg is None:
+            # Unreachable in a real install; keep the value on the trainer.
+            return {}, dict(unknown)
+
+    if notify is None:
+        notify = print
+    config_name = getattr(config_class, "__name__", str(config_class))
+
+    to_config, to_trainer = {}, {}
+    for key, value in unknown.items():
+        try:
+            verdict, detail = classify_config_kwarg(config_class, key)
+        except Exception:
+            verdict, detail = "unknown", None
+
+        if verdict == "accepted":
+            to_config[key] = value
+        elif verdict == "rename":
+            # A legacy Optional forwarded at its `None` default says nothing, so
+            # it must not replace a real value. Same rule as the config path.
+            if rename_value_is_unset(config_class, detail, value):
+                continue
+            if already_supplied and detail in already_supplied:
+                notify(
+                    f"Unsloth: `{key}` was renamed to `{detail}` by {rename_source(key)} and "
+                    f"this {config_name} accepts only the new name. You set both, so `{key}` "
+                    f"is ignored and your `{detail}` is kept."
+                )
+                continue
+            to_config[detail] = value
+            notify(
+                f"Unsloth: {rename_source(key)} renamed `{key}` to `{detail}`. "
+                f"Forwarding your value to `{detail}` - update your code when convenient."
+            )
+        elif verdict == "retired":
+            notify(
+                f"Unsloth: `{key}` is not supported by the installed "
+                f"{removal_source(key)}'s {config_name} and will be IGNORED - {detail}."
+            )
+        else:
+            to_trainer[key] = value
+
+    return to_config, to_trainer
+
+
 def _backwards_compatible_trainer(trainer_class, config_class):
     original_init = trainer_class.__init__
 
@@ -725,8 +802,10 @@ def _backwards_compatible_trainer(trainer_class, config_class):
         if ("args" in kwargs) and (Version(trl) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
 
-            trainer_params.remove("self")
-            trainer_params.remove("args")
+            # `discard`, not `remove`: a trainer naming its config something other
+            # than `args` would otherwise die with a bare KeyError here.
+            trainer_params.discard("self")
+            trainer_params.discard("args")
 
             # Fields that should be passed to Config init
             config_fields = {
@@ -749,6 +828,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # Separate kwargs into trainer kwargs and config kwargs
             trainer_kwargs = {}
             additional_config_kwargs = {}
+            unknown_kwargs = {}
 
             for key, value in kwargs.items():
                 if key in trainer_params:
@@ -756,7 +836,16 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 elif key in moved_params or key in config_fields:
                     additional_config_kwargs[key] = value
                 else:
-                    additional_config_kwargs[key] = value
+                    # Filing this with the config kwargs dropped it in silence.
+                    unknown_kwargs[key] = value
+
+            migrated, unroutable = _route_unknown_trainer_kwargs(
+                config_class,
+                unknown_kwargs,
+                already_supplied = set(additional_config_kwargs),
+            )
+            additional_config_kwargs.update(migrated)
+            trainer_kwargs.update(unroutable)
 
             config_dict.update(additional_config_kwargs)
 
@@ -771,7 +860,8 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 # the moved values on the caller's config rather than rebuild it.
                 config = training_args
                 for key, value in additional_config_kwargs.items():
-                    if key in config_fields or key in moved_params:
+                    # `migrated` keys are already known to be accepted here.
+                    if key in config_fields or key in moved_params or key in migrated:
                         setattr(config, key, value)
 
             # Reconstruct kwargs for Trainer
