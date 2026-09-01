@@ -1305,7 +1305,7 @@ def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
         offloaded.append(function)
         return function(*args)
 
-    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local, "dataset_uploads_root", lambda: tmp_path)
     monkeypatch.setattr(local.asyncio, "to_thread", run_offloaded)
 
     response = asyncio.run(local.upload_dataset_response(_Upload("../train.jsonl", payload)))
@@ -1326,8 +1326,8 @@ def test_local_dataset_items_expose_recipe_and_upload_source(monkeypatch, tmp_pa
     (parquet_dir / "part.parquet").write_bytes(b"parquet")
     upload_root.mkdir()
     (upload_root / "manual.jsonl").write_text('{"text":"hello"}\n', encoding = "utf-8")
-    monkeypatch.setattr(local, "LOCAL_DATASETS_ROOT", recipe_root)
-    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", upload_root)
+    monkeypatch.setattr(local, "recipe_datasets_root", lambda: recipe_root)
+    monkeypatch.setattr(local, "dataset_uploads_root", lambda: upload_root)
 
     response = local.list_local_datasets_response()
 
