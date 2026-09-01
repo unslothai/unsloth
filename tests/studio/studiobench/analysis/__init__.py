@@ -46,14 +46,10 @@ class CellFailure(RuntimeError):
         self.detail = detail
 
 
-# ── the no-bare-zero convention (INTERFACES.md, "Rules that apply to every dict") ──
-#
-# `0` means "measured, and it was zero". It never means "did not run". Getting
-# this wrong is the single cheapest way to publish a false negative: a frame
-# budget of 0.00 ms reads as a fast app and is indistinguishable from an
-# instrument that never attached. Every numeric key these layers emit therefore
-# goes through one of the two helpers below, so the distinction is structural
-# rather than remembered.
+# The no-bare-zero convention (INTERFACES.md, "Rules that apply to every dict"). `0` means
+# "measured, and it was zero" and never "did not run": a frame budget of 0.00 ms reads as a fast
+# app and is indistinguishable from an instrument that never attached. Every numeric key these
+# layers emit goes through one of the two helpers below, so the distinction is structural.
 
 
 def measured(key: str, value: Any) -> dict:

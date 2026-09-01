@@ -18,7 +18,7 @@ from pathlib import Path
 from tests.studio.studiobench.scoring import payload_rules
 
 
-# ── defect 4: window rows outlive their cell ────────────────────────────────
+# defect 4: window rows outlive their cell
 
 
 def _ladder_payload() -> list[dict]:
@@ -77,7 +77,7 @@ def test_completed_cell_ids_ignores_rows_that_are_not_cells():
     assert "r1M.treatment.rep0" not in payload_rules.completed_cell_ids(rows)
 
 
-# ── defect 1: census_peak is not comparable across arms ─────────────────────
+# defect 1: census_peak is not comparable across arms
 
 
 def test_census_peak_is_refused_for_cross_arm_comparison():
@@ -98,7 +98,7 @@ def test_a_normal_metric_is_still_comparable():
     assert payload_rules.refuse_uncomparable("select_all_copy.copy_ms") is None
 
 
-# ── defect 2: a metric censored at some rungs but not others ───────────────
+# defect 2: a metric censored at some rungs but not others
 
 
 def _censored_payload() -> list[dict]:
@@ -152,7 +152,7 @@ def test_a_metric_measured_everywhere_is_poolable():
     assert payload_rules.refuse_partial_censoring(rows, "reasoning_toggle.close_ms") is None
 
 
-# ── defect 7: a census is only a census if the DOM had settled ─────────────
+# defect 7: a census is only a census if the DOM had settled
 
 
 def test_an_unsettled_census_is_not_marked_settled():
@@ -170,7 +170,7 @@ def test_an_unsettled_census_is_not_marked_settled():
     assert payload_rules.settled(settled)
 
 
-# ── the comparability key ──────────────────────────────────────────────────
+# the comparability key
 
 
 def _meta(
@@ -287,10 +287,10 @@ def test_the_key_is_computed_over_the_fields_it_explains():
     """
     corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
     a = _meta(corpus)
-    #: Fields the key reads out of the nested `platform` dict rather than off the row itself.
-    #: Written as a set rather than a single special case, because the single special case is what
-    #: had to be edited when `system` and `machine` were added -- and a test that needs editing to
-    #: keep passing when a field is added is a test that can be edited into silence instead.
+    #: Fields the key reads out of the nested `platform` dict rather than off the row itself. Written as
+    #: a set rather than a single special case, because the special case is what had to be edited when
+    #: `system` and `machine` were added, and a test that needs editing to keep passing can be edited
+    #: into silence instead.
     nested = {"engine", "system", "machine", "node"}
     for field in payload_rules.comparability_fields(a):
         b = _meta(corpus)
@@ -468,7 +468,7 @@ def test_the_key_looks_like_a_token_that_can_be_quoted():
     assert key.startswith("cmp:") and len(key) == len("cmp:") + 10
 
 
-# ── window rows must belong to the attempt that finished, not merely to the id ──
+# window rows must belong to the attempt that finished, not merely to the id
 
 
 def _resumed_window_payload() -> list[dict]:

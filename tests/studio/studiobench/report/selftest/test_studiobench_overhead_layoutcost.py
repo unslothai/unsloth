@@ -35,9 +35,7 @@ from studiobench.report.overhead import (  # noqa: E402
 from studiobench.scoring import Measure  # noqa: E402
 
 
-# ---------------------------------------------------------------------------------------
 # the layout-cost adapter
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_missing_snapshot_is_not_attempted_rather_than_zero():
@@ -110,9 +108,7 @@ def test_layoutcost_js_parses():
     assert result.returncode == 0, result.stderr
 
 
-# ---------------------------------------------------------------------------------------
 # the overhead gate
-# ---------------------------------------------------------------------------------------
 
 
 def test_an_instrument_whose_cost_tracks_the_treatment_is_disqualified():

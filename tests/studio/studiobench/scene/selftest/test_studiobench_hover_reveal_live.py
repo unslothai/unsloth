@@ -44,9 +44,9 @@ if str(_STUDIO_TESTS) not in sys.path:
 from studiobench.runtime.types import ActionContext, Cell  # noqa: E402
 from studiobench.scene import actions as A  # noqa: E402
 
-#: Unsloth's own geometry: a 20x20 action inside a 279x49 sticky header row, at the same offset the
-#: live probe measured. The numbers matter -- a control large enough to be hit by chance would let
-#: the test pass for the wrong reason.
+#: Unsloth's own geometry: a 20x20 action inside a 279x49 sticky header row, at the offset the live
+#: probe measured. The numbers matter: a control large enough to be hit by chance would let the test
+#: pass for the wrong reason.
 FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -78,8 +78,8 @@ FIXTURE = """
 
 SELECTOR = 'button[aria-label="New chat"]'
 
-#: A URL that actually loads. Pointing the fallback at a dead port exercises the "navigation
-#: failed too" branch instead of the navigation branch under test.
+#: A URL that actually loads. Pointing the fallback at a dead port exercises the "navigation failed
+#: too" branch instead of the navigation branch under test.
 FALLBACK_URL = "about:blank"
 
 
@@ -108,8 +108,8 @@ def browser():
 
 @pytest.fixture()
 def page(browser):
-    # A PAGE PER TEST, because the mouse position is page state and a previous test's hover would
-    # carry the control into the next one already revealed.
+    # A PAGE PER TEST, because the mouse position is page state and a previous test's hover would carry
+    # the control into the next one already revealed.
     pg = browser.new_page(viewport = {"width": 1280, "height": 900})
     pg.set_content(FIXTURE)
     yield pg
@@ -129,7 +129,6 @@ def _ctx(page, log = None) -> ActionContext:
     )
 
 
-# ── the condition, reproduced ───────────────────────────────────────
 
 
 def test_the_control_really_is_unreachable_until_it_is_hovered(page):
@@ -148,16 +147,15 @@ def test_the_control_really_is_unreachable_until_it_is_hovered(page):
     ), "the un-hovered control hit-tests to itself, so this fixture does not reproduce the failure"
 
 
-# ── the fix ─────────────────────────────────────────────────────────
 
 
 def test_hovering_reveals_the_control_and_returns_a_point_on_it(page):
     point = A._reveal_by_hover(_ctx(page), SELECTOR)
     assert point is not None, "hovering did not make the control hit-testable"
     x, y = point
-    # Against the control's OWN box, read from the page. Hard-coding the live app's (243, 319)
-    # asserted the fixture's layout rather than the behaviour, and failed on a fixture that was
-    # working correctly.
+    # Against the control's OWN box, read from the page. Hard-coding the live app's (243, 319) asserted
+    # the fixture's layout rather than the behaviour, and failed on a fixture that was working
+    # correctly.
     box = page.eval_on_selector(SELECTOR, "(el) => el.getBoundingClientRect().toJSON()")
     assert box["left"] <= x <= box["right"], (point, box)
     assert box["top"] <= y <= box["bottom"], (point, box)
@@ -183,7 +181,6 @@ def test_the_hover_is_reported_so_the_gesture_is_not_silent(page):
     assert any("hover-revealed" in m for m in said), said
 
 
-# ── and what it must NOT do ─────────────────────────────────────────
 
 
 def test_an_ordinary_control_is_not_hovered_first(page):
@@ -192,10 +189,9 @@ def test_an_ordinary_control_is_not_hovered_first(page):
     the log rather than by asking `_reveal_by_hover` what it would have done."""
     page.eval_on_selector(
         SELECTOR,
-        # `transition: none` as well: `opacity` is transitioned over 150ms, so `getComputedStyle`
-        # sampled on the next tick still reports "0" and the control looks hidden to any check
-        # that reads it. That is a real hazard for the production code too, and the reason the
-        # reveal waits out `_REVEAL_SETTLE_MS` rather than sampling immediately.
+        # `transition: none` as well: `opacity` is transitioned over 150ms, so `getComputedStyle` sampled
+        # on the next tick still reports "0" and the control looks hidden to any check that reads it. A
+        # real hazard for the production code too, and the reason the reveal waits out `_REVEAL_SETTLE_MS`.
         "(el) => { el.style.transition = 'none'; el.style.opacity = '1';"
         " el.style.pointerEvents = 'auto'; }",
     )

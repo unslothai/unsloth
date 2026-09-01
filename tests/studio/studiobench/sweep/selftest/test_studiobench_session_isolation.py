@@ -64,8 +64,8 @@ def test_cell_metrics_refuses_to_collapse_two_sessions():
         "cell_metrics keyed on cell_id alone and returned the last writer's values. That is how a "
         "payload holding two concurrent runs reported a 149.8% regression that does not exist."
     )
-    # The colliding cell is NAMED, not just counted. A refusal that says only "two sessions" sends
-    # the reader back to the payload to find out which reading it was protecting them from.
+    # The colliding cell is NAMED, not just counted: a refusal that says only "two sessions" sends the
+    # reader back to the payload to find out which reading it was protecting them from.
     assert "r1M.base.rep0" in message
     assert "91c4d6d94da8" in message and "430f0b831dda" in message
 
@@ -197,7 +197,7 @@ def test_sessions_in_lists_only_completed_cells():
     assert floor_table.sessions_in(rows) == {"91c4d6d94da8", "430f0b831dda"}
 
 
-# ── the write-time guard ────────────────────────────────────────────────────
+# the write-time guard
 
 
 def test_a_second_live_session_is_refused(tmp_path):
@@ -243,7 +243,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-# ── the rows these guards emit must actually be emittable ──────────────────
+# the rows these guards emit must actually be emittable
 
 
 def test_the_new_row_types_are_registered_in_the_schema(tmp_path):

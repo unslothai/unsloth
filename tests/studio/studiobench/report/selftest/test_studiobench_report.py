@@ -54,9 +54,7 @@ def _metrics(keystroke_ms: float = 25.0) -> dict[str, Measure]:
     }
 
 
-# ---------------------------------------------------------------------------------------
 # incremental payload
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_crash_at_rung_four_still_ships_rungs_one_to_three(tmp_path: Path):
@@ -151,9 +149,7 @@ def test_an_empty_excluded_block_is_still_printed_as_a_claim():
         render_excluded({"excluded_cells": None})
 
 
-# ---------------------------------------------------------------------------------------
 # editorial policy
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_single_frame_summary_may_not_be_a_headline():
@@ -226,7 +222,7 @@ def test_harness_bias_is_printed_and_never_subtracted():
     assert "NOT subtracted" in summary
 
 
-# ── a cell that failed an invalidating gate is INCOMPLETE, not absent ──────────
+# a cell that failed an invalidating gate is INCOMPLETE, not absent
 
 
 def _gated_cell_rows(

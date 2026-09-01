@@ -101,7 +101,6 @@ def _window(
     }
 
 
-# ── what is selected as "the streaming phase" ────────────────────────────────────────────────
 
 
 def test_a_window_with_traffic_and_growth_is_the_streaming_phase():
@@ -290,7 +289,6 @@ def test_a_window_the_instrument_never_ran_in_is_refused():
     assert any("did not run" in reason for reason in rejected)
 
 
-# ── the numbers themselves ───────────────────────────────────────────────────────────────────
 
 
 def test_the_rate_is_cost_per_thousand_streamed_characters():
@@ -368,13 +366,12 @@ def test_an_action_running_during_generation_does_not_set_the_worst_streaming_fr
     m = _stream_measures(windows)
     assert m["stream_max_frame_ms"].value == pytest.approx(286.0)
     # And its SSE task chains are excluded from the targeted numerator too. Measured on a
-    # standard-tier 10K null, an `action:keystroke` chain cost 23.77 ms per burst against 1.69 ms
-    # in the gap windows either side: the chain runs until the event loop drains, so the typing
-    # lands inside it and is billed to the stream.
+    # standard-tier 10K null, an `action:keystroke` chain cost 23.77 ms per burst against 1.69 ms in
+    # the gap windows either side: the chain runs until the event loop drains, so the typing lands
+    # inside it and is billed to the stream.
     assert "1 unaided streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
 
 
-# ── refusing rather than reporting zero ──────────────────────────────────────────────────────
 
 
 def test_no_clamp_means_null_with_a_reason_not_zero_cost():
@@ -473,8 +470,8 @@ def test_a_recorder_that_died_partway_poisons_every_streaming_metric():
         m["stream_cost_ms_per_kchar"].note or ""
     )
 
-    # The giveaway: without this the crashed cell was byte-identical to the one that never
-    # crashed, so nothing downstream could tell a truncated run from a complete one.
+    # The giveaway: without this the crashed cell was byte-identical to the one that never crashed, so
+    # nothing downstream could tell a truncated run from a complete one.
     assert _stream_measures([good])["stream_cost_ms_per_kchar"].value is not None
 
 
@@ -501,7 +498,6 @@ def test_every_declared_stream_metric_is_produced():
     assert all(v.value is not None for v in m.values())
 
 
-# ── the label that caused this ───────────────────────────────────────────────────────────────
 
 
 def test_a_gap_window_is_not_labelled_stream():

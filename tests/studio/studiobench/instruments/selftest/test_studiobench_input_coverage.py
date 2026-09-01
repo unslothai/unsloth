@@ -44,9 +44,9 @@ from studiobench.scene.actions import keystroke  # noqa: E402
 
 INPUT_JS = Path(__file__).resolve().parents[1] / "input.js"
 
-#: A DOM small enough to run the instrument and explicit enough to hold a paint open. Paints
-#: resolve only when this driver says so, which is what makes "still in flight at the drain" a
-#: state the test can create rather than race for.
+#: A DOM small enough to run the instrument and explicit enough to hold a paint open. Paints resolve
+#: only when this driver says so, which makes "still in flight at the drain" a state the test can
+#: create rather than race for.
 DRIVER = """
 import fs from "node:fs";
 let now = 0;
@@ -151,7 +151,6 @@ def test_settling_on_the_work_keeps_it(tmp_path):
     assert got["inputs_seen"] == 12
 
 
-# ── what the action does with it ─────────────────────────────────────────────────────────────
 
 
 class _Page:

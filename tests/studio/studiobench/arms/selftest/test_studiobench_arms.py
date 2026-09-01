@@ -72,9 +72,7 @@ def _arm(
     )
 
 
-# ---------------------------------------------------------------------------------------
 # manifest: invariance and potency
-# ---------------------------------------------------------------------------------------
 
 
 def test_an_exact_arm_that_drifts_is_voided_not_quoted():
@@ -200,9 +198,7 @@ def test_an_equivalent_arm_must_declare_its_diff_and_an_exact_one_may_not():
         _arm(declared_diff = DeclaredDiff(normaliser = "n", keys = ("style",)))
 
 
-# ---------------------------------------------------------------------------------------
 # ladder
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_step_removing_two_mechanisms_must_admit_it_is_fused():
@@ -385,9 +381,7 @@ def test_required_rungs_covers_both_routes():
     assert "D" in keys and "A" in keys
 
 
-# ---------------------------------------------------------------------------------------
 # calibration
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_batch_without_calibration_arms_is_refused_before_it_runs():
@@ -485,9 +479,7 @@ def test_a_batch_with_no_null_reading_has_no_noise_floor():
     assert "no measured noise floor" in verdict.reason
 
 
-# ---------------------------------------------------------------------------------------
 # dose-response
-# ---------------------------------------------------------------------------------------
 
 
 def _dose_points(
@@ -549,9 +541,7 @@ def test_two_points_do_not_make_a_line():
     assert fit.verdict == "NO FIT"
 
 
-# ---------------------------------------------------------------------------------------
 # armpack
-# ---------------------------------------------------------------------------------------
 
 
 def _write_armpack(
@@ -612,9 +602,7 @@ def test_a_matching_armpack_resolves(tmp_path: Path):
     assert resolution.require().target_dist_digest == "digest-1"
 
 
-# ---------------------------------------------------------------------------------------
 # recovery
-# ---------------------------------------------------------------------------------------
 
 
 def test_full_recovery_is_occupancy():
@@ -671,9 +659,7 @@ def test_worse_after_delete_points_at_the_delete_path():
     assert result.classification == "WORSE AFTER DELETE"
 
 
-# ---------------------------------------------------------------------------------------
 # knobs
-# ---------------------------------------------------------------------------------------
 
 
 def test_only_requested_preboot_arms_are_installed():
