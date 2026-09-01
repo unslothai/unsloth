@@ -486,6 +486,13 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
             break
         conditional = conditional or parts[0].lower() in _SHELL_BODY_KEYWORDS
         stripped = parts[1].strip() if len(parts) > 1 else ""
+    # A `case` arm label: `x in x) pip install ...` and the bare `b) pip install ...` of a
+    # later arm. Only the matching arm runs, so the command is conditional. An unbalanced `)`
+    # is what marks it; a quote or a `(` before one means it belongs to the command.
+    close = stripped.find(")")
+    if close > 0 and not set(stripped[:close]) & set("('\""):
+        stripped = stripped[close + 1 :].strip()
+        conditional = True
     return (f"!{stripped}" if bang and stripped else stripped), conditional
 
 

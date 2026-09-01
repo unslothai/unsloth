@@ -1632,6 +1632,36 @@ def test_notebook_validator_declines_markers_it_cannot_judge():
     assert nv._requirement_applies("torch>=2.12; sys_platform == 'linux'", environment)
 
 
+def test_notebook_validator_reads_case_arms():
+    """Stripping `case` left `x in x) pip install ...`, which parses as nothing. Only the
+    matching arm runs, so the command is conditional, and the git+ ban still sees it."""
+    nv = _load_notebook_validator_module()
+
+    single = "!case x in x) pip install git+https://example.com/pkg.git ;; esac"
+    assert nv._split_chained(single) == [("!pip install git+https://example.com/pkg.git", True)]
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(single, "nb.ipynb", 0))
+
+    # A later arm carries no keyword at all, just its own label.
+    multi = (
+        "!case x in a) pip install git+https://a.example/a.git ;; "
+        "b) pip install git+https://b.example/b.git ;; esac"
+    )
+    assert [c for c, _ in nv._split_chained(multi)] == [
+        "!pip install git+https://a.example/a.git",
+        "!pip install git+https://b.example/b.git",
+    ]
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(multi, "nb.ipynb", 0))
+
+    # Conditional, so the version replay leaves an arm alone.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!case x in x) pip install "torch==2.12.0" ;; esac', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
+
+    # A `)` inside a quoted argument belongs to the command, not to an arm label.
+    quoted = '!pip install "a)b" git+https://example.com/evil.git'
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(quoted, "nb.ipynb", 0))
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
