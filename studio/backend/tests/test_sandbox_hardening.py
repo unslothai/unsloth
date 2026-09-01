@@ -2577,3 +2577,130 @@ class TestCurrentHeadReviewRegressions:
     def test_safe_function_default_allowed(self):
         code = "def f(x=(p := 'README.md')): pass\nopen(p).read()"
         assert not _is_blocked(code), "safe function-default binding blocked"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "x=xshadow; cat /etc/${x:1}",
+            "x=xshadow; cat /etc/${x#x}",
+            "x=shadowx; cat /etc/${x%x}",
+            "x=shadow-tail; cat /etc/${x:0:6}",
+        ],
+    )
+    def test_static_shell_substring_and_trim_paths_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"static parameter operation leaked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "x=xhosts; cat /etc/${x:1}",
+            "x=xhosts; cat /etc/${x#x}",
+        ],
+    )
+    def test_static_shell_substring_and_trim_benign_paths_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), f"benign parameter operation blocked: {cmd!r}"
+
+    def test_literal_augmented_path_assignment_blocked(self):
+        code = "p = '/etc/'\np += 'shadow'\nopen(p).read()"
+        assert _is_blocked(code), "literal augmented path assignment leaked"
+
+    def test_literal_augmented_benign_path_allowed(self):
+        code = "p = 'docs/'\np += 'guide.md'\nopen(p).read()"
+        assert not _is_blocked(code), "benign augmented path assignment blocked"
+
+    def test_sendmsg_uses_address_argument(self):
+        trusted = "sock.sendmsg((b'hello', b'world'), [], 0, ('google.com', 443))"
+        metadata = "sock.sendmsg((b'hello', b'world'), [], 0, ('169.254.169.254', 80))"
+        assert not _is_blocked(trusted), "sendmsg buffer tuple was mistaken for a host"
+        assert _is_blocked(metadata), "sendmsg metadata destination leaked"
+
+    def test_sensitive_find_exec_copy_blocked(self):
+        cmd = r"find ~/.ssh -type f -exec cp {} /tmp/out \;"
+        assert _find_sensitive_paths(cmd), "find -exec credential copy leaked"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "find ~/.ssh -type f",
+            r"find ~/.ssh -type f -exec grep -l needle {} \;",
+        ],
+    )
+    def test_sensitive_find_inspection_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), f"find inspection blocked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io as i\ni.FileIO('/etc/shadow').read()",
+            "import io\ni = io\nj = i\nj.FileIO('/etc/shadow').read()",
+        ],
+    )
+    def test_io_module_alias_reads_blocked(self, code):
+        assert _is_blocked(code), "io module alias sensitive read leaked"
+
+    def test_io_module_alias_benign_read_allowed(self):
+        code = "import io as i\ni.FileIO('README.md').read()"
+        assert not _is_blocked(code), "benign io alias read blocked"
+
+    def test_aiohttp_session_instance_hosts_checked(self):
+        metadata = (
+            "import aiohttp\ns = aiohttp.ClientSession()\n"
+            "s.get('http://169.254.169.254/latest/meta-data')"
+        )
+        trusted = (
+            "import aiohttp\ns = aiohttp.ClientSession()\n"
+            "s.get('https://google.com/search?q=unsloth')"
+        )
+        assert _is_blocked(metadata), "aiohttp session metadata request leaked"
+        assert not _is_blocked(trusted), "trusted aiohttp session request blocked"
+
+    def test_duplicate_dict_key_uses_last_value(self):
+        blocked = "open({'x': 'README.md', 'x': '/etc/shadow'}['x']).read()"
+        allowed = "open({'x': '/etc/shadow', 'x': 'README.md'}['x']).read()"
+        assert _is_blocked(blocked), "last duplicate dict value leaked"
+        assert not _is_blocked(allowed), "shadowed duplicate dict value blocked"
+
+    def test_function_parameter_shadows_outer_binding(self):
+        code = "path = '/etc/shadow'\ndef read(path):\n    open(path)\nread('README.md')"
+        assert not _is_blocked(code), "outer binding leaked through a local parameter"
+
+    def test_function_local_sensitive_binding_still_blocks(self):
+        code = "def read():\n    path = '/etc/shadow'\n    open(path)\nread()"
+        assert _is_blocked(code), "function-local sensitive binding leaked"
+
+    def test_request_object_literal_url_is_checked(self):
+        metadata = (
+            "import urllib.request\n"
+            "r = urllib.request.Request('http://169.254.169.254/latest')\n"
+            "urllib.request.urlopen(r)"
+        )
+        trusted = (
+            "import urllib.request\n"
+            "r = urllib.request.Request('https://google.com/')\n"
+            "urllib.request.urlopen(r)"
+        )
+        assert _is_blocked(metadata), "Request object metadata URL leaked"
+        assert not _is_blocked(trusted), "trusted Request object URL blocked"
+
+    def test_request_object_import_alias_is_checked(self):
+        code = (
+            "from urllib.request import Request as R, urlopen\n"
+            "r = R('http://169.254.169.254/latest')\n"
+            "urlopen(r)"
+        )
+        assert _is_blocked(code), "aliased Request object metadata URL leaked"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/shadow",
+            "file:///etc/%73hadow",
+        ],
+    )
+    def test_sensitive_file_urls_blocked(self, url):
+        code = f"import urllib.request\nurllib.request.urlopen({url!r}).read()"
+        assert _is_blocked(code), f"sensitive file URL leaked: {url!r}"
+
+    def test_benign_file_url_allowed(self):
+        code = "import urllib.request\nurllib.request.urlopen('file:///tmp/data.txt').read()"
+        assert not _is_blocked(code), "benign file URL blocked"

@@ -1673,6 +1673,25 @@ _BASH_DIR_EXFIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ``find ~/.ssh ... -exec cp {} /tmp/out \;`` places the sensitive root
+# before the copy verb, so the command-first expression above cannot see it.
+# Keep ordinary inspection (``find ~/.ssh -type f``) available and gate only
+# actions that execute one of the recursive copy/archive tools.
+_BASH_FIND_EXFIL_RE = re.compile(
+    r"\bfind\b[^;&|\n]*?"
+    + r"(?:"
+    + _HOME_PREFIX_RE
+    + r"(?:"
+    + "|".join(_BASH_SENSITIVE_DIR_NAMES)
+    + r")(?=/?(?:\s|$))"
+    + r"|(?<![A-Za-z0-9_./~$%-])/(?:etc(?:/ssh)?|var/spool/cron|proc/(?:self|thread-self|\d+))"
+    + r"(?=/?(?:\s|$)))"
+    + r"[^;&|\n]*?(?<!\w)(?:-exec|-execdir)\b[^;&|\n]*?\b(?:"
+    + "|".join(re.escape(c) for c in _BASH_DIR_EXFIL_COMMANDS)
+    + r")\b",
+    re.IGNORECASE,
+)
+
 # ``cat /etc/sha*ow`` / ``cat /etc/sh?dow`` -- bash expands ``*`` and
 # ``?`` glob wildcards against the filesystem. The brace expander above
 # only handles ``{a,b}`` braces; this pattern catches the wildcard
@@ -2060,6 +2079,8 @@ def _find_sensitive_paths(command: str) -> set[str]:
         # Python shutil dir-exfil gate that the round-4 commit added;
         # without this the bash side is still wide open.
         for m in _BASH_DIR_EXFIL_RE.finditer(text):
+            found.add(m.group(0))
+        for m in _BASH_FIND_EXFIL_RE.finditer(text):
             found.add(m.group(0))
         # Brace-bomb defence. ``cat ~/{,x0,...,x341}/{.ssh/id_rsa,...}``
         # exceeds ``_expand_brace_projections``'s cap so the leaf
@@ -3431,6 +3452,11 @@ _SHELL_PARAM_REPL_RE = re.compile(r"\$\{(\w+)/(/)?([^/{}]*)/([^{}]*)\}")
 # Case modification (${p^^} upper, ${p,,} lower, ${p^}/${p,} first char) also
 # transforms the value, so p=PASSWD; cat /etc/${p,,} builds /etc/passwd.
 _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
+# Deterministic substring and prefix/suffix removal forms. These have to run
+# before the generic variable substitution below, which would otherwise replace
+# the expression with the unmodified value.
+_SHELL_PARAM_SUBSTRING_RE = re.compile(r"\$\{(\w+):\s*(-?\d+)(?::\s*(-?\d+))?\}")
+_SHELL_PARAM_TRIM_RE = re.compile(r"\$\{(\w+)(#{1,2}|%{1,2})([^{}]*)\}")
 # Indirect expansion ${!p} yields the value of the variable *named* by $p, so
 # x=passwd; p=x; cat /etc/${!p} builds /etc/passwd.
 _SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
@@ -3627,9 +3653,47 @@ def _expand_shell_assignments(command: str) -> str:
         pointed = env.get(m.group(1))
         return env.get(pointed, m.group(0)) if pointed is not None else m.group(0)
 
+    def repl_substring(m):
+        value = env.get(m.group(1))
+        if value is None:
+            return m.group(0)
+        start = int(m.group(2))
+        if start < 0:
+            start = max(0, len(value) + start)
+        length = m.group(3)
+        if length is None:
+            return value[start:]
+        count = int(length)
+        end = start + count if count >= 0 else len(value) + count
+        return value[start:end]
+
+    def repl_trim(m):
+        value = env.get(m.group(1))
+        pattern = m.group(3)
+        if value is None or not pattern:
+            return m.group(0)
+        op = m.group(2)
+        if op.startswith("#"):
+            ends = range(len(value) + 1)
+            if op == "##":
+                ends = reversed(range(len(value) + 1))
+            for end in ends:
+                if fnmatch.fnmatchcase(value[:end], pattern):
+                    return value[end:]
+        else:
+            starts = reversed(range(len(value) + 1))
+            if op == "%%":
+                starts = range(len(value) + 1)
+            for start in starts:
+                if fnmatch.fnmatchcase(value[start:], pattern):
+                    return value[:start]
+        return value
+
     command = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, command)
     command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
     command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
+    command = _SHELL_PARAM_SUBSTRING_RE.sub(repl_substring, command)
+    command = _SHELL_PARAM_TRIM_RE.sub(repl_trim, command)
     return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
 
 
@@ -14375,7 +14439,11 @@ def _check_signal_escape_patterns(code: str):
                 # Indexed dict of literals: prefer the value at the
                 # static key; otherwise return any sensitive value.
                 if isinstance(key_node, ast.Constant):
-                    for k_node, v_node in zip(container.keys, container.values):
+                    # Python keeps the last value for a duplicate key.
+                    # Search in reverse so the static projection mirrors
+                    # runtime last-wins semantics.
+                    pairs = list(zip(container.keys, container.values))
+                    for k_node, v_node in reversed(pairs):
                         if isinstance(k_node, ast.Constant) and k_node.value == key_node.value:
                             v = _extract_string_from_node(v_node, _depth + 1)
                             if v is not None:
@@ -14525,6 +14593,16 @@ def _check_signal_escape_patterns(code: str):
                     )
                 if _val is not None:
                     _record_string_binding(_assign.target.id, _val)
+                continue
+            if (
+                isinstance(_assign, ast.AugAssign)
+                and isinstance(_assign.target, ast.Name)
+                and isinstance(_assign.op, ast.Add)
+            ):
+                _left = string_bindings.get(_assign.target.id)
+                _right = _extract_string_from_node(_assign.value)
+                if _left is not None and _right is not None:
+                    _record_string_binding(_assign.target.id, _left + _right)
                 continue
             if not isinstance(_assign, ast.Assign):
                 continue
@@ -14726,6 +14804,39 @@ def _check_signal_escape_patterns(code: str):
     # pre-pass so the pathlib fallback inside it resolves.
     _run_string_binding_prepass(tree)
 
+    def _local_scope_binding_names(node: ast.AST) -> set[str]:
+        """Return names whose local bindings shadow values from an outer scope."""
+        names: set[str] = set()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            args = node.args
+            names.update(arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs))
+            if args.vararg is not None:
+                names.add(args.vararg.arg)
+            if args.kwarg is not None:
+                names.add(args.kwarg.arg)
+
+        body = (
+            node.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            else [node.body]
+        )
+        stack = list(reversed(body))
+        while stack:
+            current = stack.pop()
+            if isinstance(current, _LEXICAL_SCOPE_NODES):
+                if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    names.add(current.name)
+                continue
+            if isinstance(current, ast.Name) and isinstance(current.ctx, ast.Store):
+                names.add(current.id)
+            elif isinstance(current, (ast.Import, ast.ImportFrom)):
+                for alias in current.names:
+                    names.add(alias.asname or alias.name.split(".", 1)[0])
+            elif isinstance(current, ast.ExceptHandler) and current.name:
+                names.add(current.name)
+            stack.extend(reversed(list(ast.iter_child_nodes(current))))
+        return names
+
     def _visit_local_binding_scope(visitor: ast.NodeVisitor, node: ast.AST) -> None:
         """Visit a nested lexical scope with only its own binding overlay."""
         saved_bindings = dict(string_bindings)
@@ -14745,6 +14856,9 @@ def _check_signal_escape_patterns(code: str):
             for name, value in vars(visitor).items()
             if isinstance(value, (dict, set))
         }
+        for name in _local_scope_binding_names(node):
+            string_bindings.pop(name, None)
+            string_bindings_all.pop(name, None)
         _run_alias_prepass(node)
         _run_string_binding_prepass(node)
         try:
@@ -15782,6 +15896,10 @@ def _check_signal_escape_patterns(code: str):
             # as X``: a later bare ``X('/etc/shadow')`` flows through the
             # same file-read gate as the qualified call.
             self.file_reader_aliases: set[str] = set()
+            self.file_reader_module_aliases: dict[str, str] = {
+                "io": "io",
+                "codecs": "codecs",
+            }
             self.file_copy_aliases: dict[str, str] = {}
             self.network_module_aliases: dict[str, str] = {
                 name: name
@@ -15790,12 +15908,14 @@ def _check_signal_escape_patterns(code: str):
                     "httpx",
                     "urllib.request",
                     "urllib3",
+                    "aiohttp",
                     "socket",
                     "http.client",
                 )
             }
             self.network_call_aliases: dict[str, str] = {}
             self.network_instance_aliases: dict[str, str] = {}
+            self.request_url_bindings: dict[str, str] = {}
 
         def _canonical_network_callable(self, func: ast.AST) -> str:
             if isinstance(func, ast.Name):
@@ -15812,8 +15932,16 @@ def _check_signal_escape_patterns(code: str):
             root = cur.id
             if root in self.network_instance_aliases:
                 return ".".join([self.network_instance_aliases[root], *parts])
-            canonical_root = self.network_module_aliases.get(root, root)
+            canonical_root = self.network_module_aliases.get(
+                root,
+                self.file_reader_module_aliases.get(root, root),
+            )
             return ".".join([canonical_root, *parts])
+
+        def _extract_url_literal(self, node: ast.AST) -> "str | None":
+            if isinstance(node, ast.Name):
+                return self.request_url_bindings.get(node.id)
+            return _extract_string_literal(node)
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -15821,6 +15949,8 @@ def _check_signal_escape_patterns(code: str):
                     self.pathlib_aliases.add(alias.asname or "pathlib")
                 elif alias.name == "builtins":
                     self.builtins_aliases.add(alias.asname or "builtins")
+                if alias.name in self.file_reader_module_aliases:
+                    self.file_reader_module_aliases[alias.asname or alias.name] = alias.name
                 if alias.name in self.network_module_aliases:
                     self.network_module_aliases[alias.asname or alias.name] = alias.name
             self.generic_visit(node)
@@ -15848,7 +15978,9 @@ def _check_signal_escape_patterns(code: str):
             if node.module in self.network_module_aliases:
                 for alias in node.names:
                     canonical = f"{node.module}.{alias.name}"
-                    if any(canonical.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES):
+                    if canonical == "urllib.request.Request" or any(
+                        canonical.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES
+                    ):
                         self.network_call_aliases[alias.asname or alias.name] = canonical
             elif node.module in ("urllib", "http"):
                 for alias in node.names:
@@ -15876,6 +16008,10 @@ def _check_signal_escape_patterns(code: str):
                         self.builtins_aliases.add(tgt.id)
                     if src in self.path_aliases:
                         self.path_aliases.add(tgt.id)
+                    if src in self.file_reader_module_aliases:
+                        self.file_reader_module_aliases[tgt.id] = self.file_reader_module_aliases[
+                            src
+                        ]
                     if src in self.network_module_aliases:
                         self.network_module_aliases[tgt.id] = self.network_module_aliases[src]
                     if src in self.network_call_aliases:
@@ -15884,6 +16020,8 @@ def _check_signal_escape_patterns(code: str):
                         self.network_instance_aliases[tgt.id] = self.network_instance_aliases[src]
                     if src in self.file_copy_aliases:
                         self.file_copy_aliases[tgt.id] = self.file_copy_aliases[src]
+                    if src in self.request_url_bindings:
+                        self.request_url_bindings[tgt.id] = self.request_url_bindings[src]
                     if src in eval_exec_aliases:
                         eval_exec_aliases[tgt.id] = eval_exec_aliases[src]
             # Method rebinding inside the file-read surface:
@@ -15920,10 +16058,26 @@ def _check_signal_escape_patterns(code: str):
                     instance_module = "httpx"
                 elif constructor == "urllib3.PoolManager":
                     instance_module = "urllib3"
+                elif constructor == "aiohttp.ClientSession":
+                    instance_module = "aiohttp.ClientSession"
                 if instance_module:
                     for tgt in node.targets:
                         if isinstance(tgt, ast.Name):
                             self.network_instance_aliases[tgt.id] = instance_module
+                if constructor == "urllib.request.Request":
+                    request_url = (
+                        self._extract_url_literal(node.value.args[0]) if node.value.args else None
+                    )
+                    if request_url is None:
+                        for kw in node.value.keywords or []:
+                            if kw.arg in ("url", "full_url"):
+                                request_url = self._extract_url_literal(kw.value)
+                                if request_url is not None:
+                                    break
+                    if request_url is not None:
+                        for tgt in node.targets:
+                            if isinstance(tgt, ast.Name):
+                                self.request_url_bindings[tgt.id] = request_url
             self.generic_visit(node)
 
         def visit_FunctionDef(self, node):
@@ -16009,25 +16163,26 @@ def _check_signal_escape_patterns(code: str):
                 # ``host = some_input; sock.connect((host, 80))`` keeps
                 # legitimate dynamic-host tool calls passing through.
                 #
-                # ``sendto(data, address)`` and ``sendmsg(buffers,
-                # ancdata, flags, address)`` carry the address tuple at
-                # a non-zero positional index, so scan every positional
-                # arg for a ``(host, port)`` tuple shape -- the first
-                # match wins.
+                # The address position is method-specific. In particular,
+                # ``sendmsg`` commonly receives a tuple of buffers at arg 0;
+                # treating that tuple as an address rejects trusted calls.
                 host_lit = None
-                for a in node.args:
-                    if isinstance(a, ast.Tuple) and a.elts:
-                        host_lit = _extract_string_literal(a.elts[0])
-                        if host_lit:
-                            break
-                if host_lit is None and node.args:
-                    host_lit = _extract_string_literal(node.args[0])
+                address_node = None
+                method = node.func.attr
+                if method in ("connect", "connect_ex") and node.args:
+                    address_node = node.args[0]
+                elif method == "sendto" and len(node.args) >= 2:
+                    address_node = node.args[-1]
+                elif method == "sendmsg" and len(node.args) >= 4:
+                    address_node = node.args[3]
+                if isinstance(address_node, ast.Tuple) and len(address_node.elts) >= 2:
+                    host_lit = _extract_string_literal(address_node.elts[0])
                 # Keyword forms: sock.connect(address=(host, port)).
                 if host_lit is None:
                     for kw in node.keywords or []:
                         if kw.arg in ("address", "host", "hostname"):
                             v = kw.value
-                            if isinstance(v, ast.Tuple) and v.elts:
+                            if isinstance(v, ast.Tuple) and len(v.elts) >= 2:
                                 host_lit = _extract_string_literal(v.elts[0])
                             else:
                                 host_lit = _extract_string_literal(v)
@@ -16094,7 +16249,7 @@ def _check_signal_escape_patterns(code: str):
                         # leave url_arg/host_arg None so the kw fallback
                         # below picks up ``url=``.
                         if len(node.args) >= 2:
-                            url_arg = _extract_string_literal(node.args[1])
+                            url_arg = self._extract_url_literal(node.args[1])
                     else:
                         a0 = node.args[0]
                         if isinstance(a0, ast.Tuple) and a0.elts:
@@ -16102,7 +16257,7 @@ def _check_signal_escape_patterns(code: str):
                         elif fq in _HOST_FIRST_FQ:
                             host_arg = _extract_string_literal(a0)
                         else:
-                            url_arg = _extract_string_literal(a0)
+                            url_arg = self._extract_url_literal(a0)
 
                 # Keyword fallback. ``url=`` and ``address=`` carry the
                 # full URL or (host, port); ``host=`` / ``hostname=``
@@ -16118,10 +16273,29 @@ def _check_signal_escape_patterns(code: str):
                                 host_arg = _extract_string_literal(v.elts[0])
                         else:
                             if url_arg is None and host_arg is None:
-                                url_arg = _extract_string_literal(v)
+                                url_arg = self._extract_url_literal(v)
                     elif kw.arg in ("host", "hostname"):
                         if host_arg is None:
                             host_arg = _extract_string_literal(kw.value)
+
+                if url_arg:
+                    parsed_url = urllib.parse.urlsplit(url_arg)
+                    if parsed_url.scheme.lower() == "file":
+                        file_path = urllib.parse.unquote(parsed_url.path)
+                        if re.match(r"^/[A-Za-z]:/", file_path):
+                            file_path = file_path[1:]
+                        matched_paths = _find_sensitive_paths(file_path)
+                        if matched_paths:
+                            sensitive_file_reads.append(
+                                {
+                                    "type": "sensitive_file_read",
+                                    "line": getattr(node, "lineno", -1),
+                                    "description": (
+                                        "Blocked: access to sensitive file path(s): "
+                                        + ", ".join(sorted(matched_paths))
+                                    ),
+                                }
+                            )
 
                 if url_arg and host_arg is None:
                     m = re.match(r"^\w+://([^/?#]+)", url_arg)
