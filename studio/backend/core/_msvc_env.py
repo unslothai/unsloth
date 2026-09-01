@@ -54,17 +54,30 @@ def _rocm_clang_cl_present() -> bool:
     )
 
 
+def _cc_needs_msvc_headers(cc: str) -> bool:
+    """Triton's own predicates decide, so this cannot disagree with what it does. They are imported
+    apart from `get_cc` because `is_clang_cl` only arrived in triton-windows 3.5.1.post23: importing
+    all three together failed on every earlier release and threw away a usable `get_cc` with it.
+    The fallback is what both predicates do, a case-insensitive basename match."""
+    try:
+        from triton.runtime.build import is_clang_cl, is_msvc  # noqa: PLC0415
+        return bool(is_msvc(cc) or is_clang_cl(cc))
+    except Exception:  # noqa: BLE001
+        logger.debug("Triton's compiler predicates are unavailable", exc_info = True)
+        return os.path.basename(str(cc)).lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe")
+
+
 def _needs_msvc_headers() -> bool:
     """Only cl and clang-cl need them; `get_cc()` otherwise picks bundled TinyCC, which carries its own.
     The fallback needs both halves: an in-place ROCm-to-XPU repair leaves the compiler on disk without
     the Triton that selects it. Unanswerable means ungated: gating wrongly breaks a working box."""
     try:
-        from triton.runtime.build import get_cc, is_clang_cl, is_msvc  # noqa: PLC0415
+        from triton.runtime.build import get_cc  # noqa: PLC0415
         cc = get_cc()
     except Exception:  # noqa: BLE001
         logger.debug("Triton's compiler selection is unavailable", exc_info = True)
         return _triton_is_triton_windows() and _rocm_clang_cl_present()
-    return bool(is_msvc(cc) or is_clang_cl(cc))
+    return _cc_needs_msvc_headers(cc)
 
 
 def _toolchain_summary() -> str:

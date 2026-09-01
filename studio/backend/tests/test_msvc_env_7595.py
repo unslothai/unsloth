@@ -18,6 +18,7 @@ def _fake_triton(
     monkeypatch,
     inc_dirs,
     cc = "clang-cl.exe",
+    with_is_clang_cl = True,
 ):
     pkg = types.ModuleType("triton")
     utils = types.ModuleType("triton.windows_utils")
@@ -27,7 +28,8 @@ def _fake_triton(
     build = types.ModuleType("triton.runtime.build")
     build.get_cc = lambda: cc
     build.is_msvc = lambda c: os.path.basename(c).lower() in ("cl", "cl.exe")
-    build.is_clang_cl = lambda c: os.path.basename(c).lower() in ("clang-cl", "clang-cl.exe")
+    if with_is_clang_cl:
+        build.is_clang_cl = lambda c: os.path.basename(c).lower() in ("clang-cl", "clang-cl.exe")
     runtime.build = build
     pkg.runtime = runtime
     monkeypatch.setitem(sys.modules, "triton", pkg)
@@ -198,6 +200,44 @@ def test_stale_rocm_clang_cl_under_xpu_triton_is_not_gated(tmp_path, monkeypatch
     monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
     monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
     monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: False)
+    assert _msvc_env._needs_msvc_headers() is False
+    assert _msvc_env.crt_headers_reachable() is True
+
+
+def test_tinycc_is_not_gated_on_a_release_without_is_clang_cl(tmp_path, monkeypatch):
+    """triton-windows 3.2.0.post18 through 3.5.1.post22 ship `get_cc` and `is_msvc` but no
+    `is_clang_cl`. Importing the three together lost `get_cc` too, so an AMD box that still had the
+    ROCm wheel on disk fell through to the wheel-layout guess and was gated, even though those
+    releases predate the ROCm clang-cl branch and pick TinyCC, which compiles."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, [], cc = "tcc.exe", with_is_clang_cl = False)
+    monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
+    monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: True)
+    assert _msvc_env._needs_msvc_headers() is False
+    assert _msvc_env.crt_headers_reachable() is True
+
+
+def test_clang_cl_is_still_gated_without_is_clang_cl(tmp_path, monkeypatch):
+    """The other half: dropping the predicate must not drop the detection."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, [], cc = "clang-cl.exe", with_is_clang_cl = False)
+    assert _msvc_env._needs_msvc_headers() is True
+    assert _msvc_env.crt_headers_reachable() is False
+
+
+def test_a_raising_predicate_does_not_escape(tmp_path, monkeypatch):
+    """`is_msvc(None)` is a TypeError. The call used to sit outside the try, so it escaped."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, [], cc = "tcc.exe")
+    build = sys.modules["triton.runtime.build"]
+
+    def boom(_c):
+        raise TypeError("expected str, bytes or os.PathLike object, not NoneType")
+
+    monkeypatch.setattr(build, "is_msvc", boom)
     assert _msvc_env._needs_msvc_headers() is False
     assert _msvc_env.crt_headers_reachable() is True
 
