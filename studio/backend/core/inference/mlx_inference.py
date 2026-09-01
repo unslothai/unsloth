@@ -24,7 +24,6 @@ from core.inference.chat_template_helpers import (
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
     prompt_opens_reasoning_channel,
-    prompt_serializes_structured_media as _prompt_serializes_vlm_media,
     strip_open_reasoning_prefill,
     trailing_assistant_text,
     vlm_prompt_issue as _vlm_prompt_issue,
