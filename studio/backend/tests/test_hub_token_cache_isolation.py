@@ -130,9 +130,9 @@ def test_an_anonymous_denial_does_not_blank_a_later_ui_lookup(monkeypatch):
         "org/private-set", "hf_operator_token"
     )
 
-    assert size == 4096 and "sha-private" in hashes, (
-        "an API key's anonymous denial poisoned the UI session's cache slot"
-    )
+    assert (
+        size == 4096 and "sha-private" in hashes
+    ), "an API key's anonymous denial poisoned the UI session's cache slot"
 
 
 def test_the_same_caller_still_gets_a_cache_hit(monkeypatch):
@@ -173,9 +173,9 @@ def test_concurrent_callers_of_different_credentials_do_not_share_one_scan():
     ambient_result, anon_result = asyncio.run(_drive())
 
     assert ambient_result == "result-for-None"
-    assert anon_result == "result-for-False", (
-        "the anonymous caller received the scan computed under the ambient credential"
-    )
+    assert (
+        anon_result == "result-for-False"
+    ), "the anonymous caller received the scan computed under the ambient credential"
     assert sorted(map(str, computed)) == [
         "False",
         "None",
