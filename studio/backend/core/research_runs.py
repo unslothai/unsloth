@@ -62,6 +62,7 @@ from storage.studio_db import (
     list_chat_messages,
     upsert_chat_message,
 )
+from utils.workspace_context import reset_workspace_subject, set_workspace_subject
 
 logger = get_logger(__name__)
 _URL_BLOCK = re.compile(
@@ -938,9 +939,28 @@ class ResearchSupervisor:
         self._task: asyncio.Task | None = None
         self._cancel_events: dict[str, threading.Event] = {}
         self._lost_leases: set[str] = set()
+        # Round-robin cursor so a busy owner queue cannot starve managed accounts.
+        self._next_workspace = 0
+
+    def _workspaces(self) -> list[str]:
+        """Every workspace whose queue this supervisor polls, owner included.
+
+        Read each pass rather than at startup so an account created later is
+        picked up without a restart.
+        """
+        from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, known_workspace_subjects
+        try:
+            return known_workspace_subjects()
+        except Exception:
+            return [LEGACY_WORKSPACE_SUBJECT]
 
     def start(self) -> None:
-        db.recover_expired()
+        from utils.workspace_context import run_in_workspace
+        for subject in self._workspaces():
+            try:
+                run_in_workspace(subject, db.recover_expired)
+            except Exception:
+                logger.warning("research.recover_expired_failed subject=%s", subject)
         if self._task is None:
             self._task = asyncio.create_task(self._loop(), name = "research-supervisor")
 
@@ -956,7 +976,14 @@ class ResearchSupervisor:
                 except asyncio.CancelledError:
                     pass
         finally:
-            await asyncio.to_thread(db.release_worker_leases, self.worker_id)
+            from utils.workspace_context import run_in_workspace
+            for subject in self._workspaces():
+                try:
+                    await asyncio.to_thread(
+                        run_in_workspace, subject, db.release_worker_leases, self.worker_id
+                    )
+                except Exception:
+                    logger.warning("research.release_leases_failed subject=%s", subject)
 
     def wake(self) -> None:
         # Polling is intentionally sufficient for one local process; requests never own tasks.
@@ -1114,11 +1141,18 @@ class ResearchSupervisor:
                 if self._server_port() is None:
                     await asyncio.sleep(self.poll_seconds)
                     continue
-                run = await asyncio.to_thread(db.claim_next, self.worker_id)
+                # claim_next opens the CALLER's studio.db and asyncio.to_thread copies
+                # this task's context, so polling once would only ever serve the owner
+                # and leave every managed account's run queued forever.
+                run, claimed = await self._claim_next_in_any_workspace()
                 if run is None:
                     await asyncio.sleep(self.poll_seconds)
                     continue
-                await self._process(run)
+                token = set_workspace_subject(claimed)
+                try:
+                    await self._process(run)
+                finally:
+                    reset_workspace_subject(token)
             except asyncio.CancelledError:
                 raise
             except sqlite3.OperationalError as exc:
@@ -1134,6 +1168,23 @@ class ResearchSupervisor:
             except Exception:
                 logger.exception("research.supervisor_iteration_failed")
                 await asyncio.sleep(1)
+
+    async def _claim_next_in_any_workspace(self) -> tuple[dict | None, str]:
+        """The next queued run from any workspace, and the subject that owns it."""
+        from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, run_in_workspace
+
+        subjects = self._workspaces()
+        if not subjects:
+            return None, LEGACY_WORKSPACE_SUBJECT
+        start = self._next_workspace % len(subjects)
+        for offset in range(len(subjects)):
+            subject = subjects[(start + offset) % len(subjects)]
+            run = await asyncio.to_thread(run_in_workspace, subject, db.claim_next, self.worker_id)
+            if run is not None:
+                self._next_workspace = (start + offset + 1) % len(subjects)
+                return run, subject
+        self._next_workspace = (start + 1) % len(subjects)
+        return None, LEGACY_WORKSPACE_SUBJECT
 
     def _server_port(self) -> int | None:
         port = getattr(self.app.state, "server_port", None)
