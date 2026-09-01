@@ -16,6 +16,8 @@ itself a full-model RAM reservation, so ``no_ram_reserve`` wins on that flag.
 from __future__ import annotations
 
 import threading
+
+from utils.workspace_context import current_workspace_subject
 import time
 from typing import Any, Optional
 
@@ -29,11 +31,13 @@ DEFAULT_NO_RAM_RESERVE = False
 # Matches openai_auto_switch_settings.
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
-_cache: dict[str, tuple[float, Any]] = {}
+# Keyed by (workspace, setting): studio.db is per account, so a name-only key
+# serves one account's value to the next for the length of the TTL.
+_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 # Bumped on every write. A read that began before a write must not fill the
 # cache with the value it already fetched, or the new setting would appear to
 # revert for the rest of the TTL and a load could launch contradicting it.
-_generation: dict[str, int] = {}
+_generation: dict[tuple[str, str], int] = {}
 
 
 def _coerce_bool(value: Any) -> Optional[bool]:
@@ -54,12 +58,13 @@ _MAX_REREADS = 3
 
 
 def _cached_setting(key: str) -> Any:
+    scoped = (current_workspace_subject(), key)
     for _attempt in range(_MAX_REREADS):
         with _cache_lock:
-            hit = _cache.get(key)
+            hit = _cache.get(scoped)
             if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_S:
                 return hit[1]
-            generation = _generation.get(key, 0)
+            generation = _generation.get(scoped, 0)
         try:
             from storage.studio_db import get_app_setting
             stored = get_app_setting(key, None)
@@ -67,8 +72,8 @@ def _cached_setting(key: str) -> Any:
             # An unreadable DB must not fail a load; fall back to the default.
             return None
         with _cache_lock:
-            if _generation.get(key, 0) == generation:
-                _cache[key] = (time.monotonic(), stored)
+            if _generation.get(scoped, 0) == generation:
+                _cache[scoped] = (time.monotonic(), stored)
                 return stored
         # A write committed while this read was in flight, so `stored` predates
         # it. Returning it would let a load launch with flags contradicting the
@@ -81,10 +86,12 @@ def _invalidate(*keys: str) -> None:
     transaction, so invalidating them separately would let a load in between read
     a new keep_resident against a cached old no_ram_reserve and emit --mlock for
     a combination that was never stored."""
+    subject = current_workspace_subject()
     with _cache_lock:
         for key in keys:
-            _cache.pop(key, None)
-            _generation[key] = _generation.get(key, 0) + 1
+            scoped = (subject, key)
+            _cache.pop(scoped, None)
+            _generation[scoped] = _generation.get(scoped, 0) + 1
 
 
 def get_keep_resident() -> bool:
@@ -110,10 +117,11 @@ def should_mlock() -> bool:
 
 
 def _pair_generations() -> tuple[int, int]:
+    subject = current_workspace_subject()
     with _cache_lock:
         return (
-            _generation.get(KEEP_RESIDENT_SETTING_KEY, 0),
-            _generation.get(NO_RAM_RESERVE_SETTING_KEY, 0),
+            _generation.get((subject, KEEP_RESIDENT_SETTING_KEY), 0),
+            _generation.get((subject, NO_RAM_RESERVE_SETTING_KEY), 0),
         )
 
 

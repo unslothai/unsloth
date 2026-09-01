@@ -42,6 +42,8 @@ from __future__ import annotations
 import os
 import re
 import threading
+
+from utils.workspace_context import current_workspace_subject
 import time
 from typing import Any, Optional
 
@@ -67,7 +69,9 @@ MIN_AUTO_UNLOAD_IDLE_SECONDS = 60
 
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
-_cache: dict[str, tuple[float, Any]] = {}
+# Keyed by (workspace, setting): studio.db is per account, so a name-only key
+# serves one account's value to the next for the length of the TTL.
+_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 
 
 def _coerce_bool(value: Any) -> bool | None:
@@ -96,8 +100,9 @@ def _apply_idle_floor(seconds: int) -> int:
 def _cached_setting(key: str, default: Any) -> Any:
     """Read an app setting, memoized for _CACHE_TTL_S to spare the hot path."""
     now = time.monotonic()
+    scoped = (current_workspace_subject(), key)
     with _cache_lock:
-        hit = _cache.get(key)
+        hit = _cache.get(scoped)
         if hit is not None and now - hit[0] < _CACHE_TTL_S:
             return hit[1]
     try:
@@ -107,13 +112,13 @@ def _cached_setting(key: str, default: Any) -> Any:
         stored = None
     value = default if stored is None else stored
     with _cache_lock:
-        _cache[key] = (now, value)
+        _cache[scoped] = (now, value)
     return value
 
 
 def _invalidate(key: str) -> None:
     with _cache_lock:
-        _cache.pop(key, None)
+        _cache.pop((current_workspace_subject(), key), None)
 
 
 def get_openai_auto_switch_enabled() -> bool:

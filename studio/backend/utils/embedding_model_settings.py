@@ -12,6 +12,8 @@ documents already indexed under the old model must be re-uploaded after a change
 from __future__ import annotations
 
 import threading
+
+from utils.workspace_context import current_workspace_subject
 import time
 from typing import Any, Optional
 
@@ -42,11 +44,13 @@ _StoredState = tuple[
 # The raw record is carried so a conditional write compares against exactly what
 # is stored: a reconstruction never matches a record written by a build with one
 # field fewer.
-_cached: tuple[float, _StoredState] | None = None
+# Per workspace: studio.db is per account, and one global slot would hand another
+# account's embedding model and GGUF repo to a RAG ingestion.
+_cached: dict[str, tuple[float, _StoredState]] = {}
 # Bumped on every write/invalidate. A reader captures it before the DB read and
 # only fills the cache if it is unchanged afterward, so a read that overlapped a
 # save cannot repopulate the cache with the pre-save value for the whole TTL.
-_generation = 0
+_generation: dict[str, int] = {}
 _lock = threading.Lock()
 # Per-model, process-local: the last (gguf_repo, backend, download_pending, files)
 # seen for each model. The one stored record belongs to whichever model was saved
@@ -55,10 +59,10 @@ _resolved_gguf_memo: dict[str, tuple[Optional[str], Optional[str], bool, Optiona
 
 
 def _invalidate_cache() -> None:
-    global _cached, _generation
+    subject = current_workspace_subject()
     with _lock:
-        _cached = None
-        _generation += 1
+        _cached.pop(subject, None)
+        _generation[subject] = _generation.get(subject, 0) + 1
 
 
 def default_embedding_model() -> str:
@@ -236,13 +240,13 @@ def _get_stored_state() -> _StoredState:
     torn. The legacy individual fields are read in the same SQL statement for
     compatibility with builds from before the atomic record existed.
     """
-    global _cached
+    subject = current_workspace_subject()
     now = time.monotonic()
     with _lock:
-        cached = _cached
+        cached = _cached.get(subject)
         if cached is not None and now - cached[0] < _CACHE_TTL_S:
             return cached[1]
-        gen = _generation
+        gen = _generation.get(subject, 0)
     try:
         from storage.studio_db import get_app_settings
         settings = get_app_settings(
@@ -258,9 +262,10 @@ def _get_stored_state() -> _StoredState:
         # silently reverting the embed/search hot path to the default model,
         # which would mix vector spaces mid-ingestion.
         with _lock:
-            if _cached is not None:
-                _cached = (time.monotonic(), _cached[1])
-                return _cached[1]
+            held = _cached.get(subject)
+            if held is not None:
+                _cached[subject] = (time.monotonic(), held[1])
+                return held[1]
         return (None, None, None, None, False, None)
     override = _coerce_embedding_model(settings.get(EMBEDDING_MODEL_SETTING_KEY))
     resolution = settings.get(EMBEDDING_RESOLUTION_SETTING_KEY)
@@ -283,8 +288,8 @@ def _get_stored_state() -> _StoredState:
         # Only cache when no save landed while we were reading; otherwise this
         # value may be pre-save, and caching it would mask the new one for the
         # TTL. The next reader re-reads the committed value.
-        if _generation == gen:
-            _cached = (time.monotonic(), value)
+        if _generation.get(subject, 0) == gen:
+            _cached[subject] = (time.monotonic(), value)
     return value
 
 

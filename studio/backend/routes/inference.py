@@ -49,6 +49,8 @@ from urllib.parse import quote as _urlquote
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
+from utils.workspace_context import current_workspace_subject
+from auth.authentication import require_install_admin
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
 from hub.services.models.ollama import (
@@ -14911,7 +14913,8 @@ async def check_transformers_upgrade_route(
     "/install-latest-transformers", response_model = InstallLatestTransformersResponse
 )
 async def install_latest_transformers_route(
-    request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
+    request: InstallLatestTransformersRequest,
+    current_subject: str = Depends(require_install_admin),
 ):
     """
     Consented install of the latest transformers release into the persistent
@@ -23771,7 +23774,9 @@ def _openai_model_objects() -> list[dict]:
 
 # Brief cache for the local-model filesystem scan so repeated /v1/models calls
 # don't rescan the HF cache and models dirs on every request.
-_CATALOG_CACHE: dict = {"at": 0.0, "models": []}
+# Keyed by workspace: the scan includes scan-folder models, which are private
+# per account, so one global entry serves them to whoever asks next.
+_CATALOG_CACHE: dict = {"subject": None, "at": 0.0, "models": []}
 # Ids the last catalog scan listed, rebuilt only when that scan is replaced.
 _ADVERTISED_CACHE: dict = {"at": None, "paths": {}}
 
@@ -24092,6 +24097,15 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
     return objects
 
 
+def _catalog_is_fresh(subject: str, now: float) -> bool:
+    """Cached entry is usable only for the workspace that produced it."""
+    return bool(
+        _CATALOG_CACHE["at"]
+        and _CATALOG_CACHE["subject"] == subject
+        and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S
+    )
+
+
 async def _cached_local_catalog() -> list:
     """Locally available models (models dir + HF caches + LM Studio + scan
     folders), cached for a few seconds. Returns a list of LocalModelInfo.
@@ -24103,12 +24117,13 @@ async def _cached_local_catalog() -> list:
     into a single scan instead of one per request."""
     # Validity is keyed on "at" (set only after a scan), not on list contents, so
     # an empty/errored scan is still cached instead of rescanning on every poll.
+    subject = current_workspace_subject()
     now = time.monotonic()
-    if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+    if _catalog_is_fresh(subject, now):
         return _CATALOG_CACHE["models"]
     async with _catalog_lock():
         now = time.monotonic()
-        if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+        if _catalog_is_fresh(subject, now):
             return _CATALOG_CACHE["models"]
         try:
             from routes.models import collect_local_models
@@ -24120,6 +24135,7 @@ async def _cached_local_catalog() -> list:
             _CATALOG_CACHE["models"] = []
         # Stamp after the scan, not the pre-scan "now": a scan slower than the TTL
         # would otherwise leave the cache already expired, so every waiter rescans.
+        _CATALOG_CACHE["subject"] = subject
         _CATALOG_CACHE["at"] = time.monotonic()
     return _CATALOG_CACHE["models"]
 

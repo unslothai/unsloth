@@ -1854,10 +1854,13 @@ class TestPairedWritesAreInvalidatedTogether:
     def test_invalidating_a_pair_bumps_both_generations(self):
         import utils.model_memory_settings as mm
 
+        from utils.workspace_context import current_workspace_subject
+
+        subject = current_workspace_subject()
         mm._generation.clear()
         mm._invalidate(mm.KEEP_RESIDENT_SETTING_KEY, mm.NO_RAM_RESERVE_SETTING_KEY)
-        assert mm._generation[mm.KEEP_RESIDENT_SETTING_KEY] == 1
-        assert mm._generation[mm.NO_RAM_RESERVE_SETTING_KEY] == 1
+        assert mm._generation[(subject, mm.KEEP_RESIDENT_SETTING_KEY)] == 1
+        assert mm._generation[(subject, mm.NO_RAM_RESERVE_SETTING_KEY)] == 1
 
     def test_one_acquisition_covers_every_key(self):
         import ast
