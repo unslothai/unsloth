@@ -844,7 +844,11 @@ def _active_chain(
             continue
         by_id[identifier] = message
         parent = message.get("parentId") or message.get("parent_id")
-        if parent is None and previous is not None:
+        # A row that CARRIES the column and holds null is a root the client meant, as
+        # editing the first prompt makes. Only a row written before the column exists has
+        # nothing to say, and there storage order stands in.
+        stated = "parentId" in message or "parent_id" in message
+        if parent is None and previous is not None and not stated:
             synthesized.add(identifier)
             parent = previous
         parent_of[identifier] = parent

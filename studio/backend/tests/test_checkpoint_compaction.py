@@ -3751,3 +3751,86 @@ def test_a_replayed_row_that_renders_no_text_is_refused_rather_than_trusted(monk
 
     assert llama_cpp._archive_branch_chain(rows, branch) is None
     assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+
+
+def test_a_second_explicit_root_is_not_wired_onto_the_branch_before_it(monkeypatch):
+    """Editing the first prompt makes a real second root; storage order must not fuse them.
+
+    Standing the previous row in for every null parent joined the abandoned root's branch
+    onto the live one, so the walk reached back into it and could restore its boundary.
+    """
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    rows = [
+        {"id": "u1", "parentId": None, "role": "user", "content": "The first wording."},
+        {
+            "id": "a1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": "An abandoned reply.",
+            "metadata": _checkpoint_metadata(44),
+        },
+        # The edit: a root of its own, not a child of the branch it replaced.
+        {"id": "u2", "parentId": None, "role": "user", "content": "The second wording."},
+        {
+            "id": "a2",
+            "parentId": "u2",
+            "role": "assistant",
+            "content": "The live reply.",
+            "metadata": {"generationStatus": "completed"},
+        },
+    ]
+    branch = [
+        {"role": "user", "content": "The second wording."},
+        {"role": "assistant", "content": "The live reply."},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    chain = llama_cpp._archive_branch_chain(rows, branch)
+    assert chain is not None and [row["id"] for row in chain] == ["u2", "a2"]
+    # The live turn recorded nothing, so the epoch is over; 44 is the abandoned root's.
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
+
+
+def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypatch):
+    """`isAbandonedAssistantTurn` keeps a turn that finished on reasoning alone.
+
+    `_as_wire` strips reasoning, so such a row offers no key. Treating it as dropped let
+    an abandoned one past the tip unchecked and carried its boundary onto the live branch.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    rows = [
+        {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
+        {
+            "id": "a1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": "Done.",
+            "metadata": {"generationStatus": "completed"},
+        },
+        {
+            "id": "a2",
+            "parentId": "a1",
+            "role": "assistant",
+            "content": [{"type": "reasoning", "text": "An abandoned line of thought."}],
+            "metadata": _checkpoint_metadata(30),
+        },
+        {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue"},
+    ]
+    branch = [
+        {"role": "user", "content": "Start."},
+        {"role": "assistant", "content": "Done."},
+        {"role": "user", "content": "Continue"},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert llama_cpp._archive_branch_chain(rows, branch) is None
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    # A reply that STOPPED on reasoning carries nothing and is dropped, so it stays exempt.
+    rows[2]["metadata"] = {"incomplete": {"reason": "cancelled"}, **_checkpoint_metadata(30)}
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (30, True)

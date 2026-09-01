@@ -1070,16 +1070,19 @@ def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool
 
 
 def _row_replayed(message: dict) -> bool:
-    """Whether the client re-sends this reply, by `assistantTurnCarriesPayload`.
+    """Whether the client re-sends this reply, by `isAbandonedAssistantTurn`.
 
     Status is not the test: a Stop that reached text is kept, and only a reply carrying
     nothing is dropped -- along with the tool results its wire projection would expand to.
+    A turn that FINISHED on reasoning alone is a reply too, replayed as `reasoning_content`,
+    even though `_as_wire` strips reasoning and leaves it nothing to be matched on.
     """
     if message.get("role") != "assistant":
         return True
     content = message.get("content")
     if isinstance(content, str):
         return bool(content.strip())
+    reasoning = False
     for part in content or ():
         if not isinstance(part, dict):
             continue
@@ -1087,7 +1090,19 @@ def _row_replayed(message: dict) -> bool:
             return True
         if part.get("type") in ("image", "image-url", "file"):
             return True
+        reasoning = reasoning or part.get("type") == "reasoning"
+    if reasoning and not _row_ended_early(message):
+        return True
     return bool(message.get("attachments"))
+
+
+def _row_ended_early(message: dict) -> bool:
+    """`assistantTurnEndedEarly`: the persisted marker, since status is session state."""
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    return bool(metadata.get("incomplete") or custom.get("incomplete"))
 
 
 def _archive_branch_chain(
