@@ -1509,9 +1509,7 @@ class InferenceBackend:
                 # this request's response protocol. With *tools*, matching the
                 # render: a named template selects "tool_use" for a tool-calling
                 # turn, and profiling without them reads "default" instead.
-                reasoning_channel_markers = detect_reasoning_channel_markers(
-                    processor, tools = tools
-                )
+                reasoning_channel_markers = detect_reasoning_channel_markers(processor, tools = tools)
                 if image
                 else None,
                 reasoning_channel_markers_resolved = True,
