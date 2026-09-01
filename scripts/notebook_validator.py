@@ -903,6 +903,13 @@ def _spec_window(
     return exact, floor, cap, ceiling, exclusions, floor_excludes_itself
 
 
+# Flags that stop pip treating what is installed as satisfying an unbounded requirement, so
+# it resolves from the index instead of leaving the version alone.
+_RESOLVE_ANYWAY_FLAGS = frozenset(
+    {"--upgrade", "-U", "--force-reinstall", "--ignore-installed", "-I"}
+)
+
+
 def _effective_version(
     install_cell: str, target: str, resolved: str | None
 ) -> tuple[str | None, bool]:
@@ -959,9 +966,10 @@ def _effective_version(
         if inv.action == "uninstall":
             current = None  # removed; a later install can put it back
             continue
-        if not pins and not replaced_unnamed and inv.flags & {"--upgrade", "-U"}:
-            # A bare name with --upgrade takes the newest release. Nothing here names it, and
-            # unlike a plain install it does not leave what is there alone.
+        if not pins and not replaced_unnamed and inv.flags & _RESOLVE_ANYWAY_FLAGS:
+            # A bare name with any of these takes whatever the index offers: none of them let
+            # the installed version satisfy the requirement, so it is not what the cell ends
+            # on, and nothing here names what does.
             current, exact_known = None, True
             continue
         if replaced_unnamed:

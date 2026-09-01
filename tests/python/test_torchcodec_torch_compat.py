@@ -1183,7 +1183,8 @@ def test_notebook_validator_keeps_an_outer_fallback_across_a_nested_or():
     nv = _load_notebook_validator_module()
 
     nested = (
-        "!pip install foo || (pip install bar || pip install baz && " 'pip install "torch==2.12.0")'
+        '!pip install foo || (pip install bar || pip install baz && '
+        'pip install "torch==2.12.0")'
     )
     assert [flag for _, flag in nv._split_chained(nested)] == [False, True, True, True]
     assert nv.rule_inst_004_torchcodec_torch(nested, COLAB_TORCH211, "nb.ipynb", 0) == []
@@ -1191,7 +1192,9 @@ def test_notebook_validator_keeps_an_outer_fallback_across_a_nested_or():
     # The grouped head list still ends its own tail at the `&&`.
     same_list = '!(pip install foo || pip install bar && pip install "torch==2.12.0")'
     assert [flag for _, flag in nv._split_chained(same_list)] == [False, True, False]
-    assert len(nv.rule_inst_004_torchcodec_torch(same_list, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+    assert len(
+        nv.rule_inst_004_torchcodec_torch(same_list, COLAB_TORCH211, "nb.ipynb", 0)
+    ) == 1
 
 
 def test_notebook_validator_lands_an_upward_move_on_an_inclusive_cap():
@@ -1205,12 +1208,9 @@ def test_notebook_validator_lands_an_upward_move_on_an_inclusive_cap():
     assert "torchcodec==0.10.0" in findings[0].message
 
     # An open floor has no cap to land on and stays a floor, which the ABI remedy needs.
-    assert (
-        nv.rule_inst_004_torchcodec_torch(
-            '!pip install "torch==2.12.0" "torchcodec>=0.12.0"', COLAB_TORCH211, "nb.ipynb", 0
-        )
-        == []
-    )
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch==2.12.0" "torchcodec>=0.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
 
 
 def test_notebook_validator_will_not_keep_a_version_through_an_upgrade():
@@ -1218,41 +1218,30 @@ def test_notebook_validator_will_not_keep_a_version_through_an_upgrade():
     what the cell ends on. Without the flag pip leaves a satisfied requirement alone."""
     nv = _load_notebook_validator_module()
 
-    for flag in ("--upgrade", "-U"):
+    # None of these let the installed version satisfy the requirement, so pip resolves from
+    # the index and the old version is not what the cell ends on.
+    for flag in ("--upgrade", "-U", "--force-reinstall", "--ignore-installed", "-I"):
         cell = f'!pip install {flag} "torch==2.12.0" torchcodec'
         assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], flag
 
     # No flag: the requirement is already satisfied, so 0.11 stays and is reported.
-    assert (
-        len(
-            nv.rule_inst_004_torchcodec_torch(
-                '!pip install "torch==2.12.0" torchcodec', COLAB_TORCH211, "nb.ipynb", 0
-            )
-        )
-        == 1
-    )
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch==2.12.0" torchcodec', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
 
-    # A bound still bounds it, upgrade or not.
-    assert (
-        nv.rule_inst_004_torchcodec_torch(
-            '!pip install --upgrade "torch==2.12.0" "torchcodec>=0.12.0"',
-            COLAB_TORCH211,
-            "nb.ipynb",
-            0,
-        )
-        == []
-    )
-    assert (
-        len(
-            nv.rule_inst_004_torchcodec_torch(
-                '!pip install --upgrade "torch==2.11.0" "torchcodec==0.10.0"',
-                COLAB_TORCH211,
-                "nb.ipynb",
-                0,
-            )
-        )
-        == 1
-    )
+    # A bound still bounds it, forced or not.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install --force-reinstall "torch==2.12.0" "torchcodec>=0.12.0"',
+        COLAB_TORCH211,
+        "nb.ipynb",
+        0,
+    ) == []
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install --upgrade "torch==2.12.0" "torchcodec>=0.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        '!pip install --upgrade "torch==2.11.0" "torchcodec==0.10.0"', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
