@@ -269,7 +269,7 @@ def _decode_utf8_prefix(raw: bytes) -> str:
 
 def _append_windows_instruction_layer(
     verified_root, scope: tuple[str, ...], *, limit: int, layers: list[dict], issues: list[dict]
-) -> tuple[int, bool]:
+) -> tuple[int, bool, bool]:
     relative = "/".join((*scope, "AGENTS.md"))
     try:
         selected = _read_instruction_windows(verified_root, scope, limit)
@@ -280,16 +280,16 @@ def _append_windows_instruction_layer(
                 "reason": "symlink" if exc.errno == errno.ELOOP else "unreadable",
             }
         )
-        return 0, False
+        return 0, False, False
     if selected is None:
-        return 0, False
+        return 0, False, False
     selected_name, raw, read_truncated = selected
     relative = "/".join((*scope, selected_name))
     try:
         content = _decode_utf8_prefix(raw)
     except UnicodeDecodeError:
         issues.append({"path": relative, "reason": "invalid-utf8"})
-        return 0, read_truncated
+        return len(raw), read_truncated, True
     layers.append(
         {
             "path": relative,
@@ -299,7 +299,7 @@ def _append_windows_instruction_layer(
             "bytesRead": len(raw),
         }
     )
-    return len(raw), read_truncated
+    return len(raw), read_truncated, True
 
 
 def _resolve_agents_instructions_windows(
@@ -316,23 +316,25 @@ def _resolve_agents_instructions_windows(
     layers: list[dict] = []
     issues: list[dict] = []
     remaining = max_total_bytes
+    files_read = 0
     truncated = False
     with WindowsVerifiedRoot.open(root, expected_identity) as verified_root:
         directory_parts = _windows_instruction_target_directory(
             verified_root, _target_parts(target)
         )
         for depth in range(len(directory_parts) + 1):
-            if len(layers) >= max_files or remaining <= 0:
+            if files_read >= max_files or remaining <= 0:
                 truncated = True
                 break
             scope = directory_parts[:depth]
-            read, file_truncated = _append_windows_instruction_layer(
+            read, file_truncated, found = _append_windows_instruction_layer(
                 verified_root,
                 scope,
                 limit = min(max_file_bytes, remaining),
                 layers = layers,
                 issues = issues,
             )
+            files_read += int(found)
             remaining -= read
             truncated = truncated or file_truncated
         try:
@@ -366,6 +368,7 @@ def _resolve_targeted_repository_instructions_windows(
     issues: list[dict] = []
     normalized_targets: list[tuple[str, tuple[str, ...]]] = []
     remaining = max_total_bytes
+    files_read = 0
     truncated = False
     with WindowsVerifiedRoot.open(root, expected_identity) as verified_root:
         seen_targets: set[str] = set()
@@ -382,16 +385,17 @@ def _resolve_targeted_repository_instructions_windows(
         for _target, directory_parts in normalized_targets:
             scopes.update(directory_parts[:depth] for depth in range(1, len(directory_parts) + 1))
         for scope in sorted(scopes, key = lambda value: (len(value), value)):
-            if len(layers) >= max_files or remaining <= 0:
+            if files_read >= max_files or remaining <= 0:
                 truncated = True
                 break
-            read, file_truncated = _append_windows_instruction_layer(
+            read, file_truncated, found = _append_windows_instruction_layer(
                 verified_root,
                 scope,
                 limit = min(max_file_bytes, remaining),
                 layers = layers,
                 issues = issues,
             )
+            files_read += int(found)
             remaining -= read
             truncated = truncated or file_truncated
         try:
@@ -430,6 +434,7 @@ def _resolve_repository_instructions_windows(
     layers: list[dict] = []
     issues: list[dict] = []
     remaining = max_total_bytes
+    files_read = 0
     directories_seen = 0
     truncated = False
     with WindowsVerifiedRoot.open(root, expected_identity) as verified_root:
@@ -439,14 +444,15 @@ def _resolve_repository_instructions_windows(
             if directories_seen > max_directories:
                 truncated = True
                 break
-            if len(layers) < max_files and remaining > 0:
-                read, file_truncated = _append_windows_instruction_layer(
+            if files_read < max_files and remaining > 0:
+                read, file_truncated, found = _append_windows_instruction_layer(
                     verified_root,
                     scope,
                     limit = min(max_file_bytes, remaining),
                     layers = layers,
                     issues = issues,
                 )
+                files_read += int(found)
                 remaining -= read
                 truncated = truncated or file_truncated
             else:
@@ -520,12 +526,13 @@ def resolve_agents_instructions(
     layers = []
     issues = []
     remaining = max_total_bytes
+    files_read = 0
     truncated = False
     directory_fd = os.dup(root_fd)
     scope_parts: list[str] = []
     try:
         for depth in range(len(relative_parts) + 1):
-            if len(layers) >= max_files or remaining <= 0:
+            if files_read >= max_files or remaining <= 0:
                 truncated = True
                 break
             relative = "/".join((*scope_parts, "AGENTS.md"))
@@ -543,6 +550,9 @@ def resolve_agents_instructions(
                     selected_name, raw, read_truncated = selected
                     relative = "/".join((*scope_parts, selected_name))
                     take = len(raw)
+                    files_read += 1
+                    remaining -= take
+                    truncated = truncated or read_truncated
                     try:
                         content = _decode_utf8_prefix(raw)
                     except UnicodeDecodeError:
@@ -557,8 +567,6 @@ def resolve_agents_instructions(
                                 "bytesRead": take,
                             }
                         )
-                        remaining -= take
-                        truncated = truncated or read_truncated
             if depth == len(relative_parts):
                 break
             try:
@@ -621,6 +629,7 @@ def resolve_targeted_repository_instructions(
     issues: list[dict] = []
     layers: list[dict] = []
     remaining = max_total_bytes
+    files_read = 0
     truncated = False
     try:
         normalized_targets: list[tuple[str, tuple[str, ...]]] = []
@@ -639,7 +648,7 @@ def resolve_targeted_repository_instructions(
             scopes.update(directory_parts[:depth] for depth in range(1, len(directory_parts) + 1))
 
         for scope in sorted(scopes, key = lambda value: (len(value), value)):
-            if len(layers) >= max_files or remaining <= 0:
+            if files_read >= max_files or remaining <= 0:
                 truncated = True
                 break
             try:
@@ -668,6 +677,9 @@ def resolve_targeted_repository_instructions(
                     continue
                 selected_name, raw, read_truncated = selected
                 relative = "/".join((*scope, selected_name))
+                files_read += 1
+                remaining -= len(raw)
+                truncated = truncated or read_truncated
                 try:
                     content = _decode_utf8_prefix(raw)
                 except UnicodeDecodeError:
@@ -682,8 +694,6 @@ def resolve_targeted_repository_instructions(
                         "bytesRead": len(raw),
                     }
                 )
-                remaining -= len(raw)
-                truncated = truncated or read_truncated
             finally:
                 os.close(directory_fd)
     finally:
@@ -739,6 +749,7 @@ def resolve_repository_instructions(
     layers: list[dict] = []
     issues: list[dict] = []
     remaining = max_total_bytes
+    files_read = 0
     directories_seen = 0
     truncated = False
     try:
@@ -760,7 +771,7 @@ def resolve_repository_instructions(
                     truncated = True
                     break
                 relative = "/".join((*scope, "AGENTS.md"))
-                if len(layers) < max_files and remaining > 0:
+                if files_read < max_files and remaining > 0:
                     try:
                         selected = _read_instruction_at(
                             directory_fd, min(max_file_bytes, remaining)
@@ -776,6 +787,9 @@ def resolve_repository_instructions(
                         if selected is not None:
                             selected_name, raw, read_truncated = selected
                             relative = "/".join((*scope, selected_name))
+                            files_read += 1
+                            remaining -= len(raw)
+                            truncated = truncated or read_truncated
                             try:
                                 content = _decode_utf8_prefix(raw)
                             except UnicodeDecodeError:
@@ -790,9 +804,7 @@ def resolve_repository_instructions(
                                         "bytesRead": len(raw),
                                     }
                                 )
-                                remaining -= len(raw)
-                                truncated = truncated or read_truncated
-                elif remaining <= 0 or len(layers) >= max_files:
+                elif remaining <= 0 or files_read >= max_files:
                     truncated = True
 
                 try:

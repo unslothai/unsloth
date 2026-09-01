@@ -56,6 +56,8 @@ def test_native_lane_runs_full_tests_on_all_supported_platforms() -> None:
 def test_matrix_guard_and_research_contracts_trigger_the_workflow() -> None:
     triggers = _workflow()[ON]
     required_paths = {
+        "studio/backend/core/inference/llama_cpp.py",
+        "studio/backend/core/inference/studio_tool_loop.py",
         "studio/backend/tests/test_deep_research_handoff_simulation.py",
         "studio/backend/tests/test_research_progress_events.py",
         "studio/backend/tests/test_research_runs_storage.py",

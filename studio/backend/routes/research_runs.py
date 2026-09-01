@@ -438,7 +438,7 @@ def create_research_run(
             status_code = 400,
             detail = "Deep research requires a user message with non-empty text",
         )
-    config = _sanitize_config(payload, thread)
+    config = _sanitize_config(payload, thread, request)
     expected_project_id = str(thread.get("projectId") or "").strip() or None
     stripped_question = (payload.question or "").strip()
     project_context_snapshot = _project_context_snapshot_for_thread(

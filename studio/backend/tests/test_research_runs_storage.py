@@ -2565,6 +2565,32 @@ def test_create_without_assistant_id_does_not_eagerly_create_message(research_ho
     assert studio_db.list_chat_messages("thread-1") == before
 
 
+def test_create_stamps_the_request_local_date(research_home, monkeypatch):
+    from routes import research_runs as research_routes
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace()),
+        headers={"x-unsloth-timezone": "Pacific/Auckland"},
+    )
+    monkeypatch.setattr(
+        research_routes,
+        "current_date_prompt_line",
+        lambda **kwargs: kwargs["request"].headers["x-unsloth-timezone"],
+    )
+
+    run = research_routes.create_research_run(
+        research_routes.CreateResearchRun(
+            threadId="thread-1",
+            userMessageId="user-1",
+            inferenceRequest={"model": "local-model"},
+        ),
+        request,
+        current_subject="alice",
+    )
+
+    assert run["config"]["currentDate"] == "Pacific/Auckland"
+
+
 @pytest.mark.parametrize(
     ("content", "attachments"),
     [

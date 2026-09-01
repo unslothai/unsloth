@@ -1753,7 +1753,20 @@ export function AgentWorkspacePanel({
                       </pre>
                     </details>
                   ) : null}
-                  <div className="mt-3 rounded-xl border border-border/60 bg-background/45 p-3">
+                  {!workspace.capabilities.gitMutations ? (
+                    <p className="mt-3 rounded-xl border border-border/60 bg-muted/25 px-3 py-2 text-[11px] text-muted-foreground">
+                      Git status and diffs are read-only because this project
+                      folder is nested inside a larger repository. Select the
+                      repository root to prepare commits or create worktrees.
+                    </p>
+                  ) : null}
+                  <div
+                    className={
+                      workspace.capabilities.gitMutations
+                        ? "mt-3 rounded-xl border border-border/60 bg-background/45 p-3"
+                        : "hidden"
+                    }
+                  >
                     <div className="flex flex-wrap items-start gap-2">
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-semibold text-foreground">

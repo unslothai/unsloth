@@ -2291,7 +2291,7 @@ def recover_graph_runs() -> int:
         current = now_ms()
         active_runs = conn.execute(
             "SELECT id, current_node_id, status, cancel_requested FROM agent_graph_runs "
-            "WHERE status IN ('queued', 'running', 'pausing', 'cancelling')"
+            "WHERE status IN ('running', 'pausing', 'cancelling')"
         ).fetchall()
         conn.execute(
             "UPDATE agent_graph_tool_effects SET status = 'uncertain', "

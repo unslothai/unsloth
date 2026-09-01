@@ -257,20 +257,12 @@ def _terminate_bounded_process(process: subprocess.Popen, group_id: Optional[int
 
 
 def git_root(root: Path) -> Path:
-    code, output, _ = run_bounded(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd = root,
-        timeout_seconds = 5,
-        output_limit = 16_384,
-    )
-    if code != 0:
-        raise AgentWorkspaceError("The project folder is not a Git repository.")
-    try:
-        resolved = Path(output.strip()).resolve(strict = True)
-        root.relative_to(resolved)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise AgentWorkspaceError("Git returned an invalid repository root.") from exc
-    return resolved
+    # Import lazily because ``git_service`` shares the bounded process helpers
+    # above. Repository discovery must use the same trusted executable and
+    # neutralized Git environment as every other workspace Git operation.
+    from .git_service import _safe_git_root
+
+    return _safe_git_root(root)
 
 
 _COMPLETE_FINGERPRINT_PREFIX = "c0dec0de"

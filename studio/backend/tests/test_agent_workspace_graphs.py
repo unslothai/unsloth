@@ -2086,7 +2086,7 @@ def test_run_completion_event_is_not_a_separate_append(tmp_path, monkeypatch):
         manager._executor.shutdown(wait = True)
 
 
-def test_queued_runs_recover_as_interrupted_and_can_start_through_api(tmp_path):
+def test_queued_runs_survive_recovery_and_can_start_through_api(tmp_path):
     _folder_project(tmp_path)
     client = _client()
     payload = _spec(
@@ -2100,10 +2100,10 @@ def test_queued_runs_recover_as_interrupted_and_can_start_through_api(tmp_path):
         json = {"input": {"value": 1}, "start": False},
     ).json()
     assert queued["status"] == "queued"
-    assert recover_graph_runs() == 1
-    assert get_graph_run("project", queued["id"])["status"] == "interrupted"
+    assert recover_graph_runs() == 0
+    assert get_graph_run("project", queued["id"])["status"] == "queued"
 
-    resumed = client.post(f"/api/agent-workspace/projects/project/graph-runs/{queued['id']}/resume")
+    resumed = client.post(f"/api/agent-workspace/projects/project/graph-runs/{queued['id']}/start")
     assert resumed.status_code == 200
     assert _wait(queued["id"])["status"] == "completed"
 

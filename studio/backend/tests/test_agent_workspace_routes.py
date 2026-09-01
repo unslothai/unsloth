@@ -111,6 +111,7 @@ def test_unavailable_workspace_has_stable_false_capabilities(tmp_path):
         "plans": False,
         "background": False,
         "git": False,
+        "gitMutations": False,
         "worktrees": False,
         "review": False,
         "memory": False,
@@ -240,6 +241,22 @@ def test_workspace_capabilities_gate_secure_traversal_support(tmp_path, monkeypa
     capabilities = response.json()["capabilities"]
     assert capabilities["instructions"] is False
     assert capabilities["repositoryMap"] is False
+
+
+def test_nested_repository_workspace_keeps_reads_but_disables_mutations(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    workspace = repository / "nested"
+    workspace.mkdir(parents=True)
+    _folder_project(workspace)
+    monkeypatch.setattr(agent_workspace_routes, "git_root", lambda _root: repository)
+
+    response = _client().get("/api/agent-workspace/projects/project/workspace")
+
+    assert response.status_code == 200
+    capabilities = response.json()["capabilities"]
+    assert capabilities["git"] is True
+    assert capabilities["gitMutations"] is False
+    assert capabilities["worktrees"] is False
 
 
 def test_native_git_and_worktree_ownership_fields_are_not_serialized(tmp_path, monkeypatch):

@@ -30,6 +30,7 @@ export interface AgentWorkspaceCapabilities {
   plans: boolean;
   background: boolean;
   git: boolean;
+  gitMutations: boolean;
   worktrees: boolean;
   review: boolean;
   memory?: boolean;

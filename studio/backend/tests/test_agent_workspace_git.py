@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from core.agent_workspace.common import AgentWorkspaceError, workspace_fingerprint
+from core.agent_workspace.common import AgentWorkspaceError, git_root, workspace_fingerprint
 from core.agent_workspace.background import BackgroundTaskManager
 from core.agent_workspace import git_service as git_service_module
 from core.agent_workspace import verification as verification_module
@@ -237,6 +237,38 @@ def test_git_process_ignores_caller_path(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path))
     assert git_service_module._trusted_git_executable() != attacker
     assert Path(git_service_module._base_git_arguments()[0]) != attacker
+
+
+def test_workspace_git_root_ignores_caller_path(monkeypatch, tmp_path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _repository(repository)
+    marker = tmp_path / "attacker.executed"
+    attacker = tmp_path / "git"
+    attacker.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).write_text('yes')\n",
+        encoding="utf-8",
+    )
+    attacker.chmod(0o700)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    assert git_root(repository) == repository.resolve()
+    assert marker.exists() is False
+
+
+def test_git_status_supports_an_unborn_repository(tmp_path):
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.invalid")
+    (tmp_path / "new.txt").write_text("uncommitted\n", encoding="utf-8")
+    _folder_project(tmp_path)
+
+    status = git_status("project")
+
+    assert status["head"] is None
+    assert status["branch"] in {"main", "master"}
+    assert status["detached"] is False
+    assert status["counts"]["untracked"] == 1
 
 
 def test_git_processes_fail_closed_on_windows(monkeypatch):

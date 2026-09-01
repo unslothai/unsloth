@@ -17,6 +17,7 @@ from core.agent_workspace.discovery import (
 from core.agent_workspace.instructions import (
     resolve_agents_instructions,
     resolve_repository_instructions,
+    resolve_targeted_repository_instructions,
 )
 from storage import studio_db
 
@@ -141,6 +142,31 @@ def test_repository_instructions_discover_scoped_nested_layers(tmp_path):
     ]
     assert 'path="src/AGENTS.md" scope="src"' in result["combined"]
     assert "rules apply only within their scope" in result["precedence"]
+
+
+def test_invalid_targeted_instruction_files_consume_file_and_byte_bounds(tmp_path):
+    targets = []
+    for index in range(4):
+        scope = tmp_path / f"scope-{index}"
+        scope.mkdir()
+        (scope / "AGENTS.md").write_bytes(b"\xff" * 8)
+        target = scope / "code.py"
+        target.write_text("pass\n", encoding="utf-8")
+        targets.append(target.relative_to(tmp_path).as_posix())
+
+    result = resolve_targeted_repository_instructions(
+        tmp_path,
+        targets,
+        max_files=2,
+        max_total_bytes=12,
+        max_file_bytes=6,
+    )
+
+    assert result["layers"] == []
+    assert len(result["issues"]) == 2
+    assert {issue["reason"] for issue in result["issues"]} == {"invalid-utf8"}
+    assert result["bytesRead"] == 12
+    assert result["truncated"] is True
 
 
 def test_agents_override_replaces_agents_file_in_the_same_scope(tmp_path):

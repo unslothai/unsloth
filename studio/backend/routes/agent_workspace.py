@@ -568,6 +568,7 @@ def workspace_capabilities(
         "plans": False,
         "background": False,
         "git": False,
+        "gitMutations": False,
         "worktrees": False,
         "review": False,
         "memory": False,
@@ -586,10 +587,12 @@ def workspace_capabilities(
             "capabilities": unavailable_capabilities,
         }
     try:
-        git_root(workspace.root)
+        repository = git_root(workspace.root)
         is_git_repository = True
     except AgentWorkspaceError:
+        repository = None
         is_git_repository = False
+    git_mutations = is_git_repository and repository == workspace.root
     execution = execution_boundary_status()
     instruction_traversal = secure_instruction_traversal_supported()
     repository_traversal = secure_repository_traversal_supported()
@@ -611,7 +614,8 @@ def workspace_capabilities(
             "plans": True,
             "background": execution.available,
             "git": is_git_repository,
-            "worktrees": is_git_repository and workspace.kind == "folder",
+            "gitMutations": git_mutations,
+            "worktrees": git_mutations and workspace.kind == "folder",
             "review": True,
             "memory": True,
             "dreaming": True,

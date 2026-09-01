@@ -623,7 +623,16 @@ def _project_git(project_id: str, *, mutation: bool = False) -> tuple[Path, Path
 
 def git_status(project_id: str) -> dict:
     workspace, repository = _project_git(project_id)
-    head, _ = _git(repository, ["rev-parse", "HEAD"], output_limit = 256)
+    head_code, head_output, head_truncated = _run_git(
+        repository,
+        ["rev-parse", "--verify", "--quiet", "HEAD"],
+        timeout_seconds = 5,
+        output_limit = 256,
+    )
+    unborn_head = head_code == 1 and not head_output and not head_truncated
+    if not unborn_head and (head_code != 0 or head_truncated or "\ufffd" in head_output):
+        detail = head_output.strip()[:1000] or "Git could not resolve HEAD."
+        raise AgentWorkspaceError(detail)
     branch_code, branch_output, _ = _run_git(
         repository,
         ["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -671,7 +680,7 @@ def git_status(project_id: str) -> dict:
     return {
         "repositoryRoot": str(repository),
         "projectPrefix": relative,
-        "head": head.strip(),
+        "head": None if unborn_head else head_output.strip(),
         "branch": branch_output.strip() if branch_code == 0 else None,
         "detached": branch_code != 0,
         "clean": parsed_count == 0,
