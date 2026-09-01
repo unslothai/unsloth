@@ -22,7 +22,6 @@ KV cache is exhausted.
 from __future__ import annotations
 
 import asyncio
-import logging
 import math
 import sys
 import threading
@@ -35,7 +34,9 @@ from core.inference.llama_admission import LlamaAdmissionLease, _bool_env
 
 _SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
-_log = logging.getLogger(__name__)
+from loggers import get_logger
+
+_log = get_logger(__name__)
 
 
 # Off falls back to step 1's wire clamp alone, which is the behaviour that predates any
@@ -65,6 +66,14 @@ PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
 # that may not exist is worse than the overrun it guards.
 DEFAULT_RECLAIM_BARRIER_TIMEOUT_S = 10.0
 DEFAULT_RECLAIM_BARRIER_POLL_S = 0.05
+
+# A pause must never be able to outlive the thing it was waiting for. The stream calls
+# await_resume() with no argument, and an unbounded wait there turned three paused chats
+# into a 33-minute hang with nothing decoding: strictly worse for a user than the crash
+# this replaced, because a crash at least ends. On expiry the turn finishes with what it
+# has, which is the behaviour that predates preemption, and the wire clamp still bounds
+# what any request may occupy.
+DEFAULT_RESUME_WAIT_TIMEOUT_S = 90.0
 
 
 class LlamaStreamPreempted(Exception):
@@ -766,6 +775,9 @@ class ControllerPreemptionPolicy:
                 pass
 
     def await_resume(self, timeout: Optional[float] = None) -> bool:
+        # None means "caller stated no preference", NOT "wait forever".
+        if timeout is None:
+            timeout = DEFAULT_RESUME_WAIT_TIMEOUT_S
         if self._resumes >= DEFAULT_MAX_PREEMPT_RESUMES:
             # Churning on one chat helps nobody; let it finish and take its room back.
             _log.warning(
@@ -790,7 +802,7 @@ class ControllerPreemptionPolicy:
             )
             # The future's own timeout is a backstop for a loop that never runs the
             # coroutine at all; resume_async is already bounded by timeout_s.
-            got = bool(future.result(timeout = None if timeout is None else timeout + 5.0))
+            got = bool(future.result(timeout = timeout + 5.0))
             _log.info(
                 "llama preemption %s: gen_id=%s want=%s",
                 "resumed" if got else "gave-up", self._gen_id, want,

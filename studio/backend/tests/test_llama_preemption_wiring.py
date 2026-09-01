@@ -462,3 +462,78 @@ class TestTheDraftReserveActuallyApplied:
         backend.spec_draft_n_max = None
         backend._spec_draft_n_max = None
         assert inference._openai_llama_speculative_draft_tokens(backend) == 0
+
+
+class TestAPauseCannotOutliveTheRoomItWaitsFor:
+    """A 33-minute hang with nothing decoding, observed 2026-09-01.
+
+    Three chats were interrupted, entered the pause handshake, and waited forever: the
+    stream calls `await_resume()` with NO argument, the adapter mapped None to
+    `future.result(timeout=None)`, and `resume_async` mapped it to no deadline. Both
+    layers unbounded. That is strictly worse for a user than the crash it replaced,
+    because a crash at least ends.
+    """
+
+    def test_no_argument_does_not_mean_forever(self):
+        import inspect
+
+        from core.inference.llama_preemption import DEFAULT_RESUME_WAIT_TIMEOUT_S
+
+        source = inspect.getsource(ControllerPreemptionPolicy.await_resume)
+        assert "if timeout is None:" in source, "an unstated timeout must acquire one"
+        assert "DEFAULT_RESUME_WAIT_TIMEOUT_S" in source
+        assert DEFAULT_RESUME_WAIT_TIMEOUT_S > 0
+
+    def test_the_future_is_never_awaited_unbounded(self):
+        import inspect
+
+        source = inspect.getsource(ControllerPreemptionPolicy.await_resume)
+        assert "timeout = None if timeout is None" not in source, (
+            "the future would block forever when the caller stated no timeout"
+        )
+
+    def test_it_always_returns_promptly_rather_than_blocking(self):
+        """The value depends on the path taken; the point is that it RETURNS.
+
+        A participant holding no lease answers True at once (there is nothing to take
+        back), one with no loop answers False. Neither may block, which is the property
+        the hang violated.
+        """
+        import time
+
+        for gen_id in ("known", "missing"):
+            controller = PreemptionController(f"prompt-{gen_id}")
+            controller.configure(budget = 16384, kv_unified = True)
+            if gen_id == "known":
+                controller.register(gen_id, tokens = 100, signal = PreemptSignal())
+            policy = ControllerPreemptionPolicy(
+                controller, gen_id, PreemptSignal(), loop = None
+            )
+            started = time.monotonic()
+            result = policy.await_resume()
+            assert result in (True, False)
+            assert time.monotonic() - started < 5, f"{gen_id}: await_resume blocked"
+
+    def test_giving_up_is_reported_as_false_not_raised(self):
+        """False means "finish the turn with what you have", which the stream already
+        knows how to do. An exception here would surface as a failed generation."""
+        controller = PreemptionController("gave-up")
+        controller.configure(budget = 16384, kv_unified = True)
+        policy = ControllerPreemptionPolicy(
+            controller, "missing", PreemptSignal(), loop = None
+        )
+        assert policy.await_resume(timeout = 0.01) is False
+
+    def test_the_events_reach_the_logger_studio_actually_configures(self):
+        """`paused` never appeared in the live log, which read as "the handshake never
+        ran". The handshake may well have run: the module was writing to a stdlib
+        logger Studio does not configure, so the evidence was simply discarded."""
+        from pathlib import Path
+
+        import core.inference.llama_preemption as module
+
+        source = Path(module.__file__).read_text()
+        assert "from loggers import get_logger" in source
+        assert "logging.getLogger" not in source, (
+            "a stdlib logger here is dropped, and silence gets read as absence"
+        )
