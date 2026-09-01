@@ -1201,6 +1201,30 @@ async def start_training(
                 ),
                 error = "Training resources busy",
             )
+
+        # The before_spawn hook tears the export subprocess down to free VRAM, and it
+        # calls the private _shutdown_subprocess directly, so it bypasses the export
+        # orchestrator's own workspace guard. Refuse rather than kill: an export can
+        # be hours of work, and the owner's own export is still torn down as before.
+        from core.export import get_export_backend
+
+        export_backend = get_export_backend()
+        export_owns = getattr(export_backend, "owns_workspace", None)
+        export_active = getattr(export_backend, "is_export_active", None)
+        if (
+            callable(export_owns)
+            and callable(export_active)
+            and await asyncio.to_thread(export_active)
+            and not export_owns(current_subject)
+        ):
+            return TrainingJobResponse(
+                job_id = "",
+                status = "error",
+                message = (
+                    "An export is running in another account and training would stop it. "
+                    "Wait for that export to finish before starting a run."
+                ),
+            )
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
         if request.start_request_id:
             # A retry of an id that already resolved replays its stored outcome even when the

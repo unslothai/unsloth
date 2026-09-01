@@ -584,6 +584,13 @@ async def stream_export_logs(
             while True:
                 if await request.is_disconnected():
                     return
+                # Re-checked every pass, not just at open: the log buffer is shared,
+                # so if another account starts an export during this stream's idle
+                # window the buffer is cleared and refilled with their output and
+                # this already-authorized loop would go on yielding it.
+                if callable(owns_workspace) and not owns_workspace(current_subject):
+                    yield _format_sse("{}", event = "complete", event_id = cursor)
+                    return
 
                 entries, new_cursor = backend.get_logs_since(cursor)
                 if entries:
