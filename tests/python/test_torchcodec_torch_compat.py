@@ -383,9 +383,9 @@ def test_security_audit_covers_every_installable_torchcodec_line():
     # Whatever the selector installs on a reachable torch minor has to be in that set.
     for torch_minor in ("2.10", "2.9", "2.8"):
         spec = ips._select_torchcodec_spec(f"{torch_minor}.0")
-        assert any(spec in dep for extra in audited for dep in extras[extra]), (
-            f"torch {torch_minor} installs {spec}, which no audited extra declares"
-        )
+        assert any(
+            spec in dep for extra in audited for dep in extras[extra]
+        ), f"torch {torch_minor} installs {spec}, which no audited extra declares"
 
 
 def test_extras_no_deps_has_no_unconditional_torchcodec_pin():
@@ -1043,9 +1043,10 @@ def test_notebook_validator_keeps_the_stricter_of_two_equal_floors():
 
     for spelling in ("torchcodec>=0.8.0,>0.8.0", "torchcodec>0.8.0,>=0.8.0"):
         assert nv._spec_window(nv.parse_spec(spelling).pins)[5] is True, spelling
-        assert nv._effective_version(
-            f'!pip install "{spelling}"', "torchcodec", "0.8.0"
-        ) == (None, True), spelling
+        assert nv._effective_version(f'!pip install "{spelling}"', "torchcodec", "0.8.0") == (
+            None,
+            True,
+        ), spelling
 
     # Two inclusive floors still name the endpoint.
     assert nv._effective_version(
@@ -1060,16 +1061,24 @@ def test_notebook_validator_reads_a_named_direct_reference():
 
     tag = "torchcodec @ https://github.com/meta-pytorch/torchcodec/archive/refs/tags/v0.13.0.zip"
     assert nv._archive_requirement(tag) == ("torchcodec", None)
-    assert nv.rule_inst_004_torchcodec_torch(
-        f'!pip install "torch==2.12.0" "{tag}"', COLAB_TORCH211, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            f'!pip install "torch==2.12.0" "{tag}"', COLAB_TORCH211, "nb.ipynb", 0
+        )
+        == []
+    )
 
     # A named reference whose archive does name a version still yields it, either way.
     wheel = "torchcodec @ https://x/torchcodec-0.10.0-cp312-cp312-manylinux_2_28_x86_64.whl"
     assert nv._archive_requirement(wheel) == ("torchcodec", "0.10.0")
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        f'!pip install "torch==2.11.0" "{wheel}"', COLAB_TORCH211, "nb.ipynb", 0
-    )) == 1
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                f'!pip install "torch==2.11.0" "{wheel}"', COLAB_TORCH211, "nb.ipynb", 0
+            )
+        )
+        == 1
+    )
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
