@@ -1738,9 +1738,14 @@ def test_notebook_validator_strips_execution_prefixes():
         ), cell
 
     # The replay reads them too, so a prefixed install still moves the version.
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        '!env FOO=1 pip install "torch==2.12.0"', COLAB_TORCH211, "nb.ipynb", 0
-    )) == 1
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                '!env FOO=1 pip install "torch==2.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+            )
+        )
+        == 1
+    )
 
 
 def test_notebook_validator_quotes_inside_a_substitution():
@@ -1752,9 +1757,12 @@ def test_notebook_validator_quotes_inside_a_substitution():
 
     # A backtick body survives the assignment-prefix strip, since the bodies are read off the
     # raw pieces.
-    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(
-        "!X=`pip install git+https://example.com/pkg.git`", "nb.ipynb", 0
-    ))
+    assert any(
+        f.rule == "R-INST-001"
+        for f in nv.rule_inst_001_git_plus(
+            "!X=`pip install git+https://example.com/pkg.git`", "nb.ipynb", 0
+        )
+    )
 
 
 def test_notebook_validator_tells_a_grouping_close_from_a_substitution_close():
