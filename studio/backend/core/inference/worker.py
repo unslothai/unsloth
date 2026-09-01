@@ -528,6 +528,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "format_type": _tpl_info.get("format_type", "generic"),
                         "template_name": _tpl_info.get("template_name"),
                         "special_tokens": _tpl_info.get("special_tokens", {}) or {},
+                        # The body an IMAGE turn renders through. This whitelist is the only
+                        # way the field reaches the parent, and the route authorizes
+                        # image-turn tool healing from it, so omitting it silently profiles
+                        # the tokenizer template instead (#10092).
+                        "processor_template": _tpl_info.get("processor_template"),
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)

@@ -22759,6 +22759,7 @@ async def produce_openai_chat_completions(
             _sf_model_info,
             active_model_name = backend.active_model_name,
             template = _sf_image_tpl,
+            template_is_processor = _sf_image_tpl is not None,
         )
         if _sf_client_tools
         else None

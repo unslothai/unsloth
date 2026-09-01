@@ -436,3 +436,47 @@ def test_a_processor_body_that_cannot_advertise_empties_the_healing_catalog():
         {"chat_template_info": {"template": _CHATML_WITH_TOOLS}},
     )
     assert text_catalog
+
+
+def test_the_worker_forwards_the_processor_template_to_the_parent():
+    """The orchestrator keeps no live processor, so this whitelist is the ONLY way the
+    body reaches the route. Omitting the key profiles image turns from the tokenizer
+    template and re-opens exactly what the mirror exists to close (#10092)."""
+    import ast
+    import pathlib
+
+    source = pathlib.Path("core/inference/worker.py").read_text()
+    tree = ast.parse(source)
+    keys: set = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        literals = {k.value for k in node.keys if isinstance(k, ast.Constant)}
+        if "has_template" in literals and "format_type" in literals:
+            keys |= literals
+    assert "processor_template" in keys, sorted(keys)
+
+
+def test_a_replay_only_processor_body_is_not_authorized_for_healing():
+    """A mirrored processor body arrives with no live target, so the permissive
+    tokenizer rule would authorize a body that replays tool turns but never reads
+    ``tools`` and therefore never advertised them."""
+    from core.inference.chat_template_helpers import renderable_tool_catalog_for_targets
+
+    catalog = renderable_tool_catalog_for_targets(
+        [_LOOKUP],
+        (None,),
+        {"chat_template_info": {"template": _CHATML_WITH_TOOLS}},
+        template = _TOOL_ROUNDTRIP_ONLY,
+        template_is_processor = True,
+    )
+    assert catalog == []
+
+    # A tokenizer body keeps the round-trip clause: the schema came from the caller's own
+    # system prompt there, and a native template still sits behind it.
+    assert renderable_tool_catalog_for_targets(
+        [_LOOKUP],
+        (None,),
+        {"chat_template_info": {"template": _CHATML_WITH_TOOLS}},
+        template = _TOOL_ROUNDTRIP_ONLY,
+    )

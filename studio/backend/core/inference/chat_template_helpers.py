@@ -1876,20 +1876,25 @@ def _accepts_tools_kwarg(target) -> bool:
     return "tools" in parameters
 
 
-def _renders_tool_schema(target, template, tools) -> bool:
+def _renders_tool_schema(target, template, tools, template_is_processor: bool = False) -> bool:
     """True unless the template *target* will select provably cannot advertise tools.
 
     A processor is held to the stricter test. Its render goes straight through
     ``apply_chat_template_for_generation`` with no native-template fallback behind it (the
     native template of a text model cannot place the image), so what the processor's own
     body does with ``tools`` is the whole answer. A tokenizer keeps the round-trip clause,
-    because ``renderable_tool_catalog`` still has the native template to fall back on."""
+    because ``renderable_tool_catalog`` still has the native template to fall back on.
+
+    ``template_is_processor`` says the *template* is a processor body even though *target*
+    is not a processor object. Under the orchestrator the route has no live processor to
+    pass, only the body mirrored through worker IPC, so without this the mirrored body
+    would be judged by the permissive tokenizer rule (#10092)."""
     if tools and not _accepts_tools_kwarg(target):
         return False
     value = template or getattr(target, "chat_template", None)
     if not value:
         value = getattr(getattr(target, "tokenizer", None), "chat_template", None)
-    is_processor = _is_processor(target)
+    is_processor = template_is_processor or _is_processor(target)
     return _template_reads_tools(
         value,
         tools,
@@ -1905,6 +1910,7 @@ def renderable_tool_catalog_for_targets(
     cache = None,
     active_model_name = None,
     template = None,
+    template_is_processor: bool = False,
 ):
     """The catalog safe under every object a backend could render this turn with.
 
@@ -1929,11 +1935,13 @@ def renderable_tool_catalog_for_targets(
         # sanitized during the render, so a tool dropped from the prompt stayed authorized
         # for healing. One None target profiles as unprofilable and takes the curated
         # sweep, the safe direction (#7066).
-        return renderable_tool_catalog(tools, None, model_info, cache, active_model_name, template)
+        return renderable_tool_catalog(
+            tools, None, model_info, cache, active_model_name, template, template_is_processor
+        )
     catalog = tools
     for target in live:
         catalog = renderable_tool_catalog(
-            catalog, target, model_info, cache, active_model_name, template
+            catalog, target, model_info, cache, active_model_name, template, template_is_processor
         )
         if not catalog:
             return catalog
@@ -1947,6 +1955,7 @@ def renderable_tool_catalog(
     cache = None,
     active_model_name = None,
     template = None,
+    template_is_processor: bool = False,
 ):
     """The catalog that survives EVERY template this request could render with.
 
@@ -1980,7 +1989,9 @@ def renderable_tool_catalog(
         )
         return []
 
-    active_renders_tools = _renders_tool_schema(tokenizer, template, tools)
+    active_renders_tools = _renders_tool_schema(
+        tokenizer, template, tools, template_is_processor = template_is_processor
+    )
     # A processor stays on "default" and the VLM path renders straight through
     # apply_chat_template_for_generation, with no native-template fallback behind it
     # (mlx_inference.py). When that default body never reads ``tools`` the schema cannot
