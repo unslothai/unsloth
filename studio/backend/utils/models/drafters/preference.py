@@ -3,9 +3,17 @@
 
 """Ranking keys that decide which sidecar a load prefers.
 
-The download, the snapshot reuse, the offline cache lookup and the local scan
-all order candidates with these, so a repo resolves to the same file whichever
-path reaches it first.
+The download, the snapshot reuse and the offline cache lookup all order
+candidates with these, so a repo resolves to the same file whichever of those
+paths reaches it first.
+
+The local-folder scan does NOT: detect_mtp_file ranks with its own
+``_smallest_first``, which is size-first on purpose, so a folder holding several
+copies costs the least disk. These keys are speed-first instead, because the hub
+path is choosing what to spend a download on. The two therefore agree on the
+family and can differ on the copy, which is a deliberate difference and not an
+oversight -- an earlier version of this docstring claimed the local scan shared
+them, and it never has.
 """
 
 from pathlib import Path

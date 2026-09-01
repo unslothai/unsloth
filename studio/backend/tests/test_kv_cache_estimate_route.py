@@ -352,9 +352,7 @@ class TestDrafterDiscoveryMatchesTheLoader:
         beside the weights is a deliberate statement that the companion is the one
         to use, and that is how Gemma 4 ships."""
         snap = self._snapshot(tmp_path)
-        main = _write_gguf(
-            snap / "model-Q4_K_M.gguf", {**_MLA_NO_HEAD, "nextn_predict_layers": 1}
-        )
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", {**_MLA_NO_HEAD, "nextn_predict_layers": 1})
         companion = _write_gguf(snap / "mtp-model.gguf", _MLA_NO_HEAD)
 
         got, _ = models_routes._resolve_mtp_drafter(str(main))

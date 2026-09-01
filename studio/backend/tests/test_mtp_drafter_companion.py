@@ -1491,6 +1491,39 @@ def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monke
     assert backend._cached_repo_mtp_drafter("some/repo") is None
 
 
+def test_a_shared_head_pairs_with_its_target_in_the_local_scan(tmp_path):
+    """-shared marks the head's FORM, not its family.
+
+    mtp-<model>-shared-<quant>.gguf left a pairing stem of <model>-shared, which
+    never prefixes <model>-<quant>, so detect_mtp_file could not pair the borrowed
+    head that the hub picker now prefers -- and a local checkout of the very files
+    Studio had just downloaded resolved differently from the download.
+    """
+    from utils.models.drafters.common import _drafter_matches_weight, _drafter_pairing_stem
+    from utils.models.model_config import detect_mtp_file
+
+    weight = "qwen3.8-flash-next-ud-iq1_s-00001-of-00003.gguf"
+    for tier in ("Q8_0", "BF16", "Q4_K_M"):
+        name = f"mtp-Qwen3.8-Flash-Next-shared-{tier}.gguf"
+        assert _drafter_pairing_stem(name, kind = "mtp") == "qwen3.8-flash-next"
+        assert _drafter_matches_weight(name, weight, kind = "mtp"), name
+    # A different family is still rejected, which is the whole point of pairing.
+    assert not _drafter_matches_weight("mtp-Some-Other-shared-Q8_0.gguf", weight, kind = "mtp")
+    # Only MTP publishes a borrowed form, so no other kind changes meaning.
+    assert _drafter_pairing_stem("dspark-Model-shared-Q8_0.gguf", kind = "dspark") == "model-shared"
+
+    root = tmp_path / "local"
+    (root / "MTP").mkdir(parents = True)
+    for i in (1, 2, 3):
+        (root / f"Qwen3.8-Flash-Next-UD-IQ1_S-0000{i}-of-00003.gguf").write_bytes(b"x" * 64)
+    shared = root / "MTP" / "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+    shared.write_bytes(b"x" * 64)
+    found = detect_mtp_file(
+        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root = str(root)
+    )
+    assert found is not None and Path(found).name == shared.name
+
+
 def test_cached_dspark_lookup_prefers_q8_and_excludes_dflash(tmp_path, monkeypatch):
     import core.inference.llama_cpp as llama_cpp_module
 

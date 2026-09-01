@@ -14036,7 +14036,7 @@ class LlamaCppBackend:
                 subdirs.extend(snap / f for f in sorted(snap_subdirs, key = mtp_preference_key))
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.
-            for cand in (roots + subdirs if allow_nested else roots):
+            for cand in roots + subdirs if allow_nested else roots:
                 # Half a split set is not a drafter, and offline there is no fetch
                 # to complete it -- the same whole-set rule _download_companion_gguf
                 # applies to its own cache hit.

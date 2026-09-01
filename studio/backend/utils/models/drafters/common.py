@@ -39,12 +39,20 @@ def _drafter_pairing_stem(name: str, *, kind: str) -> str:
         stem = stem[: -(len(kind) + 1)]
     from utils.models.model_config import _GGUF_KNOWN_QUANT_RE
 
-    return re.sub(
+    stem = re.sub(
         rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]+(?:\.[0-9]+)?bpw)?$",
         "",
         stem,
         flags = re.IGNORECASE,
     )
+    # An MTP head that borrows the target's token_embd/output is published as
+    # mtp-<model>-shared-<quant>.gguf, so -shared is a marker of the head's FORM,
+    # not part of the family. Left in, the stem is <model>-shared and never
+    # prefixes <model>-<quant>, so the local scan could not pair the very head the
+    # hub picker prefers. MTP only: no other kind publishes a borrowed form.
+    if kind == "mtp":
+        stem = re.sub(r"-shared$", "", stem)
+    return stem
 
 
 def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, kind: str) -> bool:
