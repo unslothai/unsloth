@@ -4088,6 +4088,26 @@ get_torch_index_url() {
         # already trusts it over the runtime for the same reason.
         _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
         [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe=$(_kfd_gfx_targets 2>/dev/null || true)
+        if [ -z "$_amd_gfx_gate_probe" ] && [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]; then
+            # Neither override-independent source could name the silicon and a SPOOF is in
+            # force -- an older ROCr that cannot re-enumerate once the variable is
+            # stripped, no amd-smi, and no KFD topology (a container without /sys). The
+            # only value left is the spoofed name itself, and letting it stand would mean
+            # the spoof answering the presence test. It is not evidence of a healthy arch,
+            # it is the absence of evidence. Take the cpu index and say why.
+            #
+            # HSA_OVERRIDE_GFX_VERSION only, NOT UNSLOTH_ROCM_GFX_ARCH. The first renames
+            # the agent, so it can hide a gfx1033 behind a healthy name; the second is a
+            # DECLARED arch for a host whose probes cannot answer, which is exactly the
+            # runtime-less #7301 population the per-arch reroute serves. Treating it as a
+            # spoof would strand every legitimate UNSLOTH_ROCM_GFX_ARCH=gfx1151 install on
+            # the cpu index. A stale declared arch on a real Deck is caught instead by the
+            # probe running in "physical" mode, which ignores it, and by the reroute veto.
+            echo "[WARN] HSA_OVERRIDE_GFX_VERSION is set and this host cannot confirm its real arch (no unspoofed rocminfo, amd-smi or KFD topology)." >&2
+            echo "[WARN] Installing CPU-only PyTorch rather than trusting the spoofed name: gfx1033 (Van Gogh) computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md)." >&2
+            echo "[WARN] Unset HSA_OVERRIDE_GFX_VERSION so the arch can be read, or pin UNSLOTH_TORCH_INDEX_URL to choose deliberately." >&2
+            echo "$_base/cpu"; return
+        fi
         [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe="$_amd_gfx_probe"
         _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_gate_probe" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
@@ -4868,6 +4888,19 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             # setup.sh re-probes instead: a host that really does have ROCm still finds
             # gfx1033 through its own rocminfo call, and the documented
             # UNSLOTH_TORCH_INDEX_URL pin returns long before this block.
+            # Keyed on the PHYSICAL inventory, not only on the inferred value. A stale
+            # UNSLOTH_ROCM_GFX_ARCH=gfx1030 makes _infer_linux_amd_gfx_arch return
+            # gfx1030 on a real Deck, so an arm testing the inferred value alone let the
+            # override walk the cpu index the gate had just chosen back to gfx103X-all.
+            # The gate's verdict cannot be handed down directly -- get_torch_index_url
+            # runs in a command substitution, so nothing it sets outlives it -- hence the
+            # re-probe here, in "physical" mode for the same reason the gate uses it.
+            _amd_reroute_physical=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+            [ -n "$_amd_reroute_physical" ] || _amd_reroute_physical=$(_kfd_gfx_targets 2>/dev/null || true)
+            case " $(printf '%s\n' "$_amd_reroute_physical" | sed 's/:.*$//' \
+                     | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
+                *" gfx1033 "*) _linux_inferred_gfx="gfx1033" ;;
+            esac
             case "${_linux_inferred_gfx%%:*}" in
                 gfx1033)
                     echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- keeping CPU-only PyTorch (studio/ROCM_RDNA2_APU.md)." >&2

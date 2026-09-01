@@ -289,6 +289,18 @@ EOF
         printf 'INDEX=<installer exited %s>\n' "$?"
 }
 
+# run_installer unsets UNSLOTH_ROCM_GFX_ARCH inside the generated script, so exporting it
+# around a call does nothing. This variant re-applies an assignment AFTER that unset, for
+# the cases that are specifically about a stale declared arch.
+run_installer_env() {   # $1 = "VAR=value", $2 = _ARCH
+    run_installer "${2:-x86_64}" >/dev/null 2>&1 || true
+    sed -i "s|^_ARCH=|export $1\n_ARCH=|" "$_ROOT/run.sh"
+    PATH="$_MOCK:$_TOOLS" "$_RUN_SHELL" "$_ROOT/run.sh" 2>"$_ROOT/stderr.txt" || \
+        printf 'INDEX=<installer exited %s>\n' "$?"
+}
+run_index_env() { run_installer_env "$1" "${2:-x86_64}" | sed -n 's/^INDEX=//p'; }
+run_gfx_env()   { run_installer_env "$1" "${2:-x86_64}" | sed -n 's/^GFX=//p'; }
+
 run_index() { run_installer "${1:-x86_64}" | sed -n 's/^INDEX=//p'; }
 run_gfx()   { run_installer "${1:-x86_64}" | sed -n 's/^GFX=//p'; }
 run_radeon() { run_installer "${1:-x86_64}" | sed -n 's/^RADEON=//p'; }
@@ -481,6 +493,38 @@ assert_eq "gfx1030 + gfx1032 still take the shared gfx103X-all index" \
 # cannot regrow its own path back to ROCm.
 fedora_no_version_host gfx1033
 assert_eq "a lone gfx1033 does not reroute" "$_BASE/cpu" "$(run_index)"
+
+# A stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Deck. _infer_linux_amd_gfx_arch returns
+# the override, so the arm that tested only the inferred value let it walk the cpu index
+# the gate had just chosen back to gfx103X-all. A READABLE ROCm version is what makes this
+# distinct from the no-version cases above: it takes the plain inferred-gfx arm, which
+# maps the override through _amd_arch_index_family_for_gfx and never consults the probe.
+readable_version_host() {   # $@ = gfx arches
+    reset_host
+    mock_rocminfo "$@"
+    mock_amdsmi "N/A" "$@"
+    mock_hipconfig_offpath "7.2.0"
+    mock_rpm
+    mock_kfd
+    mock_pci_amd_display
+}
+readable_version_host gfx1033
+assert_eq "a stale gfx1030 override on a real Deck does not reroute" \
+    "$_BASE/cpu" "$(run_index_env UNSLOTH_ROCM_GFX_ARCH=gfx1030)"
+readable_version_host gfx1033
+assert_eq "and the rejected override is not forwarded to setup.sh" \
+    "" "$(run_gfx_env UNSLOTH_ROCM_GFX_ARCH=gfx1030)"
+# A declared arch on hardware that really is that arch still routes normally, so this
+# stays a gfx1033 veto rather than a blanket distrust of the override.
+readable_version_host gfx1030
+# A readable ROCm version means get_torch_index_url returns the version-keyed index and
+# never reaches the */cpu reroute at all, so the override is simply not consulted here.
+assert_eq "a gfx1030 override on real gfx1030 keeps the version index" \
+    "$_BASE/rocm7.2" "$(run_index_env UNSLOTH_ROCM_GFX_ARCH=gfx1030)"
+# The no-version path stays covered too, since it reaches the family arm instead.
+fedora_no_version_host gfx1033
+assert_eq "a stale override on a no-version Deck does not reroute either" \
+    "$_BASE/cpu" "$(run_index_env UNSLOTH_ROCM_GFX_ARCH=gfx1030)"
 
 mock_kfd_two() {   # $1 $2 = gfx_target_version per KFD node
     : > "$_F_KFD"

@@ -416,6 +416,65 @@ assert_eq "KFD names gfx1033 behind the spoof -> cpu" \
 assert_eq "KFD names gfx1030 -> rocm" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_kfd_host gfx1030)"
 
+echo "=== An override nothing can verify is not evidence of a healthy arch ==="
+# Older ROCr that answers only while the override is set, no amd-smi, and no KFD: the
+# fallback chain used to end at the spoofed probe, so gfx1030 stood as proof the host was
+# safe. Absence of evidence is not evidence of absence -- take the cpu index and say so.
+_index_unverifiable_override() {  # $1 = the env assignment to apply
+    _iuo_dir=$(_make_kfd_only_host)
+    _iuo_stub=$(mktemp -d)
+    printf '_kfd_gfx_targets() { :; }\n' > "$_iuo_stub/kfd.sh"
+    PATH="$_iuo_dir:$_TOOLS_DIR" "$_SH" -c "
+        unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL
+        unset UNSLOTH_TORCH_INDEX_FAMILY ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
+        unset HSA_OVERRIDE_GFX_VERSION
+        export $1
+        _ARCH=x86_64
+        . '$_E2E_FUNCS'
+        . '$_iuo_stub/kfd.sh'
+        get_torch_index_url
+    " 2>/dev/null | tail -1
+    rm -rf "$_iuo_dir" "$_iuo_stub"
+}
+assert_eq "HSA override with no verifiable source -> cpu" \
+    "https://download.pytorch.org/whl/cpu" \
+    "$(_index_unverifiable_override HSA_OVERRIDE_GFX_VERSION=10.3.0)"
+# UNSLOTH_ROCM_GFX_ARCH is a DECLARED arch, not a spoof: it renames nothing, and a
+# tool-blind host is exactly the runtime-less #7301 population the per-arch reroute
+# serves. Treating it as unverifiable would strand every legitimate gfx1151 install on
+# the cpu index, so it must still defer to the reroute.
+# Both reach the cpu index, so the INDEX alone cannot tell the spoof refusal apart from
+# the ordinary no-version deferral. Assert on which branch spoke.
+_stderr_unverifiable_override() {  # $1 = env assignment -> stderr only
+    _suo_dir=$(_make_kfd_only_host)
+    _suo_stub=$(mktemp -d)
+    printf '_kfd_gfx_targets() { :; }\n' > "$_suo_stub/kfd.sh"
+    PATH="$_suo_dir:$_TOOLS_DIR" "$_SH" -c "
+        unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL
+        unset UNSLOTH_TORCH_INDEX_FAMILY ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
+        unset HSA_OVERRIDE_GFX_VERSION
+        export $1
+        _ARCH=x86_64
+        . '$_E2E_FUNCS'
+        . '$_suo_stub/kfd.sh'
+        get_torch_index_url >/dev/null
+    " 2>&1
+    rm -rf "$_suo_dir" "$_suo_stub"
+}
+assert_eq "the spoof refusal names HSA_OVERRIDE_GFX_VERSION" "yes" \
+    "$(_stderr_unverifiable_override HSA_OVERRIDE_GFX_VERSION=10.3.0 \
+       | grep -qF 'HSA_OVERRIDE_GFX_VERSION is set and this host cannot confirm' && echo yes || echo no)"
+assert_eq "a declared arch on a tool-blind host is not a spoof" "yes" \
+    "$(_stderr_unverifiable_override UNSLOTH_ROCM_GFX_ARCH=gfx1151 \
+       | grep -qF 'cannot confirm its real arch' && echo no || echo yes)"
+assert_eq "and it still reaches the cpu index for the reroute to pick up" \
+    "https://download.pytorch.org/whl/cpu" \
+    "$(_index_unverifiable_override UNSLOTH_ROCM_GFX_ARCH=gfx1151)"
+# With NO override in force there is nothing being spoofed, so an empty physical read is
+# just a host the probes cannot read, and the pre-existing routing is left alone.
+assert_eq "no override and no probe is not treated as a spoof" \
+    "rocm" "$(_route '')"
+
 echo "=== A declared arch must not answer for the silicon ==="
 # UNSLOTH_ROCM_GFX_ARCH is an arch HINT for routing, not a wheel pin, and it is short-
 # circuited at the top of _probe_amd_gfx_arch. A stale gfx1030 on a real Van Gogh -- the
