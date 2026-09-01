@@ -4227,9 +4227,8 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
         migration.patch &&
         useChatRuntimeStore.getState().activePresetSource !== "custom"
       ) {
-        // "modified" is an ordinary edit and belongs here. A custom preset does
-        // not: it can hold a legacy value on purpose, and selecting it bumps no
-        // counter for a field it leaves alone, so this would overwrite it.
+        // "modified" is an ordinary edit and belongs here; a custom preset can
+        // hold a legacy value on purpose and bumps no counter for it.
         adoptMigratedFieldsAfterLocalEdit(
           migration.patch,
           checkpoint,
@@ -4614,9 +4613,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           globalBelongsToActiveCheckpoint,
           globalBelongsToActiveCheckpoint && !remembersPerModel,
         );
-        // Set when the confirming read is declined because the model moved.
-        // Neither switch path can schedule the new model's own retry: both are
-        // gated on settingsHydrated, still false here.
+        // Neither switch path can schedule the new model's retry from here:
+        // both gate on settingsHydrated, still false.
         let checkpointMovedDuringConfirm = false;
         if (fromServer && migration.patch) {
           try {
@@ -4730,8 +4728,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           if (fromServer) backfillMirroredSettings(hydratedSettings);
           // After the backfill, so a startup edit wins over the stored value.
           flushPreHydrationSettings();
-          // Now that hydration is marked complete, the model this switched to
-          // can have its own legacy row repaired.
+          // Hydrated now, so the model switched to can be repaired.
           if (checkpointMovedDuringConfirm) {
             scheduleLegacyQwenDefaultsRetry(null);
           }
