@@ -4077,7 +4077,17 @@ get_torch_index_url() {
         # hit and rocminfo names each GPU agent twice -- its own "Name: gfx1033" and its
         # "ISA Info" line -- so a single-GPU Deck already reads "gfx1033\ngfx1033". The
         # surrounding spaces keep gfx10330 out.
+        # KFD before the plain probe, and the plain probe last of all. When the physical
+        # read comes back empty -- no amd-smi, and an older ROCr that cannot re-enumerate
+        # once the override is stripped -- the only thing left is _amd_gfx_probe, which
+        # was collected WITH HSA_OVERRIDE_GFX_VERSION and UNSLOTH_ROCM_GFX_ARCH in force
+        # and therefore reports the spoof. Accepting it would let an environment variable
+        # answer a presence test, which is the one property this gate rests on. amdkfd
+        # writes gfx_target_version from the kernel's IP-version table and ROCr never
+        # touches it, so it answers exactly on those hosts; _hsa_spoofed_physical_gfx
+        # already trusts it over the runtime for the same reason.
         _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+        [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe=$(_kfd_gfx_targets 2>/dev/null || true)
         [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe="$_amd_gfx_probe"
         _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_gate_probe" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"

@@ -2488,8 +2488,17 @@ EOF
     else
         step "gpu" "AMD ROCm"
     fi
+    # Only claim a path that is really there, matching install.sh. /opt/rocm is a
+    # FALLBACK, not a detection, so a runtime-only ROCm host reaches here with nothing at
+    # it -- and this script runs after install.sh on every install and alone on every
+    # `unsloth studio update`, so leaving it unconditional here meant the run still ended
+    # by advertising the directory install.sh had just stopped claiming.
     _setup_rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
-    substep "ROCm: $_setup_rocm_root"
+    if [ -d "$_setup_rocm_root" ]; then
+        substep "ROCm: $_setup_rocm_root"
+    else
+        substep "ROCm: runtime detected (no SDK tree at $_setup_rocm_root)"
+    fi
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
 elif [ "$_setup_xpu_ready" = true ]; then

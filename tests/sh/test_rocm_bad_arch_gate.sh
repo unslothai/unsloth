@@ -197,7 +197,7 @@ trap 'rm -rf "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE" "$_E2E_DIR" "$_FAKE_SMI_
                _nvidia_cu126_verdict _cap_cuda_family_for_pre_turing \
                _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
                _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
-               _detect_rocm_version_tag get_torch_index_url; do
+               _detect_rocm_version_tag _kfd_gfx_targets get_torch_index_url; do
         sed -n "/^$_fn()/,/^}/p" "$INSTALL_SH"
         echo ""
     done
@@ -372,6 +372,49 @@ assert_eq "spoofed Deck -> cpu index anyway" \
 assert_eq "spoofed gfx1030 host keeps rocm" \
     "https://download.pytorch.org/whl/rocm7.2" \
     "$(export HSA_OVERRIDE_GFX_VERSION=10.3.0; _index_for_rocminfo_host gfx1030)"
+
+echo "=== KFD answers when the probe cannot, so a spoof cannot fill the gap ==="
+# The fallback chain ends at _amd_gfx_probe, which was collected WITH the override in
+# force. On a Deck with no amd-smi and an older ROCr that cannot re-enumerate once
+# HSA_OVERRIDE_GFX_VERSION is stripped, the physical read is empty and that fallback
+# reports the spoofed gfx1030 -- letting an environment variable answer a presence test.
+# amdkfd is the kernel's own table and no runtime variable reaches it.
+_make_kfd_only_host() {  # rocminfo that answers ONLY while the override is set
+    _ko_dir=$(mktemp -d)
+    _ko_spoof=$(_make_rocminfo_host gfx1030)
+    cp "$_ko_spoof/hipconfig" "$_ko_dir/hipconfig"
+    cat > "$_ko_dir/rocminfo" <<KFDONLY
+#!/bin/sh
+if [ -n "\${HSA_OVERRIDE_GFX_VERSION:-}" ]; then
+    exec "$_ko_spoof/rocminfo"
+fi
+exit 1
+KFDONLY
+    chmod +x "$_ko_dir/rocminfo"
+    printf '%s' "$_ko_dir"
+}
+_index_for_kfd_host() {  # $1 = gfx the kernel reports ("" for a KFD that says nothing)
+    _ifk_dir=$(_make_kfd_only_host)
+    _ifk_stub=$(mktemp -d)
+    cat > "$_ifk_stub/kfd.sh" <<KSTUB
+_kfd_gfx_targets() { [ -z '$1' ] || printf '%s\n' '$1'; }
+KSTUB
+    PATH="$_ifk_dir:$_TOOLS_DIR" "$_SH" -c "
+        unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL
+        unset UNSLOTH_TORCH_INDEX_FAMILY ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
+        HSA_OVERRIDE_GFX_VERSION=10.3.0; export HSA_OVERRIDE_GFX_VERSION
+        _ARCH=x86_64
+        . '$_E2E_FUNCS'
+        . '$_ifk_stub/kfd.sh'
+        get_torch_index_url
+    " 2>/dev/null | tail -1
+    rm -rf "$_ifk_dir" "$_ifk_stub"
+}
+assert_eq "KFD names gfx1033 behind the spoof -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_kfd_host gfx1033)"
+# KFD naming a healthy card is believed too: this is a source, not a veto.
+assert_eq "KFD names gfx1030 -> rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_kfd_host gfx1030)"
 
 echo "=== A declared arch must not answer for the silicon ==="
 # UNSLOTH_ROCM_GFX_ARCH is an arch HINT for routing, not a wheel pin, and it is short-
