@@ -374,10 +374,7 @@ def test_planning_waits_for_plan_approval_before_research(research_home, monkeyp
     planned = research_db.get_run("run-1")
     assert planned["status"] == "awaiting_approval"
     assert research_db.claim_next("worker-2") is None
-    assert (
-        research_db.approve("run-1", planned["planRevision"], planned["planHash"])
-        == "queued"
-    )
+    assert research_db.approve("run-1", planned["planRevision"], planned["planHash"]) == "queued"
     assert research_db.claim_next("worker-2") is not None
 
 

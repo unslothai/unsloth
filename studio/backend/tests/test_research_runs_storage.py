@@ -1785,10 +1785,7 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(
     assert planned["assistantMessageId"] is None
     assert research_db.claim_next(supervisor.worker_id) is None
 
-    assert (
-        research_db.approve("run-1", planned["planRevision"], planned["planHash"])
-        == "queued"
-    )
+    assert research_db.approve("run-1", planned["planRevision"], planned["planHash"]) == "queued"
     running = research_db.claim_next(supervisor.worker_id)
     assert running is not None
     asyncio.run(supervisor._process(running))
