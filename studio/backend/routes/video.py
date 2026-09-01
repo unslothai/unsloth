@@ -515,13 +515,19 @@ async def generate_video(
 @router.get("/video/generate-progress", response_model = VideoGenerateProgressResponse)
 async def video_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    return VideoGenerateProgressResponse(**get_video_backend().generate_progress())
+    # Scoped: one backend serves every account, so an unscoped poll reports the
+    # clip another account is generating.
+    return VideoGenerateProgressResponse(
+        **get_video_backend().generate_progress(current_workspace_subject())
+    )
 
 
 @router.post("/video/generate/cancel")
 async def cancel_video_generation(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    cancelled = await asyncio.to_thread(get_video_backend().cancel_generate)
+    cancelled = await asyncio.to_thread(
+        get_video_backend().cancel_generate, None, current_workspace_subject()
+    )
     return {"cancelled": cancelled}
 
 
@@ -1609,7 +1615,9 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
     if video is None:
         raise _not_found(video_id)
     if video.status in ("queued", "in_progress"):
-        await asyncio.to_thread(get_video_backend().cancel_generate, video_id)
+        await asyncio.to_thread(
+            get_video_backend().cancel_generate, video_id, current_workspace_subject()
+        )
         # The run can reach its terminal state between the lookup and the cancel, so a
         # refused cancellation is not proof that nothing was written. Let the worker
         # settle, then fall through to the same delete the completed branch performs --

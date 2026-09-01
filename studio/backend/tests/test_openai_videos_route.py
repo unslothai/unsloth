@@ -949,8 +949,11 @@ def test_deleting_a_job_that_finishes_mid_cancel_removes_the_clip(client, backen
     job = _create(client, {"prompt": "racy"}).json()
     assert client.get(f"/v1/videos/{job['id']}").json()["status"] in ("queued", "in_progress")
 
-    def _cancel_after_it_finishes(expected_video_id):
+    def _cancel_after_it_finishes(expected_video_id, subject = None):
         assert expected_video_id == job["id"]
+        # The route names the caller's workspace, so the backend cannot end a run
+        # this account does not own.
+        assert subject == "unsloth"
         backend.gate.set()
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
@@ -1186,7 +1189,9 @@ def test_a_delete_that_cannot_observe_the_settle_does_not_confirm(client, backen
             "queued",
             "in_progress",
         )
-        monkeypatch.setattr(backend, "cancel_generate", lambda expected_video_id: False)
+        monkeypatch.setattr(
+            backend, "cancel_generate", lambda expected_video_id, subject = None: False
+        )
         resp = client.delete(f"/v1/videos/{job['id']}")
         assert resp.status_code == 409, resp.json()
         assert resp.json()["error"]["code"] == "video_not_ready"

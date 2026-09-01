@@ -1566,3 +1566,116 @@ def test_the_diffusion_dataset_interlock_only_blocks_the_running_account():
                 pass
     finally:
         reset_workspace_subject(token)
+
+
+def test_an_image_generation_is_invisible_and_uncancellable_to_other_accounts():
+    from core.inference.diffusion import DiffusionBackend, _GenState
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    backend._lock = threading.RLock()
+    backend._generation_cancel_lock = threading.RLock()
+    backend._gen = _GenState(total_steps = 20, step = 7, subject = "alice")
+    cancel = threading.Event()
+    backend._active_generate_cancel = cancel
+
+    assert backend.generate_progress("alice")["active"] is True
+    assert backend.generate_progress("bob")["active"] is False
+    # Answered as idle rather than refused: Bob's page settles its button exactly
+    # as it would against an engine with nothing running, which is what he sees.
+    assert backend.cancel_generate("bob") is False
+    assert not cancel.is_set()
+    assert backend.cancel_generate("alice") is True
+    assert cancel.is_set()
+
+    # The teardown path passes no subject and must still stop whatever is running.
+    cancel.clear()
+    assert backend.cancel_generate() is True
+    assert cancel.is_set()
+
+
+def test_a_video_generation_is_invisible_and_uncancellable_to_other_accounts():
+    from core.inference.video import VideoBackend
+
+    backend = VideoBackend.__new__(VideoBackend)
+    backend._lock = threading.RLock()
+    backend._gen = {"active": True, "phase": "denoising", "step": 3, "total": 10}
+    backend._generate_job_active = True
+    backend._gen_video_id = "vid-1"
+    backend._gen_subject = "alice"
+    cancel = threading.Event()
+    backend._active_generate_cancel = cancel
+
+    assert backend.generate_progress("alice")["active"] is True
+    assert backend.generate_progress("bob")["active"] is False
+    assert backend.cancel_generate(None, "bob") is False
+    assert not cancel.is_set()
+    assert backend.cancel_generate(None, "alice") is True
+    assert cancel.is_set()
+
+
+def test_training_refuses_weights_outside_the_callers_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from fastapi import HTTPException
+    from routes.training import _reject_uncontained_training_path
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    outside = tmp_path / "someone-elses.safetensors"
+    outside.write_bytes(b"weights")
+
+    token = _bind("alice")
+    try:
+        mine = workspace_root() / "models"
+        mine.mkdir(parents = True, exist_ok = True)
+        private = mine / "alice.safetensors"
+        private.write_bytes(b"weights")
+        # Containing the outputs scopes what training WRITES; the base weights it
+        # reads are still whatever path the request named.
+        with pytest.raises(HTTPException) as excinfo:
+            _reject_uncontained_training_path(str(outside))
+        assert excinfo.value.status_code == 403
+        _reject_uncontained_training_path(str(private))
+        # A Hub repo id is not a path and must stay loadable.
+        _reject_uncontained_training_path("unsloth/Llama-3.2-1B")
+        _reject_uncontained_training_path(None)
+    finally:
+        reset_workspace_subject(token)
+
+    owner = _bind("unsloth")
+    try:
+        _reject_uncontained_training_path(str(outside))
+    finally:
+        reset_workspace_subject(owner)
+
+
+def test_only_the_owner_can_load_a_model_that_runs_its_own_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from fastapi import HTTPException
+    from routes.inference import _reject_remote_code_from_a_managed_account
+
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth" / "auth.db")
+    monkeypatch.setattr(
+        auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / "auth" / ".bootstrap_password"
+    )
+    auth_storage.create_initial_user(
+        "unsloth", "owner-password", secrets.token_urlsafe(64), is_admin = True
+    )
+    auth_storage.create_managed_user("alice")
+
+    token = _bind("alice")
+    try:
+        # A repo id is not a path, so containment never sees this one: the repo's
+        # own Python would run as the backend user with every workspace readable.
+        with pytest.raises(HTTPException) as excinfo:
+            _reject_remote_code_from_a_managed_account(True)
+        assert excinfo.value.status_code == 403
+        _reject_remote_code_from_a_managed_account(False)
+    finally:
+        reset_workspace_subject(token)
+
+    owner = _bind("unsloth")
+    try:
+        _reject_remote_code_from_a_managed_account(True)
+    finally:
+        reset_workspace_subject(owner)

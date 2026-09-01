@@ -37,7 +37,11 @@ import os
 import tempfile
 import threading
 
-from utils.workspace_context import current_workspace_subject, run_in_workspace
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    current_workspace_subject,
+    run_in_workspace,
+)
 import time
 import types
 from dataclasses import dataclass
@@ -1064,6 +1068,10 @@ class VideoBackend:
         self._generate_job_token: Optional[object] = None
         # The OpenAI /v1/videos job id this run was started under, or None for a Studio-page run.
         self._gen_video_id: Optional[str] = None
+        # Whose run this is. One backend serves every account, so without it any
+        # account's poll sees the current clip's progress and any account's cancel
+        # ends it.
+        self._gen_subject: str = LEGACY_WORKSPACE_SUBJECT
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """The device target for ``ordinal``, pinned onto the calling thread.
@@ -5176,6 +5184,7 @@ class VideoBackend:
                 # Register before the worker starts so cancellation covers the spawn window.
                 self._active_generate_cancel = cancel
                 self._gen_video_id = video_id
+                self._gen_subject = current_workspace_subject()
                 self._gen = {
                     "active": True,
                     "phase": "queued",
@@ -6264,8 +6273,12 @@ class VideoBackend:
             except OSError:
                 pass
 
-    def generate_progress(self) -> dict[str, Any]:
+    def generate_progress(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """``subject`` reports idle for another account's run; None keeps the
+        unfiltered view the backend's own probes need."""
         with self._lock:
+            if subject is not None and self._gen_subject != subject:
+                return {"active": False, "total_steps": 0, "fraction": 0.0}
             gen = dict(self._gen)
             # generate() swaps in a bare {"active": False} before the worker records the terminal dict; report active across that gap.
             if self._generate_job_active:
@@ -6301,9 +6314,19 @@ class VideoBackend:
             self._gen = {"active": False}
             return True
 
-    def cancel_generate(self, expected_video_id: Optional[str] = None) -> bool:
-        """Signal the in-flight generation to stop at its next step callback."""
+    def cancel_generate(
+        self,
+        expected_video_id: Optional[str] = None,
+        subject: Optional[str] = None,
+    ) -> bool:
+        """Signal the in-flight generation to stop at its next step callback.
+
+        ``subject`` refuses a cancel aimed at another account's run, answered as
+        "nothing was running" for the same reason its progress reports idle. None
+        is the teardown path, which must stop whatever is running."""
         with self._lock:
+            if subject is not None and self._gen_subject != subject:
+                return False
             if expected_video_id is not None and self._gen_video_id != expected_video_id:
                 return False
             cancel = self._active_generate_cancel

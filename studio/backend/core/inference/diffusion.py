@@ -37,6 +37,7 @@ from core._torchao_stub import (
 )
 from loggers import get_logger
 from utils.hardware import clear_gpu_cache
+from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
 
 from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
@@ -895,6 +896,10 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
+    # Whose generation this is. The engine is one process-wide singleton, so
+    # without it every account's poll sees every other account's progress and
+    # any account's cancel stops whoever happens to be generating.
+    subject: str = LEGACY_WORKSPACE_SUBJECT
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -5862,7 +5867,9 @@ class DiffusionBackend:
                 if expected_load is not None and expected_load != loaded_id:
                     raise DiffusionModelReplacedError(expected_load, loaded_id)
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
-                self._gen = _GenState(total_steps = steps)
+                self._gen = _GenState(
+                    total_steps = steps, subject = current_workspace_subject()
+                )
             try:
                 # FIRST, before any device object exists. This worker is not the thread that loaded
                 # the pipeline, so until it is pinned the un-indexed state.device below -- and the
@@ -6152,7 +6159,9 @@ class DiffusionBackend:
                         "diffusion.generate: activation headroom re-check skipped (%s)", exc
                     )
 
-                gen = _GenState(total_steps = steps * len(chunks))
+                gen = _GenState(
+                    total_steps = steps * len(chunks), subject = current_workspace_subject()
+                )
                 # Steps completed by FINISHED chunks, so the bar spans the whole multi-chunk call (mutable cell for _on_step).
                 steps_done = [0]
 
@@ -6327,9 +6336,15 @@ class DiffusionBackend:
                     # Sole clear of the published progress state, on every exit, so a crashed generation never leaves the UI stuck.
                     self._gen = None
 
-    def generate_progress(self) -> dict[str, Any]:
-        """Live per-step progress for an in-flight generation (lock-free read)."""
+    def generate_progress(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """Live per-step progress for an in-flight generation (lock-free read).
+
+        ``subject`` reports idle for a generation belonging to another account.
+        None keeps the unfiltered view for the engine's own internal probes.
+        """
         gen = self._gen
+        if gen is not None and subject is not None and gen.subject != subject:
+            gen = None
         if gen is None or gen.total_steps <= 0:
             return {
                 "active": False,
@@ -6346,8 +6361,13 @@ class DiffusionBackend:
             "eta_seconds": gen.eta_seconds,
         }
 
-    def cancel_generate(self) -> bool:
+    def cancel_generate(self, subject: Optional[str] = None) -> bool:
         """Signal the in-flight generation to stop at its next step boundary.
+
+        ``subject`` refuses a cancel aimed at another account's generation, the
+        same way it is hidden from their progress poll. None is the engine's own
+        teardown path (unload, a superseding load), which must still stop
+        whatever is running whoever started it.
 
         The denoise loop already watches this event (``_on_step`` sets diffusers'
         ``_interrupt``, and the per-chunk check discards a partial batch), but until now only
@@ -6358,6 +6378,12 @@ class DiffusionBackend:
         during the VAE decode or the encode that precedes step 0 lands when that finishes.
         Same contract as the video backend."""
         with self._generation_cancel_lock:
+            gen = self._gen
+            if subject is not None and gen is not None and gen.subject != subject:
+                # Another account's denoise. Answered as "nothing was running",
+                # which is what a caller who cannot even see it should be told,
+                # and which settles their button exactly as an idle engine does.
+                return False
             # Stop targets the denoising generation, not a serialized waiter.
             active = self._active_generate_cancel
             if active is not None:

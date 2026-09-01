@@ -146,11 +146,13 @@ class _FakeBackend:
             ),
         }
 
-    def generate_progress(self):
+    def generate_progress(self, subject = None):
         # Idle by default; the persist-window override lives in the route, not here.
+        # subject: the route scopes the poll to the caller's workspace, and both
+        # real engines take it.
         return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
 
-    def cancel_generate(self):
+    def cancel_generate(self, subject = None):
         # Both real engines return False when nothing is in flight; the fake tracks the same event.
         cancel = self.active_generate_cancel
         if cancel is None:

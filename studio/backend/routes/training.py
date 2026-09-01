@@ -412,6 +412,19 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
     return all(len(parts) == family[3] for family, parts in families.items())
 
 
+def _reject_uncontained_training_path(model_path: Optional[str]) -> None:
+    """A managed account may only train from weights inside its own roots.
+
+    The same rule /inference/load applies, and for the same reason: the request
+    field reaches the worker verbatim, so an absolute path is a read of any file
+    the backend can reach. Training makes it worse than a load, because the
+    adapter that comes back is derived from those weights and outlives the run.
+    Hub repo ids are untouched; they are not paths and land in the shared cache.
+    """
+    from routes.inference import _reject_uncontained_local_path
+    _reject_uncontained_local_path(model_path, "train from")
+
+
 def _trainable_local_roots(path: Path, model_name: Optional[str] = None) -> list[Path]:
     """The snapshot root plus any subdirectory a load reads from.
 
@@ -748,10 +761,17 @@ def _reject_untrainable_model_request(
                 if request.model_local_path == request.model_name
                 else normalize_path(request.model_local_path)
             )
+        # Scoping the subprocess to the caller's workspace scopes what it WRITES;
+        # the weights it reads are still whatever path arrived in the request. An
+        # absolute path is otherwise a read of another account's private
+        # checkpoint, and the adapter it trains is derived from it.
+        _reject_uncontained_training_path(model_name)
+        _reject_uncontained_training_path(model_local_path)
     else:
         model_local_path = (
             normalize_path(request.model_local_path) if request.model_local_path else None
         )
+        _reject_uncontained_training_path(model_local_path)
         from hub.utils.hf_cache_state import (
             latest_snapshot_from_cache_path,
             with_load_subdirs,
@@ -2945,6 +2965,12 @@ async def start_diffusion_training(
         MODULAR_BASE_FAMILIES,
         _assert_trusted_base_model,
     )
+
+    # The dataset, output and conditioning-cache paths are contained above; the base
+    # model was not, so a managed caller could name another account's checkpoint and
+    # train an adapter off it. Same containment inference applies to a local load.
+    _reject_uncontained_training_path(config.get("base_model"))
+    _reject_uncontained_training_path(normalized_cfg.fetch_base_model)
 
     try:
         # Same answer the trainer's own call reaches. A local MiniMax-H3 pipeline is a modular

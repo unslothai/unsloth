@@ -6761,12 +6761,45 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
     )
 
 
+def _reject_remote_code_from_a_managed_account(trust_remote_code: Any) -> None:
+    """Only the installation owner may run a repository's own Python.
+
+    trust_remote_code executes code the model repository ships, as the backend's
+    OS user, before any of this feature's isolation applies: that code can read
+    and write every account's workspace and anything else the process can reach.
+    Path containment does not help, because the repo id is not a path.
+
+    So it stays with whoever administers the install. A managed account that
+    needs such a model asks the owner to load it, which is also who decides
+    whether the repository is worth trusting in the first place.
+    """
+    if not trust_remote_code:
+        return
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        return
+    from auth.storage import is_admin
+
+    if is_admin(subject):
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "Only the installation owner can load a model that runs its own code. "
+            "Ask them to load it, or pick a model that does not need trusted remote code."
+        ),
+    )
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest,
     *,
     operation: str,
     resolved_ollama_path: Optional[str] = None,
 ) -> tuple[str, str, bool]:
+    # Before the path work, and regardless of how the model is named: a Hub repo id
+    # is not a path, so containment never sees it.
+    _reject_remote_code_from_a_managed_account(getattr(request, "trust_remote_code", False))
     if is_ollama_manifest_ref(request.model_path):
         # The read-only inventory scan hands the picker an opaque manifest
         # reference; the load path owns the filesystem write that turns it into
@@ -33170,7 +33203,10 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-    progress = get_active_diffusion_engine().generate_progress()
+    # Scoped: one engine serves every account, so an unscoped poll reports another
+    # account's step count and ETA, and the UI would show a run this caller cannot
+    # have started.
+    progress = get_active_diffusion_engine().generate_progress(current_workspace_subject())
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:
         progress = {**progress, "active": True}
@@ -33189,8 +33225,13 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     generation that already finished."""
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
+    # run_in_executor does NOT copy the context, so the subject is read here and
+    # passed rather than left for the worker to resolve to the default.
+    subject = current_workspace_subject()
     cancelled = await asyncio.get_running_loop().run_in_executor(
-        _CANCEL_EXECUTOR, get_active_diffusion_engine().cancel_generate
+        _CANCEL_EXECUTOR, functools.partial(
+            get_active_diffusion_engine().cancel_generate, subject,
+        )
     )
     return {"cancelled": cancelled}
 
