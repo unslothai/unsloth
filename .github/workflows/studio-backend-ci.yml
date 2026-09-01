@@ -39,6 +39,7 @@ on:
       - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
 
@@ -220,9 +221,13 @@ jobs:
         # UNSLOTH_STUDIO_SANDBOX_CI_ENFORCE=1, which is exported below only when
         # this probe confirms the sandbox applies here; otherwise those tests
         # self-skip and the run stays green with a warning.
+        timeout-minutes: 12
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '240'
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y bubblewrap
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update -y && apt-get install -y --no-install-recommends bubblewrap'
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           if bwrap --ro-bind / / --unshare-all --die-with-parent /usr/bin/true 2>/tmp/bwrap_probe.txt; then
             echo "UNSLOTH_STUDIO_SANDBOX_CI_ENFORCE=1" >> "$GITHUB_ENV"

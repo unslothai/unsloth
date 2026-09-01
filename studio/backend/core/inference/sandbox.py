@@ -5,6 +5,8 @@
 OS-level sandbox wrapper for tool execution.
 """
 
+from __future__ import annotations
+
 import atexit
 import errno
 import os
@@ -561,9 +563,9 @@ def _linux_accelerator_sysfs_paths() -> list[str]:
                 for entry in entries:
                     for candidate in (entry.path, os.path.join(entry.path, "device")):
                         target = os.path.realpath(candidate)
-                        if _path_is_within(
-                            target, sysfs_root, strict = True
-                        ) and os.path.isdir(target):
+                        if _path_is_within(target, sysfs_root, strict = True) and os.path.isdir(
+                            target
+                        ):
                             paths.append(target)
         except OSError as exc:
             logger.debug("accelerator sysfs discovery failed for %s: %s", class_path, exc)
@@ -894,9 +896,9 @@ def _resolve_nproc_limit() -> int:
 # Import-time sanity: catch the case where a maintainer accidentally
 # adds a literal `{` to the template (e.g. a dict literal) which would
 # turn .format() into a KeyError at every tool call.
-assert "12345" in _LINUX_NPROC_WRAPPER_TEMPLATE.format(
-    nproc = 12345
-), "_LINUX_NPROC_WRAPPER_TEMPLATE does not format cleanly"
+assert "12345" in _LINUX_NPROC_WRAPPER_TEMPLATE.format(nproc = 12345), (
+    "_LINUX_NPROC_WRAPPER_TEMPLATE does not format cleanly"
+)
 
 
 def _linux_inner_rlimit_wrapper(inner_argv: list[str]) -> list[str]:

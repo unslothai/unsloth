@@ -297,6 +297,16 @@ class TestSandboxEnvIsolation:
             "MPLBACKEND",
             "PYTHONPATH",
             "VIRTUAL_ENV",
+            "USER",
+            "LOGNAME",
+            "CUDA_DEVICE_ORDER",
+            "CUDA_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "GPU_DEVICE_ORDINAL",
+            "NVIDIA_VISIBLE_DEVICES",
+            "ONEAPI_DEVICE_SELECTOR",
+            "ZE_AFFINITY_MASK",
             "SystemRoot",
             "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
