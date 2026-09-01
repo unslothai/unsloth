@@ -94,8 +94,8 @@ def resolve_llama_server_binary(
 def get_stored_custom_llama_cpp_path() -> Optional[Path]:
     """The Unsloth-selected directory, or ``None`` when automatic discovery is active."""
     try:
-        from storage.studio_db import get_app_setting
-        value = get_app_setting(CUSTOM_LLAMA_CPP_PATH_SETTING_KEY, None)
+        from storage.studio_db import get_install_setting
+        value = get_install_setting(CUSTOM_LLAMA_CPP_PATH_SETTING_KEY, None)
     except Exception:
         # A settings DB problem must not take the bundled runtime down with it.
         return None
@@ -156,8 +156,8 @@ def set_custom_llama_cpp_path(value: Optional[str]) -> Optional[Path]:
         raise RuntimeError(f"The llama.cpp path is managed by the {variable} environment variable.")
     directory = _canonical_directory(value) if value is not None else None
     with _settings_lock:
-        from storage.studio_db import upsert_app_settings
-        upsert_app_settings(
+        from storage.studio_db import upsert_install_settings
+        upsert_install_settings(
             {CUSTOM_LLAMA_CPP_PATH_SETTING_KEY: (str(directory) if directory is not None else None)}
         )
         _path_revision += 1

@@ -4477,6 +4477,25 @@ def get_app_setting(key: str, fallback = None):
         conn.close()
 
 
+def get_install_setting(key: str, fallback = None):
+    """An installation-wide setting, always read from the owner's database.
+
+    A few settings are documented and gated as install-wide (the Hugging Face
+    cache home, the llama.cpp executable), but app_settings lives in the caller's
+    studio.db. Read per account, a managed user finds nothing and silently falls
+    back to the default cache or binary, so an install that moved its cache off a
+    constrained disk would redownload models to the wrong place.
+    """
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, run_in_workspace
+    return run_in_workspace(LEGACY_WORKSPACE_SUBJECT, get_app_setting, key, fallback)
+
+
+def upsert_install_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Write installation-wide settings to the owner's database. See above."""
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, run_in_workspace
+    return run_in_workspace(LEGACY_WORKSPACE_SUBJECT, upsert_app_settings, settings)
+
+
 def get_app_settings(keys: list[str]) -> dict[str, Any]:
     """Read a set of settings from one SQLite snapshot.
 

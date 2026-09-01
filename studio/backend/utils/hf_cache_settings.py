@@ -111,8 +111,8 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
 
 def _stored_cache_home() -> Optional[Path]:
     try:
-        from storage.studio_db import get_app_setting
-        value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
+        from storage.studio_db import get_install_setting
+        value = get_install_setting(CACHE_HOME_SETTING_KEY, None)
     except Exception:
         return None
     if not isinstance(value, str) or not value.strip():
@@ -137,8 +137,8 @@ def configured_cache_key() -> str:
     if explicit:
         return "env:" + explicit
     try:
-        from storage.studio_db import get_app_setting
-        value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
+        from storage.studio_db import get_install_setting
+        value = get_install_setting(CACHE_HOME_SETTING_KEY, None)
     except Exception:
         return "default"
     if isinstance(value, str) and value.strip():
@@ -287,8 +287,8 @@ def _validate_cache_home(raw_path: str) -> Path:
 
 def _stored_history() -> list[Path]:
     try:
-        from storage.studio_db import get_app_setting
-        raw = get_app_setting(CACHE_HISTORY_SETTING_KEY, [])
+        from storage.studio_db import get_install_setting
+        raw = get_install_setting(CACHE_HISTORY_SETTING_KEY, [])
     except Exception:
         raw = []
     if not isinstance(raw, list):
@@ -329,9 +329,9 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
             deduped.append(str(path))
             if len(deduped) >= MAX_CACHE_HISTORY:
                 break
-        from storage.studio_db import upsert_app_settings
+        from storage.studio_db import upsert_install_settings
 
-        upsert_app_settings(
+        upsert_install_settings(
             {
                 CACHE_HOME_SETTING_KEY: str(next_home) if next_home is not None else None,
                 CACHE_HISTORY_SETTING_KEY: deduped,
