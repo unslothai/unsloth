@@ -21,6 +21,32 @@ _METRIC_RE = re.compile(r"^llamacpp:(\w+)(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.MUL
 _OFF = {"0", "false", "no", "off"}
 
 
+def scrape_llama_metrics(base_url, timeout_s = 3.0):
+    """One /metrics read as a {name: float} dict, or None if it could not be read.
+
+    Split out of the daemon's own scrape so a caller needing a single sample (the
+    preemption reclaim barrier) reuses this parser instead of adding a second one, or a
+    ``GET /slots`` poller. None covers every reason the read did not happen: no
+    ``--metrics``, a server still starting, a socket error. Callers must treat that as
+    "cannot tell", never as "nothing is running".
+    """
+    url = f"{str(base_url).rstrip('/')}/metrics"
+    try:
+        with urllib.request.urlopen(url, timeout = timeout_s) as r:
+            if r.status != 200:
+                return None
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    out = {}
+    for k, v in _METRIC_RE.findall(body):
+        try:  # a malformed value must not kill the daemon thread
+            out[k] = float(v)
+        except ValueError:
+            continue
+    return out
+
+
 class LlamaServerStatsLogger:
     """Daemon poller that logs vLLM-style engine stats from llama-server.
 
@@ -35,7 +61,8 @@ class LlamaServerStatsLogger:
         interval_s = 10.0,
         stall_timeout_s = 600.0,
     ):
-        self._url = f"{base_url.rstrip('/')}/metrics"
+        self._base_url = base_url.rstrip("/")
+        self._url = f"{self._base_url}/metrics"
         self._log = logger
         self._interval = max(1.0, float(interval_s))
         self._stop = threading.Event()
@@ -56,20 +83,7 @@ class LlamaServerStatsLogger:
         self._stop.set()
 
     def _scrape(self):
-        try:
-            with urllib.request.urlopen(self._url, timeout = 3) as r:
-                if r.status != 200:
-                    return None
-                body = r.read().decode("utf-8", "replace")
-        except Exception:
-            return None
-        out = {}
-        for k, v in _METRIC_RE.findall(body):
-            try:  # a malformed value must not kill the daemon thread
-                out[k] = float(v)
-            except ValueError:
-                continue
-        return out
+        return scrape_llama_metrics(self._base_url)
 
     def _stalled_for(self, now, running, decode_calls):
         """Seconds the engine has held a slot without calling llama_decode().

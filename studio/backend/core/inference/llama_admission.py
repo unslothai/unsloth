@@ -318,6 +318,7 @@ class LlamaAdmissionLease:
         "_parked",
         "_budgeted",
         "_tokens",
+        "_preempted",
     )
 
     def __init__(
@@ -332,6 +333,10 @@ class LlamaAdmissionLease:
         self._release_lock = threading.Lock()
         self._parked = False
         self._budgeted = False
+        # Set by preempt(), which hands the commitment back because the upstream task
+        # ended and the cells really are reclaimable. Distinct from _parked, where the
+        # task is alive and the cells are not.
+        self._preempted = False
         # Returned to the queue on release, not on park: a parked holder has
         # stopped decoding but llama-server still holds its KV until the task ends.
         self._tokens = max(0, int(tokens or 0))
@@ -431,6 +436,125 @@ class LlamaAdmissionLease:
             queue.unpark()
         if stranded is not None:
             queue.release(stranded)
+
+    def preempt(self) -> bool:
+        """Hand back BOTH the slot and the KV commitment so someone else may decode.
+
+        The difference from ``park`` is what llama-server is doing afterwards. A parked
+        holder has only stopped waiting on the GPU; its task is still alive and its cells
+        are still resident, which is why ``park`` keeps ``_tokens``. Preemption ends the
+        upstream task, so the slot goes non-processing and its cells become purgeable by
+        ``try_clear_idle_slots`` (``server-context.cpp:1656``, gated on ``kv_unified``
+        alone). Only then is the commitment genuinely free to give away.
+
+        **The caller must have closed the upstream response first.** This is the rule
+        ``_release_admission`` already states (``routes/inference.py:2690-2696``): on
+        disconnect llama-server keeps decoding until ``resp`` is closed, so handing the
+        room back any earlier admits a second request past ``--parallel`` and recreates
+        the collision this exists to prevent. Nothing here can check that, so it is a
+        contract, not a guard.
+
+        False when there is nothing to preempt: no queue, already released, or already
+        preempted. A lease holding no slot (parked on a tool approval) still returns
+        True and gives its commitment back, which is the cheapest room to reclaim.
+        """
+        queue = self._queue
+        with self._release_lock:
+            if queue is None or self._released or self._preempted:
+                return False
+            slot, self._slot = self._slot, None
+            tokens, self._tokens = self._tokens, 0
+            self._preempted = True
+        # Outside the lease lock, matching release()'s order. Gives the slot and the
+        # tokens back together and re-runs the grant, so the room reaches whoever is
+        # waiting for it in one step.
+        queue.release(slot, tokens)
+        return True
+
+    @property
+    def is_preempted(self) -> bool:
+        return self._preempted
+
+    async def resume_async(
+        self,
+        tokens: int,
+        *,
+        cancel_event = None,
+        poll_s: float = 0.02,
+        timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
+    ) -> bool:
+        """Take the room back after a preemption, waiting until the cache has it.
+
+        ``tokens`` is re-stated rather than remembered because a resumed run carries the
+        partial it already generated, so it is larger than it was when preempted.
+
+        No double-charge: on the slot path ``acquire_parked_slot`` commits the tokens
+        itself inside ``_take_slot_locked``, so this only records the figure. On the
+        commitment-only path ``try_recost(0, want)`` does the same move without a slot.
+
+        Bounded for the same reason ``recost_waiting`` is: a caller spinning here holds
+        room nobody else can plan against, so an unbounded wait would freeze the queue
+        rather than one chat. Giving up leaves this lease holding nothing, which the
+        caller must surface rather than carry on decoding.
+
+        False means the resume did not happen: cancelled, released, or waited past
+        ``timeout_s``. True with no queue is the admission-disabled case, where there is
+        nothing to account.
+        """
+        want = max(0, int(tokens or 0))
+        queue = self._queue
+        with self._release_lock:
+            if self._released:
+                return False
+            if queue is None:
+                return True
+            if not self._preempted:
+                return True
+            # A parked holder's slot is owned by the park machinery and comes back
+            # through unpark_async. Taking a second one from a ticket here would put the
+            # same lease in two slots, so a parked lease only ever re-takes its
+            # commitment, whether or not it is holding the slot at this instant.
+            commitment_only = self._parked or self._slot is not None
+        deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
+        if commitment_only:
+            while True:
+                if queue.try_recost(0, want):
+                    return self._record_resume(queue, want, slot = None)
+                if self._released or (cancel_event is not None and cancel_event.is_set()):
+                    return False
+                if deadline is not None and time.monotonic() >= deadline:
+                    return False
+                await asyncio.sleep(poll_s)
+        slot = await queue.acquire_parked_slot(
+            tokens = want,
+            cancel_event = cancel_event,
+            poll_s = poll_s,
+            deadline = deadline,
+        )
+        if slot is None:
+            return False
+        return self._record_resume(queue, want, slot = slot)
+
+    def _record_resume(self, queue, want: int, *, slot: Optional[int]) -> bool:
+        """Record room the queue has already committed, or give it straight back.
+
+        release() may have run during the wait, in which case it handed back the 0 this
+        lease held while preempted and will not run again. Whatever was just committed
+        would then be stranded for the life of the process, so return it here.
+        """
+        with self._release_lock:
+            if self._released:
+                stranded = True
+            else:
+                stranded = False
+                if slot is not None:
+                    self._slot = slot
+                self._tokens = want
+                self._preempted = False
+        if stranded:
+            queue.release(slot, want)
+            return False
+        return True
 
     def recost(self, tokens: int) -> bool:
         """Re-state what this lease actually occupies as its conversation grows.
@@ -956,15 +1080,28 @@ class LlamaAdmissionQueue:
     async def acquire_parked_slot(
         self,
         *,
+        tokens: int = 0,
         cancel_event = None,
         poll_s: float = 0.02,
+        deadline: Optional[float] = None,
     ) -> Optional[int]:
         """Wait for a slot for a holder resuming from a park, None if cancelled.
 
         Ordered by ticket rather than counted, so approvals resume in the order
         they came back: counting them made every approved holder block every
         other one, and with nothing decoding that never resolved.
+
+        ``tokens`` is the KV commitment to take back alongside the slot, and is
+        committed here rather than by the caller, so a resumed holder cannot be
+        admitted into room the cache does not have. It defaults to 0, which is a
+        park resuming: that holder never gave its commitment back, so there is
+        nothing to re-take and the wait is for a slot alone.
+
+        ``deadline`` is a ``time.monotonic()`` instant to give up at, for a preempted
+        holder whose wait must be bounded. None is the park default: an approved prompt
+        waits as long as it takes, which is the behaviour that predates preemption.
         """
+        want = max(0, int(tokens or 0))
         with self._lock:
             self._unpark_seq += 1
             ticket = self._unpark_seq
@@ -978,10 +1115,12 @@ class LlamaAdmissionQueue:
                             break
                         ahead += 1
                     # Only the approvals ahead of this one hold slots back from it.
-                    slot = self._take_slot_locked(ahead)
+                    slot = self._take_slot_locked(ahead, want)
                     if slot is not None:
                         return slot
                     if cancel_event is not None and cancel_event.is_set():
+                        return None
+                    if deadline is not None and time.monotonic() >= deadline:
                         return None
                 await asyncio.sleep(poll_s)
         finally:
