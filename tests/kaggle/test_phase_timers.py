@@ -111,9 +111,9 @@ def test_nested_calls_are_not_counted_twice(hub, tmp_path):
     # while a correct sum lands at 1x. A host that deschedules the runner
     # stretches both sides equally, where a constant bound would go red on
     # scheduling and report it as double counting.
-    assert timer._seconds <= elapsed * 1.5, (
-        f"nested seconds counted twice: {timer._seconds} against {elapsed} elapsed"
-    )
+    assert (
+        timer._seconds <= elapsed * 1.5
+    ), f"nested seconds counted twice: {timer._seconds} against {elapsed} elapsed"
 
 
 def test_a_raising_download_still_restores_the_module(hub):
