@@ -175,6 +175,11 @@ class JobManager:
             self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
             self._job.internal_api_key_id = internal_api_key_id
             self._events.clear()
+            # Dropped with the events: a stream opened for the previous job stays
+            # in _subs after that job ends, and this singleton is shared, so the
+            # next account's events and logs would be broadcast down it. subscribe()
+            # already refuses a new stream from another workspace.
+            self._subs.clear()
             self._seq = 0
 
             run_payload = dict(run)

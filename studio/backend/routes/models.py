@@ -2145,6 +2145,11 @@ def browse_folders(
         # 403s on click. Drive roots stay: only their system subdirectories are denied.
         if is_denied_system_path(resolved):
             return
+        # Same reason, for the account boundary: home and the drive roots below are
+        # added unconditionally, so a managed account was shown the host layout as
+        # chips that 403 on click. The owner's allowlist still contains them.
+        if not _is_path_inside_allowlist(Path(resolved), allowed_roots):
+            return
         if _safe_is_dir(resolved):
             seen_sug.add(resolved)
             suggestions.append(resolved)
