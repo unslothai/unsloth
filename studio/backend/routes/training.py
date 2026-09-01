@@ -1237,6 +1237,42 @@ def _background_video_generation_active() -> bool:
         return False
 
 
+def _foreign_media_render_active(subject: str) -> Optional[str]:
+    """The engines' own refusal message when a render in ANOTHER account is live.
+
+    Asks the diffusion and video backends the same question their unload asks,
+    without tearing anything down. Returns None when nothing foreign is running,
+    which includes every single-account install, where one subject owns both.
+    A backend that cannot answer is treated as idle: a probe that fails must not
+    become a way to block training.
+    """
+    from utils.workspace_context import ForeignWorkspaceActiveError
+
+    def _diffusion():
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        return get_active_diffusion_engine()
+
+    def _video():
+        from core.inference.video import get_video_backend
+        return get_video_backend()
+
+    for get_backend in (_diffusion, _video):
+        try:
+            backend = get_backend()
+        except Exception:  # noqa: BLE001 - an engine that will not construct holds nothing
+            continue
+        probe = getattr(backend, "_refuse_foreign_teardown", None)
+        if not callable(probe):
+            continue
+        try:
+            probe(subject)
+        except ForeignWorkspaceActiveError as exc:
+            return str(exc)
+        except Exception:  # noqa: BLE001 - see the docstring
+            continue
+    return None
+
+
 @router.post("/start", responses = _TRAINING_START_ERROR_RESPONSES)
 async def start_training(
     request: TrainingStartRequest,
@@ -1295,6 +1331,24 @@ async def start_training(
                 message = (
                     "An export is running in another account and training would stop it. "
                     "Wait for that export to finish before starting a run."
+                ),
+            )
+        # Same rule, one hook further down. _free_vram_for_training calls
+        # diffusion.unload() and video.unload() with no subject, which is the
+        # engine's own path and deliberately tears down whatever is running, so a
+        # valid training start cancelled another account's in-flight render. Ask
+        # the engines' own refusal first and decline rather than kill; the owner's
+        # own render is still torn down as before.
+        foreign_render = await asyncio.to_thread(
+            _foreign_media_render_active, current_subject
+        )
+        if foreign_render:
+            return TrainingJobResponse(
+                job_id = "",
+                status = "error",
+                message = (
+                    f"{foreign_render} Training would stop it, so wait for it to "
+                    "finish before starting a run."
                 ),
             )
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"

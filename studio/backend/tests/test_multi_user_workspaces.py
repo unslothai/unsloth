@@ -3267,3 +3267,160 @@ def test_a_resident_controlnet_is_not_reused_across_workspaces():
         _Resolved("flux-union-pro", "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", False)
     )
     assert hub_one == hub_two
+
+
+def test_a_forced_model_swap_cannot_stop_another_accounts_chats(monkeypatch):
+    import threading as _threading
+
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+    from state import active_generations
+
+    active_generations.reset_for_tests()
+
+    def _register(subject, handle):
+        with active_generations._LOCK:
+            active_generations._ACTIVE[handle] = {
+                "handle": handle,
+                "thread_id": f"thread-{handle}",
+                "run_id": f"run-{handle}",
+                "model": "m",
+                "kind": "chat",
+                "started_at": 0.0,
+                "subject": subject,
+                "event": _threading.Event(),
+            }
+
+    try:
+        _register("alice", "a1")
+        _register("bob", "b1")
+
+        token = _bind("bob")
+        try:
+            # Bob may not see Alice's chat, but force_cancel_active used to cancel
+            # it anyway: the subject filter only hid the ids from the refusal.
+            with pytest.raises(HTTPException) as exc:
+                inference_routes._raise_or_cancel_active_generations(
+                    force = True, action = "Unloading the model", caller_scoped = True
+                )
+            assert exc.value.status_code == 409
+            assert exc.value.detail["error"] == "foreign_active_generations"
+            assert exc.value.detail["running"] == 1
+            assert exc.value.detail["thread_ids"] == []
+        finally:
+            reset_workspace_subject(token)
+
+        # Alice's stream is untouched; Bob's own is still his to stop.
+        assert active_generations._ACTIVE["a1"]["event"].is_set() is False
+        assert active_generations.count("bob") == 1
+        assert active_generations.cancel_all("bob") == 1
+        assert active_generations._ACTIVE["a1"]["event"].is_set() is False
+
+        # The sidecar swap stays install-wide: it replaces the runtime under every
+        # stream, so leaving another account's running would be worse.
+        assert active_generations.cancel_all() == 2
+        assert active_generations._ACTIVE["a1"]["event"].is_set() is True
+    finally:
+        active_generations.reset_for_tests()
+
+
+def test_a_lone_account_can_still_force_its_own_swap():
+    import threading as _threading
+
+    from routes import inference as inference_routes
+    from state import active_generations
+
+    active_generations.reset_for_tests()
+    try:
+        with active_generations._LOCK:
+            active_generations._ACTIVE["only"] = {
+                "handle": "only",
+                "thread_id": "t",
+                "run_id": "r",
+                "model": "m",
+                "kind": "chat",
+                "started_at": 0.0,
+                "subject": LEGACY_WORKSPACE_SUBJECT,
+                "event": _threading.Event(),
+            }
+
+        token = _bind(LEGACY_WORKSPACE_SUBJECT)
+        try:
+            # The single-account install is the same install it was: one subject
+            # owns everything, so nothing is foreign and the force still works.
+            assert (
+                inference_routes._raise_or_cancel_active_generations(
+                    force = True, action = "Unloading the model", caller_scoped = True
+                )
+                == 1
+            )
+        finally:
+            reset_workspace_subject(token)
+        assert active_generations._ACTIVE["only"]["event"].is_set() is True
+    finally:
+        active_generations.reset_for_tests()
+
+
+def test_only_the_owner_may_revoke_every_accounts_preview_links():
+    import inspect
+
+    from auth.authentication import require_install_admin
+    from routes.settings import rotate_preview_links
+
+    # One installation-wide signing secret, so rotating it revokes the owner's
+    # links and every other account's, not just the caller's.
+    dependency = inspect.signature(rotate_preview_links).parameters["current_subject"].default
+    assert dependency.dependency is require_install_admin
+
+
+def test_training_refuses_rather_than_cancelling_a_foreign_render(monkeypatch):
+    from core.inference import diffusion_engine_router, video as video_module
+    from routes.training import _foreign_media_render_active
+    from utils.workspace_context import ForeignWorkspaceActiveError
+
+    class _Busy:
+        def _refuse_foreign_teardown(self, subject):
+            raise ForeignWorkspaceActiveError(
+                "Another account is generating an image right now."
+            )
+
+    class _Idle:
+        def _refuse_foreign_teardown(self, subject):
+            return None
+
+    class _Broken:
+        def _refuse_foreign_teardown(self, subject):
+            raise RuntimeError("probe unavailable")
+
+    def _engines(diffusion, video):
+        monkeypatch.setattr(
+            diffusion_engine_router, "get_active_diffusion_engine", lambda: diffusion
+        )
+        monkeypatch.setattr(video_module, "get_video_backend", lambda: video)
+
+    # _free_vram_for_training unloads both engines with no subject, which is their
+    # own path and tears down whatever is running, so the refusal belongs here.
+    _engines(_Busy(), _Idle())
+    assert (
+        _foreign_media_render_active("bob")
+        == "Another account is generating an image right now."
+    )
+
+    _engines(_Idle(), _Idle())
+    assert _foreign_media_render_active("bob") is None
+
+    # A probe that cannot answer must not become a way to block training.
+    _engines(_Broken(), _Idle())
+    assert _foreign_media_render_active("bob") is None
+
+
+def test_the_video_backend_can_be_asked_before_it_is_torn_down():
+    import inspect
+
+    from core.inference.video import VideoBackend
+
+    # unload() must ask through the same helper the training guard asks, so the
+    # two can never disagree about what counts as a foreign render.
+    assert hasattr(VideoBackend, "_refuse_foreign_teardown")
+    assert "_refuse_foreign_teardown(subject)" in inspect.getsource(VideoBackend.unload)

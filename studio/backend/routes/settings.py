@@ -2920,9 +2920,17 @@ class PreviewLinkRotateResponse(BaseModel):
 
 @router.post("/preview-links/rotate", response_model = PreviewLinkRotateResponse)
 def rotate_preview_links(
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(require_install_admin),
 ) -> PreviewLinkRotateResponse:
-    """Rotate the preview-link signing secret, revoking every previously shared `/p` link."""
+    """Rotate the preview-link signing secret, revoking every previously shared `/p` link.
+
+    Owner only. The payload carries a workspace subject, but every account signs
+    with one installation-wide secret, so rotating it revokes the owner's links
+    and every other account's along with the caller's own. That is an
+    install-wide effect, and it belongs with the other install-wide controls
+    rather than behind plain authentication. A managed account revoking only its
+    own links would need a per-workspace signing secret, which this does not add.
+    """
     rotate_preview_link_secret()
     logger.info("settings.preview_links_rotated subject=%s", current_subject)
     return PreviewLinkRotateResponse(rotated = True)

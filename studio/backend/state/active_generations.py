@@ -145,21 +145,37 @@ def active_thread_ids(subject: Optional[str] = None) -> list[str]:
     return seen
 
 
-def count() -> int:
-    """Number of generations currently in flight."""
+def count(subject: Optional[str] = None) -> int:
+    """Number of generations currently in flight.
+
+    ``subject`` limits the count to one workspace; None keeps the install-wide
+    view the VRAM and lifecycle counters need. The difference between the two is
+    how many belong to somebody else.
+    """
     with _LOCK:
-        return len(_ACTIVE)
+        if subject is None:
+            return len(_ACTIVE)
+        return sum(1 for e in _ACTIVE.values() if e.get("subject") == subject)
 
 
-def cancel_all() -> int:
+def cancel_all(subject: Optional[str] = None) -> int:
     """Signal every in-flight generation to stop. Returns how many were signalled.
 
     Only sets the cancel events; each stream tears itself down. Entries are
     removed by their own __exit__, so one mid-cleanup is neither lost nor double
     counted.
+
+    ``subject`` restricts the sweep to one workspace. None stays install-wide,
+    which is what the sidecar swap needs: it replaces the runtime underneath
+    every stream, so leaving another account's running would be worse than
+    stopping it.
     """
     with _LOCK:
-        events = [e["event"] for e in _ACTIVE.values()]
+        events = [
+            e["event"]
+            for e in _ACTIVE.values()
+            if subject is None or e.get("subject") == subject
+        ]
     for ev in events:
         try:
             ev.set()

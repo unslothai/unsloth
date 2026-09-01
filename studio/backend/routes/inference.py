@@ -12836,6 +12836,7 @@ def _raise_or_cancel_active_generations(
     force: bool,
     action: str,
     cancel: bool = True,
+    caller_scoped: bool = False,
 ) -> int:
     """Gate a model swap on the chats currently generating.
 
@@ -12850,6 +12851,14 @@ def _raise_or_cancel_active_generations(
     before teardown: cancelling is destructive and unrecoverable, so it must not
     run ahead of preflight checks that can still reject the load (see
     _load_model_impl).
+
+    ``caller_scoped`` is set by the request-driven swaps, where force_cancel_active
+    is a user asking to stop their own chats. Naming another account's chats back
+    to them was already refused, but the cancel itself was install-wide, so
+    retrying with the flag stopped every account's streams anyway. Under it, a
+    foreign generation refuses instead, and the sweep reaches only the caller's.
+    The sidecar swap leaves it False on purpose: that replaces the runtime under
+    every stream, so leaving somebody else's running is worse than stopping it.
     """
     if not active_generations.count():
         return 0
@@ -12872,10 +12881,31 @@ def _raise_or_cancel_active_generations(
                 "thread_ids": thread_ids,
             },
         )
+    subject = current_workspace_subject() if caller_scoped else None
+    if subject is not None:
+        foreign = active_generations.count() - active_generations.count(subject)
+        if foreign:
+            # force_cancel_active means "stop MY chats", and there is no answer
+            # here that stops only those and still frees the model, so refuse.
+            # The count is install-wide because the swap really would stop them
+            # all; no thread ids, since they are not this caller's to see.
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "foreign_active_generations",
+                    "message": (
+                        f"{action} would stop {foreign} chat"
+                        f"{'s' if foreign != 1 else ''} running in another account. "
+                        "Wait for them to finish."
+                    ),
+                    "running": foreign,
+                    "thread_ids": [],
+                },
+            )
     if not cancel:
         # Refusal-only pass: the caller cancels later, once nothing can still reject the load.
         return 0
-    cancelled = active_generations.cancel_all()
+    cancelled = active_generations.cancel_all(subject)
     if cancelled:
         logger.info(
             "model_swap_cancelled_active_generations",
@@ -12931,7 +12961,9 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
     await _drain(time.monotonic() + budget * 4 / 5, discount_registered = False)
 
 
-async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> None:
+async def _drain_and_recancel_before_teardown(
+    *, force: bool, action: str, caller_scoped: bool = True
+) -> None:
     """Wait out inference the registry cannot see, then stop anything new.
 
     A request that passed the keep-warm middleware but has not reached its
@@ -12949,7 +12981,11 @@ async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> No
         timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
     )
     if force:
-        _raise_or_cancel_active_generations(force = True, action = action)
+        # Same scope as the cancel this is re-running, so the second sweep cannot
+        # reach further than the first one was allowed to.
+        _raise_or_cancel_active_generations(
+            force = True, action = action, caller_scoped = caller_scoped
+        )
 
 
 _UNRESOLVED_BACKEND_STATE = object()
@@ -13346,6 +13382,7 @@ async def load_model_gated(
                     force = request.force_cancel_active,
                     action = "Loading a model",
                     cancel = cancel,
+                    caller_scoped = True,
                 ),
             )
         # Record provenance only once the model is resident, and here rather than
@@ -15818,6 +15855,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 force = request.force_cancel_active,
                 action = "Unloading the model",
                 cancel = False,
+                caller_scoped = True,
             )
 
         # Serialize with /load under the same lifecycle gate: the Unsloth unload now runs
@@ -15833,6 +15871,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                     force = request.force_cancel_active,
                     action = "Unloading the model",
                     cancel = False,
+                    caller_scoped = True,
                 )
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
@@ -15851,7 +15890,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 # chats. A manual unload is a deliberate user action, so it cancels mid-stream
                 # requests rather than deferring to them the way the automatic idle loop does.
                 _raise_or_cancel_active_generations(
-                    force = request.force_cancel_active, action = "Unloading the model"
+                    force = request.force_cancel_active,
+                    action = "Unloading the model",
+                    caller_scoped = True,
                 )
                 # Let what we just cancelled unwind first, like /load: tearing the server down under
                 # streams told to stop but not yet finished turned a clean end into a dropped
@@ -15878,7 +15919,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             if _unload_evicts_standard_backend(backend, request.model_path):
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
-                    force = request.force_cancel_active, action = "Unloading the model"
+                    force = request.force_cancel_active,
+                    action = "Unloading the model",
+                    caller_scoped = True,
                 )
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"

@@ -42,6 +42,9 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    # Rotation revokes every account's links, not just the caller's, so the route
+    # asks for the installation owner. These tests are the owner's path.
+    app.dependency_overrides[settings.require_install_admin] = lambda: "admin"
     return TestClient(app, raise_server_exceptions = False), calls
 
 
@@ -51,6 +54,25 @@ def test_rotate_preview_links(client):
     assert r.status_code == 200
     assert r.json() == {"rotated": True}
     assert calls.get("rotated") is True
+
+
+def test_rotate_preview_links_refuses_a_managed_account(monkeypatch):
+    calls: dict = {"enabled": True}
+    monkeypatch.setattr(settings, "get_preview_sharing_enabled", lambda: calls["enabled"])
+    monkeypatch.setattr(
+        settings, "rotate_preview_link_secret", lambda: calls.__setitem__("rotated", True)
+    )
+    monkeypatch.setattr("auth.authentication.is_admin", lambda subject: subject == "unsloth")
+
+    app = FastAPI()
+    app.include_router(settings.router)
+    app.dependency_overrides[settings.get_current_subject] = lambda: "alice"
+    c = TestClient(app, raise_server_exceptions = False)
+
+    # One installation-wide signing secret: rotating it would revoke the owner's
+    # shared links and every other account's along with Alice's own.
+    assert c.post("/preview-links/rotate").status_code == 403
+    assert "rotated" not in calls
 
 
 def test_get_preview_sharing(client):

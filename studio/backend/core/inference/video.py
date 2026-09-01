@@ -6366,6 +6366,27 @@ class VideoBackend:
             del state
             clear_gpu_cache()
 
+    def _refuse_foreign_teardown(self, subject: Optional[str]) -> None:
+        """Raise if tearing down now would end another account's render or load.
+
+        Split out of unload so callers that are about to trigger the engine's own
+        subject-less teardown (the training start frees VRAM that way) can ask the
+        question first and refuse, instead of discovering it by cancelling
+        somebody's clip. Mirrors the diffusion backend's helper of the same name.
+        """
+        if subject is None:
+            return
+        with self._lock:
+            if self._generate_job_active and self._gen_subject != subject:
+                raise ForeignWorkspaceActiveError(
+                    "Another account is generating a video right now."
+                )
+            loading = self._loading
+            if loading is not None and loading.error is None and loading.subject != subject:
+                raise ForeignWorkspaceActiveError(
+                    "Another account is loading a video model right now."
+                )
+
     def unload(self, subject: Optional[str] = None) -> dict[str, Any]:
         """Free the pipeline, cancelling whatever is running.
 
@@ -6376,17 +6397,7 @@ class VideoBackend:
         cancellation event, so the authenticated unload route was still a way for
         any account to end somebody else's run.
         """
-        if subject is not None:
-            with self._lock:
-                if self._generate_job_active and self._gen_subject != subject:
-                    raise ForeignWorkspaceActiveError(
-                        "Another account is generating a video right now."
-                    )
-                loading = self._loading
-                if loading is not None and loading.error is None and loading.subject != subject:
-                    raise ForeignWorkspaceActiveError(
-                        "Another account is loading a video model right now."
-                    )
+        self._refuse_foreign_teardown(subject)
         with self._lock:
             self._load_token += 1
             self._cancel_event.set()
