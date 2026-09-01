@@ -996,3 +996,52 @@ def test_a_cpu_pinned_drafter_is_not_charged_the_tied_duplicate(backend, mib_emb
     ]
     assert None not in priced
     assert priced[0] == priced[1], "the tied drafter is charged a duplicate it never allocates"
+
+
+def test_an_unclassified_vulkan_device_is_shared_for_the_host_pool_too(backend):
+    """Two different questions, and an unreadable type answers no to both.
+
+    `_unclassified_gpu_ids` withholds the discrete-only discount; `_shared_gpu_ids`
+    decides whether the pool may be credited ON TOP of host RAM, which is what
+    `_launch_host_shortfall_message` and `_fit_derived_load_mode` read. An integrated
+    device's heap IS that RAM, so counting it twice hides the shortfall the pageable
+    override exists to catch -- and the probe reports a heap for an unreadable row,
+    so `total <= 0` alone does not catch it.
+    """
+    import inspect
+
+    compact = "".join(inspect.getsource(backend.load_model).split())
+    assert "_shared_gpu_ids|=_unclassified_gpu_ids" in compact
+    # Vulkan only: elsewhere "unclassified" can just mean torch is absent, which is
+    # no evidence about any device's memory topology.
+    vulkan_branch = compact[
+        compact.index("ifis_vulkan_backend:_shared_gpu_ids=") : compact.index(
+            "else:_unclassified_gpu_ids="
+        )
+    ]
+    assert "_shared_gpu_ids|=_unclassified_gpu_ids" in vulkan_branch
+
+
+def test_a_shared_pool_is_not_credited_on_top_of_host_ram(backend, mib_embd_pair):
+    """Why the set membership above matters, at the seam that reads it: the same
+    device credited as dedicated VRAM answers "fits", and treated as shared answers
+    with a shortfall, which is what reaches the pageable-load override."""
+    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
+
+    tied, _untied = mib_embd_pair
+    instance = object.__new__(backend)
+    instance._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    instance._cgroup_available_memory_mib = lambda: None
+    argv = ["llama-server", "-m", str(tied)]
+    rows = [(0, 24 * 1024)]
+    avail_mib = 8 * 1024 + _HOST_RAM_HEADROOM_MIB
+
+    assert (
+        instance._launch_host_shortfall_message(argv, rows, avail_mib = avail_mib) is None
+    ), "24 GiB of dedicated VRAM holds all but 8 GiB of it"
+    assert (
+        instance._launch_host_shortfall_message(
+            argv, rows, avail_mib = avail_mib, shared_gpu_ids = [0]
+        )
+        is not None
+    ), "the same pool is host RAM, so the whole model has to fit in it"

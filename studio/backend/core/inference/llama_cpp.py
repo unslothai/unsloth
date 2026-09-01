@@ -19261,6 +19261,14 @@ class LlamaCppBackend:
                             for row in (_vulkan_probe_rows or ())
                             if not row.get("type_known", True)
                         }
+                        # And they join the shared set, which is the separate question
+                        # of whether this pool may be credited on TOP of host RAM. If
+                        # the device is integrated its heap IS that RAM, and counting
+                        # it twice hides the shortfall the pageable override exists to
+                        # catch. Only a Vulkan row is folded in: elsewhere
+                        # "unclassified" can mean torch is simply absent, which says
+                        # nothing about any device's memory topology.
+                        _shared_gpu_ids |= _unclassified_gpu_ids
                     else:
                         _unclassified_gpu_ids = {
                             idx
