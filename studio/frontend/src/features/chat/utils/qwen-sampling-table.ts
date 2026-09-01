@@ -2,12 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The single Qwen3 sampling table, kept free of store imports.
- *
- * qwen-params.ts imports the store, which imports this migration, so the table
- * cannot live there without a cycle. Keeping it pure lets model load, the Think
- * toggle and the migration agree by construction: change a value once and every
- * consumer follows, including rows already on disk.
+ * The single Qwen3 sampling table. Kept free of store imports: qwen-params.ts
+ * imports the store, so the table cannot live there without a cycle. Load, the
+ * Think toggle and the migration then agree by construction.
  */
 
 import { parseExternalModelId } from "../external-providers";
@@ -20,43 +17,34 @@ export type QwenThinkingParams = {
   presencePenalty?: number;
 };
 
-// Boundary-anchored, not a substring: "Qwen3.80" and "Qwen3.8B" are a future
-// family and a parameter count, and a substring test would give both the
-// presence bump. Any non-alphanumeric ends the family, rather than a list of
-// delimiters: a path or filename can separate it with a space or a bracket just
-// as legitimately as with "-", "/", the "." of a .gguf name or the ":" of a tag.
+// Boundary-anchored: "Qwen3.80" and "Qwen3.8B" are a future family and a
+// parameter count, and a substring test would bump both. Any non-alphanumeric
+// ends the family, since a path can separate it with a space as readily as "-".
 const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[^a-z0-9])/;
 
 const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
 /**
- * An Ollama inventory reference wraps a percent-encoded absolute path, so
- * normalizeModelIdentity sees the wrapper rather than a path and folds the case
- * of the path with it. Two manifests differing only by path case are two files
- * on a case-sensitive filesystem, so callers compare these exactly.
+ * normalizeModelIdentity sees this wrapper rather than the percent-encoded path
+ * inside it and folds the path's case with it, so callers compare these exactly:
+ * two manifests differing only by case are two files.
  */
 export function isOllamaManifestRef(modelId: string): boolean {
   return modelId.startsWith(OLLAMA_MANIFEST_REF_PREFIX);
 }
 
 /**
- * The bare model id, with any external wrapper removed.
- *
- * An external checkpoint is `external::<provider>::<percent-encoded id>`, so
- * "Qwen/Qwen3.8-27B" arrives with its slash as `%2F`. That leaves an
- * alphanumeric `f` against the family segment, which the boundary match would
- * reject, dropping the presence bump for every external Qwen.
+ * The bare model id, with any wrapper removed. Both wrappers percent-encode, so
+ * "Qwen/Qwen3.8-27B" arrives with its slash as `%2F`, leaving an alphanumeric
+ * "f" against the family segment that the boundary match would reject.
  */
 function bareModelId(checkpoint: string): string {
   const external = parseExternalModelId(checkpoint)?.modelId;
   if (external !== undefined) {
     return external;
   }
-  // An Ollama row keeps its opaque inventory reference all the way into
-  // inference status (_public_model_identifier), and the manifest path is
-  // quoted with safe='', so every separator arrives as %2F. Undecoded, the
-  // family segment sits between an alphanumeric "f" and a "%", and the
-  // boundary match below drops the presence bump for every Ollama Qwen.
+  // An Ollama row carries its inventory reference into inference status, quoted
+  // with safe='', so every separator arrives as %2F.
   if (checkpoint.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) {
     const ref = checkpoint.slice(OLLAMA_MANIFEST_REF_PREFIX.length);
     try {

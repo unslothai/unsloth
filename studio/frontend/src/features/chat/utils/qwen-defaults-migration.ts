@@ -36,13 +36,10 @@ const LEGACY_OPTIONAL_GLOBAL_QWEN_DEFAULTS = {
 } as const;
 
 /**
- * The replacement table, read from the resolver model load and the Think toggle
- * use, so a corrected recommendation reaches persisted rows instead of this
- * file drifting into a second, stale source of truth.
- *
- * Null whenever the resolver gives no presencePenalty, which is exactly the
- * Qwen3.5/3.6/3.8 set: a generic Qwen3 row never had the bump, so it is not
- * ours to rewrite.
+ * The replacement table, read from the same resolver load and the Think toggle
+ * use, so this file cannot drift into a second source of truth. Null whenever
+ * the resolver gives no presencePenalty: a generic Qwen3 row never had the bump,
+ * so it is not ours to rewrite.
  */
 function currentQwenDefaults(
   modelId: string,
@@ -88,9 +85,8 @@ function isLegacyGlobalQwenDefaultSnapshot(
     Object.entries(LEGACY_OPTIONAL_GLOBAL_QWEN_DEFAULTS).every(
       ([key, value]) => {
         const stored = params[key as keyof PersistedInferenceParams];
-        // Old global settings did not always serialize these two. A present
-        // value must still match, so a customized snapshot is never mistaken
-        // for generated legacy data.
+        // Old globals did not always serialize these two, but a present value
+        // must still match, or a customization reads as generated data.
         return stored === undefined || stored === value;
       },
     )
@@ -140,20 +136,15 @@ function migrateStoredModelDefaults(
   const patchByModel: Record<string, PersistedInferenceParams> = {};
   const storedEntries = Object.entries(stored ?? {});
   // Prefer an exact key when legacy storage holds two spellings; otherwise
-  // normalize the sole case-insensitive match to the checkpoint spelling,
-  // which is how replay indexes the map.
-  // normalizeModelIdentity, not toLowerCase: it folds case for repository ids
-  // and case-insensitive path forms while preserving it for POSIX paths, which
-  // can name two different files differing only by case.
-  // An opaque id is compared exactly. An external one is provider-qualified,
-  // built by buildExternalModelId, so it has no legacy spellings to reconcile;
-  // an Ollama manifest ref wraps an encoded path whose case is significant.
+  // normalize the sole case-insensitive match to the checkpoint spelling, which
+  // is how replay indexes the map. normalizeModelIdentity, not toLowerCase: it
+  // preserves case for POSIX paths, which can name two different files. Opaque
+  // ids compare exactly and have no legacy spellings to reconcile.
   const activeIdentity = normalizeModelIdentity(activeCheckpoint);
   const activeIsOpaque = isOpaqueModelRef(activeCheckpoint);
-  // Only the sole alias is normalized, and that is checked rather than assumed:
-  // with two historical spellings one may hold the legacy snapshot and the
-  // other the user's own sampling, and picking by insertion order would serve
-  // generated defaults over a customization for the same model.
+  // Only the sole alias, checked rather than assumed: with two spellings one
+  // may hold the legacy snapshot and the other the user's own sampling, and
+  // insertion order would serve generated defaults over a customization.
   const aliases = activeIsOpaque
     ? []
     : storedEntries.filter(
@@ -180,10 +171,8 @@ function migrateStoredModelDefaults(
           ? changedDefaults(entry, currentDefaults)
           : migratedEntry;
       if (modelId !== normalizedModelId) {
-        // The server merge only sets keys, so the spelling being normalized
-        // away survives there. Leaving it legacy means a later status naming
-        // that spelling replays the stale row, so migrate the alias too rather
-        // than pointing two keys at different values.
+        // The server merge only sets keys, so the spelling normalized away
+        // survives and a later status naming it would replay the stale row.
         migratedByModel[modelId] = migratedEntry;
         patchByModel[modelId] = changedDefaults(entry, currentDefaults);
       }
@@ -208,9 +197,8 @@ export function migrateLegacyQwenDefaults(
   globalBelongsToActiveCheckpoint = false,
   migrateOwnedGlobalAlongsideModelMemory = false,
 ): QwenDefaultsMigration {
-  // An empty map is no per-model memory, not memory that is empty. Both callers
-  // normalize it away, but this is exported: leaving that to them makes a
-  // global-only install fail to migrate depending on the path taken.
+  // An empty map is no per-model memory, not memory that is empty. Normalized
+  // here, not in the callers: this is exported.
   const storedRaw = settings.inferenceParamsByModel;
   const stored =
     storedRaw !== undefined && Object.keys(storedRaw).length > 0
@@ -243,7 +231,7 @@ export function migrateLegacyQwenDefaults(
     ? changedDefaults(settings.inferenceParams ?? {}, currentGlobalDefaults)
     : null;
   // An already-current global produces {}, which is truthy and would be sent as
-  // an empty conditional patch. Nothing to migrate is not a migration.
+  // an empty patch.
   const globalPatch =
     globalChanges && Object.keys(globalChanges).length > 0
       ? globalChanges

@@ -362,10 +362,8 @@ function sameCheckpointIdentity(
   if (!(left && right)) {
     return false;
   }
-  // Opaque ids compare exactly. An external id is provider-qualified, so its
-  // case is the provider's business, and an Ollama manifest ref wraps an
-  // encoded POSIX path. normalizeModelIdentity would fold both, since it
-  // lowercases anything that is not a local path.
+  // Opaque ids compare exactly: a provider qualifies one and an encoded POSIX
+  // path sits inside the other, and normalizeModelIdentity would fold both.
   if (isOpaqueModelRef(left) || isOpaqueModelRef(right)) {
     return left === right;
   }
@@ -630,8 +628,7 @@ function flushSettingsOnPageHidden(terminal: boolean): void {
   // tab is going away, so send it rather than let the next session hydrate over it.
   drainPreHydrationPatch();
   if (Object.keys(pendingPatch).length === 0) return;
-  // Counted like any other flush: settingsWritesAreDrained answers "can the
-  // migration write now", and a keepalive PUT still on the wire would land
+  // Counted like any other flush: a keepalive PUT still on the wire would land
   // after the compare-and-set and restore the legacy row.
   unsettledFlushes += 1;
   inflightFlush = inflightFlush
@@ -3568,9 +3565,8 @@ function noteModelDefaultsBeforeHydration(
   if (!sameCheckpointIdentity(modelLoadedBeforeHydration, checkpoint)) {
     modelLoadedBeforeHydration = null;
   }
-  // setCheckpoint marks any pre-hydration switch as an interactive pick. This
-  // is the adoption signal that says otherwise, and leaving the mark would tell
-  // hydration the global belongs to nobody.
+  // setCheckpoint marks any pre-hydration switch as an interactive pick, and
+  // this is the adoption signal that says otherwise.
   if (sameCheckpointIdentity(unownedCheckpointBeforeHydration, checkpoint)) {
     unownedCheckpointBeforeHydration = null;
   }
@@ -3916,11 +3912,9 @@ function qwenMigrationThinkingOn(
     return true;
   }
   // Ahead of the established mode: a model that cannot reason never had the
-  // thinking table applied at load (apply-inference-status-to-store gates on
-  // supportsReasoning), and the mode recorded for it is just whatever toggle
-  // this browser happened to hold. Only once a load or status actually reported
-  // this checkpoint, though: supportsReasoning starts false, and "not asked
-  // yet" is not "cannot".
+  // thinking table applied at load, so its recorded mode is just this browser's
+  // toggle. Only once status reported this checkpoint, though, since
+  // supportsReasoning starts false and "not asked yet" is not "cannot".
   const statusSeen = sameCheckpointIdentity(
     loadedModelReasoningMode?.checkpoint,
     state.params.checkpoint,
@@ -3929,9 +3923,7 @@ function qwenMigrationThinkingOn(
     return false;
   }
   // requireLoad, as the hydrated pill uses: a status refresh echoes the toggle
-  // already in the store, which before hydration is this browser's local
-  // default, and letting that pick the table would persist thinking sampling
-  // under a pill hydrating off.
+  // already in the store, which before hydration is this browser's own default.
   const established = loadEstablishedReasoningMode(state, true);
   if (established) {
     return established.enabled;
@@ -3964,18 +3956,12 @@ const QWEN_MIGRATION_DECISION_FIELDS = [
 ] as const satisfies ReadonlyArray<keyof PersistedChatSettings>;
 
 // Raw, not sanitized: the server tests `key in current` against what is stored,
-// and sanitizing drops keys that are still present, such as an empty
-// inferenceParamsByModel. Asserting absence from the sanitized copy would fence
-// a key the row really has and reject every migration on that install.
+// so asserting absence from the sanitized copy would fence a key the row has.
 /**
  * True when a decision field is stored but sanitizes away, such as an explicit
- * null. The compare-and-set asserts a value or an absence and neither fits: the
- * sanitized copy has nothing to send, while the row still holds the key, so an
- * absence assertion rejects every time. Decline rather than migrate unfenced.
- * An empty inferenceParamsByModel map is exempt, and only that: it sanitizes
- * away and means what the migration already assumes, no per-model memory. Any
- * other unsanitizable value there, a null included, is still a key the row
- * holds and another tab can replace with real per-model rows.
+ * null: the compare-and-set can assert a value or an absence and neither fits,
+ * so decline rather than migrate unfenced. An empty inferenceParamsByModel map
+ * is exempt, and only that, since it means what the migration already assumes.
  */
 function isEmptyPlainObject(value: unknown): boolean {
   return (
@@ -4143,9 +4129,8 @@ function adoptMigratedFieldsAfterLocalEdit(
     }
     const storedRow = state.paramsByModel[checkpoint];
     return {
-      // As the normal application path does: a thread pin is not an
-      // installation default, and applying one advances no mutation version, so
-      // nothing above would have noticed it.
+      // As the normal application path does: applying a thread pin advances no
+      // mutation version, so nothing above would have noticed it.
       params: restoreThreadScopedParams(nextParams),
       ...(storedRow
         ? {
@@ -4168,15 +4153,13 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     // legacy snapshot; a newer edit in another tab fails the fingerprint
     // safely.
     await flushPendingChatSettings();
-    // A write still outstanding past the flush timeout would reach the backend
-    // merge after this CAS and restore the legacy row. Rearm on its settlement
-    // rather than waiting here, since a wedged write must not hold a send open,
-    // and an external selection gets no later status callback to schedule this.
+    // A write outstanding past the flush timeout would reach the backend merge
+    // after this CAS and restore the legacy row. Rearm on its settlement rather
+    // than wait: an external selection gets no later status callback.
     if (!settingsWritesAreDrained()) {
-      // Bounded: a patch the backend keeps refusing is retained and reflushed
-      // by each pass, so rearming on every settlement would loop on an
-      // unreachable backend. The count clears as soon as writes drain, so a
-      // healthy install never spends it.
+      // Bounded: a refused patch is retained and reflushed by each pass, so an
+      // unbounded rearm loops on an unreachable backend. Cleared once writes
+      // drain, so a healthy install never spends it.
       if (qwenMigrationRearmsWhileBlocked < QWEN_MIGRATION_MAX_REARMS) {
         qwenMigrationRearmsWhileBlocked += 1;
         void inflightFlush.catch(() => undefined).then(() => {
@@ -4200,8 +4183,8 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     const confirmedRaw = await getChatSettings();
     const confirmed = sanitizeChatSettings(confirmedRaw);
     const confirmedState = useChatRuntimeStore.getState();
-    // A model switch during the confirming GET invalidates both the row and the
-    // reasoning mode this retry would persist. The new model schedules its own.
+    // A model switch during the GET invalidates both the row and the reasoning
+    // mode this retry would persist. The new model schedules its own.
     if (
       !confirmedState.settingsHydrated ||
       confirmedState.activePresetSource !== "builtin-default" ||
@@ -4218,16 +4201,15 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       checkpoint,
       qwenMigrationThinkingOn(confirmed, confirmedState),
       includeOwnedGlobal,
-      // Recomputed from the confirming read, as hydration derives it: per-model
-      // memory turned on elsewhere since scheduling means the global snapshot
-      // is no longer the active checkpoint's to rewrite.
+      // From the confirming read, as hydration derives it: memory turned on
+      // elsewhere means the global is no longer this checkpoint's to rewrite.
       migrateOwnedGlobalAlongsideModelMemory &&
         !qwenMigrationRemembersPerModel(confirmed, confirmedState),
     );
     if (!migration.patch) return;
     if (qwenMigrationHasUnfenceableField(confirmedRaw, confirmed)) return;
-    // Captured before the write: an edit landing while it is in flight is the
-    // one case where the server takes the migration and local refuses it.
+    // Captured before the write: an edit landing mid-flight is the one case
+    // where the server takes the migration and local refuses it.
     const presetSourceBeforeWrite = activePresetSourceMutationVersion;
     const paramVersionsBeforeWrite = { ...inferenceParamMutationVersions };
     const persisted = await savePersistedChatSettingsPatchIfCurrent(
@@ -4236,15 +4218,10 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       qwenMigrationExpectedAbsent(confirmedRaw),
       qwenMigrationExpectedAbsentPaths(confirmedRaw, migration.patch),
     );
-    // Only now touch local state. Applying before persisting would leave this
-    // tab generating with values the server rejected, with no read to correct
-    // it; the write decides.
-    //
-    // Revalidated again after the await: the checkpoint can move between the
-    // CAS committing and its response arriving, and applying then would mark a
-    // different model's row migrated while the server updated the first. An
-    // external pick has no model-load callback to schedule another retry, so
-    // that row would stay stale until the next start.
+    // Only now touch local state: applying before persisting would leave this
+    // tab generating with values the server rejected. Revalidated after the
+    // await too, since the checkpoint can move while the response is in flight,
+    // and an external pick gets no callback to schedule another retry.
     if (
       persisted.applied &&
       sameCheckpointIdentity(
@@ -4279,17 +4256,14 @@ const QWEN_MIGRATION_MAX_REARMS = 3;
 let qwenMigrationRearmsWhileBlocked = 0;
 
 /**
- * Settles once a scheduled migration has finished deciding and persisting.
- *
- * The send path joins this so a prompt sent right after picking a Qwen with a
- * dormant legacy row does not generate from the values getReplayedParams just
- * put on screen. Resolves immediately when nothing is scheduled.
+ * Settles once a scheduled migration has decided and persisted, so a prompt sent
+ * right after picking a Qwen with a dormant legacy row does not generate from
+ * the values getReplayedParams just put on screen.
  */
 export async function awaitPendingQwenDefaultsMigration(): Promise<void> {
   if (qwenMigrationInFlight === null) return;
-  // Bounded like the settings flush: the confirming GET and the conditional
-  // write take no abort signal, so a wedged backend would hold every send open
-  // here. Past this the run goes ahead on what the server already has.
+  // Bounded like the settings flush: neither request takes an abort signal, so
+  // a wedged backend would hold every send open. Past this the run proceeds.
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -4303,9 +4277,8 @@ export async function awaitPendingQwenDefaultsMigration(): Promise<void> {
   }
 }
 
-// Re-read rather than await once: a status or model change can schedule a
-// replacement while this waits, and that retry owns the checkpoint the send is
-// about to generate from. Ends when nothing is scheduled.
+// Re-read rather than await once: a replacement scheduled while this waits owns
+// the checkpoint the send is about to generate from.
 async function followPendingQwenDefaultsMigrations(): Promise<void> {
   let pending = qwenMigrationInFlight;
   while (pending) {
@@ -4342,13 +4315,11 @@ function scheduleLegacyQwenDefaultsRetry(
     return;
   }
   qwenDefaultsRetryScheduled = true;
-  // Published so the send path can join it. The promise exists from scheduling
-  // time, not from when the microtask runs, or a send landing in between would
-  // find nothing to wait for and generate from the row just replayed.
+  // Published from scheduling time, not from when the microtask runs, or a send
+  // landing in between would find nothing to wait for.
   let settleMigration: () => void = () => undefined;
-  // Only clears the pointer while it still refers to this retry: the scheduler
-  // frees its slot before the async work finishes, so a later retry can replace
-  // it, and clearing that would tell the send path nothing is pending.
+  // Cleared only while the pointer still refers to this retry: the scheduler
+  // frees its slot before the async work ends, so a later retry can replace it.
   const migration: Promise<void> = new Promise<void>((resolve) => {
     settleMigration = () => {
       if (qwenMigrationInFlight === migration) {
@@ -4688,11 +4659,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
                       ),
                   )
                 : unmigrated(confirmed);
-            // migrateLegacyQwenDefaults returns its own input when there is
-            // nothing to migrate, so a confirming read that finds no candidate
-            // would otherwise replace an unsaved legacy merge with server-only
-            // settings and drop every imported preference for the session. An
-            // unfenceable field declines the same way.
+            // migrateLegacyQwenDefaults returns its own input when nothing
+            // migrates, so a read finding no candidate would otherwise replace
+            // an unsaved legacy merge with server-only settings.
             if (
               migration.patch === null ||
               qwenMigrationHasUnfenceableField(confirmedRaw, confirmed)
