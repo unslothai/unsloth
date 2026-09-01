@@ -2839,3 +2839,38 @@ def test_a_retired_workspace_path_is_still_recognised_as_private(tmp_path, monke
     assert inference_routes._looks_like_a_local_model_path("black-forest-labs/FLUX.1-dev") is False
     assert inference_routes._looks_like_a_local_model_path("/var/lib/x/model") is True
     assert inference_routes._looks_like_a_local_model_path("a/b/c") is True
+
+
+def test_a_managed_recipe_cannot_read_provider_keys_from_the_server_environment():
+    from fastapi import HTTPException
+
+    from routes.data_recipe.jobs import _reject_env_credentials_from_a_managed_account
+
+    # api_key_env is resolved with os.getenv in the spawned worker, and both the
+    # variable name and the endpoint come from the request, so this hands the
+    # secret to an endpoint of the caller's choosing rather than merely spending
+    # it. No containment on the recipe's paths can address that.
+    providers = [
+        {"provider_type": "external", "api_key_env": "OPENAI_API_KEY"},
+        {"provider_type": "external", "api_key": "sk-its-own"},
+    ]
+    token = _bind("alice")
+    try:
+        with pytest.raises(HTTPException) as exc:
+            _reject_env_credentials_from_a_managed_account(providers)
+        assert exc.value.status_code == 403
+        # Supplying the key directly is fine.
+        _reject_env_credentials_from_a_managed_account([providers[1]])
+        _reject_env_credentials_from_a_managed_account(
+            [{"provider_type": "external", "api_key_env": "  "}]
+        )
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        # The owner's environment is the owner's, and naming a variable in it is
+        # how the feature is meant to be used.
+        _reject_env_credentials_from_a_managed_account(providers)
+    finally:
+        reset_workspace_subject(token)

@@ -19,7 +19,7 @@ from auth.authentication import (
     get_current_credential,
     require_ui_session_for_local_commands,
 )
-from auth.storage import CredentialRotated
+from auth.storage import CredentialRotated, is_installation_owner
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -275,6 +275,36 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
+def _reject_env_credentials_from_a_managed_account(providers: list) -> None:
+    """Only the owner may have a recipe read a provider key out of the environment.
+
+    ``api_key_env`` is resolved with os.getenv in the spawned worker, which
+    inherits the backend environment. The variable name and the endpoint both
+    come from the request, so a managed account could name any secret the process
+    holds and have it sent to an endpoint of its choosing. That is not spending a
+    credential, it is handing it over, which no containment on the recipe's paths
+    can address.
+
+    The owner keeps it: the environment is theirs, and naming a variable in it is
+    how the feature is meant to be used. A managed account supplies the key
+    itself instead.
+    """
+    if is_installation_owner():
+        return
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        named = provider.get("api_key_env")
+        if isinstance(named, str) and named.strip():
+            raise HTTPException(
+                status_code = 403,
+                detail = (
+                    "This account cannot read provider keys from the server's "
+                    "environment. Enter the API key directly instead."
+                ),
+            )
+
+
 def _inject_local_providers(
     recipe: dict[str, Any],
     request: Request,
@@ -339,6 +369,8 @@ def _inject_local_providers(
             expect_gen = expect_gen,
         )
         internal_key_id = int(row["id"])
+
+    _reject_env_credentials_from_a_managed_account(providers)
 
     # Strip stale "external"-only fields (extra_headers/extra_body/api_key_env)
     # the frontend may have serialized; a provider flipped from external to local
@@ -604,6 +636,21 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
             detail = "This execution does not have publishable dataset artifacts.",
         )
     artifact_path = _workspace_artifact_path(artifact_path)
+
+    if not (hf_token or "").strip() and not is_installation_owner():
+        # publish_recipe_dataset passes token=None straight into the Hub client and
+        # card.push_to_hub, where it means "use whatever is ambient". That is the
+        # owner's token or cached login, so a managed account could create or
+        # overwrite datasets under the owner's repositories. This path never goes
+        # near the download lifecycle, so the fallback made owner-only there does
+        # not cover it.
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Publishing to Hugging Face needs your own access token. Add one "
+                "in Settings and try again."
+            ),
+        )
 
     try:
         url = publish_recipe_dataset(

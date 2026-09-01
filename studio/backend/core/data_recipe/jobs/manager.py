@@ -251,6 +251,15 @@ class JobManager:
             from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
             cache_env = get_hf_cache_paths().child_env({})
+            # Same suppression the trainers apply: this child is spawned, so it
+            # copies the live parent environment. Defence in depth behind the
+            # route's refusal of api_key_env, which is what actually stops a
+            # managed account naming an arbitrary variable to read.
+            from core.training.training import _ambient_credentials_suppressed_for
+
+            cache_env.update(
+                _ambient_credentials_suppressed_for(self._workspace_subject)
+            )
 
             with (
                 child_environment_for_spawn(cache_env),
