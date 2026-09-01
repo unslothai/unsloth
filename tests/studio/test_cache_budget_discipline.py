@@ -734,9 +734,7 @@ def _resolve(text: str, row: dict) -> str:
     return _PW_EXPR.sub(lambda m: row.get(m.group(1), m.group(0)), text)
 
 
-_PRIMARY_KEY = re.compile(
-    r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.cache-primary-key\s*\}\}"
-)
+_PRIMARY_KEY = re.compile(r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.cache-primary-key\s*\}\}")
 
 
 def _forwarded_key(key: str, steps: list, row: dict) -> str:
