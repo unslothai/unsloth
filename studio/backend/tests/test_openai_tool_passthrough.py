@@ -205,6 +205,42 @@ class TestFriendlyUpstreamError:
             # None keeps the upstream status: a 400 would blame the caller's request.
             assert _classify_llama_generation_error(Exception(raw)) is None
 
+    def test_in_band_sse_error_gets_the_same_wording_as_the_non_200_branch(self):
+        """A 200 stream that later emits data: {"error": ...} used to be wrapped in a
+        plain RuntimeError, and _friendly_error flattens the count-less oversize
+        refusal to "An internal error occurred" -- a 400/invalid_request_error with
+        nothing the client can read or compact on."""
+        import json as _json
+
+        from routes.inference import _anthropic_upstream_stream_error_event
+
+        def body(text):
+            event = _anthropic_upstream_stream_error_event(text)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        no_counts = body(
+            "the request exceeds the available context size. try increasing the context size"
+        )
+        assert "internal error" not in no_counts["message"].lower()
+        assert no_counts["message"].startswith("Prompt is too long")
+        assert no_counts["type"] == "invalid_request_error"
+
+        counted = body(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        assert "Prompt is too long: 214331 tokens > 131072 maximum" in counted["message"]
+        assert counted["type"] == "invalid_request_error"
+
+        # Starvation keeps the retry advice and must not become a 400.
+        starved = body("Context size has been exceeded.")
+        assert "shared pool of context" in starved["message"]
+        assert "too long" not in starved["message"].lower()
+        assert starved["type"] == "api_error"
+
+        unrelated = body("disk full")
+        assert unrelated["message"] == "llama-server error: disk full"
+        assert unrelated["type"] == "api_error"
+
     def test_a_genuine_oversize_body_is_still_classified_as_an_overflow(self):
         from routes.inference import _classify_llama_generation_error
         assert (

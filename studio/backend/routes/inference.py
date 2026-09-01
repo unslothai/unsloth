@@ -1036,6 +1036,27 @@ def _anthropic_stream_error_event(exc, *, force: bool = False):
     )
 
 
+def _anthropic_upstream_stream_error_event(text: str):
+    """In-band Anthropic error event for a 200 stream that later reports an upstream failure.
+
+    Same wording and status rule as the non-200 branch. Routing the raw body through
+    `_friendly_error` instead flattens the count-less oversize refusal ("the request
+    exceeds the available context size") to "An internal error occurred", so a streaming
+    client is told 400/invalid_request_error with nothing it can read or compact on.
+    """
+    from core.inference.llama_keepwarm import mark_current_response_failed
+
+    mark_current_response_failed()
+    over = bool(_classify_llama_generation_error(Exception(text)))
+    return build_anthropic_sse_event(
+        "error",
+        anthropic_error_body(
+            _anthropic_upstream_error(text),
+            status = 400 if over else 500,
+        ),
+    )
+
+
 def _drop_parallel_tool_call_deltas(chunk) -> bool:
     """In-place: drop tool_call deltas whose index >= 1 from a parsed OpenAI
     streaming chunk so only the first tool call survives (parallel_tool_calls=false
@@ -29506,12 +29527,7 @@ async def _anthropic_passthrough_stream(
                         from core.inference.llama_keepwarm import mark_response_failed
 
                         mark_response_failed(getattr(request, "scope", None))
-                        event = _anthropic_stream_error_event(
-                            RuntimeError(error_message),
-                            force = True,
-                        )
-                        if event is not None:
-                            yield event
+                        yield _anthropic_upstream_stream_error_event(error_message)
                         return
                 if disable_parallel_tool_use:
                     _drop_parallel_tool_call_deltas(chunk)
