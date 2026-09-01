@@ -201,20 +201,38 @@ def test_the_transformers_tables_do_not_overlap_or_contradict_the_trl_ones():
     assert not (set(TRANSFORMERS_CONFIG_RENAMES) & set(TRL_CONFIG_RENAMES))
 
 
-def test_transformers_rename_targets_are_real_fields_of_the_installed_version():
-    """Skipped on transformers 4, which still declares the old names."""
+def test_a_field_the_installed_version_still_declares_is_never_migrated():
+    """The invariant that makes a table entry safe to write ahead of its removal.
+
+    The 28 arguments did not all go in 5.0.0: `group_by_length` survived to 5.1.0,
+    `warmup_ratio` and `logging_dir` to 5.14.1. An entry is consulted only after
+    the config rejects the name, so on a version that still has it the entry must
+    be inert. Asserted per entry, and per installed version, rather than assuming
+    one cutoff.
+    """
     transformers = pytest.importorskip("transformers")
-    TrainingArguments = transformers.TrainingArguments
-    fields = {f.name for f in dataclasses.fields(TrainingArguments)}
-    if "warmup_ratio" in fields:
-        pytest.skip("transformers 4 still declares the pre-5.0 argument names")
+    fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
 
+    for key in list(TRANSFORMERS_CONFIG_RENAMES) + list(TRANSFORMERS_REMOVED_FIELD_ADVICE):
+        if key in fields:
+            verdict, _ = _MODULE.classify_config_kwarg(transformers.TrainingArguments, key)
+            assert verdict == "accepted", f"{key} is still a field but classified {verdict}"
+
+
+def test_a_transformers_rename_target_exists_once_the_old_name_is_gone():
+    """A rename is only reachable after the old name goes, so that is when its
+    target has to be real. A typo there degrades the migration to a plain drop."""
+    transformers = pytest.importorskip("transformers")
+    fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
+
+    checked = 0
     for old, new in TRANSFORMERS_CONFIG_RENAMES.items():
-        assert old not in fields, f"{old} is still a field, so it must not be renamed"
+        if old in fields:
+            continue
         assert new in fields, f"{old} renames to {new}, which does not exist"
-
-    for retired in TRANSFORMERS_REMOVED_FIELD_ADVICE:
-        assert retired not in fields, f"{retired} still exists, so it is not retired"
+        checked += 1
+    if not checked:
+        pytest.skip("this transformers still declares every renamed argument")
 
 
 def test_a_transformers_5_removal_is_carried_across_on_a_real_config():
@@ -222,7 +240,7 @@ def test_a_transformers_5_removal_is_carried_across_on_a_real_config():
     transformers = pytest.importorskip("transformers")
     fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
     if "warmup_ratio" in fields:
-        pytest.skip("transformers 4 still declares warmup_ratio")
+        pytest.skip("this transformers still declares warmup_ratio")
 
     @dataclasses.dataclass
     class ModernSFTConfig:
