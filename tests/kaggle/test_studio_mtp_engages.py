@@ -58,9 +58,9 @@ def test_a_drafter_that_never_engaged_is_a_failure():
         if isinstance(node, ast.If) and "drafter_kind" in ast.unparse(node.test)
     ]
     assert guards, "spec_drafter_kind appears but gates nothing"
-    assert any("'mtp'" in guard or '"mtp"' in guard for guard in guards), (
-        "the drafter kind is read but never required to be mtp"
-    )
+    assert any(
+        "'mtp'" in guard or '"mtp"' in guard for guard in guards
+    ), "the drafter kind is read but never required to be mtp"
     appends = [
         ast.unparse(node)
         for node in ast.walk(func)
