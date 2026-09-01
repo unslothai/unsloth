@@ -80,6 +80,7 @@ export {
   normalizeModelFormat,
   normalizeRuntime,
   normalizeTimestamp,
+  partialSetFromRows,
   removeScanFolder,
   resolveInventoryResource,
   useDeviceInventorySources,

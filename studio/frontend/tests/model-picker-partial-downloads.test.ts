@@ -199,6 +199,39 @@ test("Hub rows can still tell a partial apart from an absent model", () => {
   );
 });
 
+test("an id with a complete copy is never also marked partial", () => {
+  // The cache keys by repo AND format, so one id survives as two rows: a complete GGUF copy and a
+  // torn safetensors one. Marking on `partial` alone put that id in both sets, and since the click
+  // reads downloadedSet it loaded fine while the row showed a warning dot and offered a resume.
+  assert.ok(
+    PICKERS.includes(
+      "partialSetFromRows([...cachedGguf, ...cachedModels], (c) => c.repo_id)",
+    ),
+    "the picker builds the set through the shared helper",
+  );
+  // That helper is the whole guarantee, so its exclusion rule is asserted here too.
+  const dedupe = read("../src/features/hub/inventory/inventory-dedupe.ts");
+  const start = dedupe.indexOf("export function partialSetFromRows");
+  assert.ok(start > 0, "the helper exists");
+  const body = dedupe.slice(start, dedupe.indexOf("\n}", start));
+  assert.match(body, /if \(repoId && !row\.partial\) complete\.add/);
+  assert.match(
+    body,
+    /if \(row\.partial && !complete\.has\(key\)\) partial\.add\(key\)/,
+  );
+  // Both barrels have to carry it or the import above cannot resolve.
+  assert.ok(
+    read("../src/features/hub/inventory/index.ts").includes(
+      "partialSetFromRows",
+    ) && read("../src/features/hub/index.ts").includes("partialSetFromRows"),
+  );
+  // Two rows for one id is the case being guarded, so the key that allows it is pinned.
+  assert.ok(
+    dedupe.includes('return `${normalizedRepo}\\0${modelFormat ?? "unknown"}`'),
+    "repo plus format, which is what lets one id be both",
+  );
+});
+
 test("a partial alone does not open the picker on the On Device tab", () => {
   // hasDownloadedModels picks the first run tab. The cached lists carry partials so they can be
   // seen and removed, but a machine whose only cached row is a cancelled download has nothing to

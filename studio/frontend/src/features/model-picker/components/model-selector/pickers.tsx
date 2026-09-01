@@ -57,6 +57,7 @@ import {
   hfApiToken,
   isHiddenModelId,
   jobKeyOf,
+  partialSetFromRows,
   scanFolderStatusCopy,
   useDownloadManagerStore,
   useHfTokenStore,
@@ -3217,14 +3218,12 @@ export function HubModelPicker({
   );
 
   // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
-  // or as absent. Same split the Hub page keeps.
+  // or as absent. Same split, and the same helper, the Hub page uses. One repo id can hold both a
+  // complete GGUF copy and a torn safetensors one, since the cache keys by repo AND format, so an
+  // id with any complete row is left out: it loads, and the mark would contradict that.
   const partialSet = useMemo(
     () =>
-      new Set(
-        [...cachedGguf, ...cachedModels]
-          .filter((c) => c.partial === true)
-          .map((c) => c.repo_id.toLowerCase()),
-      ),
+      partialSetFromRows([...cachedGguf, ...cachedModels], (c) => c.repo_id),
     [cachedGguf, cachedModels],
   );
 
