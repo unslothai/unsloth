@@ -455,9 +455,10 @@ def test_a_separate_drafter_never_inherits_the_main_cpu_device():
         ["--spec-draft-device", "cpu"],
         ["--spec-draft-ngl", "0"],
     ):
-        assert llama_cpp._extra_args_draft_offloaded_to_cpu(
-            ["--model-draft", "draft.gguf", *pin], {}
-        ) is True
+        assert (
+            llama_cpp._extra_args_draft_offloaded_to_cpu(["--model-draft", "draft.gguf", *pin], {})
+            is True
+        )
 
 
 def test_the_budget_sizes_from_what_lands_in_vram(backend, tied_gguf):
@@ -1001,12 +1002,7 @@ def test_a_host_only_load_is_not_charged_the_tied_duplicate(backend, mib_embd_pa
     ), "a host-only load allocates no second matrix"
     # The same weights against a card: the duplicate is real there, and the VRAM it
     # takes is VRAM the file's own weights do not get.
-    assert (
-        instance._launch_host_shortfall_message(
-            argv, [(0, 0)], avail_mib = avail_mib
-        )
-        is not None
-    )
+    assert instance._launch_host_shortfall_message(argv, [(0, 0)], avail_mib = avail_mib) is not None
 
 
 def test_a_cpu_pinned_drafter_is_not_charged_the_tied_duplicate(backend, mib_embd_pair):
@@ -1020,8 +1016,7 @@ def test_a_cpu_pinned_drafter_is_not_charged_the_tied_duplicate(backend, mib_emb
     # test is the weights, so hold it flat rather than abstain.
     instance._mtp_draft_kv_bytes = lambda *_a, **_kw: 0
     priced = [
-        instance._cpu_resident_draft_bytes(4096, drafter_path = str(path))
-        for path in (tied, untied)
+        instance._cpu_resident_draft_bytes(4096, drafter_path = str(path)) for path in (tied, untied)
     ]
     assert None not in priced
     assert priced[0] == priced[1], "the tied drafter is charged a duplicate it never allocates"
