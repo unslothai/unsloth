@@ -259,8 +259,10 @@ def _oauth_store():
 
 
 def _strip_client_id_under_basic_auth(auth) -> None:
-    """The SDK leaves client_id in the body under Basic auth; strict servers
-    (Notion) reject that as two auth methods per RFC 6749 2.3.1."""
+    """The SDK leaves client_id in the body under Basic auth. Strict servers
+    (Notion) read that as two auth methods -- RFC 6749 2.3 -- and 401 the exchange.
+    Dropping it is safe: 3.2.1 makes client_id a MAY once the client is
+    authenticated, and an unauthenticated one sends no header, so it keeps it."""
     context = getattr(auth, "context", None)
     prepare = getattr(context, "prepare_token_auth", None)
     if prepare is None:
