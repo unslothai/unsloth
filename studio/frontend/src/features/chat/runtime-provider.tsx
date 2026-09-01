@@ -2109,26 +2109,7 @@ function useStudioRuntimeAdapters(
               ? cloneAttachments(message.attachments)
               : [];
           const custom = message.metadata?.custom;
-          const targetParentId = parentId ?? null;
-          const duplicateUserMessage =
-            message.role === "user" && !existingMessage
-              ? (await listStoredChatMessages(remoteId)).find((m) => {
-                  if (m.role !== "user" || m.parentId !== targetParentId) {
-                    return false;
-                  }
-                  const mContentStr = JSON.stringify(m.content);
-                  const newContentStr = JSON.stringify(content);
-                  const mAttachStr = JSON.stringify(m.attachments ?? []);
-                  const newAttachStr = JSON.stringify(attachments);
-                  return (
-                    mContentStr === newContentStr && mAttachStr === newAttachStr
-                  );
-                })
-              : undefined;
-
-          const finalMessageId = duplicateUserMessage?.id ?? message.id;
           const createdAt =
-            duplicateUserMessage?.createdAt ??
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
             Date.now();
@@ -2173,9 +2154,9 @@ function useStudioRuntimeAdapters(
             return;
           }
           await saveStoredChatMessage({
-            id: finalMessageId,
+            id: message.id,
             threadId: remoteId,
-            parentId: targetParentId,
+            parentId: parentId ?? null,
             role: message.role,
             content,
             ...(attachments.length > 0 && { attachments }),
