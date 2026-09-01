@@ -1901,7 +1901,6 @@ def get_chat_template(
     is_mlx_backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None) == "mlx"
     if use_zoo_tokenizer_patch is None:
         use_zoo_tokenizer_patch = is_mlx_backend
-    old_tokenizer = tokenizer
 
     # mlx-lm's TokenizerWrapper._tokenizer is the HF tokenizer, not the Rust
     # backend the vocab-edit paths below need; unwrap here, re-wrap before return.
@@ -1911,6 +1910,19 @@ def get_chat_template(
         if _inner_tokenizer is not None and hasattr(_inner_tokenizer, "is_fast"):
             _mlx_tokenizer_wrapper = tokenizer
             tokenizer = _inner_tokenizer
+
+    # Multimodal checkpoints (gemma-4-E2B, Llava, Qwen-VL, ...) load as a processor,
+    # which carries the text tokenizer in `.tokenizer` -- the same unwrap the save and
+    # loader paths do. Everything below needs the tokenizer itself: the processor never
+    # has the Rust backend the vocab edits use, nor, on MLX, a padding_side of its own.
+    _processor = None
+    if hasattr(tokenizer, "tokenizer"):
+        _processor = tokenizer
+        tokenizer = tokenizer.tokenizer
+
+    # Bind after unwrapping: the pad/bos/unk restore below reads it, and a
+    # processor answers None for all three.
+    old_tokenizer = tokenizer
 
     IS_GEMMA = False
     if tokenizer.__class__.__name__.startswith("Gemma"):
@@ -2147,10 +2159,23 @@ def get_chat_template(
 
     # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
+    # Hand the processor back, not the tokenizer it was carrying: it renders chat
+    # templates off its own attribute, and the vocab edits above may have rebuilt the
+    # tokenizer and remapped eos. The loader mirrors these onto the processor
+    # (models/vision.py), so refresh them here or that copy goes stale.
+    if _processor is not None:
+        _processor.tokenizer = tokenizer
+        _processor.chat_template = chat_template
+        for _token in ("bos_token", "eos_token", "pad_token",):
+            if hasattr(tokenizer, _token):
+                setattr(_processor, _token, getattr(tokenizer, _token))
+                setattr(_processor, _token + "_id", getattr(tokenizer, _token + "_id"))
+        tokenizer = _processor
+
     # Patch saving functions
     if patch_saving and not is_mlx_backend:
         from .save import patch_saving_functions
-        tokenizer = patch_saving_functions(tokenizer)
+        tokenizer = patch_saving_functions(tokenizer, vision = _processor is not None)
 
     # Add Ollama
     tokenizer._ollama_modelfile = ollama_modelfile
