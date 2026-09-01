@@ -4596,6 +4596,16 @@ case "$TORCH_INDEX_URL" in
             if [ -n "${_amd_spoof_physical:-}" ]; then
                 _amd_probe_out="$_amd_spoof_physical"
             fi
+            # An empty correction has two meanings and only one of them is "no spoof": the
+            # helper also declines whenever the KFD reports more than one GPU node, because
+            # the override can collapse several physical targets into one reported token.
+            # Counting NODES rather than distinct arches deliberately matches the helper's
+            # own rule -- it declines on two nodes even where they agree -- so a singleton
+            # probe it refused to vouch for never picks a family on its own.
+            if [ -z "${_amd_spoof_physical:-}" ] && [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && \
+               [ "$(_kfd_gfx_targets | awk 'NF { n++ } END { print n + 0 }')" -gt 1 ]; then
+                _amd_probe_out=""
+            fi
             _amd_probed_family=$(_amd_agreed_index_family "$_amd_probe_out") \
                 || _amd_probed_family=""
             _amd_probed_gfx_first=$(_amd_sole_index_arch "$_amd_probe_out") \
@@ -4651,6 +4661,20 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     # re-exports unchanged).
                     if [ -n "$_linux_inferred_gfx" ]; then
                         export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
+                    fi
+                    # A corroborated spoof has to be cleared here as well. The rocm* leaf
+                    # below does it, but this reroute produces a gfx* leaf, which that case
+                    # never matches: the host would install native $_linux_inferred_gfx
+                    # wheels while ROCr kept reporting the spoofed arch, leaving the kernels
+                    # in those wheels unusable. SKIP_TORCH is false on this branch by its
+                    # own guard, so the wheels really are going in.
+                    if [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+                       [ -n "${_amd_spoof_physical:-}" ]; then
+                        unset HSA_OVERRIDE_GFX_VERSION
+                        echo "  [WARN] Clearing HSA_OVERRIDE_GFX_VERSION for the rest of this install:" >&2
+                        echo "  [WARN] these wheels carry $_linux_inferred_gfx kernels, so the runtime has" >&2
+                        echo "  [WARN] to report the real arch. Remove the export from your shell profile" >&2
+                        echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
                     fi
                     # Off the family, not the arch: no family straddles this boundary.
                     case "$_amd_family" in

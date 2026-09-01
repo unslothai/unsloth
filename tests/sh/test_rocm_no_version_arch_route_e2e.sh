@@ -283,6 +283,7 @@ TORCHAUDIO_CONSTRAINT=""
 printf 'INDEX=%s\n' "\$TORCH_INDEX_URL"
 printf 'GFX=%s\n' "\${UNSLOTH_ROCM_GFX_ARCH:-}"
 printf 'RADEON=%s\n' "\${_amd_gpu_radeon:-}"
+printf 'HSA=%s\n' "\${HSA_OVERRIDE_GFX_VERSION:-}"
 EOF
     PATH="$_MOCK:$_TOOLS" "$_RUN_SHELL" "$_ROOT/run.sh" 2>"$_ROOT/stderr.txt" || \
         printf 'INDEX=<installer exited %s>\n' "$?"
@@ -291,6 +292,7 @@ EOF
 run_index() { run_installer "${1:-x86_64}" | sed -n 's/^INDEX=//p'; }
 run_gfx()   { run_installer "${1:-x86_64}" | sed -n 's/^GFX=//p'; }
 run_radeon() { run_installer "${1:-x86_64}" | sed -n 's/^RADEON=//p'; }
+run_hsa()   { run_installer "${1:-x86_64}" | sed -n 's/^HSA=//p'; }
 
 _BASE="https://download.pytorch.org/whl"
 _AMD="https://repo.amd.com/rocm/whl"
@@ -460,6 +462,47 @@ mock_strix_cpuinfo; mock_kfd_gfx 110000
 assert_eq "a real gfx1100 corroborated by the kernel keeps its own family" \
     "$_AMD/gfx110X-all/" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
 
+
+mock_kfd_two() {   # $1 $2 = gfx_target_version per KFD node
+    : > "$_F_KFD"
+    for _i in 1 2; do
+        mkdir -p "$_F_SYSKFD/kfd/topology/nodes/$_i"
+    done
+    printf 'cpu_cores_count 0\nsimd_count 128\nvendor_id 4098\ngfx_target_version %s\n' \
+        "$1" > "$_F_SYSKFD/kfd/topology/nodes/1/properties"
+    printf 'cpu_cores_count 0\nsimd_count 128\nvendor_id 4098\ngfx_target_version %s\n' \
+        "$2" > "$_F_SYSKFD/kfd/topology/nodes/2/properties"
+}
+
+# The override can collapse a mixed host into ONE reported arch, and a singleton probe then
+# agrees on a family neither physical GPU can run. The spoof helper already declines here;
+# an empty correction must not be read as "no spoof".
+fedora_no_version_host gfx1100
+mock_strix_cpuinfo; mock_kfd_two 110501 120001
+assert_eq "a spoof-collapsed mixed host does not reroute" \
+    "$_BASE/cpu" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
+fedora_no_version_host gfx1100
+mock_strix_cpuinfo; mock_kfd_two 110501 120001
+assert_eq "and names no arch for setup.sh to build" \
+    "" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_gfx)"
+
+# Two nodes that agree are still a decline, because the shipped helper declines on any
+# multi-node KFD. This asserts the conservative outcome rather than the ideal one:
+# correcting here would mean changing the helper, which the Strix path shares.
+fedora_no_version_host gfx1100
+mock_strix_cpuinfo; mock_kfd_two 110501 110501
+assert_eq "two nodes the helper will not vouch for do not reroute either" \
+    "$_BASE/cpu" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
+
+# Native wheels plus a live override is the worst of both: the kernels are there and ROCr
+# keeps reporting the arch they are not for. The rocm* leaf clears it; a gfx* leaf must too.
+fedora_no_version_host gfx1100
+mock_strix_cpuinfo; mock_kfd_gfx 110501
+assert_eq "a corroborated spoof is cleared once native wheels are chosen" \
+    "" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_hsa)"
+fedora_no_version_host gfx1201
+assert_eq "an override that corroborated nothing is left alone" \
+    "11.0.0" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_hsa)"
 
 echo ""
 echo "  passed: $PASS, failed: $FAIL"
