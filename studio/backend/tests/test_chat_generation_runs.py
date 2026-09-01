@@ -341,7 +341,13 @@ def test_explicit_edit_keeps_display_metadata_but_not_the_run_claim(chat_home):
         key: value
         for key, value in authoritative["metadata"].items()
         if key
-        not in {"serverManaged", "generationRunId", "generationSeq", "generationStatus", "generationSettled"}
+        not in {
+            "serverManaged",
+            "generationRunId",
+            "generationSeq",
+            "generationStatus",
+            "generationSettled",
+        }
     }
     saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
     assert saved["content"] == [{"type": "text", "text": "edited"}]
