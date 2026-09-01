@@ -1784,9 +1784,7 @@ def test_notebook_validator_ignores_quoted_substitution_text():
     notebook must not be failed for it. Double quotes still expand."""
     nv = _load_notebook_validator_module()
 
-    literal = (
-        "!echo '$(pip install git+https://example.com/pkg.git)'; pip install unsloth"
-    )
+    literal = "!echo '$(pip install git+https://example.com/pkg.git)'; pip install unsloth"
     assert nv._substitution_bodies(literal) == []
     assert nv.rule_inst_001_git_plus(literal, "nb.ipynb", 0) == []
 

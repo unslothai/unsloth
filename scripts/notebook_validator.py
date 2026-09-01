@@ -570,9 +570,7 @@ def _substitution_bodies(command: str) -> list[str]:
             quote = "" if ch == quote else (quote or ch)
             i += 1
             continue
-        opens = command.startswith("$(", i) or (
-            ch in "<>" and command[i + 1 : i + 2] == "("
-        )
+        opens = command.startswith("$(", i) or (ch in "<>" and command[i + 1 : i + 2] == "(")
         if opens:
             depth, j = 1, i + 2
             inner_quote = ""
@@ -705,9 +703,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             if ch in "({":
                 # `$(`, `<(` and `>(` open a substitution, which lives inside a word and runs
                 # its own commands; a bare `(` groups this line's.
-                groupings.append(
-                    not (ch == "(" and buf and buf[-1] in "$<>")
-                )
+                groupings.append(not (ch == "(" and buf and buf[-1] in "$<>"))
                 tails.append(False)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command
