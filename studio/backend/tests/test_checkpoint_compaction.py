@@ -3836,3 +3836,74 @@ def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypat
     # A reply that STOPPED on reasoning carries nothing and is dropped, so it stays exempt.
     rows[2]["metadata"] = {"incomplete": {"reason": "cancelled"}, **_checkpoint_metadata(30)}
     assert llama_cpp._sticky_compaction_state("t1", branch) == (30, True)
+
+def _image_turn(text, *, payload = 30000):
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": text},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64," + "A" * payload},
+            },
+        ],
+    }
+
+
+def test_an_instruction_typed_beside_an_image_is_still_carried():
+    items = carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024)
+
+    assert items == [INSTRUCTION]
+
+
+def test_an_image_turn_costs_the_same_as_the_words_it_carries():
+    with_image = carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024)
+    plain = carried_forward_items(
+        [{"role": "user", "content": INSTRUCTION}], max_tokens = 1024
+    )
+
+    assert with_image == plain
+
+
+def test_a_thread_opened_with_a_screenshot_still_names_its_task_after_a_reset():
+    messages = [
+        {"role": "system", "content": "you are helpful"},
+        _image_turn(INSTRUCTION),
+        {"role": "assistant", "content": "Understood."},
+    ]
+    for index in range(8):
+        messages += [
+            {"role": "user", "content": f"Section {index}. " + "x" * 600},
+            {"role": "assistant", "content": f"Section {index} noted."},
+        ]
+    messages += [{"role": "user", "content": "continue"}]
+
+    fitted, truncation = _fit(messages)
+
+    assert truncation["checkpoint_started"] is True
+    assert INSTRUCTION in fitted[0]["content"]
+
+
+def test_an_oversized_instruction_is_still_excluded_whole():
+    long_instruction = "Always " + "w " * 2000
+
+    items = carried_forward_items([_image_turn(long_instruction)], max_tokens = 64)
+
+    assert items == []
+
+
+def test_a_nudge_sent_with_an_image_is_not_quoted_as_an_instruction():
+    """`is_substantive` passes any turn carrying an attachment, which is right for a
+    recall query and wrong here: the attachment never reaches the block, so only the
+    words can earn a bullet. Pricing the whole message used to hide this by making such
+    a turn unaffordable."""
+    items = carried_forward_items([_image_turn("ok")], max_tokens = 1024)
+
+    assert items == []
+
+
+def test_an_image_turn_is_judged_on_its_words_not_its_attachment():
+    assert carried_forward_items([_image_turn("continue")], max_tokens = 1024) == []
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024) == [
+        INSTRUCTION
+    ]
