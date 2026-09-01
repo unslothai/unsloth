@@ -365,18 +365,33 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def _unwrap_shell_group(command: str) -> str:
-    """`( pip install x )` and `{ pip install x; }` -> `pip install x`.
+# Words that introduce a compound command's body. A pip call behind one still runs, so it has
+# to parse, but only when the test above it went a particular way, so it is not certain.
+_SHELL_KEYWORDS = frozenset(
+    {"if", "then", "elif", "else", "fi", "while", "until", "for", "do", "done", "case", "esac"}
+)
 
-    A grouped command still runs, so leaving the bracket on hides it from PIP_LINE_RE and
-    with it from every rule, R-INST-001's git+ ban included.
+
+def _unwrap_shell_group(command: str) -> tuple[str, bool]:
+    """`( pip install x )` -> `("pip install x", False)`, `then pip install x` -> `(..., True)`.
+
+    A grouped or compound command still runs, so leaving the bracket or the keyword on hides
+    it from PIP_LINE_RE and with it from every rule, R-INST-001's git+ ban included. The flag
+    says the keyword made it conditional: a `then` body runs only when its test did.
     """
     stripped = command.strip()
     bang = stripped.startswith("!")
     if bang:
         stripped = stripped[1:].lstrip()
     stripped = stripped.lstrip("({").strip().rstrip(")}").rstrip()
-    return f"!{stripped}" if bang and stripped else stripped
+    conditional = False
+    while True:
+        head, _, rest = stripped.partition(" ")
+        if head.lower() not in _SHELL_KEYWORDS:
+            break
+        conditional = True
+        stripped = rest.strip()
+    return (f"!{stripped}" if bang and stripped else stripped), conditional
 
 
 def _split_chained(line: str) -> list[tuple[str, bool]]:
@@ -433,7 +448,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         elif line.startswith("||", i):
             flush()
             tails[-1] = True
-            buf_conditional = True
+            buf_conditional = any(tails)
             i += 2
         elif line.startswith("&&", i):
             flush()
@@ -450,18 +465,22 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         else:
             if ch in "({":
                 tails.append(False)
+                if not "".join(buf).strip():
+                    buf_conditional = any(tails)  # the group opens before the command
             elif ch in ")}" and len(tails) > 1:
+                # The command in hand belongs to the level being closed, so its flag stays
+                # what it was; the pop only affects what comes after.
                 tails.pop()
-            buf_conditional = any(tails)
             buf.append(ch)
             i += 1
     flush()
     (head, head_conditional), *rest = out
-    commands = [(_unwrap_shell_group(head), head_conditional)]
+    head_text, head_keyword = _unwrap_shell_group(head)
+    commands = [(head_text, head_conditional or head_keyword)]
     for piece, flag in rest:
-        text = _unwrap_shell_group(piece.strip())
+        text, keyword = _unwrap_shell_group(piece.strip())
         if text:
-            commands.append((f"!{text}", flag))
+            commands.append((f"!{text}", flag or keyword))
     return commands
 
 
