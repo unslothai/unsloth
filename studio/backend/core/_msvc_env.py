@@ -14,11 +14,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _headers_complete(dirs) -> bool:
+    """`stdlib.h` alone is a standalone SDK: its ucrt pulls in `vcruntime.h` from the VC toolset,
+    so the compile still dies there (measured with the toolset dir removed). Both, or not whole."""
+    def found(name: str) -> bool:
+        return any(d and os.path.isfile(os.path.join(d, name)) for d in dirs)
+    return found("stdlib.h") and found("vcruntime.h")
+
+
 def _have_crt_headers() -> bool:
-    for d in os.environ.get("INCLUDE", "").split(os.pathsep):
-        if d and os.path.isfile(os.path.join(d, "stdlib.h")):
-            return True
-    return False
+    return _headers_complete(os.environ.get("INCLUDE", "").split(os.pathsep))
 
 
 def _triton_finds_crt_headers() -> bool | None:
@@ -31,7 +36,7 @@ def _triton_finds_crt_headers() -> bool | None:
     except Exception:  # noqa: BLE001
         logger.debug("Triton's MSVC/WinSDK discovery is unavailable", exc_info = True)
         return None
-    return any(d and os.path.isfile(os.path.join(d, "stdlib.h")) for d in inc_dirs)
+    return _headers_complete(inc_dirs)
 
 
 def _triton_is_triton_windows() -> bool:
@@ -93,7 +98,8 @@ def _needs_msvc_headers() -> bool:
 
 
 def _toolchain_summary() -> str:
-    """0 include dirs means no Visual Studio; several with no `stdlib.h` means a partial SDK."""
+    """0 include dirs means no Visual Studio; dirs missing only `vcruntime.h` means an SDK
+    without the VC toolset."""
     try:
         cc = os.path.basename(_triton_cc())
     except Exception:  # noqa: BLE001
@@ -104,8 +110,13 @@ def _toolchain_summary() -> str:
     except Exception:  # noqa: BLE001
         inc_dirs = []
     logger.debug("Triton include dirs: %s", list(inc_dirs))
+    missing = [
+        h for h in ("stdlib.h", "vcruntime.h")
+        if not any(d and os.path.isfile(os.path.join(d, h)) for d in inc_dirs)
+    ]
     return (
         f"compiler={cc}, Triton include dirs={len(inc_dirs)}, "
+        f"missing headers={','.join(missing) or 'none'}, "
         f"INCLUDE={'set' if os.environ.get('INCLUDE') else 'unset'}"
     )
 

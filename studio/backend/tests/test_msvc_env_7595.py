@@ -38,8 +38,9 @@ def _fake_triton(
     monkeypatch.setitem(sys.modules, "triton.runtime.build", build)
 
 
-def test_have_crt_headers_true_when_include_has_stdlib(tmp_path, monkeypatch):
+def test_have_crt_headers_true_when_include_has_both_headers(tmp_path, monkeypatch):
     (tmp_path / "stdlib.h").write_text("/* stub */")
+    (tmp_path / "vcruntime.h").write_text("/* stub */")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     assert _msvc_env._have_crt_headers() is True
 
@@ -49,19 +50,42 @@ def test_have_crt_headers_false_when_include_lacks_stdlib(tmp_path, monkeypatch)
     assert _msvc_env._have_crt_headers() is False
 
 
+def test_have_crt_headers_false_when_include_has_only_stdlib(tmp_path, monkeypatch):
+    (tmp_path / "stdlib.h").write_text("/* stub */")
+    monkeypatch.setenv("INCLUDE", str(tmp_path))
+    assert _msvc_env._have_crt_headers() is False
+
+
 def test_have_crt_headers_false_when_include_unset(monkeypatch):
     monkeypatch.delenv("INCLUDE", raising = False)
     assert _msvc_env._have_crt_headers() is False
 
 
-def test_triton_discovery_true_when_ucrt_dir_has_stdlib(tmp_path, monkeypatch):
+def _sdk_dirs(tmp_path, *, with_toolset):
+    """The real layout: `stdlib.h` in the SDK's ucrt, `vcruntime.h` in the VC toolset include."""
     ucrt = tmp_path / "ucrt"
     ucrt.mkdir()
     (ucrt / "stdlib.h").write_text("/* stub */")
-    other = tmp_path / "um"
-    other.mkdir()
-    _fake_triton(monkeypatch, [str(other), str(ucrt)])
+    dirs = [str(tmp_path / "um"), str(ucrt)]
+    (tmp_path / "um").mkdir()
+    if with_toolset:
+        msvc = tmp_path / "msvc"
+        msvc.mkdir()
+        (msvc / "vcruntime.h").write_text("/* stub */")
+        dirs.append(str(msvc))
+    return dirs
+
+
+def test_triton_discovery_true_when_dirs_carry_both_headers(tmp_path, monkeypatch):
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
     assert _msvc_env._triton_finds_crt_headers() is True
+
+
+def test_triton_discovery_false_when_sdk_lacks_the_vc_toolset(tmp_path, monkeypatch):
+    """A standalone SDK passes the `stdlib.h` check and the compile still dies on `vcruntime.h`
+    (measured on an R9700 with the toolset dir removed). This must gate."""
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = False))
+    assert _msvc_env._triton_finds_crt_headers() is False
 
 
 def test_triton_discovery_false_when_no_dir_has_stdlib(tmp_path, monkeypatch):
@@ -128,16 +152,14 @@ def test_reachable_is_true_off_win32(monkeypatch):
 def test_reachable_via_triton_even_when_include_is_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("INCLUDE", raising = False)
-    ucrt = tmp_path / "ucrt"
-    ucrt.mkdir()
-    (ucrt / "stdlib.h").write_text("/* stub */")
-    _fake_triton(monkeypatch, [str(ucrt)])
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
     assert _msvc_env.crt_headers_reachable() is True
 
 
 def test_reachable_via_include_when_triton_finds_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     (tmp_path / "stdlib.h").write_text("/* stub */")
+    (tmp_path / "vcruntime.h").write_text("/* stub */")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     _fake_triton(monkeypatch, [])
     assert _msvc_env.crt_headers_reachable() is True
@@ -329,12 +351,14 @@ def test_toolchain_summary_separates_no_vs_from_a_partial_sdk(tmp_path, monkeypa
     summary = _msvc_env._toolchain_summary()
     assert "compiler=clang-cl.exe" in summary
     assert "include dirs=0" in summary
+    assert "missing headers=stdlib.h,vcruntime.h" in summary
     assert "INCLUDE=unset" in summary
 
-    _fake_triton(monkeypatch, [str(tmp_path), str(tmp_path)], cc = "clang-cl.exe")
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = False), cc = "clang-cl.exe")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     summary = _msvc_env._toolchain_summary()
     assert "include dirs=2" in summary
+    assert "missing headers=vcruntime.h" in summary
     assert "INCLUDE=set" in summary
 
 
@@ -414,10 +438,7 @@ def test_gate_does_not_disable_where_triton_already_compiles(monkeypatch, tmp_pa
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
     monkeypatch.delenv("TORCHDYNAMO_DISABLE")
     monkeypatch.delenv("INCLUDE", raising = False)
-    ucrt = tmp_path / "ucrt"
-    ucrt.mkdir()
-    (ucrt / "stdlib.h").write_text("/* stub */")
-    _fake_triton(monkeypatch, [str(ucrt)])
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
 
     _msvc_env.gate_torch_compile_on_windows(logging.getLogger("test_gate_7595"))
     assert "TORCHDYNAMO_DISABLE" not in os.environ
