@@ -1876,7 +1876,12 @@ def _accepts_tools_kwarg(target) -> bool:
     return "tools" in parameters
 
 
-def _renders_tool_schema(target, template, tools, template_is_processor: bool = False) -> bool:
+def _renders_tool_schema(
+    target,
+    template,
+    tools,
+    template_is_processor: bool = False,
+) -> bool:
     """True unless the template *target* will select provably cannot advertise tools.
 
     A processor is held to the stricter test. Its render goes straight through
