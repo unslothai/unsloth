@@ -251,6 +251,14 @@ def code_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
     return out
 
 
+# A shell line that runs pip somewhere in it. Anchored on the `!` so a `pip install` inside a
+# Python string is not a cell, and open after it so a chained or compound command is:
+# `!echo start; pip install x` and `!if ...; then pip install x; fi` both install.
+_PIP_CELL_RE = re.compile(
+    r"^[ \t]*!.*\b(?:uv\s+)?pip\s+(?:install|uninstall)\b", re.MULTILINE
+)
+
+
 def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
     """Heuristic: any code cell that contains a `pip install`, `pip uninstall`
     or `uv pip install` shell command, or a top-line `%%capture` magic."""
@@ -260,7 +268,7 @@ def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
         if first and first[0].strip().startswith("%%capture"):
             out.append((i, src))
             continue
-        if re.search(r"^[ \t]*!\s*(uv\s+)?pip\s+(install|uninstall)\b", src, re.MULTILINE):
+        if _PIP_CELL_RE.search(src):
             out.append((i, src))
     return out
 

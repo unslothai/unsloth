@@ -1451,6 +1451,31 @@ def test_notebook_validator_expands_bundled_short_flags():
     )
 
 
+def _one_cell_notebook(source: str) -> dict:
+    return {"cells": [{"cell_type": "code", "source": source.splitlines(keepends = True)}]}
+
+
+def test_install_cell_discovery_finds_compound_commands():
+    """The rules only see cells `install_cells` hands them, and it wanted `pip` right after
+    the `!`, so every compound form was invisible to the real lint flow no matter what the
+    splitter did with it."""
+    nv = _load_notebook_validator_module()
+
+    for source in (
+        "!pip install torch==2.12.0",
+        "!uv pip install torch",
+        "!pip uninstall -y torchcodec",
+        "!if command -v uv; then pip install git+https://example.com/x.git; fi",
+        "!echo start; pip install torch==2.12.0",
+        "!pip install foo || (pip install git+https://example.com/x.git)",
+    ):
+        assert nv.install_cells(_one_cell_notebook(source)), source
+
+    # Still anchored on the `!`, so a pip mention in Python is not an install cell.
+    for source in ('cmd = "pip install torch"', "import torch", "# pip install torch"):
+        assert nv.install_cells(_one_cell_notebook(source)) == [], source
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
