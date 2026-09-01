@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
+import { isServedByLlamaCpp } from "@/features/model-picker";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -663,24 +664,22 @@ export function UsageExamples({
   // quant variant string) -- a direct local .gguf file (custom folder /
   // LM Studio / drag-drop) is just as much a GGUF the codex preflight would
   // accept, but never has a "variant" to report, and would otherwise read as
-  // non-GGUF here. activeNativePathToken covers the drag-drop/picked-file
-  // case; ggufContextLength is only ever populated when the backend's
-  // /api/inference/status last reported is_gguf: true for the active model
-  // (see applyActiveModelStatusToStore), so together these three cover every
-  // path a model can be GGUF through, matching the same is_gguf-or-equivalent
-  // check hasGgufSource applies to a staged pick.
+  // non-GGUF here.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
     if (detectedAgents.length === 0) return;
-    const isGguf =
-      activeGgufVariant != null ||
-      activeNativePathToken != null ||
-      ggufContextLength != null;
+    const isGguf = isServedByLlamaCpp({
+      loadedIsGguf,
+      activeGgufVariant,
+      activeNativePathToken,
+      checkpoint,
+    });
     const preferred = detectedAgents.find((a) => a !== "codex" || isGguf);
     if (preferred) {
       setAgent(preferred);
@@ -696,7 +695,8 @@ export function UsageExamples({
     detectedAgents,
     activeGgufVariant,
     activeNativePathToken,
-    ggufContextLength,
+    loadedIsGguf,
+    checkpoint,
   ]);
 
   const keylessBase =

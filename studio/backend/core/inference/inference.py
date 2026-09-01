@@ -34,7 +34,7 @@ from core.inference.chat_eos import (
     resolve_chat_turn_end_eos_ids_using,
 )
 from core.inference.chat_template_helpers import (
-    ReasoningChannelNormalizer,
+    make_reasoning_normalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
     neutralize_control_markup_in_messages,
@@ -209,7 +209,7 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         self,
         tokenizer,
         *,
-        markers: tuple[str, str],
+        markers: tuple[str, ...],
         skip_prompt: bool = True,
         timeout: float = 0.2,
         cancel_event = None,
@@ -218,7 +218,7 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
     ):
         decode_kwargs["skip_special_tokens"] = False
         super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
-        self._normalizer = ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
+        self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
         self._cancel_event = cancel_event
         self._aborted = False
 

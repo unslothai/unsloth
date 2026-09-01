@@ -613,6 +613,10 @@ def _run_llama_phase(
     backend = None
     model_was_active = False
     mtmd_guard = ExitStack()
+    # The installer exits 0 for a transient failure it answered by keeping the tree, so
+    # success no longer implies a new release. Read as the post-install check reads it.
+    prior_marker = read_install_marker(_find_binary())
+    prior_tag = (prior_marker or {}).get("release_tag") or (prior_marker or {}).get("tag")
     try:
         # Block loads and free the binary while the installer swaps it.
         try:
@@ -716,17 +720,31 @@ def _run_llama_phase(
                     f"{new_backend or 'an unknown backend'}"
                 )
 
-        logger.info("llama update: success", to_tag = new_tag, backend = new_backend)
+        kept_existing = backend_request is None and new_tag is not None and new_tag == prior_tag
+        logger.info(
+            "llama update: success",
+            to_tag = new_tag,
+            backend = new_backend,
+            kept_existing = kept_existing,
+        )
         reload_hint = " Reload your model to use it." if model_was_active else ""
+        if backend_request is not None:
+            message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
+        elif kept_existing:
+            # The phase only runs when a newer release was offered, so naming the kept
+            # release as current would send the user looking for a fix it does not have.
+            message = (
+                f"llama.cpp could not be updated right now, so the existing {new_tag} "
+                "install was kept. Try again later."
+            )
+        else:
+            message = f"Updated llama.cpp to {new_tag}.{reload_hint}"
         return {
             "to_tag": new_tag,
             "backend": new_backend,
             "reload_required": model_was_active,
-            "message": (
-                f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
-                if backend_request is not None
-                else f"Updated llama.cpp to {new_tag}.{reload_hint}"
-            ),
+            "kept_existing": kept_existing,
+            "message": message,
         }
     except _flow.InstallerExit as exc:
         # Raw "installer exited 4: <log tail>" says nothing actionable in the UI.

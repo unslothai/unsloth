@@ -120,6 +120,13 @@ def prepare_device_map():
 
 UNSLOTH_DEVICE_MAP = "unsloth"
 
+# Same planner, different answer when it declines. Every veto path ends in "sequential",
+# which fills the first device to its whole free budget -- right for a loader default,
+# wrong for a caller that picked several cards on their combined capacity. Naming the
+# fallback spares such a caller enumerating veto reasons that are unsloth's and can grow.
+UNSLOTH_BALANCED_DEVICE_MAP = "unsloth_balanced"
+_PLANNED_DEVICE_MAPS = {UNSLOTH_DEVICE_MAP: "sequential", UNSLOTH_BALANCED_DEVICE_MAP: "balanced"}
+
 # A string, not None, so an explicit False stays distinguishable from "unset".
 OFFLOAD_EMBEDDING_AUTO = "auto"
 
@@ -343,12 +350,14 @@ def resolve_unsloth_device_map(
     `skip_reason` is the caller's veto, for when only the caller can tell the planner
     would describe a different model than the load builds.
     """
-    if device_map != UNSLOTH_DEVICE_MAP:
+    # `isinstance` first: a caller's explicit dict is unhashable, so `in` alone raises.
+    if not isinstance(device_map, str) or device_map not in _PLANNED_DEVICE_MAPS:
         return device_map
+    _declined = _PLANNED_DEVICE_MAPS[device_map]
 
     def _fallback(reason):
-        print(f"Unsloth: Not planning a device map; {reason}. Using `sequential`.")
-        return "sequential"
+        print(f"Unsloth: Not planning a device map; {reason}. Using `{_declined}`.")
+        return _declined
 
     if skip_reason is not None:
         return _fallback(skip_reason)
@@ -395,7 +404,7 @@ def resolve_unsloth_device_map(
             and 0 <= device < device_count
         ]
     if len(probe) < 2:
-        return "sequential"
+        return _declined
 
     try:
         from unsloth_zoo.device_map_planner import plan_device_map_for_pretrained
@@ -434,7 +443,7 @@ def resolve_unsloth_device_map(
         return _fallback(f"planning failed ({error})")
 
     if plan is None:
-        return "sequential"
+        return _declined
     print(plan.describe())
     return plan.device_map
 

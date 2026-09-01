@@ -1778,7 +1778,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"CSM preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"CSM preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -2029,7 +2029,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"SNAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"SNAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -2220,8 +2220,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"BiCodec preprocessing complete: {len(result_dataset)} examples "
-            f"({skipped} skipped)\n"
+            f"BiCodec preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
@@ -2413,7 +2412,7 @@ class UnslothTrainer:
 
         result_dataset = HFDataset.from_list(processed_examples)
         logger.info(
-            f"DAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"DAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
@@ -2787,8 +2786,7 @@ class UnslothTrainer:
                                 self.dataset_snapshot_path
                             )
                             logger.info(
-                                f"Loaded cached dataset for {dataset_source}: "
-                                f"{len(dataset)} rows\n"
+                                f"Loaded cached dataset for {dataset_source}: {len(dataset)} rows\n"
                             )
                         except Exception as error:
                             from hub.utils.dataset_cache import (
@@ -2803,8 +2801,7 @@ class UnslothTrainer:
                                 raise
                             self._update_progress(
                                 status_message = (
-                                    f"Cached dataset unavailable; "
-                                    f"downloading {dataset_source}..."
+                                    f"Cached dataset unavailable; downloading {dataset_source}..."
                                 )
                             )
                             dataset = None
@@ -3479,9 +3476,9 @@ class UnslothTrainer:
                 # kills the feature. Env-only, deliberately NOT worker.py's
                 # _data_parallel_world_size, which also counts visible CUDA devices:
                 # that bounds a row subset where over-counting is free, this feeds a
-                # veto where both directions are wrong. Unsloth's multi-GPU load is
-                # device_map="balanced", model-parallel to transformers with _n_gpu = 1,
-                # so a balanced 4-GPU run draws one GPU's rows per step and counting
+                # veto where both directions are wrong. Unsloth's multi-GPU load is a
+                # sharding device_map, model-parallel to transformers with _n_gpu = 1,
+                # so a sharded 4-GPU run draws one GPU's rows per step and counting
                 # devices would report 4x the passes, vetoing a qualifying run.
                 world_size = world_size_from_env()
                 if world_size > 1:

@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,7 @@ from routes.chat_generation_runs import (
 from storage import chat_generation_runs_db as runs_db
 from storage import studio_db
 from state.tool_policy import reset_tool_policy, set_tool_policy, set_tool_policy_default
+from utils.paths import studio_db_path
 
 
 @pytest.fixture(autouse = True)
@@ -331,6 +334,26 @@ def test_batched_events_preserve_receipt_timestamps(chat_home):
     )
     chunks = [event for event in runs_db.list_events("run-1") if event["type"] == "chunk"]
     assert [event["createdAt"] for event in chunks] == [1001, 1002]
+
+
+def test_stream_batches_do_not_rewrite_studio_db_while_the_keeper_holds_the_wal(chat_home):
+    """#9934: each event batch closed the last connection, checkpointing studio.db."""
+    _create()
+    worker_token = runs_db.get_worker_token("run-1")
+    db_path = Path(str(studio_db_path()))
+    wal_path = Path(f"{db_path}-wal")
+
+    assert studio_db.open_wal_keeper() is True
+    try:
+        before = hashlib.sha256(db_path.read_bytes()).hexdigest()
+        for index in range(5):
+            runs_db.append_events("run-1", worker_token, [("chunk", {"text": str(index)})])
+            assert wal_path.is_file()
+        assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before
+    finally:
+        studio_db.close_wal_keeper()
+    assert not wal_path.exists()
+    assert len(runs_db.list_events("run-1")) >= 5
 
 
 def test_cancel_before_registration_and_startup_orphan_reconciliation(chat_home):

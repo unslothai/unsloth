@@ -926,7 +926,7 @@ test("a normalized migration patch stays within the loaded context", async () =>
       maxTokens: 4096,
     },
     paramsByModel: { [lowerCaseKey]: LEGACY_SNAPSHOT },
-    ggufContextLength: 4096,
+    loadedContextLength: 4096,
     activePreset: "Default",
     activePresetSource: "builtin-default",
     rememberParamsPerModel: true,
