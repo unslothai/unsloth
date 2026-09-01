@@ -547,35 +547,53 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
 
 
 def _substitution_bodies(command: str) -> list[str]:
-    """The insides of every `$( )` and backtick substitution in `command`.
+    """The insides of every substitution in `command`, in the order the shell runs them.
 
-    They run when the command runs, so a pip call in one is an install like any other, and the
-    outer command is usually not pip at all.
+    `$( )`, backticks and the `<( )` / `>( )` process forms all run when the command runs, so
+    a pip call in one is an install like any other and the outer command is usually not pip.
+    Single quotes and an escaped `$` make the text literal, and then nothing runs.
     """
     bodies: list[str] = []
+    quote = ""
     i = 0
     while i < len(command):
-        if command.startswith("$(", i):
+        ch = command[i]
+        if ch == "\\" and quote != "'":
+            i += 2  # escaped: `\\$(` is a literal dollar
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = ""  # single quotes make the text literal, so nothing runs in there
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = "" if ch == quote else (quote or ch)
+            i += 1
+            continue
+        opens = command.startswith("$(", i) or (
+            ch in "<>" and command[i + 1 : i + 2] == "("
+        )
+        if opens:
             depth, j = 1, i + 2
-            quote = ""
+            inner_quote = ""
             while j < len(command) and depth:
-                ch = command[j]
-                if ch == "\\" and quote != "'":
-                    j += 2  # an escaped character, whatever it is
+                inner = command[j]
+                if inner == "\\" and inner_quote != "'":
+                    j += 2
                     continue
-                if quote:
-                    if ch == quote:
-                        quote = ""
-                elif ch in "\"'":
-                    quote = ch  # a `)` in here closes nothing
-                elif ch == "(":
+                if inner_quote:
+                    if inner == inner_quote:
+                        inner_quote = ""
+                elif inner in "\"'":
+                    inner_quote = inner
+                elif inner == "(":
                     depth += 1
-                elif ch == ")":
+                elif inner == ")":
                     depth -= 1
                 j += 1
             bodies.append(command[i + 2 : j - 1 if depth == 0 else j])
             i = j
-        elif command[i] == "`":
+        elif ch == "`":
             j = command.find("`", i + 1)
             if j == -1:
                 break
@@ -620,6 +638,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     grouping_closed = False
     i = 0
 
+    def in_sub() -> bool:
+        return not all(groupings)
+
     def flush() -> None:
         nonlocal buf
         out.append(("".join(buf), buf_conditional))
@@ -627,6 +648,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
 
     while i < len(line):
         ch = line[i]
+        in_substitution = in_sub()
         if ch == "\\" and quote != "'" and i + 1 < len(line):
             buf.append(ch)
             buf.append(line[i + 1])
@@ -640,6 +662,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             quote = ch
             buf.append(ch)
             i += 1
+        elif ch in ")}" and in_substitution:
+            # Close it here, before the guard below would swallow the bracket.
+            grouping_closed = groupings.pop() if groupings else True
+            if len(tails) > 1:
+                tails.pop()
+            buf.append(ch)
+            i += 1
         elif ch == "#" and (
             i == 0
             or line[i - 1].isspace()
@@ -647,6 +676,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             or (line[i - 1] in ")}" and grouping_closed)
         ):
             break  # an operator, or a bracket that closed a grouping, ends a word
+        elif in_substitution:
+            buf.append(ch)  # its separators are its own; the body is split on its own later
+            i += 1
         elif line.startswith("||", i):
             flush()
             tails[-1] = True
@@ -671,8 +703,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             i += 1
         else:
             if ch in "({":
-                # `$(` opens a substitution, which lives inside a word; a bare `(` groups.
-                groupings.append(not (ch == "(" and buf and buf[-1] == "$"))
+                # `$(`, `<(` and `>(` open a substitution, which lives inside a word and runs
+                # its own commands; a bare `(` groups this line's.
+                groupings.append(
+                    not (ch == "(" and buf and buf[-1] in "$<>")
+                )
                 tails.append(False)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command
@@ -697,13 +732,15 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # `echo $(pip install x)` runs the install as surely as the echo, and the outer command is
     # not pip, so the inner one has to be a command of its own. Read off the raw pieces: an
     # assignment prefix like ``X=`pip install y` `` is stripped by the unwrap above.
-    for piece, flag in out:
+    ordered: list[tuple[str, bool]] = []
+    for (piece, flag), (text, command_flag) in zip(out, commands):
         for inner in _substitution_bodies(piece):
-            commands.extend(
+            ordered.extend(
                 (inner_text, flag or inner_flag)
                 for inner_text, inner_flag in _split_chained(f"!{inner}")
             )
-    return commands
+        ordered.append((text, command_flag))
+    return ordered
 
 
 def unconditional_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:

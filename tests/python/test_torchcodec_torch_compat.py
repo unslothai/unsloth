@@ -1779,6 +1779,61 @@ def test_notebook_validator_tells_a_grouping_close_from_a_substitution_close():
     assert nv.rule_inst_001_git_plus(grouped, "nb.ipynb", 0) == []
 
 
+def test_notebook_validator_ignores_quoted_substitution_text():
+    """Single quotes and an escaped `$` make the text literal, so nothing in it runs and the
+    notebook must not be failed for it. Double quotes still expand."""
+    nv = _load_notebook_validator_module()
+
+    literal = (
+        "!echo '$(pip install git+https://example.com/pkg.git)'; pip install unsloth"
+    )
+    assert nv._substitution_bodies(literal) == []
+    assert nv.rule_inst_001_git_plus(literal, "nb.ipynb", 0) == []
+
+    escaped = (
+        '!echo "' + chr(92) + '$(pip install git+https://example.com/pkg.git)"; '
+        "pip install unsloth"
+    )
+    assert nv.rule_inst_001_git_plus(escaped, "nb.ipynb", 0) == []
+
+    # A substitution inside double quotes is expanded, so it still counts.
+    expanded = "!echo \"$(printf 'X)'; pip install git+https://example.com/pkg.git)\""
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(expanded, "nb.ipynb", 0))
+
+
+def test_notebook_validator_reads_process_substitutions():
+    """`<( )` and `>( )` run their commands too."""
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!cat <(pip install git+https://example.com/pkg.git); pip install unsloth",
+        "!tee >(pip install git+https://example.com/pkg.git); pip install unsloth",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)
+        ), cell
+
+
+def test_notebook_validator_keeps_substitution_commands_in_order():
+    """A substitution runs before its host and its own separators are its own, so its commands
+    stay in sequence rather than being split across the line and appended at the end."""
+    nv = _load_notebook_validator_module()
+
+    cell = (
+        "!echo $(pip install torchcodec==0.12.0; pip install torchcodec==0.11.0); "
+        "pip install torch==2.12.0"
+    )
+    commands = [command for command, _ in nv._split_chained(cell)]
+    assert commands[0] == "!pip install torchcodec==0.12.0"
+    assert commands[1] == "!pip install torchcodec==0.11.0"
+    assert commands[-1] == "!pip install torch==2.12.0"
+
+    # 0.11 is what is left installed, and torch 2.12 does not take it.
+    findings = nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)
+    assert len(findings) == 1
+    assert "torchcodec==0.11.0" in findings[0].message
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
