@@ -8,6 +8,7 @@ import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -498,6 +499,8 @@ def account_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app = FastAPI()
     app.include_router(auth_routes.router, prefix = "/api/auth")
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    # Not a keyless caller: account management is refused to one.
+    app.dependency_overrides[auth_routes.authenticated_without_credential] = lambda: False
     with TestClient(app) as client:
         yield client, app
 
@@ -666,7 +669,7 @@ def test_only_owner_can_change_installation_wide_server_access(account_client):
     assert exc_info.value.detail == "Only the installation owner can change server access."
 
 
-def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_workspace(
+def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_and_retires_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -739,6 +742,14 @@ def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_works
             == 401
         )
 
+        # The files are kept for recovery, but moved aside: the key is derived
+        # from the username, so leaving them in place would hand them to whoever
+        # registers the name next.
+        assert not marker.exists()
+        retired = sorted(original_workspace.parent.glob(f"{original_workspace.name}-deleted-*"))
+        assert len(retired) == 1
+        assert (retired[0] / marker.name).read_text(encoding = "utf-8") == "private data"
+
         recreated = client.post(
             "/api/auth/users",
             headers = owner_headers,
@@ -748,7 +759,7 @@ def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_works
         token = _bind("alice")
         try:
             assert workspace_root() == original_workspace
-            assert marker.read_text(encoding = "utf-8") == "private data"
+            assert not marker.exists()
         finally:
             reset_workspace_subject(token)
 
@@ -852,3 +863,86 @@ def test_a_claimed_training_backend_is_private_to_the_account_that_started_it():
     assert backend.owns_workspace("alice")
     assert not backend.owns_workspace("bob")
     assert not backend.owns_workspace("unsloth")
+
+
+def test_keyless_callers_cannot_manage_accounts(account_client):
+    """Keyless admission resolves to the owner, so require_admin alone lets an
+    unauthenticated caller mint setup codes. Account management is an effect that
+    outlives the setting, so it needs a credential of its own."""
+    client, app = account_client
+    app.dependency_overrides[auth_routes.authenticated_without_credential] = lambda: True
+
+    assert client.get("/api/auth/users").status_code == 403
+    assert client.post("/api/auth/users", json = {"username": "mallory"}).status_code == 403
+    assert client.post("/api/auth/users/alice/setup-code").status_code == 403
+    assert client.delete("/api/auth/users/alice").status_code == 403
+
+
+def test_managed_accounts_cannot_export_to_an_absolute_path(tmp_path):
+    """The absolute-path escape hatch (gh 6082) is an owner convenience. For a
+    managed account it is a write primitive into any reachable directory."""
+    from utils.paths.storage_roots import exports_root, resolve_export_write_dir
+
+    outside = str(tmp_path / "outside")
+
+    token = set_workspace_subject("alice")
+    try:
+        with pytest.raises(ValueError):
+            resolve_export_write_dir(outside)
+        assert resolve_export_write_dir("nested/run").is_relative_to(exports_root())
+    finally:
+        reset_workspace_subject(token)
+
+    # The owner keeps it.
+    assert resolve_export_write_dir(outside) == Path(outside)
+
+
+def test_settings_memos_do_not_serve_one_workspace_value_to_another():
+    import utils.vram_budget_settings as vram
+    from storage.studio_db import upsert_app_settings
+
+    key = "vram_budget_fraction"
+    for subject, value in (("alice", 0.11), ("bob", 0.99)):
+        token = set_workspace_subject(subject)
+        try:
+            upsert_app_settings({key: value})
+            vram._invalidate(key)
+        finally:
+            reset_workspace_subject(token)
+
+    reads = {}
+    for subject in ("alice", "bob"):
+        token = set_workspace_subject(subject)
+        try:
+            reads[subject] = float(vram._cached_setting(key))
+        finally:
+            reset_workspace_subject(token)
+    assert reads == {"alice": 0.11, "bob": 0.99}
+
+
+def test_mcp_session_keys_are_private_to_a_workspace():
+    """scope carries client-chosen thread ids, so two accounts can present the
+    same one and would otherwise share a live stdio child."""
+    from core.inference.mcp_client import _session_key
+
+    keys = {}
+    for subject in ("alice", "bob"):
+        token = set_workspace_subject(subject)
+        try:
+            keys[subject] = _session_key("stdio://tool", None, "s=same:t=same")
+        finally:
+            reset_workspace_subject(token)
+    assert keys["alice"] != keys["bob"]
+
+
+def test_the_openai_model_catalog_cache_is_per_workspace():
+    from routes.inference import _CATALOG_CACHE, _catalog_is_fresh
+
+    _CATALOG_CACHE["subject"] = "alice"
+    _CATALOG_CACHE["at"] = time.monotonic()
+    try:
+        assert _catalog_is_fresh("alice", time.monotonic())
+        assert not _catalog_is_fresh("bob", time.monotonic())
+    finally:
+        _CATALOG_CACHE["subject"] = None
+        _CATALOG_CACHE["at"] = 0.0
