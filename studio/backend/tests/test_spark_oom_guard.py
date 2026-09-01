@@ -68,9 +68,21 @@ class TestDeviceNameTokenFallback:
         "name",
         [
             "NVIDIA GeForce RTX 4090",
+            "NVIDIA GeForce RTX 5090",
             "NVIDIA H100 80GB HBM3",
             "NVIDIA RTX 6000 Ada Generation",
             "Tesla T4",
+            "NVIDIA B200",
+            # The near misses the whole-token boundary exists for. Each of these
+            # contains "GB10" as a substring, so the pre-PR `"NVIDIA GB10" in name`
+            # test in loader.py matched them and disabled fast_inference on a
+            # discrete card; a regression here would cap one at 80% of its VRAM.
+            "NVIDIA GB100",
+            "NVIDIA GB10X",
+            "NVIDIA GB102",
+            "NVIDIA GB200 NVL72",
+            # aarch64 + NVIDIA but not Spark: the closest real host there is.
+            "NVIDIA GH200 480GB",
         ],
     )
     def test_discrete_names_not_unified(self, name: str) -> None:
