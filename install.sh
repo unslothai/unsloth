@@ -4079,6 +4079,35 @@ get_torch_index_url() {
         # every device), so an all-hidden host keeps the behaviour it has today rather
         # than reading as "no AMD at all".
         _amd_gfx_gate_probe=$(_probe_amd_gfx_arch visible 2>/dev/null || true)
+        # Leaving the masks in the environment only filters the ones the PROBE honours.
+        # rocminfo is an HSA tool: ROCR_VISIBLE_DEVICES removes agents from its output,
+        # HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias do not. torch is a HIP
+        # application and obeys exactly the ones rocminfo ignores, so a HIP mask naming
+        # only the APU left the dGPU in this list while the runtime could not reach it --
+        # the same hole as the ROCR case above, one layer down. Resolve those ordinals
+        # ourselves against the list rocminfo did filter, which is the order they index.
+        #
+        # Ordinals index the DEDUPLICATED list because rocminfo prints each agent's token
+        # more than once (its Name line and its ISA Info line); this mirrors the
+        # _runtime_gfx selection further down, which deduplicates for the same reason.
+        # An out-of-range or unparsable ordinal selects nothing and falls through to the
+        # physical read below, as does "-1" or an empty value -- those mean no visible
+        # device at all, where ROCm wheels are inert rather than dangerous.
+        _amd_gfx_hip_mask="${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-}}"
+        if [ -n "$_amd_gfx_gate_probe" ] && [ -n "$_amd_gfx_hip_mask" ] \
+           && [ "$_amd_gfx_hip_mask" != "-1" ]; then
+            _amd_gfx_gate_probe=$(printf '%s\n' "$_amd_gfx_gate_probe" \
+                | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
+                | awk -v mask="$_amd_gfx_hip_mask" '
+                    BEGIN {
+                        _n = split(mask, _w, /,/)
+                        for (_i = 1; _i <= _n; _i++) {
+                            gsub(/^[ \t]+|[ \t]+$/, "", _w[_i])
+                            if (_w[_i] ~ /^[0-9]+$/) _sel[_w[_i] + 0] = 1
+                        }
+                    }
+                    NF && !_seen[$0]++ { if ((_ord++) in _sel) print }')
+        fi
         if [ -z "$_amd_gfx_gate_probe" ]; then
             _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
         fi

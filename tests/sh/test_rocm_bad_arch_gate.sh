@@ -391,6 +391,57 @@ assert_eq "mixed host unmasked keeps rocm" \
 assert_eq "mixed host masked to the APU -> cpu" \
     "https://download.pytorch.org/whl/cpu" "$(_index_for_mixed_host 0)"
 
+echo "=== A HIP-layer mask selecting only the APU must reach the same verdict ==="
+# rocminfo is an HSA tool and IGNORES HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES -- the
+# mock above reproduces that, answering with both agents under a HIP mask. torch is a HIP
+# application and obeys exactly those, so leaving them in the environment filters nothing
+# and the dGPU stayed in the list while the runtime could only reach gfx1033. The gate has
+# to resolve those ordinals itself against the list rocminfo did filter.
+_index_for_mixed_host_hip() {  # $1 = var name, $2 = value
+    _imhh_dir=$(_make_mixed_host)
+    PATH="$_imhh_dir:$_TOOLS_DIR" "$_SH" -c "
+        unset UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY
+        unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
+        unset CUDA_VISIBLE_DEVICES
+        $1='$2'; export $1
+        _ARCH=x86_64
+        . '$_E2E_FUNCS'
+        get_torch_index_url
+    " 2>/dev/null | tail -1
+    rm -rf "$_imhh_dir"
+}
+
+# The mock must NOT filter on a HIP mask -- that is the whole premise. If it ever did,
+# the assertions below would pass without the gate doing anything.
+_hip_unfiltered=$( _hp=$(_make_mixed_host)
+    PATH="$_hp:$_TOOLS_DIR" "$_SH" -c "
+        unset UNSLOTH_ROCM_GFX_ARCH HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES
+        HIP_VISIBLE_DEVICES=0; export HIP_VISIBLE_DEVICES
+        . '$_E2E_FUNCS'; _probe_amd_gfx_arch visible | sort -u | tr '\n' ' '" 2>/dev/null
+    rm -rf "$_hp" )
+assert_eq "rocminfo ignores the HIP mask (premise)" "gfx1033 gfx1100 " "$_hip_unfiltered"
+
+assert_eq "HIP_VISIBLE_DEVICES=0 (APU only) -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES 0)"
+assert_eq "CUDA_VISIBLE_DEVICES=0 alias -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_mixed_host_hip CUDA_VISIBLE_DEVICES 0)"
+# Selecting the healthy card, or both, keeps ROCm: the gate must not become "any mask
+# means CPU".
+assert_eq "HIP_VISIBLE_DEVICES=1 (dGPU only) -> rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES 1)"
+assert_eq "HIP_VISIBLE_DEVICES=0,1 (both) -> rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES 0,1)"
+# Nothing selectable: -1 and an out-of-range ordinal mean no visible device, where ROCm
+# wheels are inert rather than dangerous, so the host keeps the behaviour it has today.
+assert_eq "HIP_VISIBLE_DEVICES=-1 -> rocm (nothing visible)" \
+    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES -1)"
+assert_eq "HIP_VISIBLE_DEVICES=9 out of range -> rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES 9)"
+# A single-GPU Deck is unaffected by any of this: every ordinal lands on gfx1033.
+assert_eq "single Deck under a HIP mask -> cpu" \
+    "https://download.pytorch.org/whl/cpu" \
+    "$(export HIP_VISIBLE_DEVICES=0; _index_for_rocminfo_host gfx1033)"
+
 echo "=== Structural: the gate precedes the version-keyed index selection ==="
 _gate_line=$(grep -n 'Archs measured to compute INCORRECTLY under ROCm' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _idx_line=$(grep -n 'rocm7.2|rocm7.2.\*) echo "\$_base/rocm7.2"' "$INSTALL_SH" | head -1 | cut -d: -f1)
