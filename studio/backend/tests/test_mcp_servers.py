@@ -720,6 +720,77 @@ def test_clear_oauth_tokens_async_no_op_safe(tmp_path, monkeypatch):
     asyncio.run(mcp_client.clear_oauth_tokens_async("https://example.com/mcp"))
 
 
+def test_oauth_credential_binding_is_stable_credential_free_and_account_scoped(monkeypatch):
+    import asyncio
+    import base64
+    from types import SimpleNamespace
+
+    import fastmcp.client.auth as auth_module
+
+    from core.inference import mcp_client
+
+    class FakeAdapter:
+        def __init__(self, tokens):
+            self.tokens = tokens
+
+        async def get_tokens(self):
+            return self.tokens
+
+        async def get_client_info(self):
+            return SimpleNamespace(client_id = "studio-client")
+
+    class FakeOAuth:
+        adapter = None
+
+        def __init__(self, **_kwargs):
+            self.token_storage_adapter = self.adapter
+
+    def jwt(claims):
+        payload = (
+            base64.urlsafe_b64encode(json.dumps(claims, sort_keys = True).encode("utf-8"))
+            .decode("ascii")
+            .rstrip("=")
+        )
+        return f"header.{payload}.signature"
+
+    monkeypatch.setattr(auth_module, "OAuth", FakeOAuth)
+    monkeypatch.setattr(mcp_client, "_oauth_store", lambda: object())
+
+    FakeOAuth.adapter = FakeAdapter(
+        SimpleNamespace(
+            access_token = jwt({"sub": "account-a", "iat": 1}),
+            refresh_token = "refresh-a",
+            scope = "read write",
+        )
+    )
+    first = asyncio.run(mcp_client._oauth_credential_binding_async("https://mcp.test"))
+    FakeOAuth.adapter = FakeAdapter(
+        SimpleNamespace(
+            access_token = jwt({"sub": "account-a", "iat": 2}),
+            refresh_token = "rotated-refresh-a",
+            scope = "read write",
+        )
+    )
+    rotated = asyncio.run(mcp_client._oauth_credential_binding_async("https://mcp.test"))
+    FakeOAuth.adapter = FakeAdapter(
+        SimpleNamespace(
+            access_token = jwt({"sub": "account-b", "iat": 2}),
+            refresh_token = "refresh-b",
+            scope = "read write",
+        )
+    )
+    other_account = asyncio.run(mcp_client._oauth_credential_binding_async("https://mcp.test"))
+
+    assert first == rotated
+    assert first != other_account
+    assert len(first or "") == 64
+    assert "account-a" not in str(first)
+    assert "refresh-a" not in str(first)
+
+    FakeOAuth.adapter = FakeAdapter(SimpleNamespace(access_token = "", refresh_token = "", scope = None))
+    assert asyncio.run(mcp_client._oauth_credential_binding_async("https://mcp.test")) is None
+
+
 def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(tmp_path, monkeypatch):
     """delete_mcp_server route helper must call clear_oauth_tokens_async
     when the deleted row had use_oauth=true."""

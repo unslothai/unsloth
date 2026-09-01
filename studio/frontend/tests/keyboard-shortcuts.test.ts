@@ -1447,7 +1447,11 @@ test("New chat inherits the project on screen, inferred or not", async () => {
   assert.match(page, /setCurrentProjectId\(projectId\);\n\s*useChatRuntimeStore\.getState\(\)\.setActiveProjectId\(projectId\);/);
   // The page's own New chat button starts from the same value, so the chord
   // and the button cannot disagree about which project a new chat is in.
-  assert.match(page, /runtime\.setActiveProjectId\(currentProjectId\);/);
+  assert.match(
+    page,
+    /const navigationProjectId = search\.project \?\? currentProjectId;/,
+  );
+  assert.match(page, /runtime\.setActiveProjectId\(navigationProjectId\);/);
   // Off Chat the page is hidden rather than unmounted, so the runtime still
   // names a project the user is not looking at. That one stays excluded.
   assert.match(root, /isChatRoute \? chatRuntime\.activeProjectId : null/);

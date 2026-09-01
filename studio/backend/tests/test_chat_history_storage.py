@@ -305,11 +305,12 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
     _reset_studio_db(tmp_path, monkeypatch)
     project = studio_db.upsert_chat_project(_project())
     assert project["rootPath"].startswith(str(tmp_path / "Projects"))
-    assert (tmp_path / "Projects" / "Research-project").exists()
-    assert (tmp_path / "Projects" / "Research-project" / "sandbox").is_dir()
-    assert not (tmp_path / "Projects" / "Research-project" / "chats").exists()
-    assert not (tmp_path / "Projects" / "Research-project" / "files").exists()
-    assert not (tmp_path / "Projects" / "Research-project" / "exports").exists()
+    project_root = Path(project["rootPath"])
+    assert project_root.exists()
+    assert (project_root / "sandbox").is_dir()
+    assert not (project_root / "chats").exists()
+    assert not (project_root / "files").exists()
+    assert not (project_root / "exports").exists()
     studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
     studio_db.upsert_chat_message(_message("msg-1", 1, "delete with project"))
 
@@ -324,7 +325,7 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
     assert studio_db.list_chat_threads(project_id = "project-1") == []
     assert studio_db.get_chat_thread("thread-1") is None
     assert studio_db.list_chat_messages("thread-1") == []
-    assert (tmp_path / "Projects" / "Research-project").exists()
+    assert project_root.exists()
     with pytest.raises(studio_db.ChatThreadDeletedError):
         studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
 
@@ -682,7 +683,7 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
             _msg("m1", None, 1),
             _msg("m2", "m1", 2),
             _msg("m3", "m2", 3),
-            _msg("m4", "m2", 4),  # sibling — must be excluded
+            _msg("m4", "m2", 4),  # sibling, must be excluded
         ],
     )
 
@@ -947,6 +948,7 @@ def _research_thread(
         thread_id = "src",
         user_message_id = "prompt",
         assistant_message_id = "report",
+        expected_project_id = None,
         config = {},
         created_at = 1,
     )

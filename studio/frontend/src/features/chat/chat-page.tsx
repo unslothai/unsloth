@@ -1,36 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  applyModelLoadConfigToRuntime,
-  currentRuntimePerModelConfig,
-  type DeletedModelRef,
-  type ExternalConnectionRef,
-  type ExternalModelOption,
-  type LoraModelOption,
-  type ModelOption,
-  ModelSelector,
-  type ModelSelectorChangeMeta,
-  type PerModelConfig,
-  isServedByMlx,
-  loadedContextFields,
-  resolveInitialConfig,
-  SidebarModelConfig,
-  useActiveModelConfig,
-} from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
-import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,6 +14,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   Dialog,
   DialogContent,
@@ -49,6 +22,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   ResizableHandle,
@@ -57,7 +40,6 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DOWNLOAD_KIND,
   dismissStartToast,
@@ -71,28 +53,47 @@ import {
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
-import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
-import { chatLocalModelOptions } from "./local-model-options";
 import {
-  type NativeIntent,
+  type DeletedModelRef,
+  type ExternalConnectionRef,
+  type ExternalModelOption,
+  type LoraModelOption,
+  type ModelOption,
+  ModelSelector,
+  type ModelSelectorChangeMeta,
+  type PerModelConfig,
+  SidebarModelConfig,
+  applyModelLoadConfigToRuntime,
+  currentRuntimePerModelConfig,
+  isServedByMlx,
+  loadedContextFields,
+  resolveInitialConfig,
+  useActiveModelConfig,
+} from "@/features/model-picker";
+import {
   NativeAttachmentTargetContext,
+  type NativeIntent,
   NativeModelChip,
   NativeModelDropOverlay,
   useNativeIntentStore,
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import {
+  consumeProjectSourcesPending,
+  hasProjectSourcesPending,
+} from "@/features/rag/components/project-source-dropzone";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceBackgrounded,
+  useShortcut,
+} from "@/features/settings";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { isTauri } from "@/lib/api-base";
-import { chatModelLoaded } from "./lib/chat-model-loaded";
-import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import {
-  CONVERSATION_MARKDOWN_FORMAT,
-  CONVERSATION_MARKDOWN_LABEL,
-} from "./utils/conversation-markdown";
 import {
   Archive03Icon,
   BookOpen01Icon,
@@ -106,9 +107,9 @@ import {
   LayoutAlignRightIcon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
+  PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
-  PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -117,11 +118,13 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
   type ReactElement,
+  type KeyboardEvent as ReactKeyboardEvent,
+  Suspense,
   lazy,
   memo,
-  Suspense,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -136,25 +139,38 @@ import {
   useSelectedChatArtifact,
 } from "./artifacts/store";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
-import { McpServersDialogMount } from "./mcp-composer-button";
+import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
-  ResearchActivityPanel,
-  ResearchActivitySheet,
-} from "./components/research-activity-panel";
+  agentGraphProjectSubmitIsAllowed,
+  authorizeAgentGraphDraftRouteNavigation,
+  confirmAgentGraphDraftNavigation,
+  graphRouteRetainsProjectEditor,
+  permitNextAgentGraphDraftRouteNavigation,
+} from "./components/agent-graph-workflow-state";
 import { ChatModelNotice } from "./components/chat-model-notice";
 import {
   chatModelSwitchMeta,
   type ChatModelSwitchTarget,
 } from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
+import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
+import { ProjectGoalBar } from "./components/project-goal-bar";
+import {
+  type ProjectLandingTab,
+  nextProjectLandingTab,
+  projectFolderUnavailable,
+} from "./components/project-landing-state";
 import { ProjectSwitcher } from "./components/project-switcher";
+import {
+  ResearchActivityPanel,
+  ResearchActivitySheet,
+} from "./components/research-activity-panel";
 import {
   buildExternalModelId,
   isExternalModelId,
   parseExternalModelId,
-
   providerModelSupportsStudioTools,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
@@ -172,12 +188,14 @@ import {
   renameChatItem,
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
-import { usePinnedChatsStore } from "./stores/pinned-chats-store";
-import { usePinnedProjectsStore } from "./stores/pinned-projects-store";
+import { chatModelLoaded } from "./lib/chat-model-loaded";
+import { hasKnownContextWindow } from "./lib/context-window-known";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
 } from "./lib/training-compare-handoff";
+import { chatLocalModelOptions } from "./local-model-options";
+import { McpServersDialogMount } from "./mcp-composer-button";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -190,11 +208,6 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import {
-  COMPOSER_INPUT_SELECTOR,
-  isSurfaceBackgrounded,
-  useShortcut,
-} from "@/features/settings";
-import {
   ChatActiveContext,
   ChatRuntimeProvider,
   useChatActive,
@@ -206,7 +219,7 @@ import {
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
-import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
+import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import {
   CHAT_CODE_TOOLS_ENABLED_KEY,
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
@@ -218,10 +231,10 @@ import {
   threadScopedOverride,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
-import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
-import { useChatPreferencesStore } from "./stores/chat-preferences-store";
-import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { usePinnedChatsStore } from "./stores/pinned-chats-store";
+import { usePinnedProjectsStore } from "./stores/pinned-projects-store";
+import { useResearchRunStore } from "./stores/research-run-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import {
@@ -230,25 +243,32 @@ import {
   comparePairReadState,
   resolveComparePaneThreadIds,
 } from "./utils/compare-pane-threads";
-import { clearNewChatDraft } from "./utils/composer-draft";
-import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
+import { clearNewChatDraft } from "./utils/composer-draft";
+import {
+  CONVERSATION_MARKDOWN_FORMAT,
+  CONVERSATION_MARKDOWN_LABEL,
+} from "./utils/conversation-markdown";
+import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
 import { attachmentsSample } from "./utils/pasted-text";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
-import {
-  consumeProjectSourcesPending,
-  hasProjectSourcesPending,
-} from "@/features/rag/components/project-source-dropzone";
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
     default: module.ProjectSourcesPanel,
+  })),
+);
+
+const AgentWorkspacePanel = lazy(() =>
+  import("./components/agent-workspace-panel").then((module) => ({
+    default: module.AgentWorkspacePanel,
   })),
 );
 
@@ -366,7 +386,9 @@ const SingleContent = memo(function SingleContent({
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
   // Without a URL threadId the artifact must belong to the active thread.
-  const showArtifactPanel = !showResearchPanel && Boolean(
+  const showArtifactPanel =
+    !showResearchPanel &&
+    Boolean(
     artifact &&
       artifactSurface === "panel" &&
       (threadId
@@ -461,8 +483,7 @@ const SingleContent = memo(function SingleContent({
           withHandle={false}
           className={cn(
             "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
-            !artifactLayoutActive &&
-              "pointer-events-none -ml-0 -mr-0 w-0",
+            !artifactLayoutActive && "pointer-events-none -ml-0 -mr-0 w-0",
           )}
         />
         <ResizablePanel
@@ -470,18 +491,10 @@ const SingleContent = memo(function SingleContent({
           id="chat-artifact"
           defaultSize="0%"
           minSize={
-            showResearchPanel
-              ? "30%"
-              : artifactPanelSettledOpen
-                ? "30%"
-                : "0%"
+            showResearchPanel ? "30%" : artifactPanelSettledOpen ? "30%" : "0%"
           }
           maxSize={
-            showResearchPanel
-              ? "58%"
-              : artifactLayoutActive
-                ? "58%"
-                : "0%"
+            showResearchPanel ? "58%" : artifactLayoutActive ? "58%" : "0%"
           }
           collapsible={showArtifactPanel}
           collapsedSize="0%"
@@ -896,12 +909,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
     if (!threadsSettled) return;
     if (!baseThreadId) markInitialHistoryReady("base");
     if (!loraThreadId) markInitialHistoryReady("lora");
-  }, [
-    baseThreadId,
-    loraThreadId,
-    markInitialHistoryReady,
-    threadsSettled,
-  ]);
+  }, [baseThreadId, loraThreadId, markInitialHistoryReady, threadsSettled]);
 
   const sendUnavailableReason = !threadsSettled
     ? "Loading comparison history."
@@ -920,6 +928,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
         active ? (
           <SharedComposer
             handlesRef={handlesRef}
+            pairId={pairId}
+            projectId={projectId}
             onExitCompare={onExitCompare}
             model1ThreadId={baseThreadId}
             model2ThreadId={loraThreadId}
@@ -998,10 +1008,7 @@ function GeneralCompareHeader({
   value: string;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
-  onValueChange: (
-    id: string,
-    meta: ModelSelectorChangeMeta,
-  ) => void;
+  onValueChange: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -1137,12 +1144,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     if (!threadsSettled) return;
     if (!model1ThreadId) markInitialHistoryReady("model1");
     if (!model2ThreadId) markInitialHistoryReady("model2");
-  }, [
-    markInitialHistoryReady,
-    model1ThreadId,
-    model2ThreadId,
-    threadsSettled,
-  ]);
+  }, [markInitialHistoryReady, model1ThreadId, model2ThreadId, threadsSettled]);
 
   return (
     <CompareShell
@@ -1151,6 +1153,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         active ? (
           <SharedComposer
             handlesRef={handlesRef}
+            pairId={pairId}
+            projectId={projectId}
             model1={model1}
             model2={model2}
             onExitCompare={onExitCompare}
@@ -1285,7 +1289,8 @@ async function exportProjectConversation(
   if (format === "csv") return exports.exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
     return exports.exportConversationMarkdown(threadId);
-  if (format === "sharegpt-jsonl") return exports.exportConversationShareGPT(threadId);
+  if (format === "sharegpt-jsonl")
+    return exports.exportConversationShareGPT(threadId);
   // Was a fallthrough return, so an unhandled format silently exported ShareGPT.
   const unhandled: never = format;
   throw new Error(`Unhandled export format: ${String(unhandled)}`);
@@ -1367,9 +1372,11 @@ function ProjectLanding({
     () => useChatRuntimeStore.getState().activeThreadId,
   );
   // Land on Sources when the project was just created with dropped files.
-  const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
+  const [projectTab, setProjectTab] = useState<ProjectLandingTab>(() =>
     hasProjectSourcesPending(projectId) ? "sources" : "chats",
   );
+  const projectTabsId = useId();
+  const projectTabPanelId = `${projectTabsId}-panel`;
   // Drop the marker once committed: React may replay the initializer above.
   useEffect(() => {
     consumeProjectSourcesPending(projectId);
@@ -1432,12 +1439,16 @@ function ProjectLanding({
   }
 
   async function commitProjectDelete(): Promise<void> {
+    if (!confirmAgentGraphDraftNavigation()) {
+      return;
+    }
     setDeletingProject(false);
     try {
       await deleteChatProject(projectId);
       // Refresh chat history so the project's now-deleted chats don't linger
       // in the sidebar, matching the sidebar delete path.
       notifyChatHistoryUpdated();
+      permitNextAgentGraphDraftRouteNavigation();
       useChatRuntimeStore.getState().setActiveProjectId(null);
       navigate({ to: "/chat", search: { new: createThreadNonce() } });
     } catch (err) {
@@ -1488,6 +1499,8 @@ function ProjectLanding({
 
   // Full chat actions, matching the sidebar chat menu.
   const { projects } = useChatProjects();
+  const project = projects.find((candidate) => candidate.id === projectId);
+  const folderUnavailable = projectFolderUnavailable(project);
   const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
   const confirmDeleteChats = useChatPreferencesStore(
@@ -1506,6 +1519,31 @@ function ProjectLanding({
   // Preselected from the preference, so the dialog shows what is about to
   // happen and can still be turned off for this one chat.
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
+
+  function handleProjectTabKeyDown(
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+  ): void {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    const next = nextProjectLandingTab(projectTab, event.key);
+    if (selectProjectTab(next)) {
+      document.getElementById(`${projectTabsId}-${next}`)?.focus();
+    }
+  }
+
+  function selectProjectTab(next: ProjectLandingTab): boolean {
+    if (
+      next !== projectTab &&
+      projectTab === "agent" &&
+      !confirmAgentGraphDraftNavigation()
+    ) {
+      return false;
+    }
+    setProjectTab(next);
+    return true;
+  }
 
   // Landing has no active thread selected, so the onView callback here is a
   // no-op; the items list refreshes itself once storage emits its update.
@@ -1713,7 +1751,9 @@ function ProjectLanding({
   }, [items]);
 
   useEffect(() => {
-    const previewsReady = items.every((item) => previews[item.id] !== undefined);
+    const previewsReady = items.every(
+      (item) => previews[item.id] !== undefined,
+    );
     if (
       !dataLoaded ||
       !runtimeReady ||
@@ -1761,7 +1801,11 @@ function ProjectLanding({
                     aria-label="Project options"
                     className="inline-flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground"
                   >
-                    <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
+                    <HugeiconsIcon
+                      icon={MoreHorizontalIcon}
+                      strokeWidth={1.75}
+                      className="size-5"
+                    />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -1776,16 +1820,32 @@ function ProjectLanding({
                       setRenamingProject(true);
                     }}
                   >
-                    <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon
+                      icon={Edit03Icon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
                     <span>Rename project</span>
                   </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
-                    <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
+                  <DropdownMenuItem
+                    onSelect={() => togglePinProject(projectId)}
+                  >
+                    <HugeiconsIcon
+                      icon={projectPinned ? PinOffIcon : PinIcon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                    <span>
+                      {projectPinned ? "Unpin project" : "Pin project"}
+                    </span>
                   </DropdownMenuItem>
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>
-                      <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon
+                        icon={Download01Icon}
+                        strokeWidth={1.75}
+                        className="size-icon"
+                      />
                       <span>Export</span>
                     </DropdownMenuSubTrigger>
                     <DropdownMenuSubContent className="unsloth-plus-menu w-48">
@@ -1804,49 +1864,122 @@ function ProjectLanding({
                     variant="destructive"
                     onSelect={() => setDeletingProject(true)}
                   >
-                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon
+                      icon={Delete02Icon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
                     <span>Delete project</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
 
+            {folderUnavailable ? (
+              <div
+                role="alert"
+                className="mb-4 rounded-[18px] border border-destructive/25 bg-destructive/5 px-4 py-3"
+              >
+                <p className="text-sm font-semibold text-foreground">
+                  Local project folder unavailable
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Reconnect the repository in Unsloth Desktop before starting
+                  another chat. The repository remains untouched on disk.
+                </p>
+              </div>
+            ) : null}
+
+            <ProjectGoalBar />
+
             <ProjectComposer
-              disabled={Boolean(pendingNewThreadId)}
-              placeholder={`New chat in ${projectName}`}
+              disabled={Boolean(pendingNewThreadId) || folderUnavailable}
+              beforeSubmit={() =>
+                agentGraphProjectSubmitIsAllowed(projectTab === "agent")
+              }
+              placeholder={
+                folderUnavailable
+                  ? "Reconnect the local folder to start a chat"
+                  : `New chat in ${projectName}`
+              }
             />
 
-            <div className="mt-9 flex items-center gap-2">
+            <div
+              className="mt-9 flex items-center gap-2"
+              role="tablist"
+              aria-label="Project sections"
+            >
               <button
+                id={`${projectTabsId}-chats`}
                 type="button"
-                onClick={() => setProjectTab("chats")}
+                onClick={() => selectProjectTab("chats")}
+                onKeyDown={handleProjectTabKeyDown}
                 data-active={projectTab === "chats"}
+                role="tab"
+                aria-selected={projectTab === "chats"}
+                aria-controls={projectTabPanelId}
+                tabIndex={projectTab === "chats" ? 0 : -1}
                 className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Chats
               </button>
               <button
+                id={`${projectTabsId}-sources`}
                 type="button"
-                onClick={() => setProjectTab("sources")}
+                onClick={() => selectProjectTab("sources")}
+                onKeyDown={handleProjectTabKeyDown}
                 data-active={projectTab === "sources"}
+                role="tab"
+                aria-selected={projectTab === "sources"}
+                aria-controls={projectTabPanelId}
+                tabIndex={projectTab === "sources" ? 0 : -1}
                 className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Sources
               </button>
+              <button
+                id={`${projectTabsId}-agent`}
+                type="button"
+                onClick={() => selectProjectTab("agent")}
+                onKeyDown={handleProjectTabKeyDown}
+                data-active={projectTab === "agent"}
+                role="tab"
+                aria-selected={projectTab === "agent"}
+                aria-controls={projectTabPanelId}
+                tabIndex={projectTab === "agent" ? 0 : -1}
+                className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Agent workspace
+              </button>
             </div>
 
-            {projectTab === "sources" ? (
-              <Suspense
-                fallback={
-                  <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
-                    Loading sources…
-                  </div>
-                }
-              >
-                <ProjectSourcesPanel projectId={projectId} />
-              </Suspense>
-            ) : (
-              <div className="mt-8 flex flex-col gap-1">
+            <div
+              id={projectTabPanelId}
+              role="tabpanel"
+              aria-labelledby={`${projectTabsId}-${projectTab}`}
+            >
+              {projectTab === "sources" ? (
+                <Suspense
+                  fallback={
+                    <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
+                      Loading sources…
+                    </div>
+                  }
+                >
+                  <ProjectSourcesPanel projectId={projectId} />
+                </Suspense>
+              ) : projectTab === "agent" ? (
+                <Suspense
+                  fallback={
+                    <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
+                      Loading agent workspace...
+                    </div>
+                  }
+                >
+                  <AgentWorkspacePanel key={projectId} projectId={projectId} />
+                </Suspense>
+              ) : (
+                <div className="mt-8 flex flex-col gap-1">
                 {items.map((item) => {
                   const preview = previews[item.id];
                   const displayTitle =
@@ -2075,8 +2208,9 @@ function ProjectLanding({
                     </div>
                   );
                 })}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -2140,14 +2274,19 @@ function ProjectLanding({
             className="focus-visible:border-input focus-visible:ring-0"
           />
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" onClick={() => setRenamingProject(false)}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setRenamingProject(false)}
+            >
               Cancel
             </Button>
             <Button
               type="button"
               onClick={() => void commitProjectRename()}
               disabled={
-                !projectNameDraft.trim() || projectNameDraft.trim() === projectName
+                !projectNameDraft.trim() ||
+                projectNameDraft.trim() === projectName
               }
             >
               Save
@@ -2166,6 +2305,9 @@ function ProjectLanding({
             <AlertDialogTitle>Delete project</AlertDialogTitle>
             <AlertDialogDescription>
               Delete "{projectName}"? Its chats will be permanently deleted.
+              {project?.workspaceKind === "folder"
+                ? " The selected repository will remain on disk."
+                : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -2187,7 +2329,9 @@ export type ChatSearch = {
   project?: string;
 };
 
-export function validateChatSearch(search: Record<string, unknown>): ChatSearch {
+export function validateChatSearch(
+  search: Record<string, unknown>,
+): ChatSearch {
   return {
     thread: typeof search.thread === "string" ? search.thread : undefined,
     compare: typeof search.compare === "string" ? search.compare : undefined,
@@ -2223,7 +2367,6 @@ export function ChatPage({
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
     const wasIncognito = store.incognito;
-    store.setIncognito(!store.incognito);
     // On an empty scratch chat there's nothing to abandon, so flip in
     // place: navigating would remount the thread and bounce the composer
     // (it docks to the bottom before the welcome state re-centers it).
@@ -2234,6 +2377,13 @@ export function ChatPage({
       !search.compare &&
       !search.project &&
       store.activeThreadId == null;
+    if (
+      !onEmptyScratchChat &&
+      !authorizeAgentGraphDraftRouteNavigation()
+    ) {
+      return;
+    }
+    store.setIncognito(!store.incognito);
     if (wasIncognito) {
       requestTemporaryPromptQueueStop();
     }
@@ -2355,36 +2505,61 @@ export function ChatPage({
   const currentProject = currentProjectId
     ? (projects.find((project) => project.id === currentProjectId) ?? null)
     : null;
+  const navigationProjectId = search.project ?? currentProjectId;
   const { items: currentProjectItems, loaded: currentProjectItemsLoaded } =
     useChatSidebarItems({
-    projectId: currentProjectId ?? "__no_project_selected__",
+      projectId: currentProjectId ?? "__no_project_selected__",
     });
   const currentChatTitle = activeThreadId
     ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
     : undefined;
   const openProjectLanding = useCallback(
     (projectId: string) => {
+      if (
+        navigationProjectId &&
+        !graphRouteRetainsProjectEditor(
+          { pathname: "/chat", search: { project: projectId } },
+          navigationProjectId,
+        ) &&
+        !authorizeAgentGraphDraftRouteNavigation()
+      ) {
+        return;
+      }
       useChatRuntimeStore.getState().setActiveThreadId(null);
       useChatRuntimeStore.getState().setActiveProjectId(projectId);
       navigate({ to: "/chat", search: { project: projectId } });
     },
-    [navigate],
+    [navigate, navigationProjectId],
   );
 
   const handleDesktopNewChat = useCallback(() => {
+    const nextSearch = navigationProjectId
+      ? { project: navigationProjectId }
+      : { new: crypto.randomUUID() };
+    if (
+      navigationProjectId &&
+      !graphRouteRetainsProjectEditor(
+        { pathname: "/chat", search: nextSearch },
+        navigationProjectId,
+      ) &&
+      !authorizeAgentGraphDraftRouteNavigation()
+    ) {
+      return;
+    }
     clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
-    runtime.setActiveProjectId(currentProjectId);
+    runtime.setActiveProjectId(navigationProjectId);
     runtime.setIncognito(false);
     navigate({
       to: "/chat",
-      search: currentProjectId
-        ? { project: currentProjectId }
-        : { new: crypto.randomUUID() },
+      search: nextSearch,
     });
-  }, [currentProjectId, navigate]);
+  }, [navigate, navigationProjectId]);
   const openProjectsList = useCallback(() => {
+    if (!authorizeAgentGraphDraftRouteNavigation()) {
+      return;
+    }
     navigate({ to: "/projects" });
   }, [navigate]);
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
@@ -2488,7 +2663,12 @@ export function ChatPage({
     if (model) return model.isLora;
     const lora = lorasFromStore.find((entry) => entry.id === checkpoint);
     return lora?.exportType === "lora";
-  }, [inferenceParams.checkpoint, isExternalModel, modelsFromStore, lorasFromStore]);
+  }, [
+    inferenceParams.checkpoint,
+    isExternalModel,
+    modelsFromStore,
+    lorasFromStore,
+  ]);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
@@ -2640,7 +2820,9 @@ export function ChatPage({
     // offering the pill there restored a preference that sent no tools at all.
     const canRunCode = codeToolCanRun({
       hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
-      providerHostsCodeExecution: providerHostsCodeExecution(provider?.providerType),
+      providerHostsCodeExecution: providerHostsCodeExecution(
+        provider?.providerType,
+      ),
       supportsStudioTools: supportsStudioToolsHere,
     });
     const nextToolsEnabled = canSearch
@@ -2878,7 +3060,8 @@ export function ChatPage({
           !!loadingModel &&
           normalizeModelRef(loadingModel.id) ===
             normalizeModelRef(selection.id) &&
-          (loadingModel.ggufVariant ?? null) === (selection.ggufVariant ?? null);
+          (loadingModel.ggufVariant ?? null) ===
+            (selection.ggufVariant ?? null);
         if (isLoadingThisPick) {
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
@@ -2937,8 +3120,7 @@ export function ChatPage({
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
-      const loadConfig =
-        selection.config ?? rememberedConfigFor(selection);
+      const loadConfig = selection.config ?? rememberedConfigFor(selection);
       await selectModel({
         ...selection,
         ...(loadConfig ? { config: loadConfig, keepSpeculative: true } : {}),
@@ -3050,7 +3232,9 @@ export function ChatPage({
             "Another download for this model is still running. Reselect it once that finishes to load it.",
         });
       }
-      setPendingHubAutoLoad((current) => (current === pending ? null : current));
+      setPendingHubAutoLoad((current) =>
+        current === pending ? null : current,
+      );
     })();
     return () => {
       active = false;
@@ -3104,7 +3288,9 @@ export function ChatPage({
   );
   const handleNativeImageDrop = useCallback(
     (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addImageAttachments(artifactViewKey, intents);
+      useNativeIntentStore
+        .getState()
+        .addImageAttachments(artifactViewKey, intents);
     },
     [artifactViewKey],
   );
@@ -3118,13 +3304,17 @@ export function ChatPage({
   );
   const handleNativeAudioDrop = useCallback(
     (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addAudioAttachments(artifactViewKey, intents);
+      useNativeIntentStore
+        .getState()
+        .addAudioAttachments(artifactViewKey, intents);
     },
     [artifactViewKey],
   );
   const handleNativeVideoDrop = useCallback(
     (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addVideoAttachments(artifactViewKey, intents);
+      useNativeIntentStore
+        .getState()
+        .addVideoAttachments(artifactViewKey, intents);
     },
     [artifactViewKey],
   );
@@ -3505,8 +3695,7 @@ export function ChatPage({
   }
 
   /** Step the effort level, clamped at both ends unless we are cycling. */
-  const shiftReasoningEffort = useCallback(
-    (delta: number, wrap: boolean) => {
+  const shiftReasoningEffort = useCallback((delta: number, wrap: boolean) => {
       const state = useChatRuntimeStore.getState();
       const levels = state.reasoningEffortLevels;
       // Levels stay populated for an enable_thinking model, whose request path
@@ -3532,9 +3721,7 @@ export function ChatPage({
         : Math.min(Math.max(from + delta, 0), levels.length - 1);
       if (levels[next] === state.reasoningEffort) return;
       state.setReasoningEffort(levels[next]);
-    },
-    [],
-  );
+  }, []);
   useShortcut(
     "cycleReasoningEffort",
     () => {
@@ -4150,7 +4337,7 @@ export function ChatPage({
             ) : null}
           </div>
           <div className="pointer-events-auto ml-auto flex items-center gap-1">
-            {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
+              {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
@@ -4224,12 +4411,18 @@ export function ChatPage({
                       className="size-icon"
                       strokeWidth={1.75}
                     />
-                    {!['completed', 'failed', 'cancelled'].includes(latestResearchRunStatus) ? (
+                      {!["completed", "failed", "cancelled"].includes(
+                        latestResearchRunStatus,
+                      ) ? (
                       <span className="absolute right-1 top-1 size-1.5 rounded-full bg-primary ring-2 ring-background" />
                     ) : null}
                   </button>
                 </TooltipPrimitive.Trigger>
-                <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+                  <TooltipContent
+                    side="bottom"
+                    sideOffset={6}
+                    className="tooltip-compact"
+                  >
                   Research activity
                 </TooltipContent>
               </Tooltip>

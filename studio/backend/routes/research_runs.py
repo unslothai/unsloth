@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import secrets
 import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
+from core.agent_workspace.project_context import (
+    PROJECT_SESSION_PREFIX,
+    ProjectContextUnavailable,
+    resolve_project_context,
+)
 from core.inference.message_content import message_text_with_pastes
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
@@ -377,6 +383,38 @@ def _sanitize_config(
     }
 
 
+def _project_context_snapshot_for_thread(
+    thread: dict[str, Any], *, query: str
+) -> dict[str, Any] | None:
+    """Resolve project authority from the stored thread, never from renderer input."""
+    project_id = str(thread.get("projectId") or "").strip()
+    if not project_id:
+        return None
+    try:
+        resolved = resolve_project_context(
+            f"{PROJECT_SESSION_PREFIX}{project_id}",
+            query = query,
+        )
+    except ProjectContextUnavailable as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    if resolved is None or resolved.project_id != project_id:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The project workspace is unavailable. Reopen the project, then retry.",
+        )
+    return {
+        "id": secrets.token_urlsafe(32),
+        "projectId": project_id,
+        "context": {
+            "addition": resolved.addition,
+            "projectContext": resolved.project_context,
+            "repositoryInstructions": resolved.repository_instructions,
+            "repositorySelection": resolved.repository_selection,
+            "memory": resolved.memory,
+        },
+    }
+
+
 @router.post("", status_code = 202)
 def create_research_run(
     payload: CreateResearchRun,
@@ -400,7 +438,13 @@ def create_research_run(
             status_code = 400,
             detail = "Deep research requires a user message with non-empty text",
         )
-    config = _sanitize_config(payload, thread, request)
+    config = _sanitize_config(payload, thread)
+    expected_project_id = str(thread.get("projectId") or "").strip() or None
+    stripped_question = (payload.question or "").strip()
+    project_context_snapshot = _project_context_snapshot_for_thread(
+        thread,
+        query = stripped_question or message_text_with_pastes(user_message).strip(),
+    )
     try:
         if db.has_thread_claim(payload.threadId):
             # The thread's one run was stopped, so it is re-pointed at this question rather
@@ -410,6 +454,8 @@ def create_research_run(
                 user_message_id = payload.userMessageId,
                 assistant_message_id = payload.assistantMessageId,
                 config = config,
+                expected_project_id = expected_project_id,
+                project_context_snapshot = project_context_snapshot,
             )
             if run is None:
                 raise HTTPException(
@@ -424,6 +470,8 @@ def create_research_run(
                 user_message_id = payload.userMessageId,
                 assistant_message_id = payload.assistantMessageId,
                 config = config,
+                expected_project_id = expected_project_id,
+                project_context_snapshot = project_context_snapshot,
             )
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc

@@ -6,6 +6,7 @@ import inspect
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import threading
 from types import SimpleNamespace
@@ -267,7 +268,7 @@ def test_clear_history_reaps_search_thumbnails_with_a_body(monkeypatch):
     """DELETE /api/chat is clear-all either way, and the frontend always sends a body.
 
     Gating the thumbnail reap on `payload is None` meant it never ran, so "Clear all
-    chats" left every cached thumbnail — which says what was searched for — on disk.
+    chats" left every cached thumbnail (which says what was searched for) on disk.
     """
     from core.inference import search_images
 
@@ -341,6 +342,382 @@ def test_project_delete_cancels_research_before_workspace_cleanup(monkeypatch):
         )
 
     assert cancelled == ["run-1"]
+
+
+def test_project_delete_blocks_while_studio_worktree_is_active(tmp_path):
+    from core.agent_workspace.state import save_worktree
+    from storage import studio_db
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "project-with-worktree",
+            "name": "Project",
+            "instructions": "",
+            "rootPath": str(root),
+            "workspaceKind": "folder",
+            "workspaceDeviceId": str(root.stat().st_dev),
+            "workspaceFileId": str(root.stat().st_ino),
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    save_worktree(
+        {
+            "id": "active-worktree",
+            "projectId": project["id"],
+            "gitRoot": str(root),
+            "path": str(tmp_path / "owned-worktree"),
+            "branch": "unsloth-studio/delete-safety",
+            "baseRef": "HEAD",
+            "markerPath": str(tmp_path / "owner.json"),
+            "markerTokenHash": "proof",
+            "backgroundTaskId": None,
+            "status": "active",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            chat_history.delete_project(
+                project["id"],
+                SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+                current_subject = "test-user",
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "active and unresolved Studio worktrees" in exc_info.value.detail
+    assert studio_db.get_chat_project(project["id"]) is not None
+
+
+def test_project_delete_removes_owned_checkpoint_refs_before_row_cascade(tmp_path, monkeypatch):
+    from core.agent_workspace.git_service import create_checkpoint
+    from storage import studio_db
+
+    root = tmp_path / "repository"
+    root.mkdir()
+
+    def run_git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd = root,
+            check = True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            text = True,
+        )
+        return result.stdout.strip()
+
+    run_git("init", "-q")
+    run_git("config", "user.name", "Test")
+    run_git("config", "user.email", "test@example.invalid")
+    (root / "owned.txt").write_text("base\n", encoding = "utf-8")
+    run_git("add", "owned.txt")
+    run_git("commit", "-qm", "base")
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "project-with-checkpoint",
+            "name": "Project",
+            "instructions": "",
+            "rootPath": str(root),
+            "workspaceKind": "folder",
+            "workspaceDeviceId": str(root.stat().st_dev),
+            "workspaceFileId": str(root.stat().st_ino),
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    (root / "owned.txt").write_text("checkpoint\n", encoding = "utf-8")
+    checkpoint = create_checkpoint(project["id"], ["owned.txt"])
+    foreign_ref = "refs/unsloth-studio/checkpoints/foreign-user-ref"
+    run_git("update-ref", foreign_ref, "HEAD")
+    real_delete = chat_history.delete_chat_project
+
+    def observed_delete(project_id, delete_files = False):
+        owned_ref = subprocess.run(
+            ["git", "show-ref", "--verify", checkpoint["refName"]],
+            cwd = root,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            check = False,
+        )
+        assert owned_ref.returncode != 0
+        assert run_git("show-ref", "--verify", "--hash", foreign_ref) == run_git(
+            "rev-parse", "HEAD"
+        )
+        return real_delete(project_id, delete_files = delete_files)
+
+    monkeypatch.setattr(chat_history, "delete_chat_project", observed_delete)
+    monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda _id: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(chat_history, "_remove_conversation_archives", lambda *_a, **_k: None)
+
+    async def remove_sandboxes(_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    deleted = asyncio.run(
+        chat_history.delete_project(
+            project["id"],
+            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+            delete_files = True,
+            current_subject = "test-user",
+        )
+    )
+
+    assert deleted.id == project["id"]
+    assert studio_db.get_chat_project(project["id"]) is None
+    assert root.is_dir()
+    assert run_git("show-ref", "--verify", "--hash", foreign_ref) == run_git("rev-parse", "HEAD")
+
+
+def test_project_delete_stops_if_owned_checkpoint_ref_changed(tmp_path):
+    from core.agent_workspace.git_service import create_checkpoint
+    from core.agent_workspace.state import get_checkpoint
+    from storage import studio_db
+
+    root = tmp_path / "repository"
+    root.mkdir()
+
+    def run_git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd = root,
+            check = True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            text = True,
+        )
+        return result.stdout.strip()
+
+    run_git("init", "-q")
+    run_git("config", "user.name", "Test")
+    run_git("config", "user.email", "test@example.invalid")
+    (root / "owned.txt").write_text("base\n", encoding = "utf-8")
+    run_git("add", "owned.txt")
+    run_git("commit", "-qm", "base")
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "project-with-changed-checkpoint",
+            "name": "Project",
+            "instructions": "",
+            "rootPath": str(root),
+            "workspaceKind": "folder",
+            "workspaceDeviceId": str(root.stat().st_dev),
+            "workspaceFileId": str(root.stat().st_ino),
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    (root / "owned.txt").write_text("checkpoint\n", encoding = "utf-8")
+    checkpoint = create_checkpoint(project["id"], ["owned.txt"])
+    head = run_git("rev-parse", "HEAD")
+    run_git("update-ref", checkpoint["refName"], head)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            chat_history.delete_project(
+                project["id"],
+                SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+                current_subject = "test-user",
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "checkpoint ref changed" in str(exc_info.value.detail)
+    assert studio_db.get_chat_project(project["id"]) is not None
+    assert get_checkpoint(checkpoint["id"]) is not None
+    assert run_git("show-ref", "--verify", "--hash", checkpoint["refName"]) == head
+
+
+def test_project_delete_waits_for_agent_verification_worker(tmp_path, monkeypatch):
+    from core.agent_workspace import background as background_module
+    from storage import studio_db
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "project-with-task",
+            "name": "Project",
+            "instructions": "",
+            "rootPath": str(root),
+            "workspaceKind": "folder",
+            "workspaceDeviceId": str(root.stat().st_dev),
+            "workspaceFileId": str(root.stat().st_ino),
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    entered = threading.Event()
+    events = []
+
+    def cancellable_verification(*args, cancel_event, **kwargs):
+        entered.set()
+        assert cancel_event.wait(timeout = 5)
+        events.append("worker-stopped")
+        return {"status": "cancelled"}
+
+    real_delete = chat_history.delete_chat_project
+
+    def observed_delete(project_id, delete_files = False):
+        events.append("row-delete")
+        return real_delete(project_id, delete_files = delete_files)
+
+    monkeypatch.setattr(background_module, "run_project_verification", cancellable_verification)
+    monkeypatch.setattr(chat_history, "delete_chat_project", observed_delete)
+    monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda _id: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(chat_history, "_remove_conversation_archives", lambda *_a, **_k: None)
+
+    async def remove_sandboxes(_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    background_module.manager.enqueue_verification(project["id"], start = True)
+    assert entered.wait(timeout = 2)
+
+    deleted = asyncio.run(
+        chat_history.delete_project(
+            project["id"],
+            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+            current_subject = "test-user",
+        )
+    )
+
+    assert deleted.id == project["id"]
+    assert events == ["worker-stopped", "row-delete"]
+    assert studio_db.get_chat_project(project["id"]) is None
+
+
+def test_project_delete_cancels_and_waits_for_direct_verification_route(tmp_path, monkeypatch):
+    from core.agent_workspace import verification as verification_module
+    from core.agent_workspace.state import set_verification_config
+    from routes import agent_workspace as agent_workspace_routes
+    from storage import studio_db
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "project-with-foreground-verification",
+            "name": "Project",
+            "instructions": "",
+            "rootPath": str(root),
+            "workspaceKind": "folder",
+            "workspaceDeviceId": str(root.stat().st_dev),
+            "workspaceFileId": str(root.stat().st_ino),
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    verification_config = set_verification_config(
+        project["id"],
+        [
+            {
+                "name": "test",
+                "kind": "test",
+                "command": "test-command",
+                "required": True,
+                "timeoutSeconds": 30,
+                "logLimitBytes": 4096,
+            }
+        ],
+    )
+    entered = threading.Event()
+    events = []
+    route_result = []
+    route_errors = []
+
+    def cancellable_check(
+        check,
+        *,
+        root,
+        cancel_event,
+        run_id,
+        expected_root_identity = None,
+    ):
+        entered.set()
+        assert cancel_event.wait(timeout = 5)
+        events.append("foreground-stopped")
+        return {
+            "name": check["name"],
+            "kind": check["kind"],
+            "command": check["command"],
+            "required": True,
+            "status": "cancelled",
+            "exitCode": None,
+            "output": "",
+            "outputBytes": 0,
+            "outputTruncated": False,
+            "timeoutSeconds": 30,
+            "startedAt": 1,
+            "completedAt": 2,
+            "durationMs": 1,
+        }
+
+    real_delete = chat_history.delete_chat_project
+
+    def observed_delete(project_id, delete_files = False):
+        events.append("row-delete")
+        return real_delete(project_id, delete_files = delete_files)
+
+    def run_foreground_route():
+        try:
+            route_result.append(
+                agent_workspace_routes.run_verification(
+                    project["id"],
+                    agent_workspace_routes.VerificationRunRequest(
+                        configRevision = verification_config["revision"]
+                    ),
+                    current_subject = "test-user",
+                )
+            )
+        except Exception as exc:
+            route_errors.append(exc)
+
+    monkeypatch.setattr(verification_module, "execute_check", cancellable_check)
+    monkeypatch.setattr(agent_workspace_routes, "_require_execution_boundary", lambda: None)
+    monkeypatch.setattr(chat_history, "delete_chat_project", observed_delete)
+    monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda _id: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(chat_history, "_remove_conversation_archives", lambda *_a, **_k: None)
+
+    async def remove_sandboxes(_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    foreground = threading.Thread(target = run_foreground_route)
+    foreground.start()
+    assert entered.wait(timeout = 2)
+
+    deleted = asyncio.run(
+        chat_history.delete_project(
+            project["id"],
+            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+            current_subject = "test-user",
+        )
+    )
+    foreground.join(timeout = 2)
+
+    assert not foreground.is_alive()
+    assert route_errors == []
+    assert route_result[0]["status"] == "cancelled"
+    assert deleted.id == project["id"]
+    assert events == ["foreground-stopped", "row-delete"]
+    assert studio_db.get_chat_project(project["id"]) is None
 
 
 # ---------------------------------------------------------------------------

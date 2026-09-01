@@ -1861,9 +1861,11 @@ fn run_staged_rollback_relaunch_helper() -> bool {
         eprintln!("staged rollback relaunch timed out waiting for the previous app");
         return true;
     }
-    match std::env::current_exe()
-        .and_then(|binary| detached_relaunch_command(binary).args(original_args).spawn())
-    {
+    match std::env::current_exe().and_then(|binary| {
+        detached_relaunch_command(binary)
+            .args(original_args)
+            .spawn()
+    }) {
         Ok(_) => {}
         Err(error) => eprintln!("staged rollback relaunch failed: {error}"),
     }
@@ -1898,7 +1900,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
-    // GUI apps don't inherit shell dotfile PATH — this spawns the user's
+    // GUI apps don't inherit shell dotfile PATH: this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
     let _ = fix_path_env::fix();
 
@@ -2001,6 +2003,7 @@ fn main() {
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
             native_intents::pick_native_document_folder,
+            native_intents::pick_native_project_folder,
             native_intents::consume_native_path_token,
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,

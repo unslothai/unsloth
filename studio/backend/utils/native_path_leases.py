@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Verification for Tauri native path signed grants.
+"""Verification for Tauri native path grants.
 
-Rust signs compact ``base64url(payload_json).base64url(hmac)`` grants. The
-frontend can see and forward the grant, but cannot change it without breaking
-the HMAC. The backend verifies the original payload segment bytes, then
-re-stats the path before any native read.
+Production grants use an authenticated encrypted envelope, so the renderer can
+forward a grant without learning or changing its path. The backend authenticates
+the envelope before decryption, then re-stats the path before any native read.
+Version 1 verification remains only for grants from an older desktop process
+during an in-place backend transition.
 """
 
 from __future__ import annotations
@@ -28,10 +29,14 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
-_MAX_NATIVE_PATH_REDACTIONS = 100
 _MAX_NATIVE_PATH_LABELS = 10_000
+_MAX_NATIVE_PATH_REDACTIONS = _MAX_NATIVE_PATH_LABELS
 _MIN_LEASE_SECRET_BYTES = 32
 _WINDOWS_STAT_USES_FILE_ID_INFO = os.name == "nt" and sys.version_info >= (3, 12)
+_LEASE_V2_PREFIX = "2"
+_LEASE_V2_NONCE_BYTES = 16
+_LEASE_V2_ENCRYPTION_DOMAIN = b"unsloth-native-path-lease-v2-encryption\0"
+_LEASE_V2_AUTH_DOMAIN = b"unsloth-native-path-lease-v2-auth\0"
 
 _REPLAY_LOCK = threading.Lock()
 _USED_NONCES: dict[str, int] = {}
@@ -177,18 +182,13 @@ def verify_native_path_lease(
         raise NativePathLeaseError("Native path grant is required.")
 
     secret = _decode_secret()
-    payload_b64, signature_b64 = _split_lease(lease)
-    expected_signature = hmac.new(
-        secret,
-        payload_b64.encode("ascii"),
-        hashlib.sha256,
-    ).digest()
-    supplied_signature = _b64decode(signature_b64)
-    if not hmac.compare_digest(expected_signature, supplied_signature):
-        raise NativePathLeaseError("Native path grant signature is invalid.")
-
-    payload = _decode_payload(payload_b64)
-    _validate_payload(payload, operation = operation, expected_kind = expected_kind)
+    payload, envelope_version = _decode_authenticated_payload(lease, secret)
+    _validate_payload(
+        payload,
+        operation = operation,
+        expected_kind = expected_kind,
+        envelope_version = envelope_version,
+    )
 
     path = Path(str(payload["canonical_path"]))
     _reject_network_or_device_path(path)
@@ -284,7 +284,7 @@ def _decode_secret() -> bytes:
         return secret
 
 
-def _split_lease(lease: str) -> tuple[str, str]:
+def _lease_parts(lease: str) -> list[str]:
     if not isinstance(lease, str):
         raise NativePathLeaseError("Native path grant has an invalid format.")
     try:
@@ -292,14 +292,14 @@ def _split_lease(lease: str) -> tuple[str, str]:
     except UnicodeEncodeError as exc:
         raise NativePathLeaseError("Native path grant has an invalid format.") from exc
     parts = lease.split(".")
-    if len(parts) != 2 or not parts[0] or not parts[1]:
+    if any(not part for part in parts):
         raise NativePathLeaseError("Native path grant has an invalid format.")
-    return parts[0], parts[1]
+    return parts
 
 
-def _decode_payload(payload_b64: str) -> dict[str, Any]:
+def _decode_payload_bytes(payload_bytes: bytes) -> dict[str, Any]:
     try:
-        payload = json.loads(_b64decode(payload_b64).decode("utf-8"))
+        payload = json.loads(payload_bytes.decode("utf-8"))
     except Exception as exc:
         raise NativePathLeaseError("Native path grant payload is invalid.") from exc
     if not isinstance(payload, dict):
@@ -307,8 +307,55 @@ def _decode_payload(payload_b64: str) -> dict[str, Any]:
     return payload
 
 
+def _xor_lease_stream(secret: bytes, nonce: bytes, value: bytes) -> bytes:
+    output = bytearray()
+    for block_index in range(0, len(value), hashlib.sha256().digest_size):
+        counter = block_index // hashlib.sha256().digest_size
+        seed = _LEASE_V2_ENCRYPTION_DOMAIN + nonce + counter.to_bytes(8, "big")
+        stream = hmac.new(secret, seed, hashlib.sha256).digest()
+        chunk = value[block_index : block_index + len(stream)]
+        output.extend(byte ^ mask for byte, mask in zip(chunk, stream))
+    return bytes(output)
+
+
+def _decode_authenticated_payload(lease: str, secret: bytes) -> tuple[dict[str, Any], int]:
+    parts = _lease_parts(lease)
+    if len(parts) == 3 and parts[0] == _LEASE_V2_PREFIX:
+        envelope = _b64decode(parts[1])
+        if len(envelope) <= _LEASE_V2_NONCE_BYTES:
+            raise NativePathLeaseError("Native path grant has an invalid format.")
+        supplied_signature = _b64decode(parts[2])
+        if len(supplied_signature) != hashlib.sha256().digest_size:
+            raise NativePathLeaseError("Native path grant has an invalid format.")
+        expected_signature = hmac.new(
+            secret,
+            _LEASE_V2_AUTH_DOMAIN + envelope,
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(expected_signature, supplied_signature):
+            raise NativePathLeaseError("Native path grant signature is invalid.")
+        nonce = envelope[:_LEASE_V2_NONCE_BYTES]
+        ciphertext = envelope[_LEASE_V2_NONCE_BYTES:]
+        payload = _decode_payload_bytes(_xor_lease_stream(secret, nonce, ciphertext))
+        return payload, 2
+    if len(parts) == 2:
+        payload_b64, signature_b64 = parts
+        expected_signature = hmac.new(
+            secret,
+            payload_b64.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        supplied_signature = _b64decode(signature_b64)
+        if len(supplied_signature) != hashlib.sha256().digest_size:
+            raise NativePathLeaseError("Native path grant has an invalid format.")
+        if not hmac.compare_digest(expected_signature, supplied_signature):
+            raise NativePathLeaseError("Native path grant signature is invalid.")
+        return _decode_payload_bytes(_b64decode(payload_b64)), 1
+    raise NativePathLeaseError("Native path grant has an invalid format.")
+
+
 def _validate_payload(
-    payload: dict[str, Any], *, operation: str, expected_kind: str | None
+    payload: dict[str, Any], *, operation: str, expected_kind: str | None, envelope_version: int
 ) -> None:
     required = (
         "version",
@@ -325,7 +372,7 @@ def _validate_payload(
     missing = [key for key in required if key not in payload]
     if missing:
         raise NativePathLeaseError("Native path grant payload is missing required fields.")
-    if _required_int(payload, "version") != 1:
+    if _required_int(payload, "version") != envelope_version:
         raise NativePathLeaseError("Native path grant version is unsupported.")
     if payload["operation"] != operation:
         raise NativePathLeaseError("Native path grant operation is invalid.")
@@ -382,25 +429,49 @@ def _validate_current_stat(
 
 def _consume_nonce(nonce: str, expires_at_ms: int) -> None:
     now_ms = int(time.time() * 1000)
+    if expires_at_ms <= now_ms:
+        raise NativePathLeaseError("Native path grant has expired.")
+    try:
+        nonce_digest = hashlib.sha256(nonce.encode("utf-8")).digest()
+        from storage.studio_db import consume_native_path_lease_nonce
+        consumed = consume_native_path_lease_nonce(
+            nonce_digest,
+            expires_at_ms,
+            now_ms = now_ms,
+        )
+    except Exception as exc:
+        raise NativePathLeaseError("Native path grant replay protection is unavailable.") from exc
+    if not consumed:
+        raise NativePathLeaseError("Native path grant was already used.")
+
+    # Retain a bounded process-local diagnostic cache for compatibility with
+    # older callers. It is not consulted for replay decisions; SQLite is the
+    # authoritative cross-process consume boundary.
+    nonce_key = nonce_digest.hex()
     with _REPLAY_LOCK:
         for key, expiry in list(_USED_NONCES.items()):
             if expiry <= now_ms:
                 _USED_NONCES.pop(key, None)
-        if nonce in _USED_NONCES:
-            raise NativePathLeaseError("Native path grant was already used.")
-        _USED_NONCES[nonce] = expires_at_ms
+        _USED_NONCES[nonce_key] = expires_at_ms
 
 
 def _remember_native_path_for_redaction(path: str, display_label: str) -> None:
     with _REDACTION_LOCK:
+        # Keep the display-label and redaction caches in the same recency order.
+        # Every path retained for a durable label must also remain redactable.
+        _NATIVE_PATH_LABELS.pop(path, None)
         _NATIVE_PATH_LABELS[path] = display_label
+        if path in _NATIVE_PATH_REDACTIONS:
+            _NATIVE_PATH_REDACTIONS.remove(path)
+        _NATIVE_PATH_REDACTIONS.append(path)
         if len(_NATIVE_PATH_LABELS) > _MAX_NATIVE_PATH_LABELS:
             excess = len(_NATIVE_PATH_LABELS) - _MAX_NATIVE_PATH_LABELS
             for stale_path in list(_NATIVE_PATH_LABELS.keys())[:excess]:
                 _NATIVE_PATH_LABELS.pop(stale_path, None)
-        if path in _NATIVE_PATH_REDACTIONS:
-            return
-        _NATIVE_PATH_REDACTIONS.append(path)
+                try:
+                    _NATIVE_PATH_REDACTIONS.remove(stale_path)
+                except ValueError:
+                    pass
         del _NATIVE_PATH_REDACTIONS[:-_MAX_NATIVE_PATH_REDACTIONS]
 
 
@@ -426,7 +497,16 @@ def _reject_network_or_device_path(path: Path) -> None:
 def _b64decode(value: str) -> bytes:
     try:
         padding = "=" * (-len(value) % 4)
-        return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+        encoded = value.encode("ascii")
+        decoded = base64.b64decode(
+            encoded + padding.encode("ascii"),
+            altchars = b"-_",
+            validate = True,
+        )
+        canonical = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
+        if canonical != value:
+            raise NativePathLeaseError("Native path grant has an invalid format.")
+        return decoded
     except (UnicodeEncodeError, binascii.Error, ValueError) as exc:
         raise NativePathLeaseError("Native path grant has an invalid format.") from exc
 

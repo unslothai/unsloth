@@ -546,7 +546,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "pendingSettings.some((entry) => entry.threadIds.has(threadId))" in QUEUED_SETTINGS
     queued_run_failure = _between(
         CHAT_ADAPTER,
-        "try {\n        yield* adapter.run(args);",
+        "try {\n        const commandText = latestSlashCommandText(args.messages);",
         "} finally {",
     )
     assert "if (!args.abortSignal.aborted)" in queued_run_failure
@@ -752,7 +752,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         < first_draft_check
         < gpu_discovery_index
         < second_draft_check
-        < send_flow.index("clearSubmittedDraft();")
+        < send_flow.index("clearSubmittedDraft();", second_draft_check)
     )
     assert "requestLocalPromptQueueStop(" in SHARED_COMPOSER
     assert "compareStopDecision?.preStreamRunTokens ?? []" in SHARED_COMPOSER
@@ -877,7 +877,7 @@ def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
     changed_draft = _between(
         send_flow,
         "const keepChangedDraft = () =>",
-        "const clearSubmittedDraft = () =>",
+        "let compareStopDecision:",
     )
     assert "releaseCompareModelLifecycle();" in changed_draft
     assert "resetPromptQueue();" in changed_draft
@@ -891,7 +891,7 @@ def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
 
     compare_run = _between(
         send_flow,
-        "setComparing(true);",
+        'const toastId = toast("Comparing models…"',
         "} else {",
     )
     failed_compare = _between(compare_run, "} catch (err) {", "} finally {")

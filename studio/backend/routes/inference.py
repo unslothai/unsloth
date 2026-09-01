@@ -28,7 +28,17 @@ from fastapi import (
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, Collection, List, NamedTuple, Optional, TYPE_CHECKING, Union
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Iterable,
+    List,
+    NamedTuple,
+    Optional,
+    TYPE_CHECKING,
+    Union,
+)
 import functools
 import json
 import httpx
@@ -72,6 +82,7 @@ from core.inference.memory_contract import (
     project_estimate_memory_response,
 )
 from core.inference.stream_errors import LlamaStreamError
+from core.inference.runtime_registry import register_llama_cpp_backend
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
@@ -2969,6 +2980,7 @@ from models.inference import (
     ListOpenAIContainersResponse,
     OpenAIContainerRequest,
     OpenAIContainerSummary,
+    is_reserved_agent_task_session_id,
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
@@ -2981,6 +2993,12 @@ from core.inference.anthropic_compat import (
     build_anthropic_sse_event,
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
+)
+from core.agent_workspace.project_context import (
+    ProjectContextUnavailable,
+    project_query_from_messages,
+    resolve_project_context_snapshot,
+    strip_server_project_context,
 )
 from auth import storage as auth_storage
 from auth.authentication import API_KEY_PREFIX, get_current_subject
@@ -3012,6 +3030,15 @@ def _request_has_api_key(request: Any) -> bool:
     from auth.authentication import admitted_without_session
 
     return admitted_without_session(request)
+
+
+def _require_ui_for_installed_mcp(payload: Any, request: Any) -> None:
+    """Do not let an API surface spend installation-owned connector secrets."""
+    if bool(getattr(payload, "mcp_enabled", False)) and _request_has_api_key(request):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Saved MCP connectors can only be used from the Unsloth UI.",
+        )
 
 
 def _request_is_internal_workflow(request: Any) -> bool:
@@ -3060,6 +3087,19 @@ def _request_is_saved_credential_workflow(request: Any) -> bool:
         logger.debug("external_provider.workflow_key_name_probe_failed", exc_info = True)
         return False
     return name == auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME
+
+
+def _durable_research_snapshot_run_id(request: Any, thread_id: Any) -> Optional[str]:
+    """Return the run bound to an authenticated Deep Research model hop."""
+    if not _request_is_saved_credential_workflow(request) or not isinstance(thread_id, str):
+        return None
+    prefix = "research:"
+    if not thread_id.startswith(prefix):
+        return None
+    run_id = thread_id[len(prefix) :]
+    if not 1 <= len(run_id) <= 128 or _re.fullmatch(r"[A-Za-z0-9_-]+", run_id) is None:
+        return None
+    return run_id
 
 
 def _request_used_api_key(request: Any) -> bool:
@@ -4807,6 +4847,7 @@ async def _select_request_tools(
         ALL_TOOLS,
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
+        project_memory_tools_enabled,
     )
 
     if not tools_on:
@@ -4817,6 +4858,18 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    memory_names = {"memory_search", "memory_read", "memory_write", "memory_update"}
+    if not tools_on or not project_memory_tools_enabled(getattr(payload, "session_id", None)):
+        tools = [tool for tool in tools if tool["function"]["name"] not in memory_names]
+    elif payload.enabled_tools is not None:
+        # Memory is a project capability, not a renderer pill. Keep it available to the
+        # model even when the composer sent an explicit list for the optional tools.
+        tools.extend(
+            tool
+            for tool in ALL_TOOLS
+            if tool["function"]["name"] in memory_names
+            and tool["function"]["name"] not in {item["function"]["name"] for item in tools}
+        )
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
@@ -6758,6 +6811,7 @@ def _resolve_model_identifier_for_request(
 
 # GGUF inference backend (llama-server)
 _llama_cpp_backend = LlamaCppBackend()
+register_llama_cpp_backend(_llama_cpp_backend)
 
 
 def get_llama_cpp_backend() -> LlamaCppBackend:
@@ -12850,6 +12904,8 @@ async def get_active_generations(
     for _entry in entries:
         if isinstance(_entry.get("model"), str):
             _entry["model"] = redact_native_paths(_entry["model"])
+        if is_reserved_agent_task_session_id(_entry.get("thread_id")):
+            _entry["thread_id"] = None
     slots = 1
     try:
         slots = _openai_llama_admission_capacity(fastapi_request, get_llama_cpp_backend())
@@ -12858,7 +12914,11 @@ async def get_active_generations(
     return {
         "active": entries,
         "count": len(entries),
-        "thread_ids": active_generations.active_thread_ids(),
+        "thread_ids": [
+            thread_id
+            for thread_id in active_generations.active_thread_ids()
+            if not is_reserved_agent_task_session_id(thread_id)
+        ],
         "parallel_slots": max(1, int(slots)),
     }
 
@@ -15698,6 +15758,8 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 
     cancel_id = body.get("cancel_id")
     if isinstance(cancel_id, str) and cancel_id:
+        if is_reserved_agent_task_session_id(cancel_id):
+            return {"cancelled": 0}
         return {"cancelled": _cancel_by_cancel_id_or_stash(cancel_id)}
 
     keys = []
@@ -15705,7 +15767,7 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
     # /v1/messages clients can cancel by their native id.
     for k in ("completion_id", "session_id", "message_id"):
         v = body.get(k)
-        if isinstance(v, str) and v:
+        if isinstance(v, str) and v and not is_reserved_agent_task_session_id(v):
             keys.append(v)
 
     if not keys:
@@ -16394,7 +16456,7 @@ async def _generate_tts_wav(
     _audio_cancel = threading.Event()
     prompt_for_budget = text
 
-    # Pick backend — both return (wav_bytes, sample_rate)
+    # Pick backend: both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
@@ -17884,7 +17946,7 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         # ── User / assistant messages ─────────────────────────
         combined_text: Optional[str] = None
         if isinstance(msg.content, str):
-            # Plain string content — pass through
+            # Plain string content: pass through
             combined_text = msg.content
         elif isinstance(msg.content, list):
             # Multimodal content parts
@@ -19576,17 +19638,25 @@ async def produce_openai_chat_completions(
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    _require_ui_for_installed_mcp(payload, request)
     request = _DisconnectPolicyRequest(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
-
     # OpenAI's newer "developer" role is equivalent to "system". Normalize it
     # before provider routing so external providers (which may not accept the
     # "developer" role) get "system" too, matching the local path.
     for _m in payload.messages:
         if _m.role == "developer":
             _m.role = "system"
+    durable_research_run_id = _durable_research_snapshot_run_id(request, payload.thread_id)
+    payload.messages = _with_project_context_messages(
+        payload.messages,
+        payload.session_id,
+        payload.project_context_snapshot_id,
+        durable_research_run_id = durable_research_run_id,
+        durable_owner_subject = current_subject if durable_research_run_id else None,
+    )
 
     if payload.logprobs:
         _raise_unsupported_openai_parameter(
@@ -20300,7 +20370,7 @@ async def produce_openai_chat_completions(
     # verbatim so structured `tool_calls` flow back to the client. This
     # branch runs BEFORE `_extract_content_parts` because that helper is
     # unaware of `role="tool"` messages and assistant messages that only
-    # carry `tool_calls` (content=None) — both of which are valid in
+    # carry `tool_calls` (content=None): both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
 
@@ -23450,12 +23520,38 @@ _SANDBOX_MEDIA_TYPES = {
 }
 
 
+def _require_public_sandbox_session(session_id: str) -> None:
+    """Keep server-owned agent scopes and live repositories off file APIs."""
+    if is_reserved_agent_task_session_id(session_id):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Background agent workspaces are not public sandboxes.",
+        )
+    if not session_id.startswith("project-"):
+        return
+    from storage import studio_db
+
+    # An imported chat may legitimately have a project-shaped ID. Only the
+    # synthetic project session maps directly to a workspace root.
+    if studio_db.get_chat_thread(session_id) is not None:
+        return
+    project_id = session_id[len("project-") :]
+    project = studio_db.get_chat_project(project_id) if project_id else None
+    if project is not None and project.get("workspaceKind") == "folder":
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Folder project files are not available through sandbox APIs.",
+        )
+
+
 def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
     """The session's sandbox directory.
 
     ``create=False`` resolves the path without materialising it, so a read-only
     request cannot leave a directory behind for every id it is asked about.
     """
+    _require_public_sandbox_session(session_id)
+
     from core.inference.tools import get_sandbox_workdir, resolve_sandbox_workdir
 
     resolver = get_sandbox_workdir if create else resolve_sandbox_workdir
@@ -24617,7 +24713,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         async def _stream():
             # Manual httpx client/response lifecycle AND explicit iterator
-            # close — see _anthropic_passthrough_stream for the full rationale.
+            # close: see _anthropic_passthrough_stream for the full rationale.
             # Saving the iterator and closing it in the finally block avoids the
             # Python 3.13 + httpcore 1.0.x "Exception ignored in:
             # <async_generator>" / anyio cancel-scope trace.
@@ -25560,6 +25656,14 @@ def _build_chat_request(
         messages = messages,
         stream = stream,
     )
+    if payload.session_id is not None:
+        chat_kwargs["session_id"] = payload.session_id
+    if payload.project_context_snapshot_id is not None:
+        chat_kwargs["project_context_snapshot_id"] = payload.project_context_snapshot_id
+    if payload.thread_id is not None:
+        chat_kwargs["thread_id"] = payload.thread_id
+    if payload.cancel_id is not None:
+        chat_kwargs["cancel_id"] = payload.cancel_id
     # Only forward an explicitly set model so an omitted Responses model stays
     # reload-only when openai_chat_completions re-checks on the non-streaming path.
     if "model" in payload.model_fields_set:
@@ -26962,6 +27066,7 @@ async def openai_responses(
     internally, and returns a response matching the Responses API schema
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
+    _require_ui_for_installed_mcp(payload, request)
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
@@ -26970,6 +27075,11 @@ async def openai_responses(
     # model only for the chat handler to 400 it as having no non-system message.
     if not any(m.role not in ("system", "developer") for m in messages):
         raise HTTPException(status_code = 400, detail = "At least one non-system message is required.")
+    messages = _with_project_context_messages(
+        messages,
+        payload.session_id,
+        payload.project_context_snapshot_id,
+    )
     # Reject a malformed function tool before any model load, mirroring the
     # /v1/chat/completions check, so an invalid request never switches the model.
     # Built-in tools (web_search, mcp, ...) carry no name and are dropped later.
@@ -27517,6 +27627,184 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     )
 
 
+def _system_text_fragments(messages: list[Any]) -> list[str]:
+    """Return only system/developer text, including text in multimodal arrays."""
+    fragments: list[str] = []
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role not in ("system", "developer"):
+            continue
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        if isinstance(content, str):
+            fragments.append(content)
+            continue
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+            text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+            if part_type == "text" and isinstance(text, str):
+                fragments.append(text)
+    return fragments
+
+
+def _project_context_http_exception(
+    exc: ProjectContextUnavailable, *, anthropic: bool = False
+) -> HTTPException:
+    message = str(exc)
+    if anthropic:
+        detail = anthropic_error_body(
+            message,
+            status = 409,
+        )
+    else:
+        detail = openai_error_body(
+            message,
+            status = 409,
+            code = "project_workspace_unavailable",
+            param = "session_id",
+        )
+    return HTTPException(status_code = 409, detail = detail)
+
+
+def _with_project_context_messages(
+    messages: list[Any],
+    session_id: Optional[str],
+    project_context_snapshot_id: Optional[str] = None,
+    *,
+    durable_research_run_id: Optional[str] = None,
+    durable_owner_subject: Optional[str] = None,
+) -> list[Any]:
+    """Place server-owned context after all caller instructions, exactly once."""
+    try:
+        resolved = resolve_project_context_snapshot(
+            session_id,
+            project_context_snapshot_id,
+            query = project_query_from_messages(messages),
+            durable_research_run_id = durable_research_run_id,
+            durable_owner_subject = durable_owner_subject,
+        )
+    except ProjectContextUnavailable as exc:
+        raise _project_context_http_exception(exc) from exc
+    if resolved is None:
+        return messages
+
+    copied = [
+        dict(message) if isinstance(message, dict) else message.model_copy(deep = True)
+        for message in messages
+    ]
+    caller_instructions = []
+    conversation = []
+    for message in copied:
+        role = message.get("role") if isinstance(message, dict) else message.role
+        if role not in ("system", "developer"):
+            conversation.append(message)
+            continue
+        content = message.get("content") if isinstance(message, dict) else message.content
+        if isinstance(content, str):
+            cleaned_content = strip_server_project_context(content)
+            if isinstance(message, dict):
+                message["content"] = cleaned_content
+            else:
+                message.content = cleaned_content
+        elif isinstance(content, list):
+            cleaned = []
+            for part in content:
+                part_type = (
+                    part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+                )
+                text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+                if part_type != "text" or not isinstance(text, str):
+                    cleaned.append(part)
+                    continue
+                replacement = strip_server_project_context(text)
+                if isinstance(part, dict):
+                    cleaned.append({**part, "text": replacement})
+                else:
+                    cloned = part.model_copy(deep = True)
+                    cloned.text = replacement
+                    cleaned.append(cloned)
+            if isinstance(message, dict):
+                message["content"] = cleaned
+            else:
+                message.content = cleaned
+        caller_instructions.append(message)
+
+    authoritative_context: list[Any] = []
+    if resolved.addition:
+        if not copied or not isinstance(copied[0], dict):
+            authoritative_context.append(ChatMessage(role = "system", content = resolved.addition))
+        else:
+            authoritative_context.append({"role": "system", "content": resolved.addition})
+    return [*caller_instructions, *authoritative_context, *conversation]
+
+
+def _anthropic_system_text_fragments(system: Any) -> list[str]:
+    if isinstance(system, str):
+        return [system]
+    if not isinstance(system, list):
+        return []
+    fragments: list[str] = []
+    for part in system:
+        if isinstance(part, str):
+            fragments.append(part)
+            continue
+        part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+        text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+        if part_type == "text" and isinstance(text, str):
+            fragments.append(text)
+    return fragments
+
+
+def _with_anthropic_project_context(
+    system: Any,
+    session_id: Optional[str],
+    project_context_snapshot_id: Optional[str] = None,
+    *,
+    messages: Iterable[Any] = (),
+) -> Any:
+    """Append project context to Anthropic's string or text-block system shape."""
+    try:
+        resolved = resolve_project_context_snapshot(
+            session_id,
+            project_context_snapshot_id,
+            query = project_query_from_messages(messages),
+        )
+    except ProjectContextUnavailable as exc:
+        raise _project_context_http_exception(exc, anthropic = True) from exc
+    if resolved is None:
+        return system
+    if system is None:
+        return resolved.addition or None
+    if isinstance(system, str):
+        base = strip_server_project_context(system)
+        return "\n\n".join(part for part in (base, resolved.addition) if part)
+    if isinstance(system, list):
+        cleaned = []
+        for part in system:
+            if isinstance(part, str):
+                cleaned.append(strip_server_project_context(part))
+                continue
+            part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+            text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+            if part_type != "text" or not isinstance(text, str):
+                cleaned.append(part)
+            elif isinstance(part, dict):
+                cleaned.append({**part, "text": strip_server_project_context(text)})
+            else:
+                cloned = part.model_copy(deep = True)
+                cloned.text = strip_server_project_context(text)
+                cleaned.append(cloned)
+        if resolved.addition:
+            cleaned.append({"type": "text", "text": resolved.addition})
+        return cleaned
+    return system
+
+
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
@@ -27528,6 +27816,11 @@ async def chat_count_tokens(
     Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational. The
     caller is a background recount with no abort signal, so switching could drag the backend back
     to the model loaded when the count started, a reload the client's guards cannot undo."""
+    payload.messages = _with_project_context_messages(
+        payload.messages,
+        payload.session_id,
+        payload.project_context_snapshot_id,
+    )
     # Admitted only while nothing generates, and stood down at the next checkpoint if that changes:
     # admission is not atomic with the work, and true mutual exclusion would put a lock in front of
     # generation startup, which is the cost this avoids. Refusing here also covers the second tab or
@@ -27767,6 +28060,13 @@ async def anthropic_count_tokens(
     tokenizer, and returns ``{"input_tokens": int}`` only. Unlike /messages,
     max_tokens is NOT required here.
     """
+    _require_ui_for_installed_mcp(payload, request)
+    payload.system = _with_anthropic_project_context(
+        payload.system,
+        payload.session_id,
+        payload.project_context_snapshot_id,
+        messages = payload.messages,
+    )
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
@@ -27891,6 +28191,13 @@ async def anthropic_messages(
     responses in Anthropic Messages API format (streaming SSE or non-streaming
     JSON).
     """
+    _require_ui_for_installed_mcp(payload, request)
+    payload.system = _with_anthropic_project_context(
+        payload.system,
+        payload.session_id,
+        payload.project_context_snapshot_id,
+        messages = payload.messages,
+    )
     llama_backend = get_llama_cpp_backend()
 
     # Default-off parity: with no automatic load possible and nothing loaded, 503
@@ -33414,7 +33721,7 @@ async def _generate_openai_images(
             )
             if want_b64:
                 encoded = image_gallery.image_b64(record["id"])
-                if encoded is None:  # vanished between write and read — fail the call
+                if encoded is None:  # vanished between write and read: fail the call
                     raise RuntimeError("generated image could not be read back for encoding")
                 items.append(ImageGenerationData(b64_json = encoded))
             else:
