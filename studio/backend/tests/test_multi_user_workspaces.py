@@ -531,6 +531,20 @@ def test_owner_can_create_list_and_delete_standard_accounts(account_client):
     assert auth_storage.get_user_and_secret("alice") is None
 
 
+def test_recreating_a_name_whose_files_are_locked_says_so(account_client, monkeypatch):
+    client, _app = account_client
+    monkeypatch.setattr(
+        auth_storage,
+        "create_managed_user",
+        lambda username: (_ for _ in ()).throw(ValueError("Close anything using them")),
+    )
+    # The expected recreate-after-delete case, not a bug: it must reach the owner
+    # as the instruction storage wrote rather than as an opaque 500.
+    refused = client.post("/api/auth/users", json = {"username": "alice"})
+    assert refused.status_code == 409
+    assert "Close anything using them" in refused.json()["detail"]
+
+
 def test_setup_code_is_hashed_expires_and_is_not_listed(account_client):
     client, _app = account_client
     created = client.post("/api/auth/users", json = {"username": "alice"})
@@ -1283,21 +1297,45 @@ def test_closing_one_accounts_mcp_row_leaves_the_others_session_alive():
             keys[subject] = mcp_client._session_key("stdio:same-cmd", None, "")
         finally:
             reset_workspace_subject(token)
-    saved = dict(mcp_client._stdio_sessions)
-    mcp_client._stdio_sessions.clear()
+    saved = dict(mcp_client._mcp_sessions)
+    mcp_client._mcp_sessions.clear()
     try:
         for subject, key in keys.items():
-            mcp_client._stdio_sessions[key] = SimpleNamespace(close = lambda: None)
+            mcp_client._mcp_sessions[key] = SimpleNamespace(close = lambda: None)
         token = _bind("alice")
         try:
             mcp_client.close_stdio_sessions("stdio:same-cmd")
         finally:
             reset_workspace_subject(token)
-        assert keys["alice"] not in mcp_client._stdio_sessions
-        assert keys["bob"] in mcp_client._stdio_sessions
+        assert keys["alice"] not in mcp_client._mcp_sessions
+        assert keys["bob"] in mcp_client._mcp_sessions
     finally:
-        mcp_client._stdio_sessions.clear()
-        mcp_client._stdio_sessions.update(saved)
+        mcp_client._mcp_sessions.clear()
+        mcp_client._mcp_sessions.update(saved)
+
+
+def test_process_exit_closes_every_accounts_mcp_sessions():
+    from core.inference import mcp_client
+
+    keys = {}
+    for subject in ("alice", "bob"):
+        token = _bind(subject)
+        try:
+            keys[subject] = mcp_client._session_key("stdio:same-cmd", None, "")
+        finally:
+            reset_workspace_subject(token)
+    saved = dict(mcp_client._mcp_sessions)
+    mcp_client._mcp_sessions.clear()
+    try:
+        for key in keys.values():
+            mcp_client._mcp_sessions[key] = SimpleNamespace(close = lambda: None)
+        # atexit runs on the main thread, which holds the default workspace, so a
+        # workspace-confined close would strand every managed account's child.
+        mcp_client._close_sessions_at_exit()
+        assert mcp_client._mcp_sessions == {}
+    finally:
+        mcp_client._mcp_sessions.clear()
+        mcp_client._mcp_sessions.update(saved)
 
 
 def test_a_delete_that_cannot_retire_leaves_the_name_reserved_from_the_start(
@@ -1321,6 +1359,61 @@ def test_a_delete_that_cannot_retire_leaves_the_name_reserved_from_the_start(
         assert conn.execute(
             "SELECT 1 FROM auth_user WHERE username = ?", ("casey",)
         ).fetchone() is None
+    finally:
+        conn.close()
+
+
+def test_a_create_cannot_slip_past_a_tombstone_it_did_not_see(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _auth_db(tmp_path, monkeypatch)
+    conn = auth_storage.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO retired_usernames (username, created_at) VALUES (?, ?)",
+            ("casey", "2026-01-01T00:00:00+00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    # Stands in for the racing create whose pre-commit read saw a free name: the
+    # insert itself must refuse, or it binds to a workspace a delete is renaming.
+    with pytest.raises(ValueError):
+        auth_storage.create_initial_user(
+            "casey",
+            "code",
+            secrets.token_urlsafe(64),
+            reject_if_retired = True,
+        )
+    conn = auth_storage.get_connection()
+    try:
+        assert conn.execute(
+            "SELECT 1 FROM auth_user WHERE username = ?", ("casey",)
+        ).fetchone() is None
+    finally:
+        conn.close()
+
+
+def test_roots_that_cannot_be_resolved_keep_the_name_reserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _auth_db(tmp_path, monkeypatch)
+    auth_storage.create_managed_user("casey")
+    # A reduced install where the sandbox root will not import. The workspace
+    # tree still renames cleanly, so without the completeness flag retirement
+    # reports success and a namesake reopens the untouched project directory.
+    monkeypatch.setattr(
+        auth_storage,
+        "_resolve_subject_owned_roots",
+        lambda username: ([], False),
+    )
+    auth_storage.delete_managed_user("casey")
+    assert auth_storage._retire_workspace_directory("casey") is False
+    conn = auth_storage.get_connection()
+    try:
+        assert conn.execute(
+            "SELECT 1 FROM retired_usernames WHERE username = ?", ("casey",)
+        ).fetchone() is not None
     finally:
         conn.close()
 

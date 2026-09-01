@@ -506,6 +506,10 @@ def create_managed_user(
             status_code = status.HTTP_409_CONFLICT,
             detail = f"Username {payload.username} already exists",
         ) from exc
+    except ValueError as exc:
+        # A name whose deleted account still holds locked files. The message says
+        # what to close and that a retry will work, which a 500 would throw away.
+        raise HTTPException(status_code = status.HTTP_409_CONFLICT, detail = str(exc)) from exc
     return CreatedManagedUserResponse(
         username = payload.username,
         is_admin = False,
