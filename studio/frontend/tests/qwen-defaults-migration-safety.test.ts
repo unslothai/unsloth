@@ -45,6 +45,7 @@ function resetHttp(settings: Record<string, unknown>): void {
   settingsHttp.conditionalStatus = 200;
   settingsHttp.gate = null;
   settingsHttp.release = null;
+  settingsHttp.putGate = null;
 }
 
 function seedActiveQwen(): void {
@@ -788,4 +789,99 @@ test("an earlier retry settling does not clear a later retry's barrier", async (
     new Promise((resolve) => setTimeout(resolve, 5000)),
   ]);
   assert.equal(serverRow(QWEN36).presencePenalty, 1.5);
+});
+
+test("the send barrier follows a retry that replaces the one it captured", async () => {
+  const QWEN36 = "unsloth/Qwen3.6-14B-GGUF";
+  const base = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: {
+      [QWEN38]: { ...LEGACY_SNAPSHOT },
+      [QWEN36]: { ...LEGACY_SNAPSHOT },
+    },
+  };
+  resetHttp({ ...base });
+  const holdGet = (): [Promise<Record<string, unknown>>, () => void] => {
+    let release: () => void = () => undefined;
+    const held = new Promise<Record<string, unknown>>((resolve) => {
+      release = () => resolve(settingsHttp.settings);
+    });
+    return [held, release];
+  };
+  const [firstGet, releaseFirst] = holdGet();
+  const [secondGet, releaseSecond] = holdGet();
+  settingsHttp.getResponses.push(firstGet, secondGet);
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: {
+      [QWEN38]: { ...LEGACY_SNAPSHOT },
+      [QWEN36]: { ...LEGACY_SNAPSHOT },
+    },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  const first = useChatRuntimeStore.getState();
+  first.setParams(
+    { ...first.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // The send joins here, so it captures the first retry.
+  const barrier = awaitPendingQwenDefaultsMigration();
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN36 },
+  }));
+  const second = useChatRuntimeStore.getState();
+  second.setParams(
+    { ...second.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  releaseFirst();
+  setTimeout(releaseSecond, 60);
+
+  await Promise.race([
+    barrier,
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+  // The checkpoint the send would generate from is the second one.
+  assert.equal(serverRow(QWEN36).presencePenalty, 1.5);
+});
+
+test("a write outlasting the flush timeout rearms the migration", async () => {
+  resetHttp({ ...LEGACY_SETTINGS });
+  let releasePut: () => void = () => undefined;
+  settingsHttp.putGate = new Promise<void>((resolve) => {
+    releasePut = resolve;
+  });
+  seedActiveQwen();
+  // An unrelated setting write, held open past the debounce so it is still on
+  // the wire when the migration tries to land.
+  const before = useChatRuntimeStore.getState();
+  before.setAutoTitle(!before.autoTitle);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  // Past the 2000 ms flush timeout with the ordinary write still outstanding.
+  await new Promise((resolve) => setTimeout(resolve, 2600));
+  assert.equal(serverRow().presencePenalty, 0);
+
+  releasePut();
+  settingsHttp.putGate = null;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await Promise.race([
+    awaitPendingQwenDefaultsMigration(),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+  assert.equal(serverRow().presencePenalty, 1.5);
 });

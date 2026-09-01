@@ -19,6 +19,8 @@ export const settingsHttp = {
   putFailures: [] as Array<{ status: number; detail?: unknown }>,
   /** Resolve to let a held GET complete. */
   release: null as (() => void) | null,
+  /** Hold an ordinary PUT open, so a write can outlast the flush timeout. */
+  putGate: null as Promise<void> | null,
   hold(): void {
     settingsHttp.gate = new Promise<void>((resolve) => {
       settingsHttp.release = resolve;
@@ -133,6 +135,7 @@ export async function authFetch(
     }
   } else if (init?.method === "PUT") {
     settingsHttp.puts.push(JSON.parse(init.body ?? "{}"));
+    if (settingsHttp.putGate) await settingsHttp.putGate;
     const failureResponse = nextPutFailureResponse();
     if (failureResponse) return failureResponse;
   } else {

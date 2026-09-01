@@ -1190,12 +1190,21 @@ test("a failed settings write does not strand the migration", async () => {
         ] !== undefined,
     );
 
-  // The 503 leaves the older patch requeued. Migrating now would let that write
-  // land after the CAS and restore the legacy row, so this pass must decline.
-  assert.equal(migrationReached(), false, "migrated behind an undrained write");
+  // The 503 leaves the older patch requeued. Reaching the backend merge after
+  // the CAS would restore the legacy row, so the migration has to be the last
+  // write, not merely a write that eventually happens.
+  const putKeys = settingsHttp.puts.map((put) => Object.keys(put).join(","));
+  const migrationIndex = putKeys.findIndex((keys) =>
+    keys.includes("inferenceParamsByModel"),
+  );
+  const lastOrdinary = putKeys.reduce(
+    (last, keys, index) =>
+      keys.includes("inferenceParamsByModel") ? last : index,
+    -1,
+  );
+  assert.ok(migrationIndex > lastOrdinary, "migrated behind an undrained write");
 
-  // Not stranded, though: the local legacy row survived, so the next trigger
-  // runs it once the queue is clear.
+  // Nor stranded: the requeued write settling rearms it in the same pass.
   settingsHttp.putFailures = [];
   await flushPendingChatSettings();
   const qwen = useChatRuntimeStore.getState();

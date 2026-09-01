@@ -4116,10 +4116,16 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     // safely.
     await flushPendingChatSettings();
     // A write still outstanding past the flush timeout would reach the backend
-    // merge after this CAS and restore the legacy row, and nothing retries once
-    // the local copy is migrated. Skip instead: the local legacy row survives,
-    // so the next status refresh schedules this again.
+    // merge after this CAS and restore the legacy row. Rearm on its settlement
+    // rather than waiting here, since a wedged write must not hold a send open,
+    // and an external selection gets no later status callback to schedule this.
     if (!settingsWritesAreDrained()) {
+      void inflightFlush.catch(() => undefined).then(() => {
+        scheduleLegacyQwenDefaultsRetry(
+          ownedGlobalCheckpoint,
+          migrateOwnedGlobalAlongsideModelMemory,
+        );
+      });
       return;
     }
     const state = useChatRuntimeStore.getState();
@@ -4208,8 +4214,15 @@ let qwenMigrationInFlight: Promise<void> | null = null;
  * dormant legacy row does not generate from the values getReplayedParams just
  * put on screen. Resolves immediately when nothing is scheduled.
  */
-export function awaitPendingQwenDefaultsMigration(): Promise<void> {
-  return qwenMigrationInFlight ?? Promise.resolve();
+export async function awaitPendingQwenDefaultsMigration(): Promise<void> {
+  // Re-read rather than await once: a status or model change can schedule a
+  // replacement while this waits, and that retry owns the checkpoint the send
+  // is about to generate from. Ends when nothing is scheduled.
+  let pending = qwenMigrationInFlight;
+  while (pending) {
+    await pending;
+    pending = qwenMigrationInFlight;
+  }
 }
 
 let qwenDefaultsRetryScheduled = false;
