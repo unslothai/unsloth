@@ -10,6 +10,7 @@ nvidia-smi involved.
 
 from __future__ import annotations
 
+import importlib.util as _importlib_util
 import sys
 import time
 import types as _types
@@ -26,15 +27,49 @@ if _BACKEND_DIR not in sys.path:
 
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+# Same reasoning as httpx below: only when the real one is absent. With _BACKEND_DIR on
+# sys.path the in-repo loggers package resolves, and stubbing over it trips the shadowing
+# guard in test_backend_ci_parallel_isolation.py.
+#
+# Probed with find_spec, not `import loggers`: an import bound purely to test
+# resolvability leaves an unused name that scripts/verify_import_hoist.py reads as a
+# botched hoist, and loggers/handlers.py imports structlog at module scope, whose stub is
+# not installed until below, so in the very environment this block exists for the import
+# would fail on that transitive dep and the except branch would stub over the real
+# package. find_spec answers "is it resolvable" without executing the module.
+#
+# Same except clause as _is_installed() in test_backend_ci_parallel_isolation.py:
+# find_spec raises for a missing parent, and ValueError when a prior test left a bare
+# ModuleType (__spec__ is None) in sys.modules, where the stub is already there anyway.
+try:
+    _real_loggers = _importlib_util.find_spec("loggers") is not None
+except (ImportError, ValueError):
+    _real_loggers = False
+if not _real_loggers:
+    sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-sys.modules.setdefault("structlog", _structlog_stub)
+# Same reasoning as httpx below: only when the real one is absent. The real structlog
+# has get_logger, which is all this module wants from it.
+try:
+    import structlog  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("structlog", _structlog_stub)
 # Set get_logger even if a prior test inserted a bare ``structlog`` stub.
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
+# Only when the real library is absent, the way test_llama_cpp_placement.py already does
+# it. setdefault reads as if it defers to the real httpx, but sys.modules holds what has
+# been IMPORTED, not what is installed, so in a process where nothing has touched httpx
+# yet the stub wins and shadows the real library for the whole session. This stub has no
+# Response, and starlette.testclient reads httpx.Response at import, so every module
+# collected afterwards that reaches fastapi.testclient or routes.inference dies on it.
+#
+# In the full parallel run something always imports httpx before this file is collected,
+# which is why it went unnoticed. Splitting the timing tests into a ten-file serial step
+# removed that accident and the 3.10 leg failed collection on two of them.
 _httpx_stub = _types.ModuleType("httpx")
 for _exc in (
     "ConnectError",
@@ -56,8 +91,12 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
+from core.inference import llama_cpp as llama_cpp_module  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 
@@ -344,6 +383,11 @@ def test_helper_is_static_method_callable_off_class():
 # ---------------------------------------------------------------------------
 
 
+# Hiding /proc selects the psutil branch (what macOS and Windows take); the procfs
+# branch is covered separately below.
+_NO_PROCFS = "/unsloth-test-no-such-proc-root"
+
+
 def test_kill_orphaned_servers_returns_count():
     """The reaper reports how many owned orphans it killed, so __init__ can
     arm the settle wait. Only Unsloth-owned llama-server procs count."""
@@ -373,6 +417,7 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", _NO_PROCFS),
         patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
     ):
         n = LlamaCppBackend._kill_orphaned_servers()
@@ -385,6 +430,7 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", _NO_PROCFS),
         patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
     ):
         assert LlamaCppBackend._kill_orphaned_servers() == 0
@@ -420,6 +466,7 @@ def test_kill_orphaned_servers_spares_live_parent():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", _NO_PROCFS),
         patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
         patch.object(
             LlamaCppBackend,
@@ -652,3 +699,205 @@ def test_reap_recorded_pid_no_pidfile(tmp_path):
     pidfile = tmp_path / "llama-server.pid"  # never created
     with patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)):
         assert LlamaCppBackend._reap_recorded_pid() == 0
+
+
+def _stat_bytes(
+    pid,
+    comm,
+    start_time = 1000,
+):
+    """A /proc/<pid>/stat line. starttime is field 22, so the filler matters."""
+    filler = " ".join(["0"] * 18)  # fields 4..21
+    return f"{pid} ({comm}) S {filler} {start_time}".encode("utf-8")
+
+
+def _write_fake_procfs(tmp_path, entries):
+    """Build a /proc-shaped tree. entries is [(pid, comm, exe_target)]."""
+    root = tmp_path / "fake-proc"
+    root.mkdir()
+    for pid, comm, exe_target in entries:
+        d = root / str(pid)
+        d.mkdir()
+        (d / "stat").write_bytes(_stat_bytes(pid, comm))
+        if exe_target is not None:
+            (d / "exe").symlink_to(exe_target)
+    return root
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
+def test_kill_orphaned_servers_procfs_matches_psutil_selection(tmp_path):
+    """The Linux /proc sweep must select exactly what the psutil sweep selects:
+    the Unsloth-owned orphan, never a foreign llama-server or another program."""
+    import os
+
+    mypid = os.getpid()
+    owned_dir = tmp_path / "unsloth-test-llama"
+    owned_dir.mkdir()
+    fake_path = owned_dir / "llama-server"
+    fake_path.write_text("x")
+    foreign = tmp_path / "usr-bin-llama-server"
+    foreign.write_text("x")
+
+    root = _write_fake_procfs(
+        tmp_path,
+        [
+            (mypid + 1, "llama-server", str(fake_path)),  # owned orphan
+            (mypid + 2, "llama-server", str(foreign)),  # not ours
+            (mypid + 3, "python3", str(fake_path)),  # wrong name
+            (mypid + 4, "llama-server", None),  # exe unreadable
+        ],
+    )
+
+    killed = []
+
+    def _fake_kill(pid, sig):
+        killed.append(pid)
+
+    with (
+        patch.dict(os.environ, {"LLAMA_SERVER_PATH": str(fake_path)}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", str(root)),
+        patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+        patch.object(os, "kill", _fake_kill),
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+
+    assert n == 1, "only the Unsloth-owned orphan should be counted"
+    assert killed == [mypid + 1]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
+def test_kill_orphaned_servers_procfs_spares_live_parent(tmp_path):
+    """Same live-parent rule as the psutil sweep: only the true orphan is reaped."""
+    import os
+
+    mypid = os.getpid()
+    owned_dir = tmp_path / "unsloth-test-llama"
+    owned_dir.mkdir()
+    fake_path = owned_dir / "llama-server"
+    fake_path.write_text("x")
+
+    root = _write_fake_procfs(
+        tmp_path,
+        [
+            (mypid + 1, "llama-server", str(fake_path)),  # live parent
+            (mypid + 2, "llama-server", str(fake_path)),  # true orphan
+        ],
+    )
+
+    killed = []
+
+    with (
+        patch.dict(os.environ, {"LLAMA_SERVER_PATH": str(fake_path)}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", str(root)),
+        patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
+        patch.object(
+            LlamaCppBackend,
+            "_pid_parent_is_alive",
+            staticmethod(lambda pid: pid == mypid + 1),
+        ),
+        patch.object(os, "kill", lambda pid, sig: killed.append(pid)),
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+
+    assert n == 1, "only the true orphan should be reaped"
+    assert killed == [mypid + 2], "the live-parent server must be spared"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
+def test_kill_orphaned_servers_procfs_handles_a_deleted_binary(tmp_path):
+    """An orphan left behind by an upgrade has " (deleted)" appended to its exe
+    link. psutil strips that marker, so the procfs sweep must too, or the
+    orphan stops being recognised as ours."""
+    import os
+
+    mypid = os.getpid()
+    owned_dir = tmp_path / "unsloth-test-llama"
+    owned_dir.mkdir()
+    fake_path = owned_dir / "llama-server"
+
+    root = _write_fake_procfs(
+        tmp_path,
+        [(mypid + 1, "llama-server", f"{fake_path} (deleted)")],
+    )
+
+    killed = []
+    with (
+        patch.dict(os.environ, {"LLAMA_SERVER_PATH": str(fake_path)}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", str(root)),
+        patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+        patch.object(os, "kill", lambda pid, sig: killed.append(pid)),
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+
+    assert n == 1
+    assert killed == [mypid + 1]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
+def test_kill_orphaned_servers_procfs_refuses_a_reused_pid(tmp_path):
+    """psutil.Process.kill() refuses to signal a PID that has been reused. The
+    procfs sweep must do the same, or an orphan that exits between the scan and
+    the signal takes an unrelated replacement process with it."""
+    import os
+
+    mypid = os.getpid()
+    owned_dir = tmp_path / "unsloth-test-llama"
+    owned_dir.mkdir()
+    fake_path = owned_dir / "llama-server"
+    fake_path.write_text("x")
+
+    root = _write_fake_procfs(tmp_path, [(mypid + 1, "llama-server", str(fake_path))])
+    stat_file = root / str(mypid + 1) / "stat"
+
+    killed = []
+
+    def _pid_reused_between_scan_and_kill(pid):
+        # Runs after the scan and before the kill: stand in a different process
+        # on the same PID by giving it a later starttime.
+        stat_file.write_bytes(_stat_bytes(pid, "some-daemon", start_time = 9999))
+        return False
+
+    with (
+        patch.dict(os.environ, {"LLAMA_SERVER_PATH": str(fake_path)}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", str(root)),
+        patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
+        patch.object(
+            LlamaCppBackend,
+            "_pid_parent_is_alive",
+            staticmethod(_pid_reused_between_scan_and_kill),
+        ),
+        patch.object(os, "kill", lambda pid, sig: killed.append(pid)),
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+
+    assert killed == [], "a reused PID must never be signalled"
+    assert n == 0
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
+def test_kill_orphaned_servers_procfs_still_kills_the_same_process(tmp_path):
+    """Control for the test above: an unchanged starttime is still reaped, so
+    the identity check is not simply refusing everything."""
+    import os
+
+    mypid = os.getpid()
+    owned_dir = tmp_path / "unsloth-test-llama"
+    owned_dir.mkdir()
+    fake_path = owned_dir / "llama-server"
+    fake_path.write_text("x")
+
+    root = _write_fake_procfs(tmp_path, [(mypid + 1, "llama-server", str(fake_path))])
+    killed = []
+    with (
+        patch.dict(os.environ, {"LLAMA_SERVER_PATH": str(fake_path)}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", str(root)),
+        patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+        patch.object(os, "kill", lambda pid, sig: killed.append(pid)),
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+
+    assert killed == [mypid + 1]
+    assert n == 1

@@ -1,8 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import {
+  DEFAULT_STT_MODEL,
+  type DefaultSttModel,
+  STT_MODELS,
+  STT_MODEL_REPOS,
+  type SttModel,
+  migrateVoiceSettings,
+} from "./stt-model-catalog";
+
+export * from "./stt-model-catalog";
 
 // Voice preferences in localStorage. Adapters read them at call time so
 // changes apply without reloading the chat runtime.
@@ -24,26 +35,6 @@ const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
-/** Five curated Whisper choices, mirrored by the backend (stt_sidecar.py). */
-export const STT_MODELS = [
-  "tiny",
-  "base",
-  "small",
-  "large-v3-turbo",
-  "large-v3",
-] as const;
-export type DefaultSttModel = (typeof STT_MODELS)[number];
-/** A curated id or a user-selected Hugging Face `owner/model` repository. */
-export type SttModel = string;
-/** Whisper repos downloaded through Studio's existing Model Hub manager. */
-export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
-  tiny: "unsloth/whisper-tiny",
-  base: "unsloth/whisper-base",
-  small: "unsloth/whisper-small",
-  "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
-  "large-v3": "unsloth/whisper-large-v3",
-};
-export const DEFAULT_STT_MODEL: DefaultSttModel = "small";
 const HF_REPO_ID =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
 
@@ -87,11 +78,13 @@ export function isSttModelLanguageCompatible(
   return normalized === "auto" || normalized.split("-", 1)[0] === "en";
 }
 
-export type DictationEngine = "browser" | "model";
+export type DictationEngine = "browser" | "model" | "custom";
+
+export type TtsEngine = "system" | "studio" | "custom";
 
 /**
- * Whether a model id is one of the five curated Whisper choices. Curated models
- * run GGML through whisper.cpp; custom repos are safetensors and run through
+ * Whether a model id is curated. Whisper ids run GGML through whisper.cpp,
+ * mtmd ids run through llama.cpp, and custom repos are safetensors on
  * Transformers.
  */
 export function isCuratedSttModel(model: SttModel): boolean {
@@ -114,7 +107,12 @@ export interface VoiceSettingsState {
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
 
-  /** BCP 47 tag for speech recognition, or "auto" for the browser locale. */
+  sttProviderId: string;
+  setSttProviderId: (value: string) => void;
+  sttProviderModel: string;
+  setSttProviderModel: (value: string) => void;
+
+  /** bcp 47 tag for speech recognition, or "auto" for engine-specific detection. */
   dictationLanguage: string;
   setDictationLanguage: (value: string) => void;
 
@@ -136,9 +134,20 @@ export interface VoiceSettingsState {
   ttsEnabled: boolean;
   setTtsEnabled: (value: boolean) => void;
 
-  /** "system": speechSynthesis voices. "studio": the loaded TTS audio model. */
-  ttsEngine: "system" | "studio";
-  setTtsEngine: (value: "system" | "studio") => void;
+  /** "system": speechSynthesis voices. "studio": the loaded TTS audio model.
+   * "custom": a saved connection's /audio/speech endpoint. */
+  ttsEngine: TtsEngine;
+  setTtsEngine: (value: TtsEngine) => void;
+
+  /** Saved connection id used by the "custom" engine. */
+  ttsProviderId: string;
+  setTtsProviderId: (value: string) => void;
+  /** Model id sent to the custom endpoint (e.g. "kokoro"). */
+  ttsProviderModel: string;
+  setTtsProviderModel: (value: string) => void;
+  /** Voice name sent to the custom endpoint; blank input defaults to alloy. */
+  ttsProviderVoice: string;
+  setTtsProviderVoice: (value: string) => void;
 
   /** speechSynthesis voiceURI, or "default" for the system voice. */
   ttsVoiceURI: string;
@@ -199,7 +208,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       micDeviceId: "default",
       setMicDeviceId: (micDeviceId) => set({ micDeviceId }),
 
-      dictationEngine: "browser",
+      dictationEngine: isTauri ? "model" : "browser",
       setDictationEngine: (dictationEngine) => set({ dictationEngine }),
 
       sttModel: DEFAULT_STT_MODEL,
@@ -215,6 +224,11 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
               : DEFAULT_STT_MODEL,
           };
         }),
+
+      sttProviderId: "",
+      setSttProviderId: (sttProviderId) => set({ sttProviderId }),
+      sttProviderModel: "",
+      setSttProviderModel: (sttProviderModel) => set({ sttProviderModel }),
 
       dictationLanguage: "auto",
       setDictationLanguage: (dictationLanguage) =>
@@ -302,6 +316,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       ttsEngine: "system",
       setTtsEngine: (ttsEngine) => set({ ttsEngine }),
 
+      ttsProviderId: "",
+      setTtsProviderId: (ttsProviderId) => set({ ttsProviderId }),
+      ttsProviderModel: "",
+      setTtsProviderModel: (ttsProviderModel) => set({ ttsProviderModel }),
+      ttsProviderVoice: "",
+      setTtsProviderVoice: (ttsProviderVoice) => set({ ttsProviderVoice }),
+
       ttsVoiceURI: "default",
       setTtsVoiceURI: (ttsVoiceURI) => set({ ttsVoiceURI }),
 
@@ -315,6 +336,8 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     {
       name: "unsloth_voice_settings",
       storage: createJSONStorage(() => quotaSafeLocalStorage),
+      version: 1,
+      migrate: migrateVoiceSettings,
       merge: (persisted, current) => {
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
         const dictationLanguage = asString(saved?.dictationLanguage, "auto");
@@ -322,9 +345,11 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         // backends now live under "model".
         const savedEngine = saved?.dictationEngine as string | undefined;
         const dictationEngine: DictationEngine =
-          savedEngine === "model" || savedEngine === "gguf"
-            ? "model"
-            : "browser";
+          savedEngine === "custom"
+            ? "custom"
+            : isTauri || savedEngine === "model" || savedEngine === "gguf"
+              ? "model"
+              : "browser";
         const savedSttModel = normalizeSttModel(saved?.sttModel);
         const sttModel = isSttModelLanguageCompatible(
           savedSttModel,
@@ -337,6 +362,8 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
           sttModel,
+          sttProviderId: asString(saved?.sttProviderId, ""),
+          sttProviderModel: asString(saved?.sttProviderModel, ""),
           dictationLanguage,
           dictionary: Array.isArray(saved?.dictionary)
             ? saved.dictionary
@@ -347,7 +374,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           recentDictations: normalizeRecentDictations(saved?.recentDictations),
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
-          ttsEngine: saved?.ttsEngine === "studio" ? "studio" : "system",
+          ttsEngine:
+            saved?.ttsEngine === "studio" || saved?.ttsEngine === "custom"
+              ? saved.ttsEngine
+              : "system",
+          ttsProviderId: asString(saved?.ttsProviderId, ""),
+          ttsProviderModel: asString(saved?.ttsProviderModel, ""),
+          ttsProviderVoice: asString(saved?.ttsProviderVoice, ""),
           ttsVoiceURI: asString(saved?.ttsVoiceURI, "default"),
           ttsRate: clampNumber(saved?.ttsRate, 0.5, 2, 1),
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),

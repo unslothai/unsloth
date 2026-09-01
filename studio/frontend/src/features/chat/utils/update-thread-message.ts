@@ -136,14 +136,17 @@ export async function updateThreadMessage(args: {
   // If it's NOT incognito, we attempt to save to the DB regardless of the ID.
   if (remoteId && !isIncognito) {
     try {
-      await saveChatMessage({
-        id: messageId,
-        threadId: remoteId,
-        parentId: originalParentId,
-        role: "assistant",
-        content: (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [],
-        createdAt: originalCreatedAt ? Number(originalCreatedAt) : Date.now(),
-      });
+      await saveChatMessage(
+        {
+          id: messageId,
+          threadId: remoteId,
+          parentId: originalParentId,
+          role: "assistant",
+          content: (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [],
+          createdAt: originalCreatedAt ? Number(originalCreatedAt) : Date.now(),
+        },
+        { allowGenerationEdit: true },
+      );
     } catch (e) {
       thread.import(originalExport);
       console.error("Backend sync failed for message update. Rolling back UI.", e);

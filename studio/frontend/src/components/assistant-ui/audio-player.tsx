@@ -4,16 +4,22 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { PauseIcon, PlayIcon } from "lucide-react";
+import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { PauseIcon, PlayIcon } from "lucide-react";
 import { type FC, useRef, useState } from "react";
 
 interface AudioPlayerProps {
   src: string;
+  filename?: string;
 }
 
-export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
+export const AudioPlayer: FC<AudioPlayerProps> = ({
+  src,
+  filename = "generated-audio.wav",
+}) => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -24,10 +30,15 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
     if (!audio) return;
     if (isPlaying) {
       audio.pause();
-    } else {
-      audio.play();
+      setIsPlaying(false);
+      return;
     }
-    setIsPlaying(!isPlaying);
+    // An uploaded file can carry a codec the webview cannot decode, so the
+    // button only flips once playback has actually started.
+    audio.play().then(
+      () => setIsPlaying(true),
+      () => setIsPlaying(false),
+    );
   };
 
   const handleTimeUpdate = () => {
@@ -56,10 +67,11 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
   };
 
   const handleDownload = () => {
-    const link = document.createElement("a");
-    link.href = src;
-    link.download = "generated-audio.wav";
-    link.click();
+    void downloadUrl(src, filename).catch((error) => {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save audio.");
+      }
+    });
   };
 
   const formatTime = (t: number) => {
@@ -76,6 +88,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
+        onError={() => setIsPlaying(false)}
         preload="metadata"
       />
       <Button

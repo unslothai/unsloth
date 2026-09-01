@@ -43,10 +43,21 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
+from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .loader_utils import (
+    DEFAULT_DEVICE_MAP,
+    OFFLOAD_EMBEDDING_AUTO,
+    planner_config_overrides,
+    planner_hub_kwargs,
+    planner_kwargs_with_max_memory,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    planner_class_mismatch_reason,
+    planner_model_class,
+    planner_quantization_kwargs,
+    requested_device_map,
+    resolve_unsloth_device_map,
 )
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
@@ -96,6 +107,8 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
+    get_device_stats,
+    clean_gpu_cache,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -139,6 +152,150 @@ def _infer_device_map_from_loaded_model(model):
     return device_map
 
 
+def _repair_dispatch_hooks(model):
+    """Give a dispatched module its hook back after the load replaced it.
+
+    `dispatch_model` hooks every map entry; what drops the hook is our own
+    `post_patch` -> `patch_model_and_tokenizer`, which installs a NEW Embedding
+    and Linear over the same weights, so `_hf_hook` dies with the old module.
+    Not tied-specific: `tie_word_embeddings = False` fails identically.
+    Unrepaired, a split model raises `index is on cuda:0, different from other
+    tensors on cuda:1` at the first embedding lookup.
+    """
+    device_map = getattr(model, "hf_device_map", None)
+    if not device_map or len(set(device_map.values())) < 2:
+        return 0
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+
+    # dispatch passes the model's skip keys, and sets io_same_device on the ROOT
+    # only; setting it on a submodule copies every result back and forth.
+    skip_keys = getattr(model, "_skip_keys_device_placement", None)
+    io_same_device = not hasattr(model, "_hf_hook")
+
+    targets = {name: device for name, device in device_map.items() if name}
+
+    # A coarse map covers an endpoint through an ANCESTOR and dispatch hooks it
+    # anyway, so iterating keys alone misses the rebuilt one. Endpoints only:
+    # repairing every covered descendant would hook thousands that never lost one.
+    for get in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            replaced = getattr(model, get, lambda: None)()
+        except Exception:
+            continue  # a model that cannot answer is not one to guess about
+        if replaced is None or hasattr(replaced, "_hf_hook"):
+            continue
+        name = next(
+            (n for n, m in model.named_modules() if m is replaced and n),
+            None,
+        )
+        if name is None or name in targets:
+            continue
+        covering = [
+            key for key in device_map if not key or name == key or name.startswith(key + ".")
+        ]
+        if covering:
+            targets[name] = device_map[max(covering, key = len)]
+
+    repaired = 0
+    for name, device in targets.items():
+        try:
+            module = model.get_submodule(name)
+        except AttributeError:
+            continue  # a name this build does not have; not ours to invent
+        if hasattr(module, "_hf_hook"):
+            continue
+        execution_device = (
+            f"{DEVICE_TYPE_TORCH}:{device}"
+            if isinstance(device, int) and not isinstance(device, bool)
+            else device
+        )
+        # `.type`, not `==`: a map may carry `torch.device("cpu", 0)`.
+        device_kind = (
+            execution_device.type
+            if isinstance(execution_device, torch.device)
+            else str(execution_device)
+        )
+        if device_kind in ("cpu", "disk"):
+            continue  # offload is a different mechanism, and has its own hooks
+        try:
+            add_hook_to_module(
+                module,
+                AlignDevicesHook(
+                    execution_device = execution_device,
+                    io_same_device = io_same_device,
+                    skip_keys = skip_keys,
+                ),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Unsloth: could not re-attach a dispatch hook to {name!r} on "
+                f"{execution_device} ({type(exc).__name__}: {exc}). Training a "
+                "model split across devices may fail at the first tensor that "
+                "crosses one.",
+                RuntimeWarning,
+                stacklevel = 2,
+            )
+            continue
+        repaired += 1
+    return repaired
+
+
+def _lift_endpoint_hooks_onto_adapters(model):
+    """After PEFT wraps a repaired endpoint, lift its hook onto the wrapper.
+
+    The hook wraps the module's OWN forward, so it moves the input inside
+    `base_layer(x)`; `lora.Linear.forward` then feeds the CALLER's `x` to
+    `lora_A` (casting dtype, not device), whose weights PEFT placed on the base
+    layer's device. Split across cards, the adapter branch raises where the base
+    call did not. peft 0.20.0.
+    """
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+
+    lifted = 0
+    for get in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            wrapper = getattr(model, get, lambda: None)()
+        except Exception:
+            continue  # a model that cannot answer is not one to guess about
+        if wrapper is None:
+            continue
+
+        if hasattr(wrapper, "_hf_hook"):
+            continue
+        base = getattr(wrapper, "base_layer", None)
+        hook = getattr(base, "_hf_hook", None) if base is not None else None
+        if hook is None or getattr(hook, "execution_device", None) is None:
+            continue  # not a wrapped endpoint, or one dispatch never placed
+        try:
+            add_hook_to_module(
+                wrapper,
+                AlignDevicesHook(
+                    execution_device = hook.execution_device,
+                    io_same_device = False,
+                    skip_keys = getattr(hook, "skip_keys", None),
+                ),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Unsloth: could not lift the dispatch hook onto the adapter "
+                f"wrapping {get}() on {hook.execution_device} "
+                f"({type(exc).__name__}: {exc}). Training an adapter that "
+                "targets the embeddings on a split model may fail at the first "
+                "tensor that crosses a device.",
+                RuntimeWarning,
+                stacklevel = 2,
+            )
+            continue
+        lifted += 1
+    return lifted
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -149,6 +306,15 @@ def _attach_bnb_multidevice_hooks(
     """
     if fast_inference:
         return
+    # Before the bnb gate: the rebuild happens whatever the quantization. Not under
+    # offload, where `_embedding_dispatch_device` READS this hook to place the ids.
+    if not offload_embedding:
+        repaired = _repair_dispatch_hooks(model)
+        if repaired:
+            logger.info(
+                f"Unsloth: re-attached dispatch hooks to {repaired} module(s) "
+                "the load left unhooked, so a split model runs and trains."
+            )
     is_bnb = (
         load_in_4bit
         or load_in_8bit
@@ -307,6 +473,93 @@ def _embeddings_are_tied(input_embeddings, output_embeddings):
     if w_in is None or w_out is None:
         return False
     return w_in is w_out or w_in.data_ptr() == w_out.data_ptr()
+
+
+def _offload_embedding_unsupported_platform():
+    # Offloaded embeddings do not work on Windows or WSL.
+    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
+        return "WSL"
+    if os.name == "nt":
+        return "Windows"
+    return None
+
+
+def _embedding_dispatch_device(input_embeddings):
+    # accelerate's hook wraps forward and re-sends the ids to the device it recorded, after
+    # our offload pre-hook already sent them to the CPU weight. Returns that device, or None.
+    hook = getattr(input_embeddings, "_hf_hook", None)
+    return None if hook is None else getattr(hook, "execution_device", None)
+
+
+# Big in absolute terms and big on this card, since every lookup then crosses PCIe. 2.5 GiB
+# is 16% of a 16 GB T4 and worth moving, 3% of an 80 GB card and not.
+_OFFLOAD_EMBEDDING_MIN_BYTES = 2**30
+_OFFLOAD_EMBEDDING_MIN_FRACTION = 0.05
+
+
+def _embedding_is_worth_offloading(input_embeddings):
+    """Whether `"auto"` should offload, judged from the embedding against its own card.
+
+    False on anything unmeasurable, which is what every release before this one did.
+    """
+    try:
+        weight = getattr(input_embeddings, "weight", None)
+        if weight is None:
+            return False
+        size = weight.numel() * weight.element_size()
+        device = weight.device
+        if device.type != "cuda":
+            return False
+        total = torch.cuda.get_device_properties(device.index or 0).total_memory
+    except Exception:
+        return False
+    if not total:
+        return False
+    return size >= _OFFLOAD_EMBEDDING_MIN_BYTES and size / total >= _OFFLOAD_EMBEDDING_MIN_FRACTION
+
+
+def _resolve_offload_embedding(model, offload_embedding):
+    """Report `offload_embedding` as True only when the offload will really run.
+
+    It is a VRAM optimisation, not a correctness switch, so turn it off where it
+    cannot help instead of failing the load. It also gates
+    `_attach_bnb_multidevice_hooks`, which must still run whenever no offload
+    happens, so every "no offload" case has to answer False.
+
+    `"auto"` (the default) decides from the size of the embedding, and the declines below
+    stay silent for it: they explain why something a caller *asked* for is not happening,
+    and nobody asked for a default.
+    """
+    automatic = offload_embedding == OFFLOAD_EMBEDDING_AUTO
+
+    def _decline(reason):
+        if not automatic:
+            print(f"Unsloth: Not offloading embeddings; {reason}")
+        return False
+
+    if not automatic and not offload_embedding:
+        return False
+    platform_name = _offload_embedding_unsupported_platform()
+    if platform_name is not None:
+        return _decline(f"offloading is unsupported on {platform_name}.")
+    try:
+        in_embed = model.get_input_embeddings()
+        out_embed = (
+            model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+        )
+    except Exception:
+        # Cannot inspect it, so leave an explicit request alone and decline the default.
+        return False if automatic else offload_embedding
+    if _embeddings_are_tied(in_embed, out_embed):
+        return _decline("this model ties embed_tokens to lm_head, so offloading saves no VRAM.")
+    if _embedding_dispatch_device(in_embed) is not None:
+        return _decline("this model is dispatched across devices, which overrides the offload.")
+    if is_distributed():
+        # The offload leaves embed_tokens on the CPU while the rest of the rank stays on
+        # CUDA. Under full finetuning it is trainable, and DDP with device_ids refuses a
+        # module whose trainable parameters span both, so the run dies before step one.
+        return _decline("a distributed launch cannot wrap a model split across CPU and GPU.")
+    return _embedding_is_worth_offloading(in_embed) if automatic else True
 
 
 VLLM_SUPPORTED_VLM = [
@@ -547,12 +800,24 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     except:
         pass
 
-    # Mixed precision autocast
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+    # Mixed precision autocast. Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is
+    # process wide, so a later load would otherwise decide this model's rollouts.
+    forced_float32 = getattr(self, "_unsloth_forced_float32", None)
+    if forced_float32 is None:
+        forced_float32 = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    if forced_float32:
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
-        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
+        # CUDA autocast does not validate its dtype the way the CPU/XPU/MPS paths do,
+        # so autocast(dtype = torch.float32) enters ENABLED rather than turning into a
+        # no-op, and the compiled graph then returns inf/NaN logits. A float32 model has
+        # nothing to autocast to; disable instead of asking for a dtype that is not one.
+        autocaster = torch.autocast(
+            device_type = DEVICE_TYPE_TORCH,
+            dtype = dtype,
+            enabled = dtype in (torch.float16, torch.bfloat16),
+        )
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 
@@ -634,6 +899,7 @@ from .loader_utils import (
     _hub_repo_or_local_path,
     _is_offline_related_error,
     _load_pretrained_tokenizer_fast,
+    _mark_loaded_revision,
     _offline_aware_load,
 )
 
@@ -662,6 +928,7 @@ def _construct_vlm_processor_fallback(
     trust_remote_code,
     cache_dir = None,
     local_files_only = False,
+    revision = None,
 ):
     """Build a VLM processor manually when AutoProcessor.from_pretrained fails (some VLMs
     have unresolvable tokenizer_class entries): load the image processor + tokenizer
@@ -678,6 +945,7 @@ def _construct_vlm_processor_fallback(
             token = token,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            revision = revision,
         )
         # Load image processor
         image_processor = AutoImageProcessor.from_pretrained(
@@ -686,6 +954,7 @@ def _construct_vlm_processor_fallback(
             trust_remote_code = trust_remote_code,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            revision = revision,
         )
         # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check).
         # Resolve the cached snapshot first so transformers does not call model_info (#7481).
@@ -696,6 +965,7 @@ def _construct_vlm_processor_fallback(
             trust_remote_code = trust_remote_code,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            revision = revision,
         )
         # Read tokenizer_config.json for special tokens: prefer the local file (offline
         # / local checkpoint dir), else hf_hub_download with local_files_only forwarded.
@@ -721,6 +991,7 @@ def _construct_vlm_processor_fallback(
                     "tokenizer_config.json",
                     token = token,
                     cache_dir = cache_dir,
+                    revision = revision,
                     local_files_only = local_files_only,
                 )
                 with open(config_path, "r", encoding = "utf-8") as f:
@@ -754,6 +1025,7 @@ def _construct_vlm_processor_fallback(
                     trust_remote_code = trust_remote_code,
                     cache_dir = cache_dir,
                     local_files_only = local_files_only,
+                    revision = revision,
                 )
                 proc_class_name = PROCESSOR_MAPPING_NAMES.get(config.model_type)
             except Exception as _e:
@@ -816,7 +1088,9 @@ class FastBaseModel:
         load_in_16bit = False,
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         trust_remote_code = False,
         model_types = None,
         tokenizer_name = None,
@@ -826,7 +1100,7 @@ class FastBaseModel:
         whisper_language = None,
         whisper_task = None,
         auto_config = None,
-        offload_embedding = False,
+        offload_embedding = OFFLOAD_EMBEDDING_AUTO,
         float32_mixed_precision = None,  # Forces float32 mixed precision
         # vLLM parameters
         fast_inference = False,
@@ -838,6 +1112,14 @@ class FastBaseModel:
         unsloth_vllm_standby = False,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         text_only = False,
+        # True when the caller already swapped a multimodal config for its text sub-config,
+        # so `auto_config` no longer describes the repo. Set by loader.py, and by the block
+        # below on the direct-call path.
+        text_only_decoder = False,
+        # True when `auto_config` came from the caller. It cannot be inferred here:
+        # FastModel pops `config` out of kwargs before this sees them, so by now it looks
+        # exactly like one we resolved ourselves.
+        auto_config_from_caller = False,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -860,6 +1142,22 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
+        # Read from kwargs, not the signature: the weight load below forwards **kwargs, so
+        # binding it would drop it there.
+        _revision = kwargs.get("revision")
+        _tokenizer_revision_arg = kwargs.pop("tokenizer_revision", None)
+        if _revision is not None and fast_inference and is_vLLM_available():
+            # vLLM fetches the default branch, so pinning only the config and tokenizer
+            # would mix two refs in one model.
+            logger.warning_once(
+                f"Unsloth: Ignoring revision = `{_revision}` since vLLM loads weights from "
+                "the default branch. Use `fast_inference = False` to load a pinned revision."
+            )
+            _revision = None
+            _tokenizer_revision_arg = None
+            kwargs.pop("revision", None)
+        _revision_repo = model_name  # The repo the pin names, captured before any remap.
+
         # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent;
         # skip the vision tower only for families with their own text decoder (Gemma 3). #5816
         if text_only and auto_config is None:
@@ -868,6 +1166,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                revision = _revision,
             )
         if text_only and hasattr(auto_config, "vision_config"):
             parent_config = auto_config
@@ -880,6 +1179,7 @@ class FastBaseModel:
                 auto_config = text_config
                 auto_model = AutoModelForCausalLM
                 _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+                text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,
             AutoModelForImageTextToText,
@@ -908,7 +1208,7 @@ class FastBaseModel:
         if is_vlm_config and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
-                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3 among vision models. "
+                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Qwen3-VL, Gemma3, Mistral3 among vision models. "
                     f"Found architectures: {', '.join(model_types)}!"
                 )
 
@@ -928,39 +1228,14 @@ class FastBaseModel:
         token = hf_login(token)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
-        if DEVICE_TYPE == "cuda":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
-            )
-            gpu_version = torch.version.cuda
-            gpu_stats_snippet = (
-                f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
-            )
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "hip":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = resolve_hip_gpu_stats_name(gpu_stats)
-            gpu_version = torch.version.hip
-            gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "xpu":
-            gpu_stats = torch.xpu.get_device_properties(0)
-            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
-            gpu_version = torch.version.xpu
-            gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-            # [TODO] After adding vLLM support for XPU, change this
+        gpu_stats_name, gpu_stats_snippet, max_memory = get_device_stats()
+        if DEVICE_TYPE == "xpu":
             vllm_version = ""
         else:
-            raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
-
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+            try:
+                vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except:
+                vllm_version = ""
 
         arch_name = model_type_arch.title()
         arch_name = arch_name.replace("_Vl_", "_VL_").replace("_Moe", "_MoE")
@@ -996,6 +1271,9 @@ class FastBaseModel:
         # The base + tokenizer prefetch runs AFTER the load-mode validation below, so an invalid
         # load_in_* combination fails without first downloading a snapshot.
 
+        # Whether float32 was asked for rather than arrived at by upcasting. Only an
+        # explicit request may suppress the V100/T4 float16 autocast (see #4082).
+        user_float32 = _requested_float32(dtype)
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -1018,11 +1296,13 @@ class FastBaseModel:
         # Check for custom data-types
         custom_datatype = None
         correct_dtype = None
-        if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
-            custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
-            assert custom_datatype.count(";") >= 4
+        # `custom_datatype` has to stay None when unset: the consumer below tests
+        # `is not None` and would walk every module of every model to `exec("")`.
+        _raw_custom_dtype, _code_is_trusted = trusted_custom_dtype()
+        if _raw_custom_dtype != "":
+            assert _raw_custom_dtype.count(";") >= 4
             checker, _dtype, _bnb_compute_dtype, _custom_datatype, execute_code = (
-                custom_datatype.split(";", 4)
+                _raw_custom_dtype.split(";", 4)
             )
             # Allow custom dtypes on all runs
             allow_all_runs = checker == "all"
@@ -1031,15 +1311,27 @@ class FastBaseModel:
                 dtype == torch.float16 or os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
             )
             if allow_all_runs or allow_float16_runs:
-                if eval(_dtype) is not None:
-                    dtype = eval(_dtype)
-                if eval(_bnb_compute_dtype) is not None:
-                    bnb_compute_dtype = eval(_bnb_compute_dtype)
+                # A table lookup, not eval: these fields NAME a dtype.
+                _resolved_dtype = resolve_dtype(_dtype)
+                if _resolved_dtype is not None:
+                    dtype = _resolved_dtype
+                _resolved_bnb_compute_dtype = resolve_dtype(_bnb_compute_dtype)
+                if _resolved_bnb_compute_dtype is not None:
+                    bnb_compute_dtype = _resolved_bnb_compute_dtype
                 correct_dtype = bnb_compute_dtype
-                custom_datatype = _custom_datatype
-                # Execute code as well
-                if len(execute_code.strip()) != 0:
-                    exec(execute_code)
+                # The last two fields are code, run only when this process set the
+                # variable; an inherited environment picks dtypes but injects nothing.
+                if _code_is_trusted:
+                    custom_datatype = _custom_datatype
+                    # Execute code as well
+                    if len(execute_code.strip()) != 0:
+                        exec(execute_code)
+                else:
+                    logger.warning(
+                        "Unsloth: Ignoring the code in `UNSLOTH_FORCE_CUSTOM_DTYPE` "
+                        "because it was not set by Unsloth."
+                    )
+                    custom_datatype = None
             else:
                 custom_datatype = None
                 correct_dtype = None
@@ -1050,13 +1342,25 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                revision = _revision,
             )
         model_class = resolve_model_class(auto_model, auto_config)
+        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
+        # Resolved here rather than at the load, because attention resolution below and the
+        # device-map planner both have to size the same dtype the load will really use.
+        torch_dtype = dtype
+        if do_forced_float32:
+            torch_dtype = torch.bfloat16
+        # What attention actually runs in, not the checkpoint load dtype: the
+        # UNSLOTH_FORCE_CUSTOM_DTYPE families (csm, falcon_h1, nemotron_h) load float32 to keep
+        # Mamba precision, then cast projections back to correct_dtype (float16), so flash stays.
+        attn_dtype = correct_dtype if correct_dtype is not None else torch_dtype
         attn_impl = resolve_attention_implementation(
             model_class,
             auto_config,
             requested_attn_implementation = kwargs.get("attn_implementation", None),
             supports_sdpa = supports_sdpa,
+            dtype = attn_dtype,
         )
 
         # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
@@ -1087,6 +1391,76 @@ class FastBaseModel:
             load_in_4bit = False
             load_in_8bit = False
             load_in_16bit = False
+
+        # text_only loads the decoder alone, but the planner gets only `model_name` and
+        # rebuilds the whole VLM: it budgets a vision tower this load never creates and
+        # names `model.language_model.layers.0` where the standalone decoder has
+        # `model.layers.0`, so the first decoder weight ends up with no device set.
+        _planner_skip_reason = (
+            "text_only loads a decoder the repo config does not describe"
+            if text_only_decoder
+            else None
+        )
+        # Same failure from the other direction: `num_labels` (or an explicit `auto_model`)
+        # loads a task head whose `score` replaces the planned `lm_head`, and dispatch
+        # refuses a map with no `score.weight`.
+        if _planner_skip_reason is None:
+            _planner_skip_reason = planner_class_mismatch_reason(
+                model_class,
+                planner_model_class(auto_config, trust_remote_code = trust_remote_code),
+            )
+        # The comparison above returns None for a concrete `PreTrainedModel` subclass:
+        # `resolve_model_class` reads `auto_model._model_mapping`, which only Auto classes
+        # have. Unknown is not compatible, so decline rather than plan the repo's class.
+        if (
+            _planner_skip_reason is None
+            and model_class is None
+            and getattr(auto_model, "_model_mapping", None) is None
+        ):
+            _planner_skip_reason = (
+                "an explicit model class has no auto mapping, so the plan cannot be "
+                "checked against the class the load builds"
+            )
+        # The weights load against the caller's config; the planner rebuilds the repo's from
+        # a name. Same class, another `num_hidden_layers` or `vocab_size`, and the map omits
+        # blocks or under-budgets weights. Only the caller knows, so do not guess.
+        if _planner_skip_reason is None and (user_config is not None or auto_config_from_caller):
+            _planner_skip_reason = (
+                "a caller-supplied config may not describe the repo the planner rebuilds"
+            )
+
+        # A no-op unless the caller asked for "unsloth" (or set UNSLOTH_AUTO_DEVICE_MAP);
+        # an already-planned map comes back unchanged, so a direct FastBaseModel call
+        # behaves the same as going through FastModel.
+        device_map = resolve_unsloth_device_map(
+            requested_device_map(device_map),
+            model_name,
+            fast_inference = fast_inference,
+            full_finetuning = full_finetuning,
+            planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
+            skip_reason = _planner_skip_reason,
+            **planner_config_overrides(kwargs),
+            token = token,
+            trust_remote_code = trust_remote_code,
+            **planner_hub_kwargs(kwargs),
+            # The pin the config and weights below use; the default branch would size a
+            # different checkpoint than the one being loaded.
+            revision = _revision,
+            # The dtype the load below is given: `from_pretrained` overrides config.json,
+            # so planning the checkpoint's own mis-sizes by 2x whenever it changed.
+            **add_dtype_kwargs(torch_dtype),
+            # A caller-supplied config overrides the flags: loader.py clears them when it
+            # forwards one, so the flags alone would size a 4bit load at full precision.
+            **planner_quantization_kwargs(
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                quantization_config = user_quantization_config,
+                # The same extra _skip_modules below adds.
+                extra_skip_modules = ["out_proj"]
+                if any(mt == "nemotron_h" for mt in (model_types or []))
+                else None,
+            ),
+        )
 
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
@@ -1131,6 +1505,7 @@ class FastBaseModel:
             and _tokenizer_repo != model_name
         )
         if _warm_tokenizer_repo:
+            # No revision: this only runs when the repo differs from the pinned one.
             maybe_prefetch_hf_snapshot(
                 _tokenizer_repo,
                 token = token,
@@ -1179,6 +1554,8 @@ class FastBaseModel:
                         "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
+            elif dtype == torch.float32:
+                print("Unsloth: Using float32 full finetuning.")
             else:
                 print(
                     "Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32."
@@ -1205,6 +1582,7 @@ class FastBaseModel:
                     token = token,
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
+                    revision = _revision,
                 )
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import (
@@ -1243,11 +1621,7 @@ class FastBaseModel:
                     if user_quantization_config is None:
                         kwargs["quantization_config"] = quantization_config
 
-        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
-        torch_dtype = dtype
-        if do_forced_float32:
-            torch_dtype = torch.bfloat16
-
+        # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)
@@ -1259,6 +1633,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                revision = _revision,
             )
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
@@ -1268,10 +1643,11 @@ class FastBaseModel:
         raise_handler = RaiseUninitialized()
         try:
             if offload_embedding and fast_inference:
-                # vLLM manages its own weights; embedding offload does not apply.
-                print(
-                    "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."
-                )
+                # vLLM manages its own weights. Silent for the default, as above.
+                if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
+                    print(
+                        "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."
+                    )
                 offload_embedding = False
             if not fast_inference:
                 # Prevent load_in_fp8 from being forwarded into HF internal model loading
@@ -1299,6 +1675,13 @@ class FastBaseModel:
                     # attn_implementation   = attn_implementation,
                     **kwargs,
                 )
+                # Must precede _attach_bnb_multidevice_hooks: it returns early
+                # while offload_embedding is True.
+                offload_embedding = _resolve_offload_embedding(
+                    model,
+                    offload_embedding,
+                )
+
                 # Attach dispatch hooks for bnb multi-device loads.
                 _attach_bnb_multidevice_hooks(
                     model,
@@ -1322,37 +1705,24 @@ class FastBaseModel:
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
                     model.fast_generate_batches = error_out_no_vllm
                 if offload_embedding:
-                    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
-                        # WSL doesn't work with offloaded embeddings
-                        pass
-                    elif os.name == "nt":
-                        # Windows doesn't work with offloaded embeddings
-                        pass
-                    else:
-                        embed_tokens = model.get_input_embeddings()
-                        out_embed = (
-                            model.get_output_embeddings()
-                            if hasattr(model, "get_output_embeddings")
-                            else None
-                        )
-                        if _embeddings_are_tied(embed_tokens, out_embed):
-                            raise NotImplementedError(
-                                "offload_embedding = True is not supported for models with tied word "
-                                "embeddings (embed_tokens shares its weight with lm_head). Offloading "
-                                "would strand the output projection on CPU and saves no VRAM. Set "
-                                "offload_embedding = False for this model."
-                            )
-                        nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                        ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                        print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                        _embed_device = embed_tokens.weight.device  # decoder device, before offload
-                        embed_tokens.to("cpu")
+                    # Unsupported platforms and tied embeddings were screened out above.
+                    embed_tokens = model.get_input_embeddings()
+                    out_embed = (
+                        model.get_output_embeddings()
+                        if hasattr(model, "get_output_embeddings")
+                        else None
+                    )
+                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
+                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                    _embed_device = embed_tokens.weight.device  # decoder device, before offload
+                    embed_tokens.to("cpu")
 
-                        # Device-safe embedding offload.
-                        _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
-                        # Must free GPU memory otherwise will not free!
-                        torch.cuda.empty_cache()
-                        gc.collect()
+                    # Device-safe embedding offload.
+                    _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
+                    # Must free GPU memory otherwise will not free!
+                    clean_gpu_cache()
+                    gc.collect()
             else:
                 from unsloth_zoo.vllm_utils import (
                     load_vllm,
@@ -1452,13 +1822,15 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
+        # The loader resolves this (caller's adapter repo vs resolved base model); the
+        # fallback below covers a direct call.
+        _tokenizer_revision = _tokenizer_revision_arg
+        if _tokenizer_revision is None and tokenizer_name == _revision_repo:
+            _tokenizer_revision = _revision
 
         # On the vLLM path the tokenizer warm was deferred (fast_inference_setup may remap model_name).
         # Warm the now-final tokenizer repo so the load below hits the cache (a cached/local repo is a no-op).
@@ -1466,7 +1838,8 @@ class FastBaseModel:
             maybe_prefetch_hf_snapshot(
                 tokenizer_name,
                 token = token,
-                revision = kwargs.get("revision"),
+                # Match the tokenizer load below, which only pins its own repo.
+                revision = _tokenizer_revision,
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = kwargs.get("local_files_only", False),
                 tokenizer_only = True,
@@ -1511,6 +1884,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
                 except Exception as _e:
                     _tok = None
@@ -1524,6 +1898,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
                 except Exception as _e:
                     _err = _e
@@ -1535,6 +1910,7 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
+                            revision = _tokenizer_revision,
                         )
                     except Exception:
                         # Swallow so the manual fallback / entry-point retry can run.
@@ -1554,6 +1930,7 @@ class FastBaseModel:
                         trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
                 except Exception as _fe:
                     _fallback, _fb_err = None, _fe
@@ -1640,6 +2017,7 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                     cache_dir = kwargs.get("cache_dir"),
                     local_files_only = local_files_only,
+                    revision = _tokenizer_revision,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
                 # Re-attach as processor wrapper if original was a processor
@@ -1667,6 +2045,7 @@ class FastBaseModel:
                     token = token,
                     cache_dir = kwargs.get("cache_dir"),
                     local_files_only = lfo,
+                    revision = _tokenizer_revision,
                 )
                 try:
                     return _AutoTokenizer.from_pretrained(
@@ -1676,6 +2055,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
                 except Exception:
                     return _load_pretrained_tokenizer_fast(
@@ -1685,6 +2065,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
 
             _last_resort_err = None
@@ -1759,11 +2140,33 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
-        return model, tokenizer
+            clean_gpu_cache()
+        # Saving restores sentencepiece assets from the repo name alone, which carries no
+        # branch. Stamped here, not per processor branch, so a fallback cannot lose it.
+        _mark_loaded_revision(tokenizer, _tokenizer_revision)
+        model = _mark_forced_float32(model, do_forced_float32)
+        model = _mark_full_finetuning(model, full_finetuning)
+
+        # LAST, for the reason the llama loader repairs last: the attach above
+        # runs during the load, and `patch_model_and_tokenizer` further down
+        # REPLACES the embedding and lm_head with freshly built modules, which
+        # carry the weights over but not the `_hf_hook`. A model this loader
+        # split across cards would otherwise still meet the original
+        # cross-device `index_select`. Idempotent, so the earlier attach stands.
+        if not fast_inference and not offload_embedding:
+            try:
+                _repaired = _repair_dispatch_hooks(model)
+                if _repaired:
+                    logger.info(
+                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                        "the patching pass left unhooked, so the model trains."
+                    )
+            except Exception as _exc:
+                logger.warning(
+                    f"Unsloth: could not check the dispatch hooks "
+                    f"({type(_exc).__name__}: {_exc})."
+                )
+        return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
     def get_peft_model(
@@ -1791,7 +2194,7 @@ class FastBaseModel:
         temporary_location = "_unsloth_temporary_saved_buffers",
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
-        ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
+        ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
         **kwargs,
     ):
@@ -1845,6 +2248,34 @@ class FastBaseModel:
         # only the auto (None / "all-linear") path relies on the regex, whose mlp
         # block is the sole remaining MLP-intent signal on fused-expert models.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+
+        # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never
+        # trains, so redirect before scoping, matching FastLanguageModel.
+        target_modules, modules_to_save, _moved = _redirect_embedding_targets(
+            target_modules,
+            modules_to_save,
+            allow_redirect = finetune_language_layers,
+            skip = _vllm_unmovable_embedding_modules(model, target_modules),
+        )
+        _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        ensure_weight_tying = _effective_weight_tying(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        modules_to_save = _drop_tied_output_module(
+            model,
+            modules_to_save,
+            ensure_weight_tying,
+        )
+        if _moved:
+            logger.warning_once(
+                f"Unsloth: Moved {', '.join(_moved)} from `target_modules` to "
+                f"`modules_to_save`, so they are trained as full weight matrices.\n"
+                f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
+            )
+        _raise_if_fast_inference_modules_to_save(model, modules_to_save)
+
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -1912,10 +2343,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         max_seq_length = model.max_seq_length
         # If we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(
@@ -2037,6 +2465,18 @@ class FastBaseModel:
 
         model = _get_peft_model(model, lora_config)
 
+        # PEFT may have wrapped an endpoint this load repaired; the hook stays on
+        # `base_layer` and the adapter branch reads the caller's tensor.
+        try:
+            _lifted = _lift_endpoint_hooks_onto_adapters(model)
+            if _lifted:
+                logger.info(
+                    f"Unsloth: lifted dispatch hooks onto {_lifted} adapter-wrapped "
+                    "embedding module(s), so a split model trains them."
+                )
+        except Exception as _exc:
+            logger.warning_once(f"Unsloth: could not lift adapter hooks: {_exc}")
+
         # Restore original PEFT method
         if _clippable_linear_cls is not None:
             _LoraModel._create_and_replace = _original_car
@@ -2061,10 +2501,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
@@ -2179,10 +2616,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         # Add for_inference and for_training
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
@@ -2298,9 +2732,9 @@ class FastBaseModel:
             # Set a flag for generation!
             if hasattr(m, "_flag_for_generation"):
                 try:
-                    # Weirdly sometimes cannot succeed so do a try except
+                    # A PEFT wrapper delegates the read but owns nothing to delete
                     del m._flag_for_generation
-                except:
+                except AttributeError:
                     pass
 
         m = model

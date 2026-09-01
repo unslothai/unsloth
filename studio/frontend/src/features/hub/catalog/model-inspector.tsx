@@ -52,6 +52,9 @@ import {
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { SelectedModelView } from "../types";
 import { DatasetDownloadSection } from "./dataset-download-section";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import { routableToMediaPage } from "../lib/local-path";
+import { studioPageForTask } from "../lib/unsloth-support";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
@@ -280,7 +283,11 @@ function ModelStatusChips({
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
-  const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
+  // The Images/Video pages run these, so they are not "unsupported" to a user even though chat cannot load them.
+  const showUnsupported =
+    !isDataset &&
+    unslothSupport.status === "unsupported" &&
+    !unslothSupport.supportedIn;
   // The format-unsupported chip already explains itself; this one covers the
   // supported-format model a chat-only host still can't run.
   const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
@@ -389,6 +396,8 @@ export type ModelInspectorRuntime = {
     status: "fits" | "tight" | "exceeds";
   } | null;
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
 };
 
@@ -403,12 +412,17 @@ export type ModelInspectorActions = {
   onTrain?: () => void;
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
+  /** Open settings with the quant the card resolved. */
+  onOpenSettings?: (ggufVariant: string | null) => void;
 };
 
 export const ModelInspector = memo(function ModelInspector({
   model,
   runtime,
   actions,
+  preferredGgufFile = null,
+
+  preferredGgufFileIntent = 0,
   isDataset = false,
   metadataUnavailable = false,
   selectionHiddenByFilters = false,
@@ -417,6 +431,9 @@ export const ModelInspector = memo(function ModelInspector({
   isDataset?: boolean;
   metadataUnavailable?: boolean;
   selectionHiddenByFilters?: boolean;
+  preferredGgufFile?: string | null;
+
+  preferredGgufFileIntent?: number;
   runtime: ModelInspectorRuntime;
   actions: ModelInspectorActions;
 }) {
@@ -428,6 +445,7 @@ export const ModelInspector = memo(function ModelInspector({
     minMemory,
     vramInfo,
     gpuGb,
+    gpuCount,
     systemRamGb,
   } = runtime;
   const {
@@ -438,6 +456,7 @@ export const ModelInspector = memo(function ModelInspector({
     onTrain,
     onInventoryChange,
     onSearchHub,
+    onOpenSettings,
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
@@ -497,7 +516,7 @@ export const ModelInspector = memo(function ModelInspector({
 
   if (!model) {
     return (
-      <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 py-16 text-center">
+      <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 py-16 text-center">
         <div className="inline-flex size-12 items-center justify-center rounded-[14px] bg-muted text-muted-foreground">
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
@@ -557,13 +576,33 @@ export const ModelInspector = memo(function ModelInspector({
           c.key === "vision" ||
           c.key === "audio",
       ));
+  // An image / video model runs on its own page, which onLoad already routes to;
+  // the chat gates below would leave it greyed out as if it were unusable. Only when the
+  // row is one onLoad can actually route there: those pages resolve a routed `model` as a
+  // Hub id, so a filesystem row fails routableToMediaPage and the click falls through to
+  // the chat loader, which unloads the resident model for a load that can only fail.
+  // Whether this model's runtime is llama.cpp at all. Deliberately NOT
+  // runsOnMediaPage below: that one also asks whether the click can be ROUTED to
+  // the page, which is a different question. A diffusion GGUF on a filesystem row
+  // is not routable and still does not load through llama.cpp, so a memory bar
+  // there would describe the wrong runtime either way.
+  const runsOnMediaRuntime =
+    studioPageForTask(
+      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+    ) !== undefined;
+  const runsOnMediaPage =
+    studioPageForTask(
+      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+    ) !== undefined &&
+    routableToMediaPage(model.kind, model.localSource);
   // Chat-only hosts (no supported GPU / usable MLX) run inference only through
   // llama.cpp, so only GGUF is loadable.
   const canRunModel =
     !isDataset &&
-    (model.runtimeCapabilities?.canChat ?? true) &&
-    !isEmbeddingOnly &&
-    (model.isGguf || (!chatOnly && unslothSupported));
+    (runsOnMediaPage ||
+      ((model.runtimeCapabilities?.canChat ?? true) &&
+        !isEmbeddingOnly &&
+        (model.isGguf || (!chatOnly && unslothSupported))));
   const canTrainModel =
     !isDataset &&
     (model.runtimeCapabilities?.canTrain ?? false) &&
@@ -651,6 +690,7 @@ export const ModelInspector = memo(function ModelInspector({
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onTrain={onTrain}
@@ -672,6 +712,7 @@ export const ModelInspector = memo(function ModelInspector({
         <InspectorDownloadSlot>
           {model.isLocal && !hasActiveHubDownload ? (
             <LocalOnDeviceCard
+              showMemoryBar={!runsOnMediaRuntime}
               modelId={model.id}
               repoId={model.hubRepoId}
               sourceLabel={model.sourceLabel}
@@ -692,9 +733,13 @@ export const ModelInspector = memo(function ModelInspector({
               isLoading={isLoadingThisModel}
               loadingPhase={loadingPhase}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
+
+              preferredFile={preferredGgufFile}
+              preferredFileIntent={preferredGgufFileIntent}
               unsupportedReason={
-                unslothSupport.status === "unsupported"
+                unslothSupport.status === "unsupported" && !unslothSupport.supportedIn
                   ? (unslothSupport.reason ?? "Unsupported format")
                   : null
               }
@@ -705,20 +750,28 @@ export const ModelInspector = memo(function ModelInspector({
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }
               onChange={onInventoryChange}
+              onOpenSettings={onOpenSettings}
             />
           ) : (
             <DownloadSection
+              showMemoryBar={!runsOnMediaRuntime}
+              mediaRuntime={runsOnMediaRuntime}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               modelFormat={model.modelFormat}
               canRun={canRunModel}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}
+              preferredGgufFile={preferredGgufFile}
+
+              preferredGgufFileIntent={preferredGgufFileIntent}
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
@@ -830,7 +883,7 @@ export const ModelInspector = memo(function ModelInspector({
         />
       </div>
 
-      <div className="max-w-[860px] space-y-4 pt-4">
+      <div className="max-w-[var(--hub-readme-measure)] space-y-4 pt-4">
         {readmeReady && readmeRepoId && (
           <ModelReadme
             repoId={readmeRepoId}

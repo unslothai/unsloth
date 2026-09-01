@@ -134,7 +134,9 @@ export function LlamaUpdateBanner({
       className={cn(
         positioned
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[400px]"
-          : "pointer-events-auto w-full",
+          : // shrink-0: nothing in this card can give up height, so a capped
+            // stack squeezing it only prints its text over its own buttons.
+            "pointer-events-auto w-[calc(100vw-2rem)] max-w-[400px] shrink-0",
       )}
       data-testid="llama-update-banner"
     >
@@ -172,7 +174,9 @@ export function LlamaUpdateBanner({
           />
           <div className="min-w-0">
             <p className="font-heading text-base font-medium text-foreground">
-              {applying ? `Updating ${component}...` : `New ${component} update`}
+              {applying
+                ? `Updating ${component}...`
+                : `New ${component} update`}
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {status?.installed_tag ?? "unknown"} &rarr;{" "}

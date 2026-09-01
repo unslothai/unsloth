@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import logging
 import os
 import psutil
@@ -86,12 +87,12 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         if formatting_func is None:
             return super().__call__(examples)
 
-        # why: base __call__ would reapply formatting_func; applied above.
-        self.formatting_func = None
-        try:
-            return super().__call__(examples)
-        finally:
-            self.formatting_func = formatting_func
+        # why: base __call__ would reapply formatting_func; applied above. A
+        # per-call shallow view shares every other attribute by reference, so a
+        # concurrent caller can never observe formatting_func blanked on self.
+        view = copy.copy(self)
+        view.formatting_func = None
+        return super(UnslothVisionDataCollator, view).__call__(examples)
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
@@ -141,6 +142,73 @@ _AUTO_PACK_SKIP_MESSAGES = (
 def _should_skip_auto_packing_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(msg in message for msg in _AUTO_PACK_SKIP_MESSAGES)
+
+
+def _should_skip_auto_padding_free_error(exc: Exception) -> bool:
+    """Net for a TRL that words the padding-free / `max_length` guard differently.
+
+    rl.py already handles the known wording; both terms must appear here so an
+    unrelated ValueError still propagates.
+    """
+    message = str(exc).lower()
+    return "padding_free" in message and "max_length" in message
+
+
+def _bound_splits(original_init, args, kwargs):
+    """`(train_dataset, eval_dataset)` as the wrapped `__init__` will see them.
+
+    Bound through the signature rather than indexed positionally: TRL has moved
+    these parameters between releases, and a hardcoded index silently reads the
+    data collator on the version that did.
+    """
+    try:
+        bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs)
+    except Exception:
+        return kwargs.get("train_dataset"), kwargs.get("eval_dataset")
+    return bound.arguments.get("train_dataset"), bound.arguments.get("eval_dataset")
+
+
+def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
+    """Whether dropping padding-free actually leaves something enforcing the cap.
+
+    This fallback only runs when the exact source-text match in `rl.py` missed
+    TRL's guard, which means the generated pre-tokenized truncation block was
+    never inserted either. Turning `padding_free` off keeps `max_length` for
+    TRL's collator, and that collator does not truncate: rows that already carry
+    `input_ids` reach the model at full length. So the retry would convert a
+    hard error into a silently uncapped run, which is strictly worse.
+
+    Raw splits are fine -- prep tokenizes them under `max_length`. Only rows that
+    are already tokenized are at risk, so scan for those and let the original
+    error propagate when any is over.
+
+    A packed split is fine too: the packer owns the overflow and chunks it, so
+    an overlength row there is not an unenforced cap. `packing` and
+    `eval_packing` are resolved separately because they can differ, and the
+    generated exact-match path already excludes eval-packed splits from its own
+    scan -- scanning them here refused a configuration that path accepts.
+    """
+    cap = getattr(config, "max_length", None)
+    if not cap:
+        return True
+    try:
+        from unsloth.models.rl import pretokenized_within_cap, splits_within_cap
+    except Exception:
+        return True  # nothing to check against; do not invent a failure
+    packing = bool(getattr(config, "packing", False))
+    # TRL's own default: `eval_packing = None` means "whatever `packing` is".
+    eval_packing = getattr(config, "eval_packing", None)
+    eval_packing = packing if eval_packing is None else bool(eval_packing)
+    if not packing and not pretokenized_within_cap(train, cap):
+        return False
+    return eval_packing or splits_within_cap(evals, cap)
+
+
+def _disable_padding_free(config):
+    if config is None:
+        return
+    if hasattr(config, "padding_free"):
+        setattr(config, "padding_free", False)
 
 
 _VISION_DATASET_KEYS = frozenset(
@@ -599,6 +667,127 @@ def _resolve_trainer_params(trainer_class, init_fn):
     return set(params.keys())
 
 
+def _ensure_warnings_issued(model):
+    """Restore the `warnings_issued` dict that trl trainers write into.
+
+    transformers set `self.warnings_issued = {}` in `PreTrainedModel.__init__` up
+    to 5.0.0 and dropped it in 5.1.0. trl did not follow: grpo, dpo, online_dpo,
+    kto, orpo, cpo, rloo and experimental bco still open `__init__` with
+    `model.warnings_issued["estimate_tokens"] = True`, so the trainer cannot be
+    built at all:
+
+        AttributeError: 'Qwen2ForCausalLM' object has no attribute 'warnings_issued'
+
+    models/rl.py already guards this, but only in the source it GENERATES, so the
+    guard exists exactly when that generation succeeds. When it does not, unsloth
+    falls back to trl's own class and the write is unguarded again. Measured, so
+    the weaker claim is the right one: UNSLOTH_COMPILE_DISABLE=1 does NOT remove
+    the generated module, which is still written with the guard in it, so that is
+    not the gap this closes. The fallback is.
+
+    Best-effort, and no stricter than the generated guard: a non-module (trl also
+    accepts a repo id string) is left alone.
+    """
+    import torch
+
+    if not isinstance(model, torch.nn.Module):
+        return
+    try:
+        existing = getattr(model, "warnings_issued", None)
+        if isinstance(existing, dict):
+            return
+        if existing is None:
+            model.warnings_issued = {}
+        else:
+            # Preserve a non-dict value rather than discard it; trl only ever
+            # writes one boolean key.
+            try:
+                model.warnings_issued = dict(existing)
+            except Exception:
+                model.warnings_issued = {}
+    except Exception:
+        # A model refusing the assignment is trl's to report, not ours to turn
+        # into a different traceback.
+        pass
+
+
+def _route_unknown_trainer_kwargs(
+    config_class,
+    unknown,
+    notify = None,
+    already_supplied = None,
+):
+    """Split names neither side declares into `(to_config, to_trainer)` using
+    `rl_config_compat`'s rename/retire policy, which otherwise only runs when a
+    config is built; unrecognised names go back to the trainer call to raise there.
+
+    `already_supplied` uses presence, not a default comparison, because `kwargs`
+    holds only what the caller typed, so an explicit new name is never overwritten.
+    """
+    if not unknown:
+        return {}, {}
+
+    try:
+        from .models.rl_config_compat import (
+            classify_config_kwarg,
+            removal_source,
+            rename_source,
+            rename_value_is_unset,
+        )
+    except Exception:
+        # tests/ AST-load this function into a bare namespace with no package to
+        # import from, and supply the classifier through globals() instead.
+        classify_config_kwarg = globals().get("classify_config_kwarg")
+        rename_source = globals().get("rename_source", lambda key: "TRL")
+        removal_source = globals().get("removal_source", lambda key: "TRL")
+        rename_value_is_unset = globals().get(
+            "rename_value_is_unset", lambda cls, name, value: False
+        )
+        if classify_config_kwarg is None:
+            # Unreachable in a real install; keep the value on the trainer.
+            return {}, dict(unknown)
+
+    if notify is None:
+        notify = print
+    config_name = getattr(config_class, "__name__", str(config_class))
+
+    to_config, to_trainer = {}, {}
+    for key, value in unknown.items():
+        try:
+            verdict, detail = classify_config_kwarg(config_class, key)
+        except Exception:
+            verdict, detail = "unknown", None
+
+        if verdict == "accepted":
+            to_config[key] = value
+        elif verdict == "rename":
+            # A legacy Optional forwarded at its `None` default says nothing, so
+            # it must not replace a real value. Same rule as the config path.
+            if rename_value_is_unset(config_class, detail, value):
+                continue
+            if already_supplied and detail in already_supplied:
+                notify(
+                    f"Unsloth: `{key}` was renamed to `{detail}` by {rename_source(key)} and "
+                    f"this {config_name} accepts only the new name. You set both, so `{key}` "
+                    f"is ignored and your `{detail}` is kept."
+                )
+                continue
+            to_config[detail] = value
+            notify(
+                f"Unsloth: {rename_source(key)} renamed `{key}` to `{detail}`. "
+                f"Forwarding your value to `{detail}` - update your code when convenient."
+            )
+        elif verdict == "retired":
+            notify(
+                f"Unsloth: `{key}` is not supported by the installed "
+                f"{removal_source(key)}'s {config_name} and will be IGNORED - {detail}."
+            )
+        else:
+            to_trainer[key] = value
+
+    return to_config, to_trainer
+
+
 def _backwards_compatible_trainer(trainer_class, config_class):
     original_init = trainer_class.__init__
 
@@ -613,8 +802,10 @@ def _backwards_compatible_trainer(trainer_class, config_class):
         if ("args" in kwargs) and (Version(trl) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
 
-            trainer_params.remove("self")
-            trainer_params.remove("args")
+            # `discard`, not `remove`: a trainer naming its config something other
+            # than `args` would otherwise die with a bare KeyError here.
+            trainer_params.discard("self")
+            trainer_params.discard("args")
 
             # Fields that should be passed to Config init
             config_fields = {
@@ -637,6 +828,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # Separate kwargs into trainer kwargs and config kwargs
             trainer_kwargs = {}
             additional_config_kwargs = {}
+            unknown_kwargs = {}
 
             for key, value in kwargs.items():
                 if key in trainer_params:
@@ -644,7 +836,16 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 elif key in moved_params or key in config_fields:
                     additional_config_kwargs[key] = value
                 else:
-                    additional_config_kwargs[key] = value
+                    # Filing this with the config kwargs dropped it in silence.
+                    unknown_kwargs[key] = value
+
+            migrated, unroutable = _route_unknown_trainer_kwargs(
+                config_class,
+                unknown_kwargs,
+                already_supplied = set(additional_config_kwargs),
+            )
+            additional_config_kwargs.update(migrated)
+            trainer_kwargs.update(unroutable)
 
             config_dict.update(additional_config_kwargs)
 
@@ -654,11 +855,19 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             if not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
             else:
+                # Every trl config subclasses TrainingArguments, so this is the
+                # branch real calls take and config_dict was going nowhere. Set
+                # the moved values on the caller's config rather than rebuild it.
                 config = training_args
+                for key, value in additional_config_kwargs.items():
+                    # `migrated` keys are already known to be accepted here.
+                    if key in config_fields or key in moved_params or key in migrated:
+                        setattr(config, key, value)
 
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
             kwargs["args"] = config
+        _ensure_warnings_issued(args[0] if args else kwargs.get("model"))
         original_init(self, *args, **kwargs)
 
     return new_init
@@ -769,8 +978,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = f"Unsloth: Sample packing skipped ({reason} detected)."
-            print(message)
+            elif data_collator is None:
+                # compute_metrics, preprocess_logits_for_metrics, for_inference() and the
+                # user can all set it, so name the flag and not a setter.
+                reason = "UNSLOTH_RETURN_LOGITS=1"
+            logger.warning(f"Unsloth: packing=True ignored ({reason}).")
 
         packing_active = False
         if _should_pack(config_arg) and not blocked:
@@ -799,6 +1011,17 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 )
                 _disable_sample_packing(config_arg)
                 packing_active = False
+                original_init(self, *args, **kwargs)
+            elif auto_padding_free_active and _should_skip_auto_padding_free_error(exc):
+                train, evals = _bound_splits(original_init, args, kwargs)
+                if not _cap_is_enforceable_without_padding_free(config_arg, train, evals):
+                    raise
+                logger.info(
+                    "Unsloth: Auto padding-free disabled because the trainer rejected it (%s).",
+                    exc,
+                )
+                _disable_padding_free(config_arg)
+                auto_padding_free_active = False
                 original_init(self, *args, **kwargs)
             else:
                 raise
@@ -867,6 +1090,15 @@ def _patch_trl_trainer():
     trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
     trl_classes = list(trl_trainers & trl_configs)
 
+    # Auto-packing wraps first so it lands INSIDE the backwards-compatible one: a
+    # moved `packing` kwarg must reach the config before packing is decided, else
+    # the block is undone right after. Guarded so a failure here still leaves the
+    # pre-0.13 compatibility wrappers installed.
+    try:
+        _patch_sft_trainer_auto_packing(trl)
+    except Exception as exc:
+        logger.warning(f"Unsloth: could not enable SFT auto-packing ({exc}).")
+
     for x in trl_classes:
         try:
             exec(
@@ -875,7 +1107,5 @@ def _patch_trl_trainer():
             )
         except:
             continue
-
-    _patch_sft_trainer_auto_packing(trl)
 
     trl.__UNSLOTH_BACKWARDS_COMPATIBLE__ = True

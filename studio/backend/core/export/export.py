@@ -3,7 +3,6 @@
 
 """Export backend - exports models in various formats."""
 
-import glob
 import json
 import structlog
 import tempfile
@@ -15,7 +14,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 
 # unsloth imports torch on non-MLX hosts, so a --no-torch install raises here. Stay importable
-# (null the classes) so exports return a clean "PyTorch is not installed" error, not an import crash.
+# (null the classes) so exports return a clean "PyTorch is not installed" error.
 try:
     from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
     _UNSLOTH_IMPORT_ERROR = None
@@ -29,6 +28,7 @@ from huggingface_hub import HfApi, ModelCard
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
+from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import detect_audio_type
 from utils.paths import (
     ensure_dir,
@@ -37,9 +37,9 @@ from utils.paths import (
     resolve_output_dir,
 )
 from core.inference import get_inference_backend
+from utils.paths.path_utils import drop_appledouble_metadata
 
-# GPU/PyTorch-only imports, skipped on MLX and on a --no-torch install so the module stays
-# importable; export then degrades to a clear "PyTorch is not installed" error.
+# GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
 _TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
@@ -86,9 +86,9 @@ def _multi_gpu_device_map_kwargs() -> dict:
 
     unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``, which stacks
     the whole model on GPU0 and OOMs multi-GPU hosts whose other GPUs sit empty (#7053).
-    Returns ``{"device_map": "balanced"}`` only on a real multi-GPU CUDA/ROCm host
-    (mirroring the inference loader's ``get_device_map``), else empty so single-GPU, CPU
-    and MLX loads keep the loader default."""
+    Returns a sharding map only on a real multi-GPU CUDA/ROCm host (mirroring the
+    inference loader's ``get_device_map``), else empty so single-GPU, CPU and MLX loads
+    keep the loader default."""
     if _IS_MLX:
         return {}
     try:
@@ -98,12 +98,13 @@ def _multi_gpu_device_map_kwargs() -> dict:
         if len(visible) > 1:
             device_map = get_device_map(visible)
         elif not visible:
-            # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back
-            # to the visible-GPU count, so a multi-GPU UUID/MIG host still shards.
+            # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back to the visible count.
             device_map = get_device_map(None)
         else:
             return {}
-        if device_map == "balanced":
+        # Every sharding answer `get_device_map` gives; a "balanced"-only whitelist
+        # dropped the map the moment CUDA began asking for a planned one.
+        if device_map in ("balanced", "unsloth", "unsloth_balanced"):
             return {"device_map": device_map}
     except Exception as exc:
         logger.debug(f"multi-GPU device_map resolution failed; using loader default: {exc}")
@@ -141,6 +142,17 @@ def _is_cpu_spill_rejection(exc: BaseException) -> bool:
     return "dispatched on the cpu or the disk" in str(exc).lower()
 
 
+def _is_device_map_infeasible(exc: BaseException) -> bool:
+    """The planner refusing to place the model, matched by class name.
+
+    It raises rather than spilling a bitsandbytes model to CPU, budgeting from free
+    memory read before this process opens a context -- so a training or chat job
+    holding the other cards can make it refuse a model the single-device loader
+    still fits. By name, so the export does not require a version defining it.
+    """
+    return type(exc).__name__ == "DeviceMapInfeasible"
+
+
 class _CpuSpillRetry(Exception):
     """A multi-GPU load that succeeded but left modules offloaded to CPU/disk."""
 
@@ -157,6 +169,18 @@ def _cpu_offloaded_modules(model) -> int:
     return sum(1 for target in device_map.values() if str(target) in ("cpu", "disk"))
 
 
+def _accepts_by_keyword(params, name):
+    """True if `name` is passable as a keyword, not merely named.
+
+    Every call site passes by keyword, so a positional-only parameter is not support: counting
+    it turns a clean refusal into a TypeError.
+    """
+    import inspect
+
+    parameter = params.get(name)
+    return parameter is not None and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
+
+
 def _supports_kwarg(fn, name):
     """True if `fn` accepts keyword `name` directly or via **kwargs."""
     import inspect
@@ -165,7 +189,105 @@ def _supports_kwarg(fn, name):
         params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return False
-    return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    return _accepts_by_keyword(params, name) or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+def _gguf_shard_export_supported(fn):
+    """True when the exporter explicitly implements GGUF shard-size control."""
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return _accepts_by_keyword(params, "gguf_shard_size")
+
+
+def _imatrix_export_supported(save_fn):
+    """True when this build can apply an imatrix, not merely swallow the keyword: the MLX binding
+    takes `**kwargs` and filters them, so only unsloth_zoo itself settles it."""
+    import inspect
+
+    try:
+        params = inspect.signature(save_fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if _accepts_by_keyword(params, "imatrix_file"):
+        return True
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return False
+    try:
+        from unsloth_zoo.llama_cpp import resolve_imatrix_file  # noqa: F401
+    except Exception:
+        # Runs before export_gguf's exception boundary, which must return a tuple, not raise.
+        return False
+    return True
+
+
+def _reported_gguf_files(result):
+    """Absolute GGUF paths unsloth reported writing, or None if it reported nothing.
+
+    None means "fall back to the legacy heuristics", which covers every older shape:
+    pre-2025.10 unsloth returned nothing, is_main_process=False returns None, and
+    save_method="lora" returns a str. An empty result is None too, since a stale
+    manifest is indistinguishable from an old build.
+    """
+    if not isinstance(result, dict):
+        return None
+    files = result.get("gguf_files")
+    if not isinstance(files, (list, tuple)):
+        return None
+
+    resolved = []
+    for entry in files:
+        # A malformed payload must not be half-trusted.
+        if not isinstance(entry, (str, os.PathLike)):
+            return None
+        path = os.path.abspath(os.fspath(entry))
+        if path.lower().endswith(".gguf") and os.path.isfile(path):
+            resolved.append(path)
+    return resolved or None
+
+
+def _materialized_imatrix_path(model_dir, imatrix_file):
+    """Where unsloth copies a `*.gguf_file` imatrix beside the model, else None.
+
+    `_materialize_imatrix` drops that copy in the model directory, so the owned-root scan
+    would otherwise relocate it as if it were a converted model. Callers compare the whole path
+    (see `_is_imatrix`): a basename match would suppress a real output of the same name.
+    """
+    if imatrix_file is True:
+        name = "imatrix_unsloth.gguf"  # the upstream imatrix_unsloth.gguf_file, renamed
+    elif isinstance(imatrix_file, (str, os.PathLike)):
+        base = os.path.basename(os.fspath(imatrix_file))
+        if not base.endswith(".gguf_file"):
+            return None
+        name = base[: -len(".gguf_file")] + ".gguf"
+    else:
+        return None
+    return Path(model_dir) / name
+
+
+def _is_imatrix(path, imatrix_path):
+    """True when `path` is the materialized imatrix, asked of the filesystem rather than `==`.
+
+    The on-disk spelling is the filesystem's to choose (a folding mount changes case, APFS
+    stores NFD), so byte-exact `Path.__eq__` misses and the imatrix is relocated as a model.
+    """
+    if imatrix_path is None:
+        return False
+    try:
+        return os.path.samefile(path, imatrix_path)
+    except OSError:
+        # Either side may be gone by cleanup time; fall back to a folded comparison.
+        return _folded(path) == _folded(imatrix_path)
+
+
+def _folded(path):
+    import unicodedata
+    return unicodedata.normalize("NFC", os.path.normcase(os.fspath(path)))
 
 
 def _compressed_export_supported():
@@ -268,7 +390,6 @@ def _apply_wsl_sudo_patch():
         logger.warning(f"Could not apply WSL sudo patch: {e}")
 
 
-# Model card template
 MODEL_CARD = """---
 base_model: {base_model}
 tags:
@@ -380,8 +501,7 @@ class ExportBackend:
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
-            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on
-            # single-GPU/CPU/MLX. _device_map_override is the single-device retry below.
+            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
             _device_map_kw = (
                 _multi_gpu_device_map_kwargs()
                 if _device_map_override is None
@@ -512,6 +632,12 @@ class ExportBackend:
             else:
                 self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
 
+            restored_repo_id = restore_hf_cache_repo_identity(model, base_model)
+            if restored_repo_id:
+                logger.info(
+                    f"Restored Hub model identity for legacy adapter export: {restored_repo_id}"
+                )
+
             self.current_model = model
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
@@ -536,7 +662,10 @@ class ExportBackend:
             if (
                 _device_map_override is None
                 and (
-                    isinstance(e, _CpuSpillRetry) or _is_oom_error(e) or _is_cpu_spill_rejection(e)
+                    isinstance(e, _CpuSpillRetry)
+                    or _is_oom_error(e)
+                    or _is_cpu_spill_rejection(e)
+                    or _is_device_map_infeasible(e)
                 )
                 and _multi_gpu_device_map_kwargs()
             ):
@@ -552,7 +681,7 @@ class ExportBackend:
 
         logger.warning(
             f"Multi-GPU export load unusable ({retry_reason}); retrying on "
-            f"the single-device loader default."
+            f"the sequential loader default."
         )
         self.cleanup_memory()
         return self.load_checkpoint(
@@ -561,7 +690,10 @@ class ExportBackend:
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
-            _device_map_override = {},
+            # Named, not omitted: an omitted map is unsloth's DEFAULT_DEVICE_MAP, which
+            # `requested_device_map` upgrades back to the planner, re-running the
+            # placement that just failed. A typed "sequential" passes through.
+            _device_map_override = {"device_map": "sequential"},
         )
 
     def _write_export_metadata(self, save_directory: str):
@@ -960,6 +1092,8 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         imatrix_file = None,
+        private: bool = False,
+        gguf_shard_size: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
@@ -972,6 +1106,9 @@ class ExportBackend:
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID
             hf_token: Hugging Face token
+            imatrix_file: Optional importance matrix file path or boolean
+            private: Whether to make the Hub repository private
+            gguf_shard_size: Maximum final full-precision GGUF shard size
 
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
@@ -983,19 +1120,41 @@ class ExportBackend:
 
         # Only forward imatrix_file to an unsloth build that accepts it, else older builds raise
         # an unexpected-keyword error even for a plain no-imatrix export.
-        if imatrix_file is not None and not _supports_kwarg(
-            self.current_model.save_pretrained_gguf, "imatrix_file"
-        ):
+        if imatrix_file and not _imatrix_export_supported(self.current_model.save_pretrained_gguf):
             return (
                 False,
                 "This Unsloth build does not support GGUF imatrix export. "
                 "Upgrade unsloth and unsloth_zoo, or disable the imatrix option.",
                 None,
             )
-        imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}
+        # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
+        imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
+        shard_hooks = []
+        if save_directory:
+            shard_hooks.append(self.current_model.save_pretrained_gguf)
+        if push_to_hub:
+            shard_hooks.append(self.current_model.push_to_hub_gguf)
+        if gguf_shard_size is not None and not all(
+            _gguf_shard_export_supported(hook) for hook in shard_hooks
+        ):
+            return (
+                False,
+                "This Unsloth build does not support GGUF shard-size control. "
+                "Upgrade unsloth and unsloth_zoo, or clear the shard-size option.",
+                None,
+            )
+        shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
+        # Resolution reads a Hub repo, so the local save needs the token too -- kept out of
+        # imatrix_kw, which the push below shares and already names token= itself.
+        local_token_kw = (
+            {"token": hf_token}
+            if imatrix_file
+            and hf_token
+            and _supports_kwarg(self.current_model.save_pretrained_gguf, "token")
+            else {}
+        )
 
         output_path: Optional[str] = None
-        model_tmp_to_cleanup: Optional[str] = None
         try:
             # Normalize to a lowercased list so multiple quants come from one model load.
             if isinstance(quantization_method, (list, tuple)):
@@ -1015,7 +1174,9 @@ class ExportBackend:
                     _resolve_local_convert_script,  # noqa: F401
                 )
                 os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-            except ImportError:
+            except Exception:
+                # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or
+                # AttributeError, and this pin is an optimisation, not worth failing an export.
                 if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
                     logger.warning(
                         "Unsloth: installed unsloth_zoo does not honor "
@@ -1037,72 +1198,107 @@ class ExportBackend:
                 # On WSL, patch out sudo check before llama.cpp build
                 _apply_wsl_sudo_patch()
 
-                # convert_to_gguf writes output relative to cwd (repo root);
-                # snapshot existing .gguf so we can diff and relocate afterwards.
-                cwd = os.getcwd()
-                pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
+                # Keep all intermediates under an export-owned root.
+                model_tmp_root = tempfile.mkdtemp(prefix = "_tmp_model_", dir = abs_save_dir)
+                model_tmp_path = Path(model_tmp_root)
+                _model_tmp = os.path.join(model_tmp_root, "model")
+                # Needed by the cleanup below too, so resolve it before anything can raise.
+                imatrix_path = _materialized_imatrix_path(_model_tmp, imatrix_file)
+                try:
+                    result = self.current_model.save_pretrained_gguf(
+                        _model_tmp,
+                        self.current_tokenizer,
+                        quantization_method = quant_method,
+                        **imatrix_kw,
+                        **local_token_kw,
+                        **shard_kw,
+                    )
 
-                pre_existing_subs = {d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()}
+                    # Scan only the owned root; exact reported paths cover external outputs.
+                    reported = result if isinstance(result, dict) else {}
+                    produced = {p for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
+                    produced.update(Path(f) for f in _reported_gguf_files(result) or [])
+                    produced = {p for p in produced if not _is_imatrix(p, imatrix_path)}
+                    modelfiles = {p for p in model_tmp_path.rglob("Modelfile") if p.is_file()}
+                    reported_modelfile = reported.get("modelfile_location")
+                    if reported_modelfile and Path(reported_modelfile).is_file():
+                        modelfiles.add(Path(os.path.abspath(os.fspath(reported_modelfile))))
 
-                # Avoid clobbering an existing user-owned model/ directory.
-                import uuid
-
-                _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
-                model_tmp_to_cleanup = _model_tmp
-                self.current_model.save_pretrained_gguf(
-                    _model_tmp,
-                    self.current_tokenizer,
-                    quantization_method = quant_method,
-                    **imatrix_kw,
-                )
-
-                # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
-                new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
-                for src in sorted(new_ggufs):
-                    dest = os.path.join(abs_save_dir, os.path.basename(src))
-                    shutil.move(src, dest)
-                    logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
-
-                # Flatten GGUF files from subdirs created during this export.
-                for sub in list(Path(abs_save_dir).iterdir()):
-                    if not sub.is_dir():
-                        continue
-                    if sub.name in pre_existing_subs:
-                        continue
-                    for src in sub.glob("*.gguf"):
+                    relocated_ggufs = []
+                    for src in sorted(produced):
+                        if src.is_symlink():
+                            raise RuntimeError(
+                                f"GGUF conversion produced a symlink, refusing to relocate it: {src}"
+                            )
                         dest = os.path.join(abs_save_dir, src.name)
                         shutil.move(str(src), dest)
+                        relocated_ggufs.append(dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
-                    shutil.rmtree(str(sub), ignore_errors = True)
-                    logger.info(f"Cleaned up subdirectory: {sub.name}")
+                    if not relocated_ggufs:
+                        raise RuntimeError(
+                            "GGUF conversion produced no files: no .gguf outputs for "
+                            f"{abs_save_dir}"
+                        )
 
-                # For non-PEFT models, save_pretrained_gguf leaves a *_gguf dir at
-                # the checkpoint path; relocate its GGUFs and clean it up.
-                if self.current_checkpoint:
-                    ckpt = Path(self.current_checkpoint)
-                    gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
-                    if gguf_dir.is_dir() and gguf_dir.resolve() != Path(abs_save_dir).resolve():
-                        for src in gguf_dir.glob("*.gguf"):
-                            dest = os.path.join(abs_save_dir, src.name)
-                            shutil.move(str(src), dest)
-                            logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
-                        # Also relocate Ollama Modelfile if present
-                        modelfile = gguf_dir / "Modelfile"
-                        if modelfile.is_file():
+                    if modelfiles:
+                        modelfile = sorted(modelfiles)[0]
+                        if modelfile.is_symlink():
+                            raise RuntimeError(
+                                "GGUF conversion produced a symlinked Modelfile, "
+                                f"refusing to relocate it: {modelfile}"
+                            )
+                        # Optional artifact: unsloth generates it best-effort, so a locked or
+                        # read-only destination must not fail an export whose GGUFs all landed.
+                        try:
                             shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
-                        shutil.rmtree(str(gguf_dir), ignore_errors = True)
-                        logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
+                        except OSError as exception:
+                            logger.warning(f"Could not relocate the Modelfile: {exception}")
+                finally:
+                    # Preserve any GGUF that could not be relocated. The imatrix is an input,
+                    # so counting it would retain the merged checkpoint on every such export.
+                    unrelocated = []
+                    if model_tmp_path.is_dir():
+                        unrelocated = sorted(
+                            str(p)
+                            for p in model_tmp_path.rglob("*.gguf")
+                            if not _is_imatrix(p, imatrix_path)
+                        )
+                    if unrelocated:
+                        logger.error(
+                            "Kept GGUF files that could not be relocated: %s",
+                            ", ".join(unrelocated),
+                        )
+                    else:
+                        shutil.rmtree(model_tmp_root, ignore_errors = True)
 
-                # Write export metadata so the Chat page can identify the base model
-                self._write_export_metadata(abs_save_dir)
-
-                final_ggufs = sorted(glob.glob(os.path.join(abs_save_dir, "*.gguf")))
+                # iterdir, not glob.glob: glob hides dot-leading names, so an empty
+                # model stem's ".Q4_K_M.gguf" got reported as "(none)". This list is the
+                # success gate, so a leftover companion would report a run that wrote nothing.
+                final_ggufs = sorted(
+                    str(p)
+                    for p in drop_appledouble_metadata(list(Path(abs_save_dir).iterdir()))
+                    if p.is_file() and p.name.lower().endswith(".gguf")
+                )
                 logger.info(
                     "GGUF export complete. Final files in %s:\n  %s",
                     abs_save_dir,
                     "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
                 )
+                if not final_ggufs:
+                    # Reporting success over an empty directory is what hid #7897.
+                    # The owned temp root is already gone: the finally above drops it.
+                    return (
+                        False,
+                        f"GGUF conversion reported success but wrote no .gguf file to "
+                        f"{abs_save_dir}. Check the export log for the path the "
+                        f"converter actually used, then upgrade with "
+                        f"`pip install --upgrade unsloth unsloth_zoo` and retry.",
+                        None,
+                    )
+
+                # Only write metadata once an artifact is actually present.
+                self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
 
             if push_to_hub:
@@ -1120,7 +1316,9 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     token = hf_token,
+                    private = private,
                     **imatrix_kw,
+                    **shard_kw,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
@@ -1131,8 +1329,6 @@ class ExportBackend:
             )
 
         except Exception as e:
-            if model_tmp_to_cleanup:
-                shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
             logger.error(f"Error exporting GGUF model: {e}")
             import traceback
 
@@ -1229,7 +1425,12 @@ class ExportBackend:
                         # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
                         token = hf_token or None,
                     )
-                    final_ggufs = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
+                    # iterdir, not glob.glob: glob hides dot-leading names.
+                    final_ggufs = sorted(
+                        str(p)
+                        for p in drop_appledouble_metadata(list(Path(save_directory).iterdir()))
+                        if p.is_file() and p.name.lower().endswith(".gguf")
+                    )
                     logger.info(
                         "LoRA GGUF export complete. Files in %s:\n  %s",
                         save_directory,

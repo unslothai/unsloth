@@ -35,8 +35,10 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
 
 
 def _touch(path: Path) -> Path:
+    """A headerless GGUF: selection falls to the filename, but non-empty since zero bytes now
+    means an interrupted download."""
     path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_bytes(b"")
+    path.write_bytes(b"\0" * 32)
     return path
 
 
@@ -273,6 +275,31 @@ def test_metadata_url_mismatch_dropped(tmp_path: Path):
     assert detect_mmproj_file(str(weight)) is None
 
 
+def test_metadata_url_derivative_repack_accepts_base_mmproj(tmp_path: Path):
+    """#6305: LM Studio repack/derivative GGUF + base-projector is valid."""
+    weight = _gguf_with_general(
+        tmp_path / "gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-Q4_0.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.type": "model",
+            "general.basename": "gemma-4-26B-A4B-it",
+            "general.base_model.0.repo_url": (
+                "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF"
+            ),
+        },
+    )
+    mmproj = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "gemma-4-26B-A4B-it",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+        },
+    )
+    assert detect_mmproj_file(str(weight)) == str(mmproj.resolve())
+
+
 def test_metadata_identifies_mmproj_without_filename_hint(tmp_path: Path):
     """Projector named ``vision-projector.gguf`` discovered via header."""
     weight = _gguf_with_general(
@@ -319,3 +346,22 @@ def test_metadata_score_outranks_filename_prefix(tmp_path: Path):
         },
     )
     assert detect_mmproj_file(str(weight)) == str(correct.resolve())
+
+
+def test_a_zero_byte_projector_is_not_offered_to_the_loader(tmp_path: Path):
+    """llama-server cannot open an interrupted download, and the inventory already reports such
+    a row text-only, so handing the path over would fail the whole load."""
+    weight = _touch(tmp_path / "Model-Q4_K_M.gguf")
+    (tmp_path / "mmproj-F16.gguf").write_bytes(b"")
+
+    assert detect_mmproj_file(str(weight)) is None
+    assert detect_mmproj_file(str(tmp_path)) is None
+
+
+def test_a_zero_byte_projector_does_not_shadow_a_whole_one(tmp_path: Path):
+    """Control: only the empty one is skipped, so a projector beside it is still found."""
+    weight = _touch(tmp_path / "Model-Q4_K_M.gguf")
+    (tmp_path / "mmproj-F16.gguf").write_bytes(b"")
+    whole = _touch(tmp_path / "mmproj-Q8_0.gguf")
+
+    assert detect_mmproj_file(str(weight)) == str(whole.resolve())

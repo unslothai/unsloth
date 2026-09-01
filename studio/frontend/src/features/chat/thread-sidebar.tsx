@@ -46,6 +46,7 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
+import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
   deleteChatItem,
   renameChatItem,
@@ -54,10 +55,13 @@ import {
 import type { SidebarItem } from "./hooks/use-chat-sidebar-items";
 import {
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationShareGPT,
+  exportConversationMarkdown,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
@@ -66,9 +70,11 @@ import {
 } from "./utils/chat-history-storage";
 
 const EXPORT_FORMATS = [
-  { label: "Raw JSONL", fn: exportConversationRawJsonl },
+  { label: "Training JSONL", fn: exportConversationRawJsonl },
+  { label: "Message JSONL", fn: exportConversationMessagesJsonl },
   { label: "CSV", fn: exportConversationCsv },
   { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+  { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
 ] as const;
 
 async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {
@@ -221,7 +227,7 @@ export function ThreadSidebar({
                     Export Recents
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
                         {label} — combined
                       </DropdownMenuItem>
@@ -240,7 +246,7 @@ export function ThreadSidebar({
                     Export Recents + Projects
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
                         {label} — combined
                       </DropdownMenuItem>

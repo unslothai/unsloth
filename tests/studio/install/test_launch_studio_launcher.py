@@ -58,5 +58,21 @@ def test_launcher_is_windowless_powershell():
     assert "launch-studio.ps1" in text
 
 
+def test_hidden_window_never_pairs_with_execution_policy_bypass():
+    # The pair AV detections key on; install.rs already refuses it for the app's own launch.
+    # launch-studio.ps1 is written locally, so it has no mark-of-the-web and RemoteSigned loads
+    # it. The hidden window costs nothing to keep, the Bypass costs a detection.
+    text = _text()
+    for line in text.splitlines():
+        if re.search(r"-WindowStyle\s+Hidden", line):
+            assert not re.search(r"-ExecutionPolicy\s+Bypass", line), (
+                "a hidden-window PowerShell launch must not also pass -ExecutionPolicy Bypass: "
+                f"{line.strip()}"
+            )
+    assert re.search(
+        r"-WindowStyle\s+Hidden\s+-ExecutionPolicy\s+RemoteSigned", text
+    ), "the shortcut must launch launch-studio.ps1 under RemoteSigned, not Bypass."
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

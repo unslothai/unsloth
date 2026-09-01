@@ -9,12 +9,14 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { type BrowseFoldersResponse, browseFolders } from "@/features/chat";
+import { useT } from "@/i18n";
 import { ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
@@ -29,6 +31,7 @@ export interface FolderBrowserProps {
   /** Optional initial directory. Defaults to the user's home on the server. */
   initialPath?: string;
   title?: string;
+  description?: string;
   confirmLabel?: string;
   showModelHints?: boolean;
 }
@@ -82,9 +85,11 @@ export function FolderBrowser({
   onSelect,
   initialPath,
   title = "Select folder to detect models",
+  description,
   confirmLabel = "Use this folder",
   showModelHints = true,
 }: FolderBrowserProps) {
+  const t = useT();
   const [data, setData] = useState<BrowseFoldersResponse | null>(null);
   const [path, setPath] = useState<string | undefined>(initialPath);
   const [showHidden, setShowHidden] = useState(false);
@@ -129,6 +134,7 @@ export function FolderBrowser({
 
   // Fetch only on closed -> open; later navigation is driven by `navigate()`,
   // so `path` is deliberately kept out of the dependency list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only reopening resets navigation to the initial path
   useEffect(() => {
     if (!open) return;
     // fallbackOnError: recover into HOME if initialPath is bad, rather than
@@ -157,6 +163,9 @@ export function FolderBrowser({
       >
         <DialogHeader className="px-6 pt-6 pb-2">
           <DialogTitle>{title}</DialogTitle>
+          <DialogDescription className="sr-only">
+            {description ?? title}
+          </DialogDescription>
         </DialogHeader>
 
         {/* Breadcrumb */}
@@ -211,7 +220,9 @@ export function FolderBrowser({
           {!error && !data && loading && (
             <div className="flex items-center gap-2 px-6 py-3">
               <Spinner className="size-3 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">Loading…</span>
+              <span className="text-xs text-muted-foreground">
+                {t("common.loading")}
+              </span>
             </div>
           )}
           {!error && data && (
@@ -242,7 +253,8 @@ export function FolderBrowser({
                     (empty directory)
                   </div>
                 )}
-              {showModelHints && data.model_files_here !== undefined &&
+              {showModelHints &&
+                data.model_files_here !== undefined &&
                 data.model_files_here > 0 && (
                   <div className="border-t border-border/30 px-6 py-1.5 text-ui-10 text-foreground/70">
                     {data.model_files_here} model file

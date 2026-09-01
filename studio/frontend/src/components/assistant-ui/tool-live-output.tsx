@@ -4,9 +4,9 @@
 "use client";
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { toolOutputKey, useToolPaneScope } from "@/features/chat";
+import { useToolOutputFor, useToolPaneScope } from "@/features/chat";
+import { stripAnsi, tailToolOutput } from "@/lib/strip-ansi";
 import { useEffect, useMemo, useRef } from "react";
-import { tailText } from "./tool-result-output";
 
 /**
  * Live-scrolling stdout/stderr pane for a running server-side tool, backed by
@@ -16,16 +16,26 @@ import { tailText } from "./tool-result-output";
  */
 export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
   const paneScope = useToolPaneScope();
-  const output = useChatRuntimeStore(
-    (s) => s.toolLiveOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
+  const output = useToolOutputFor(
+    useChatRuntimeStore((s) => s.toolLiveOutput),
+    paneScope,
+    toolCallId,
   );
+  return output ? <ToolLiveOutputPane output={output} /> : null;
+}
+
+/** Presentational production pane, exported so browser smoke tests this exact path. */
+export function ToolLiveOutputPane({ output }: { output: string }) {
   const scrollRef = useRef<HTMLPreElement>(null);
   // Pinned to the bottom until the user scrolls up (handler below), so
   // streaming chunks no longer yank them down.
   const pinnedToBottom = useRef(true);
 
-  // The stream can reach hundreds of KB; render only the tail while live.
-  const visible = useMemo(() => tailText(output).visible, [output]);
+  // The stream can reach hundreds of KB; render only the clean tail while live.
+  const visible = useMemo(
+    () => tailToolOutput(stripAnsi(output)).visible,
+    [output],
+  );
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -43,10 +53,6 @@ export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
       el.scrollTop = el.scrollHeight;
     }
   }, [visible]);
-
-  if (!output) {
-    return null;
-  }
 
   return (
     <div className="aui-tool-live-output mt-2 border-t border-dashed pt-2">

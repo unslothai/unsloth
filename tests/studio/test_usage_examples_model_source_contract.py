@@ -12,17 +12,20 @@ SETTINGS = REPO / "studio/frontend/src/features/settings"
 USAGE_EXAMPLES_TSX = SETTINGS / "components/usage-examples.tsx"
 OPENAI_MODELS_TS = SETTINGS / "api/openai-models.ts"
 API_KEYS_TAB_TSX = SETTINGS / "tabs/api-keys-tab.tsx"
+KEYLESS_SECTION_TSX = SETTINGS / "components/keyless-api-access-section.tsx"
+KEYLESS_ELIGIBILITY_TS = SETTINGS / "components/keyless-example-eligibility.ts"
 
 
 def test_examples_name_a_model_the_server_can_serve():
     # A hardcoded repo id made copied curls 404; read the servable ids from /v1/models.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert 'from "../api/openai-models"' in src
-    assert "function useExampleModelName(): string" in src
+    assert "function useExampleModelName(keylessOnly: boolean): string" in src
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "listOpenAIModels()" in hook
     # Precedence: live checkpoint, then a loaded entry, then any entry if switching is on.
-    assert "catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined)" in hook
+    assert "catalog?.find((m) => m.loaded) ??" in hook
+    assert "(!keylessOnly && autoSwitch ? catalog?.[0] : undefined)" in hook
     # The snippet pins the quant so the request names the file on disk.
     assert "`${pick.id}:${pick.quant}`" in hook
 
@@ -37,10 +40,10 @@ def test_examples_never_print_a_hardcoded_model_id():
     assert "MODEL_FALLBACK" not in src
     # No repo-shaped literal anywhere: a snippet may only name what /v1 returns.
     assert re.search(r'"unsloth/[^"]+"', src) is None
-    assert "function useExampleModelName(): string | null" in src
+    assert "function useExampleModelName(keylessOnly: boolean): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
     # Nothing servable means nothing is built, so there is nothing to copy.
-    assert "(model ? buildSnippets(base, key, model, os) : null)" in src
+    assert "(model ? buildSnippets(base, key, toolsKey, model, os) : null)" in src
     assert "if (!snippets) return;" in src
     assert "{snippets ? (" in src
     assert 't("settings.apiKeys.usageNoModel")' in src
@@ -72,23 +75,17 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
-    # Resident, or downloaded with something able to reload it. Never the setting alone.
-    assert "(!!entry && (entry.loaded || autoSwitch || idleReload))" in hook
+    # resident, or downloaded with switching able to load this exact catalog entry.
+    assert "entry.loaded || (!keylessOnly && autoSwitch)" in hook
     assert "autoSwitch ||\n" not in hook
 
 
-def test_standalone_idle_unload_still_names_the_stored_checkpoint():
-    # UNSLOTH_MODEL_IDLE_TTL without auto-switch reloads exactly what it freed, so the
-    # stored checkpoint stays runnable and the panel must keep showing it. The stash
-    # restores only that model, so it can never pick catalog[0].
+def test_idle_unload_does_not_guess_the_stashed_checkpoint():
+    # the idle stash is process-wide, but the browser checkpoint is not.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
-    assert "const [idleReload, setIdleReload] = useState(false);" in hook
-    assert "setIdleReload(settings[1])" in hook
-    assert "s.idleUnloadActive" in hook
-    # fromCatalog stays gated on auto-switch alone.
-    assert "?? (autoSwitch ? catalog?.[0] : undefined)" in hook
-    assert "idleReload ? catalog" not in hook
+    assert "idleReload" not in hook
+    assert "idleUnloadActive" not in hook
 
 
 def test_a_failed_refresh_does_not_erase_what_the_server_holds():
@@ -132,33 +129,42 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
     assert "<ModelAutoSwitchSection />" in tab
 
 
-API_MONITOR_TSX = SETTINGS / "components/api-monitor-console.tsx"
+# The monitor moved onto its own page; Settings keeps configuration and links across.
+API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
+# Their own module: the overlay mounts from __root.tsx, so importing from the page
+# pulled it into the eager bundle.
+API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
+MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
-def test_api_monitor_pages_five_at_a_time():
-    # The backend retains 50 terminal entries; the console used to dump them all at once.
+def test_api_monitor_history_does_not_reorder_under_the_reader():
+    # The backend moves an entry to the front as it finishes, so the page pauses the poll
+    # to hold the whole list still while a payload is read.
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "const PAGE_SIZE = 5;" in src
-    assert "ordered.slice(" in src
-    # Paging back must freeze the id order, or live traffic reorders history under it.
-    assert "frozenIds" in src
-    assert "setFrozenIds((prev) => prev ?? entries.map((entry) => entry.id))" in src
+    assert "paused" in src
+    assert "setPaused" in src
+    # Filters and search are what keep 50 rows usable without paging.
+    assert "filterEntries(" in src
+    assert "STATUS_FILTERS" in src
 
 
 def test_api_monitor_renders_lifecycle_rows():
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "function LifecycleEntry(" in src
-    assert 'entry.kind === "lifecycle"' in src
+    labels = API_MONITOR_LIFECYCLE_TS.read_text(encoding = "utf-8")
+    assert "export function isLifecycleEntry(" in labels
+    assert 'entry.kind === "lifecycle"' in labels
     for label in ("Loading model", "Model loaded", "Model unloaded"):
-        assert label in src
-    # Lifecycle rows have no prompt/reply to fetch.
-    assert "isLifecycle(entry) || !expandedIds.has(entry.id)" in src
+        assert label in labels
+    # A lifecycle row has no prompt or reply, so it is not selectable for detail.
+    assert "if (isLifecycleEntry(entry)) {" in src
+    assert 'from "./lifecycle"' in src
 
 
-def test_auto_switch_section_sits_above_the_monitor():
+def test_auto_switch_section_sits_above_the_usage_examples():
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
-    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<ApiMonitorConsole />")
-    assert tab.index("<ApiMonitorConsole />") < tab.index("<UsageExamples")
+    # Configuration still comes ahead of the examples that depend on it.
+    assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
+    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<UsageExamples")
 
 
 AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
@@ -166,7 +172,7 @@ EN_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
 
 def test_api_monitor_renders_download_rows():
-    src = API_MONITOR_TSX.read_text(encoding = "utf-8")
+    src = API_MONITOR_LIFECYCLE_TS.read_text(encoding = "utf-8")
     assert 'entry.event === "download"' in src
     for label in ("Downloading model", "Model downloaded", "Model download failed"):
         assert label in src
@@ -181,6 +187,12 @@ def test_monitor_can_unload_the_loaded_model():
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
     assert "resolveInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src
+
+
+def test_settings_still_reaches_the_monitor():
+    # The console is gone, so Settings must still have a way through to it.
+    link = MONITOR_LINK_TSX.read_text(encoding = "utf-8")
+    assert 'to: "/api-monitor"' in link
 
 
 def test_auto_download_toggle_is_gated_on_auto_switch():
@@ -198,3 +210,29 @@ def test_auto_download_copy_warns_about_api_key_holders():
     assert start != -1
     description = en[start : en.find("\n", en.find('",', start))]
     assert "API key" in description
+
+
+def test_keyless_examples_match_transport_tool_and_full_scope_policy():
+    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
+    builder = src[src.find("function buildSnippets") : src.find("const KEY_PLACEHOLDER")]
+    variants = ("curlTools", "pythonTools", "javascriptTools", "curlAdvanced")
+    assert all(
+        "toolsKey"
+        in next(row for row in builder.splitlines() if row.strip().startswith(f"{variant}:"))
+        for variant in variants
+    )
+    assert "keylessBase && keylessTools" in src
+    assert "apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER)" in src
+    assert 'const KEYLESS_KEY_PLACEHOLDER = "not-needed"' in src
+    assert "keylessBaseEligible(base, keylessScope, keylessExposure)" in src
+    eligibility = KEYLESS_ELIGIBILITY_TS.read_text(encoding = "utf-8")
+    assert 'exposure === "colab" || exposure === "public_url"' in eligibility
+    assert "if (isLoopbackHost(host)) return true;" in eligibility
+    assert 'return scope === "inference";' in eligibility
+    assert "!(useTunnel && cloudflareUrl)" in src
+    assert "useExampleModelName(keylessBase && !apiKey)" in src
+    section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
+    assert "[cloudflareUrl, onSettingsChange]" in section
+    assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]
+    assert "including on localhost" in section
+    assert "read the files and settings in Unsloth" not in section

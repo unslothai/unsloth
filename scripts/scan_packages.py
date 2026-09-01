@@ -57,9 +57,11 @@ Exit codes:
 import argparse
 import atexit
 import bisect
+import contextlib
 import hashlib
 import io
 import json
+import multiprocessing
 import os
 import re
 import shutil
@@ -107,11 +109,15 @@ RE_BASE64 = re.compile(
 RE_EXEC_EVAL = re.compile(r"\b(exec|eval)\s*\(")
 
 # Network APIs (excludes urllib.parse which is pure string manipulation)
+# ``httpx2`` is the pydantic-maintained successor and a separate import name, so the older
+# ``httpx``-only alternative did not see it. openai 3.0.0 requires httpx2 and routes every
+# call through it, which made the SDK's own HTTP invisible to each combined check that needs
+# a network half (secrets + network, IMDS + network, archive + network).
 RE_NETWORK = re.compile(
     r"\burllib\.request\b"
     r"|\burlopen\s*\("
     r"|\brequests\s*\.\s*(get|post|put|patch|delete|head|Session)\b"
-    r"|\bhttpx\s*\.\s*(get|post|put|patch|delete|Client|AsyncClient)\b"
+    r"|\b(?:httpx|httpx2)\s*\.\s*(get|post|put|patch|delete|Client|AsyncClient)\b"
     r"|\bsocket\s*\.\s*(socket|create_connection)\b"
     r"|\bhttp\.client\b"
     r"|\bhttp\.server\b",
@@ -275,15 +281,31 @@ RE_FS_ENUM = re.compile(
     r"|\bglob\s*\.\s*glob\s*\([^)]*(?:\*\*|\*\.pem|\*\.key|\*\.cer|\*\.pfx|\*\.p12)"
     r"|\bos\.listdir\s*\(\s*['\"](?:/home|/root|/Users|/etc)"
     r"|\bPath\s*\(\s*['\"]~['\"]\s*\)\s*\.\s*glob\b"
-    r"|\bhistory\b.*\bread\b"  # reading shell history
-    r"|\b\.bash_history\b"
-    r"|\b\.zsh_history\b"
+    # Shell / REPL history FILES. Replaces `\bhistory\b.*\bread\b`, whose re.DOTALL `.*` spanned
+    # the whole file and produced 9 of the 11 baselined CRITICALs here (httpx, urllib3, IPython,
+    # torch) -- each allowlisted, which suppressed this check for the whole file.
+    r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli|irb|sqlite)_history\b"
+    # Undotted history files, with a boundary that finds them however the path was built. fish
+    # writes fish_history and PowerShell writes PSReadLine/ConsoleHost_history.txt, neither with a
+    # leading dot. A quote counts as a boundary alongside a separator, so a basename assembled by
+    # Path.home() / "fish" / "fish_history" or os.path.join(h, "fish", "fish_history") still
+    # matches: there the character before the name is the quote, not a slash.
+    r"|(?:^|[/\\'\"])(?i:fish_history|ConsoleHost_history\.txt)\b"
+    r"|['\"~/]\.history\b"
+    r"|\bHISTFILE\b"
     r"|/etc/shadow"
     r"|/etc/passwd",
     re.DOTALL,
 )
 
-# Reverse shell / bind shell patterns
+# Reverse shell / bind shell patterns. LEFT EXACTLY AS IT WAS, dup2 included,
+# because this pattern is what the evidence is extracted with. It is re.DOTALL,
+# so a match spans from the first signal to the last and the rendered evidence
+# for a long span is a digest of the whole thing; editing the alternation moves
+# the span, moves the digest, and silently reopens every reviewed baseline entry
+# taken against it. Removing the dup2 branch here un-suppressed 11 entries on
+# the studio and hf-stack shards, multiprocess/tests/__init__.py among them.
+# Whether dup2 alone is enough is decided below instead, where it costs nothing.
 RE_REVERSE_SHELL = re.compile(
     r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
     r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
@@ -293,6 +315,33 @@ RE_REVERSE_SHELL = re.compile(
     r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",  # data: URI abuse
     re.DOTALL,
 )
+
+# The same thing without the dup2 branch, used only to answer "would this file
+# still be a reverse shell if dup2 did not count?".
+#
+# dup2 is the ordinary way to point a file descriptor at a file, and it was the
+# only single-token alternative above, in a pattern whose every other branch
+# names two co-occurring signals. So it fired on capture helpers and redirect
+# plumbing: ten of the nineteen reverse-shell entries in the committed baseline
+# are dup2 with no socket anywhere in the file (click/testing.py,
+# numba/tests/support.py, rich/console.py, torch elastic redirects.py,
+# sentencepiece) and not one is a true positive. triton 3.8.0 shipped an
+# eleventh in _internal_testing.py, which reddened main.
+#
+# A reverse shell dup2s onto a SOCKET, so the socket is the half carrying the
+# meaning. A file with one is judged exactly as before, evidence included; a
+# file without one has to earn the finding on a branch other than dup2. Nothing
+# is lost: a payload has to name socket to obtain the descriptor at all, and the
+# socket + connect + subprocess branch catches it independently.
+RE_REVERSE_SHELL_WITHOUT_DUP = re.compile(
+    r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
+    r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
+    r"|\b/bin/(?:sh|bash)\b.*\bsocket\b"
+    r"|\bpty\s*\.\s*spawn\b"
+    r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",  # data: URI abuse
+    re.DOTALL,
+)
+RE_SOCKET_USE = re.compile(r"\bsocket\b")
 
 # Process injection / code loading from remote
 RE_REMOTE_CODE = re.compile(
@@ -422,6 +471,8 @@ class Finding:
     filename: str
     check: str
     evidence: str = ""
+    # Whole-file digest; a baseline entry may pin it (see _load_baseline).
+    file_sha256: str = ""
 
 
 # Checkers
@@ -713,7 +764,11 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_anti = bool(RE_ANTI_ANALYSIS.search(content))
     has_dns_exfil = bool(RE_DNS_EXFIL.search(content))
     has_fs_enum = bool(RE_FS_ENUM.search(content))
-    has_rev_shell = bool(RE_REVERSE_SHELL.search(content))
+    # dup2 counts only alongside a socket; see RE_FD_DUP.
+    # dup2 counts only alongside a socket; see RE_REVERSE_SHELL_WITHOUT_DUP.
+    has_rev_shell = bool(RE_REVERSE_SHELL.search(content)) and (
+        bool(RE_SOCKET_USE.search(content)) or bool(RE_REVERSE_SHELL_WITHOUT_DUP.search(content))
+    )
     has_remote_code = bool(RE_REMOTE_CODE.search(content))
     has_crypto_theft = bool(RE_CRYPTO_THEFT.search(content))
     has_openssl_cli = bool(RE_OPENSSL_CLI.search(content))
@@ -811,6 +866,8 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 package,
                 filename,
                 "Reverse shell / bind shell pattern",
+                # Still RE_REVERSE_SHELL, so every finding that survives the gate
+                # renders byte-identical evidence to before this change.
                 _extract_evidence(content, RE_REVERSE_SHELL),
             )
         )
@@ -1151,6 +1208,9 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
             )
         )
 
+    digest = hashlib.sha256(original.encode("utf-8", "replace")).hexdigest()
+    for f in findings:
+        f.file_sha256 = digest
     return findings
 
 
@@ -1887,6 +1947,25 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
             )
         )
     return findings
+
+
+def _scan_one(task: tuple[str, str]) -> tuple[str, list[Finding]]:
+    """Pool worker: ``scan_archive`` over one (archive_path, package) pair.
+
+    Module-level and pickle-clean on purpose, so the pool can use the "spawn"
+    start method. ``Finding`` is a plain dataclass, so results travel as-is.
+
+    The archive-limit ``[WARN]`` lines go to stderr from deep inside
+    ``iter_archive_files``. Left alone they land in the parent's stream whenever
+    the worker happens to reach them, so two runs of the same input produce logs
+    that differ only in where those lines sit. They are returned instead and the
+    caller prints them in task order, which keeps the whole report reproducible.
+    """
+    archive_path, package = task
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        findings = scan_archive(archive_path, package)
+    return buf.getvalue(), findings
 
 
 # Download packages
@@ -2971,24 +3050,30 @@ def _finding_key(f: Finding) -> tuple[str, str, str, str]:
     )
 
 
-def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
-    """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
+def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | None]":
+    """Load an allowlist JSON into {match key: pinned file digests}.
+
+    None means unpinned: the key alone suppresses, as before. A set of digests
+    covers only those exact file contents, so any other edit to the file reopens
+    the finding. For files whose danger sits outside the matched lines, e.g. a
+    credential send whose evidence records the urlopen call but not its destination.
+    """
     try:
         with open(path, "r", encoding = "utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
-        return set()
+        return {}
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
-        return set()
+        return {}
     if not isinstance(data, dict):
         print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
-        return set()
+        return {}
     entries = data.get("entries", [])
     if not isinstance(entries, list):
         print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
-        return set()
-    keys: set[tuple[str, str, str, str]] = set()
+        return {}
+    keys: dict[tuple[str, str, str, str], "set[str] | None"] = {}
     legacy = 0
     for e in entries:
         if not isinstance(e, dict):
@@ -2998,16 +3083,23 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
             if not e.get("evidence_hash"):
                 legacy += 1
-            keys.add(
-                (
-                    _norm_pkg(e["package"]),
-                    _relpath_in_package(e["file"]),
-                    e["check"],
-                    evidence_hash,
-                )
+            key = (
+                _norm_pkg(e["package"]),
+                _relpath_in_package(e["file"]),
+                e["check"],
+                evidence_hash,
             )
         except (KeyError, TypeError):
             continue
+        # None = unpinned (key alone suppresses). A set = only those file digests.
+        # An unpinned entry wins, since it already suppresses the key on its own.
+        pin = e.get("file_sha256")
+        if key not in keys:
+            keys[key] = {pin} if pin else None
+        elif not pin:
+            keys[key] = None
+        elif keys[key] is not None:
+            keys[key].add(pin)
     if legacy:
         print(
             f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash and may "
@@ -3018,8 +3110,18 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     return keys
 
 
-def _write_baseline(path: str, findings: list[Finding]) -> None:
-    """Persist CRITICAL/HIGH findings as an allowlist for human triage."""
+def _write_baseline(
+    path: str,
+    findings: list[Finding],
+    source: "str | None" = None,
+) -> None:
+    """Persist CRITICAL/HIGH findings as an allowlist for human triage.
+
+    Pins are carried over from `source`, the baseline in effect for this run, so
+    regenerating cannot silently widen a reviewed entry. Reading them from `path`
+    instead would drop every pin whenever the output goes somewhere new.
+    """
+    pinned = {k for k, v in _load_baseline(source or path).items() if v is not None}
     entries = []
     seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
@@ -3029,24 +3131,28 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
         if key in seen:
             continue
         seen.add(key)
-        entries.append(
-            {
-                "package": f.package,
-                "file": _relpath_in_package(f.filename),
-                "check": f.check,
-                "severity": f.severity,
-                "evidence": f.evidence,
-                "evidence_hash": _evidence_hash(f.evidence),
-            }
-        )
+        entry = {
+            "package": f.package,
+            "file": _relpath_in_package(f.filename),
+            "check": f.check,
+            "severity": f.severity,
+            "evidence": f.evidence,
+            "evidence_hash": _evidence_hash(f.evidence),
+        }
+        if key in pinned and f.file_sha256:
+            entry["file_sha256"] = f.file_sha256
+        entries.append(entry)
     doc = {
         "_comment": (
             "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding "
             "manually judged benign. Matched on (package, package-relative file, "
             "check, evidence_hash); evidence_hash is over the matched code with "
             "L<NN>: markers stripped, so version bumps and line shifts do not "
-            "reopen an entry but changed code does. severity and evidence are for "
-            "review only. Regenerate with --write-baseline AFTER reviewing every line."
+            "reopen an entry but changed code does. An optional file_sha256 pins an "
+            "entry to that exact file, for danger sitting outside the matched lines "
+            "(a credential send records the urlopen call, not its destination). "
+            "severity and evidence are for review only. Regenerate with "
+            "--write-baseline AFTER reviewing every line."
         ),
         "version": 1,
         "entries": entries,
@@ -3058,14 +3164,20 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
 
 
 def _partition_baseline(
-    findings: list[Finding], baseline: set[tuple[str, str, str, str]]
+    findings: list[Finding], baseline: "dict[tuple[str, str, str, str], set[str] | None]"
 ) -> tuple[list[Finding], list[Finding]]:
     """Split findings into (active, suppressed) by allowlist membership."""
     if not baseline:
         return list(findings), []
     active, suppressed = [], []
     for f in findings:
-        (suppressed if _finding_key(f) in baseline else active).append(f)
+        key = _finding_key(f)
+        hit = key in baseline
+        if hit:
+            pins = baseline[key]
+            # A pinned entry only covers the file it was reviewed against.
+            hit = pins is None or f.file_sha256 in pins
+        (suppressed if hit else active).append(f)
     return active, suppressed
 
 
@@ -3102,6 +3214,12 @@ def main() -> int:
         "--with-deps",
         action = "store_true",
         help = "Also download and scan transitive dependencies (full dependency tree)",
+    )
+    parser.add_argument(
+        "--jobs",
+        type = int,
+        default = 0,
+        help = "Archive-scanning worker processes (default: min(4, cpu count); 1 = serial)",
     )
     parser.add_argument(
         "--fix",
@@ -3199,6 +3317,11 @@ def main() -> int:
     tmpdir = tempfile.mkdtemp(prefix = "pth_scan_")
     atexit.register(lambda d = tmpdir: shutil.rmtree(d, ignore_errors = True))
     download_errors: list[str] = []
+    # Scan-side failures, kept beside the download ones so both reach the SCAN
+    # INCOMPLETE block below. A stall has to exit 2 like any other partial scan:
+    # exit 1 is reserved for "non-baselined CRITICAL or HIGH findings detected",
+    # so exiting 1 on a dead worker reports an infrastructure failure as a threat.
+    scan_errors: list[str] = []
     try:
         downloaded, download_errors = download_packages(
             specs,
@@ -3207,15 +3330,57 @@ def main() -> int:
         )
         print(f"  Downloaded {len(downloaded)} archive(s).")
 
-        for spec, archive_path in downloaded:
-            pkg_name = _extract_pkg_name(spec)
-            findings = scan_archive(archive_path, pkg_name)
-            all_findings.extend(findings)
-            # Delete archive immediately after scanning
-            try:
-                os.remove(archive_path)
-            except OSError:
-                pass
+        # Scanning, not downloading, is the cost here: on the hf-stack shard the
+        # `pip download` above takes 9.7s and the pass below took 306s of a 316s
+        # total. It is pure CPU (regex over decompressed archive members) and
+        # every archive is independent, so it fans out across cores.
+        #
+        # `imap` with chunksize=1 yields in submission order, so the findings
+        # list is assembled in exactly the order the serial loop produced it and
+        # the report is unchanged. chunksize=1 is also what makes `next(timeout=)`
+        # available at all: above 1, CPython's Pool.imap returns a bare generator
+        # with no timeout support (Lib/multiprocessing/pool.py).
+        tasks = [(archive_path, _extract_pkg_name(spec)) for spec, archive_path in downloaded]
+        jobs = args.jobs if args.jobs else max(1, min(4, os.cpu_count() or 1))
+        if jobs > 1 and len(tasks) > 1:
+            print(f"  Scanning {len(tasks)} archive(s) across {jobs} workers...")
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(processes = jobs) as pool:
+                results = pool.imap(_scan_one, tasks, chunksize = 1)
+                for i, (archive_path, _pkg) in enumerate(tasks):
+                    try:
+                        captured, findings = results.next(timeout = 900)
+                    except multiprocessing.TimeoutError:
+                        # A worker died (OOM or segfault on a hostile archive).
+                        # Without this the iterator blocks forever and the job
+                        # only ends at the workflow timeout, with no reason given.
+                        #
+                        # Recorded rather than raised: `raise SystemExit(<str>)`
+                        # prints the string and exits 1, and 1 already means
+                        # "CRITICAL or HIGH findings detected". Routing it here
+                        # gets the SCAN INCOMPLETE report and exit 2, which is
+                        # what a partial scan is supposed to return.
+                        scan_errors.append(
+                            f"scan stalled after {i}/{len(tasks)} archive(s) with no "
+                            f"result for 900s; a pool worker most likely died"
+                        )
+                        break
+                    if captured:
+                        sys.stderr.write(captured)
+                    all_findings.extend(findings)
+                    # Delete archive immediately after scanning
+                    try:
+                        os.remove(archive_path)
+                    except OSError:
+                        pass
+        else:
+            for archive_path, pkg_name in tasks:
+                all_findings.extend(scan_archive(archive_path, pkg_name))
+                # Delete archive immediately after scanning
+                try:
+                    os.remove(archive_path)
+                except OSError:
+                    pass
     finally:
         shutil.rmtree(tmpdir, ignore_errors = True)
 
@@ -3229,7 +3394,7 @@ def main() -> int:
         baseline_path = _DEFAULT_BASELINE_PATH
     else:
         baseline_path = None
-    baseline = _load_baseline(baseline_path) if baseline_path else set()
+    baseline = _load_baseline(baseline_path) if baseline_path else {}
 
     active, suppressed = _partition_baseline(all_findings, baseline)
 
@@ -3256,15 +3421,15 @@ def main() -> int:
     # Surface pip-download failures BEFORE the exit code so a partial download
     # can't masquerade as "0 findings, all clean" (silent-failure hardening 4).
     # Also keeps us from writing a baseline from an incomplete scan.
-    if download_errors:
+    incomplete_errors = download_errors + scan_errors
+    if incomplete_errors:
         print(
             f"\n  {'=' * 72}\n"
-            f"  SCAN INCOMPLETE: {len(download_errors)} pip download "
-            f"failure(s):\n"
+            f"  SCAN INCOMPLETE: {len(incomplete_errors)} failure(s):\n"
             f"  {'=' * 72}",
             file = sys.stderr,
         )
-        for err in download_errors:
+        for err in incomplete_errors:
             print(f"  [ERROR] {err}", file = sys.stderr)
         print(
             "  Refusing to report 'all clean' on a partial scan; exiting 2.",
@@ -3276,7 +3441,7 @@ def main() -> int:
     # allowlist (ignoring any loaded baseline), then exit 0. Only reached once
     # the scan is known complete.
     if args.write_baseline:
-        _write_baseline(args.write_baseline, all_findings)
+        _write_baseline(args.write_baseline, all_findings, source = baseline_path)
         return 0
 
     # Exit code: 1 only if a NON-baselined CRITICAL or HIGH remains. This is the

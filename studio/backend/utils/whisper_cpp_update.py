@@ -98,13 +98,25 @@ _resolve_memo: dict = {}
 
 
 def _resolve_prebuilt_for_host(
-    *, force_refresh: bool = False, backend: Optional[str] = None
+    *,
+    force_refresh: bool = False,
+    backend: Optional[str] = None,
+    published_repo: Optional[str] = None,
+    published_release_tag: Optional[str] = None,
 ) -> Optional[dict]:
     """Run install_whisper_prebuilt.py --resolve-prebuilt (no download); return
     {prebuilt_available, repo, release_tag, upstream_tag, backend, asset, os,
     arch, ...} or None. Fail-open: any error -> None so a source build never
-    blocks the app."""
+    blocks the app.
+
+    A caller installing a pinned release must pass the same pin here, or it probes
+    a different artifact than it installs: the unpinned latest pointer sorts by
+    commit date and can lag the published_at pick (#6219)."""
     extra_args = ("--backend", backend) if backend else ()
+    if published_repo:
+        extra_args += ("--published-repo", published_repo)
+    if published_release_tag:
+        extra_args += ("--published-release-tag", published_release_tag)
     return _flow.resolve_prebuilt_for_host(
         force_refresh = force_refresh,
         memo = _resolve_memo,
@@ -121,7 +133,14 @@ def _installed_whisper_version(binary: Optional[str]) -> Optional[str]:
     if not binary:
         return None
     try:
-        proc = subprocess.run([binary, "--version"], capture_output = True, text = True, timeout = 20)
+        proc = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 20,
+        )
     except Exception:  # pragma: no cover - defensive
         return None
     m = re.search(r"v?(\d+\.\d+\.\d+)", (proc.stderr or "") + (proc.stdout or ""))
@@ -394,6 +413,118 @@ def _install_latest_while_blocked(
     }
 
 
+def _installed_llama_bundle() -> tuple[Optional[str], Optional[str]]:
+    """Backend and asset name of the managed llama.cpp runtime a slim install rides."""
+    try:
+        from utils.llama_cpp_freshness import read_install_marker as read_llama_marker
+        from utils.llama_cpp_update import _find_binary as find_llama_binary
+        from utils.prebuilt.llama_backend import marker_backend
+
+        marker = read_llama_marker(find_llama_binary()) or {}
+        return marker_backend(marker), marker.get("asset")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("whisper repair: llama pairing lookup failed", error = str(exc))
+        return None, None
+
+
+def slim_pairing_is_stale() -> bool:
+    """Whether a slim install still hardlinks the runtime of a different backend.
+
+    The same comparison ``run_repair_phase`` makes before it does any work, exposed
+    so the llama planner can tell a re-pair that is still owed from one already done.
+    A repair that failed retryably leaves exactly this state: llama has moved, whisper
+    has not."""
+    backend, _ = _installed_llama_bundle()
+    if backend is None:
+        return False
+    marker = read_install_marker(_find_binary())
+    if not marker or marker.get("install_kind") != "slim":
+        return False
+    return marker.get("backend") != backend
+
+
+def repair_pairing_plan() -> dict:
+    """Whisper's half of a llama.cpp backend switch.
+
+    A slim install has no ggml of its own -- it hardlinks llama's -- so replacing
+    the llama bundle leaves dictation on the very backend the switch was meant to
+    leave behind. Only whether such an install exists is decided here: which
+    backend to install is whatever the llama phase actually lands on, which the
+    runner reads from the marker once that phase has finished."""
+    plan: dict = {"update_available": False, "skip_reason": None, "phase": None}
+    binary = _find_binary()
+    if _active_install_is_local_link(binary):
+        plan["skip_reason"] = "local_link"
+        return plan
+    marker = read_install_marker(binary)
+    if marker is None:
+        plan["skip_reason"] = "source_build" if binary else "not_installed"
+        return plan
+    if marker.get("install_kind") != "slim":
+        # Carries its own ggml, so llama's backend is not its backend.
+        plan["skip_reason"] = "self_contained"
+        return plan
+    script = _installer_script()
+    if script is None:
+        plan["skip_reason"] = "installer_missing"
+        return plan
+    install_dir = _install_dir_for(binary)
+    if install_dir is None:
+        plan["skip_reason"] = "no_install_dir"
+        return plan
+    plan["update_available"] = True
+    plan["phase"] = {
+        "install_dir": install_dir,
+        "repo": marker.get("published_repo") or DEFAULT_PUBLISHED_REPO,
+        "script": script,
+        # Unpinned: the installer resolves the whisper release that pairs with
+        # whichever llama.cpp release is installed when this phase runs.
+        "pin_release_tag": None,
+        "repair": True,
+    }
+    return plan
+
+
+def run_repair_phase(phase: dict, set_progress) -> dict:
+    """Reinstall the slim whisper bundle for the backend llama.cpp now runs."""
+    backend, llama_asset = _installed_llama_bundle()
+    if backend is None:
+        logger.info("whisper repair: skipped, llama backend unknown")
+        return {}
+    if (read_install_marker(_find_binary()) or {}).get("backend") == backend:
+        # Detection can land back on the backend whisper is already built against,
+        # and the switch preserves the release, so the hardlinks still point at the
+        # same build. Nothing to repair, and nothing to claim was repaired.
+        return {}
+    try:
+        result = _install_latest(
+            phase["install_dir"],
+            phase["repo"],
+            # The llama asset names the AMD arch the new bundle was built for.
+            llama_asset,
+            backend,
+            phase["script"],
+            set_progress,
+            pin_release_tag = phase.get("pin_release_tag"),
+        )
+    except _flow.InstallerExit as exc:
+        if exc.returncode != 2:
+            raise
+        # 2 is "no compatible release": this llama.cpp release publishes no
+        # whisper bundle for the new backend. The old hardlinked runtime still
+        # works, so dictation degrades rather than failing the switch.
+        logger.info("whisper repair: skipped", backend = backend, detail = str(exc)[-500:])
+        return {
+            "message": (
+                "Dictation still uses the previous backend; no whisper.cpp build is "
+                f"published for this llama.cpp release on {backend} yet."
+            ),
+        }
+    # Describe the backend change instead of an incidental version change.
+    result["message"] = f"Re-paired whisper.cpp with the {backend} backend."
+    return result
+
+
 def chained_phase_plan(
     *, force_refresh: bool = False, paired_llama_will_update: bool = False
 ) -> dict:
@@ -473,6 +604,38 @@ def chained_phase_plan(
         "pin_release_tag": None if sys.platform == "darwin" else status.get("latest_tag"),
     }
     return plan
+
+
+def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
+    """Make the pairing check chained_phase_plan deferred, now that llama is installed.
+
+    The plan assumes the new llama supplies a workable pairing. That was false for ten
+    days (llama reached b10687, whisper stayed on b10472-mix-4b653db), so the phase ran
+    an install that could only exit 2 and failed a job llama had already won.
+
+    An attempt that goes ahead still surfaces exit 2, which is what keeps an
+    incompatible release actionable rather than a false success.
+    """
+    try:
+        backend = phase.get("backend")
+        repo = phase.get("repo")
+        pin = phase.get("pin_release_tag")
+        resolved = _resolve_prebuilt_for_host(
+            force_refresh = True,
+            backend = backend if isinstance(backend, str) else None,
+            published_repo = repo if isinstance(repo, str) else None,
+            published_release_tag = pin if isinstance(pin, str) else None,
+        )
+    except Exception as exc:
+        logger.debug("whisper pairing pre-flight failed", error = str(exc))
+        resolved = None
+    # A POSITIVE incompatibility only: an unreachable API reports prebuilt_available
+    # false too, and a pre-flight that cannot answer must fail towards the install.
+    # Deliberately no test on the INSTALLED kind -- a fat marker carries no
+    # install_kind, so gating on it skips the host most likely to meet a pairing gap.
+    if (resolved or {}).get("unavailable_reason") == "incompatible":
+        return {"skipped": True, "skip_reason": "paired_llama_unavailable"}
+    return run_chained_phase(phase, set_progress)
 
 
 def run_chained_phase(phase: dict, set_progress) -> dict:

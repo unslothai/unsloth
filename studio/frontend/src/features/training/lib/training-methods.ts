@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { DatasetFormat, TrainingMethod } from "@/types/training";
+import type {
+  DatasetFormat,
+  ModelType,
+  TrainingMethod,
+} from "@/types/training";
+import type { LoraVariant } from "../types/config";
 
 const BACKEND_TRAINING_TYPE: Record<TrainingMethod, string> = {
   qlora: "LoRA/QLoRA",
@@ -24,25 +29,60 @@ export function toBackendTrainingType(trainingMethod: TrainingMethod): string {
 export function getTrainingMethodLabel(
   trainingMethod: TrainingMethod | string,
 ): string {
-  if (Object.prototype.hasOwnProperty.call(TRAINING_METHOD_LABELS, trainingMethod)) {
+  if (
+    Object.prototype.hasOwnProperty.call(TRAINING_METHOD_LABELS, trainingMethod)
+  ) {
     return TRAINING_METHOD_LABELS[trainingMethod as TrainingMethod];
   }
   return TRAINING_METHOD_LABELS.full;
+}
+
+export function isTrainingMethodSupportedOnDevice(
+  trainingMethod: TrainingMethod,
+  deviceType?: string,
+): boolean {
+  return deviceType !== "mac" || trainingMethod !== "cpt";
+}
+
+export function isTrainingModelTypeSupportedOnDevice(
+  modelType: ModelType | null,
+  deviceType?: string,
+): boolean {
+  return (
+    deviceType !== "mac" ||
+    (modelType !== "audio" && modelType !== "embeddings")
+  );
+}
+
+export function isTrainingLoraVariantSupportedOnDevice(
+  loraVariant: LoraVariant,
+  trainingMethod: TrainingMethod,
+  deviceType?: string,
+): boolean {
+  const usesAdapter =
+    trainingMethod === "qlora" ||
+    trainingMethod === "lora" ||
+    trainingMethod === "cpt";
+  return (
+    deviceType !== "mac" ||
+    !usesAdapter ||
+    (loraVariant !== "loftq" && loraVariant !== "dora")
+  );
 }
 
 export function parseBackendTrainingMethod(
   trainingType: unknown,
   loadIn4Bit: unknown,
 ): TrainingMethod {
-  if (trainingType === "Continued Pretraining") return "cpt";
+  if (trainingType === "Continued Pretraining") {
+    return "cpt";
+  }
   if (trainingType === "LoRA/QLoRA") {
     return loadIn4Bit ? "qlora" : "lora";
   }
   return "full";
 }
 
-export function isRawTextDatasetFormat(
-  datasetFormat: DatasetFormat,
-): boolean {
+export function isRawTextDatasetFormat(datasetFormat: DatasetFormat): boolean {
   return datasetFormat === "raw";
 }

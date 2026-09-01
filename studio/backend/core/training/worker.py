@@ -11,8 +11,9 @@ version-switching. Pattern follows core/data_recipe/jobs/worker.py.
 
 from __future__ import annotations
 
-import structlog
 from loggers import get_logger
+import importlib
+import importlib.metadata
 import math
 import os
 import shutil
@@ -24,15 +25,16 @@ import re
 import types
 import subprocess as _sp
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.training.training import TrainingProgress
 
 # ── WSL AMD Strix Halo (gfx1151): enable ROCDXG before any torch import ──────
-# Mirrors main.py. In WSL the AMD GPU is reached via the ROCDXG bridge
-# (librocdxg.so over /dev/dxg), which HSA loads only when HSA_ENABLE_DXG_
-# DETECTION=1 is set before torch touches the GPU. A worker spawned outside a
-# login shell misses the installer's persisted env and falls back to CPU.
-# Gated to no-op unless BOTH /dev/dxg and librocdxg.so exist, so native Linux
-# ROCm, NVIDIA, macOS and Windows are unaffected.
+# Mirrors main.py. In WSL the AMD GPU is reached via the ROCDXG bridge (librocdxg.so
+# over /dev/dxg), which HSA loads only when HSA_ENABLE_DXG_DETECTION=1 is set before
+# torch touches the GPU; a worker spawned outside a login shell misses the installer's
+# persisted env. Gated on both /dev/dxg and librocdxg.so, so other platforms no-op.
 if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.environ:
     try:
         if os.path.exists("/dev/dxg") and any(
@@ -43,12 +45,29 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
         pass
 
 logger = get_logger(__name__)
+from utils.child_stdio import utf8_child_env
+
+# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 from utils.hardware import apply_gpu_ids
+from utils.hf_dataset_options import hf_dataset_split_instruction_names
+
+# Light module on purpose: the MLX branch below runs on torch-less hosts, so it
+# cannot reach these through core.training.trainer.
+from core.training.dataset_bounds import (
+    bound_dataset_rows,
+    max_train_rows_for_config,
+    record_row_bound,
+    row_bound_for_resume,
+    world_size_from_env,
+)
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
-    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -62,8 +81,913 @@ def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> st
     return str(path.parent if path.name.startswith("checkpoint-") else path)
 
 
+def _data_parallel_world_size() -> int:
+    """Replicas that each draw a full batch of rows per optimizer step.
+
+    Two things multiply row consumption and only one of them is in the env: a
+    distributed launch (torchrun, accelerate, mpirun, mlx.launch), and plain
+    DataParallel, which transformers reaches for whenever a non-distributed run
+    sees more than one CUDA device -- it sets n_gpu to the visible device count and
+    scales the train batch by it, so an extra visible GPU eats rows exactly as an
+    extra rank does. XPU and MPS stay at one device there, so only CUDA counts.
+
+    The larger of the two, never the sum: a distributed run forces n_gpu to 1, and a
+    model-parallel one (a sharding device_map, which is what Unsloth's own multi-GPU
+    load uses) forces it to 1 as well. Rounding up when the model turns out to be
+    sharded rather than replicated only tokenizes a larger subset of a corpus this
+    bound is orders of magnitude below anyway; rounding down means the run silently
+    re-reads rows it has already trained on.
+
+    torch is read out of sys.modules rather than imported: this also runs on the MLX
+    path, on hosts where no torch exists, and a process that never imported it has
+    no CUDA devices to count either.
+    """
+    sizes = [world_size_from_env()]
+    torch_module = sys.modules.get("torch")
+    if torch_module is not None:
+        try:
+            distributed = getattr(torch_module, "distributed", None)
+            if (
+                distributed is not None
+                and distributed.is_available()
+                and distributed.is_initialized()
+            ):
+                sizes.append(int(distributed.get_world_size()))
+        except Exception:
+            # A stubbed or half-initialised torch.distributed must not fail a run.
+            pass
+        try:
+            sizes.append(int(torch_module.cuda.device_count()))
+        except Exception:
+            # A CPU-only build answers 0, which the filter below drops; a broken or
+            # stubbed torch.cuda raises instead, and that must not fail a run either.
+            pass
+    return max([size for size in sizes if size > 0], default = 1)
+
+
+def _model_local_files_only(config: dict) -> bool:
+    return bool(config.get("model_snapshot_path"))
+
+
+def _dataset_local_files_only(config: dict) -> bool:
+    return bool(config.get("dataset_snapshot_path"))
+
+
+def _untrainable_model_format_error(config: dict) -> str | None:
+    model_format = str(config.get("model_format") or "").strip().lower()
+    if model_format == "gguf":
+        return "GGUF models are inference-only and cannot be trained."
+    if model_format == "adapter":
+        return "Adapter models are inference-only and cannot be trained as base models."
+    return None
+
+
+def _resolve_cached_model_load_name(config: dict) -> str:
+    return config.get("model_snapshot_path") or config["model_name"]
+
+
+def _effective_training_load_in_4bit(
+    config: dict, model_load_target: str, hf_token: str | None
+) -> bool:
+    from .provenance import effective_training_load_in_4bit
+    return effective_training_load_in_4bit(config, model_load_target, hf_token)
+
+
+def _drop_model_pin(config: dict) -> str:
+    config["model_snapshot_path"] = None
+    return config["model_name"]
+
+
+def _drop_model_pin_for_fallback(config: dict, hf_token: str | None) -> str:
+    from utils.transformers_version import get_transformers_activation_tier
+
+    active_target = _resolve_cached_model_load_name(config)
+    fallback_target = config["model_name"]
+    if not config.get("model_revision"):
+        active_tier = get_transformers_activation_tier(active_target, hf_token)
+        fallback_tier = get_transformers_activation_tier(fallback_target, hf_token)
+        if active_tier != fallback_tier:
+            raise RuntimeError(
+                "The cached model is incomplete and its Hugging Face fallback requires "
+                f"a different Transformers runtime ({active_tier} to {fallback_tier}). "
+                "Remove the incomplete cached model and retry."
+            )
+    return _drop_model_pin(config)
+
+
+def _is_model_cache_artifact_error(error: BaseException | None) -> bool:
+    """Classify model-only failures that mean a local snapshot is incomplete.
+
+    Transformers does not consistently report a missing tokenizer or processor as
+    a file error.  Some families raise a bare ``TypeError`` after resolving a
+    missing vocabulary path to ``None``.  Keep those otherwise-generic messages
+    scoped to the model-cache retry path so they cannot make unrelated dataset or
+    training failures retryable.
+    """
+    from hub.utils.dataset_cache import is_cache_artifact_error
+
+    if is_cache_artifact_error(error):
+        return True
+    markers = (
+        "can't load processor for",
+        "can't load image processor for",
+        "can't load feature extractor for",
+        "stat: path should be string, bytes, os.pathlike or integer, not nonetype",
+        "expected str, bytes or os.pathlike object, not nonetype",
+        # SentencePiece/BPE families resolve a missing vocab path to None and dereference it, so
+        # the failure arrives as a bare AttributeError with no cache-specific text. Without these,
+        # 26 tokenizer families (XLMRoberta, MBart, NLLB, Bloom, ...) get zero Hub retry and a
+        # pinned tokenizer-less snapshot is terminal. A false positive costs one Hub attempt.
+        "'nonetype' object has no attribute 'endswith'",
+        "'nonetype' object has no attribute 'readlines'",
+        "argument should be a str or an os.pathlike object",
+        "can't find a vocabulary file at path 'none'",
+    )
+    seen: set[int] = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if any(marker in str(current).lower() for marker in markers):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _model_offline_mode_enabled() -> bool:
+    try:
+        from utils.utils import hf_env_offline
+        return hf_env_offline()
+    except Exception:
+        pass
+    return any(
+        str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+        for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+
+
+def _cache_artifact_fallback_allowed(
+    config: dict, error: BaseException | None, resource: str
+) -> bool:
+    require_exact = bool(
+        config.get("require_exact_resume_resources")
+        or config.get(f"require_exact_{resource}_resource")
+    )
+    if resource == "dataset":
+        from hub.utils.dataset_cache import dataset_cache_fallback_allowed
+        return dataset_cache_fallback_allowed(
+            error,
+            require_exact = require_exact,
+            revision = config.get("dataset_revision"),
+        )
+    if require_exact or _model_offline_mode_enabled():
+        return False
+    return _is_model_cache_artifact_error(error)
+
+
+def _model_cache_fallback_error(config: dict, error: BaseException | None) -> RuntimeError | None:
+    """Return an actionable error when an incomplete cache cannot be repaired."""
+    if not _is_model_cache_artifact_error(error):
+        return None
+    if config.get("require_exact_resume_resources") or config.get("require_exact_model_resource"):
+        return RuntimeError(
+            "The exact cached model snapshot is incomplete, so this run cannot "
+            "preserve its recorded model resources. Restore the missing model, "
+            "tokenizer, or processor files and retry."
+        )
+    if _model_offline_mode_enabled():
+        revision = config.get("model_revision")
+        revision_text = f" at revision {revision}" if revision else ""
+        return RuntimeError(
+            "Offline mode is enabled, but the cached model snapshot is incomplete. "
+            "Reconnect to download the missing model, tokenizer, or processor files"
+            f"{revision_text}, or select a complete local model."
+        )
+    return None
+
+
+def _mlx_revision_fallback_error(config: dict) -> RuntimeError | None:
+    """Refuse an exact retry when MLX would remap the repo and drop its commit.
+
+    ``FastMLXModel`` maps Unsloth bitsandbytes repositories to their full-precision
+    base because MLX cannot read bnb-packed weights.  A commit from the selected
+    repository has no guaranteed meaning in that different repository, so silently
+    applying it (or dropping it) would violate the cache pin.
+    """
+    model_name = str(config.get("model_name") or "")
+    revision = config.get("model_revision")
+    if (
+        revision
+        and model_name.startswith("unsloth/")
+        and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit"))
+    ):
+        return RuntimeError(
+            "The cached model snapshot is incomplete, but MLX cannot safely retry "
+            f"'{model_name}' at revision {revision}: MLX maps its bitsandbytes "
+            "weights to a different base repository. Select that full-precision "
+            "base model directly, or restore the missing cached files."
+        )
+    return None
+
+
+def _require_strict_cached_dataset(config: dict, dataset: Any, split: str) -> Any:
+    if (
+        config.get("require_exact_resume_resources") or config.get("require_exact_dataset_resource")
+    ) and dataset is None:
+        raise FileNotFoundError(f"The exact cached dataset split '{split}' is no longer available.")
+    return dataset
+
+
+def _offline_mode_enabled() -> bool:
+    return any(
+        str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+        for name in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE")
+    )
+
+
+def _verify_config_pins(config: dict, event_queue: Any) -> bool:
+    require_model = bool(
+        config.get("require_exact_resume_resources") or config.get("require_exact_model_resource")
+    )
+    require_dataset = bool(
+        config.get("require_exact_resume_resources") or config.get("require_exact_dataset_resource")
+    )
+    if require_model or require_dataset:
+        from core.training.provenance import (
+            ExactResumeResourcesUnavailable,
+            validate_exact_dataset_pin,
+            validate_exact_model_pin,
+        )
+
+        try:
+            model_snapshot = validate_exact_model_pin(config) if require_model else None
+            dataset_snapshot = validate_exact_dataset_pin(config) if require_dataset else None
+        except ExactResumeResourcesUnavailable as error:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(error),
+                    "stack": "",
+                    "ts": time.time(),
+                }
+            )
+            return False
+        if model_snapshot is not None:
+            config["model_snapshot_path"] = model_snapshot
+            config["model_revision"] = Path(model_snapshot).name
+        if dataset_snapshot is not None:
+            config["dataset_snapshot_path"] = dataset_snapshot
+
+    for message in config.get("cache_pin_warnings") or []:
+        _send_status(event_queue, message)
+    model_path = config.get("model_snapshot_path")
+    require_validated_snapshot = bool(config.get("require_validated_model_snapshot"))
+    if require_validated_snapshot and not model_path:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": (
+                    "The cached model snapshot selected during preflight is no longer available."
+                ),
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return False
+    if model_path and not require_model:
+        from hub.utils.hf_cache_state import (
+            latest_snapshot_from_cache_path,
+            with_load_subdirs,
+        )
+        from utils.utils import canonical_model_repo_id
+
+        pinned_repo_id = config.get("actual_model_repo_id") or canonical_model_repo_id(
+            config["model_name"]
+        )
+        config["model_snapshot_path"] = latest_snapshot_from_cache_path(
+            model_path,
+            "model",
+            pinned_repo_id,
+            with_load_subdirs(config["model_name"], ("config.json", "adapter_config.json")),
+        )
+        if config["model_snapshot_path"] is None:
+            if require_validated_snapshot:
+                event_queue.put(
+                    {
+                        "type": "error",
+                        "error": (
+                            "The cached model snapshot selected during preflight is no "
+                            "longer available."
+                        ),
+                        "stack": "",
+                        "ts": time.time(),
+                    }
+                )
+                return False
+            if not config.get("model_revision"):
+                config["actual_model_repo_id"] = None
+        else:
+            config["model_revision"] = Path(config["model_snapshot_path"]).name
+    dataset_path = config.get("dataset_snapshot_path")
+    if dataset_path and not require_dataset:
+        from hub.utils.dataset_cache import (
+            dataset_cache_path_from_cache_path,
+            dataset_snapshot_from_cache_path,
+        )
+
+        resolved = dataset_cache_path_from_cache_path(
+            dataset_path,
+            config.get("hf_dataset") or "",
+        )
+        snapshot = (
+            dataset_snapshot_from_cache_path(
+                str(resolved),
+                config.get("hf_dataset") or "",
+            )
+            if resolved is not None
+            else None
+        )
+        if snapshot is not None:
+            config["dataset_revision"] = snapshot.name
+        config["dataset_snapshot_path"] = str(resolved) if resolved else None
+    if (
+        config.get("dataset_revision")
+        and not config.get("dataset_snapshot_path")
+        and _offline_mode_enabled()
+    ):
+        event_queue.put(
+            {
+                "type": "error",
+                "error": (
+                    "The selected dataset snapshot is incomplete and its exact "
+                    "revision cannot be downloaded while offline."
+                ),
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return False
+    return True
+
+
+def _validate_training_worker_config(config: dict, event_queue: Any) -> bool:
+    if not _verify_config_pins(config, event_queue):
+        return False
+    format_error = _untrainable_model_format_error(config)
+    if format_error:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": format_error,
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return False
+    return True
+
+
+def _cached_dataset_row_limit(config: dict) -> int | None:
+    slice_end = config.get("dataset_slice_end")
+    slice_start = config.get("dataset_slice_start")
+    if isinstance(slice_end, bool) or not isinstance(slice_end, int) or slice_end < 0:
+        return None
+    if slice_start is None:
+        slice_start = 0
+    if isinstance(slice_start, bool) or not isinstance(slice_start, int):
+        return None
+    return slice_end + 1 if slice_end >= max(slice_start, 0) else None
+
+
+def _load_cached_dataset_for_config(
+    config: dict,
+    split: str | None,
+    token: str | None = None,
+    *,
+    row_limit: int | None = None,
+):
+    hf_dataset = config.get("hf_dataset")
+    local_path = config.get("dataset_snapshot_path")
+    if not hf_dataset or not local_path:
+        return None
+    from hub.utils.dataset_cache import load_cached_hf_dataset
+
+    kwargs = {
+        "subset": config.get("subset"),
+        "split": split or "train",
+        "token": token,
+    }
+    if row_limit is not None:
+        kwargs["row_limit"] = row_limit
+    return load_cached_hf_dataset(hf_dataset, local_path, **kwargs)
+
+
+def _load_hf_train_and_eval_datasets(
+    config: dict,
+    token: str | None,
+    load_dataset: Callable,
+    status_callback: Callable[[str], None],
+    warning_callback: Callable[[str], None] | None = None,
+):
+    from core.training.eval_dataset import (
+        EVAL_SPLIT_CANDIDATES,
+        MIN_EVAL_ROWS,
+        evaluation_enabled,
+    )
+
+    hf_dataset = config["hf_dataset"]
+    subset = config.get("subset")
+    train_split = config.get("train_split", "train") or "train"
+    eval_split = config.get("eval_split")
+    revision = config.get("dataset_revision")
+    eval_enabled = evaluation_enabled(config.get("eval_steps"))
+    require_exact = bool(
+        config.get("require_exact_resume_resources") or config.get("require_exact_dataset_resource")
+    )
+    dataset = None
+    loaded_from_cache = False
+    config["_dataset_loaded_from_exact_snapshot"] = False
+
+    def warn(message: str) -> None:
+        if warning_callback is not None:
+            warning_callback(message)
+        else:
+            logger.warning(message)
+
+    def load_remote(split: str):
+        kwargs = {"split": split, "token": token}
+        if subset:
+            kwargs["name"] = subset
+        if revision:
+            kwargs["revision"] = revision
+        return load_dataset(hf_dataset, **kwargs)
+
+    if _dataset_local_files_only(config):
+        status_callback(f"Loading cached dataset: {hf_dataset}")
+        try:
+            row_limit = _cached_dataset_row_limit(config)
+            if row_limit is None:
+                dataset = _load_cached_dataset_for_config(config, train_split, token)
+            else:
+                dataset = _load_cached_dataset_for_config(
+                    config,
+                    train_split,
+                    token,
+                    row_limit = row_limit,
+                )
+            dataset = _require_strict_cached_dataset(config, dataset, train_split)
+            loaded_from_cache = dataset is not None
+        except Exception as error:
+            if not _cache_artifact_fallback_allowed(config, error, "dataset"):
+                raise
+            status_callback("Cached dataset unavailable; downloading from the Hub...")
+
+    if dataset is None:
+        dataset = load_remote(train_split)
+
+    eval_dataset = None
+    explicit_separate_eval = bool(eval_split and eval_split != train_split)
+    if eval_enabled and explicit_separate_eval:
+        if loaded_from_cache:
+            try:
+                eval_dataset = _load_cached_dataset_for_config(config, eval_split, token)
+                eval_dataset = _require_strict_cached_dataset(
+                    config,
+                    eval_dataset,
+                    eval_split,
+                )
+            except Exception as error:
+                if not _cache_artifact_fallback_allowed(config, error, "dataset"):
+                    raise
+                status_callback(
+                    "Cached eval split unavailable; reloading train and eval from the Hub..."
+                )
+                remote_train = load_remote(train_split)
+                remote_eval = load_remote(eval_split)
+                dataset = remote_train
+                eval_dataset = remote_eval
+                loaded_from_cache = False
+        else:
+            eval_dataset = load_remote(eval_split)
+    elif eval_enabled and not eval_split:
+        auto_errors: list[tuple[str, Exception]] = []
+        try:
+            split_info = getattr(getattr(dataset, "info", None), "splits", None)
+            if loaded_from_cache:
+                available_splits = list(split_info or ())
+            else:
+                from datasets import get_dataset_split_names
+
+                split_kwargs = {"path": hf_dataset}
+                if subset:
+                    split_kwargs["config_name"] = subset
+                if revision:
+                    split_kwargs["revision"] = revision
+                if token:
+                    split_kwargs["token"] = token
+                available_splits = get_dataset_split_names(**split_kwargs)
+
+            excluded_splits = set(hf_dataset_split_instruction_names(train_split))
+            for candidate in EVAL_SPLIT_CANDIDATES:
+                if candidate not in available_splits or candidate in excluded_splits:
+                    continue
+                try:
+                    if loaded_from_cache:
+                        candidate_dataset = _load_cached_dataset_for_config(
+                            config,
+                            candidate,
+                            token,
+                        )
+                        candidate_dataset = _require_strict_cached_dataset(
+                            config,
+                            candidate_dataset,
+                            candidate,
+                        )
+                    else:
+                        candidate_dataset = load_remote(candidate)
+                except Exception as error:
+                    if require_exact:
+                        raise
+                    auto_errors.append((candidate, error))
+                    continue
+                if len(candidate_dataset) >= MIN_EVAL_ROWS:
+                    eval_dataset = candidate_dataset
+                    break
+        except Exception as error:
+            if require_exact:
+                raise
+            warn(
+                "Automatic eval split detection failed; a held-out split will be created "
+                f"from the training data when enough rows are available: {error}"
+            )
+        else:
+            if eval_dataset is None and auto_errors:
+                candidate, error = auto_errors[0]
+                warn(
+                    f"Automatic eval split '{candidate}' could not be loaded; a held-out "
+                    "split will be created from the training data when enough rows are "
+                    f"available: {error}"
+                )
+
+    from core.training.provenance import (
+        attest_loaded_dataset,
+        exact_dataset_snapshot_path,
+    )
+
+    snapshot, _ = attest_loaded_dataset(hf_dataset, dataset, eval_dataset)
+    if snapshot is None and loaded_from_cache:
+        snapshot = exact_dataset_snapshot_path(
+            config.get("dataset_snapshot_path"),
+            hf_dataset,
+        )
+    if snapshot is not None:
+        config["dataset_snapshot_path"] = snapshot
+        config["_dataset_loaded_from_exact_snapshot"] = True
+    return dataset, eval_dataset
+
+
+def _load_embedding_hf_dataset(
+    config: dict, load_dataset: Callable, status_callback: Callable[[str], None]
+):
+    hf_dataset = str(config.get("hf_dataset") or "").strip()
+    if not hf_dataset:
+        return None
+
+    subset = config.get("subset") or None
+    train_split = config.get("train_split", "train") or "train"
+    revision = config.get("dataset_revision")
+    token = config.get("hf_token", "")
+    token = token if token and token.strip() else None
+    dataset = None
+    config["_dataset_loaded_from_exact_snapshot"] = False
+
+    if _dataset_local_files_only(config):
+        status_callback(f"Loading cached dataset: {hf_dataset}")
+        try:
+            row_limit = _cached_dataset_row_limit(config)
+            if row_limit is None:
+                dataset = _load_cached_dataset_for_config(
+                    config,
+                    train_split,
+                    token,
+                )
+            else:
+                dataset = _load_cached_dataset_for_config(
+                    config,
+                    train_split,
+                    token,
+                    row_limit = row_limit,
+                )
+            dataset = _require_strict_cached_dataset(
+                config,
+                dataset,
+                train_split,
+            )
+            if dataset is not None:
+                from core.training.provenance import exact_dataset_snapshot_path
+                snapshot = exact_dataset_snapshot_path(
+                    config.get("dataset_snapshot_path"),
+                    hf_dataset,
+                )
+                if snapshot is not None:
+                    config["dataset_snapshot_path"] = snapshot
+                    config["_dataset_loaded_from_exact_snapshot"] = True
+        except Exception as error:
+            if not _cache_artifact_fallback_allowed(config, error, "dataset"):
+                raise
+            status_callback("Cached dataset unavailable; downloading from the Hub...")
+            dataset = None
+            config["_dataset_loaded_from_exact_snapshot"] = False
+
+    if dataset is None:
+        load_kwargs = {
+            "split": train_split,
+            "token": token,
+        }
+        if revision:
+            load_kwargs["revision"] = revision
+        dataset = load_dataset(hf_dataset, subset, **load_kwargs)
+    from core.training.provenance import attest_loaded_dataset
+
+    snapshot, _ = attest_loaded_dataset(hf_dataset, dataset)
+    if snapshot is not None:
+        config["dataset_snapshot_path"] = snapshot
+        config["_dataset_loaded_from_exact_snapshot"] = True
+    return dataset
+
+
+def _pre_detect_training_model(
+    trainer,
+    config: dict,
+    model_name: str,
+    hf_token: str | None,
+    model_load_name: str,
+    local_files_only: bool,
+    model_revision: str | None = None,
+) -> None:
+    trainer.pre_detect_and_load_tokenizer(
+        model_name = model_name,
+        max_seq_length = config["max_seq_length"],
+        hf_token = hf_token,
+        is_dataset_image = config.get("is_dataset_image", False),
+        is_dataset_audio = config.get("is_dataset_audio", False),
+        trust_remote_code = config.get("trust_remote_code", False),
+        model_load_name = model_load_name,
+        local_files_only = local_files_only,
+        model_revision = model_revision,
+    )
+    _check_finetune_targets_after_detect(trainer, config)
+
+
+_NOTHING_TO_TRAIN = (
+    "Nothing to train: select at least one layer family (finetune_language_layers or "
+    "finetune_vision_layers) and at least one module type (finetune_attention_modules or "
+    "finetune_mlp_modules)."
+)
+
+
+def _finetune_selectors(config: dict) -> tuple[bool, bool, bool, bool]:
+    """(vision, language, attention, mlp), read exactly the way the consumers read them.
+
+    A guard that models the run differently from the code it guards rejects runs that would
+    have trained, so every default here is the CUDA consumer's own default for an omitted key.
+    Only the MLX consumer defaults vision False, and _check_mlx_finetune_targets discards the
+    vision element, so True is safe there too.
+    """
+    return (
+        bool(config.get("finetune_vision_layers", True)),
+        bool(config.get("finetune_language_layers", True)),
+        bool(config.get("finetune_attention_modules", True)),
+        bool(config.get("finetune_mlp_modules", True)),
+    )
+
+
+def _requests_all_linear(config: dict) -> bool:
+    """Whether target_modules is PEFT's bare "all-linear" keyword rather than a leaf list.
+
+    get_peft_model forces every selector True for the keyword, so all-linear with the
+    selectors off trains every linear layer today and rejecting it would break the very
+    requests the selectors are not consulted for. A list naming all-linear alongside other
+    leaves is not the keyword: the caller strips it and the rest take the scoped path.
+    """
+    target_modules = config.get("target_modules")
+    if isinstance(target_modules, str):
+        return target_modules == "all-linear"
+    if isinstance(target_modules, (list, tuple)):
+        return list(target_modules) == ["all-linear"]
+    return False
+
+
+def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
+    """Reject a LoRA run that selects no adapter layers, once detection has settled which
+    branch it takes. The request model cannot decide this: the codec/ASR branches ignore the
+    selectors that is_audio_vlm reads, is_vlm needs a vision-capable model and not just an
+    image-tagged dataset, and only the probe in pre_detect separates those. pre_detect is
+    config/tokenizer only, so this still fires before any weights load, instead of surfacing
+    as get_peft_regex's "No layers to finetune" with the model already in memory."""
+    if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA":
+        return  # Full Finetuning / CPT build adapters from target_modules alone
+    if not (getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False)):
+        return  # the text branch ignores these four
+    if _requests_all_linear(config):
+        return  # get_peft_model turns all five selectors on for the keyword; see below
+    vision, language, attention, mlp = _finetune_selectors(config)
+    # Mirror get_peft_regex's two guards: one layer family AND one module type.
+    if not (vision or language) or not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
+
+
+# Targets the MLX loader trains regardless of the layer-family flags: on the CPT path
+# embed_tokens becomes a full trainable module and lm_head its own adapter.
+_CPT_TARGET_NAMES = frozenset({"embed_tokens", "lm_head"})
+
+
+def _names_a_cpt_target(target_modules) -> bool:
+    """Whether an explicit target list names something that trains on its own."""
+    if isinstance(target_modules, str):
+        return target_modules in _CPT_TARGET_NAMES
+    try:
+        return any(name in _CPT_TARGET_NAMES for name in target_modules)
+    except TypeError:  # not iterable -> not a list of names, so nothing is guaranteed
+        return False
+
+
+def _check_mlx_finetune_targets(config: dict) -> None:
+    """MLX equivalent, called from the LoRA branch of the MLX worker.
+
+    Two things differ from the CUDA path. FastMLXModel.get_peft_model is handed these
+    selectors for text models too, so there is no is_vlm gate. And the caller back-fills
+    finetune_language_layers whenever a module type is on, so only an empty module selection
+    can survive here.
+
+    Surviving the module-type filter is NOT enough to train. get_peft_model drops only the
+    names it recognises as attention or MLP leaves, so a fused qkv, a c_fc or an expanded
+    all-linear survives with both module types off -- but the text branch then gates the LoRA
+    application on finetune_language_layers, and with all four selectors off the caller's
+    back-fill never fires. Those runs apply no adapters at all: the model warns and trains
+    nothing, and a VLM raises only once the weights are loaded.
+
+    The exception is a target the loader handles independently of the layer families: naming
+    embed_tokens or lm_head puts it on the CPT path, which trains whatever the flags say.
+
+    An explicit list that merely filters down to nothing still gets the loader's own message,
+    which names the two flags."""
+    targets = config.get("target_modules")
+    if targets:
+        if _names_a_cpt_target(targets):
+            return
+        _, language, attention, mlp = _finetune_selectors(config)
+        # Vision read the way the MLX call site reads it, NOT the way _finetune_selectors
+        # does: that helper carries the CUDA consumer's defaults, where an omitted vision
+        # selector means True, while MLX defaults it False and forces it False for a text
+        # model. Taking True from an omitted key would wave through every legacy config
+        # that never sent the selectors at all.
+        vision = bool(config.get("finetune_vision_layers", False))
+        # Any one of them leaves something that can train, or leaves the loader to say so
+        # with a better message. Vision counts because this runs BEFORE detection, so a VLM
+        # whose vision tower is the only selection must not be refused here;
+        # _check_mlx_effective_targets catches the text case once is_vlm is known.
+        if attention or mlp or language or vision:
+            return
+        raise ValueError(_NOTHING_TO_TRAIN)
+    _, _, attention, mlp = _finetune_selectors(config)
+    if not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _check_mlx_effective_targets(
+    config: dict, *, finetune_language: bool, finetune_vision: bool
+) -> None:
+    """The same refusal, re-asked with the values get_peft_model will actually receive.
+
+    ``_check_mlx_finetune_targets`` runs before the model is loaded, so it cannot tell a VLM
+    from a text model and has to let a vision-only selection through. The call site can: it
+    has forced vision to False for a text model and applied the language back-fill, so if
+    both layer families are still off here, no adapter is coming and the run would train
+    nothing but its own warning.
+
+    Later than the preflight deliberately: this is the first point the answer is knowable,
+    and it is still before the trainer is built and before a single step runs."""
+    if finetune_language or finetune_vision:
+        return
+    if _names_a_cpt_target(config.get("target_modules") or ()):
+        return
+    raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _reload_dataset_with_remote_model_tokenizer(
+    trainer,
+    config: dict,
+    model_name: str,
+    hf_token: str | None,
+    reload_dataset: Callable[[], tuple],
+    model_revision: str | None = None,
+):
+    _pre_detect_training_model(
+        trainer,
+        config,
+        model_name,
+        hf_token,
+        model_name,
+        False,
+        model_revision,
+    )
+    return reload_dataset()
+
+
+def _model_load_security_error(config: dict, load_target: str, hf_token: str | None) -> dict | None:
+    from utils.models.model_config import get_base_model_from_lora_identifier
+    from utils.security import (
+        evaluate_file_security,
+        evaluate_remote_code_consent_for_targets,
+        load_scan_target,
+        security_load_subdirs,
+    )
+
+    requested_targets = [load_target]
+    try:
+        base_model = get_base_model_from_lora_identifier(load_target, hf_token)
+        if base_model:
+            requested_targets.append(base_model)
+    except Exception as error:
+        logger.debug("Could not resolve LoRA base for security scan: %s", error)
+
+    from utils.utils import hf_env_offline
+
+    primary_name = config["model_name"]
+    local_only_load = hf_env_offline()
+    consent_load_subdirs: dict[str, tuple] = {}
+    targets: list[str] = []
+    for requested_target in dict.fromkeys(requested_targets):
+        load_subdirs = security_load_subdirs(requested_target, hf_token)
+        if requested_target == load_target and requested_target != primary_name:
+            load_subdirs = tuple(
+                dict.fromkeys((*load_subdirs, *security_load_subdirs(primary_name, hf_token)))
+            )
+        target, load_subdirs = load_scan_target(requested_target, load_subdirs)
+        if target not in consent_load_subdirs:
+            targets.append(target)
+            consent_load_subdirs[target] = ()
+        load_subdirs = tuple(dict.fromkeys((*consent_load_subdirs[target], *load_subdirs)))
+        consent_load_subdirs[target] = load_subdirs
+        decision = evaluate_file_security(
+            target,
+            hf_token = hf_token,
+            load_subdirs = load_subdirs,
+            local_only_load = local_only_load,
+        )
+        if decision.blocked:
+            return {
+                "error": decision.reason,
+                "error_kind": "malware_blocked",
+                "security": decision.response_payload(),
+            }
+
+    if not config.get("trust_remote_code", False):
+        return None
+
+    decision = evaluate_remote_code_consent_for_targets(
+        targets,
+        hf_token = hf_token,
+        trust_remote_code = True,
+        approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        subject = config.get("subject"),
+        load_subdirs_by_target = consent_load_subdirs,
+    )
+    if not decision.blocked:
+        return None
+    return {
+        "error": (
+            f"Model '{decision.model_name}' ships custom code flagged as "
+            f"{decision.max_severity} by the security scan. Review it and "
+            f"re-run with approval to proceed.\n\n{decision.findings_summary}"
+        ),
+        "error_kind": "remote_code_blocked",
+        "remote_code": decision.response_payload(),
+    }
+
+
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 _CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
+_CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
+    "qwen3.5",
+    "qwen3_5",
+    "qwen3.6",
+    "qwen3_6",
+    "qwen3-next",
+    "qwen3_next",
+    "nemotron_h",
+    "nemotron-h",
+    "nemotron-3-nano",
+    "falcon_h1",
+    "falcon-h1",
+    "granite-4.0-h",
+    "granitemoehybrid",
+    "lfm2",
+    "mamba",
+    "jamba",
+    "zamba",
+    "bamba",
+)
 _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 _MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
@@ -86,8 +1010,7 @@ _TILELANG_INSTALL_TIMEOUT_S = 600
 _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
 _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 
-# Module-level handle so the torch.library.Library registration survives past
-# run_training_process() and isn't GC'd mid-run.
+# Module scope so the torch.library.Library registration isn't GC'd mid-run.
 _WINDOWS_ROCM_GROUPED_MM_LIB = None
 
 
@@ -163,9 +1086,8 @@ def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
     return _gm_lib
 
 
-# Subprocesses don't inherit os.add_dll_directory registrations. Replicate
-# main.py's Windows ROCm DLL setup so the first `import torch` finds
-# amdhip64.dll. Handles retained at module scope so they aren't GC'd.
+# Subprocesses don't inherit os.add_dll_directory registrations. Replicate main.py's
+# Windows ROCm DLL setup so the first `import torch` finds amdhip64.dll; handles kept.
 _ROCM_DLL_HANDLES: list = []
 if sys.platform == "win32":
 
@@ -210,25 +1132,7 @@ if sys.platform == "win32":
 
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
-    return any(
-        key in name
-        for key in (
-            "qwen3.5",
-            "qwen3_5",
-            "qwen3.6",
-            "qwen3_6",
-            "qwen3-next",
-            "qwen3_next",
-            "nemotron_h",
-            "nemotron-h",
-            "nemotron-3-nano",
-            "falcon_h1",
-            "falcon-h1",
-            "granite-4.0-h",
-            "granitemoehybrid",
-            "lfm2",
-        )
-    )
+    return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
 
 
 def _hipcc_gcc_install_dir() -> str | None:
@@ -254,7 +1158,144 @@ def _hipcc_gcc_install_dir() -> str | None:
     return None
 
 
+def _is_importable(import_name: str) -> bool:
+    # Invalidate finder caches so a package installed earlier in this process is seen.
+    importlib.invalidate_caches()
+    try:
+        __import__(import_name)
+        return True
+    except Exception as exc:
+        # A wrong-arch/ABI wheel raises OSError/RuntimeError ("undefined symbol"), not
+        # ImportError, so catch everything and let the caller fall back.
+        logger.debug("%s is not importable (%s: %s)", import_name, type(exc).__name__, exc)
+        return False
+
+
+# Kept in step with install_python_stack._FLASH_ATTN_IMPORT_PROBE_TIMEOUT.
+_IMPORT_PROBE_TIMEOUT = 300
+
+
+def _is_importable_isolated(import_name: str) -> bool:
+    """Probe the import in a child process.
+
+    A wrong-arch wheel can abort or segfault in its initialiser instead of raising, which
+    would kill this worker rather than fall back. A child turns that into a return code
+    (negative = fatal signal).
+    """
+    try:
+        result = _sp.run(
+            [
+                sys.executable,
+                "-c",
+                "import importlib, sys; importlib.import_module(sys.argv[1])",
+                import_name,
+            ],
+            stdout = _sp.DEVNULL,
+            stderr = _sp.DEVNULL,
+            timeout = _IMPORT_PROBE_TIMEOUT,
+            # No env override: the probe must see what the real in-process import will.
+        )
+    except (OSError, _sp.TimeoutExpired) as exc:
+        logger.debug("%s import probe did not complete (%s)", import_name, exc)
+        return False
+    if result.returncode != 0:
+        logger.debug("%s import probe exited %s", import_name, result.returncode)
+    return result.returncode == 0
+
+
+def _uninstall_package(pypi_name: str, display_name: str) -> bool:
+    """Remove a distribution. True iff it is gone afterwards."""
+    if shutil.which("uv"):
+        cmd = ["uv", "pip", "uninstall", "--python", sys.executable, pypi_name]
+    else:
+        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", pypi_name]
+    result = _sp.run(
+        cmd,
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        env = utf8_child_env(),
+    )
+    if result.returncode != 0:
+        logger.warning("Could not remove the rejected %s install:\n%s", display_name, result.stdout)
+        return False
+    return True
+
+
+def _distribution_present(pypi_name: str) -> bool:
+    """Whether the distribution's METADATA is installed, without importing it.
+
+    Metadata is what matters: unsloth/models/_utils.py gates on ``_package_available`` and
+    only then imports the native module, so metadata left behind is what turns a rejected
+    wheel into an in-process crash. Reading it never loads the extension, so this is safe
+    even for a wheel that would abort.
+    """
+    importlib.invalidate_caches()
+    try:
+        importlib.metadata.distribution(pypi_name)
+        return True
+    except Exception:
+        return False
+
+
+def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason: str) -> None:
+    """Discard an install that will not import, and say which state we ended in.
+
+    Idempotent, so it is safe on EVERY exit rather than only the ones somebody remembered:
+    it no-ops when the distribution is already gone. Leaving it in place is not the same as
+    never having installed it, since the metadata gate above imports it anyway.
+    """
+    if not _distribution_present(pypi_name):
+        return
+    logger.warning("%s %s", display_name, reason)
+    if _uninstall_package(pypi_name, display_name):
+        _send_status(event_queue, f"{display_name} is not usable on this GPU; removed it")
+    else:
+        _send_status(
+            event_queue,
+            f"{display_name} is not usable on this GPU and could not be removed; "
+            f"uninstall {pypi_name} manually before training",
+        )
+
+
 def _install_package_wheel_first(
+    *, event_queue: Any, import_name: str, display_name: str, pypi_name: str, **kwargs: Any
+) -> bool:
+    """Install a fast-path package, wheel first, and never leave an unusable one behind.
+
+    The two "touch nothing" guards run here, outside the cleanup: an already-working
+    package returns before any subprocess, and offline changes nothing. Everything after
+    them is an install attempt, so ANY unsuccessful exit -- timeout, failed install, bad
+    import -- discards what is left rather than leaving metadata the in-process import
+    would pick up. Enforced here rather than at each return because four separate exits
+    have now been found that forgot to clean up.
+    """
+    if _is_importable(import_name):
+        logger.info("%s already installed", display_name)
+        return True
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping %s installation while offline", display_name)
+        return False
+
+    installed = False
+    try:
+        installed = _attempt_package_install(
+            event_queue = event_queue,
+            import_name = import_name,
+            display_name = display_name,
+            pypi_name = pypi_name,
+            **kwargs,
+        )
+        return installed
+    finally:
+        if not installed:
+            _reject_install(event_queue, pypi_name, display_name, "will not import")
+
+
+def _attempt_package_install(
     *,
     event_queue: Any,
     import_name: str,
@@ -268,12 +1309,9 @@ def _install_package_wheel_first(
     pypi_spec: str | None = None,
     pypi_status_message: str | None = None,
 ) -> bool:
-    try:
-        __import__(import_name)
-        logger.info("%s already installed", display_name)
-        return True
-    except ImportError:
-        pass
+    """The install itself. Call it through _install_package_wheel_first, never directly."""
+    # Set when a wheel installed but would not import; see the uninstall before the fallback.
+    wheel_rejected = False
 
     env = probe_torch_wheel_env(timeout = 30)
     if wheel_url_builder is not None:
@@ -298,8 +1336,18 @@ def _install_package_wheel_first(
             run = _sp.run,
         ):
             if result.returncode == 0:
-                logger.info("Installed prebuilt %s wheel successfully", display_name)
-                return True
+                # A wheel can install yet fail to import (CUDA/ABI or arch mismatch), so
+                # verify rather than trust the exit code, and do it out of process: a bad
+                # one can take the worker down with it.
+                if _is_importable_isolated(import_name):
+                    logger.info("Installed prebuilt %s wheel successfully", display_name)
+                    return True
+                logger.warning(
+                    "%s wheel installed but is not importable; falling back to PyPI",
+                    display_name,
+                )
+                wheel_rejected = True
+                break
             logger.warning(
                 "%s failed to install %s wheel:\n%s",
                 installer,
@@ -328,15 +1376,23 @@ def _install_package_wheel_first(
     if pypi_status_message is None:
         if is_hip:
             pypi_status_message = (
-                f"Compiling {display_name} from source for ROCm "
-                "(this may take several minutes)..."
+                f"Compiling {display_name} from source for ROCm (this may take several minutes)..."
             )
         else:
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
 
+    if wheel_rejected:
+        # Remove it rather than install over it: pip/uv would report the broken
+        # distribution as already satisfying the spec and do nothing. --force-reinstall is
+        # not the answer either, since both scope it to the whole resolved transaction,
+        # which for flash-attn means torch and the running CUDA stack.
+        #
+        # A failure here is caught by the _reject_install in the finally below, which is
+        # reached from every exit rather than only the ones that remember to clean up.
+        _uninstall_package(pypi_name, display_name)
+
     _send_status(event_queue, pypi_status_message)
 
-    # Prefer uv for faster dependency resolution when available
     plain_pypi_install = pypi_version is None
     if plain_pypi_install:
         if shutil.which("uv"):
@@ -377,21 +1433,23 @@ def _install_package_wheel_first(
                 pypi_spec,
             ]
 
-    # ROCm source compilation can take 10-30 min; use a generous timeout.
-    # Non-HIP installs keep the pre-existing "no timeout" behaviour so unrelated
-    # slow installs (e.g. causal-conv1d source build on Linux aarch64, or
-    # unsupported torch/CUDA combos) aren't aborted at 5 minutes.
+    # ROCm source compilation can take 10-30 min; use a generous timeout. Non-HIP installs
+    # keep the pre-existing "no timeout" behaviour so unrelated slow builds (causal-conv1d
+    # on aarch64, unsupported torch/CUDA combos) aren't aborted at 5 minutes.
     _run_kwargs: dict[str, Any] = {
         "stdout": _sp.PIPE,
         "stderr": _sp.STDOUT,
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        # Make the Python child emit the UTF-8 we decode above.
+        "env": utf8_child_env(),
     }
     if is_hip:
         _run_kwargs["timeout"] = 1800
-        # On Ubuntu 24.04 + ROCm clang-20 the HIP source build dies on a missing
-        # <cstdlib> (gcc-14 runtime dir lacks C++ headers). Inject
-        # --gcc-install-dir for a gcc whose headers exist, respecting any
-        # pre-existing one. Mirrors bbf004c in studio/setup.sh (PR #5301).
+        # On Ubuntu 24.04 + ROCm clang-20 the HIP source build dies on a missing <cstdlib>
+        # (gcc-14 runtime dir lacks C++ headers). Inject --gcc-install-dir for a gcc whose
+        # headers exist, respecting any pre-existing one. Mirrors bbf004c in setup.sh (PR #5301).
         _existing_flags = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
         if "--gcc-install-dir" not in _existing_flags:
             _gcc_dir = _hipcc_gcc_install_dir()
@@ -417,13 +1475,12 @@ def _install_package_wheel_first(
         )
         _send_status(
             event_queue,
-            f"{display_name} installation timed out after " f"{_run_kwargs.get('timeout')}s",
+            f"{display_name} installation timed out after {_run_kwargs.get('timeout')}s",
         )
         return False
 
     if result.returncode != 0:
         if is_hip:
-            # Surface a clear error for ROCm source build failures
             error_lines = (result.stdout or "").strip().splitlines()
             snippet = "\n".join(error_lines[-5:]) if error_lines else "(no output)"
             logger.error(
@@ -439,9 +1496,8 @@ def _install_package_wheel_first(
             )
         else:
             if sys.platform == "win32":
-                # No prebuilt wheel and no source toolchain on Windows --
-                # expected for packages like causal-conv1d. Log at info so
-                # users aren't alarmed by what looks like an error.
+                # No prebuilt wheel and no source toolchain on Windows -- expected for packages like
+                # causal-conv1d. Log at info so users aren't alarmed by what looks like an error.
                 logger.info(
                     "%s is not available on Windows (no prebuilt wheel); skipping",
                     display_name,
@@ -455,6 +1511,12 @@ def _install_package_wheel_first(
                 )
         return False
 
+    # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without
+    # installing anything. Returning False is enough; the caller's finally discards it.
+    if not _is_importable_isolated(import_name):
+        logger.warning("%s installed from PyPI but will not import", display_name)
+        return False
+
     if is_hip:
         logger.info("Compiled and installed %s from source for ROCm", display_name)
     else:
@@ -462,8 +1524,15 @@ def _install_package_wheel_first(
     return True
 
 
-def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
-    if not _model_wants_causal_conv1d(model_name):
+def _ensure_causal_conv1d_fast_path(
+    event_queue: Any,
+    model_name: str,
+    *,
+    required: bool | None = None,
+) -> None:
+    if required is None:
+        required = _model_wants_causal_conv1d(model_name)
+    if not required:
         return
     if sys.platform == "win32":
         logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
@@ -557,12 +1626,15 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
         )
         return False
 
-    # Probe once; reuse so the --force-reinstall decision and the short-circuit
-    # share the same call count (stable for tests).
+    # Probe once so the --force-reinstall decision and short-circuit share a call count.
     already_importable = _flash_linear_attention_importable()
     if already_importable and _flash_linear_attention_current(already_importable = True):
         logger.info("flash-linear-attention already importable at the pinned version")
         return True
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping flash-linear-attention installation while offline")
+        return False
 
     _send_status(
         event_queue,
@@ -606,6 +1678,9 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
@@ -678,9 +1753,8 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
     )
 
 
-# Auto-derived from installed transformers: model_types whose modeling_*.py imports `from fla.*`.
-# Cached per process. Empty when transformers can't be inspected -> we skip tilelang pre-install
-# (the FLA Triton path still runs via the runtime hook).
+# Auto-derived from installed transformers: model_types whose modeling_*.py imports
+# `from fla.*`. Empty when transformers can't be inspected -> skip tilelang pre-install.
 _TRANSFORMERS_FLA_MODEL_TYPES_CACHE: frozenset[str] | None = None
 _MODEL_NAME_SEP_CHARS = ("-", ".", "/", " ")
 
@@ -787,24 +1861,20 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
             gcn_arch = _v
             break
 
-    # Driver's own answer first: hipDeviceProp_t.integrated (exposed as
-    # props.is_integrated; same gate PR #5988's UMA safetensors fast-load
-    # uses). Strictly additive -- only a truthy value upgrades to unified;
-    # 0/absent falls through to the arch/name logic below, so a wheel that
-    # omits or zeroes the field can never downgrade the known APU set. This
-    # covers unified APUs outside the hardcoded arches (gfx1103 Phoenix
-    # iGPUs, future parts) with one universal signal.
+    # Driver's own answer first: hipDeviceProp_t.integrated (props.is_integrated, the same
+    # gate PR #5988's UMA safetensors fast-load uses). Strictly additive -- only a truthy
+    # value upgrades to unified, so a wheel that omits the field can't downgrade the known
+    # APU set. Covers unified APUs outside the hardcoded arches (gfx1103 Phoenix, future).
     if getattr(props, "is_integrated", 0):
         return gcn_arch, True
 
     if gcn_arch:
-        # gfx1152 is Krackan Point, the third RDNA 3.5 APU: same shared
-        # GPU/system-RAM pool as Strix Point (gfx1150) and Strix Halo (gfx1151).
-        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151", "gfx1152"}
+        # gfx1152 is Krackan Point: same shared GPU/system-RAM pool as gfx1150/gfx1151.
+        # Case-folded: the attribute is lowercase in practice but is not guaranteed.
+        return gcn_arch, gcn_arch.lower() in {"gfx1150", "gfx1151", "gfx1152"}
 
-    # Arch attrs absent — fall back to device-name matching. Only reached under
-    # _hw.IS_ROCM, so the NVIDIA GeForce 840M cannot collide with the Krackan
-    # markers here.
+    # Arch attrs absent -- fall back to device-name matching. Only reached under _hw.IS_ROCM,
+    # so the NVIDIA GeForce 840M cannot collide with the Krackan markers.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
         "890m" in dev_lower
@@ -816,6 +1886,113 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         or "840m" in dev_lower
     )
     return gcn_arch, is_unified
+
+
+# 16 GiB, not a percentage: on a 128 GiB Strix Halo a flat 20% withholds 25.6 GiB, while
+# 0.90 there reserves 12.8 GiB and was measured as OS-starving. The constant sits between.
+_UNIFIED_OS_RESERVE_BYTES = 16 * 1024**3
+_UNIFIED_MAX_RESERVE_FRACTION = 0.20
+_DISCRETE_MEM_FRACTION = 0.90
+_MEM_FRACTION_ENV = "UNSLOTH_ROCM_MEM_FRACTION"
+
+
+def _parse_mem_fraction_env(env_value: str | None) -> float | None:
+    """``UNSLOTH_ROCM_MEM_FRACTION`` as a float, None when unset or unusable.
+
+    Shared with the OOM guard's log line so it can say whether the override was
+    actually honoured, rather than just whether the variable was set.
+    """
+    try:
+        override = float(env_value)  # None -> TypeError, "" / "  " -> ValueError
+    except (TypeError, ValueError):
+        return None
+    # Two-sided on purpose: NaN loses every comparison, so this rejects it. A one-sided
+    # `override <= 0.0 or override > 1.0` would pass NaN to set_per_process_memory_fraction.
+    return override if 0.0 < override <= 1.0 else None
+
+
+def _allocator_divides_by_props_total(torch_version: str | None) -> bool:
+    """Whether ``set_per_process_memory_fraction`` scales ``props.total_memory``.
+
+    c10's ``CUDACachingAllocator::setMemoryFraction`` caps at
+    ``fraction * device_prop.totalGlobalMem`` from torch 2.10, and at
+    ``fraction * hipMemGetInfo total`` through 2.9. Unparsable versions answer True,
+    so a surprise string keeps today's denominator rather than switching it.
+    """
+    release = str(torch_version or "").split("+", 1)[0].split(".")
+    try:
+        major, minor = int(release[0]), int(release[1])
+    except (IndexError, ValueError):
+        return True
+    return (major, minor) >= (2, 10)
+
+
+def _rocm_memory_fraction(
+    total_bytes: int,
+    is_unified: bool,
+    platform: str,
+    env_value: str | None = None,
+    denominator_bytes: int | None = None,
+) -> float:
+    """Pick the ``set_per_process_memory_fraction`` cap for a ROCm device.
+
+    ``total_bytes`` is the pool the reserve comes out of, always
+    ``get_device_properties().total_memory``: on a unified APU that is what the OS
+    shares, while ``hipMemGetInfo``'s total is a runtime budget spanning GTT.
+
+    ``denominator_bytes`` is what the allocator multiplies the fraction by, when that
+    is a different number (see ``_allocator_divides_by_props_total``). An absolute
+    byte reserve only lands where intended if the two agree, so passing it re-solves
+    the cap for the same allowed bytes, floored at the historical cap so a larger
+    driver total can never leave this tighter than the 0.80 it replaced.
+
+    - ``env_value`` (``UNSLOTH_ROCM_MEM_FRACTION``) wins when it parses to a
+      float in ``(0.0, 1.0]``; anything else is ignored, never fatal.
+    - Unified + win32: ``1.0``. The WDDM budget already excludes the OS share,
+      so any sub-1.0 cap double-taxes it (see the guard's own comment).
+    - Unified elsewhere: reserve ``min(_UNIFIED_MAX_RESERVE_FRACTION of total,
+      _UNIFIED_OS_RESERVE_BYTES)``, then clamp the cap to ``_DISCRETE_MEM_FRACTION``
+      so a huge pool never ends up looser than a discrete card. The percentage
+      ceiling keeps small pools at exactly the historical cap.
+    - Discrete: ``_DISCRETE_MEM_FRACTION``.
+    """
+    override = _parse_mem_fraction_env(env_value)
+    if override is not None:
+        return override
+
+    if not is_unified:
+        return _DISCRETE_MEM_FRACTION
+    if platform == "win32":
+        return 1.0
+    if total_bytes <= 0:
+        # The caller defaults a missing or None total to 0; with no pool size there is
+        # nothing to solve against, so keep the historical cap.
+        return 1.0 - _UNIFIED_MAX_RESERVE_FRACTION
+
+    # Solved in fraction space, not bytes: (total - 0.20 * total) / total rounds
+    # to 0.7999999999999999 on some pool sizes (12/24/28/48 GiB), which would
+    # break the "never tighter than the historical 0.80" guarantee by a ULP.
+    reserve_fraction = min(_UNIFIED_MAX_RESERVE_FRACTION, _UNIFIED_OS_RESERVE_BYTES / total_bytes)
+    fraction = 1.0 - reserve_fraction
+
+    if (
+        reserve_fraction < _UNIFIED_MAX_RESERVE_FRACTION
+        and denominator_bytes
+        and denominator_bytes > 0
+        and denominator_bytes != total_bytes
+    ):
+        # Re-solve for the same allowed bytes against the total the allocator scales.
+        # Floored, so a larger driver total cannot leave a host tighter than the 0.80
+        # this replaced. Byte arm only: the percentage arm is scale-free, and those
+        # small pools are the OOM-prone ones that must stay exactly as they were.
+        fraction = max(
+            fraction * total_bytes / denominator_bytes,
+            1.0 - _UNIFIED_MAX_RESERVE_FRACTION,
+        )
+
+    # Past ~160 GiB the byte reserve is under 10% of the pool, which would hand a unified
+    # host a looser cap than a discrete card and invert the ordering the guard is built on.
+    return min(fraction, _DISCRETE_MEM_FRACTION)
 
 
 def _nvidia_classify_spark_unified_memory(props: Any) -> tuple[str, bool]:
@@ -875,6 +2052,9 @@ def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
@@ -921,6 +2101,16 @@ def _ensure_tilelang_backend_unconditional(event_queue: Any) -> bool:
     if not needs_repair and _tilelang_importable():
         logger.info("tilelang + apache-tvm-ffi already installed")
         return True
+
+    if _model_offline_mode_enabled():
+        if needs_repair and os.environ.get("FLA_TILELANG") is None:
+            os.environ["FLA_TILELANG"] = "0"
+            logger.warning(
+                "Disabling TileLang while offline because apache-tvm-ffi %s is unsafe",
+                existing_tvm_ffi,
+            )
+        logger.info("Skipping TileLang installation while offline")
+        return False
 
     # Step 1: --no-deps keeps --force-reinstall off torch/CUDA via the dep graph.
     if needs_repair:
@@ -977,9 +2167,8 @@ def _ensure_tilelang_backend(event_queue: Any, model_name: str) -> None:
 
 
 # ── Fast-path hooks ──
-# Wrap transformers' is_{flash_linear_attention,causal_conv1d}_available so the
-# first call (at modeling import) drives the install. Models that never query
-# the gate (Llama, Gemma, dense Qwen) pay nothing.
+# Wrap transformers' is_{flash_linear_attention,causal_conv1d}_available so the first call
+# (at modeling import) drives the install; models that never query the gate pay nothing.
 # UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
 
 
@@ -1007,7 +2196,12 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
     return count
 
 
-def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
+def _install_fast_path_hooks(
+    event_queue: Any,
+    model_name: str,
+    *,
+    install_causal_conv1d: bool | None = None,
+) -> None:
     """Hook transformers' is_*_available gates so the first call drives the install.
 
     Idempotent. UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring gate.
@@ -1016,8 +2210,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         logger.info("Fast-path hooks disabled via env; using substring fallback")
         return
 
-    # On HIP torch, even installed tilelang crashes FLA's TileLang dispatch.
-    # Override with FLA_TILELANG=1.
+    # On HIP torch even installed tilelang crashes FLA's dispatch; override with FLA_TILELANG=1.
     if _torch_has_hip() and os.environ.get("FLA_TILELANG") is None:
         os.environ["FLA_TILELANG"] = "0"
         logger.info(
@@ -1059,8 +2252,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
                     logger.warning("%s install raised: %s; falling back to torch", gate_name, exc)
                     ok = False
                 logger.info("%s hook done; available=%s", gate_name, ok)
-            # post_available_fn handles "gate already True but ancillary kernel broken"
-            # (e.g. tilelang missing while FLA imports); skip when install_fn already chained it.
+            # Handles "gate already True but ancillary kernel broken" (tilelang missing while FLA imports).
             if ok and not ran_install and post_available_fn is not None:
                 try:
                     post_available_fn(event_queue)
@@ -1111,10 +2303,15 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         )
         return bool(ok)
 
-    for gate_name, install_fn, post_fn in (
+    hooks = [
         ("is_flash_linear_attention_available", _fla_install, _fla_post_available),
-        ("is_causal_conv1d_available", _causal_conv1d_install, None),
-    ):
+    ]
+    if install_causal_conv1d is None:
+        install_causal_conv1d = _model_wants_causal_conv1d(model_name)
+    if install_causal_conv1d:
+        hooks.append(("is_causal_conv1d_available", _causal_conv1d_install, None))
+
+    for gate_name, install_fn, post_fn in hooks:
         original = getattr(_iu, gate_name, None)
         if original is None:
             logger.info(
@@ -1141,12 +2338,6 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
     if not _should_try_runtime_flash_attn_install(max_seq_length):
         return
-    if has_blackwell_gpu():
-        _send_status(
-            event_queue,
-            "Skipping flash-attn install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
-        )
-        return
 
     installed = _install_package_wheel_first(
         event_queue = event_queue,
@@ -1163,7 +2354,6 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
 
 def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
-    # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
@@ -1259,8 +2449,7 @@ def _probe_mlx_vlm_numpy_image_layout(image_processor) -> str | None:
         except Exception:
             return False
 
-    # Use an asymmetric image so CHW-vs-HWC mistakes are visible to processors
-    # that skip conversion for 3D numpy arrays.
+    # Asymmetric image so CHW-vs-HWC mistakes are visible to processors that skip 3D conversion.
     hwc = np.zeros((64, 96, 3), dtype = np.uint8)
     chw = np.ascontiguousarray(hwc.transpose(2, 0, 1))
     if _accepts(hwc):
@@ -1289,9 +2478,8 @@ def _resize_mlx_vlm_image(
     if new_size != image.size:
         resampling = getattr(Image, "Resampling", Image).LANCZOS
         image = image.resize(new_size, resampling)
-    # On resize, hand mlx-vlm a writable RGB ndarray so its PIL-path
-    # square-resize is skipped and HF processors don't warn on non-writable
-    # views. resize=None above keeps the original PIL.
+    # On resize, hand mlx-vlm a writable RGB ndarray so its PIL-path square-resize is skipped
+    # and HF processors don't warn on non-writable views. resize=None keeps the original PIL.
     array = np.array(image, copy = True)
     if image_layout == "chw":
         return np.ascontiguousarray(array.transpose(2, 0, 1))
@@ -1367,9 +2555,8 @@ def _adapt_for_mlx_vlm(
 _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
-# Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used
-# only when mlx (Apple Silicon) is not importable so Unsloth config validation
-# still works on non-MLX hosts. The zoo function stays the source of truth.
+# Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used only when
+# mlx isn't importable. The zoo function stays the source of truth.
 _MLX_STUDIO_ADAMW_ALIASES = frozenset(
     (
         "adamw_8bit",
@@ -1393,8 +2580,7 @@ def _normalize_mlx_studio_optimizer(value):
         from unsloth_zoo.mlx.trainer import _normalize_mlx_optimizer_name
         return _normalize_mlx_optimizer_name(value or "adamw_8bit")
     except (ImportError, ValueError):
-        # Missing mlx, or an older unsloth-zoo whose normalizer lacks CUDA/TRL
-        # aliases: map common adamw_* names locally so notebook defaults work.
+        # Missing mlx, or an older zoo normalizer: map common adamw_* names locally.
         opt = str(getattr(value, "value", value) or "adamw_8bit").strip().lower()
         opt = opt.rsplit(".", 1)[-1].replace("-", "_")
         if opt in _MLX_STUDIO_ADAMW_ALIASES:
@@ -1413,15 +2599,14 @@ def _normalize_mlx_studio_scheduler(value):
     if raw not in _MLX_STUDIO_LR_SCHEDULERS:
         supported = ", ".join(sorted(_MLX_STUDIO_LR_SCHEDULERS))
         raise ValueError(
-            f"Unsupported LR scheduler for MLX training: {value!r}. "
-            f"Supported values: {supported}."
+            f"Unsupported LR scheduler for MLX training: {value!r}. Supported values: {supported}."
         )
     return raw
 
 
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
-    from utils.paths import resolve_dataset_path
+    from utils.paths import dataset_files_in_dir, resolve_dataset_path
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
@@ -1435,24 +2620,8 @@ def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
         file_path_obj = Path(file_path)
 
         if file_path_obj.is_dir():
-            parquet_dir = (
-                file_path_obj / "parquet-files"
-                if (file_path_obj / "parquet-files").exists()
-                else file_path_obj
-            )
-            parquet_files = sorted(parquet_dir.glob("*.parquet"))
-            if parquet_files:
-                all_files.extend(str(p) for p in parquet_files)
-                continue
-
-            candidates: list[Path] = []
-            for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-            if candidates:
-                all_files.extend(str(c) for c in candidates)
-                continue
-
-            raise ValueError(f"No supported data files in directory: {file_path_obj}")
+            all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+            continue
 
         all_files.append(str(file_path_obj))
 
@@ -1473,10 +2642,46 @@ def _mlx_local_dataset_loader_for_files(files: list[str]) -> str:
 _MLX_WORKER_COMPLETE = "_mlx_worker_complete"
 
 
-def _start_mlx_stop_poller(stop_queue):
+def _start_worker_stop_poller(
+    stop_queue,
+    on_stop: Callable[[bool], None],
+    *,
+    completion_type: str | None = None,
+    timeout: float = 1.0,
+):
     import queue as _queue
     import threading
 
+    cancel_requested = False
+
+    def poll_stop():
+        nonlocal cancel_requested
+        while True:
+            try:
+                msg = stop_queue.get(timeout = timeout)
+                if not isinstance(msg, dict):
+                    continue
+                message_type = msg.get("type")
+                if completion_type is not None and message_type == completion_type:
+                    return
+                if message_type != "stop":
+                    continue
+                if not bool(msg.get("save", True)):
+                    cancel_requested = True
+                on_stop(not cancel_requested)
+                if cancel_requested:
+                    return
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError, ValueError):
+                return
+
+    stop_thread = threading.Thread(target = poll_stop, daemon = True)
+    stop_thread.start()
+    return stop_thread
+
+
+def _start_mlx_stop_poller(stop_queue):
     stop_save = [True]
     stop_requested = [False]
     trainer_ref = [None]
@@ -1484,26 +2689,19 @@ def _start_mlx_stop_poller(stop_queue):
     def is_stop_requested():
         return stop_requested[0]
 
-    def poll_stop():
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 0.25)
-                if msg and msg.get("type") == _MLX_WORKER_COMPLETE:
-                    return
-                if msg and msg.get("type") == "stop":
-                    stop_save[0] = msg.get("save", True)
-                    stop_requested[0] = True
-                    trainer = trainer_ref[0]
-                    if trainer is not None:
-                        trainer.stop_requested = True
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
+    def apply_stop(save: bool) -> None:
+        stop_save[0] = save
+        stop_requested[0] = True
+        trainer = trainer_ref[0]
+        if trainer is not None:
+            trainer.stop_requested = True
 
-    stop_thread = threading.Thread(target = poll_stop, daemon = True)
-    stop_thread.start()
+    stop_thread = _start_worker_stop_poller(
+        stop_queue,
+        apply_stop,
+        completion_type = _MLX_WORKER_COMPLETE,
+        timeout = 0.25,
+    )
     return stop_save, stop_requested, trainer_ref, is_stop_requested, stop_thread
 
 
@@ -1520,6 +2718,31 @@ def _resolve_mlx_output_dir(config, model_name):
             output_path = Path.cwd() / output_path
         return str(output_path.resolve())
     return str(resolve_output_dir(output_dir))
+
+
+def _resolve_mlx_max_grad_norm(value):
+    """Global-norm clip threshold for MLX runs; None keeps the trainer's default.
+
+    The worker used to hardcode 0.0 and drop the requested value, so an API caller
+    asking for a threshold got none. Unset stays 0.0 so MLX keeps its cheap
+    per-parameter clipping: the gradient-norm chart is fed by report_grad_norm
+    instead, which measures the same norm without changing what gets clipped.
+    """
+    if value is None:
+        return 0.0
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Unsloth MLX: max_grad_norm={value!r} must be a non-negative float or None."
+        )
+    # inf clears a >= 0 check but never binds, so the run would train unclipped.
+    if value < 0 or not math.isfinite(value):
+        raise ValueError(
+            f"Unsloth MLX: max_grad_norm={value} must be a finite value >= 0 "
+            "(use 0 to disable global norm clipping)."
+        )
+    return value
 
 
 def _run_mlx_training(event_queue, stop_queue, config):
@@ -1575,6 +2798,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     hf_token = config.get("hf_token") or None
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
+    model_load_name = _resolve_cached_model_load_name(config)
+    model_local_only = _model_local_files_only(config)
+    model_revision = None if model_local_only else config.get("model_revision")
 
     if config.get("use_loftq"):
         message = "LoftQ is not supported for MLX training yet."
@@ -1597,18 +2823,18 @@ def _run_mlx_training(event_queue, stop_queue, config):
     lr_scheduler_type = _normalize_mlx_studio_scheduler(config.get("lr_scheduler_type", "linear"))
 
     # ── 1. Load model ──
-    # Force text-only for non-image datasets even on vision-capable models
-    # (e.g. Qwen3.5-VL trained on plain alpaca text).
+    # Force text-only for non-image datasets even on vision-capable models (e.g. Qwen3.5-VL on alpaca).
     _send("status", status_message = f"Loading {model_name}...")
-    # Pull through resume_from_checkpoint so MLXTrainer.train() can restore
-    # optimizer + step state and continue cleanly. Was previously dropped on
-    # the floor for the MLX path, so the Resume UI button silently restarted
-    # from step 0 (the CUDA path at lines 2729 / 3108 has been forwarding
-    # this all along).
+    # Pull through resume_from_checkpoint so MLXTrainer.train() can restore optimizer + step
+    # state. Previously dropped on the MLX path, so the Resume button silently restarted from
+    # step 0 (the CUDA path has been forwarding it all along).
     resume_from_checkpoint = config.get("resume_from_checkpoint") or None
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
+    # Before the download/load below: unlike the CUDA path, this needs none of the model.
+    if use_lora:
+        _check_mlx_finetune_targets(config)
     # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
     random_seed = 3407 if _raw_seed is None else int(_raw_seed)
@@ -1618,85 +2844,72 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _lora_seed = config.get("lora_random_state")
     lora_random_state = random_seed if _lora_seed is None else int(_lora_seed)
 
-    # Malware gate (MLX): a poisoned pickle deserializes on load even with
-    # trust_remote_code False, so check HF's security scan (metadata-only) first.
-    # For a LoRA, gate the base whose weights deserialize.
-    from utils.security import evaluate_file_security
+    security_error = _model_load_security_error(config, model_load_name, hf_token)
+    if security_error:
+        _send("error", **security_error)
+        return
 
-    malware_targets = [model_name]
     try:
-        from utils.models.model_config import get_base_model_from_lora_identifier
-
-        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
-        if _base:
-            malware_targets.append(_base)
-    except Exception as exc:
-        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
-    from utils.security import security_load_subdirs
-
-    for target in dict.fromkeys(malware_targets):
-        _fs = evaluate_file_security(
-            target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+        model, tokenizer = FastMLXModel.from_pretrained(
+            model_load_name,
+            load_in_4bit = config.get("load_in_4bit", True),
+            full_finetuning = not use_lora,
+            text_only = None if is_dataset_image else True,
+            token = hf_token,
+            trust_remote_code = bool(config.get("trust_remote_code", False)),
+            random_state = model_random_state,
+            revision = model_revision,
         )
-        if _fs.blocked:
-            _send(
-                "error",
-                error = _fs.reason,
-                error_kind = "malware_blocked",
-                security = _fs.response_payload(),
-            )
-            return
-
-    # Consent gate (MLX): the CUDA path gates in run_training_process, but MLX returns
-    # before that, so scan auto_map code here before FastMLXModel runs it. Block
-    # CRITICAL/HIGH unless pinned-approved; for a LoRA, gate the base whose code runs.
-    if config.get("trust_remote_code", False):
-        from utils.security import evaluate_remote_code_consent_for_targets
-
-        consent_targets = [model_name]
-        try:
-            from utils.models.model_config import get_base_model_from_lora_identifier
-
-            # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-            base_model = get_base_model_from_lora_identifier(
-                model_name, config.get("hf_token") or None
-            )
-            if base_model:
-                consent_targets.append(base_model)
-        except Exception as exc:
-            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
-        _rc = evaluate_remote_code_consent_for_targets(
-            consent_targets,
-            hf_token = hf_token,
-            trust_remote_code = True,
-            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
-            subject = config.get("subject"),
+    except Exception as error:
+        if not model_local_only:
+            raise
+        fallback_error = _model_cache_fallback_error(config, error)
+        if fallback_error is not None:
+            raise fallback_error from error
+        if not _cache_artifact_fallback_allowed(config, error, "model"):
+            raise
+        revision_error = _mlx_revision_fallback_error(config)
+        if revision_error is not None:
+            raise revision_error from error
+        _send(
+            "status",
+            status_message = (
+                f"Cached files for {model_name} are incomplete; retrying from Hugging Face..."
+            ),
         )
-        if _rc.blocked:
-            _send(
-                "error",
-                error = (
-                    f"Model '{_rc.model_name}' ships custom code flagged as "
-                    f"{_rc.max_severity} by the security scan. Review it and "
-                    f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
-                ),
-                error_kind = "remote_code_blocked",
-                remote_code = _rc.response_payload(),
-            )
+        model_load_name = _drop_model_pin_for_fallback(config, hf_token)
+        # Scan the Hub target we fall back to, not the cached pin already scanned above.
+        security_error = _model_load_security_error(config, model_load_name, hf_token)
+        if security_error:
+            _send("error", **security_error)
             return
+        model_local_only = False
+        model_revision = config.get("model_revision")
+        model, tokenizer = FastMLXModel.from_pretrained(
+            model_load_name,
+            load_in_4bit = config.get("load_in_4bit", True),
+            full_finetuning = not use_lora,
+            text_only = None if is_dataset_image else True,
+            token = hf_token,
+            trust_remote_code = bool(config.get("trust_remote_code", False)),
+            random_state = model_random_state,
+            revision = model_revision,
+        )
 
-    model, tokenizer = FastMLXModel.from_pretrained(
-        model_name,
-        load_in_4bit = config.get("load_in_4bit", True),
-        full_finetuning = not use_lora,
-        text_only = None if is_dataset_image else True,
-        token = hf_token,
-        trust_remote_code = bool(config.get("trust_remote_code", False)),
-        random_state = model_random_state,
+    from utils.models.model_identity import restore_hf_cache_repo_identity
+
+    restored_repo_id = restore_hf_cache_repo_identity(
+        model,
+        model_load_name,
+        expected_repo_id = config.get("actual_model_repo_id") or model_name,
     )
+    if restored_repo_id:
+        logger.info(
+            "Restored Hub model identity for saved MLX adapter metadata: %s",
+            restored_repo_id,
+        )
 
+    loaded_model_for_provenance = model
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
     vision_image_size = config.get("vision_image_size")
@@ -1718,8 +2931,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             status_message = f"MLX vision image resize: {vision_image_size} (max dimension)",
         )
     # ── 2. Apply LoRA / full FT ──
-    # gradient_checkpointing stays a string ("mlx"/"unsloth"/"none"/etc.);
-    # get_peft_model and MLXTrainer both accept and handle strings.
+    # gradient_checkpointing stays a string; get_peft_model and MLXTrainer both accept strings.
     gc_setting = config.get("gradient_checkpointing", "mlx")
     if isinstance(gc_setting, str):
         use_grad_checkpoint = (
@@ -1757,6 +2969,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
 
+        # is_vlm and the back-fill's outcome are known now; the preflight could only guess.
+        _check_mlx_effective_targets(
+            config,
+            finetune_language = finetune_language,
+            finetune_vision = finetune_vision,
+        )
+
         peft_kwargs["finetune_language_layers"] = finetune_language
         peft_kwargs["finetune_attention_modules"] = finetune_attention
         peft_kwargs["finetune_mlp_modules"] = finetune_mlp
@@ -1767,11 +2986,34 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 3. Load dataset ──
     _send("status", status_message = "Loading dataset...")
     hf_dataset = config.get("hf_dataset", "")
-    subset = config.get("subset")
-    train_split = config.get("train_split", "train") or "train"
-    eval_split = config.get("eval_split")
     slice_start = config.get("dataset_slice_start")
     slice_end = config.get("dataset_slice_end")
+    config["_dataset_loaded_from_exact_snapshot"] = False
+
+    # A max_steps run cannot reach the whole dataset, and everything below here
+    # (formatting, templating, tokenization) maps over every row. Recomputed from
+    # the config, never carried over from the parent, so a bound can never be stale.
+    # The vision branch is gated on `not raw_text_mode`, so a raw or CPT run takes
+    # the text path, which honours the requested packing.
+    mlx_raw_text_mode = (
+        training_type == "Continued Pretraining" or config.get("format_type") == "raw"
+    )
+    # An mlx.launch run shards the batch across its processes the same way DDP does,
+    # and it advertises the count in the env this reads.
+    mlx_max_train_rows = max_train_rows_for_config(
+        config,
+        branch_never_packs = is_vlm and not mlx_raw_text_mode,
+        world_size = _data_parallel_world_size(),
+    )
+    # MLXTrainer resumes by jumping a batch cursor into a schedule rebuilt from
+    # whatever dataset it is handed, so bounding a checkpoint written without one
+    # continues on unrelated rows. Same marker, same rule as the CUDA path.
+    mlx_max_train_rows, mlx_max_train_rows_seed = row_bound_for_resume(
+        resume_from_checkpoint, mlx_max_train_rows, random_seed
+    )
+
+    # A bracketed split names rows the same way the numeric fields do.
+    mlx_split_names_rows = "[" in (config.get("train_split") or "")
 
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
@@ -1779,8 +3021,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
             end = slice_end if slice_end is not None else len(ds) - 1
             if end < start:
                 return ds.select([])
-            ds = ds.select(range(start, min(end + 1, len(ds))))
-        return ds
+            # The user named these rows; the bound below defers to that.
+            return ds.select(range(start, min(end + 1, len(ds))))
+        if mlx_split_names_rows:
+            return ds
+        return bound_dataset_rows(
+            ds,
+            mlx_max_train_rows,
+            mlx_max_train_rows_seed,
+            on_bound = lambda kept, total: _send(
+                "status",
+                status_message = f"Using {kept} of {total} rows (max_steps run)",
+            ),
+        )
 
     def _load_local(file_paths):
         from datasets import load_from_disk
@@ -1795,11 +3048,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
         loader = _mlx_local_dataset_loader_for_files(all_files)
         return load_dataset(loader, data_files = all_files, split = "train")
 
+    eval_dataset = None
     if hf_dataset:
-        load_kwargs = {"split": train_split, "token": hf_token}
-        if subset:
-            load_kwargs["name"] = subset
-        dataset = load_dataset(hf_dataset, **load_kwargs)
+        dataset, eval_dataset = _load_hf_train_and_eval_datasets(
+            config,
+            hf_token,
+            load_dataset,
+            lambda message: _send("status", status_message = message),
+            lambda message: _send("warning", message = message),
+        )
         dataset = _slice(dataset)
     elif config.get("local_datasets"):
         dataset = _load_local(config["local_datasets"])
@@ -1827,23 +3084,24 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         raise ValueError("No dataset specified")
 
+    _emit_resource_provenance(
+        event_queue,
+        config,
+        loaded_model_for_provenance,
+        model_load_target = model_load_name,
+        model_load_in_4bit = bool(config.get("load_in_4bit")),
+        dataset_loaded_from_exact_snapshot = bool(config.get("_dataset_loaded_from_exact_snapshot")),
+    )
+
     # Eval dataset (separate split or local file)
-    eval_dataset = None
-    if eval_split and hf_dataset:
-        eval_kwargs = {"split": eval_split, "token": hf_token}
-        if subset:
-            eval_kwargs["name"] = subset
-        try:
-            eval_dataset = load_dataset(hf_dataset, **eval_kwargs)
-        except Exception as e:
-            _send("status", status_message = f"Eval split load failed: {e}")
-            eval_dataset = None
-    elif config.get("local_eval_datasets"):
+    from core.training.eval_dataset import evaluation_enabled
+
+    eval_enabled = evaluation_enabled(config.get("eval_steps"))
+    if eval_enabled and not hf_dataset and config.get("local_eval_datasets"):
         eval_dataset = _load_local(config["local_eval_datasets"])
 
     # ── 3b. Format dataset (VLM or text) ──
-    # Reuse the GPU format pipeline for VLM (auto-detects OCR/caption/llava/
-    # sharegpt+images) and text (alpaca/sharegpt/chatml → "text" column).
+    # Reuse the GPU format pipeline for VLM (OCR/caption/llava/sharegpt+images) and text.
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
     dataset_final_format = ""
@@ -1928,6 +3186,24 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
+    if eval_enabled and eval_dataset is None:
+        from core.training.eval_dataset import (
+            MIN_TOTAL_ROWS_FOR_EVAL,
+            split_dataset_for_evaluation,
+        )
+        split_result = split_dataset_for_evaluation(dataset)
+        if split_result is None:
+            _send(
+                "warning",
+                message = (
+                    f"Evaluation is enabled, but the training dataset has only {len(dataset)} "
+                    f"rows; at least {MIN_TOTAL_ROWS_FOR_EVAL} are required to create a "
+                    "held-out eval split. Training will continue without evaluation."
+                ),
+            )
+        else:
+            dataset, eval_dataset = split_result
+
     # ── 4. Resolve training steps ──
     max_steps = config.get("max_steps", 0) or 0
     num_epochs = config.get("num_epochs", 3)
@@ -1964,31 +3240,45 @@ def _run_mlx_training(event_queue, stop_queue, config):
     )
     ensure_dir(Path(output_dir))
     _emit_output_dir(event_queue, output_dir)
+    # Pin the subset before any checkpoint lands here; a resume reads it back.
+    if not record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed) and (
+        mlx_max_train_rows
+    ):
+        _send(
+            "warning",
+            message = (
+                f"Could not record the max_steps row bound in {output_dir}: "
+                "resuming this run later will read it as unbounded"
+            ),
+        )
 
     # ── 6. Create trainer ──
-    eval_steps_val = config.get("eval_steps", 0) or 0
-    if isinstance(eval_steps_val, float) and 0 < eval_steps_val < 1:
-        eval_steps_val = max(1, int(eval_steps_val * max_steps))
+    raw_eval_steps = config.get("eval_steps", 0)
+    if evaluation_enabled(raw_eval_steps):
+        eval_steps_value = float(raw_eval_steps)
     else:
-        eval_steps_val = int(eval_steps_val)
+        eval_steps_value = 0.0
+    if 0 < eval_steps_value < 1:
+        eval_steps_val = max(1, int(eval_steps_value * max_steps))
+    else:
+        eval_steps_val = int(eval_steps_value)
 
-    # Per-element clipping only; trainer owns the None default. Re-validate
-    # for direct worker callers (training.py normalizes the main path).
-    max_grad_norm = 0.0
+    # Re-validate for direct worker callers; training.py normalizes the main path.
+    max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))
     max_grad_value = config.get("max_grad_value")
     if max_grad_value is not None:
         max_grad_value = float(max_grad_value)
-        if max_grad_value < 0:
+        if max_grad_value < 0 or not math.isfinite(max_grad_value):
             raise ValueError(
-                f"Unsloth MLX: max_grad_value={max_grad_value} must be >= 0 "
+                f"Unsloth MLX: max_grad_value={max_grad_value} must be finite and >= 0 "
                 "(0 or None disables elementwise clipping)."
             )
     max_grad_leaf_norm = config.get("max_grad_leaf_norm")
     if max_grad_leaf_norm is not None:
         max_grad_leaf_norm = float(max_grad_leaf_norm)
-        if max_grad_leaf_norm < 0:
+        if max_grad_leaf_norm < 0 or not math.isfinite(max_grad_leaf_norm):
             raise ValueError(
-                f"Unsloth MLX: max_grad_leaf_norm={max_grad_leaf_norm} must be >= 0 "
+                f"Unsloth MLX: max_grad_leaf_norm={max_grad_leaf_norm} must be finite and >= 0 "
                 "(0 or None disables proportional leaf-norm clipping)."
             )
     weight_decay = config.get("weight_decay", 0.001)
@@ -2033,9 +3323,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
         mlx_config_kwargs["dataset_order"] = "torch_randperm"
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
+    if "report_grad_norm" in _supported_fields:
+        # Refills the gradient-norm chart. MLX returns a norm for free only under
+        # global-norm clipping; asking for it beats switching clip modes, which
+        # would alter the loss trajectory and cost VLM runs mx.compile.
+        mlx_config_kwargs["report_grad_norm"] = True
     if "append_eos" in _supported_fields:
-        # Unsloth SFT formatting owns rendered examples; raw/CPT text still
-        # needs MLX to append EOS like the CUDA raw-text path.
+        # Unsloth SFT formatting owns rendered examples; raw/CPT text still needs MLX to append EOS.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
 
     trainer = MLXTrainer(
@@ -2054,27 +3348,38 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("eval_configured")
 
     # ── 7. Apply train_on_responses_only if requested ──
-    # Auto-detect markers from the chat template first, manual table as
-    # fallback. Mirror the CUDA skips: raw/CPT text has no chat turns and
-    # Alpaca-rendered text lacks the chat markers. Also check the resolved
-    # format, since format_type="auto" can land on alpaca or raw text.
+    # Auto-detect markers from the chat template first, manual table as fallback. Mirror the
+    # CUDA skips: raw/CPT text has no chat turns.
+    # Check the resolved format too, since format_type="auto" can land on alpaca or raw.
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and format_type != "alpaca"
-        and dataset_final_format not in ("alpaca", "raw_text")
+        and dataset_final_format != "raw_text"
     ):
         _send("status", status_message = "Configuring response-only training...")
-        # No catch: the helper handles detection failures and double misses, so
-        # an exception here is a real masking failure that must fail the run,
-        # not silently train on full sequences.
+        # No catch: the helper handles detection failures and double misses, so an exception here
+        # is a real masking failure that must fail the run, not silently train full sequences.
         from utils.datasets.completion_masking import apply_completion_masking
-        trainer, _masking_applied = apply_completion_masking(
+
+        trainer, masking_applied = apply_completion_masking(
             trainer,
             model_name,
             train_on_responses_only,
             notify = lambda level, message: _send("status", status_message = message),
+            dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
         )
+        if not masking_applied:
+            # A miss changes the training objective for the whole run, so it belongs in the
+            # sticky warning list the eval-split fallback already uses, not a status line
+            # that scrolls past. Recovered detection failures stay status: masking applied.
+            _send(
+                "warning",
+                message = (
+                    f"'Train on completions' could not be applied for {model_name}: no "
+                    f"instruction/response markers were found. Training will run on full "
+                    f"sequences (prompts included)."
+                ),
+            )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
@@ -2280,10 +3585,9 @@ def run_mlx_training_process(
     stop_queue: Any,
     config: dict,
     transformers_activated: bool = False,
+    config_prevalidated: bool = False,
 ) -> None:
     """MLX worker entrypoint shared by Unsloth subprocesses and the CLI adapter."""
-    model_name = config["model_name"]
-
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
@@ -2294,9 +3598,16 @@ def run_mlx_training_process(
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
+    if not config_prevalidated and not _validate_training_worker_config(config, event_queue):
+        return
+    model_load_target = _resolve_cached_model_load_name(config)
+
     if not transformers_activated:
         # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
-        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
+        _activate_transformers_version_or_warn(
+            model_load_target,
+            config.get("hf_token") or None,
+        )
 
     from utils.hardware import hardware as _hw
 
@@ -2342,6 +3653,45 @@ def run_mlx_training_process(
         )
 
 
+def _training_job_is_local(config) -> bool:
+    """True when neither the model nor the dataset needs the Hub, so the probe is wasted.
+
+    Fail closed: anything unresolvable counts as remote, since skipping a needed probe
+    costs the retry backoff the probe exists to avoid.
+    """
+    try:
+        from utils.paths import is_local_path
+    except Exception:
+        return False
+    if config.get("hf_dataset"):
+        return False
+    model = config.get("model_name")
+    try:
+        if not (model and is_local_path(model)):
+            return False
+        # A local checkpoint can name a remote base, which activation resolves and training and
+        # security code later fetches. Readable from disk, so no network needed to decide.
+        base, needs_hub = _recorded_local_base(model)
+        if needs_hub:
+            return False
+        return not base or is_local_path(base)
+    except Exception:
+        return False
+
+
+def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
+    """``(base, needs_hub)`` for the base this checkpoint records on disk.
+
+    Delegates to the resolver's own disk reads so the gate cannot drift from what
+    activation later resolves. Fail closed on an unavailable reader.
+    """
+    try:
+        from utils.transformers_version import recorded_local_base
+        return recorded_local_base(model_name)
+    except Exception:
+        return None, True
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
@@ -2350,15 +3700,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         stop_queue: mp.Queue for stop commands from the parent.
         config: Training config dict with all parameters.
     """
-    # Off on Linux (forked datasets map() workers deadlock otherwise); on spawn
-    # platforms map() is in-process, so keep tokenizer threads on for faster prep.
+    # Off on Linux (forked map() workers deadlock); on spawn platforms map() is in-process.
     os.environ["TOKENIZERS_PARALLELISM"] = (
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
-    # HTTP-fallback respawn: disable Xet before any huggingface_hub import (the
-    # var is read at import time). Mirrors core/inference/worker.py.
+    # HTTP-fallback respawn: disable Xet before any huggingface_hub import (read at import time).
     from utils.hf_xet_fallback import child_should_disable_xet
 
     if child_should_disable_xet(config):
@@ -2370,40 +3718,56 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             flush = True,
         )
 
-    # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
-    if "HF_HUB_OFFLINE" not in os.environ:
-        import socket as _socket
-        import threading as _threading
+    # Offline auto-detect: skip ~25s of HF retries per call when the hub is unreachable.
+    # Skipped for a filesystem-only job: a local checkpoint with a local dataset never reaches
+    # the Hub, and probing unconditionally would add seconds to every such startup.
+    if "HF_HUB_OFFLINE" not in os.environ and not _training_job_is_local(config):
+        _offline = False
+        _network_offline = False
+        try:
+            from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
 
-        # Daemon thread so we don't mutate process-wide setdefaulttimeout.
-        _result: list = [None]
-
-        def _probe() -> None:
-            try:
-                _socket.gethostbyname("huggingface.co")
-                _result[0] = False
-            except Exception:
-                _result[0] = True
-
-        _t = _threading.Thread(target = _probe, daemon = True)
-        _t.start()
-        _t.join(2.0)
-        if _result[0] is None or _result[0] is True:
+            # Hub ignores TRANSFORMERS_OFFLINE, so translate it before probing.
+            _offline = hf_env_offline()
+            # hf_dns_dead follows HF_ENDPOINT and stands down behind a proxy, so a mirror still counts.
+            if not _offline:
+                _offline = _network_offline = hf_dns_dead()
+            if not _offline and not hf_probe_disabled():
+                # DNS answers even without egress (WAN down, captive portal). These flags last the whole
+                # job, so only a connection failure counts: a momentary 502/503 must not block downloads.
+                from utils.transformers_version import hf_endpoint_unreachable
+                _offline = _network_offline = hf_endpoint_unreachable(
+                    gateway_errors_offline = False,
+                    proxy_timeouts_offline = False,
+                )
+        except Exception:
+            _offline = _network_offline = False
+        if _offline:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-            os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+            # Only when the network itself is the reason. TRANSFORMERS_OFFLINE alone asks for cached
+            # model files, not a cache-only dataset: an uncached hf_dataset would fail the whole job.
+            if _network_offline:
+                os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
             # logger isn't configured yet; print to stderr instead.
             print(
-                "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker.",
+                "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 set for this worker.",
                 file = sys.stderr,
                 flush = True,
             )
 
     import warnings
-    from loggers.config import LogConfig
+    from loggers.config import LogConfig, keep_progress_bars_countable
 
     if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
         warnings.filterwarnings("ignore")
+
+    # This worker READS the bars: the monitor thread further down polls tqdm._instances
+    # to turn the Hub download and "Loading checkpoint shards" bars into the UI's status
+    # line, and a disabled bar is never registered there. So it redirects their output
+    # instead of disabling them, and does so before the inherited
+    # HF_HUB_DISABLE_PROGRESS_BARS reaches huggingface_hub's import-time constant.
+    keep_progress_bars_countable()
 
     LogConfig.setup_logging(
         service_name = "unsloth-studio-training-worker",
@@ -2412,7 +3776,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
+    if not _validate_training_worker_config(config, event_queue):
+        return
+
     model_name = config["model_name"]
+    model_load_target = _resolve_cached_model_load_name(config)
 
     # ── 0. MLX FAST-PATH (must run before any torch/transformers imports) ──
     # Apple Silicon uses MLXTrainer directly -- skip torch imports / installs.
@@ -2427,7 +3795,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     mlx_transformers_activated = False
     if mlx_backend_requested and _is_current_process_apple_silicon():
         # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
-        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
+        _activate_transformers_version_or_warn(
+            model_load_target,
+            config.get("hf_token") or None,
+        )
         mlx_transformers_activated = True
 
     from utils.hardware import hardware as _hw
@@ -2486,12 +3857,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             stop_queue = stop_queue,
             config = config,
             transformers_activated = mlx_transformers_activated,
+            config_prevalidated = True,
         )
         return
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name, config.get("hf_token") or None)
+        _activate_transformers_version(
+            model_load_target,
+            config.get("hf_token") or None,
+        )
     except Exception as exc:
         event_queue.put(
             {
@@ -2504,9 +3879,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         return
 
     # ── 1a. Auto-enable trust_remote_code for NemotronH/Nano models ──
-    # NemotronH needs trust_remote_code=True to work around config-parsing bugs.
-    # Other 5.x models are native and don't need it (it bypasses the compiler,
-    # disabling fused CE). Must NOT match Llama-Nemotron (standard Llama arch).
+    # NemotronH needs trust_remote_code=True to work around config-parsing bugs; other 5.x
+    # models are native (it bypasses the compiler, disabling fused CE). Not Llama-Nemotron.
     from utils.security.trusted_org import is_trusted_org_repo
 
     _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
@@ -2514,8 +3888,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if (
         any(sub in _lowered for sub in _NEMOTRON_TRUST_SUBSTRINGS)
         and (_lowered.startswith("unsloth/") or _lowered.startswith("nvidia/"))
-        # Confirm a genuine first-party Hub repo (not a local/spoofed name starting
-        # with "unsloth/"); authenticated so private first-party repos resolve.
+        # Confirm a genuine first-party Hub repo (not a spoofed "unsloth/" name); authenticated.
         and is_trusted_org_repo(model_name, hf_token = config.get("hf_token") or None)
         and not config.get("trust_remote_code", False)
     ):
@@ -2525,96 +3898,43 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             model_name,
         )
 
-    # 1a. Malware gate: a poisoned pickle deserializes on load even with
-    # trust_remote_code False, so check HF's security scan (metadata-only) first.
-    # For a LoRA, gate the base whose weights deserialize.
-    from utils.security import evaluate_file_security
-
-    malware_targets = [model_name]
-    try:
-        from utils.models.model_config import get_base_model_from_lora_identifier
-
-        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
-        if _base:
-            malware_targets.append(_base)
-    except Exception as exc:
-        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
-    from utils.security import security_load_subdirs
-
-    _ls_hf = config.get("hf_token") or None
-    for target in dict.fromkeys(malware_targets):
-        _fs = evaluate_file_security(
-            target, hf_token = _ls_hf, load_subdirs = security_load_subdirs(target, _ls_hf)
-        )
-        if _fs.blocked:
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": _fs.reason,
-                    "error_kind": "malware_blocked",
-                    "security": _fs.response_payload(),
-                    "ts": time.time(),
-                }
-            )
-            return
-
-    # 1a'. Consent gate: scan auto_map Python before it runs; refuse CRITICAL/HIGH
-    # unless pinned-approved.
-    if config.get("trust_remote_code", False):
-        from utils.security import evaluate_remote_code_consent_for_targets
-
-        # A LoRA adapter's base is where custom code runs, so gate it too.
-        consent_targets = [model_name]
-        try:
-            from utils.models.model_config import get_base_model_from_lora_identifier
-
-            # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-            base_model = get_base_model_from_lora_identifier(
-                model_name, config.get("hf_token") or None
-            )
-            if base_model:
-                consent_targets.append(base_model)
-        except Exception as exc:
-            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
-        _rc = evaluate_remote_code_consent_for_targets(
-            consent_targets,
-            hf_token = config.get("hf_token") or None,
-            trust_remote_code = True,
-            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
-            subject = config.get("subject"),
-        )
-        if _rc.blocked:
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": (
-                        f"Model '{_rc.model_name}' ships custom code flagged as "
-                        f"{_rc.max_severity} by the security scan. Review it and "
-                        f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
-                    ),
-                    "error_kind": "remote_code_blocked",
-                    "remote_code": _rc.response_payload(),
-                    "ts": time.time(),
-                }
-            )
-            return
+    security_error = _model_load_security_error(
+        config,
+        _resolve_cached_model_load_name(config),
+        config.get("hf_token") or None,
+    )
+    if security_error:
+        event_queue.put({"type": "error", **security_error, "ts": time.time()})
+        return
 
     # ── 1b. Install fast-path kernel libraries for the chosen model.
-    # 1) causal-conv1d ALWAYS runs eagerly via the substring path: some SSM
-    #    modeling files lazy_load it without calling is_causal_conv1d_available.
-    # 2) FLA + tilelang: gated by the runtime hook on
-    #    is_flash_linear_attention_available (hooks also wrap causal-conv1d).
+    # 1) causal-conv1d runs eagerly for matching architectures: some SSM modeling files
+    #    lazy_load it without calling is_causal_conv1d_available.
+    # 2) FLA + tilelang: gated by the runtime hook on is_flash_linear_attention_available.
     # 3) mamba-ssm + flash-attn keep their substring / size gates.
     # 4) UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
     try:
-        _ensure_causal_conv1d_fast_path(event_queue, model_name)
+        from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+
+        wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+            model_name,
+            model_load_target,
+            config.get("hf_token") or None,
+        )
+        _ensure_causal_conv1d_fast_path(
+            event_queue,
+            model_name,
+            required = wants_causal_conv1d,
+        )
         if os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1":
             _ensure_flash_linear_attention(event_queue, model_name)
             _ensure_tilelang_backend(event_queue, model_name)
         else:
-            _install_fast_path_hooks(event_queue, model_name)
+            _install_fast_path_hooks(
+                event_queue,
+                model_name,
+                install_causal_conv1d = wants_causal_conv1d,
+            )
         _ensure_mamba_ssm(event_queue, model_name)
         _ensure_flash_attn_for_long_context(
             event_queue,
@@ -2637,38 +3957,23 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
-    # ── 1c. Set fork start method so dataset.map() can multiprocess ──
-    # The compiled SFTTrainer disables num_proc if start method isn't "fork".
-    # Linux only and safe here (no CUDA context yet); macOS/Windows excluded.
-    if sys.platform == "linux":
-        import multiprocessing as _mp
-        try:
-            _mp.set_start_method("fork", force = True)
-        except RuntimeError:
-            pass  # Already set
+    # No start-method override: Dataset.map() imports Pool from `multiprocess`, so forcing
+    # stdlib multiprocessing onto "fork" never reached it; the guard now asks multiprocess.
 
     # ── 1c. On Windows, check Triton availability (must be before import torch) ──
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── 1d. Stub torchao on Windows ROCm ──
-    # See core/_torchao_stub.py for the rationale (no RCCL backend on Windows
-    # ROCm). No-op elsewhere. Must run before importing transformers/unsloth_zoo.
+    # See core/_torchao_stub.py (no RCCL on Windows ROCm); run before transformers/unsloth_zoo.
     from core._torchao_stub import install_torchao_windows_rocm_stub
 
     install_torchao_windows_rocm_stub()
 
     # ── 1e. Ensure torch.distributed helper attrs are present ──
-    # Single-GPU never inits the process group, but transformers/trl import
-    # these unconditionally.
+    # Single-GPU never inits the process group, but transformers/trl import these anyway.
     _td_stubs = {
         "is_initialized": lambda: False,
         "is_available": lambda: False,
@@ -2695,20 +4000,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             pass
 
     # ── 1f. Windows ROCm runtime patches ──
-    # torch._grouped_mm has a null HIP kernel on gfx1200 (ROCm ≤ 7.12 Windows),
-    # causing 0xC0000005 during training. Root cause: JitDecomp (not
-    # torch.compile) dispatches _grouped_mm → null crash; TORCHDYNAMO_DISABLE
-    # doesn't cover JitDecomp, so we also override the CUDA dispatch key with a
-    # Python fallback. Fixed in torch==2.11.0+rocm7.13.0, so gate on HIP < 7.13.
-    # Schema: _grouped_mm(self, mat2, offs=None, bias=None, out_dtype=None);
-    #   offs: optional group-split offsets (MoE-style variable-size batches).
-    # _WINDOWS_ROCM_GROUPED_MM_LIB keeps the registration alive past return/GC.
+    # torch._grouped_mm has a null HIP kernel on gfx1200 (ROCm <= 7.12 Windows), causing
+    # 0xC0000005 during training. JitDecomp (not torch.compile) dispatches _grouped_mm to the
+    # null crash and TORCHDYNAMO_DISABLE doesn't cover it, so also override the CUDA dispatch
+    # key with a Python fallback. Fixed in torch==2.11.0+rocm7.13.0, so gate on HIP < 7.13.
+    # Schema: _grouped_mm(self, mat2, offs=None, bias=None, out_dtype=None); offs = group splits.
     global _WINDOWS_ROCM_GROUPED_MM_LIB
     if sys.platform == "win32":
         _torch_for_rocm = sys.modules.get("torch")
-        # Broad check (torch.version.hip OR "rocm" in __version__): AMD SDK /
-        # Radeon wheels don't always set torch.version.hip, and without it the
-        # BNB pin, dynamo-disable, and _grouped_mm fallback would silently skip.
+        # Broad check (torch.version.hip OR "rocm" in __version__): AMD SDK / Radeon wheels don't
+        # always set torch.version.hip, and the BNB pin, dynamo-disable and fallback would skip.
         _build_version_for_rocm = (
             getattr(_torch_for_rocm, "__version__", "").lower()
             if _torch_for_rocm is not None
@@ -2722,29 +4023,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         )
         if _is_win_rocm_torch:
-            # Disable dynamo (belt-and-suspenders; the JitDecomp patch is the
-            # real fix, but this avoids other compile paths).
+            # Belt-and-suspenders; the JitDecomp patch is the real fix, but this covers other paths.
             if "TORCHDYNAMO_DISABLE" not in os.environ:
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
-            # bitsandbytes' import-time get_rocm_gpu_arch() probe runs
-            # `hipinfo.exe` from PATH; the AMD torch wheel ships it in the venv
-            # Scripts dir, which is on PATH only for activated venvs. Prepend
-            # it so the probe succeeds instead of logging a scary (harmless)
-            # "Could not detect ROCm GPU architecture" ERROR on every import.
-            # Normally inherited from main.py's env, but workers can also be
-            # spawned standalone (tests, CLI) -- keep the guard here too.
+            # bitsandbytes' import-time get_rocm_gpu_arch() probe runs `hipinfo.exe` from PATH; the AMD
+            # torch wheel ships it in the venv Scripts dir, which is on PATH only for activated venvs.
+            # Prepend it so the probe succeeds instead of logging a scary (harmless) error on every
+            # import. Normally inherited from main.py, but workers can also be spawned standalone.
             _scripts_dir = os.path.dirname(sys.executable)
             if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
                 import shutil as _shutil
                 if not _shutil.which("hipinfo.exe"):
                     os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
 
-            # BNB picks a rocm DLL from torch.version.hip, but AMD's Windows BNB
-            # wheel may ship a DLL whose suffix doesn't match. Detect the actual
-            # DLL name and override. Values seeded by the installer are
-            # redetectable defaults, while caller overrides remain authoritative.
+            # BNB picks a rocm DLL from torch.version.hip, but AMD's Windows BNB wheel may ship a DLL
+            # whose suffix doesn't match, so detect the actual DLL name and override. Installer-seeded
+            # values are redetectable defaults; caller overrides stay authoritative.
             if (
                 "BNB_ROCM_VERSION" not in os.environ
                 or os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"
@@ -2775,10 +4071,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             _bnb_rocm_ver = max(_all_vers, key = lambda v: int(v))
                 except Exception:
                     pass
-                # Only when a ROCm bnb DLL actually exists (mirrors main.py):
-                # without one the seeded value and its marker stay untouched,
-                # so later import fixes can still redetect or opt out. DLL
-                # with unparsable name -> seeded value or "72".
+                # Only when a ROCm bnb DLL actually exists (mirrors main.py): without one the seeded value
+                # and its marker stay untouched, so later import fixes can still redetect or opt out.
+                # A DLL with an unparsable name falls back to the seeded value or "72".
                 if _found_rocm_bnb:
                     _bnb_rocm_ver = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
                     os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver
@@ -2790,18 +4085,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         _bnb_rocm_ver,
                     )
 
-            # Setting BNB_ROCM_VERSION makes bitsandbytes log a benign override
-            # notice on import; drop only that record so real errors and mismatch
-            # warnings still show.
+            # Setting BNB_ROCM_VERSION makes bitsandbytes log a benign override notice on import;
+            # drop only that record so real errors and mismatch warnings still show.
             if os.environ.get("BNB_ROCM_VERSION"):
                 import logging as _logging
                 _logging.getLogger("bitsandbytes.cextension").addFilter(
                     lambda _r: "environment variable detected" not in _r.getMessage()
                 )
 
-            # Parse HIP version for the kernel-fix gate below, falling back to
-            # the rocm version embedded in torch.__version__ when version.hip is
-            # unset (AMD SDK / Radeon wheels).
+            # Parse HIP version for the kernel-fix gate below, falling back to the rocm version in
+            # torch.__version__ when version.hip is unset (AMD SDK / Radeon wheels).
             def _hip_ver_at_least(major: int, minor: int) -> bool:
                 _hip_str = getattr(getattr(_torch_for_rocm, "version", None), "hip", None)
                 if not _hip_str:
@@ -2812,8 +4105,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             int(_ver_match.group(1)),
                             int(_ver_match.group(2)),
                         ) >= (major, minor)
-                    # "+rocmsdk<date>" wheels postdate the gfx120X null-kernel
-                    # fix (ROCm 7.13), so treat them as >= 7.13 (no workaround).
+                    # "+rocmsdk<date>" wheels postdate the gfx120X null-kernel fix (ROCm 7.13); treat as >= 7.13.
                     if "rocmsdk" in _build_version_for_rocm:
                         logger.debug(
                             "Windows ROCm: AMD SDK wheel detected (%r); "
@@ -2847,8 +4139,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
                     return False
 
-            # Install the Python fallback only on affected versions (ROCm ≤ 7.12)
-            # so 7.13+ uses the real GPU kernel.
+            # Only on affected versions (ROCm <= 7.12); 7.13+ uses the real GPU kernel.
             if not _hip_ver_at_least(7, 13):
                 try:
                     _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
@@ -2867,16 +4158,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
 
     # ── 1f-linux. Linux ROCm RDNA4 _grouped_mm null kernel ──
-    # The win32 guard above misses Linux: RDNA4 (gfx1200/gfx1201) hits the same null
-    # HIP _grouped_mm kernel at ROCm <= 7.12 (fixed 7.13, ROCm/TheRock #5284). Gate on
-    # arch + HIP < 7.13 so NVIDIA/CUDA and non-RDNA4 AMD are untouched; no-op if fixed.
+    # The win32 guard above misses Linux: RDNA4 (gfx1200/gfx1201) hits the same null HIP
+    # _grouped_mm kernel at ROCm <= 7.12 (fixed 7.13, ROCm/TheRock #5284). Gate on arch + HIP.
     if sys.platform.startswith("linux") and _hw.IS_ROCM:
         try:
             _torch_lin = sys.modules.get("torch")
             if _torch_lin is not None and _torch_lin.cuda.is_available():
-                # Prefer torch.version.hip, else rocmX.Y from torch.__version__ (AMD
-                # SDK / Radeon wheels leave version.hip unset). Unknown version on a
-                # gfx120X build -> assume affected unless it is a post-fix rocmsdk wheel.
+                # Prefer torch.version.hip, else rocmX.Y from torch.__version__ (AMD SDK / Radeon wheels
+                # leave it unset). Unknown version on gfx120X -> assume affected unless a post-fix rocmsdk.
                 _hip_str = str(getattr(getattr(_torch_lin, "version", None), "hip", "") or "")
                 _ver = getattr(_torch_lin, "__version__", "").lower()
                 _m = re.match(r"(\d+)\.(\d+)", _hip_str) or re.search(r"rocm(\d+)\.(\d+)", _ver)
@@ -2884,9 +4173,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _hip_lt_713 = (int(_m.group(1)), int(_m.group(2))) < (7, 13)
                 else:
                     _hip_lt_713 = "rocmsdk" not in _ver
-                # Scan every visible GPU (device_map="balanced" can place layers on a
-                # later RDNA4 card, so device 0 is not enough). Match gfx120X by arch,
-                # or by RX 9000 / R9700 name when the wheel omits gcnArchName.
+                # Scan every visible GPU (device_map="balanced" can place layers on a later RDNA4 card).
+                # Match gfx120X by arch, or by RX 9000 / R9700 name when the wheel omits gcnArchName.
                 _rdna4 = False
                 for _i in range(_torch_lin.cuda.device_count()):
                     _props = _torch_lin.cuda.get_device_properties(_i)
@@ -2906,17 +4194,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     # ── 1g. ROCm OOM guard ──
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
-    # set_per_process_memory_fraction caps the allocator so PyTorch raises
-    # OutOfMemoryError first (NVIDIA already has a graceful OOM path).
-    # Unified-memory APUs (gfx1150/gfx1151/gfx1152) share GPU+system RAM, so use 0.80
-    # vs 0.90 for discrete. Classify via gcnArchName, else device-name markers.
-    # Non-fatal: skipped if torch is not importable.
+    # set_per_process_memory_fraction caps the allocator so PyTorch raises OutOfMemoryError
+    # first. Unified hosts share GPU+system RAM and need OS headroom, so the cap depends on
+    # the classification and the pool size (see _rocm_memory_fraction and
+    # _rocm_classify_unified_memory). Skipped if no torch.
     if _hw.IS_ROCM:
         try:
             import torch as _torch_mem
             if _torch_mem.cuda.is_available():
-                # Classify unified vs discrete via _rocm_classify_unified_memory
-                # (see its docstring for classification priority).
+                # Classify unified vs discrete (see _rocm_classify_unified_memory's docstring).
                 _props = _torch_mem.cuda.get_device_properties(0)
                 _dev_name = _props.name
                 _gcn_arch, _is_unified = _rocm_classify_unified_memory(_props)
@@ -2926,35 +4212,81 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         "unified memory from device name %r; applying unified cap",
                         _dev_name,
                     )
-                # Unified hosts on native Windows: mem_get_info's total is the
-                # WDDM budget the driver grants HIP (BIOS carve + ~half of the
-                # remaining RAM) -- the OS share is already outside it, so the
-                # Linux 0.80 starve-protection double-taxes (48.49 GiB budget →
-                # 38.79 allowed) and blocks loads that fit in free memory.
-                # 1.0 removes the double-tax. Current AMD Windows wheels only
-                # enforce sub-1.0 fractions (measured on gfx1151: 0.5 caps,
-                # 1.0 still allocates past the budget via WDDM overcommit), so
-                # 1.0 behaves like torch's uncapped default, with WDDM
-                # arbitrating residency; on wheels that do enforce it, it caps
-                # at exactly the driver-granted budget. On Linux the total
-                # spans nearly all RAM, so keep the 0.80 OS headroom there.
-                if _is_unified:
-                    _mem_fraction = 1.0 if sys.platform == "win32" else 0.80
-                else:
-                    _mem_fraction = 0.90
+                # Unified hosts on native Windows: mem_get_info's total is the WDDM budget the driver
+                # grants HIP (BIOS carve + ~half of remaining RAM). The OS share is already outside it, so
+                # any sub-1.0 starve-protection double-taxes (48.49 GiB budget -> 38.79 allowed) and
+                # blocks loads that fit in free memory. Current AMD Windows wheels only enforce sub-1.0
+                # fractions (gfx1151: 0.5 caps, 1.0 overcommits via WDDM), so 1.0 behaves like torch's
+                # uncapped default. On Linux the total spans nearly all RAM, so keep a bounded headroom
+                # (see _rocm_memory_fraction).
+                # props.total_memory is the pool the reserve comes out of, and from torch
+                # 2.10 also what the allocator scales. Through 2.9 it scales hipMemGetInfo's
+                # total, a different number on a unified APU, so hand that to the helper on
+                # those wheels and the reserve is the same bytes either way.
+                _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
+                _driver_total = 0
+                if not _allocator_divides_by_props_total(getattr(_torch_mem, "__version__", "")):
+                    try:
+                        _driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])
+                    except Exception:
+                        _driver_total = 0
+                _env_raw = os.environ.get(_MEM_FRACTION_ENV)
+                _env_fraction = _parse_mem_fraction_env(_env_raw)
+                if _env_raw and _env_fraction is None:
+                    logger.warning(
+                        "ROCm OOM guard: ignoring %s=%r (needs a float in (0.0, 1.0]); "
+                        "using the computed cap instead",
+                        _MEM_FRACTION_ENV,
+                        _env_raw,
+                    )
+                _mem_fraction = _rocm_memory_fraction(
+                    _total_bytes, _is_unified, sys.platform, _env_raw, _driver_total or None
+                )
+                # A wheel that reports no total still gets a cap; say so rather than
+                # printing "0.0 of 0.0 GiB allowed" on the one host whose props are suspect.
+                _allowed = (
+                    f"{_total_bytes * _mem_fraction / 1024**3:.1f} of "
+                    f"{_total_bytes / 1024**3:.1f} GiB allowed"
+                    if _total_bytes > 0
+                    else "device total unreported by this wheel"
+                )
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
-                    "ROCm OOM guard: set_per_process_memory_fraction(%.2f) — "
-                    "%s memory host (%s, %s)",
+                    "ROCm OOM guard: set_per_process_memory_fraction(%.4f) — "
+                    "%s memory host (%s, %s), %s, %s",
                     _mem_fraction,
                     "unified" if _is_unified else "discrete",
                     _dev_name,
                     _gcn_arch or "unknown arch",
+                    _allowed,
+                    f"from {_MEM_FRACTION_ENV}"
+                    if _env_fraction is not None
+                    else f"computed; override with {_MEM_FRACTION_ENV}",
                 )
-                # Unified Windows APUs: the WDDM budget is user-raisable, but
-                # nothing on the box says so -- users see "48 GB VRAM" on a
-                # 96 GB machine and assume an Unsloth bug. Say where the limit
-                # comes from and how to raise it.
+                # When the totals differ the cap was solved against the driver's, so the
+                # budget printed above is not the one enforced. Give both, and the headroom
+                # that results, which the floor can leave under the intended reserve.
+                if (
+                    _is_unified
+                    and sys.platform != "win32"
+                    and _env_fraction is None
+                    and _total_bytes > 0
+                    and _driver_total > 0
+                    and abs(_driver_total - _total_bytes) > _total_bytes // 100
+                ):
+                    logger.info(
+                        "ROCm OOM guard: props.total_memory is %.1f GiB but this torch caps "
+                        "against the driver's %.1f GiB, so the fraction is solved for that "
+                        "total and %.1f GiB stays free against the intended %.1f GiB. Adjust "
+                        "with %s.",
+                        _total_bytes / 1024**3,
+                        _driver_total / 1024**3,
+                        (_total_bytes - _mem_fraction * _driver_total) / 1024**3,
+                        _UNIFIED_OS_RESERVE_BYTES / 1024**3,
+                        _MEM_FRACTION_ENV,
+                    )
+                # Unified Windows APUs: the WDDM budget is user-raisable, but nothing on the box says so
+                # -- users see "48 GB VRAM" on a 96 GB machine. Say where the limit comes from.
                 if _is_unified and sys.platform == "win32":
                     try:
                         import psutil as _psutil
@@ -3035,7 +4367,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
-        from core.training.training import TrainingProgress
         from core.training.trainer import UnslothTrainer
         from utils.paths import (
             ensure_dir,
@@ -3061,8 +4392,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     # ── 2b. EMBEDDING MODEL FAST-PATH ──
     # Embedding models use a different pipeline (FastSentenceTransformer +
-    # SentenceTransformerTrainer + MultipleNegativesRankingLoss), so branch early
-    # and handle the whole flow in a self-contained function.
+    # SentenceTransformerTrainer + MultipleNegativesRankingLoss), so branch early.
     if config.get("is_embedding", False):
         try:
             _run_embedding_training(event_queue, stop_queue, config)
@@ -3080,118 +4410,164 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 3. Create a fresh trainer instance ──
     trainer = UnslothTrainer()
 
-    # Wire up progress callback → event_queue
-    def _on_progress(progress: TrainingProgress):
-        has_train_loss = progress.step > 0 and progress.loss is not None
-        has_eval_loss = progress.eval_loss is not None
-        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
-            event_queue.put(
-                {
-                    "type": "progress",
-                    "step": progress.step,
-                    "epoch": progress.epoch,
-                    "loss": progress.loss,
-                    "learning_rate": progress.learning_rate,
-                    "total_steps": progress.total_steps,
-                    "elapsed_seconds": progress.elapsed_seconds,
-                    "eta_seconds": progress.eta_seconds,
-                    "grad_norm": progress.grad_norm,
-                    "num_tokens": progress.num_tokens,
-                    "eval_loss": progress.eval_loss,
-                    "status_message": progress.status_message,
-                    "ts": time.time(),
-                }
-            )
-        if progress.status_message:
-            _send_status(event_queue, progress.status_message)
+    trainer.add_progress_callback(_create_trainer_progress_callback(event_queue))
 
-    trainer.add_progress_callback(_on_progress)
+    def _apply_stop(save: bool) -> None:
+        trainer.should_stop = True
+        trainer.save_on_stop = save
+        logger.info("Stop signal received (save=%s)", save)
 
-    # Wire up stop_queue polling to trainer.should_stop
-    import threading
-    import queue as _queue
-
-    def _poll_stop():
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 1.0)
-                if msg and msg.get("type") == "stop":
-                    save = msg.get("save", True)
-                    trainer.should_stop = True
-                    trainer.save_on_stop = save
-                    logger.info("Stop signal received (save=%s)", save)
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
-
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
-    stop_thread.start()
+    _start_worker_stop_poller(stop_queue, _apply_stop)
 
     # ── 4. Execute the training pipeline ──
-    # Order: detect → dataset → model → prepare → train. Dataset processing runs
-    # BEFORE model loading so both never occupy VRAM at once.
+    # Order: detect -> dataset -> model -> prepare -> train, so both never hold VRAM at once.
     try:
         hf_token = config.get("hf_token", "")
         hf_token = hf_token if hf_token and hf_token.strip() else None
+        model_load_name = _resolve_cached_model_load_name(config)
+        model_local_only = _model_local_files_only(config)
+        model_revision = None if model_local_only else config.get("model_revision")
+        dataset_local_only = _dataset_local_files_only(config)
+        eval_steps = config.get("eval_steps", 0.00)
+
+        hf_dataset = config.get("hf_dataset", "")
+        training_type = config.get("training_type", "LoRA/QLoRA")
+        is_cpt_for_dataset = training_type == "Continued Pretraining"
+
+        # Filled in below, after the model probe; the closure runs after both.
+        max_train_rows = None
+        max_train_rows_seed = config.get("random_seed", 3407)
+
+        def _load_training_dataset():
+            result = trainer.load_and_format_dataset(
+                dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
+                format_type = config.get("format_type", ""),
+                local_datasets = config.get("local_datasets") or None,
+                local_eval_datasets = config.get("local_eval_datasets") or None,
+                custom_format_mapping = config.get("custom_format_mapping"),
+                subset = config.get("subset"),
+                train_split = config.get("train_split", "train"),
+                eval_split = config.get("eval_split"),
+                dataset_streaming = config.get("dataset_streaming", False),
+                eval_steps = eval_steps,
+                dataset_slice_start = config.get("dataset_slice_start"),
+                dataset_slice_end = config.get("dataset_slice_end"),
+                is_cpt = is_cpt_for_dataset,
+                s3_config = config.get("s3_config"),
+                dataset_local_files_only = dataset_local_only,
+                dataset_local_path = config.get("dataset_snapshot_path"),
+                dataset_revision = config.get("dataset_revision"),
+                require_exact_resume_resources = bool(
+                    config.get("require_exact_resume_resources")
+                    or config.get("require_exact_dataset_resource")
+                ),
+                max_train_rows = max_train_rows,
+                max_train_rows_seed = max_train_rows_seed,
+            )
+            if isinstance(result, tuple):
+                loaded_dataset, loaded_eval_dataset = result
+            else:
+                loaded_dataset = result
+                loaded_eval_dataset = None
+            if eval_steps is not None and float(eval_steps) <= 0:
+                loaded_eval_dataset = None
+            snapshot = getattr(trainer, "dataset_snapshot_path", None)
+            if snapshot:
+                config["dataset_snapshot_path"] = snapshot
+            return loaded_dataset, loaded_eval_dataset
 
         # ── 4a. Lightweight detection + tokenizer (no VRAM) ──
         _send_status(event_queue, "Detecting model type...")
-        trainer.pre_detect_and_load_tokenizer(
-            model_name = model_name,
-            max_seq_length = config["max_seq_length"],
-            hf_token = hf_token,
-            is_dataset_image = config.get("is_dataset_image", False),
-            is_dataset_audio = config.get("is_dataset_audio", False),
-            trust_remote_code = config.get("trust_remote_code", False),
-        )
+        try:
+            _pre_detect_training_model(
+                trainer,
+                config,
+                model_name,
+                hf_token,
+                model_load_name,
+                model_local_only,
+                model_revision,
+            )
+        except Exception as error:
+            if not model_local_only:
+                raise
+            fallback_error = _model_cache_fallback_error(config, error)
+            if fallback_error is not None:
+                raise fallback_error from error
+            if not _cache_artifact_fallback_allowed(config, error, "model"):
+                raise
+            _send_status(
+                event_queue,
+                f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
+            )
+            model_load_name = _drop_model_pin_for_fallback(config, hf_token)
+            # Scan the Hub target we fall back to, not the cached pin already scanned above.
+            security_error = _model_load_security_error(config, model_load_name, hf_token)
+            if security_error:
+                event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                return
+            model_local_only = False
+            model_revision = config.get("model_revision")
+            _pre_detect_training_model(
+                trainer,
+                config,
+                model_name,
+                hf_token,
+                model_load_name,
+                model_local_only,
+                model_revision,
+            )
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
 
+        # 4a has probed the model, so the packing opt-out can read the real branch
+        # instead of guessing from the client's dataset flags. Streaming and explicit
+        # train-split ranges opt out inside load_and_format_dataset.
+        # Audio codecs are chosen before the raw-text bypass and use plain Trainers
+        # with no packing argument, so they hold either way; the vision and audio-VLM
+        # branches are gated on `not raw_text_mode`, so a raw or CPT run takes the
+        # text path, which honours packing.
+        raw_text_mode = is_cpt_for_dataset or config.get("format_type") == "raw"
+        branch_never_packs = bool(getattr(trainer, "_audio_type", None)) or (
+            bool(getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False))
+            and not raw_text_mode
+        )
+        # Every replica draws its own batch per step, so the subset has to cover all of
+        # them; sized here rather than in the config because it is a property of this
+        # machine's launch. Model probing is done, so torch and the GPU mask are settled.
+        max_train_rows = max_train_rows_for_config(
+            config,
+            branch_never_packs = branch_never_packs,
+            world_size = _data_parallel_world_size(),
+        )
+        # A resume trains on the rows its first start chose, read back from the marker
+        # beside the checkpoints. No marker means the checkpoint predates the bound and
+        # trained on the whole dataset; since the trainer fast-forwards by batch count
+        # over the current dataloader, bounding it now would continue on unrelated rows.
+        resumed_rows, max_train_rows_seed = row_bound_for_resume(
+            config.get("resume_from_checkpoint"), max_train_rows, max_train_rows_seed
+        )
+        if resumed_rows != max_train_rows:
+            logger.info(
+                "Resuming with the row bound recorded at the original start "
+                f"({resumed_rows} rows) instead of {max_train_rows}\n"
+            )
+            if resumed_rows and max_train_rows and resumed_rows < max_train_rows:
+                # Sized for fewer replicas than this machine has: the recorded subset
+                # is what the run trained on and re-deriving it would continue on
+                # unrelated rows, so it stays, but say that the extra ranks may reach
+                # the end of it and start over.
+                logger.info(
+                    "That subset was sized for a smaller data-parallel world than this "
+                    "one, so the added replicas may re-read rows; start a new run "
+                    "instead of resuming to size it for this machine\n"
+                )
+        max_train_rows = resumed_rows
+
         # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
         _send_status(event_queue, "Loading and formatting dataset...")
-        hf_dataset = config.get("hf_dataset", "")
-        training_type = config.get("training_type", "LoRA/QLoRA")
-        _is_cpt_for_dataset = training_type == "Continued Pretraining"
-        dataset_result = trainer.load_and_format_dataset(
-            dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
-            format_type = config.get("format_type", ""),
-            local_datasets = config.get("local_datasets") or None,
-            local_eval_datasets = config.get("local_eval_datasets") or None,
-            custom_format_mapping = config.get("custom_format_mapping"),
-            subset = config.get("subset"),
-            train_split = config.get("train_split", "train"),
-            eval_split = config.get("eval_split"),
-            dataset_streaming = config.get("dataset_streaming", False),
-            eval_steps = config.get("eval_steps", 0.00),
-            dataset_slice_start = config.get("dataset_slice_start"),
-            dataset_slice_end = config.get("dataset_slice_end"),
-            is_cpt = _is_cpt_for_dataset,
-            s3_config = config.get("s3_config"),
-        )
-
-        if isinstance(dataset_result, tuple):
-            dataset, eval_dataset = dataset_result
-        else:
-            dataset = dataset_result
-            eval_dataset = None
-
-        # Disable eval if eval_steps <= 0
-        eval_steps = config.get("eval_steps", 0.00)
-        if eval_steps is not None and float(eval_steps) <= 0:
-            eval_dataset = None
-
-        # Tell the parent eval is configured so the frontend shows
-        # "Waiting for first evaluation step..." instead of "not configured".
-        if eval_dataset is not None:
-            event_queue.put(
-                {
-                    "type": "eval_configured",
-                    "ts": time.time(),
-                }
-            )
+        dataset, eval_dataset = _load_training_dataset()
 
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
@@ -3247,20 +4623,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
-        # Latest-sidecar models load 16-bit here too: bnb 4-bit feeds quantized
-        # expert weights into unvalidated paths (same flip as the chat worker).
-        _train_load_in_4bit = config["load_in_4bit"]
-        if _train_load_in_4bit:
-            from utils.transformers_version import latest_tier_active_for
-            if latest_tier_active_for(model_name, hf_token):
-                _train_load_in_4bit = False
+        # Latest-sidecar models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
+        try:
+            _train_load_in_4bit = _effective_training_load_in_4bit(
+                config,
+                model_load_name,
+                hf_token,
+            )
+            if config["load_in_4bit"] and not _train_load_in_4bit:
                 logger.info(
                     "Latest-transformers sidecar active for %s - forcing a 16-bit "
                     "training load (4-bit is disabled for brand-new architectures)",
-                    model_name,
+                    model_load_name,
                 )
-
-        try:
             success = trainer.load_model(
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
@@ -3271,7 +4646,75 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 is_dataset_audio = config.get("is_dataset_audio", False),
                 trust_remote_code = config.get("trust_remote_code", False),
                 gpu_ids = config.get("resolved_gpu_ids"),
+                model_load_name = model_load_name,
+                local_files_only = model_local_only,
+                actual_model_repo_id = config.get("actual_model_repo_id"),
+                model_revision = model_revision,
             )
+            fallback_error = (
+                _model_cache_fallback_error(config, trainer.model_load_error)
+                if not success and model_local_only and not trainer.should_stop
+                else None
+            )
+            if fallback_error is not None:
+                trainer.training_progress.error = str(fallback_error)
+            if (
+                not success
+                and model_local_only
+                and not trainer.should_stop
+                and fallback_error is None
+                and _cache_artifact_fallback_allowed(config, trainer.model_load_error, "model")
+            ):
+                _send_status(
+                    event_queue,
+                    f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
+                )
+                model_load_name = _drop_model_pin_for_fallback(config, hf_token)
+                # Scan the Hub target we fall back to, not the cached pin already scanned above.
+                security_error = _model_load_security_error(config, model_load_name, hf_token)
+                if security_error:
+                    event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                    return
+                model_local_only = False
+                model_revision = config.get("model_revision")
+                trainer.model = None
+                trainer.tokenizer = None
+                dataset = None
+                eval_dataset = None
+                gc.collect()
+                from utils.hardware import clear_gpu_cache
+
+                clear_gpu_cache()
+                _send_status(
+                    event_queue,
+                    "Reloading and formatting the dataset with the Hub tokenizer...",
+                )
+                dataset, eval_dataset = _reload_dataset_with_remote_model_tokenizer(
+                    trainer,
+                    config,
+                    model_name,
+                    hf_token,
+                    _load_training_dataset,
+                    model_revision,
+                )
+                if dataset is None or trainer.should_stop:
+                    success = False
+                else:
+                    success = trainer.load_model(
+                        model_name = model_name,
+                        max_seq_length = config["max_seq_length"],
+                        load_in_4bit = _train_load_in_4bit,
+                        full_finetuning = not use_lora,
+                        hf_token = hf_token,
+                        is_dataset_image = config.get("is_dataset_image", False),
+                        is_dataset_audio = config.get("is_dataset_audio", False),
+                        trust_remote_code = config.get("trust_remote_code", False),
+                        gpu_ids = config.get("resolved_gpu_ids"),
+                        model_load_name = model_load_name,
+                        local_files_only = model_local_only,
+                        actual_model_repo_id = config.get("actual_model_repo_id"),
+                        model_revision = model_revision,
+                    )
         finally:
             _load_watchdog_stop.set()
             event_queue.put({"type": "model_load_completed", "ts": time.time()})
@@ -3290,16 +4733,38 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
             return
 
+        _emit_resource_provenance(
+            event_queue,
+            config,
+            trainer.model,
+            model_load_target = model_load_name,
+            model_load_in_4bit = _train_load_in_4bit,
+            dataset_loaded_from_exact_snapshot = bool(
+                getattr(trainer, "dataset_loaded_from_exact_snapshot", False)
+            ),
+        )
+
+        if eval_dataset is not None:
+            event_queue.put(
+                {
+                    "type": "eval_configured",
+                    "ts": time.time(),
+                }
+            )
+
         # ── 4d. Prepare model (LoRA, full finetuning, or CPT) ──
         if is_cpt:
             _send_status(event_queue, "Configuring LoRA for continued pretraining...")
-            # embed_tokens (if included) goes to modules_to_save — trained
-            # full-precision at embedding_learning_rate. lm_head stays a LoRA
-            # target for merge compatibility (see unsloth PR #4106).
+            # Both go to modules_to_save: trained full-precision at
+            # embedding_learning_rate, since LoRA on either never trains.
+            # By leaf: PEFT resolves model.embed_tokens to the same module.
+            _embedding_modules = ("embed_tokens", "lm_head")
             _user_modules = config.get("target_modules") or []
-            wants_embed = "embed_tokens" in _user_modules
-            cpt_trains_embeddings = wants_embed
-            cpt_target_modules = [m for m in _user_modules if m != "embed_tokens"]
+            _leaf = lambda m: str(m).rsplit(".", 1)[-1]  # noqa: E731
+            _wants = [m for m in _user_modules if _leaf(m) in _embedding_modules]
+            # Either module in modules_to_save fills the embedding_learning_rate group.
+            cpt_trains_embeddings = bool(_wants)
+            cpt_target_modules = [m for m in _user_modules if _leaf(m) not in _embedding_modules]
             if not cpt_target_modules:
                 cpt_target_modules = [
                     "q_proj",
@@ -3309,12 +4774,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "gate_proj",
                     "up_proj",
                     "down_proj",
-                    "lm_head",
                 ]
             success = trainer.prepare_model_for_training(
                 use_lora = True,
                 target_modules = cpt_target_modules,
-                modules_to_save = ["embed_tokens"] if wants_embed else None,
+                modules_to_save = _wants or None,
                 lora_r = config.get("lora_r", 128),
                 lora_alpha = config.get("lora_alpha", 32),
                 lora_dropout = config.get("lora_dropout", 0.0),
@@ -3372,8 +4836,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
             return
 
-        # embedding_learning_rate is validated by Pydantic (Optional[float],
-        # gt=0, lt=1.0); if present it's already a finite float in range.
+        # Pydantic already validated embedding_learning_rate (Optional[float], gt=0, lt=1.0).
         embedding_lr_value = config.get("embedding_learning_rate")
         if is_cpt:
             if cpt_trains_embeddings:
@@ -3386,12 +4849,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
             elif embedding_lr_value is not None:
                 logger.warning(
-                    "CPT: embedding_learning_rate was provided but embed_tokens is "
-                    "not being trained; ignoring the override.\n"
+                    "CPT: embedding_learning_rate was provided but neither embed_tokens "
+                    "nor lm_head is being trained; ignoring the override.\n"
                 )
                 embedding_lr_value = None
 
-        # Generate output dir
         resume_from_checkpoint = config.get("resume_from_checkpoint")
         output_dir = config.get("output_dir") or _output_dir_from_resume_checkpoint(
             resume_from_checkpoint
@@ -3404,6 +4866,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
+        # Pin the subset before any checkpoint lands here, so a resume reads it back
+        # rather than deriving it from a config the user may have edited in between.
+        if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
+            # Not fatal, and nothing to fall back to: the dataset is already bounded.
+            # Say it, so a later resume reading this run as unbounded is explainable.
+            logger.warning(
+                f"Could not record the max_steps row bound in {output_dir}: "
+                "resuming this run later will read it as unbounded\n"
+            )
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
@@ -3453,7 +4924,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         _tqdm_stop.set()
 
-        # Check final state
         progress = trainer.get_training_progress()
         if progress.error:
             event_queue.put(
@@ -3530,6 +5000,35 @@ def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
         pass
 
 
+def _emit_resource_provenance(
+    event_queue: Any,
+    config: dict,
+    model: Any,
+    *,
+    model_load_target: str,
+    model_load_in_4bit: bool,
+    dataset_loaded_from_exact_snapshot: bool,
+) -> None:
+    from core.training.provenance import (
+        build_worker_provenance_event,
+        incomplete_worker_provenance_event,
+    )
+
+    try:
+        event = build_worker_provenance_event(
+            config,
+            model,
+            model_load_target = model_load_target,
+            model_load_in_4bit = model_load_in_4bit,
+            dataset_loaded_from_exact_snapshot = dataset_loaded_from_exact_snapshot,
+        )
+    except Exception:
+        logger.warning("Could not attest training resource provenance", exc_info = True)
+        event = incomplete_worker_provenance_event("provenance_attestation_failed")
+    event["ts"] = time.time()
+    event_queue.put(event)
+
+
 def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
     if step <= 0:
         return False
@@ -3578,6 +5077,168 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
     return _mlx_has_checkpoint_at_step(output_dir, step)
 
 
+def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingProgress], None]:
+    """UnslothTrainer callback that reports training progress to the parent.
+
+    Status events go out only while the status is non-empty, so the empty status the
+    trainer reports on every log leaves the parent's last real status standing.
+
+    The trainer shares one TrainingProgress for metrics and status, so a status-only
+    update (an evaluation line, a warning) carries the last step's numbers unchanged.
+    The parent appends every progress event to the loss / grad-norm / eval-loss
+    histories without deduplicating the step, so those replays would plot the same
+    point again. Only a changed measurement is published; the status still is.
+    """
+
+    sent_warnings: set[str] = set()
+    last_metrics: list = [None]
+
+    def _on_progress(progress: TrainingProgress) -> None:
+        has_train_loss = progress.step > 0 and progress.loss is not None
+        has_eval_loss = progress.eval_loss is not None
+        # The end-of-run summary carries no loss (it is the mean, not a step), but it
+        # does carry the elapsed time including the final evaluation, checkpoint save
+        # and best-model reload, and a run stopped early never reaches total_steps, so
+        # the flag the trainer sets on that record is what marks it terminal.
+        is_terminal = bool(getattr(progress, "is_run_summary", False)) or (
+            progress.total_steps > 0 and progress.step >= progress.total_steps
+        )
+        # Wall-clock fields are excluded: they move on every call, so keeping them
+        # would make each status replay look like a new measurement.
+        metrics = (
+            progress.step,
+            progress.loss,
+            progress.learning_rate,
+            progress.grad_norm,
+            progress.num_tokens,
+            progress.epoch,
+            progress.eval_loss,
+        )
+        is_repeat = metrics == last_metrics[0]
+        if (
+            (progress.step == 0 and progress.total_steps > 0)
+            or has_train_loss
+            or has_eval_loss
+            or is_terminal
+        ) and not is_repeat:
+            last_metrics[0] = metrics
+            event_queue.put(
+                {
+                    "type": "progress",
+                    "step": progress.step,
+                    "epoch": progress.epoch,
+                    "loss": progress.loss,
+                    "learning_rate": progress.learning_rate,
+                    "total_steps": progress.total_steps,
+                    "elapsed_seconds": progress.elapsed_seconds,
+                    "eta_seconds": progress.eta_seconds,
+                    "grad_norm": progress.grad_norm,
+                    "num_tokens": progress.num_tokens,
+                    "eval_loss": progress.eval_loss,
+                    "status_message": progress.status_message,
+                    "ts": time.time(),
+                }
+            )
+        if progress.status_message:
+            _send_status(event_queue, progress.status_message)
+        for message in progress.warnings:
+            if message not in sent_warnings:
+                sent_warnings.add(message)
+                event_queue.put({"type": "warning", "message": message, "ts": time.time()})
+
+    return _on_progress
+
+
+def _create_embedding_progress_callback(
+    event_queue: Any,
+    *,
+    total_steps: int,
+    training_start_time: float,
+    should_stop: Callable[[], bool],
+):
+    """TrainerCallback that reports embedding training progress to the parent.
+
+    ``should_stop`` is polled in on_train_begin and on_step_end, so a stop signal
+    arriving mid-run is seen.
+    """
+    from transformers import TrainerCallback
+
+    class _EmbeddingProgressCallback(TrainerCallback):
+        def on_train_begin(self, args, state, control, **kwargs):
+            # Progress events carry an empty status, else the parent keeps showing "Starting...".
+            if should_stop():
+                return
+            _send_status(event_queue, "Training in progress...")
+
+        def on_log(
+            self,
+            args,
+            state,
+            control,
+            logs = None,
+            **kwargs,
+        ):
+            if not logs:
+                return
+            # Trainer's end-of-run summary carries train_runtime, samples and steps per
+            # second, total_flos and memory, which nothing else here publishes. It used
+            # to reach the log only through PrinterCallback's raw stdout dict.
+            from core.training.trainer import _RESERVED_LOG_KEYS, _TRAINER_SUMMARY_KEYS
+
+            if any(k in logs for k in _TRAINER_SUMMARY_KEYS):
+                logger.info(
+                    "trainer summary",
+                    **{
+                        k: v
+                        for k, v in logs.items()
+                        if isinstance(k, str) and k not in _RESERVED_LOG_KEYS
+                    },
+                )
+            # See the note in trainer.py: "train_loss" in HF's terminal summary record is
+            # the run mean, not a step loss, so it must not become the final step.
+            loss_value = logs.get("loss")
+            if loss_value is None and logs.get("train_loss") is not None:
+                print(
+                    f"Training finished: mean train_loss={logs.get('train_loss')} "
+                    f"over {state.global_step} steps",
+                    flush = True,
+                )
+            current_step = state.global_step
+
+            elapsed = time.time() - training_start_time
+            eta = None
+            if current_step > 0 and total_steps > 0:
+                remaining = total_steps - current_step
+                if remaining > 0:
+                    eta = (elapsed / current_step) * remaining
+
+            event_queue.put(
+                {
+                    "type": "progress",
+                    "step": current_step,
+                    "epoch": round(state.epoch, 2) if state.epoch else 0,
+                    "loss": loss_value,
+                    "learning_rate": logs.get("learning_rate", None),
+                    "total_steps": total_steps,
+                    "elapsed_seconds": elapsed,
+                    "eta_seconds": eta,
+                    "grad_norm": logs.get("grad_norm"),
+                    "num_tokens": getattr(state, "num_input_tokens_seen", None),
+                    "eval_loss": logs.get("eval_loss"),
+                    "status_message": "",
+                    "ts": time.time(),
+                }
+            )
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if should_stop():
+                logger.info("Embedding training: stop at step %d", state.global_step)
+                control.should_training_stop = True
+                return control
+
+    return _EmbeddingProgressCallback()
+
+
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Self-contained embedding model training pipeline.
 
@@ -3588,10 +5249,11 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
       ModernBert.py, Qwen3_Embedding_0_6B.py
     """
     import math
-    import queue as _queue
-    import threading
 
     model_name = config["model_name"]
+    model_load_name = _resolve_cached_model_load_name(config)
+    model_local_only = _model_local_files_only(config)
+    model_revision = None if model_local_only else config.get("model_revision")
     training_start_time = time.time()
 
     # ── 1. Import embedding-specific libraries ──
@@ -3610,7 +5272,6 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         from sentence_transformers.training_args import BatchSamplers
         from datasets import Dataset
         from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
-        from transformers import TrainerCallback
         from utils.paths import datasets_root, resolve_output_dir, default_run_dir_name
     except ImportError as e:
         event_queue.put(
@@ -3624,30 +5285,30 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    # datasets is only in the process now, and setup_logging ran long before it, so
+    # this is the first point where its Generating/Map bars can be quieted. Without
+    # it a local JSON/CSV/Parquet or Hub load_dataset writes them into this worker's
+    # structured log.
+    try:
+        from loggers.config import quiet_third_party_progress_bars
+        quiet_third_party_progress_bars()
+    except Exception:  # noqa: BLE001 - never let log tidying stop a run
+        pass
+
     # ── Stop signal handling ──
     _should_stop = False
     _save_on_stop = True
 
-    def _poll_stop():
+    def _apply_stop(save: bool) -> None:
         nonlocal _should_stop, _save_on_stop
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 1.0)
-                if msg and msg.get("type") == "stop":
-                    _save_on_stop = msg.get("save", True)
-                    _should_stop = True
-                    logger.info(
-                        "Embedding training: stop signal received (save=%s)",
-                        _save_on_stop,
-                    )
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
+        _save_on_stop = save
+        _should_stop = True
+        logger.info(
+            "Embedding training: stop signal received (save=%s)",
+            _save_on_stop,
+        )
 
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
-    stop_thread.start()
+    _start_worker_stop_poller(stop_queue, _apply_stop)
 
     # ── 2. Load model ──
     _send_status(event_queue, "Loading embedding model...")
@@ -3658,80 +5319,48 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = training_type == "LoRA/QLoRA"
 
-        # Malware gate (embedding): a poisoned pickle deserializes on load even with
-        # trust_remote_code False, so check HF's security scan (metadata-only) first.
-        # For a LoRA, gate the base whose weights deserialize.
-        from utils.security import evaluate_file_security
+        security_error = _model_load_security_error(config, model_load_name, hf_token)
+        if security_error:
+            event_queue.put({"type": "error", **security_error, "ts": time.time()})
+            return
 
-        malware_targets = [model_name]
         try:
-            from utils.models.model_config import get_base_model_from_lora_identifier
-            _base = get_base_model_from_lora_identifier(model_name, hf_token)
-            if _base:
-                malware_targets.append(_base)
-        except Exception as exc:
-            logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
-        from utils.security import security_load_subdirs
-
-        for target in dict.fromkeys(malware_targets):
-            _fs = evaluate_file_security(
-                target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+            model = FastSentenceTransformer.from_pretrained(
+                model_name = model_load_name,
+                max_seq_length = max_seq_length,
+                full_finetuning = not use_lora,
+                token = hf_token,
+                revision = model_revision,
+                use_exact_model_name = model_revision is not None,
             )
-            if _fs.blocked:
-                event_queue.put(
-                    {
-                        "type": "error",
-                        "error": _fs.reason,
-                        "error_kind": "malware_blocked",
-                        "security": _fs.response_payload(),
-                        "ts": time.time(),
-                    }
-                )
-                return
-
-        # Consent gate (embedding): scan any auto_map code before it runs; block
-        # CRITICAL/HIGH unless pinned-approved. A no-op without auto_map.
-        if config.get("trust_remote_code", False):
-            from utils.security import evaluate_remote_code_consent_for_targets
-
-            consent_targets = [model_name]
-            try:
-                from utils.models.model_config import get_base_model_from_lora_identifier
-                _cbase = get_base_model_from_lora_identifier(model_name, hf_token)
-                if _cbase:
-                    consent_targets.append(_cbase)
-            except Exception as exc:
-                logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-            # Scan adapter + base as one combined unit, pinned by a single fingerprint.
-            _rc = evaluate_remote_code_consent_for_targets(
-                consent_targets,
-                hf_token = hf_token,
-                trust_remote_code = True,
-                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
-                subject = config.get("subject"),
+        except Exception as error:
+            if not model_local_only:
+                raise
+            fallback_error = _model_cache_fallback_error(config, error)
+            if fallback_error is not None:
+                raise fallback_error from error
+            if not _cache_artifact_fallback_allowed(config, error, "model"):
+                raise
+            _send_status(
+                event_queue,
+                f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
             )
-            if _rc.blocked:
-                event_queue.put(
-                    {
-                        "type": "error",
-                        "error": (
-                            f"Model '{_rc.model_name}' ships custom code flagged as "
-                            f"{_rc.max_severity} by the security scan. Review it and "
-                            f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
-                        ),
-                        "error_kind": "remote_code_blocked",
-                        "remote_code": _rc.response_payload(),
-                        "ts": time.time(),
-                    }
-                )
+            model_load_name = _drop_model_pin_for_fallback(config, hf_token)
+            # Scan the Hub target we fall back to, not the cached pin already scanned above.
+            security_error = _model_load_security_error(config, model_load_name, hf_token)
+            if security_error:
+                event_queue.put({"type": "error", **security_error, "ts": time.time()})
                 return
-
-        model = FastSentenceTransformer.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            full_finetuning = not use_lora,
-            token = hf_token,
-        )
+            model_local_only = False
+            model_revision = config.get("model_revision")
+            model = FastSentenceTransformer.from_pretrained(
+                model_name = model_load_name,
+                max_seq_length = max_seq_length,
+                full_finetuning = not use_lora,
+                token = hf_token,
+                revision = model_revision,
+                use_exact_model_name = model_revision is not None,
+            )
     except Exception as e:
         event_queue.put(
             {
@@ -3743,6 +5372,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    loaded_model_for_provenance = model
     if _should_stop:
         event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
         return
@@ -3791,12 +5421,13 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 4. Load dataset ──
     _send_status(event_queue, "Loading dataset...")
     try:
-        hf_dataset = config.get("hf_dataset", "")
+        config["_dataset_loaded_from_exact_snapshot"] = False
+        hf_dataset = str(config.get("hf_dataset") or "").strip()
         local_datasets = config.get("local_datasets") or []
-        subset = config.get("subset") or None
-        train_split = config.get("train_split", "train") or "train"
 
         def _load_local_embedding_dataset(dataset_paths: list[str]):
+            from utils.paths import dataset_files_in_dir
+
             all_files: list[str] = []
             for dataset_file in dataset_paths:
                 file_path = (
@@ -3809,22 +5440,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 if os.path.isdir(file_path):
                     file_path_obj = Path(file_path)
-                    parquet_dir = (
-                        file_path_obj / "parquet-files"
-                        if (file_path_obj / "parquet-files").exists()
-                        else file_path_obj
-                    )
-                    parquet_files = sorted(parquet_dir.glob("*.parquet"))
-                    if parquet_files:
-                        all_files.extend(str(p) for p in parquet_files)
-                        continue
-                    candidates: list[Path] = []
-                    for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                        candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-                    if candidates:
-                        all_files.extend(str(c) for c in candidates)
-                        continue
-                    raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                    all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
                 else:
                     all_files.append(file_path)
 
@@ -3842,14 +5458,11 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
             return load_dataset(loader, data_files = all_files, split = "train")
 
-        if hf_dataset and hf_dataset.strip():
-            hf_token = config.get("hf_token", "")
-            hf_token = hf_token if hf_token and hf_token.strip() else None
-            dataset = load_dataset(
-                hf_dataset.strip(),
-                subset,
-                split = train_split,
-                token = hf_token,
+        if hf_dataset:
+            dataset = _load_embedding_hf_dataset(
+                config,
+                load_dataset,
+                lambda message: _send_status(event_queue, message),
             )
         elif local_datasets:
             dataset = _load_local_embedding_dataset(local_datasets)
@@ -3891,7 +5504,6 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             )
             return
 
-        # Apply dataset slicing if specified
         slice_start = config.get("dataset_slice_start")
         slice_end = config.get("dataset_slice_end")
         if slice_start is not None or slice_end is not None:
@@ -3914,6 +5526,15 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     if _should_stop:
         event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
         return
+
+    _emit_resource_provenance(
+        event_queue,
+        config,
+        loaded_model_for_provenance,
+        model_load_target = model_load_name,
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = bool(config.get("_dataset_loaded_from_exact_snapshot")),
+    )
 
     # ── 5. Create loss function ──
     loss = MultipleNegativesRankingLoss(model)
@@ -3954,7 +5575,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     warmup_steps_val = config.get("warmup_steps")
     log_frequency = config.get("log_frequency", 50)
 
-    # Build args dict
+    from core.training.trainer import _drop_hf_stdout_callbacks, _hf_stdout_progress_disabled
+
     training_args_kwargs = {
         "output_dir": output_dir,
         "per_device_train_batch_size": batch_size,
@@ -3969,9 +5591,12 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "optim": config.get("optim", "adamw_8bit"),
         "weight_decay": config.get("weight_decay", 0.001),
         "seed": config.get("random_seed", 3407),
+        # Same reason as the UnslothTrainer path: this worker has no terminal, its
+        # stdout is teed into the server log, and _create_embedding_progress_callback
+        # already publishes every number the bar carries.
+        "disable_tqdm": _hf_stdout_progress_disabled(),
     }
 
-    # max_steps vs epochs
     if max_steps_val and max_steps_val > 0:
         training_args_kwargs["max_steps"] = max_steps_val
     else:
@@ -3983,7 +5608,6 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     elif warmup_steps_val is not None and warmup_steps_val > 0:
         training_args_kwargs["warmup_steps"] = warmup_steps_val
 
-    # save_steps
     if save_steps_val and save_steps_val > 0:
         training_args_kwargs["save_steps"] = save_steps_val
         training_args_kwargs["save_strategy"] = "steps"
@@ -4000,52 +5624,12 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         total_steps = steps_per_epoch * effective_epochs
 
     # ── 8. Create progress callback ──
-    class _EmbeddingProgressCallback(TrainerCallback):
-        """Send training progress events to the parent via event_queue."""
-
-        def on_log(
-            self,
-            args,
-            state,
-            control,
-            logs = None,
-            **kwargs,
-        ):
-            if not logs:
-                return
-            loss_value = logs.get("loss", logs.get("train_loss", None))
-            current_step = state.global_step
-
-            elapsed = time.time() - training_start_time
-            eta = None
-            if current_step > 0 and total_steps > 0:
-                remaining = total_steps - current_step
-                if remaining > 0:
-                    eta = (elapsed / current_step) * remaining
-
-            event_queue.put(
-                {
-                    "type": "progress",
-                    "step": current_step,
-                    "epoch": round(state.epoch, 2) if state.epoch else 0,
-                    "loss": loss_value,
-                    "learning_rate": logs.get("learning_rate", None),
-                    "total_steps": total_steps,
-                    "elapsed_seconds": elapsed,
-                    "eta_seconds": eta,
-                    "grad_norm": logs.get("grad_norm"),
-                    "num_tokens": getattr(state, "num_input_tokens_seen", None),
-                    "eval_loss": logs.get("eval_loss"),
-                    "status_message": "",
-                    "ts": time.time(),
-                }
-            )
-
-        def on_step_end(self, args, state, control, **kwargs):
-            if _should_stop:
-                logger.info("Embedding training: stop at step %d", state.global_step)
-                control.should_training_stop = True
-                return control
+    progress_callback = _create_embedding_progress_callback(
+        event_queue,
+        total_steps = total_steps,
+        training_start_time = training_start_time,
+        should_stop = lambda: _should_stop,
+    )
 
     # ── 9. Create trainer and train ──
     _send_status(event_queue, "Starting embedding training...")
@@ -4055,8 +5639,11 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             train_dataset = dataset,
             loss = loss,
             args = args,
-            callbacks = [_EmbeddingProgressCallback()],
+            callbacks = [progress_callback],
         )
+        # disable_tqdm only swaps ProgressCallback for PrinterCallback, which prints a
+        # raw dict per step instead; both write to the same stdout.
+        _drop_hf_stdout_callbacks(trainer)
 
         trainer.train(resume_from_checkpoint = resume_from_checkpoint)
     except Exception as e:

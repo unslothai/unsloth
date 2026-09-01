@@ -53,6 +53,7 @@ that already matches logs "already matches" and returns 0 without downloading
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -95,6 +96,7 @@ InstallSelection = core.InstallSelection
 ReleaseBundle = core.ReleaseBundle
 llama_detect_host = llama.detect_host
 installed_llama_runtime = llama.installed_llama_runtime
+installed_llama_ggml_tree = llama.installed_llama_ggml_tree
 
 # Late-binding seam for prebuilt_core: name lookups hit this module's globals
 # first (so monkeypatches apply), then the core defaults.
@@ -159,26 +161,46 @@ SLIM_BACKEND_MODULE_GLOBS = {
     },
     "cuda": {"linux": "libggml-cuda.so*", "windows": "ggml-cuda.dll"},
     "metal": {"macos": "libggml-metal*.dylib"},
-    "rocm": {"linux": "libggml-hip.so*", "windows": "*hip*.dll"},
+    # Windows rocm must name the ggml module: the bundles also ship amdhip64,
+    # hipblas and libhipblaslt, which a looser *hip*.dll would accept.
+    "rocm": {"linux": "libggml-hip.so*", "windows": "ggml-hip*.dll"},
     "vulkan": {"linux": "libggml-vulkan.so*", "windows": "ggml-vulkan.dll"},
 }
 
 # Everything the slim wiring mirrors from the llama bin dir: the core ggml
 # sonames plus every dlopen'd backend module (CPU variants included). libggml*
-# matches .so and .dylib alike; ggml*.dll covers Windows. libomp*.dll rides along
-# because llama's clang-built windows-arm64 ggml-base.dll imports
-# libomp140.aarch64.dll, shipped in the llama bundle but never a system DLL, so
-# the loader needs it next to whisper-server.exe (MSVC x64 uses System32
-# vcomp140.dll; Linux ggml needs system libgomp.so.1, which llama already requires).
-SLIM_GGML_LIBRARY_GLOBS = ("libggml*", "ggml*.dll", "libomp*.dll")
+# matches .so and .dylib alike; ggml*.dll covers Windows. libomp* rides along
+# because llama's clang-built slices (windows x64/arm64, linux arm64) link ggml
+# against the LLVM OpenMP runtime and ship it in the bundle, so the loader can
+# never find it on the host. Linux x64 (gcc, host libgomp.so.1) and macOS (Apple
+# clang, no OpenMP) ship none, so the globs match nothing there.
+SLIM_GGML_LIBRARY_GLOBS = (
+    "libggml*",
+    "ggml*.dll",
+    "libomp*.dll",
+    "libomp*.so*",
+    "libomp*.dylib",
+)
 SLIM_ROCM_LIBRARY_GLOBS = (
     "libamd*.so*",
     "libhip*.so*",
     "libhsa*.so*",
     "libroc*.so*",
 )
+# Kernel catalogs a linux ROCm llama bundle can ship, mirrored into the whisper
+# bin dir so the packaged libraries find their Tensile kernels beside them.
 SLIM_ROCM_RUNTIME_DIRS = ("hipblaslt", "rocblas")
-SLIM_RUNTIME_WIRING_VERSION = 2
+# Of those, the ones a paired runtime must actually carry. hipBLASLt builds no
+# Tensile kernels for gfx1030 / RDNA2, so llama's linux-x64-rocm-gfx103X bundle
+# ships libhipblaslt.so.1 with no hipblaslt/ catalog while every other published
+# target carries one. rocblas is load-bearing: libggml-hip links librocblas
+# directly and every published linux ROCm bundle ships rocblas/library. The
+# llama installer copies only the catalogs the archive has, so demanding both
+# here rejected a runtime llama.cpp itself runs fine on (#8364).
+SLIM_ROCM_REQUIRED_RUNTIME_DIRS = ("rocblas",)
+# 3: libomp*.so*/dylib joined the wiring, so version 2 installs are missing
+# libomp.so.5 on linux arm64 and must re-wire.
+SLIM_RUNTIME_WIRING_VERSION = 3
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
 
@@ -336,28 +358,120 @@ def artifacts_for_host(
 
 # ── Slim selection (paired with the installed llama.cpp ggml runtime) ──
 def _llama_ggml_commit(tag: str) -> str | None:
-    """The ggml commit a llama.cpp fork tag was built against. Fork tags are
-    "b<upstream_build>-mix-<ggml_commit>"; the ggml commit after "-mix-" fixes
-    the ggml ABI the slim whisper bundle links against, while the build number
-    only tracks upstream llama / fork PRs outside ggml. None when the tag has no
-    "-mix-" marker (then only an exact tag pairs)."""
+    """The "-mix-" suffix of a fork tag "b<upstream_build>-mix-<suffix>".
+
+    Despite the name this is NOT a ggml commit: it hashes the pinned PR set and
+    stays constant while the base tag, and ggml with it, moves (one value covered
+    b9909..b10001, whose ggml trees differ). Fallback for releases predating
+    ggml_tree."""
     marker = "-mix-"
     idx = tag.rfind(marker)
     end = idx + len(marker)
     return tag[end:] if idx >= 0 and end < len(tag) else None
 
 
-def llama_runtime_pairs(installed_tag: str, required_tag: Any) -> bool:
+_PUBLISHED_GGML_TREE_CACHE: dict[tuple[str, str], str | None] = {}
+
+
+def published_llama_ggml_tree(tag: Any, repo: Any = None) -> str | None:
+    """ggml tree id recorded in the published llama release for ``tag``.
+
+    An install made before ggml_tree was recorded has no tree locally, and
+    nothing can backfill one without reinstalling llama. The release manifest
+    carries it, so read that instead of falling back to the "-mix-" suffix,
+    which does not track ggml. Failures return None: the caller then uses the
+    old fallback rather than refusing an otherwise valid install, so this
+    fetches once with no retries -- the retry policy exists for downloads we
+    need, and an unreachable host would otherwise stall every uncached tag."""
+    if not isinstance(tag, str) or not tag:
+        return None
+    if not (isinstance(repo, str) and repo):
+        repo = llama.DEFAULT_PUBLISHED_REPO
+    key = (repo, tag)
+    if key in _PUBLISHED_GGML_TREE_CACHE:
+        return _PUBLISHED_GGML_TREE_CACHE[key]
+    tree = None
+    try:
+        payload = _download_host_json_once(
+            release_asset_download_url(repo, tag, llama.DEFAULT_PUBLISHED_MANIFEST_ASSET)
+        )
+        if isinstance(payload, dict):
+            candidate = payload.get("ggml_tree")
+            if isinstance(candidate, str) and candidate:
+                tree = candidate
+    except Exception as exc:
+        log(f"slim_selection: could not read ggml_tree for llama {tag}: {exc}")
+    _PUBLISHED_GGML_TREE_CACHE[key] = tree
+    return tree
+
+
+def installed_llama_tree_repo() -> str | None:
+    """Repo whose published ggml tree describes the installed llama binaries.
+
+    None when there is nothing to read, or when the binaries came from a repo
+    other than the one that published the release: recorded_ggml_tree() leaves
+    the marker's tree unset in that case precisely because the fork tree does
+    not describe an upstream-built libggml, so it must not be inferred either."""
+    metadata = llama.load_prebuilt_metadata(llama.default_managed_llama_dir())
+    if metadata is None:
+        return None
+    published = metadata.get("published_repo")
+    if not isinstance(published, str) or not published:
+        return None
+    binary = metadata.get("binary_repo")
+    if isinstance(binary, str) and binary and binary != published:
+        return None
+    return published
+
+
+def llama_runtime_pairs(
+    installed_tag: str,
+    required_tag: Any,
+    *,
+    installed_ggml_tree: Any = None,
+    required_ggml_tree: Any = None,
+    installed_repo: Any = None,
+) -> bool:
     """Whether an installed llama tag can back a slim bundle needing required_tag.
-    An exact tag always pairs; so does a shared ggml commit, since a newer llama
-    build with the same ggml ships an ABI-identical runtime. requires_ggml_sonames
-    stays the real per-file ABI gate."""
+    An exact tag always pairs; otherwise the ggml tree ids decide, since they
+    change exactly when ggml does. The "-mix-" suffix does not track ggml at all
+    (see _llama_ggml_commit) and is only used when either tree is missing.
+    requires_ggml_sonames stays the per-file ABI gate.
+
+    installed_repo is the repo that published the installed runtime (from
+    installed_llama_tree_repo()); without it the installed tag's tree is not
+    inferred, since only the caller knows the binaries came from that release."""
     if not isinstance(required_tag, str):
         return False
     if installed_tag == required_tag:
         return True
+    # An install predating ggml_tree has no tree locally, so read it from that
+    # tag's published release rather than stranding the install on a suffix
+    # comparison that ignores ggml.
+    if not (isinstance(installed_ggml_tree, str) and installed_ggml_tree):
+        if isinstance(installed_repo, str) and installed_repo:
+            installed_ggml_tree = published_llama_ggml_tree(installed_tag, installed_repo)
+    # Only probe the required release once the installed side actually resolved:
+    # the comparison below needs both trees, so with no installed tree the answer
+    # cannot change the verdict and the request is a 30s stall for nothing.
+    if installed_ggml_tree and not (isinstance(required_ggml_tree, str) and required_ggml_tree):
+        required_ggml_tree = published_llama_ggml_tree(required_tag)
+    if installed_ggml_tree and required_ggml_tree:
+        return installed_ggml_tree == required_ggml_tree
     commit = _llama_ggml_commit(installed_tag)
     return commit is not None and commit == _llama_ggml_commit(required_tag)
+
+
+def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
+    """Whether a paired Windows llama runtime carries a GPU ggml backend module.
+    Only the cpu bundle links ggml against libomp, and bundle_profile cannot tell
+    the two apart: it is absent on both the published rocm artifacts and every
+    upstream-sourced install, so the files on disk decide."""
+    for backend, per_os in SLIM_BACKEND_MODULE_GLOBS.items():
+        glob = per_os.get("windows")
+        if backend != "cpu" and glob and any(llama_bin_dir.glob(glob)):
+            return True
+    return False
 
 
 def slim_pairing_for_artifact(
@@ -373,7 +487,13 @@ def slim_pairing_for_artifact(
         return None
     llama_bin_dir, llama_tag, _profile = runtime
     requires_tag = artifact.get("requires_llama_tag")
-    if not llama_runtime_pairs(llama_tag, requires_tag):
+    if not llama_runtime_pairs(
+        llama_tag,
+        requires_tag,
+        installed_ggml_tree = installed_llama_ggml_tree(),
+        required_ggml_tree = artifact.get("requires_ggml_tree"),
+        installed_repo = installed_llama_tree_repo(),
+    ):
         log(
             f"slim_selection: {asset} skipped: installed llama tag {llama_tag!r} "
             f"does not pair with required {requires_tag!r}"
@@ -383,7 +503,21 @@ def slim_pairing_for_artifact(
     if not isinstance(sonames, list) or not sonames:
         log(f"slim_selection: {asset} skipped: manifest lists no requires_ggml_sonames")
         return None
-    missing = [str(name) for name in sonames if not (llama_bin_dir / str(name)).is_file()]
+    required_sonames = [str(name) for name in sonames]
+    if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
+        # The shared Windows manifest lists libomp only because the cpu bundle's
+        # ggml links against it; a GPU bundle neither ships nor imports it, so
+        # requiring it there only mis-rejects. link_ggml_runtime still wires it.
+        # This drops libomp140.aarch64.dll as readily as the x64 name, which is
+        # safe only while llama publishes no Windows arm64 GPU bundle: that slice
+        # is clang-built and its ggml really does need LLVM OpenMP (see
+        # SLIM_GGML_LIBRARY_GLOBS). Re-check this gate before adding one.
+        required_sonames = [
+            name
+            for name in required_sonames
+            if not (name.lower().startswith("libomp") and name.lower().endswith(".dll"))
+        ]
+    missing = [name for name in required_sonames if not (llama_bin_dir / name).is_file()]
     if missing:
         log(f"slim_selection: {asset} skipped: llama runtime missing {', '.join(missing)}")
         return None
@@ -486,12 +620,31 @@ def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> s
     if runtime is None:
         return None
     installed_tag = runtime[1]
-    required_tags = {
-        artifact.get("requires_llama_tag")
+    installed_tree = installed_llama_ggml_tree()
+    installed_repo = installed_llama_tree_repo()
+    # Normalise the tree: llama_runtime_pairs treats a non-string as absent, but
+    # an unhashable one (list/dict) would blow up the set first.
+    required_pairs = {
+        (
+            artifact.get("requires_llama_tag"),
+            artifact["requires_ggml_tree"]
+            if isinstance(artifact.get("requires_ggml_tree"), str)
+            else None,
+        )
         for artifact in os_compatible
         if isinstance(artifact.get("requires_llama_tag"), str)
     }
-    if required_tags and not any(llama_runtime_pairs(installed_tag, tag) for tag in required_tags):
+    required_tags = {tag for tag, _tree in required_pairs}
+    if required_tags and not any(
+        llama_runtime_pairs(
+            installed_tag,
+            tag,
+            installed_ggml_tree = installed_tree,
+            required_ggml_tree = tree,
+            installed_repo = installed_repo,
+        )
+        for tag, tree in required_pairs
+    ):
         required_tag = sorted(required_tags)[0]
         return (
             f"slim bundle requires llama.cpp {required_tag}; installed llama.cpp is {installed_tag}"
@@ -552,6 +705,22 @@ def _download_host_latest_release_tag(repo: str) -> str | None:
 
 def _download_host_json(url: str) -> Any:
     return core.fetch_download_host_json(_OPS, url)
+
+
+def _download_host_json_once(url: str) -> Any:
+    """One attempt, for a probe whose failure path is a cheap fallback.
+
+    A refused or blackholed host is a retryable URLError, so the default policy
+    would spend four attempts with backoff per tag before returning the answer
+    the caller already has a fallback for.
+
+    Only the ATTEMPT count is overridden. ``download_bytes`` falls back to
+    ``auth_headers(url)`` when headers are absent, so passing a bare User-Agent
+    silently dropped auth: a private published repo 404s and the caller drops to
+    the "-mix-" suffix compare this exists to replace, and an anonymous
+    huggingface.co fetch shares the per-IP limit that 429s CI fleets."""
+    data = download_bytes(url, timeout = 30, attempts = 1, headers = auth_headers(url))
+    return json.loads(data.decode("utf-8"))
 
 
 def _resolve_release_via_download_host(
@@ -780,11 +949,20 @@ def link_runtime_directories(
     linked: list[str] = []
     for name in SLIM_ROCM_RUNTIME_DIRS:
         source_root = llama_bin_dir / name
-        if not source_root.is_dir():
-            raise PrebuiltFallback(f"paired ROCm runtime is missing its {name} kernel catalog")
-        files = [path for path in source_root.rglob("*") if path.is_file()]
+        required = name in SLIM_ROCM_REQUIRED_RUNTIME_DIRS
+        files = (
+            [path for path in source_root.rglob("*") if path.is_file()]
+            if source_root.is_dir()
+            else []
+        )
         if not files:
-            raise PrebuiltFallback(f"paired ROCm runtime has an empty {name} kernel catalog")
+            if not required:
+                # hipBLASLt has no kernels for this target; llama pairs without
+                # the catalog and runs, so whisper must pair the same way.
+                log(f"slim install: paired ROCm runtime ships no {name} kernel catalog; skipping")
+                continue
+            missing = "is missing its" if not source_root.is_dir() else "has an empty"
+            raise PrebuiltFallback(f"paired ROCm runtime {missing} {name} kernel catalog")
         for source in files:
             _link_or_copy(source, whisper_bin_dir / name / source.relative_to(source_root))
         linked.append(name)
@@ -844,7 +1022,13 @@ def selection_from_artifact(
     # A slim selection carries its pairing so the install wiring and marker know
     # which llama runtime provides the ggml libraries.
     runtime = installed_llama_runtime()
-    if runtime is None or not llama_runtime_pairs(runtime[1], artifact.get("requires_llama_tag")):
+    if runtime is None or not llama_runtime_pairs(
+        runtime[1],
+        artifact.get("requires_llama_tag"),
+        installed_ggml_tree = installed_llama_ggml_tree(),
+        required_ggml_tree = artifact.get("requires_ggml_tree"),
+        installed_repo = installed_llama_tree_repo(),
+    ):
         raise PrebuiltFallback(
             "the paired llama.cpp runtime changed underneath the slim whisper selection"
         )
@@ -908,12 +1092,16 @@ def existing_install_matches(
             )
             return False
         runtime_dirs = marker.get("linked_runtime_directories")
+        # Subset plus required, not equality: a target without hipBLASLt kernels
+        # wires rocblas alone and is complete (#8364), while an unknown name or
+        # a missing rocblas still means stale or hand-edited wiring.
         if (
             marker.get("backend") == "rocm"
             and not host.is_windows
             and (
                 not isinstance(runtime_dirs, list)
-                or set(runtime_dirs) != set(SLIM_ROCM_RUNTIME_DIRS)
+                or not set(runtime_dirs) <= set(SLIM_ROCM_RUNTIME_DIRS)
+                or not set(SLIM_ROCM_REQUIRED_RUNTIME_DIRS) <= set(runtime_dirs)
             )
         ):
             log(f"existing ROCm install at {install_dir} lacks kernel catalogs; reinstalling")
@@ -1215,6 +1403,19 @@ def resolver_payload_extra(artifact: dict[str, Any]) -> dict[str, Any]:
     return {"install_kind": "slim" if artifact.get("install_kind") == "slim" else "fat"}
 
 
+def unavailable_payload(published_repo: str, exc: BaseException) -> dict[str, Any]:
+    """The resolver's negative answer, carrying WHY: the same split the install path
+    makes (ReleaseCompatibilityError is exit 2, everything else exit 1). Flattened, a
+    caller cannot tell a confirmed pairing gap from a probe that never answered."""
+    return {
+        "prebuilt_available": False,
+        "repo": published_repo,
+        "unavailable_reason": (
+            "incompatible" if isinstance(exc, ReleaseCompatibilityError) else "unresolved"
+        ),
+    }
+
+
 def resolve_prebuilt(
     host: HostInfo,
     *,
@@ -1234,8 +1435,8 @@ def resolve_prebuilt(
             requested_backend = requested_backend,
             verify_checksums = False,
         )
-    except PrebuiltFallback:
-        return {"prebuilt_available": False, "repo": published_repo}
+    except PrebuiltFallback as exc:
+        return unavailable_payload(published_repo, exc)
     os_token, arch_token = host_platform_tokens(host)
     payload = {
         "prebuilt_available": True,
@@ -1357,11 +1558,11 @@ def main(argv: list[str] | None = None) -> int:
                 backend = args.backend,
                 cpu_fallback = args.cpu_fallback,
             )
-        except PrebuiltFallback:
-            payload = {"prebuilt_available": False, "repo": args.published_repo}
+        except PrebuiltFallback as exc:
+            payload = unavailable_payload(args.published_repo, exc)
         except Exception as exc:  # noqa: BLE001 - probe must never crash the caller
             log(f"resolve failed: {exc}")
-            payload = {"prebuilt_available": False, "repo": args.published_repo}
+            payload = unavailable_payload(args.published_repo, exc)
         emit_resolver_output(payload, output_format = args.output_format)
         return EXIT_SUCCESS
 

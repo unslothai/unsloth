@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.7.5"
+from .._version import __version__
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
+    "_requested_float32",
+    "_mark_requested_float32",
+    "_mark_forced_float32",
+    "_mark_full_finetuning",
     "is_vLLM_available",
     "prepare_model_for_kbit_training",
     "xformers",
@@ -28,7 +32,6 @@ __all__ = [
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
     "USE_MODELSCOPE",
     "platform_system",
-    "resolve_hip_gpu_stats_name",
     "patch_tokenizer",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
@@ -77,6 +80,7 @@ __all__ = [
     "RaiseUninitialized",
     "fast_inference_setup",
     "patch_peft_fast_inference",
+    "save_lora_adapter",
     "error_out_no_vllm",
     "dequantize_module_weight",
     "patch_hf_quantizer",
@@ -89,6 +93,18 @@ __all__ = [
     "get_moe_target_modules",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
+    "EMBEDDING_MODULES",
+    "_embedding_leaf",
+    "_embedding_leaves",
+    "_model_ties_embeddings",
+    "_effective_weight_tying",
+    "_embedding_name_is_unambiguous",
+    "_redirect_embedding_targets",
+    "_raise_if_no_lora_targets_left",
+    "_resolve_ensure_weight_tying",
+    "_vllm_unmovable_embedding_modules",
+    "_drop_tied_output_module",
+    "_raise_if_fast_inference_modules_to_save",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
@@ -243,37 +259,6 @@ def _mark_unsloth_disable_data_parallel(model, disable = True):
     for module in _iter_wrapped_models(model):
         setattr(module, "_unsloth_disable_data_parallel", bool(disable))
     return model
-
-
-def resolve_hip_gpu_stats_name(gpu_stats):
-    name = str(getattr(gpu_stats, "name", "") or "").strip()
-    name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
-    normalized_name = name.lower().strip(". ")
-    if normalized_name and normalized_name not in ("amd radeon graphics",):
-        return name + ". "
-
-    try:
-        torch_name = str(torch.cuda.get_device_name(0) or "").strip()
-        torch_name = re.sub(r"\s*\([^)]*\)\s*$", "", torch_name).strip()
-    except Exception:
-        torch_name = ""
-    normalized_torch_name = torch_name.lower().strip(". ")
-    if normalized_torch_name and normalized_torch_name not in ("amd radeon graphics",):
-        return torch_name + ". "
-
-    arch_name = ""
-    for key in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
-        value = getattr(gpu_stats, key, None)
-        if value is not None and str(value).strip():
-            arch_name = str(value).strip()
-            break
-
-    if arch_name:
-        arch_name = arch_name.strip()
-        match = re.search(r"(gfx[0-9a-z]+)", arch_name, flags = re.I)
-        if match:
-            return f"AMD {match.group(1).lower()} GPU. "
-    return "AMD GPU. "
 
 
 from unsloth_zoo.temporary_patches import (
@@ -483,12 +468,40 @@ def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
 
 
+# Ampere. Below it the flex HOP runs its eager `sdpa_dense` fallback, whose
+# backward does `softmax_scores.to(query.dtype) @ grad_out` -- casting the scores
+# but not `grad_out`. Such a card also forces fp16 here, so query is Half against
+# a Float grad and the matmul is refused.
+_FLEX_ATTENTION_MIN_CAPABILITY = (8, 0)
+
+
+def _flex_attention_gpu_is_supported():
+    """False only for NVIDIA cards below Ampere.
+
+    ROCm, XPU, MPS, CPU and an unreadable device are left alone, so this can
+    only ever remove a path that was already broken.
+    """
+    try:
+        if getattr(torch.version, "hip", None):
+            return True
+        if not torch.cuda.is_available():
+            return True
+        return all(
+            torch.cuda.get_device_capability(index) >= _FLEX_ATTENTION_MIN_CAPABILITY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return True
+
+
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
     if not getattr(model_class, "_supports_flex_attn", False):
         return False
     if _is_flex_excluded(model_type):
+        return False
+    if not _flex_attention_gpu_is_supported():
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -514,9 +527,48 @@ def _config_get(
     field_name,
     default = None,
 ):
-    if isinstance(config, dict):
-        return config.get(field_name, default)
-    return getattr(config, field_name, default)
+    try:
+        if isinstance(config, dict):
+            return config.get(field_name, default)
+        return getattr(config, field_name, default)
+    except Exception:
+        # transformers 5.x heterogeneous configs (Gemma 3n / Gemma 4, anything
+        # with `per_layer_config`) raise AmbiguousGlobalPerLayerAttributeError,
+        # not AttributeError, on a global read of a per-layer field, so a getattr
+        # default does not cover it. This killed model load on transformers
+        # 5.15.0. Not caught by name: the class does not exist on 4.x, and a
+        # config is third-party code that may raise anything.
+        return default
+
+
+def _get_per_layer_values(config, field_name):
+    """Per-layer values for `field_name`; empty for homogeneous or 4.x configs."""
+    per_layer = _config_get(config, "per_layer_config", None)
+    if per_layer is None or isinstance(per_layer, (str, bytes)):
+        return []
+    # Three shapes: a live `_PerLayerConfigView` (a Sequence, not a list/tuple);
+    # `to_dict`/config.json, a mapping of zero-padded layer index to overrides
+    # like `{"04": {"head_dim": 512}}`; and Unsloth's SimpleNamespace wrap of it.
+    # Iterating a mapping walks the indices, not the overrides, so the probe
+    # would answer 256 where the object form answers 512.
+    if isinstance(per_layer, dict):
+        per_layer = list(per_layer.values())
+    else:
+        try:
+            iter(per_layer)
+        except TypeError:
+            # Namespace form. `iter` not `__iter__`: the view may be an
+            # old-style sequence with only `__getitem__`.
+            per_layer = list(vars(per_layer).values()) if hasattr(per_layer, "__dict__") else []
+    values = []
+    try:
+        for layer_config in per_layer:
+            value = _config_get(layer_config, field_name, None)
+            if value is not None:
+                values.append(value)
+    except Exception:
+        return values
+    return values
 
 
 def _config_set(config, field_name, value):
@@ -575,9 +627,14 @@ def _collect_attention_head_dims(config):
         "local_head_dim",
         "kv_head_dim",
     ):
-        value = _config_get(config, field_name, None)
-        if isinstance(value, int) and value > 0:
-            explicit_head_dims.append(value)
+        # Per-layer first: on a heterogeneous config the global read refuses,
+        # and no head dim reads as "no reason to disable Flash Attention" on
+        # exactly the models whose layers may exceed its ceiling.
+        candidates = _get_per_layer_values(config, field_name)
+        candidates.append(_config_get(config, field_name, None))
+        for value in candidates:
+            if isinstance(value, int) and value > 0:
+                explicit_head_dims.append(value)
 
     if len(explicit_head_dims) != 0:
         return explicit_head_dims
@@ -635,6 +692,7 @@ def _disable_flash_attention_if_needed(
     supports_flex_attention = False,
     would_use_flash_attention = False,
     disable_reason = None,
+    honor_config_attn_implementation = True,
 ):
     if disable_reason is None:
         disable_reason = _get_flash_attention_disable_reason(config)
@@ -647,11 +705,14 @@ def _disable_flash_attention_if_needed(
     # defaults, so they must not be treated as a deliberate user choice.
     explicit_request = attn_implementation
 
+    # Off for a float32 load: with no flash-specific reason the config never steered the
+    # choice, so a config-seeded "eager" must not drag an fp32 load from sdpa down to eager.
     requested_attn_implementation = attn_implementation
-    if requested_attn_implementation is None:
-        requested_attn_implementation = _config_get(config, "_attn_implementation", None)
-    if requested_attn_implementation is None:
-        requested_attn_implementation = _config_get(config, "attn_implementation", None)
+    if honor_config_attn_implementation:
+        if requested_attn_implementation is None:
+            requested_attn_implementation = _config_get(config, "_attn_implementation", None)
+        if requested_attn_implementation is None:
+            requested_attn_implementation = _config_get(config, "attn_implementation", None)
 
     if requested_attn_implementation == "eager":
         return _set_attn_impl(config, "eager")
@@ -831,6 +892,7 @@ def resolve_attention_implementation(
     config,
     requested_attn_implementation = None,
     supports_sdpa = None,
+    dtype = None,
 ):
     model_type_name = _config_get(config, "model_type", "")
     model_type = model_type_name.lower()
@@ -848,6 +910,10 @@ def resolve_attention_implementation(
     )
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     disable_reason = _get_flash_attention_disable_reason(config)
+    float32_is_only_disable_reason = disable_reason is None and dtype is torch.float32
+    if float32_is_only_disable_reason:
+        # FA2 kernels only accept fp16/bf16, and fp32 generate runs without autocast, so it raises.
+        disable_reason = "the model loads in float32 which Flash Attention does not support"
     flash_attention_disabled = disable_reason is not None
 
     if model_class is None:
@@ -868,8 +934,16 @@ def resolve_attention_implementation(
                 config,
                 supports_sdpa = supports_sdpa,
                 supports_flex_attention = supports_flex_attention,
-                would_use_flash_attention = (HAS_FLASH_ATTENTION and supports_flash_attention),
+                would_use_flash_attention = (
+                    HAS_FLASH_ATTENTION
+                    and supports_flash_attention
+                    # An explicit request is settled below and reports its own downgrade.
+                    and not (
+                        float32_is_only_disable_reason and requested_attn_implementation is not None
+                    )
+                ),
                 disable_reason = disable_reason,
+                honor_config_attn_implementation = not float32_is_only_disable_reason,
             )
         elif supports_sdpa:
             attn_impl = _set_attn_impl(config, "sdpa")
@@ -881,9 +955,17 @@ def resolve_attention_implementation(
         else:
             attn_impl = _set_attn_impl(config, "eager")
 
+    # float32 only rules out flash, unlike config-driven reasons which say something about the
+    # model itself. So an explicit non-flash request must skip the flash fallback ladder, which
+    # answers differently: gemma3 + "sdpa" resolves to eager, but the ladder says flex_attention.
+    reroute_request_through_flash_fallback = flash_attention_disabled and not (
+        float32_is_only_disable_reason
+        and not _is_flash_attention_requested(requested_attn_implementation)
+    )
+
     if requested_attn_implementation is None:
         final_attn_impl = attn_impl
-    elif flash_attention_disabled:
+    elif reroute_request_through_flash_fallback:
         final_attn_impl = _disable_flash_attention_if_needed(
             config,
             requested_attn_implementation,
@@ -1145,6 +1227,96 @@ def _adapter_repo_has_safetensors(
         return False
 
 
+def _st_weighted_subfolder_paths(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    cache_dir = None,
+):
+    """Best-effort: which subfolder modules of this sentence-transformers repo hold weights the load
+    reads? Returns their declared paths, or () for anything that is not such a repo. Any failure returns
+    (), which keeps the previous behaviour.
+
+    weights_at_root is a two-way split, root weights or per-subfolder weights, and an ST model can be
+    both: unsloth/embeddinggemma-300m ships a root model.safetensors plus 2_Dense/model.safetensors and
+    3_Dense/model.safetensors, which the ST load reads as part of the model. Pruning those made the
+    download unsatisfiable, and unsloth_zoo's post-download gate then reported it as a network fault.
+
+    modules.json is a few hundred bytes, and the module taxonomy is shared with unsloth_zoo rather than
+    restated, so the two cannot drift apart."""
+    try:
+        import json as _json
+
+        from huggingface_hub import hf_hub_download
+
+        from unsloth_zoo.hf_cache_state import _ST_WEIGHTED_MODULE_TYPES
+
+        path = hf_hub_download(
+            model_name,
+            "modules.json",
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
+        with open(path, "r", encoding = "utf-8") as f:
+            modules = _json.load(f)
+        if not isinstance(modules, list):
+            return ()
+        paths = []
+        for module in modules:
+            if not isinstance(module, dict):
+                continue
+            module_path = module.get("path")
+            # strip() before strip("/"): "  ".strip("/") is still truthy, and blank is not a subfolder.
+            if not isinstance(module_path, str) or not module_path.strip().strip("/"):
+                continue  # the root module, already covered by the root weight check
+            module_type = module.get("type")
+            leaf = module_type.rsplit(".", 1)[-1].lower() if isinstance(module_type, str) else ""
+            if leaf in _ST_WEIGHTED_MODULE_TYPES:
+                paths.append(module_path.strip().strip("/").replace("\\", "/"))
+        return tuple(paths)
+    except Exception:
+        return ()
+
+
+def _repo_has_weighted_st_subfolders(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    cache_dir = None,
+):
+    """Does this repo declare at least one weight-bearing module subfolder?"""
+    return bool(
+        _st_weighted_subfolder_paths(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
+    )
+
+
+def _weight_format_ignore_patterns(extensions, st_module_paths, siblings):
+    """ignore_patterns dropping *extensions*, scoped away from declared ST module subfolders.
+
+    A bare "*.bin" spans "/" under the Hub's fnmatch matcher, so on a repo with a root
+    model.safetensors AND a 2_Dense/pytorch_model.bin it strips that module's only weight and the
+    snapshot is unsatisfiable again. With module paths known, the glob is replaced by the concrete
+    repo files outside them: the redundant root weight is still pruned, nothing new is fetched."""
+    if not st_module_paths:
+        return tuple(f"*{extension}" for extension in extensions)
+    from glob import escape as _glob_escape
+
+    prefixes = tuple(f"{path}/" for path in st_module_paths)
+    return tuple(
+        _glob_escape(name)
+        for name in (sibling.rfilename.replace("\\", "/") for sibling in (siblings or []))
+        if name.endswith(extensions) and not name.startswith(prefixes)
+    )
+
+
 def _prefetch_ignore_patterns(
     model_name,
     *,
@@ -1156,6 +1328,7 @@ def _prefetch_ignore_patterns(
     from_flax = False,
     variant = None,
     weights_at_root = False,
+    st_module_paths = (),
 ):
     """ignore_patterns for the prewarm snapshot: the static skip list, minus the checkpoint guard when
     loading from a checkpoint-* subfolder, minus the weight format the load will not read. use_safetensors
@@ -1185,6 +1358,11 @@ def _prefetch_ignore_patterns(
         isinstance(subfolder, str) and subfolder.strip("/")
     )
     if whole_multi_component:
+        pass
+    elif st_module_paths and (from_tf or from_flax or use_safetensors is not None):
+        # An explicit format request cannot be scoped: no repo listing is fetched on these branches, and
+        # the globs span "/", so they would prune a declared ST module's only weight. Keep both formats,
+        # the same trade whole_multi_component already makes.
         pass
     elif from_tf or from_flax:
         # TF / Flax loads never read the PyTorch formats; drop safetensors and .bin.
@@ -1230,7 +1408,13 @@ def _prefetch_ignore_patterns(
                 for sibling in siblings
             )
             if has_safetensors:
-                ignore_patterns.extend(("*.bin", "*.bin.index.json"))
+                ignore_patterns.extend(
+                    _weight_format_ignore_patterns(
+                        (".bin", ".bin.index.json"),
+                        st_module_paths,
+                        siblings,
+                    )
+                )
         except Exception:
             pass
     return ignore_patterns
@@ -1297,6 +1481,21 @@ def maybe_prefetch_hf_snapshot(
     if fast_inference:  # vLLM has its own download path
         return False
 
+    # A sentence-transformers repo can hold weights at the root AND in declared module subfolders
+    # (2_Dense/...). Probed once here and shared, since both the subdir prune below and the redundant
+    # format prune span "/" and would drop those weights.
+    st_module_paths = ()
+    if (
+        weights_at_root
+        and not (tokenizer_only or adapter_only or gguf_file)
+        and not (isinstance(subfolder, str) and subfolder.strip("/"))
+    ):
+        st_module_paths = _st_weighted_subfolder_paths(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
     # tokenizer-only / adapter-only warms allow-list exact files below, so the weight-format ignore
     # list (and its auto-branch model_info call) is skipped.
     ignore_patterns = (
@@ -1312,6 +1511,7 @@ def maybe_prefetch_hf_snapshot(
             from_flax = from_flax,
             variant = variant,
             weights_at_root = weights_at_root,
+            st_module_paths = st_module_paths,
         )
     )
     # Narrow the warm to what the load reads (skip extra checkpoints/precisions); every branch still warms
@@ -1350,7 +1550,12 @@ def maybe_prefetch_hf_snapshot(
     elif weights_at_root:
         # A bare load reads only root weights: drop subdir weights (fp16/, checkpoint dirs) while keeping
         # subdir configs. Diffusion leaves weights_at_root False.
-        ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
+        #
+        # Except when the repo is both: a sentence-transformers model with a root weight AND weighted
+        # module subfolders (2_Dense/...), which the ST load reads too. Dropping those turned a
+        # satisfiable request into one that could never succeed. See _st_weighted_subfolder_paths.
+        if not st_module_paths:
+            ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
         snapshot_download_with_xet_fallback(
             model_name,
@@ -2058,7 +2263,7 @@ for model_name in model_architectures:
         break
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
+    config_filename = f"{model_name.title().replace('_', '')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
     try:
         exec(f"from {config_filepath} import {config_filename}", globals())
     except:
@@ -2174,7 +2379,16 @@ SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
+    # UNSLOTH_ALLOW_CPU=1 keeps DEVICE_TYPE "cuda" on driverless hosts, so ask
+    # whether a device is present before asking what it can do. The three flags
+    # keep the defaults set just above: no device means no bfloat16 support to
+    # claim (False only costs float32, True fails at the first cast) and Flash
+    # Attention is a CUDA kernel that could not run here anyway.
+    SUPPORTS_BFLOAT16 = False
+    HAS_FLASH_ATTENTION = False
+    HAS_FLASH_ATTENTION_SOFTCAPPING = False
+elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
 
@@ -2211,7 +2425,7 @@ if DEVICE_TYPE == "cuda":
                 import transformers.utils.import_utils
 
                 transformers.utils.import_utils.is_flash_attn_2_available = (
-                    lambda *args, **kwargs: False
+                    lambda *args, **kwargs: (False)
                 )
                 import transformers.utils
 
@@ -2224,7 +2438,7 @@ if DEVICE_TYPE == "cuda":
         # Tri Dao's benchmark shows xformers is faster for now.
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
-    SUPPORTS_BFLOAT16 = True
+    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
     if _package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
@@ -2255,8 +2469,8 @@ elif DEVICE_TYPE == "hip":
             # Stop Flash Attention from importing!
             import transformers.utils.import_utils
 
-            transformers.utils.import_utils.is_flash_attn_2_available = (
-                lambda *args, **kwargs: False
+            transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: (
+                False
             )
             import transformers.utils
 
@@ -2776,21 +2990,60 @@ from transformers.utils.quantization_config import (
     QuantizationMethod,
 )
 
-BitsAndBytesConfig__init__ = inspect.getsource(BitsAndBytesConfig.__init__)
-BitsAndBytesConfig__init__ = re.sub(
-    r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
-    "",
-    BitsAndBytesConfig__init__,
-    flags = re.MULTILINE,
-)
-BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
-length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
-BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
-BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
-    "__init__",
-    "_BitsAndBytesConfig__init__",
-)
-exec(BitsAndBytesConfig__init__, globals())
+# Importing this module twice in one process must not raise.
+#
+# This block reads BitsAndBytesConfig.__init__'s source, rewrites it, and (at
+# the bottom of the section) installs the result over the original. The
+# replacement is built with exec(), so it has no file on disk. On a SECOND
+# import, inspect.getsource() is therefore handed our own exec'd function,
+# linecache finds nothing to read for it, and the import dies with
+#
+#     OSError: could not get source code
+#
+# taking every later `from unsloth...` in that process with it. Anything that
+# drops unsloth from sys.modules and imports it again reaches this: on a clean
+# tree, `pytest tests/vllm_compat/test_extended_module_imports.py
+# tests/python/test_vision_lora_targeting.py` is 30 failures, and it is only
+# luck of the xdist scheduling that a full run does not usually pair them.
+#
+# The patch is idempotent by nature -- when it has already run, the wanted end
+# state is the one already in place -- so recognising our own handiwork and
+# standing down is the fix. The marker is set on the function rather than
+# tracked in a module global because a re-import gets fresh globals but the same
+# transformers class object.
+_bnb_init = BitsAndBytesConfig.__init__
+
+if getattr(_bnb_init, "__unsloth_patched__", False):
+    # Already installed by an earlier import of this module. Keep it.
+    _BitsAndBytesConfig__init__ = _bnb_init
+else:
+    try:
+        BitsAndBytesConfig__init__ = inspect.getsource(_bnb_init)
+    except (OSError, TypeError):
+        # Someone else replaced __init__ with something sourceless. Leaving
+        # theirs alone is strictly better than failing the import.
+        BitsAndBytesConfig__init__ = None
+
+    if BitsAndBytesConfig__init__ is None:
+        _BitsAndBytesConfig__init__ = _bnb_init
+    else:
+        BitsAndBytesConfig__init__ = re.sub(
+            r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
+            "",
+            BitsAndBytesConfig__init__,
+            flags = re.MULTILINE,
+        )
+        BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
+        length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
+        BitsAndBytesConfig__init__ = "\n".join(
+            x[length_spaces:] for x in BitsAndBytesConfig__init__
+        )
+        BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
+            "__init__",
+            "_BitsAndBytesConfig__init__",
+        )
+        exec(BitsAndBytesConfig__init__, globals())
+        _BitsAndBytesConfig__init__.__unsloth_patched__ = True
 
 if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     from accelerate.utils.dataclasses import DistributedType
@@ -2801,7 +3054,9 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-    accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
+    # Must be a property: a bare function binds as a method, inverting every
+    # `!= DistributedType.NO` guard in accelerate (#10016).
+    accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
 
 
 # to move multiple tensors to the same device
@@ -2887,6 +3142,53 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
 # Fixes a weird Torch 2.3 bug which says T4s have bfloat16
 def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
+
+
+def _requested_float32(dtype):
+    """Did the caller ask for float32, or did we arrive at it?
+
+    Reads `dtype` as given: it is also derived from a 4bit config's
+    `bnb_4bit_compute_dtype`, which describes one matmul and not the model.
+    """
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype, None)
+    return dtype is torch.float32
+
+
+def _mark_requested_float32(model, requested):
+    """Record on the model, not in the environment: with two models loaded before
+    a trainer is built, an env var describes whichever loaded last. Outermost
+    caller wins, since only it saw dtype before normalization.
+    """
+    try:
+        model._unsloth_user_float32 = bool(requested)
+    except Exception:
+        pass
+    return model
+
+
+def _mark_forced_float32(model, forced):
+    """Record whether this model's family forced float32. UNSLOTH_FORCE_FLOAT32
+    says the same, but every load rewrites it, so a second load before this model
+    trains would answer for the wrong model.
+    """
+    try:
+        model._unsloth_forced_float32 = bool(forced)
+    except Exception:
+        pass
+    return model
+
+
+def _mark_full_finetuning(model, full_finetuning):
+    """Record how this model was loaded. UNSLOTH_ENABLE_FULL_FINETUNING is process
+    wide and every load rewrites it, so a LoRA model loaded before this one trains
+    would answer "no" here and cost it the bfloat16 full finetuning may keep.
+    """
+    try:
+        model._unsloth_full_finetuning = bool(full_finetuning)
+    except Exception:
+        pass
+    return model
 
 
 def is_vLLM_available():
@@ -3081,7 +3383,7 @@ def create_boolean_mask(n = 4096, sliding_window = 2048):
 
 
 def test_mask_creation():
-    from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+    from unsloth.models._attn_mask_compat import AttentionMaskConverter
     for n in range(2, 23):
         for s in range(1, 23):
             correct_mask = (
@@ -3293,6 +3595,34 @@ def patch_gradient_accumulation_fix(Trainer):
         exec(function, globals())
         Trainer.training_step = _unsloth_training_step
 
+    # Settle any deferred compile-mode switch at the start of every step.
+    # On recompile-limit exhaustion unsloth_zoo defers the switch to eager
+    # instead of flipping mid-call: non-reentrant checkpointing packs the
+    # forward compiled and would recompute it eagerly, aborting the backward
+    # with "Something went unexpectedly wrong in activation checkpoint".
+    # Between steps nothing is half-packed, so the switch is free.
+    if not getattr(Trainer, "_unsloth_settles_eager_fallbacks", False):
+        try:
+            from unsloth_zoo.temporary_patches.utils import (
+                apply_pending_eager_fallbacks as _apply_pending_eager_fallbacks,
+            )
+        except Exception:
+            # Older unsloth_zoo has no deferred switch, so nothing to settle.
+            _apply_pending_eager_fallbacks = None
+        if _apply_pending_eager_fallbacks is not None:
+            _training_step_before_settle = Trainer.training_step
+
+            @functools.wraps(_training_step_before_settle)
+            def _unsloth_training_step_settling_fallbacks(self, *args, **kwargs):
+                try:
+                    _apply_pending_eager_fallbacks()
+                except Exception:
+                    pass
+                return _training_step_before_settle(self, *args, **kwargs)
+
+            Trainer.training_step = _unsloth_training_step_settling_fallbacks
+            Trainer._unsloth_settles_eager_fallbacks = True
+
     # Wrap Trainer.__init__: (1) pre-init, shadow accepts_loss_kwargs on whatever
     # model was passed in (covers PEFT wrapping done after FastModel.from_pretrained);
     # (2) post-init, clamp accelerator GA to 1 for the transformers 5.0-5.5
@@ -3483,6 +3813,13 @@ def unsloth_compile_transformers(
     return_logits = False,
     unsloth_force_compile = False,
 ):
+    # Again here, not only at import: a dotenv or config loader can populate
+    # `UNSLOTH_FORCE_CUSTOM_DTYPE` after this package was imported, and the compiler
+    # below reaches the older `unsloth_zoo` reader that still `eval`s the dtype field.
+    # Idempotent, so a registered or already sanitized value is unchanged.
+    from ._custom_dtype import neutralize_inherited_custom_dtype
+
+    neutralize_inherited_custom_dtype()
     if Version(torch_version) < Version("2.4.0"):
         print(
             "="
@@ -3686,6 +4023,28 @@ def fast_inference_setup(model_name, model_config):
     return fast_inference, model_name
 
 
+def save_lora_adapter(model, save_directory, *args, **kwargs):
+    """`save_pretrained` over the adapter, cast to the embedding dtype.
+
+    PEFT's own selection decides what an adapter contains, so it is handed the
+    whole state dict and only the adapter tensors are cast. Filtering down to
+    `.lora_A.`/`.lora_B.` first is what the Zoo helper does, and PEFT then looks
+    up `modules_to_save.<adapter>.weight` in what it was given and raises
+    `KeyError`; a DoRA run loses its `lora_magnitude_vector` the same way. Both
+    are reachable here without vLLM: `get_peft_model` adds `embed_tokens` and
+    `lm_head` to `modules_to_save` on its own once new tokens are trained.
+
+    The non-adapter entries are passed through by reference, so nothing is
+    copied that PEFT is going to drop anyway.
+    """
+    dtype = model.get_input_embeddings().weight.dtype
+    kwargs["state_dict"] = {
+        key: (value.to(dtype) if "lora_" in key else value)
+        for key, value in model.state_dict().items()
+    }
+    return model.save_pretrained(save_directory, *args, **kwargs)
+
+
 def patch_peft_fast_inference(model):
     vllm_engine = getattr(model.model, "vllm_engine", None)
     if vllm_engine is not None:
@@ -3693,11 +4052,29 @@ def patch_peft_fast_inference(model):
         model.fast_generate = model.model.fast_generate
         model.fast_generate_batches = model.model.fast_generate_batches
 
-        # Also saving and loading LoRA
-        from unsloth_zoo.vllm_utils import save_lora, load_lora
+        # load_lora copies into vLLM's own adapter tensors, so it needs an engine.
+        from unsloth_zoo.vllm_utils import load_lora
 
-        model.save_lora = functools.partial(save_lora, model)
         model.load_lora = functools.partial(load_lora, model)
+
+        # An engine keeps the Zoo helper it has always had: vLLM reads the saved
+        # adapter back through its own LoRA loader, so what that file may carry
+        # is its call, not one to change here.
+        if not hasattr(model, "save_lora"):
+            try:
+                from unsloth_zoo.vllm_utils import save_lora
+            except Exception:
+                save_lora = None
+            if save_lora is not None:
+                model.save_lora = functools.partial(save_lora, model)
+
+    # Without an engine there was no `save_lora` at all, and `save_lora` needs
+    # none: it is `save_pretrained` over the adapter. Gating it on the engine
+    # gave `fast_inference = False` GRPO runs `AttributeError:
+    # 'Lfm2ForCausalLM' object has no attribute 'save_lora'`.
+    # Set only when absent, so a model carrying its own keeps it.
+    if not hasattr(model, "save_lora"):
+        model.save_lora = functools.partial(save_lora_adapter, model)
 
 
 def error_out_no_vllm(*args, **kwargs):
@@ -3947,8 +4324,8 @@ def _prepare_model_for_qat(
                 weight_dtype = torch.int8,
                 granularity = PerGroup(group_size),
             )
-            filter_fn = (
-                lambda m, _: isinstance(m, torch.nn.Linear)
+            filter_fn = lambda m, _: (
+                isinstance(m, torch.nn.Linear)
                 and m.in_features >= group_size
                 and m.in_features % group_size == 0
             )
@@ -4380,6 +4757,196 @@ def warn_if_zoo_cannot_merge_moe_experts():
         "a merged_16bit checkpoint, so save_pretrained_merged('merged_16bit') would drop "
         "the expert LoRA. Upgrade unsloth_zoo to merge them; saving the LoRA adapter is "
         "unaffected."
+    )
+
+
+EMBEDDING_MODULES = frozenset(("embed_tokens", "lm_head"))
+
+
+def _embedding_leaf(name):
+    """`embed_tokens`/`lm_head` for any spelling of them, else None.
+
+    PEFT matches on the module suffix, so `model.embed_tokens` is the same module.
+    Anything else keeps its full name: layers.0.q_proj is a real target.
+    """
+    if type(name) is not str:
+        return None
+    leaf = name.rsplit(".", 1)[-1]
+    return leaf if leaf in EMBEDDING_MODULES else None
+
+
+def _embedding_leaves(names):
+    return {leaf for leaf in map(_embedding_leaf, names or ()) if leaf is not None}
+
+
+def _vllm_unmovable_embedding_modules(model, target_modules):
+    """Names to leave in `target_modules` under fast inference.
+
+    vLLM cannot sync a trainable embedding, so modules_to_save is refused below. Only
+    lm_head is spared: LoRA on it never trained here either, so redirecting it would
+    newly raise on scripts that run today. embed_tokens still redirects, so still raises.
+    """
+    if getattr(model, "vllm_engine", None) is None:
+        return ()
+    if type(target_modules) in (list, tuple) and "lm_head" in _embedding_leaves(target_modules):
+        logger.warning_once(
+            "Unsloth: Fast inference cannot train `lm_head`, so it is left as an "
+            "untrained LoRA target.\nUse `fast_inference = False` to train it."
+        )
+    return ("lm_head",)
+
+
+def _redirect_embedding_targets(
+    target_modules,
+    modules_to_save,
+    *,
+    allow_redirect = True,
+    skip = (),
+):
+    """Move embed_tokens/lm_head into modules_to_save. Returns (targets, saved, moved).
+
+    LoRA on either is silently dead here: the fused CE loss reads `lm_head.weight`
+    instead of calling the module, and PEFT's `lora_embedding_A/B` are never unfrozen.
+    """
+    if type(target_modules) not in (list, tuple) or not allow_redirect:
+        return target_modules, modules_to_save, ()
+
+    target_modules = list(dict.fromkeys(target_modules))
+    moved = [x for x in target_modules if _embedding_leaf(x) and _embedding_leaf(x) not in skip]
+    if not moved:
+        return target_modules, modules_to_save, ()
+
+    remaining = [x for x in target_modules if not _embedding_leaf(x) or _embedding_leaf(x) in skip]
+    # list() on a str would shred it into single characters.
+    if modules_to_save is None:
+        saved = []
+    elif isinstance(modules_to_save, str):
+        saved = [modules_to_save]
+    else:
+        saved = list(modules_to_save)
+    saved.extend(x for x in moved if x not in saved)
+    return remaining, saved, tuple(moved)
+
+
+def _raise_if_no_lora_targets_left(
+    target_modules,
+    moved,
+    target_parameters = None,
+):
+    """embed_tokens/lm_head go to modules_to_save, so they cannot be the only targets.
+
+    PEFT accepts `target_parameters` (fused MoE experts) with no target_modules at all.
+    """
+    if (
+        moved
+        and type(target_modules) in (list, tuple)
+        and not target_modules
+        and not target_parameters
+    ):
+        raise RuntimeError(
+            f"Unsloth: {', '.join(moved)} are trained as full modules via `modules_to_save`, "
+            "not as LoRA targets, so `target_modules` is now empty.\n"
+            "Please add at least one projection module, for example "
+            '`target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", '
+            '"gate_proj", "up_proj", "down_proj"]`.'
+        )
+
+
+def _model_ties_embeddings(model):
+    return bool(getattr(getattr(model, "config", None), "tie_word_embeddings", False))
+
+
+def _resolve_ensure_weight_tying(model, modules_to_save, requested):
+    """Default `ensure_weight_tying` on when a tied pair lands in modules_to_save.
+
+    PEFT copies each entry, so tied copies diverge and a merge keeps only one; tying
+    moves the counterpart to `modules_to_tie`. Keyed on the final modules_to_save so
+    callers that pass both names themselves are covered. Caller wins if set.
+    """
+    if requested is not None:
+        return bool(requested)
+    if not EMBEDDING_MODULES <= _embedding_leaves(modules_to_save):
+        return False
+    return _model_ties_embeddings(model)
+
+
+def _embedding_name_is_unambiguous(model, name):
+    """Whether `name` and its bare leaf select the same single module.
+
+    A composite model can hold two embed_tokens, and PEFT suffix-matches, so the bare
+    name would wrap both. Rewriting is only safe when exactly one module matches.
+    """
+    leaf = _embedding_leaf(name)
+    if leaf is None:
+        return False
+    named_modules = getattr(model, "named_modules", None)
+    if named_modules is None:
+        return True
+    found = 0
+    for module_name, _ in named_modules():
+        if module_name == leaf or module_name.endswith("." + leaf):
+            found += 1
+            if found > 1:
+                return False
+    return found == 1
+
+
+def _effective_weight_tying(model, modules_to_save, requested):
+    """Whether PEFT will really retie, not just whether it was asked to.
+
+    Tying rebuilds the output from the INPUT embedding's wrapper, so that one must be
+    saved: peft 0.18 raises AttributeError otherwise, later versions tie nothing. An
+    untied model has no counterpart to rebuild either.
+    """
+    if not _resolve_ensure_weight_tying(model, modules_to_save, requested):
+        return False
+    if not _model_ties_embeddings(model):
+        return False
+    return "embed_tokens" in _embedding_leaves(modules_to_save)
+
+
+def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):
+    """Keep the input embedding and leave the tied output for PEFT to reconstruct.
+
+    peft 0.18 ties only `tied_weight_keys - modules_to_save`, so naming both there ties
+    nothing and trains two diverging copies. One matrix on 0.18.1 and 0.20.0 alike.
+
+    Gated on the model, not the flag: `ensure_weight_tying` can be passed explicitly on
+    an untied model, where PEFT has no counterpart to rebuild and only warns, so dropping
+    lm_head would leave the head the caller asked to train frozen.
+    """
+    if (
+        not ensure_weight_tying
+        or not _model_ties_embeddings(model)
+        or not EMBEDDING_MODULES <= _embedding_leaves(modules_to_save)
+    ):
+        return modules_to_save
+    # Bare leaf, not the caller's spelling: peft 0.18 ties `tied_weight_keys` minus whole
+    # `modules_to_save` entries, so a qualified `model.embed_tokens` matches nothing there
+    # and it reconstructs no output module, leaving the head frozen. PEFT resolves the
+    # bare name by suffix on every version, so normalizing is safe.
+    kept = [x for x in modules_to_save if _embedding_leaf(x) != "lm_head"]
+    normalized = []
+    for entry in kept:
+        leaf = _embedding_leaf(entry)
+        if leaf is None or entry == leaf:
+            normalized.append(entry)
+        elif _embedding_name_is_unambiguous(model, entry):
+            normalized.append(leaf)
+        else:
+            # Rewriting would widen the scope to another subtree's embedding. Keep
+            # both entries: two copies beats a silently frozen head.
+            return modules_to_save
+    return normalized
+
+
+def _raise_if_fast_inference_modules_to_save(model, modules_to_save):
+    """Reject trainable saved modules that vLLM cannot keep synchronized."""
+    if getattr(model, "vllm_engine", None) is None or not modules_to_save:
+        return
+    raise NotImplementedError(
+        "Unsloth: Currently fast inference does not work with training "
+        f"{', '.join(modules_to_save)}."
     )
 
 

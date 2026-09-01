@@ -4,6 +4,11 @@
 export * from "./api";
 export { DownloadManagerPanel } from "./download-manager-panel";
 export {
+  finishExternalJob,
+  startExternalJob,
+  updateExternalJob,
+} from "./external-jobs";
+export {
   DownloadProgressBar,
   type DownloadProgress,
 } from "./download-progress-bar";
@@ -40,8 +45,20 @@ export {
   type RepoDownloadConfig,
 } from "./use-repo-download";
 export {
+  useStagedDownload,
+  type StagedDownloadEntry,
+} from "./use-staged-download";
+export {
+  downloadInventoryHintKind,
+  scopedVariant,
+} from "./download-manager-types";
+export { dismissStartToast, dismissStartToasts } from "./start-toast";
+export {
+  TRANSPORT_MODE_STORAGE_KEY,
   getTransportMode,
+  resolveTransportMode,
   useDownloadTransportCapabilities,
+  useHttpPartialsResumable,
   useTransportMode,
 } from "./transport-preference";
 export type { TransportConflictInfo } from "./types";

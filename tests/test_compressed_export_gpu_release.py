@@ -213,7 +213,7 @@ def test_single_device_model_keeps_plain_move():
 
 
 def test_quantized_model_is_released_when_the_stack_allows_it():
-    # Studio exports load 4-bit by DEFAULT, so skipping quantized models left a shard
+    # Unsloth exports load 4-bit by DEFAULT, so skipping quantized models left a shard
     # on every GPU. Release them too where the move is accepted.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     model = _FakeModel(devices = ("cuda:0",), quantized = True)

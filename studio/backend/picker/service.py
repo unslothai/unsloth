@@ -14,7 +14,10 @@ from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
 )
-from hub.utils.gguf import extract_quant_label, iter_hf_cache_snapshots
+from hub.utils.gguf import (
+    extract_quant_label,
+    iter_snapshots_preferring_whole,
+)
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -30,6 +33,7 @@ from utils.paths.path_utils import (
 )
 
 from .schemas import MAX_CHAT_TEMPLATE_BYTES, ValidateChatTemplateResponse
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +236,8 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
             if not name.lower().endswith(".gguf") or _is_mmproj(name):
                 continue
             path = Path(current) / name
+            if is_appledouble_metadata(path):
+                continue
             try:
                 rel = path.relative_to(dir_path).as_posix()
             except ValueError:
@@ -244,6 +250,12 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
 
 
 def _variant_matches(relative_path: str, needle: str) -> bool:
+    from hub.utils.gguf import gguf_variant_key
+
+    # The variant's own key first: in a repo holding several checkpoints at one quant
+    # the bare label names every one of them, so it cannot pick between them.
+    if gguf_variant_key(relative_path).lower() == needle:
+        return True
     quant = _extract_quant_label(relative_path).lower()
     if quant == needle:
         return True
@@ -276,13 +288,22 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
         return None
     needle = (gguf_variant or "").strip().lower()
     if needle:
-        for path in ggufs:
+        from hub.utils.gguf import gguf_variant_key
+
+        def _relative(path: Path) -> str:
             try:
-                relative = path.relative_to(dir_path).as_posix()
+                return path.relative_to(dir_path).as_posix()
             except ValueError:
-                relative = path.name
-            if _variant_matches(relative, needle):
-                return path
+                return path.name
+
+        # Files this variant owns outright before ones its label merely also names.
+        for owned in (True, False):
+            for path in ggufs:
+                relative = _relative(path)
+                if owned != (gguf_variant_key(relative).lower() == needle):
+                    continue
+                if _variant_matches(relative, needle):
+                    return path
         return None
     candidates = [path for path in ggufs if not _is_nonfirst_gguf_split(path)] or ggufs
     try:
@@ -346,7 +367,7 @@ def read_default_chat_template(
         # Resolve within each cached revision, newest first. A revision's sidecar
         # supersedes its own embedded GGUF copy, but must not override a newer
         # revision, so precedence stays per-snapshot rather than global.
-        for snapshot in iter_hf_cache_snapshots(resolved):
+        for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
             template = _chat_template_from_dir(snapshot, gguf_variant)
             if template:
                 return template
@@ -358,25 +379,21 @@ def read_default_chat_template(
 
         _api = HfApi()
 
-        def _remote_exceeds_cap(rel: str) -> bool:
-            # Best-effort: skip the download when the remote's advertised size
-            # exceeds the cap, so a maliciously large sidecar is never fetched.
+        def _remote_worth_downloading(rel: str) -> bool:
+            # Reuse the size lookup to skip absent or oversized files.
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
+                # An inconclusive lookup preserves the existing download behavior.
+                return True
+            matched = [info for info in infos if getattr(info, "path", None) == rel]
+            if not matched:
                 return False
-            for info in infos:
-                size = getattr(info, "size", None)
-                if (
-                    getattr(info, "path", None) == rel
-                    and isinstance(size, int)
-                    and size > MAX_TEMPLATE_METADATA_BYTES
-                ):
-                    return True
-            return False
+            size = getattr(matched[0], "size", None)
+            return not (isinstance(size, int) and size > MAX_TEMPLATE_METADATA_BYTES)
 
         def _download_text(rel: str) -> Optional[str]:
-            if _remote_exceeds_cap(rel):
+            if not _remote_worth_downloading(rel):
                 return None
             try:
                 path = hf_hub_download(

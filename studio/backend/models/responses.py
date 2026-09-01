@@ -21,6 +21,7 @@ class TrainingStopResponse(BaseModel):
 class TrainingMetricsResponse(BaseModel):
     """Response for training metrics history"""
 
+    job_id: str = Field(..., description = "Training job identifier")
     loss_history: List[float] = Field(default_factory = list, description = "Loss values per step")
     lr_history: List[float] = Field(default_factory = list, description = "Learning rate per step")
     step_history: List[int] = Field(default_factory = list, description = "Step numbers")

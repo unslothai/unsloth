@@ -18,6 +18,7 @@ from storage import rag_db
 from . import config, retrieval
 from .store import (
     all_chunks_for_scope,
+    conversation_archive_scope,
     kb_scope,
     project_scope,
     scope_token_estimate,
@@ -53,9 +54,16 @@ def _resolve_scope(
     scope_kb_id: str | None,
     scope_thread_id: str | None,
     scope_project_id: str | None = None,
+    scope_conversation_id: str | None = None,
 ) -> str | list[str] | None:
     """KB (an explicit pick) is exclusive; project and thread scopes combine so a
-    project chat also retrieves from its own attached documents."""
+    project chat also retrieves from its own attached documents.
+
+    The conversation archive is exclusive too, and takes precedence: it is a different
+    corpus (this chat's evicted turns), so sharing a top-K would have old turns and
+    document passages crowd each other out."""
+    if scope_conversation_id:
+        return conversation_archive_scope(scope_conversation_id)
     if scope_kb_id:
         return kb_scope(scope_kb_id)
     scopes = []
@@ -96,6 +104,92 @@ def _format(rows, hits) -> tuple[str, list[dict]]:
     return "\n\n".join(blocks), sources
 
 
+CONVERSATION_RECALL_HEADER = (
+    "These are earlier turns of THIS conversation, quoted verbatim and listed oldest "
+    "first. The turn number is each one's position in the conversation; they are not "
+    "consecutive. Where two turns state different things about the same subject, the one "
+    "with the HIGHER turn number was said later and supersedes the earlier one."
+)
+
+
+def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
+    """`_format`, plus what a recalled conversation needs and a knowledge base does not.
+
+    Two additions, both presentation only:
+
+    * each block carries ``turn``, the position of that turn in the conversation, so the
+      passages can be told apart in time. Omitted where the archive predates the column,
+      because a missing ordinal is not a position of zero.
+    * a one-line header, emitted only when there are at least two passages, stating that
+      they are oldest first and that a later turn supersedes an earlier one. It says
+      SUPERSEDES rather than "is the answer", so a question about what was originally
+      said still reads the first block as the original. With a single passage the header
+      would be an ordering claim about nothing, and it would spend tokens on the rung the
+      over-budget backoff falls to when there is least room.
+    """
+    if not hits:
+        return "No matching turns were found in this conversation.", []
+    blocks: list[str] = []
+    sources: list[dict] = []
+    for i, h in enumerate(hits, 1):
+        r = rows.get(h.chunk_id)
+        filename = (r["filename"] if r else None) or "unknown"
+        text = r["text"] if r else ""
+        ordinal = _row_value(r, "archive_ordinal")
+        turn_attr = f" turn={quoteattr(str(int(ordinal) + 1))}" if ordinal is not None else ""
+        blocks.append(f'<chunk id="{i}" source={quoteattr(filename)}{turn_attr}>\n{text}\n</chunk>')
+        sources.append(
+            {
+                "citationId": i,
+                "chunkId": h.chunk_id,
+                "documentId": r["document_id"] if r else None,
+                "filename": filename,
+                "page": None,
+                "text": text,
+                "turn": int(ordinal) + 1 if ordinal is not None else None,
+                # Carried so a merge of two searches can reorder one long turn's pieces;
+                # nothing renders them. `createdAt` is the tie-breaker `_conversation_order`
+                # needs, since pre-ordinal rows have `turn` None and ordinals are not UNIQUE.
+                "chunkIndex": _row_value(r, "chunk_index"),
+                "createdAt": _row_value(r, "created_at"),
+                "score": round(float(h.score), 4) if h.score is not None else None,
+            }
+        )
+    body = "\n\n".join(blocks)
+    if len(hits) >= 2:
+        body = f"{CONVERSATION_RECALL_HEADER}\n\n{body}"
+    return body, sources
+
+
+def render_conversation_sources(sources: list[dict]) -> str:
+    """`render_sources` for recalled conversation: keeps ``turn`` and the header.
+
+    Used when two searches are merged into one block, where the sources are already built
+    and there are no rows left to read them from.
+    """
+    blocks: list[str] = []
+    for i, s in enumerate(sources, 1):
+        s["citationId"] = i
+        turn = s.get("turn")
+        turn_attr = f" turn={quoteattr(str(turn))}" if turn is not None else ""
+        blocks.append(
+            f'<chunk id="{i}" source={quoteattr(s.get("filename") or "unknown")}'
+            f'{turn_attr}>\n{s.get("text") or ""}\n</chunk>'
+        )
+    body = "\n\n".join(blocks)
+    return f"{CONVERSATION_RECALL_HEADER}\n\n{body}" if len(sources) >= 2 else body
+
+
+def _row_value(row, key: str):
+    """A column that may not exist on an older row object, without raising."""
+    if row is None:
+        return None
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
 def render_sources(sources: list[dict]) -> str:
     """Render a citation-source list to sequentially-numbered ``<chunk>`` blocks,
     rewriting each source's ``citationId`` to match its 1-based position. Lets
@@ -126,6 +220,7 @@ def search_knowledge_base_with_sources(
     scope_kb_id: str | None = None,
     scope_thread_id: str | None = None,
     scope_project_id: str | None = None,
+    scope_conversation_id: str | None = None,
     top_k: int | None = None,
     min_score: float = 0.0,
     model_name: str | None = None,
@@ -135,7 +230,7 @@ def search_knowledge_base_with_sources(
     rendered ``<chunk>`` block's ``id``."""
     if not query or not query.strip():
         return "Error: query is empty.", []
-    scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id)
+    scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id, scope_conversation_id)
     if scope is None:
         return "No documents are attached to this chat.", []
 
@@ -169,16 +264,16 @@ def search_for_autoinject(
     scope_thread_id: str | None = None,
     scope_project_id: str | None = None,
     top_k: int | None = None,
-    min_dense_score: float = 0.70,
+    min_dense_score: float | None = 0.70,
     model_name: str | None = None,
     mode: str = "hybrid",
 ) -> tuple[str, list[dict]] | None:
     """Forced-retrieval variant for auto-injection.
 
     Returns ``(rendered_text, sources)`` only if some hit's cosine clears
-    ``min_dense_score``, else ``None`` (inject nothing). The dense gate keeps
-    weak/off-topic matches out of answers. In ``lexical`` mode hits carry no
-    cosine, so the gate falls back to a dense 1-NN probe.
+    ``min_dense_score``, else ``None`` (inject nothing). ``None`` keeps the
+    retrieved top-K without the optional-auto relevance gate. In ``lexical``
+    mode gated hits fall back to a dense 1-NN probe.
     """
     if not query or not query.strip():
         return None
@@ -196,10 +291,14 @@ def search_for_autoinject(
             model_name = model_name,
             mode = mode,
         )
-        strong = [
-            h for h in hits if h.dense_score is not None and h.dense_score >= min_dense_score
-        ][:k]
-        if not strong and hits and mode == "lexical":
+        strong = (
+            hits[:k]
+            if min_dense_score is None
+            else [
+                h for h in hits if h.dense_score is not None and h.dense_score >= min_dense_score
+            ][:k]
+        )
+        if min_dense_score is not None and not strong and hits and mode == "lexical":
             probe = retrieval.retrieve_dense(conn, scope, query, 1, model_name = model_name)
             if (
                 probe

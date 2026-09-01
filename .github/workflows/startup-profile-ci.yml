@@ -1,0 +1,230 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Measures where Unsloth's startup time goes, on each platform.
+#
+# Nothing recorded a number before: main.py logs "lifespan startup completed in X ms"
+# and studio_test_kit polls /healthz, but both throw the elapsed time away. A first
+# local run (Linux, warm cache, 18-core server) put `import main` at 5.7-6.6s BEFORE
+# the server can bind, dominated by eager module-level imports pulled in by routes:
+# torch ~1.9s self, unsloth_zoo ~0.8s, routes ~0.6s, transformers ~0.5s.
+#
+# Now a gate. The budgets below come from this workflow's own history rather than a
+# guess: 33 completed runs, 99 profiles, 297 launches, no failed launch. Median time to
+# a healthy port was 3.24s on ubuntu, 3.02s on macos, 5.11s on windows.
+#
+# Sized for a slow runner, not for the median one. A hosted runner can be slow for a
+# whole run: macos-15 in run 31932608086 came in at 5.03/5.52/5.66s, 1.8x its own
+# median, on a PR that changed nothing here. So each budget is 2x the observed median
+# rounded up to the next half second, floored at 1.4x the slowest median seen. Anything
+# tighter fails unrelated PRs on runner luck.
+#
+# What that catches is a torch-sized regression, about 5s, not a 1-2s one. A 2.2s
+# regression of the pandas kind shows up in the import table in the job summary, which
+# is what found it; the gate is here to stop the catastrophic case, not to measure.
+#
+# Raise a budget in the same PR as the import that needed it, with the run that shows
+# it, exactly as with the frontend startup budget.
+#
+# Do not make this a required status check while it is filtered by paths. A workflow
+# skipped by path filtering never reports, so a required check on it sits Pending and
+# blocks every PR that does not touch the list below:
+# https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks
+
+name: Startup profile
+
+on:
+  pull_request:
+    paths:
+      # The measured import graph is the whole backend tree: main.py imports auth,
+      # core, hub, loggers, models, picker, routes and utils at module scope.
+      - 'studio/backend/**'
+      - '!studio/backend/tests/**'
+      # The launch phase spawns `unsloth studio --api-only`, so the CLI counts too.
+      - 'unsloth_cli/**'
+      - 'studio/src-tauri/src/preflight**'
+      # The profiler hardcodes the desktop argv that process.rs::backend_args builds,
+      # so a change there must schedule a run or the two silently diverge.
+      - 'studio/src-tauri/src/process.rs'
+      - 'scripts/profile_startup.py'
+      - '.github/workflows/startup-profile-ci.yml'
+      # The job profiles whatever `install.sh --local` built: the installers pick the
+      # venv's Python and the dependency specs, and pyproject's include list is what
+      # makes --local overlay studio.backend*.
+      - 'install.sh'
+      - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - 'pyproject.toml'
+      # --local also runs the checkout's setup scripts (install.sh picks
+      # $_REPO_ROOT/studio/setup.sh, the editable install resolves setup.ps1 to the
+      # repo), and both call install_python_stack.py, which picks the dependencies.
+      - 'studio/setup.sh'
+      - 'studio/setup.ps1'
+      - 'studio/install_python_stack.py'
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: 'launch repeats per OS (median reported)'
+        type: string
+        default: '3'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: startup ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Per the header rule. Slowest median seen in 33 runs, which is what the 1.4x
+        # floor is taken from: ubuntu 3.52s, macos 5.52s, windows 5.55s.
+        include:
+          - os: ubuntu-latest
+            max_healthz_seconds: '6.5'
+          - os: macos-15
+            max_healthz_seconds: '8.0'
+          - os: windows-latest
+            max_healthz_seconds: '10.5'
+
+    env:
+      UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
+      # A wildcard bind calls ifconfig.me on the startup path; loopback times our code.
+      UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Safe for what this job measures, which is the reason to check rather than
+      # assume: `profile_startup.py` times `import main` and time-to-a-healthy-port
+      # AFTER the install, and the gate is `--max-healthz-seconds`. Install duration
+      # is neither measured nor gated. Under `--api-only` the launched server never
+      # resolves a frontend at all -- `_frontend_serving_mode` returns serve=False
+      # with no Tauri owner, so the mount block is skipped -- so a byte-identical
+      # prebuilt dist and a locally built one are indistinguishable to every number
+      # this job reports.
+      #
+      # All three legs, not just Windows: `fe-dist-Linux` and `fe-dist-macOS` are
+      # already on main from #9375, so ubuntu and macos-15 hit on the first run.
+      #
+      # RESTORE ONLY, and that is a property of this workflow's triggers rather than an
+      # oversight. It runs on `pull_request` and `workflow_dispatch` and nothing else --
+      # no `push`, no `schedule` -- so `github.ref` is `refs/pull/N/merge` on every
+      # automatic run and a save gated on `refs/heads/main` could only ever fire when a
+      # human dispatched it from main by hand. A cache that fills only when somebody
+      # remembers to press a button is not a cache; pairing a save here would be dead
+      # config that reads as a caching decision which is not in force. The producers are
+      # the five workflows that do run on push to main.
+      #
+      # tests/studio/test_frontend_dist_cache.py derives this from the `on:` block rather
+      # than allowlisting the filename, so adding `push:` here without adding the save --
+      # or adding the save without the trigger -- goes red.
+      - name: Restore the built frontend
+        id: fe-dist
+        uses: ./.github/actions/frontend-dist-restore
+
+      - name: Install Unsloth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          # --local is load-bearing: it overlays the checkout, so the profiled server
+          # is this diff. Without it install.sh resolves unsloth from PyPI.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            pwsh -NoProfile -File ./install.ps1 --local 2>&1 | tee logs/install.log
+          else
+            bash install.sh --local 2>&1 | tee logs/install.log
+          fi
+
+      # No save here (see the restore step). The assertion half of the pair is still
+      # worth running: a hit that got rebuilt anyway is the one failure mode of this
+      # cache that nothing else reveals, and this job restores on all three OSes, so it
+      # is a useful place to catch it. `save: 'false'` runs the check and skips the
+      # upload.
+      - name: Check the restored frontend was reused
+        uses: ./.github/actions/frontend-dist-save
+        with:
+          cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+          key: ${{ steps.fe-dist.outputs.key }}
+          save: 'false'
+
+      - name: Profile startup
+        shell: bash
+        run: |
+          # Explicit rather than load-bearing: `shell: bash` already runs
+          # `bash --noprofile --norc -eo pipefail {0}`. Written out because the gate's
+          # exit code reaches this step only through the pipe into tee, so it has to
+          # survive the shell key being dropped or changed to `bash {0}`.
+          set -o pipefail
+          BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth"
+          [ -x "$BIN" ] || BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/unsloth.exe"
+          [ -x "$BIN" ] || BIN=""
+          # Profile imports with the INSTALLED interpreter: that venv is what launches.
+          PY="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/python"
+          [ -x "$PY" ] || PY="$UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/python.exe"
+          [ -x "$PY" ] || PY="$(command -v python3 || command -v python)"
+          python3 scripts/profile_startup.py \
+            --python "$PY" \
+            ${BIN:+--bin "$BIN"} \
+            --repeats "${{ inputs.repeats || '3' }}" \
+            --max-healthz-seconds "${{ matrix.max_healthz_seconds }}" \
+            --json "startup-${{ matrix.os }}.json" 2>&1 | tee logs/profile.log
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          f="startup-${{ matrix.os }}.json"
+          [ -f "$f" ] || { echo "no profile produced"; exit 0; }
+          python3 - "$f" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          print(f"### {d['platform']} / {d['machine']} (py {d['python']}, {d['cpu_count']} cpu)\n")
+          imp = d.get("imports", {})
+          # Gate on ok: a failed `import main` still leaves rows, so a total can lie.
+          if imp.get("ok"):
+              print(f"**`import main`: {imp['total_seconds']}s**\n")
+              print("| package | self ms |")
+              print("|---|---:|")
+              for k, v in list(imp.get("self_by_package_ms", {}).items())[:8]:
+                  print(f"| {k} | {v} |")
+              print()
+          else:
+              print("**`import main` failed - no valid import profile**\n")
+              print("```\n" + (imp.get("error") or "")[-1500:] + "\n```\n")
+          lau = d.get("launch") or {}
+          runs = len(lau.get("runs") or [])
+          failed = lau.get("failed_runs") or 0
+          if lau.get("healthz_median_seconds") is not None:
+              # The aggregates cover only the runs that reached healthz, so flag the
+              # failures: bare numbers would read as a normal fast startup.
+              note = f" _({runs - failed} of {runs} launches; {failed} never became healthy)_" if failed else ""
+              print(f"**time to a healthy port: {lau['healthz_median_seconds']}s median, "
+                    f"{lau['healthz_max_seconds']}s max**{note}\n")
+          elif lau.get("skipped"):
+              print(f"_launch phase skipped: {lau['skipped']}_\n")
+          elif runs:
+              print(f"**no launch measurement: all {runs} launches failed to become healthy**\n")
+          PY
+
+      - name: Upload profile
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: startup-profile-${{ matrix.os }}
+          path: |
+            startup-*.json
+            logs/
+          retention-days: 14
+          if-no-files-found: warn

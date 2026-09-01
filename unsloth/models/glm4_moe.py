@@ -23,6 +23,7 @@ Key architecture differences from Qwen3 MoE:
 - Uses MLA (Multi-head Latent Attention)
 """
 
+from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
 import os
 from ._utils import __version__
@@ -388,7 +389,7 @@ class FastGLM47Model(FastLlamaModel):
         dtype = None,
         load_in_4bit = True,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         rope_scaling = None,
         fix_tokenizer = True,
         model_patcher = None,

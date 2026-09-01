@@ -20,6 +20,12 @@ from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import build_config_builder, create_data_designer
 from utils.paths import ensure_dir, recipe_datasets_root
 
+# Fresh spawned interpreter: re-apply main.py's OS-trust-store injection.
+from utils.native_tls import activate_native_tls
+from utils.paths.path_utils import drop_appledouble_metadata
+
+activate_native_tls()
+
 _ARTIFACT_ROOT = recipe_datasets_root()
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
 _RE_SECRET_TOKEN = re.compile(
@@ -187,7 +193,9 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
 
 def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     parquet_dir = base_dataset_path / "parquet-files"
-    parquet_files = sorted(parquet_dir.glob("*.parquet"))
+    # Counted, so a companion makes a single-batch job take the merge path and rewrite a
+    # dataset that needed none.
+    parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
     if len(parquet_files) <= 1:
         return
 

@@ -29,7 +29,10 @@ import os
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from core.inference.tool_loop_controller import coerce_tool_arguments
+from core.inference.tool_loop_controller import (
+    coerce_arguments_by_schema,
+    coerce_tool_arguments,
+)
 from core.tool_healing import parse_tool_calls_from_text
 
 # Only the formats this healer's parser can promote -- narrower than the loops'
@@ -147,15 +150,20 @@ def _string_arg_key_from_schema(schema: Any) -> Optional[str]:
 def _coerce_promoted_arguments(
     raw_args: Any, tool_name: str, tool_schemas: Optional[dict]
 ) -> Optional[dict]:
-    if isinstance(raw_args, Mapping):
-        return dict(raw_args)
+    """Promoted arguments, typed against the client's declared schema: the call was TEXT a
+    moment ago, so its XML parameters arrive as raw strings and closing a truncated container
+    is this healer's own job rather than something to gate."""
+    parameters = (tool_schemas or {}).get(tool_name)
+    properties = parameters.get("properties") if isinstance(parameters, Mapping) else None
+    parsed = raw_args
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
-            if isinstance(parsed, Mapping):
-                return dict(parsed)
         except (json.JSONDecodeError, ValueError):
-            pass
+            parsed = raw_args
+    if isinstance(parsed, Mapping):
+        return coerce_arguments_by_schema(parsed, properties, repair = True)
+    if isinstance(raw_args, str):
         if tool_schemas is not None:
             key = _string_arg_key_from_schema(tool_schemas.get(tool_name))
             return {key: raw_args} if key else None
@@ -321,6 +329,12 @@ class StreamToolCallHealer:
         self._buffer = ""
         self._holding = False
         self._id_offset = 0
+        # Markup span each promoted call was cut from, keyed by its call id.
+        # Promotion is destructive -- the span never reaches the client -- so a
+        # caller that ends up DISCARDING a promoted call (a turn truncated at
+        # finish_reason "length" cannot be executed) has no other way to give
+        # the model's own words back. Bounded by _MAX_HOLD_CHARS per span.
+        self._promoted_spans: dict[str, str] = {}
         # Structured delta.tool_calls seen upstream: grammar mode already
         # worked, so healing goes dormant and text relays verbatim.
         self.dormant = False
@@ -328,6 +342,14 @@ class StreamToolCallHealer:
     @property
     def healed(self) -> bool:
         return self._id_offset > 0
+
+    def promoted_source(self, call_id: str) -> str:
+        """The exact markup span a promoted call was cut from, or "".
+
+        Only for a caller that has to un-promote: relaying this alongside the
+        call would double the output, since the call already carries it.
+        """
+        return self._promoted_spans.get(call_id, "")
 
     def structured_tool_call_seen(self) -> list:
         """Go dormant; flush anything held so no text is swallowed."""
@@ -400,6 +422,7 @@ class StreamToolCallHealer:
                     if self._buffer[pos:start]:
                         events.append(("text", self._buffer[pos:start]))
                     events.append(("tool_call", promoted[0]))
+                    self._promoted_spans[promoted[0]["id"]] = self._buffer[start:end]
                     self._id_offset += 1
                 else:
                     # Undeclared/unusable name: markup is DATA, flush it (and prior text) verbatim.
@@ -442,6 +465,7 @@ class StreamToolCallHealer:
                 if residue[pos:start]:
                     events.append(("text", residue[pos:start]))
                 events.append(("tool_call", promoted[0]))
+                self._promoted_spans[promoted[0]["id"]] = residue[start:end]
                 self._id_offset += 1
                 any_promoted = True
             else:

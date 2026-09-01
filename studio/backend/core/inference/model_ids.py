@@ -79,6 +79,34 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
     return name or identifier
 
 
+def _is_hub_repo_id(identifier: str) -> bool:
+    """``org/name``, including Hub repos named ``org/name.gguf``. A file reference
+    carries a repo id plus a filename, so two or more slashes."""
+    if identifier.count("/") != 1:
+        return False
+    stem = (
+        identifier[: -len(_GGUF_SUFFIX)]
+        if identifier.lower().endswith(_GGUF_SUFFIX)
+        else identifier
+    )
+    return not _looks_like_path(stem)
+
+
+def display_model_name(identifier: Optional[str]) -> Optional[str]:
+    """The short label a UI should show for *identifier*.
+
+    Trailing segment of the public id, so a HF cache snapshot reads as ``X-GGUF`` and
+    not its commit sha. Splitting the raw identifier instead leaks the host layout on
+    Windows, where ``C:\\Users\\...`` has no ``/`` to split on.
+    """
+    if not identifier:
+        return identifier
+    if _is_hub_repo_id(identifier):
+        return identifier.split("/")[1]
+    clean = public_model_id(identifier)
+    return clean.rsplit("/", 1)[-1] or clean
+
+
 def model_id_matches(requested: Optional[str], internal: Optional[str]) -> bool:
     """Whether a client-supplied *requested* id refers to *internal*.
 
