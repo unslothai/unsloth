@@ -264,14 +264,14 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
     offenders = []
     for name, steps in _composite_actions():
         for step in steps:
-            uses = str(step.get("uses", ""))
+            uses = _uses(step)
             if "actions/cache" not in uses or "/restore@" in uses:
                 continue
             if "refs/heads/main" not in str(step.get("if", "")):
-                offenders.append(f"action {name}: {step.get('name') or uses}")
+                offenders.append(f"action {name}: {step.get('name') or step.get('uses')}")
     for name, jid, job in _jobs():
         for step in job.get("steps") or []:
-            uses = str(step.get("uses", ""))
+            uses = _uses(step)
             # setup-python's `cache:` is a save too, and an invisible one: the action
             # registers a post-step (`post: dist/cache-save/index.js` in its own
             # action.yml) that runs after the job on whatever ref it ran on, with no
@@ -287,7 +287,7 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
             if not saves:
                 continue
             if not _restricted_to_main(str(step.get("if", ""))):
-                offenders.append(f"{name}:{jid}: {step.get('name') or uses}")
+                offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
     assert not offenders, (
         "these steps save a cache on whatever ref they run on, so every PR writes its own "
         "copy and evicts the copy on main that all PRs share:\n  " + "\n  ".join(offenders)
@@ -307,7 +307,7 @@ def test_no_job_uses_setup_pythons_built_in_pip_cache():
         f"{name}:{jid}"
         for name, jid, job in _jobs()
         for step in job.get("steps") or []
-        if "setup-python" in str(step.get("uses", "")) and (step.get("with") or {}).get("cache")
+        if "setup-python" in _uses(step) and (step.get("with") or {}).get("cache")
     ]
     assert not offenders, (
         f"these jobs use setup-python's built-in cache, which saves on every ref with no "
@@ -429,7 +429,7 @@ def test_the_pip_cache_save_action_is_gated_on_the_default_branch():
         (REPO / ".github" / "actions" / "pip-cache-save" / "action.yml").read_text(encoding = "utf-8")
     )
     steps = (doc.get("runs") or {}).get("steps") or []
-    saves = [s for s in steps if "actions/cache" in str(s.get("uses", ""))]
+    saves = [s for s in steps if "actions/cache" in _uses(s)]
     assert saves, "pip-cache-save no longer saves anything"
     for s in saves:
         cond = str(s.get("if", ""))
@@ -502,9 +502,9 @@ def test_the_cold_install_lanes_never_restore_a_cache():
         if name not in cold:
             continue
         for step in job.get("steps") or []:
-            uses = str(step.get("uses", ""))
+            uses = _uses(step)
             if "actions/cache" in uses:
-                offenders.append(f"{name}:{jid}: {step.get('name') or uses}")
+                offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
             if "setup-python" in uses and (step.get("with") or {}).get("cache"):
                 offenders.append(f"{name}:{jid}: setup-python cache on a cold-install lane")
     assert not offenders, "a cold-install lane must not be warmed by a cache:\n  " + "\n  ".join(
@@ -523,7 +523,7 @@ def test_every_setup_python_step_still_pins_an_interpreter():
         f"{name}:{jid}"
         for name, jid, job in _jobs()
         for step in job.get("steps") or []
-        if "setup-python" in str(step.get("uses", ""))
+        if "setup-python" in _uses(step)
         and not (step.get("with") or {}).get("python-version")
     ]
     assert not offenders, f"setup-python without an explicit python-version: {offenders}"
@@ -551,14 +551,14 @@ def test_a_cache_save_of_downloaded_artifacts_waits_for_the_download_to_succeed(
             if s.get("id") and re.search(r"install|download|build|prime", str(s.get("run", "")))
         }
         for step in steps:
-            uses = str(step.get("uses", ""))
+            uses = _uses(step)
             if "actions/cache" not in uses or "/restore@" in uses:
                 continue
             cond = str(step.get("if", ""))
             if "always()" not in cond:
                 continue  # not force-run, so a failed producer already skips it
             if not any(f"steps.{pid}.outcome" in cond for pid in producers if pid):
-                offenders.append(f"{name}:{jid}: {step.get('name') or uses}")
+                offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
     assert not offenders, (
         "these cache saves run under always() without checking that the step which "
         "produced the payload succeeded, so a partial download can be stored under an "
@@ -590,7 +590,7 @@ def test_every_cache_key_path_resolves_where_the_job_checked_out():
         # rather than reported. A checkout with no `repository:` is this repo by definition.
         own_prefixes, foreign_prefixes = [], []
         for s in steps:
-            if "actions/checkout" not in str(s.get("uses", "")):
+            if "actions/checkout" not in _uses(s):
                 continue
             with_ = s.get("with") or {}
             prefix = str(with_.get("path") or "").strip("/")
@@ -651,7 +651,7 @@ def test_no_setup_python_step_declares_a_cache_path_without_a_cache():
         f"{name}:{jid}"
         for name, jid, job in _jobs()
         for step in job.get("steps") or []
-        if "setup-python" in str(step.get("uses", ""))
+        if "setup-python" in _uses(step)
         and (step.get("with") or {}).get("cache-dependency-path")
         and not (step.get("with") or {}).get("cache")
     ]
@@ -679,7 +679,7 @@ def test_local_action_references_use_the_nested_checkout_path():
         checkout_dirs = [
             str((s.get("with") or {}).get("path")).rstrip("/")
             for s in steps
-            if "actions/checkout" in str(s.get("uses", "")) and (s.get("with") or {}).get("path")
+            if "actions/checkout" in _uses(s) and (s.get("with") or {}).get("path")
         ]
         if not checkout_dirs:
             continue
@@ -725,6 +725,17 @@ _PW_INSTALL = re.compile(r"playwright\s+install\s+([^\n|&;]+)")
 
 PW_ENGINES = ("chromium", "firefox", "webkit")
 
+
+def _uses(step):
+    """A step's `uses`, casefolded, because GitHub resolves owner/repo case-insensitively.
+
+    `Actions/Cache/Save@v6` runs the same action as the lowercase spelling, so a
+    case-sensitive match let a writer skip these guards while still working. Only the
+    owner/repo half is case-insensitive; the ref after `@` is a git ref and is not, and
+    nothing here matches on the ref. Local `./.github/actions/...` references are
+    filesystem paths on the runner and are compared raw.
+    """
+    return str(step.get("uses", "")).casefold()
 
 def _matrix_rows(job) -> list[dict]:
     """One substitution map per job the matrix can actually produce.
@@ -819,7 +830,7 @@ def _playwright_jobs():
         cache_steps = [
             step
             for step in steps
-            if "actions/cache" in str(step.get("uses", ""))
+            if "actions/cache" in _uses(step)
             and "ms-playwright" in str((step.get("with") or {}).get("path", ""))
         ]
         if not cache_steps:
