@@ -3293,8 +3293,6 @@ def test_rng_capture_stays_quiet_when_the_state_cannot_be_read(monkeypatch):
     assert warnings == []
 
 
-# ── Cache-clear ordering ─────────────────────────────────────
-
 _BACKEND_SOURCE = Path(__file__).resolve().parents[1] / "core" / "inference" / "mlx_inference.py"
 _BACKEND_TREE = ast.parse(_BACKEND_SOURCE.read_text(encoding = "utf-8"))
 
@@ -3352,11 +3350,10 @@ def test_the_drain_covers_both_generation_stream_modules():
     names = {element.value for element in assigned[0].value.elts}
     assert names == {
         "mlx_lm.generate",
-        # mlx-vlm moves generation_stream between release layouts.
         "mlx_vlm.generate",
         "mlx_vlm.generate.dispatch",
         "mlx_vlm.generate.ar",
-        # A second stream since 0.6.0, created on import and never wired-limited.
+        # A second stream since 0.6.0, never wired-limited.
         "mlx_vlm.speculative.common",
     }
 

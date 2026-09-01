@@ -733,10 +733,8 @@ def _kv_quant_probe(language_model, entries, bits):
         _restore_mlx_rng_key(rng_key)
 
 
-# mlx-lm and mlx-vlm both run generation on their own thread-local stream, so a
-# no-argument mx.synchronize() -- which waits on the default stream -- drains none of it.
-# mlx-vlm moves generation_stream between release layouts, so every candidate is tried;
-# speculative decoding owns a separate stream that wired_limit never sees.
+# A no-argument mx.synchronize() waits on the default stream, which generation does not
+# use. mlx-vlm moves the symbol between layouts, and speculative decoding owns its own.
 _GENERATION_STREAM_MODULES = (
     "mlx_lm.generate",
     "mlx_vlm.generate",
@@ -749,11 +747,10 @@ _GENERATION_STREAM_MODULES = (
 def _drain_generation_streams(mx):
     """Best effort: every caller is a cleanup path whose old body could not fail.
 
-    mlx made command encoders thread local in 0.31.2, and at the mlx-vlm pin floor
-    generation_stream is still a plain mx.new_stream, so synchronizing one from a
-    thread that did not create it raises. Draining is a safety margin on top of the
-    clear, not a precondition for it, so a drain we cannot perform is skipped and
-    the clear still happens.
+    At the mlx-vlm pin floor generation_stream is a plain mx.new_stream, which raises
+    when synchronized off its creating thread (mlx made command encoders thread local
+    in 0.31.2). Draining is a margin on top of the clear, never a precondition, so a
+    drain we cannot perform is skipped.
     """
 
     synchronize = getattr(mx, "synchronize", None)

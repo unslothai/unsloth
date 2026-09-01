@@ -357,14 +357,10 @@ if _IS_MLX:
             clear_cache = getattr(mx.metal, "clear_cache", None)
         if callable(clear_cache):
             # MLX pins buffers a live command buffer reads, but not a dropped output array.
-            # mlx-lm and mlx-vlm generate on their own thread-local streams, which a
-            # no-argument mx.synchronize() would not wait on.
-            #
-            # Best effort, because this helper is what torch.cuda.empty_cache() calls on
-            # MLX and library code calls that from finally arms, on whatever thread it is
-            # on. mlx made command encoders thread local in 0.31.2, so synchronizing a
-            # stream bound on another thread raises; failing to drain is survivable,
-            # raising out of empty_cache() is not.
+            # Generation runs on its own streams, which a no-argument mx.synchronize()
+            # would not wait on. Best effort: this helper is torch.cuda.empty_cache() on
+            # MLX, called from finally arms on any thread, and synchronizing a stream
+            # bound on another thread raises (mlx 0.31.2 made encoders thread local).
             _synchronize = getattr(mx, "synchronize", None)
             if callable(_synchronize):
                 _drained = []

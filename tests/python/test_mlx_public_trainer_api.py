@@ -195,7 +195,7 @@ _GENERATION_STREAM_MODULES = (
     "mlx_vlm.generate",
     "mlx_vlm.generate.dispatch",
     "mlx_vlm.generate.ar",
-    # A second stream since mlx-vlm 0.6.0, created on import and never wired-limited.
+    # A second stream since mlx-vlm 0.6.0, never wired-limited.
     "mlx_vlm.speculative.common",
 )
 
@@ -234,7 +234,6 @@ def test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing(monkeypatch, shape
         metal = getattr(mx, "metal", None) or type("Metal", (), {})()
         monkeypatch.setattr(mx, "metal", metal, raising = False)
         monkeypatch.setattr(metal, "clear_cache", clear, raising = False)
-    # mlx-vlm moves this symbol between release layouts, so every candidate counts.
     _stub_generation_streams(
         monkeypatch,
         "mlx_lm.generate",
@@ -299,11 +298,7 @@ def _recording_synchronize(
 
 
 def test_mlx_clear_gpu_memory_still_clears_when_a_stream_cannot_be_drained(monkeypatch):
-    """torch.cuda.empty_cache() routes here, and callers invoke it from finally arms.
-
-    mlx made command encoders thread local in 0.31.2, so a stream bound on another
-    thread raises when synchronized. Not draining is survivable; raising is not.
-    """
+    """empty_cache() routes here from finally arms, and a foreign stream raises."""
     unsloth = _import_mlx_unsloth()
     import mlx.core as mx
 
