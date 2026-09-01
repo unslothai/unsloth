@@ -210,7 +210,11 @@ def test_stale_marker_cleanup_preserves_concurrent_generated_winner(monkeypatch)
     raced = []
 
     class _RacingConnection:
-        def execute(self, sql, params = ()):
+        def execute(
+            self,
+            sql,
+            params = (),
+        ):
             if not raced and "password_hash" in sql:
                 raced.append(True)
                 assert storage.update_password(
