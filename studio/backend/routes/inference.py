@@ -3327,6 +3327,7 @@ def _detect_safetensors_features(
     chat_template: Optional[str],
     tools = None,
     prefer_tool_use: bool = True,
+    reasoning_fallback: bool = True,
 ) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
@@ -3347,7 +3348,11 @@ def _detect_safetensors_features(
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    if not flags.get("supports_reasoning"):
+    # The fallback widens the search to the tokenizer body and the unselected branches of a
+    # named collection. That is right when classifying the model, and wrong when the caller
+    # asked about ONE body: an image turn would enable <think> parsing for a protocol its
+    # renderer never selected and move answer text into reasoning_content (#10092).
+    if not flags.get("supports_reasoning") and reasoning_fallback:
         try:
             from core.inference.chat_template_helpers import (
                 detect_reasoning_channel_markers_from_template,
@@ -22278,6 +22283,10 @@ async def produce_openai_chat_completions(
         # passing it unconditionally breaks every caller and test stub that predates the
         # parameter, and the default is what all of them already assume.
         _pref = {} if prefer_tool_use else {"prefer_tool_use": False}
+        if template is not None:
+            # Asking about one specific body, so do not let the fallback rescue reasoning
+            # support from the tokenizer body or an unselected branch.
+            _pref["reasoning_fallback"] = False
         features = _detect_safetensors_features(backend, body, tools = tools, **_pref)
         # The prefill probe needs the ONE body that will render, not the named collection
         # it came from: its <think> guard tests the collection's keys and returns False, so
@@ -22882,6 +22891,13 @@ async def produce_openai_chat_completions(
         if image is not None
         else None
     )
+    # "Will an image actually be placed" is a different question from "which body renders
+    # it". An image-capable processor with no template of its own still places the image
+    # and falls back to the nested tokenizer, so keying the marker on the template alone
+    # left a historical image attached to the newest turn for those models (#10092).
+    _sf_renders_image = image is not None and bool(
+        (_sf_model_info.get("chat_template_info") or {}).get("renders_image")
+    )
     if _sf_image_tpl is not None:
         # Reclassify the WHOLE protocol from the body this turn renders with, not just
         # tool support. A processor template can carry a reasoning channel the nested
@@ -22985,7 +23001,7 @@ async def produce_openai_chat_completions(
         # and renders through the tokenizer's text template, and the mirror omits the body
         # for exactly that case, so a string-only template would otherwise be handed part
         # lists. Unknown means leave the conversation as the caller sent it (#10092).
-        if image is not None and _sf_image_tpl is not None:
+        if _sf_renders_image:
             _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
             if _sf_image_ordinal is not None:
                 _sf_seen_users = 0
@@ -23396,7 +23412,7 @@ async def produce_openai_chat_completions(
                                 # correction is appended, or the render's reverse scan
                                 # attaches it to the correction instead (#10092).
                                 _nudge_base = gen_kwargs["messages"]
-                                if image is not None:
+                                if _sf_renders_image:
                                     from core.inference.chat_template_helpers import (
                                         messages_with_attached_image as _nudge_attach,
                                     )

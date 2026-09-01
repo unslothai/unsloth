@@ -813,6 +813,7 @@ def test_a_named_processor_template_is_classified_without_tool_use():
             template,
             tools = None,
             prefer_tool_use = True,
+            **_k,
         ):
             selected = _selected_template_strings_from_value(
                 template, tools, prefer_tool_use = prefer_tool_use
@@ -857,6 +858,7 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
     backend.models["sf-model"]["chat_template_info"] = {
         "template": _CHATML_WITH_TOOLS,
         "processor_template": _CHATML_WITH_TOOLS,
+        "renders_image": True,
     }
     payload = ChatCompletionRequest(
         model = "default",
@@ -1075,3 +1077,170 @@ def test_no_image_marker_when_the_render_falls_back_to_the_tokenizer():
         body = message.get("content")
         if isinstance(body, list):
             assert not any(p.get("type") == "image" for p in body), message
+
+
+def test_an_image_capable_processor_without_a_template_still_marks_its_turn():
+    """chat_render_target falls back to the nested tokenizer when the processor has no
+    template of its own, but the image is still placed. Keying the marker on the template
+    left a historical image attached to the newest, unrelated question (#10092)."""
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_sf_client_tools_passthrough as passthrough
+    from models.inference import ChatCompletionRequest, ChatMessage
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    # Image-capable, but no processor body: the nested tokenizer renders it.
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _CHATML_WITH_TOOLS,
+        "renders_image": True,
+    }
+    payload = ChatCompletionRequest(
+        model = "default",
+        tools = [passthrough.LOOKUP_TOOL],
+        stream = False,
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "IMAGE_QUESTION"},
+                    {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+                ],
+            ),
+            ChatMessage(role = "assistant", content = "a dot"),
+            ChatMessage(role = "user", content = "LATER_QUESTION"),
+        ],
+    )
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._call(payload, monkeypatch, backend)
+    finally:
+        monkeypatch.undo()
+
+    sent = [m for m in backend.calls[0]["messages"] if m.get("role") == "user"]
+    assert isinstance(sent[0]["content"], list), sent[0]
+    assert any(p.get("type") == "image" for p in sent[0]["content"])
+    assert not isinstance(sent[-1]["content"], list) or not any(
+        p.get("type") == "image" for p in sent[-1]["content"]
+    )
+
+
+def test_a_catalog_render_failure_does_not_drop_the_system_turn():
+    """render_advertising_tools probes without tools first. If that render kept the system
+    turn, the role is supported, so a failure on the tools render is the catalog's and
+    dropping the instructions would answer the wrong question (#10092)."""
+    calls: list = []
+
+    backend, seen = _vision_probe()
+
+    def _apply(processor, messages, **kwargs):
+        calls.append(messages)
+        if kwargs.get("tools"):
+            raise ValueError("this processor cannot render a catalog")
+        return "probe ok"
+
+    backend._apply_chat_template_for_generation = _apply
+
+    with pytest.raises(ValueError, match = "cannot render a catalog"):
+        _drain(
+            backend,
+            messages = [
+                {"role": "system", "content": "SENTINEL_RULE"},
+                {"role": "user", "content": "what is in this"},
+            ],
+            system_prompt = "",
+            tools = [_LOOKUP],
+        )
+
+    # It must not have retried with the system turn stripped.
+    assert all(any(m.get("role") == "system" for m in attempt) for attempt in calls), calls
+
+
+def test_reasoning_is_not_rescued_from_the_tokenizer_body_on_an_image_turn():
+    """_detect_safetensors_features widens its reasoning search to the tokenizer body when
+    the given template shows none. That is right when classifying the model and wrong when
+    the caller asked about one body: the image turn would enable a native channel its own
+    renderer never selected (#10092).
+
+    Deliberately does NOT stub _detect_safetensors_features: stubbing it is what made an
+    earlier version of this check pass with the fix reverted.
+    """
+    import routes.inference as inf
+
+    from core.inference.chat_template_helpers import _GEMMA_TEMPLATE_OPENERS
+
+    processor_body = "{{ messages }} plain, no reasoning"
+
+    class _Backend:
+        active_model_name = "m"
+        # Only the TOKENIZER body carries the native reasoning channel.
+        models = {
+            "m": {
+                "chat_template_info": {
+                    "template": _GEMMA_TEMPLATE_OPENERS[0] + " {{ messages }}",
+                    "processor_template": processor_body,
+                    "renders_image": True,
+                }
+            }
+        }
+
+    backend = _Backend()
+    features = inf._detect_safetensors_features(
+        backend, processor_body, prefer_tool_use = False, reasoning_fallback = False
+    )
+    widened = inf._detect_safetensors_features(backend, processor_body, prefer_tool_use = False)
+
+    assert not features.get("supports_reasoning"), features
+    # The widened call is what the strict mode has to differ from; if this ever stops being
+    # True the test no longer proves anything.
+    assert widened.get("supports_reasoning"), widened
+
+
+def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
+    """The nudge retry attaches the image marker so the picture stays on its own turn, but
+    a vision-marked model whose processor cannot process images renders the tokenizer text
+    path. Keying that on the image alone handed a string-only template part lists (#10092)."""
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_sf_client_tools_passthrough as passthrough
+
+    truncated = '<tool_call>{"name": "lookup"'
+
+    def responder(messages, tools):
+        nudged = any(
+            "native tool-call format" in (m.get("content") or "")
+            for m in messages
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        )
+        return (
+            ['<tool_call>{"name": "lookup", "arguments": {}}</tool_call>']
+            if nudged
+            else [truncated]
+        )
+
+    backend = passthrough._ScriptedBackend(responder)
+    backend.models["sf-model"]["is_vision"] = True
+    # No renders_image: the image is ignored and the tokenizer text path renders.
+    backend.models["sf-model"]["chat_template_info"] = {"template": _CHATML_WITH_TOOLS}
+    payload = _image_request(tools = [passthrough.LOOKUP_TOOL], stream = False, nudge_tool_calls = True)
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._call(payload, monkeypatch, backend)
+    finally:
+        monkeypatch.undo()
+
+    assert len(backend.calls) == 2, "the nudge retry did not run"
+    for call in backend.calls:
+        for message in call["messages"]:
+            body = message.get("content")
+            if isinstance(body, list):
+                assert not any(p.get("type") == "image" for p in body), message

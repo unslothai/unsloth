@@ -1369,13 +1369,13 @@ class InferenceBackend:
                     # peels a kwarg the processor rejects rather than failing the request.
                     rendered_with["messages"] = vision_messages
                     try:
-                        return self._apply_chat_template_for_generation(
+                        rendered = self._apply_chat_template_for_generation(
                             processor,
                             vision_messages,
                             tools = catalog,
                             continue_final_message = bool(continue_partial),
                         )
-                    except Exception as e:
+                    except Exception as e:  # noqa: F841 -- read by the fallback below
                         # Dropping the system turn drops the caller's instructions, so it stays
                         # where that is the only thing left to try: a processor that cannot
                         # render a system role at all. With tool history in the conversation it
@@ -1387,7 +1387,14 @@ class InferenceBackend:
                             for m in vision_messages
                             if not (isinstance(m, dict) and m.get("role") == "system")
                         ]
-                        if has_tool_history or len(without_system) == len(vision_messages):
+                        # A previous render kept the system turn, so the role is supported
+                        # and dropping it would hide a catalog failure behind an answer that
+                        # silently ignores the caller's instructions (#10092).
+                        if (
+                            has_tool_history
+                            or rendered_with.get("system_ok")
+                            or len(without_system) == len(vision_messages)
+                        ):
                             raise
                         logger.warning(
                             f"Vision processor for '{self.active_model_name}' may not support "
@@ -1403,6 +1410,16 @@ class InferenceBackend:
                             continue_final_message = bool(continue_partial),
                         )
                         rendered_with["messages"] = without_system
+                        return rendered
+                    else:
+                        # A render that kept the system turn proves the role is supported, so
+                        # a later failure is the catalog's, and dropping the instructions to
+                        # paper over it would answer the wrong question (#10092).
+                        if any(
+                            isinstance(m, dict) and m.get("role") == "system"
+                            for m in vision_messages
+                        ):
+                            rendered_with["system_ok"] = True
                         return rendered
 
                 # Whether the catalog reaches the prompt is decided by comparing the two
@@ -2975,6 +2992,11 @@ class InferenceBackend:
             # the image render never selects, and promotes calls for a schema the model
             # was never shown (#10092, #7066).
             "processor_template": None,
+            # Whether an image turn renders through an image-capable processor at all.
+            # Distinct from processor_template: a processor can handle images and still
+            # have no template of its own, in which case the render falls back to the
+            # nested tokenizer body but the image IS still placed (#10092).
+            "renders_image": False,
         }
         processor = self.models[model_name].get("processor")
         # A vision-marked model whose stored processor cannot process images (FastVisionModel
@@ -2988,6 +3010,7 @@ class InferenceBackend:
             )
         except Exception:
             processes_images = processor is not None and hasattr(processor, "image_processor")
+        chat_template_info["renders_image"] = bool(processes_images)
         if processes_images:
             processor_template = getattr(processor, "chat_template", None)
             # The named-template list form, [{"name": ..., "template": ...}], is a supported

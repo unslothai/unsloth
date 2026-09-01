@@ -545,6 +545,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         # image-turn tool healing from it, so omitting it silently profiles
                         # the tokenizer template instead (#10092).
                         "processor_template": _tpl_info.get("processor_template"),
+                        "renders_image": _tpl_info.get("renders_image"),
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)

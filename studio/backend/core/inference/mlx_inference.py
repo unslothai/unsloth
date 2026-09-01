@@ -1894,6 +1894,9 @@ class MLXInferenceBackend:
             # it out here profiles MLX image turns from the tokenizer body instead
             # (#10092). Absent whenever the render picks the nested tokenizer instead.
             "processor_template": None,
+            # An image-capable processor with no template of its own still places the
+            # image; the render just falls back to the nested tokenizer body (#10092).
+            "renders_image": False,
         }
         from core.inference.chat_template_helpers import (
             chat_render_target as _chat_render_target,
@@ -1911,6 +1914,7 @@ class MLXInferenceBackend:
         # model_markup both accept; narrowing it away would drop the override for it.
         if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
             info["processor_template"] = _proc_tpl
+        info["renders_image"] = _proc is not None and bool(getattr(self, "_is_vlm", False))
         try:
             tpl = (
                 getattr(tok, "chat_template", None)
