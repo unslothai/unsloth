@@ -1653,9 +1653,12 @@ def test_notebook_validator_reads_case_arms():
     assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(multi, "nb.ipynb", 0))
 
     # Conditional, so the version replay leaves an arm alone.
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!case x in x) pip install "torch==2.12.0" ;; esac', COLAB_TORCH211, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!case x in x) pip install "torch==2.12.0" ;; esac', COLAB_TORCH211, "nb.ipynb", 0
+        )
+        == []
+    )
 
     # Bash accepts a quoted pattern, and the label still ends at its `)`.
     quoted_pattern = '!case x in "x") pip install git+https://example.com/pkg.git ;; esac'
