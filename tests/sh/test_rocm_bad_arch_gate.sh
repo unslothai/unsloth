@@ -435,12 +435,36 @@ assert_eq "HIP_VISIBLE_DEVICES=1 (dGPU only) -> rocm" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES 1)"
 assert_eq "HIP_VISIBLE_DEVICES=0,1 (both) -> rocm" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES 0,1)"
-# Nothing selectable: -1 and an out-of-range ordinal mean no visible device, where ROCm
-# wheels are inert rather than dangerous, so the host keeps the behaviour it has today.
+# "-1" is an unambiguous "no devices", so nothing is reachable and ROCm wheels are inert
+# rather than dangerous: the host keeps the behaviour it has today.
 assert_eq "HIP_VISIBLE_DEVICES=-1 -> rocm (nothing visible)" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES -1)"
-assert_eq "HIP_VISIBLE_DEVICES=9 out of range -> rocm" \
-    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES 9)"
+# An out-of-range ordinal is NOT the same statement. It names a device this installer
+# cannot place, and the healthy arch that would justify ROCm comes from the physical
+# inventory -- which is exactly what the mask may have taken away. Decline instead of
+# guessing; the cost of guessing wrong is silent NaNs.
+assert_eq "HIP_VISIBLE_DEVICES=9 unresolvable -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES 9)"
+# ROCR_VISIBLE_DEVICES also takes UUIDs, and may mix them with ordinals
+# ("0,GPU-DEADBEEFDEADBEEF"). A probe that reports arches names no UUID, so such a token
+# identifies a device but not a position -- unresolved, never guessed, matching
+# _rocr_visible_subset() on the Python side.
+assert_eq "ROCR UUID mask -> cpu" "https://download.pytorch.org/whl/cpu" \
+    "$(_index_for_mixed_host_hip ROCR_VISIBLE_DEVICES GPU-DEADBEEFDEADBEEF)"
+# A mixed mask whose ORDINAL half lands on the healthy card keeps ROCm: an unresolved
+# token only matters when it is the reason no healthy device can be found, and here one
+# was found. Whatever the UUID names, a usable GPU is reachable either way.
+assert_eq "ROCR ordinal+UUID naming the dGPU keeps rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" \
+    "$(_index_for_mixed_host_hip ROCR_VISIBLE_DEVICES 1,GPU-DEADBEEFDEADBEEF)"
+# ...but when the ordinal half lands on the APU, the healthy arch is unaccounted for.
+assert_eq "ROCR ordinal+UUID naming the APU -> cpu" "https://download.pytorch.org/whl/cpu" \
+    "$(_index_for_mixed_host_hip ROCR_VISIBLE_DEVICES 0,GPU-DEADBEEFDEADBEEF)"
+assert_eq "HIP UUID mask -> cpu" "https://download.pytorch.org/whl/cpu" \
+    "$(_index_for_mixed_host_hip HIP_VISIBLE_DEVICES GPU-DEADBEEFDEADBEEF)"
+# A single-GPU healthy host is untouched by any of this: no bad arch, no decline.
+assert_eq "healthy host + UUID mask keeps rocm" "https://download.pytorch.org/whl/rocm7.2" \
+    "$(export ROCR_VISIBLE_DEVICES=GPU-DEADBEEFDEADBEEF; _index_for_rocminfo_host gfx1030)"
 # A single-GPU Deck is unaffected by any of this: every ordinal lands on gfx1033.
 assert_eq "single Deck under a HIP mask -> cpu" \
     "https://download.pytorch.org/whl/cpu" \
@@ -503,6 +527,44 @@ assert_eq "amd-smi host + HIP=0 (APU only) -> cpu" \
     "https://download.pytorch.org/whl/cpu" "$(_index_for_amdsmi_host HIP_VISIBLE_DEVICES 0)"
 assert_eq "amd-smi host + ROCR=1 (dGPU only) -> rocm" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_amdsmi_host ROCR_VISIBLE_DEVICES 1)"
+
+echo "=== A declared arch must not answer for the silicon ==="
+# UNSLOTH_ROCM_GFX_ARCH is an arch HINT for routing, not a wheel pin, and it is short-
+# circuited at the top of _probe_amd_gfx_arch. A stale gfx1030 on a real Van Gogh -- the
+# same value HSA_OVERRIDE_GFX_VERSION=10.3.0 spoofs to -- therefore answered the gate with
+# a healthy arch and restored the ROCm path this whole gate exists to close. "physical"
+# mode now skips it, so the probe reports the silicon.
+_index_for_declared_arch() {  # $1 = real silicon, $2 = UNSLOTH_ROCM_GFX_ARCH
+    _ida_dir=$(_make_rocminfo_host "$1")
+    PATH="$_ida_dir:$_TOOLS_DIR" "$_SH" -c "
+        unset CUDA_VISIBLE_DEVICES UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY
+        unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
+        UNSLOTH_ROCM_GFX_ARCH='$2'; export UNSLOTH_ROCM_GFX_ARCH
+        _ARCH=x86_64
+        . '$_E2E_FUNCS'
+        get_torch_index_url
+    " 2>/dev/null | tail -1
+    rm -rf "$_ida_dir"
+}
+
+assert_eq "stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a Deck -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_declared_arch gfx1033 gfx1030)"
+# The override still routes an ordinary host: a real gfx1030 keeps ROCm either way.
+assert_eq "declared gfx1030 on a real gfx1030 host keeps rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_declared_arch gfx1030 gfx1030)"
+# And it is still honoured where nothing else can answer: no rocminfo, no amd-smi.
+_no_probe_index=$( _np=$(mktemp -d)
+    printf '#!/bin/sh\necho 7.2.0\n' > "$_np/hipconfig"; chmod +x "$_np/hipconfig"
+    PATH="$_np:$_TOOLS_DIR" "$_SH" -c "
+        unset UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY HSA_OVERRIDE_GFX_VERSION
+        unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES
+        UNSLOTH_ROCM_GFX_ARCH=gfx1033; export UNSLOTH_ROCM_GFX_ARCH
+        _ARCH=x86_64
+        . '$_E2E_FUNCS'
+        get_torch_index_url" 2>/dev/null | tail -1
+    rm -rf "$_np" )
+assert_eq "declared gfx1033 with no probe tool -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$_no_probe_index"
 
 echo "=== Structural: the gate precedes the version-keyed index selection ==="
 _gate_line=$(grep -n 'Archs measured to compute INCORRECTLY under ROCm' "$INSTALL_SH" | head -1 | cut -d: -f1)

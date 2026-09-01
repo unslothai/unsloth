@@ -7364,6 +7364,34 @@ class TestRocmMiscomputingArchDemotion:
             self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", ["gfx1100"], kfd = ["gfx1033"]) == []
         )
 
+    def test_a_declared_arch_does_not_outrank_the_silicon(self, monkeypatch):
+        """UNSLOTH_ROCM_GFX_ARCH is a routing hint, not an answer about the hardware.
+
+        A stale gfx1030 on a real Van Gogh -- the value HSA_OVERRIDE_GFX_VERSION=10.3.0
+        also spoofs to -- used to be taken first and skip the demotion outright, so a
+        standalone `studio update` left the miscomputing wheels in place. The probes are
+        asked first now, and the declared arch only answers when none of them can.
+        """
+        calls = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            ["gfx1033"],
+            env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1030"},
+        )
+        assert len(calls) == 1, "a declared arch hid the silicon from the demotion"
+
+    def test_kfd_outranks_a_declared_arch(self, monkeypatch):
+        """_infer_linux_amd_gfx_arch() returns the declared arch first, so KFD has to be
+        consulted before it or the kernel never gets to answer."""
+        calls = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            [],
+            kfd = ["gfx1033"],
+            env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1030"},
+        )
+        assert len(calls) == 1, "the declared arch outranked the kernel"
+
     def test_env_override_names_the_arch(self, monkeypatch):
         calls = self._demotion_calls(
             monkeypatch, "2.10.0+rocm7.1", [], env = {"UNSLOTH_ROCM_GFX_ARCH": "GFX1033"}

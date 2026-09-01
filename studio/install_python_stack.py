@@ -1527,7 +1527,8 @@ def _rocm_miscomputing_host() -> bool:
     majority of hosts, which have no ROCm torch to demote. An explicit
     UNSLOTH_TORCH_INDEX_URL / _FAMILY stays the documented escape hatch and wins.
 
-    KFD topology sysfs is consulted after the runtime probes because a Van Gogh host can
+    KFD topology sysfs is consulted after the runtime probes, and BEFORE the product-name
+    inference and the declared arch, because a Van Gogh host can
     reach here with neither answering: _detect_amd_gfx_codes() needs rocminfo or amd-smi,
     and a Deck whose ROCm was uninstalled -- or whose user is not in the render group, so
     rocminfo enumerates no GPU -- has neither, while _infer_linux_amd_gfx_arch() maps no
@@ -1542,26 +1543,35 @@ def _rocm_miscomputing_host() -> bool:
         return False
     if "+rocm" not in _installed_torch_label_on_disk():
         return False
+    # The declared arch is consulted LAST, not first. This function asks what silicon is
+    # present, and a stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Van Gogh answered that
+    # question with a healthy arch and skipped the demotion entirely -- the same bypass an
+    # HSA_OVERRIDE spoof gave, through a different door. It still answers when no probe
+    # can, since there the declared arch is all the host has. install.sh's "physical"
+    # probe mode makes the same ordering choice.
     _env_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
-    if _env_gfx:
+    # ignore_hsa_override: HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh
+    # workaround and makes rocminfo report gfx1030, hiding the arch being judged.
+    # ignore_visible_masks: the question below is whether EVERY GPU on the host is
+    # bad, so it has to be asked of the whole host. A ROCR_VISIBLE_DEVICES that hides
+    # the healthy dGPU would otherwise leave gfx1033 as the only arch in the list and
+    # demote a working ROCm install to CPU. install.sh's _probe_amd_gfx_arch unsets
+    # both masks for the same reason.
+    _archs = [
+        _code.strip().lower().split(":")[0]
+        for _code in _detect_amd_gfx_codes(ignore_hsa_override = True, ignore_visible_masks = True)
+    ]
+    # KFD before the product-name inference, because that inference returns
+    # UNSLOTH_ROCM_GFX_ARCH first and would hand the declared arch back ahead of the
+    # kernel's own answer. amdkfd writes gfx_target_version from the IP-version table, so
+    # it is the last source here that no environment variable can reach.
+    if not _archs:
+        _archs = [_code.strip().lower().split(":")[0] for _code in _kfd_gfx_targets()]
+    if not _archs:
+        _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0]
+        _archs = [_inferred] if _inferred else []
+    if not _archs and _env_gfx:
         _archs = [_env_gfx]
-    else:
-        # ignore_hsa_override: HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh
-        # workaround and makes rocminfo report gfx1030, hiding the arch being judged.
-        # ignore_visible_masks: the question below is whether EVERY GPU on the host is
-        # bad, so it has to be asked of the whole host. A ROCR_VISIBLE_DEVICES that hides
-        # the healthy dGPU would otherwise leave gfx1033 as the only arch in the list and
-        # demote a working ROCm install to CPU. install.sh's _probe_amd_gfx_arch unsets
-        # both masks for the same reason.
-        _archs = [
-            _code.strip().lower().split(":")[0]
-            for _code in _detect_amd_gfx_codes(ignore_hsa_override = True, ignore_visible_masks = True)
-        ]
-        if not _archs:
-            _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0]
-            _archs = [_inferred] if _inferred else []
-        if not _archs:
-            _archs = [_code.strip().lower().split(":")[0] for _code in _kfd_gfx_targets()]
     return bool(_archs) and all(_arch in _ROCM_MISCOMPUTING_GFX for _arch in _archs)
 
 
