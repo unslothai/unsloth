@@ -573,9 +573,7 @@ def test_offline_embedding_detection_does_not_read_the_cache_anonymously(monkeyp
 
 
 @pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
-def test_gguf_variants_serve_the_hf_cache_only_to_an_authorized_caller(
-    monkeypatch, hf_token
-):
+def test_gguf_variants_serve_the_hf_cache_only_to_an_authorized_caller(monkeypatch, hf_token):
     """prefer_local_cache answers off disk with the credential never consulted.
 
     The listing carries variant filenames, sizes and the vision flag, so a caller denied
@@ -613,8 +611,9 @@ def test_gguf_variants_serve_the_hf_cache_only_to_an_authorized_caller(
         pass
 
     if is_anonymous(hf_token):
-        assert reads == {"snapshot": 0, "state": 0}, (
-            "the anonymous caller was served from the hub cache"
-        )
+        assert reads == {
+            "snapshot": 0,
+            "state": 0,
+        }, "the anonymous caller was served from the hub cache"
     else:
         assert reads["snapshot"] > 0, "the authorized caller lost its cache fast path"
