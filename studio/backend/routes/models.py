@@ -3761,13 +3761,13 @@ def _resolve_mtp_drafter(
 
         if _snapshot_dir_of(main_gguf_path) is not None:
             # An HF snapshot. ``_download_mtp`` takes the ``MTP/`` fallback only
-            # for a target with no head of its own, so the same gate applies here:
-            # pricing a nested copy for a quant that carries its own head reports
-            # a reserve for a drafter the load will not open.
+            # for qwen4exp with no head of its own, so the same gate applies here:
+            # pricing a nested copy for any other model reports a reserve for a
+            # drafter the load will not open.
             pick = (
-                _pick_mtp_root_only
-                if LlamaCppBackend._gguf_path_has_embedded_mtp(main_gguf_path)
-                else _pick_mtp
+                _pick_mtp
+                if LlamaCppBackend._gguf_path_wants_nested_mtp(main_gguf_path)
+                else _pick_mtp_root_only
             )
             drafter = _companion_snapshot_sibling(main_gguf_path, pick)
         else:

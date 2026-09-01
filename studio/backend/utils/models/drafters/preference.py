@@ -60,12 +60,18 @@ def mtp_precision_rank(name: str) -> int:
 def mtp_preference_key(name: str) -> tuple[int, int, str]:
     """Sort key picking the preferred MTP head by name alone.
 
-    A head that omits its own token_embd/output and borrows the target's is
-    demoted below an otherwise equal self-contained one: it is smaller, but it
-    only loads on a build carrying the borrow, so it is not the safe automatic
-    pick. Explicit selection still reaches it.
+    A head that omits its own token_embd/output and borrows the target's wins the
+    tie. It is 1.35 GB smaller at Q8_0 (2.79 against 4.14) and drafts no worse:
+    on the shipped prebuilt against Qwen3.8-Flash-Next UD-IQ1_S the shared and
+    full Q8_0 heads accept identically, 159 of 284, and shared Q4_K_M beats full
+    Q4_K_M (0.560 against 0.541) because it borrows the target's real embeddings
+    instead of carrying its own quantized copies.
+
+    The borrow is not a portability risk here, because only ``_pick_mtp``'s
+    qwen4exp path reaches a repo publishing both forms, and qwen4exp MTP and the
+    borrow live in the same fork -- a build that can draft one carries the other.
     """
-    borrows = 1 if "shared" in Path(name).name.lower() else 0
+    borrows = 0 if "shared" in Path(name).name.lower() else 1
     return mtp_precision_rank(name), borrows, Path(name).name.lower()
 
 
