@@ -257,13 +257,82 @@ def _path_is_within(
         return False
 
 
-def _editable_source_paths() -> list[str]:
-    """Source dirs registered by PEP 660 editable installs.
+def opted_in_user_site_path() -> str | None:
+    """Return the safe parent user-site path when the operator opts in."""
+    if os.environ.get("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE") != "1":
+        return None
+    try:
+        user_site = site.getusersitepackages()
+    except Exception as e:  # noqa: BLE001 - best-effort; never break tool exec
+        logger.debug("site.getusersitepackages() unavailable: %s", e)
+        return None
+    if not user_site:
+        return None
+    resolved = os.path.realpath(user_site)
+    if not os.path.isdir(resolved) or os.path.dirname(resolved) == resolved:
+        return None
+    expanded_home = os.path.expanduser("~")
+    real_home = os.path.realpath(expanded_home) if expanded_home and expanded_home != "~" else None
+    if real_home and _path_is_within(real_home, resolved):
+        logger.warning("Ignoring unsafe user-site path containing user home: %s", resolved)
+        return None
+    return resolved
 
-    Read from the parent's ``sys.modules``; valid for the child only
-    while it shares ``sys.executable`` with the parent.
+
+def _plain_pth_source_paths() -> list[str]:
+    """Existing source dirs named by non-executable ``.pth`` lines.
+
+    Python permits import statements in ``.pth`` files. Never execute or infer
+    from those lines here; finder-based editable installs are handled from the
+    already-loaded mapping below.
     """
+    site_dirs: list[str] = []
+    try:
+        site_dirs.extend(site.getsitepackages())
+    except Exception as e:  # noqa: BLE001 - best-effort; never break tool exec
+        logger.debug("site.getsitepackages() unavailable for .pth scan: %s", e)
+    user_site = opted_in_user_site_path()
+    if user_site:
+        site_dirs.append(user_site)
+
     paths: list[str] = []
+    for site_dir in site_dirs:
+        if not os.path.isdir(site_dir):
+            continue
+        try:
+            entries = list(os.scandir(site_dir))
+        except OSError as e:
+            logger.debug("Cannot scan site-packages %s for .pth files: %s", site_dir, e)
+            continue
+        for entry in entries:
+            if not entry.name.endswith(".pth"):
+                continue
+            try:
+                with open(entry.path, encoding = "utf-8", errors = "surrogateescape") as f:
+                    data = f.read(1_048_577)
+            except OSError as e:
+                logger.debug("Cannot read editable path file %s: %s", entry.path, e)
+                continue
+            if len(data) > 1_048_576:
+                logger.warning("Ignoring oversized editable path file: %s", entry.path)
+                continue
+            for raw_line in data.splitlines():
+                line = raw_line.rstrip()
+                if not line or line.startswith("#") or line.startswith(("import ", "import\t")):
+                    continue
+                candidate = line if os.path.isabs(line) else os.path.join(site_dir, line)
+                if "\x00" not in candidate and os.path.isdir(candidate):
+                    paths.append(candidate)
+    return paths
+
+
+def _editable_source_paths() -> list[str]:
+    """Source dirs registered by plain ``.pth`` or PEP 660 editable installs.
+
+    Finder mappings are read from the parent's ``sys.modules`` and are valid
+    for the child only while it shares ``sys.executable`` with the parent.
+    """
+    paths: list[str] = _plain_pth_source_paths()
     for name, mod in list(sys.modules.items()):
         if not (name.startswith("__editable___") and name.endswith("_finder")):
             continue
@@ -332,14 +401,9 @@ def _python_read_paths() -> list[str]:
     except Exception as e:  # noqa: BLE001 - best-effort; never break tool exec
         logger.debug("site.getsitepackages() unavailable: %s", e)
     # user-site is under real $HOME; exposing it defeats the deny-$HOME stance.
-    if os.environ.get("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE") == "1":
-        try:
-            user_site = site.getusersitepackages()
-        except Exception as e:  # noqa: BLE001 - best-effort; never break tool exec
-            logger.debug("site.getusersitepackages() unavailable: %s", e)
-            user_site = None
-        if user_site:
-            candidates.append(user_site)
+    user_site = opted_in_user_site_path()
+    if user_site:
+        candidates.append(user_site)
     candidates.extend(_editable_source_paths())
 
     resolved_candidates = [os.path.realpath(p) for p in candidates if p]
@@ -641,6 +705,7 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     top_ro_dirs = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
     # Narrow /etc to runtime essentials; deny sshd_config, machine-id, etc.
     etc_ro_entries = (
+        "/etc/alternatives",
         "/etc/hosts",
         "/etc/resolv.conf",
         "/etc/nsswitch.conf",

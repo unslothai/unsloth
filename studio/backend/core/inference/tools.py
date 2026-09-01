@@ -77,7 +77,11 @@ from core.inference.mcp_client import (
     record_probe_failure,
     stdio_mcp_enabled,
 )
-from core.inference.sandbox import build_sandbox_argv, sandbox_available
+from core.inference.sandbox import (
+    build_sandbox_argv,
+    opted_in_user_site_path,
+    sandbox_available,
+)
 from storage import mcp_servers_db
 
 from loggers import get_logger
@@ -6829,7 +6833,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     SystemRoot and a minimal PATHEXT) reach the child; all credential vars
     (HF_TOKEN, AWS_*, etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
     operator's cached creds, and the temp vars at _sandbox_temp_dir just inside
-    it. PYTHONPATH carries only the sandbox sitecustomize shim directory.
+    it. PYTHONPATH carries the sandbox sitecustomize shim directory plus the
+    parent user site only under its explicit sandbox opt-in.
 
     PATH starts with the Unsloth interpreter / venv and OS system dirs so
     ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
@@ -6877,6 +6882,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     deduped = list(dict.fromkeys(p for p in path_entries if p))
 
     temp_dir = _sandbox_temp_dir(workdir)
+    python_path_entries = [_SANDBOX_SITE_DIR]
+    user_site = opted_in_user_site_path()
+    if user_site:
+        python_path_entries.append(user_site)
     env = {
         "PATH": os.pathsep.join(deduped),
         "HOME": workdir,
@@ -6888,7 +6897,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "MPLBACKEND": "Agg",
         # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
         # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
-        "PYTHONPATH": _SANDBOX_SITE_DIR,
+        "PYTHONPATH": os.pathsep.join(python_path_entries),
     }
     if venv:
         env["VIRTUAL_ENV"] = venv

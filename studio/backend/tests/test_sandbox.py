@@ -275,6 +275,7 @@ def test_linux_argv_narrows_etc(tmp_path, monkeypatch):
             bound_targets.add(argv[i + 2])
     assert "/etc" not in bound_targets
     for required in (
+        "/etc/alternatives",
         "/etc/hosts",
         "/etc/resolv.conf",
         "/etc/ssl/certs",
@@ -313,6 +314,33 @@ def test_python_read_paths_includes_user_site_when_opted_in(monkeypatch, tmp_pat
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE", "1")
     paths = sandbox._python_read_paths()
     assert os.path.realpath(str(fake_user_site)) in paths
+    from core.inference import tools
+
+    child_pythonpath = tools._build_safe_env(str(tmp_path))["PYTHONPATH"].split(os.pathsep)
+    assert child_pythonpath[0] == tools._SANDBOX_SITE_DIR
+    assert os.path.realpath(str(fake_user_site)) in child_pythonpath
+
+
+def test_editable_source_paths_include_plain_pth_entries(monkeypatch, tmp_path):
+    sandbox = _load_sandbox_module()
+    import site
+
+    site_dir = tmp_path / "site-packages"
+    source_dir = tmp_path / "editable-source"
+    ignored_dir = tmp_path / "ignored-import-line"
+    site_dir.mkdir()
+    source_dir.mkdir()
+    ignored_dir.mkdir()
+    (site_dir / "editable.pth").write_text(
+        f"# comment\n{source_dir}\nimport sys; sys.path.append({str(ignored_dir)!r})\n"
+    )
+    monkeypatch.setattr(site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE", raising = False)
+
+    paths = [os.path.realpath(path) for path in sandbox._editable_source_paths()]
+    assert os.path.realpath(str(source_dir)) in paths
+    assert os.path.realpath(str(ignored_dir)) not in paths
+    assert os.path.realpath(str(source_dir)) in sandbox._python_read_paths()
 
 
 def test_python_read_paths_survives_missing_site_helpers(monkeypatch):
