@@ -146,7 +146,15 @@ def test_research_presave_keeps_the_follow_up_parent() -> None:
     assert "const userMessageIndex = messages.indexOf(userMessage);" in presave
     assert "const userMessageParentId =" in presave
     assert "userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null" in presave
-    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" in presave
+    # A message with no stored row still needs the displayed predecessor, or a follow-up
+    # research turn is written as a second root. A message that IS stored keeps what it
+    # holds -- including an explicit null, which is the root an edited first prompt makes.
+    # `??` cannot separate those two: it reads a stored null as "nothing stored" and
+    # reparents the root under the branch it was split from, in the write path.
+    assert "storedUserMessage && storedUserMessage.parentId !== undefined" in presave
+    assert "? storedUserMessage.parentId" in presave
+    assert ": userMessageParentId," in presave
+    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" not in presave
     assert "parentId: storedUserMessage?.parentId ?? null" not in presave
 
 
