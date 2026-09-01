@@ -1058,6 +1058,7 @@ def _gate_would_reprompt(
     intent_text = visible_answer or stripped
     return bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
+        and 0 < len(intent_text) < _REPROMPT_MAX_CHARS
         and _INTENT_SIGNAL.search(intent_text)
         and not (artifact_text and _has_answer_artifact(artifact_text))
     )
@@ -1125,6 +1126,14 @@ def test_only_a_leading_block_is_reasoning():
     example = "First, let me write it.\n```xml\n<think>private</think>\n```"
     assert _has_answer_artifact(example)
     assert not _gate_would_reprompt(example, "", True)
+
+
+def test_unclosed_leading_reasoning_is_all_hidden():
+    """A thought the window cut off has no closing tag, so a leading block without
+    one runs to the end and none of it was shown, artifact included."""
+    for opener in ("<think>", "<thinking>"):
+        turn = f"{opener}First, let me draft it.\n```python\nx = 1\n```"
+        assert _gate_would_reprompt(turn, "", True), opener
 
 
 def test_bracketed_reasoning_only_turn_still_gets_nudged():

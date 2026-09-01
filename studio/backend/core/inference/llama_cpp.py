@@ -1062,13 +1062,18 @@ def _text_outside_think(text: str) -> str:
     only its closer.
     """
     stripped = text.lstrip()
+    # Longest opener first: "<think" is also a prefix of "<thinking".
     for opener, closer in (
+        ("<thinking", "</thinking>"),
         ("<think", "</think>"),
         ("[THINK]", "[/THINK]"),
-        ("<thinking", "</thinking>"),
     ):
         close = text.find(closer)
         if close < 0:
+            # A leading block with no closer runs to the end: a thought the window
+            # cut off has no closing tag, and none of it was shown.
+            if stripped.startswith(opener):
+                return ""
             continue
         if stripped.startswith(opener) or opener not in text[:close]:
             return text[close + len(closer) :]
@@ -29951,11 +29956,19 @@ class LlamaCppBackend:
                                 yield _meta
                             return
 
-                        _render_html_already_done_intent = _tool_succeeded(
-                            "render_html"
-                        ) and re.search(
+                        _names_render_html = re.search(
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
+                        )
+                        _render_html_already_done_intent = (
+                            _tool_succeeded("render_html") and _names_render_html
+                        )
+                        # Markup drafted for a canvas tool that has not run yet is not a
+                        # finished answer, so the artifact exemption does not apply to it.
+                        _render_html_pending_intent = bool(
+                            _names_render_html
+                            and "render_html" in _enabled_tool_names
+                            and not _tool_succeeded("render_html")
                         )
                         # A post-tool stall still deserves a nudge, but each retry
                         # re-runs tools, so allow only one. RAG autoinject never lands
@@ -29976,8 +29989,15 @@ class LlamaCppBackend:
                             and not _render_html_already_done_intent
                             and _reprompt_used < _reprompt_cap
                             and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
+                            # On _stripped as well: it is what gets replayed, and the
+                            # intent text can be a short tail of a very long turn.
+                            and len(_stripped) < _REPROMPT_MAX_CHARS
                             and _is_short_intent_without_action(_intent_text)
-                            and not (_artifact_text and _has_answer_artifact(_artifact_text))
+                            and not (
+                                _artifact_text
+                                and not _render_html_pending_intent
+                                and _has_answer_artifact(_artifact_text)
+                            )
                         ):
                             _reprompt_count += 1
                             if _already_acted:
