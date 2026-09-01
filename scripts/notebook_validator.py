@@ -157,7 +157,10 @@ def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
     marker_text = raw.split(";", 1)[1].strip()
     if not marker_text:
         return True
-    named = set(re.findall(r"[A-Za-z_]\w*", marker_text)) & _MARKER_VARIABLES
+    # Outside the string literals: `sys_platform == 'platform_release'` references one
+    # variable, not two.
+    bare = re.sub(r"\"[^\"]*\"|'[^']*'", " ", marker_text)
+    named = set(re.findall(r"[A-Za-z_]\w*", bare)) & _MARKER_VARIABLES
     if not named or named - environment.keys():
         return True  # nothing to judge on, or a field the oracle cannot answer for
     try:
@@ -472,7 +475,15 @@ def _unquoted_arm_close(text: str) -> int | None:
     """
     quote = ""
     depth = 0
+    index = -1
+    escaped = False
     for index, ch in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and quote != "'":
+            escaped = True  # `x\\)y)` matches a literal `)`, so only the second one closes
+            continue
         if quote:
             if ch == quote:
                 quote = ""
@@ -521,6 +532,36 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
         stripped = stripped[close + 1 :].strip()
         conditional = True
     return (f"!{stripped}" if bang and stripped else stripped), conditional
+
+
+def _substitution_bodies(command: str) -> list[str]:
+    """The insides of every `$( )` and backtick substitution in `command`.
+
+    They run when the command runs, so a pip call in one is an install like any other, and the
+    outer command is usually not pip at all.
+    """
+    bodies: list[str] = []
+    i = 0
+    while i < len(command):
+        if command.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < len(command) and depth:
+                if command[j] == "(":
+                    depth += 1
+                elif command[j] == ")":
+                    depth -= 1
+                j += 1
+            bodies.append(command[i + 2 : j - 1 if depth == 0 else j])
+            i = j
+        elif command[i] == "`":
+            j = command.find("`", i + 1)
+            if j == -1:
+                break
+            bodies.append(command[i + 1 : j])
+            i = j + 1
+        else:
+            i += 1
+    return [body.strip() for body in bodies if body.strip()]
 
 
 def _split_chained(line: str) -> list[tuple[str, bool]]:
@@ -616,6 +657,14 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         text, keyword = _unwrap_shell_group(piece.strip())
         if text:
             commands.append((f"!{text}", flag or keyword))
+    # `echo $(pip install x)` runs the install as surely as the echo, and the outer command is
+    # not pip, so the inner one has to be a command of its own.
+    for text, flag in list(commands):
+        for inner in _substitution_bodies(text):
+            commands.extend(
+                (inner_text, flag or inner_flag)
+                for inner_text, inner_flag in _split_chained(f"!{inner}")
+            )
     return commands
 
 

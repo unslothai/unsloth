@@ -1676,6 +1676,55 @@ def test_notebook_validator_reads_case_arms():
     assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(quoted, "nb.ipynb", 0))
 
 
+def test_notebook_validator_reads_pip_in_a_substitution():
+    """`echo $(pip install x)` runs the install as surely as the echo, and the outer command
+    is not pip, so the inner one has to be a command of its own."""
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!echo $(pip install git+https://example.com/pkg.git)",
+        "!X=`pip install git+https://example.com/pkg.git`",
+        "!echo $(echo $(pip install git+https://example.com/pkg.git))",
+    ):
+        assert "!pip install git+https://example.com/pkg.git" in [
+            command for command, _ in nv._split_chained(cell)
+        ], cell
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)
+        ), cell
+
+    assert nv._substitution_bodies("echo $(pip install x) and `pip install y`") == [
+        "pip install x",
+        "pip install y",
+    ]
+    assert nv._substitution_bodies("pip install x") == []
+
+
+def test_notebook_validator_honours_escaped_case_patterns():
+    """A `\\)` in a pattern matches a literal parenthesis, so it is not what closes the arm."""
+    nv = _load_notebook_validator_module()
+
+    escaped = "!case 'x)y' in x\\)y) pip install git+https://example.com/pkg.git ;; esac"
+    assert nv._split_chained(escaped) == [
+        ("!pip install git+https://example.com/pkg.git", True)
+    ]
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(escaped, "nb.ipynb", 0))
+
+
+def test_notebook_validator_ignores_marker_names_in_literals():
+    """`sys_platform == 'platform_release'` references one variable, not two, so the marker
+    is judged rather than declined."""
+    nv = _load_notebook_validator_module()
+
+    environment = nv._marker_environment(COLAB_TORCH211)
+    assert not nv._requirement_applies(
+        "torch==2.12.0; sys_platform == 'platform_release'", environment
+    )
+    assert nv._requirement_applies("torch==2.12.0; sys_platform == 'linux'", environment)
+    # A real reference to an unknown field is still declined.
+    assert nv._requirement_applies("torch>=2.12; platform_release < '5.0'", environment)
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
