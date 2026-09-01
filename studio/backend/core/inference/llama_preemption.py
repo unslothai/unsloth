@@ -297,6 +297,11 @@ class ParticipantState:
     # Calls parsed and tools executing. Never preempted: nothing is decoding, so pausing
     # buys no compute, and it is inside the unsafe window the tool loop forbids.
     TOOLS_RUNNING = "tools_running"
+    # Asked to stop, but still decoding until the stream reaches a safe point. Holds KV:
+    # the room is not free because we decided it should be. Counting it as free the
+    # instant a victim was chosen is what let four chats commit 16384 of a 16384 cache
+    # while the controller believed 8192 were in use.
+    PREEMPTING = "preempting"
     PAUSED = "paused"
     DONE = "done"
 
@@ -306,6 +311,7 @@ _HOLDS_KV = frozenset({
     ParticipantState.DECODING,
     ParticipantState.PARKED_ON_TOOL,
     ParticipantState.TOOLS_RUNNING,
+    ParticipantState.PREEMPTING,
 })
 
 # May be asked to stop. QUEUED holds nothing yet, PAUSED already stopped, DONE is gone,
@@ -314,6 +320,8 @@ _PREEMPTABLE = frozenset({
     ParticipantState.DECODING,
     ParticipantState.PARKED_ON_TOOL,
 })
+# PREEMPTING is deliberately absent: it has already been asked and asking twice would
+# double-count the room its pause is going to free.
 
 
 def preemption_enabled() -> bool:
@@ -461,7 +469,15 @@ class PreemptionController:
         lease: Optional[LlamaAdmissionLease] = None,
         tokens: int = 0,
         state: str = ParticipantState.DECODING,
+        signal: Optional[PreemptSignal] = None,
     ) -> Participant:
+        """``signal`` MUST be the object the stream polls.
+
+        Without it a Participant makes its own, the caller hands a different one to the
+        stream, and setting the participant's signal reaches nobody. Observed live: four
+        chats armed, two were selected as victims, neither ever paused, and the cache
+        overran exactly as it did before any of this existed.
+        """
         with self._lock:
             existing = self._participants.get(gen_id)
             if existing is not None:
@@ -473,6 +489,7 @@ class PreemptionController:
                 lease = lease,
                 tokens = max(0, int(tokens or 0)),
                 state = state,
+                **({} if signal is None else {"preempt_event": signal}),
             )
             self._participants[gen_id] = participant
             return participant
@@ -621,9 +638,12 @@ class PreemptionController:
             for victim in victims:
                 if total + want <= ceiling:
                     break
+                # `total` is the PROJECTION used to decide how many victims are needed.
+                # The participant's own state stays KV-holding until on_preempted says
+                # the stream really stopped, so the next caller plans against reality.
                 total -= victim.tokens
                 victim.consecutive_preemptions += 1
-                victim.state = ParticipantState.PAUSED
+                victim.state = ParticipantState.PREEMPTING
                 victim.preempt_event.set()
                 chosen.append(victim)
             return chosen

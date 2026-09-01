@@ -315,8 +315,16 @@ class TestSpeculativeDraftsAreReserved:
             capacity = 4, config = LlamaAdmissionConfig(), budget = 16384, tokens = 4096
         )
         backend = _backend(url = "http://127.0.0.1:10/")
+        # Both cleared together, which is the only way the backend leaves them: a stated
+        # depth is set at the same point a drafter is configured, so "depth 2 but nothing
+        # drafting" is a state that cannot occur. An earlier revision of this test
+        # asserted against exactly that impossible shape.
+        backend.speculative_type = None
+        backend.spec_drafter_kind = None
+        backend.requested_spec_mode = None
         backend._speculative_type = None
-        backend._spec_draft_n_max = 2
+        backend.spec_draft_n_max = None
+        backend._spec_draft_n_max = None
         inference._openai_llama_preemption_arm(
             request = None,
             llama_backend = backend,
@@ -326,3 +334,131 @@ class TestSpeculativeDraftsAreReserved:
             loop = None,
         )
         assert get_preemption_controller("http://127.0.0.1:10/").snapshot().buffer == 820
+
+
+class TestTheLiveCrashOf20260901:
+    """Four chats armed, two were chosen as victims, neither ever paused.
+
+    The log said `preempted=chatcmpl-...` and then nothing: no `paused`, no
+    `awaiting-room`, no `resumed`. Meanwhile `committed` sat at 8192 of a 16384 cache
+    while four chats really held 16384, and the model ran out of context space exactly
+    as it did before any of this was written.
+
+    Two independent defects, both of which these tests fail against.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_participant_polls_the_signal_the_stream_polls(self):
+        """Defect one. Without a shared signal, `register` builds its own, the caller
+        hands a different one to the stream, and selecting a victim reaches nobody."""
+        import routes.inference as inference
+
+        queue = get_llama_admission_queue("http://127.0.0.1:20/")
+        reservation = queue.reserve(
+            capacity = 4, config = LlamaAdmissionConfig(), budget = 16384, tokens = 4096
+        )
+        signal = PreemptSignal()
+        inference._openai_llama_preemption_arm(
+            request = None,
+            llama_backend = _backend(url = "http://127.0.0.1:20/"),
+            reservation = reservation,
+            gen_id = "shared",
+            signal = signal,
+            loop = None,
+        )
+        controller = get_preemption_controller("http://127.0.0.1:20/")
+        participant = controller.participant("shared")
+        assert participant is not None
+        assert participant.preempt_event is signal, (
+            "the participant holds a different signal than the stream polls, so a "
+            "preempt can never reach the stream"
+        )
+
+    def test_selecting_a_victim_actually_sets_the_streams_signal(self):
+        controller = PreemptionController("victim-signal")
+        controller.configure(budget = 8192, kv_unified = True)
+        big = PreemptSignal()
+        small = PreemptSignal()
+        controller.register("big", tokens = 6000, signal = big)
+        controller.register("small", tokens = 2000, signal = small)
+        victims = controller.plan_preemptions(needed = 4000)
+        assert victims, "nobody was selected although the cache is over its ceiling"
+        assert small.is_set(), "the victim's own signal was never set"
+        assert not big.is_set(), "the winner must keep decoding"
+
+    def test_a_victim_keeps_holding_kv_until_the_pause_is_confirmed(self):
+        """Defect two. Marking a victim PAUSED at planning time frees room that is
+        still occupied, so the next arrival is admitted against a cache that is full."""
+        controller = PreemptionController("honest-accounting")
+        controller.configure(budget = 16384, kv_unified = True)
+        for index in range(4):
+            controller.register(f"c{index}", tokens = 4096, signal = PreemptSignal())
+        before = controller.committed_tokens()
+        assert before == 16384
+        controller.plan_preemptions(needed = 4096)
+        after = controller.committed_tokens()
+        assert after == before, (
+            f"asking for a pause freed {before - after} tokens that are still occupied; "
+            "the room is only free once the stream confirms it stopped"
+        )
+
+    def test_the_room_is_released_only_on_confirmation(self):
+        controller = PreemptionController("confirm")
+        controller.configure(budget = 16384, kv_unified = True)
+        for index in range(4):
+            controller.register(f"c{index}", tokens = 4096, signal = PreemptSignal())
+        victims = controller.plan_preemptions(needed = 4096)
+        assert victims
+        assert controller.committed_tokens() == 16384
+        # What ControllerPreemptionPolicy.on_preempted does once the stream really stopped.
+        controller.set_state(victims[0].gen_id, ParticipantState.PAUSED)
+        assert controller.committed_tokens() == 16384 - 4096
+
+    def test_an_already_asked_victim_is_not_asked_twice(self):
+        """Otherwise a second arrival double-counts the room the first pause will free."""
+        controller = PreemptionController("no-double")
+        controller.configure(budget = 16384, kv_unified = True)
+        for index in range(4):
+            controller.register(f"c{index}", tokens = 4096, signal = PreemptSignal())
+        first = {v.gen_id for v in controller.plan_preemptions(needed = 4096)}
+        second = {v.gen_id for v in controller.plan_preemptions(needed = 4096)}
+        assert not (first & second), f"re-selected {first & second}"
+
+
+class TestTheDraftReserveActuallyApplied:
+    """Defect three. The live buffer read 820 where 828 was expected, so the reserve
+    silently did nothing on the one configuration that needed it."""
+
+    def test_a_load_whose_spec_block_came_from_extra_args(self):
+        import routes.inference as inference
+
+        backend = _backend()
+        backend.speculative_type = None
+        backend.spec_drafter_kind = None
+        backend.requested_spec_mode = None
+        backend._speculative_type = "draft-mtp"
+        backend._spec_draft_n_max = 2
+        assert inference._openai_llama_speculative_draft_tokens(backend) == 2
+
+    def test_an_active_drafter_with_no_stated_depth_reserves_the_default(self):
+        import routes.inference as inference
+
+        backend = _backend()
+        backend.speculative_type = "draft-mtp"
+        backend.spec_draft_n_max = None
+        backend._spec_draft_n_max = None
+        assert inference._openai_llama_speculative_draft_tokens(backend) == 6, (
+            "None means the platform default, not zero"
+        )
+
+    def test_nothing_drafting_reserves_nothing(self):
+        import routes.inference as inference
+
+        backend = _backend()
+        backend.speculative_type = None
+        backend.spec_drafter_kind = None
+        backend.requested_spec_mode = None
+        backend._speculative_type = None
+        backend.spec_draft_n_max = None
+        backend._spec_draft_n_max = None
+        assert inference._openai_llama_speculative_draft_tokens(backend) == 0

@@ -2009,6 +2009,38 @@ def _openai_llama_admission_tokens(
     return max(1, min(budget, prompt_tokens + output_tokens))
 
 
+# Platform default when a drafter is active but no --spec-draft-n-max was given: the
+# backend's own accessor documents 6 on GPU / 3 on CPU and returns None for "default",
+# so reading it raw multiplied the reserve to nothing. Six is the conservative pick,
+# since over-reserving costs a little concurrency while under-reserving costs the crash.
+_OPENAI_LLAMA_DEFAULT_SPEC_DRAFT_N_MAX = 6
+
+
+def _openai_llama_speculative_draft_tokens(llama_backend) -> int:
+    """Draft tokens ONE slot may hold that no request is charged for.
+
+    Zero when nothing is drafting. Read through the public accessors rather than the
+    private fields: `_speculative_type` is None on a load whose spec block came from
+    extra args, which silently disabled this reserve on exactly the configuration that
+    needed it (observed: buffer 820 where 828 was expected).
+    """
+    active = (
+        getattr(llama_backend, "speculative_type", None)
+        or getattr(llama_backend, "spec_drafter_kind", None)
+        or getattr(llama_backend, "requested_spec_mode", None)
+        or getattr(llama_backend, "_speculative_type", None)
+    )
+    stated = getattr(llama_backend, "spec_draft_n_max", None)
+    if stated is None:
+        stated = getattr(llama_backend, "_spec_draft_n_max", None)
+    if stated is not None:
+        try:
+            return max(0, int(stated))
+        except (TypeError, ValueError):
+            return 0
+    return _OPENAI_LLAMA_DEFAULT_SPEC_DRAFT_N_MAX if active else 0
+
+
 def _llama_preemption_log(event: str, *, level: str = "info", **fields) -> None:
     """One line per preemption decision.
 
@@ -2065,11 +2097,7 @@ def _openai_llama_preemption_arm(
         # they are accepted or rejected, and admission never sees them. Unreserved, they
         # are what pushes a nearly-full cache onto llama-server's shrinking-batch retry,
         # where upstream #24840 throws on the speculative indices.
-        draft_tokens = (
-            int(getattr(llama_backend, "_spec_draft_n_max", 0) or 0)
-            if getattr(llama_backend, "_speculative_type", None)
-            else 0
-        ),
+        draft_tokens = _openai_llama_speculative_draft_tokens(llama_backend),
         slots = _openai_llama_admission_capacity(request, llama_backend),
     )
     if not controller.active:
@@ -2086,7 +2114,7 @@ def _openai_llama_preemption_arm(
         )
         return None
     charged = int(getattr(lease, "tokens", 0) or 0)
-    controller.register(gen_id, lease = lease, tokens = charged)
+    controller.register(gen_id, lease = lease, tokens = charged, signal = signal)
     # Whoever has to stop so this one fits. Setting the signal is all that happens here;
     # the victims notice at their own next safe point, which is the only place a pause
     # is allowed to land.

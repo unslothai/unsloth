@@ -283,12 +283,25 @@ class TestWhoStops:
         assert victims == ["big"], f"one victim should have been enough, got {victims}"
 
     def test_a_victim_is_marked_and_signalled_together(self):
+        """Marked PREEMPTING, not PAUSED.
+
+        This asserted PAUSED until a live run on 2026-09-01 showed why that is wrong:
+        PAUSED stops counting the victim's KV, so the room was treated as free the
+        instant a victim was chosen rather than when its stream actually stopped. Four
+        chats were then admitted against a cache the controller believed was half empty,
+        and the model ran out of context space exactly as it did before preemption
+        existed. A victim holds its cells until the pause is confirmed.
+        """
         controller = _controller(budget = 16384)
         _register(controller, "winner", 11000)
         victim = _register(controller, "victim", 5000)
+        before = controller.committed_tokens()
         controller.plan_preemptions()
-        assert victim.state == ParticipantState.PAUSED
+        assert victim.state == ParticipantState.PREEMPTING
         assert victim.preempt_event.is_set(), "the decision and the signal must not drift apart"
+        assert controller.committed_tokens() == before, (
+            "asking for a pause must not free room that is still occupied"
+        )
 
     def test_a_queued_chat_is_not_a_victim(self):
         controller = _controller(budget = 16384)
