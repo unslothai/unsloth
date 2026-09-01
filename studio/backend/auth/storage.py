@@ -829,31 +829,52 @@ def setup_code_login_allowed(username: str, password_hash: str) -> bool:
         conn.close()
 
 
-def _retire_workspace_directory(username: str) -> None:
-    """Move a deleted account's workspace aside so a recreated name cannot inherit it.
+def _subject_owned_roots(username: str) -> list:
+    """Every persistent directory whose path is derived from ``username``.
 
-    The key is a pure function of the username, so without this a recycled name
-    reopens the previous holder's chats and credentials. Renaming keeps the files
-    recoverable by hand, which is the point of retaining them, without handing
-    them to whoever registers the name next.
+    The workspace tree, the projects tree (a separate Documents root) and the tool
+    sandbox tree each key on workspace_key(username), so retiring only the first
+    still hands a recycled name the other two.
     """
-    from utils.paths.storage_roots import studio_root
-    from utils.workspace_context import workspace_key
+    from pathlib import Path
 
+    from utils.paths.storage_roots import project_workspaces_root, studio_root
+    from utils.workspace_context import run_in_workspace, workspace_key
+
+    def _scoped() -> list:
+        from core.inference.tools import sandbox_root
+        return [project_workspaces_root(), Path(sandbox_root())]
+
+    roots = [studio_root() / "workspaces" / workspace_key(username)]
     try:
-        workspace = studio_root() / "workspaces" / workspace_key(username)
-        if not workspace.is_dir():
-            return
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        retired = workspace.with_name(f"{workspace.name}-deleted-{stamp}")
-        suffix = 1
-        while retired.exists():
-            retired = workspace.with_name(f"{workspace.name}-deleted-{stamp}-{suffix}")
-            suffix += 1
-        workspace.rename(retired)
-    except OSError:
-        # Never let a locked file block the account revocation itself.
-        logger.warning("Could not retire the workspace directory for %s", username)
+        roots += run_in_workspace(username, _scoped)
+    except Exception:
+        logger.warning("Could not resolve every workspace root for %s", username)
+    return roots
+
+
+def _retire_workspace_directory(username: str) -> None:
+    """Move a deleted account's directories aside so a recreated name cannot inherit them.
+
+    The keys are a pure function of the username, so without this a recycled name
+    reopens the previous holder's chats, credentials, projects and sandbox files.
+    Renaming keeps them recoverable by hand, which is the point of retaining them,
+    without handing them to whoever registers the name next.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    for directory in _subject_owned_roots(username):
+        try:
+            if not directory.is_dir():
+                continue
+            retired = directory.with_name(f"{directory.name}-deleted-{stamp}")
+            suffix = 1
+            while retired.exists():
+                retired = directory.with_name(f"{directory.name}-deleted-{stamp}-{suffix}")
+                suffix += 1
+            directory.rename(retired)
+        except OSError:
+            # Never let a locked file block the account revocation itself.
+            logger.warning("Could not retire %s for %s", directory, username)
 
 
 def delete_managed_user(username: str) -> bool:
@@ -1044,7 +1065,11 @@ def update_password(
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
-            if not preserve_desktop_secret:
+            # app_secrets is install-wide and holds the OWNER's desktop credential,
+            # so a managed account's change must not delete it. Name as well as flag:
+            # an install seeded before the is_admin column still owns that secret.
+            owns_desktop_secret = username == DEFAULT_ADMIN_USERNAME or is_admin(username)
+            if not preserve_desktop_secret and owns_desktop_secret:
                 clear_desktop_secret()
             return jwt_secret
         return None

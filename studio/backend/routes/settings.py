@@ -25,6 +25,7 @@ from auth.authentication import (
     authenticated_via_api_key,
     get_current_credential,
     get_current_subject,
+    require_install_admin,
 )
 from auth.storage import rotate_preview_link_secret
 
@@ -1071,7 +1072,9 @@ def get_hugging_face_cache(
 
 @router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
 def update_hugging_face_cache(
-    payload: HuggingFaceCachePayload, current_subject: str = Depends(get_current_subject)
+    # Owner only: the cache is install-wide and the path is unconstrained, so a
+    # managed account could point downloads at another workspace.
+    payload: HuggingFaceCachePayload, current_subject: str = Depends(require_install_admin)
 ) -> HuggingFaceCacheResponse:
     try:
         set_hf_cache_home(payload.cache_home)
@@ -1090,7 +1093,9 @@ def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> L
 @router.put("/llama-cpp-path", response_model = LlamaCppPathResponse)
 def update_llama_cpp_path(
     payload: LlamaCppPathPayload,
-    current_subject: str = Depends(get_current_subject),
+    # Owner only: this picks the executable the shared inference backend launches,
+    # and a managed account's workspace is writable by that account.
+    current_subject: str = Depends(require_install_admin),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> LlamaCppPathResponse:
     # Only the interactive Unsloth UI may change this executable setting.
@@ -3607,7 +3612,9 @@ class DebugLogResponse(BaseModel):
 
 @router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
 def get_debug_log_sources(
-    current_subject: str = Depends(get_current_subject),
+    # Owner only: the log files are process-wide and carry other accounts' prompt
+    # prefixes and host paths.
+    current_subject: str = Depends(require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> DebugLogSourcesResponse:
     """Every log file the viewer may read, newest first within each family.
@@ -3630,7 +3637,7 @@ def get_debug_log(
     source: Optional[str] = None,
     cursor: Optional[str] = None,
     lines: int = 1000,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> DebugLogResponse:
     """The tail of one log, then only what was appended after `cursor`.
