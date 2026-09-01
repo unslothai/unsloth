@@ -1040,8 +1040,6 @@ def test_a_shared_pool_is_not_credited_on_top_of_host_ram(backend, mib_embd_pair
         instance._launch_host_shortfall_message(argv, rows, avail_mib = avail_mib) is None
     ), "24 GiB of dedicated VRAM holds all but 8 GiB of it"
     assert (
-        instance._launch_host_shortfall_message(
-            argv, rows, avail_mib = avail_mib, shared_gpu_ids = [0]
-        )
+        instance._launch_host_shortfall_message(argv, rows, avail_mib = avail_mib, shared_gpu_ids = [0])
         is not None
     ), "the same pool is host RAM, so the whole model has to fit in it"
