@@ -80,10 +80,11 @@ def test_missing_description_symbol_keeps_igpu_detection():
     )
     lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
 
-    flags, names = _igpu_flags_and_names(base, lib, 1)
+    flags, names, known = _igpu_flags_and_names(base, lib, 1)
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
+    assert known == [True]
 
 
 def _make_vulkan_install(tmp_path: Path) -> str:
@@ -299,6 +300,86 @@ def test_versioned_only_vulkan_soname_is_probed(tmp_path):
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(str(binary))
     assert gpus == [(0, 23 * 1024, 24 * 1024)], gpus
+
+
+class _RaisingCFunction:
+    def __init__(self):
+        self.restype = None
+        self.argtypes = None
+
+    def __call__(self, *_args):
+        raise OSError("no such symbol")
+
+
+def test_an_unreadable_device_type_is_reported_unknown_not_discrete():
+    """The probe degrades a failed type lookup to is_igpu=0 so the memory readings
+    still get through. That reads exactly like a proved dGPU, so the flag alone
+    cannot gate a credit only a discrete device may have."""
+    base = _types.SimpleNamespace(
+        ggml_backend_reg_dev_count = _FakeCFunction(1),
+        ggml_backend_reg_dev_get = _FakeCFunction(1),
+        ggml_backend_dev_type = _RaisingCFunction(),
+        ggml_backend_dev_name = _FakeCFunction(b"Mystery Vulkan device"),
+    )
+    lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
+
+    flags, names, known = _igpu_flags_and_names(base, lib, 1)
+
+    assert flags == [False]
+    assert names == ["Mystery Vulkan device"]
+    assert known == [False]
+
+
+def test_an_unreachable_registry_reports_every_device_unknown():
+    base = _types.SimpleNamespace(
+        ggml_backend_reg_dev_count = _FakeCFunction(2),
+        ggml_backend_reg_dev_get = _FakeCFunction(1),
+        ggml_backend_dev_type = _FakeCFunction(2),
+    )
+    lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(0))  # null reg
+
+    flags, names, known = _igpu_flags_and_names(base, lib, 2)
+
+    assert flags == [False, False]
+    assert known == [False, False]
+
+
+def test_the_reader_carries_the_type_known_column(tmp_path):
+    """Six columns carry it; a five-column line from an older probe answered every
+    device, so its silence is the absence of an unknown state, not one."""
+    binary = _make_vulkan_install(tmp_path)
+    rows = [
+        f"0\t{23 * GIB}\t0\t{24 * GIB}\tKnown dGPU\t1",
+        f"1\t{23 * GIB}\t0\t{24 * GIB}\tUnreadable\t0",
+        _row(2, 23 * GIB, is_igpu = 0, total_bytes = 24 * GIB, name = "Older probe"),
+    ]
+    with _mock_probe(rows):
+        inventory = LlamaCppBackend._run_vulkan_probe(binary)
+    assert [r["type_known"] for r in inventory] == [True, False, True]
+
+
+@pytest.mark.parametrize(
+    "type_known,conservative,expected",
+    [
+        # Proved discrete: no shared pool, whatever the caller asked for.
+        (True, True, False),
+        (True, False, False),
+        # Type unreadable: shared only for the caller that says so, so the
+        # existing page-locking question keeps its own answer.
+        (False, True, True),
+        (False, False, False),
+    ],
+)
+def test_an_unreadable_vulkan_type_is_shared_only_where_it_must_be(
+    type_known, conservative, expected
+):
+    rows = [{"index": 0, "is_igpu": False, "type_known": type_known}]
+    assert (
+        LlamaCppBackend._vulkan_rows_target_igpus(
+            rows, [0], conservative_on_unknown = conservative
+        )
+        is expected
+    )
 
 
 if __name__ == "__main__":

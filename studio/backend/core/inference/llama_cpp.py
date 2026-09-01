@@ -8370,7 +8370,14 @@ class LlamaCppBackend:
         *,
         conservative_on_unknown: bool = False,
     ) -> bool:
-        """Classify the selected devices from one Vulkan inventory snapshot."""
+        """Classify the selected devices from one Vulkan inventory snapshot.
+
+        ``conservative_on_unknown`` also covers a row whose TYPE could not be read.
+        The probe degrades a failed registry lookup to ``is_igpu = 0`` so the memory
+        readings still get through, which reads the same as a device proved discrete;
+        a caller crediting an iGPU's shared pool as VRAM would then do it on exactly
+        the host it cannot see. ``type_known`` is the difference.
+        """
         rows = list(rows or ())
         if not rows:
             return conservative_on_unknown
@@ -8382,6 +8389,8 @@ class LlamaCppBackend:
             and {r["index"] for r in selected} != wanted
         ):
             return conservative_on_unknown
+        if conservative_on_unknown and not all(r.get("type_known", True) for r in selected):
+            return True
         return any(r["is_igpu"] for r in selected)
 
     @staticmethod
@@ -10045,8 +10054,9 @@ class LlamaCppBackend:
         rows: list[dict] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            # 4 columns from an older probe (no name); 5 with the name column.
-            if len(parts) not in (4, 5):
+            # 4 columns from an older probe (no name); 5 with the name column;
+            # 6 with the type-known column.
+            if len(parts) not in (4, 5, 6):
                 continue
             try:
                 rows.append(
@@ -10055,7 +10065,10 @@ class LlamaCppBackend:
                         "free_mib": int(parts[1]) // (1024 * 1024),
                         "is_igpu": parts[2] == "1",
                         "total_mib": int(parts[3]) // (1024 * 1024),
-                        "name": parts[4].strip() if len(parts) == 5 else "",
+                        "name": parts[4].strip() if len(parts) >= 5 else "",
+                        # An older probe answered every device, so its silence is
+                        # the same "no unknown state" the column exists to end.
+                        "type_known": parts[5] == "1" if len(parts) == 6 else True,
                     }
                 )
             except ValueError:
@@ -21790,12 +21803,25 @@ class LlamaCppBackend:
                     _fit_env_mmproj_on_host = (
                         _resolved_mmproj_offload(_fit_extras, _fit_env) is False
                     )
+                    # Embeddings llama.cpp keeps on the host, as far as the weight terms
+                    # have NOT already taken them off the GPU. `_host_pinned` is the VRAM
+                    # DISCOUNT ledger and is zero on a shared or unclassified device,
+                    # while the CPU pin on the input layer is unconditional, so the
+                    # discount alone would leave those bytes GPU-eligible here and answer
+                    # `none` for a load whose embeddings host RAM then has to hold whole
+                    # and anonymously -- an OOM where mmap would have paged. Moved from
+                    # the weight terms to the host-only one below rather than added, so
+                    # the footprint total is unchanged and only its split moves.
+                    _fit_extra_host_pinned = max(0, _host_pinned_floor - _host_pinned)
+                    _fit_extra_draft_pinned = max(0, _draft_host_pinned_floor - _draft_host_pinned)
                     _fit_model_size = model_size
                     if _fit_env_mmproj_unsized:
                         # Same abstain the other unreadable terms take.
                         _fit_model_size = None
                     elif _fit_model_size and not _fit_env_mmproj_on_host:
                         _fit_model_size += _fit_env_mmproj_bytes
+                    if _fit_model_size:
+                        _fit_model_size = max(0, _fit_model_size - _fit_extra_host_pinned)
                     _fit_soft_overhead = _soft_overhead + self._inherited_mmproj_soft_overhead(
                         _fit_env_mmproj_bytes,
                         on_host = _fit_env_mmproj_on_host,
@@ -21823,7 +21849,7 @@ class LlamaCppBackend:
                         # price them by their own route.
                         kv_cache_bytes = _kv_bytes(effective_ctx, _effective_ctx_checkpoints),
                         kv_sized = self._can_estimate_kv(),
-                        mtp_bytes = _mtp_bytes(effective_ctx),
+                        mtp_bytes = max(0, _mtp_bytes(effective_ctx) - _fit_extra_draft_pinned),
                         # _flat_mtp_engages whole: its other arm, _mtp_kv_unsized,
                         # prices weights but NO draft KV, and the placement covers that
                         # gap with a flat cushion this footprint has no term for --
@@ -21834,9 +21860,14 @@ class LlamaCppBackend:
                             or _draft_split_across_host
                         ),
                         # Host-only, not pooled: -ngld 0 puts the drafter in RAM, which
-                        # free VRAM cannot pay for.
+                        # free VRAM cannot pay for, and so do the host-pinned embeddings
+                        # the two floors above just moved out of the weight terms.
                         host_only_bytes = (
-                            (_cpu_draft_fit_bytes or 0) + _host_pinned + _draft_host_pinned
+                            (_cpu_draft_fit_bytes or 0)
+                            + _host_pinned
+                            + _fit_extra_host_pinned
+                            + _draft_host_pinned
+                            + _fit_extra_draft_pinned
                         ),
                         # One lump on the layer path, where the graph buffer is
                         # allocated once. A tensor split replicates it on every selected

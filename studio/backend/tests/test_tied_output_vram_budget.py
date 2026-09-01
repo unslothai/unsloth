@@ -966,3 +966,62 @@ def test_only_the_emitters_that_pin_the_drafter_lend_it_the_main_device(monkeypa
         )
         is True
     )
+
+
+def test_the_load_mode_fit_charges_host_pinned_embeddings_to_ram(backend, monkeypatch):
+    """`--load-mode none` turns the embeddings into an anonymous allocation.
+
+    Under mmap they are file-backed (CPU_Mapped on a real load), so an oversized
+    host share pages in. `none` allocates them, and llama.cpp pins the input layer
+    to the CPU whatever the device is, so free VRAM can never pay for them. Left on
+    the GPU-eligible side of the fit they turn a load host RAM cannot hold into a
+    `none` the OS kills.
+
+    8 GiB into a 24 GiB card with 4 GiB of RAM: a fit, until 6 GiB of it is host
+    resident.
+    """
+    from utils import hardware
+
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+
+    class _Host:
+        _fits_without_paging = backend._fits_without_paging
+        _FIT_LOAD_MODE = backend._FIT_LOAD_MODE
+
+        def _available_system_memory_mib(self):
+            return 4 * 1024
+
+        def _amd_apu_wants_unified_memory(self, gpu_indices = None):
+            return False
+
+    def _mode(model_size, host_only):
+        return backend._fit_derived_load_mode(
+            _Host(),
+            model_size = model_size,
+            host_only_bytes = host_only,
+            gpus = [(0, 24 * 1024)],
+            avail_mib = 4 * 1024,
+        )
+
+    gib = 1024**3
+    assert _mode(8 * gib, 0) == backend._FIT_LOAD_MODE
+    # Same footprint, split so the pinned share is the part VRAM may not pay for.
+    assert _mode(2 * gib, 6 * gib) is None
+
+
+def test_load_model_hands_the_fit_the_pinned_floor_not_the_discount(backend):
+    """`_host_pinned` is the VRAM discount and is zero on a shared or unclassified
+    device; the CPU pin on the input layer is not conditional on either. The fit has
+    to see the floor, and see it moved out of the weight terms rather than added, so
+    the footprint total does not change with the split."""
+    import inspect
+
+    compact = "".join(inspect.getsource(backend.load_model).split())
+    assert "_fit_extra_host_pinned=max(0,_host_pinned_floor-_host_pinned)" in compact
+    assert "_fit_extra_draft_pinned=max(0,_draft_host_pinned_floor-_draft_host_pinned)" in compact
+    assert "_fit_model_size=max(0,_fit_model_size-_fit_extra_host_pinned)" in compact
+    assert "mtp_bytes=max(0,_mtp_bytes(effective_ctx)-_fit_extra_draft_pinned)" in compact
+    assert (
+        "host_only_bytes=((_cpu_draft_fit_bytesor0)+_host_pinned+_fit_extra_host_pinned"
+        "+_draft_host_pinned+_fit_extra_draft_pinned)" in compact
+    )
