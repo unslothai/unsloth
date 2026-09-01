@@ -125,9 +125,8 @@ class TestTheResolvedCap:
         payload.max_completion_tokens = 4096
         assert routes_inference._effective_openai_max_tokens(payload) == 4096
 
-    def test_a_prompt_that_fills_the_share_is_left_alone(self):
-        """Below a usable answer there is nothing to hand back, so the request keeps
-        the whole-window default rather than being answered in a few tokens."""
+    def test_a_prompt_that_fills_the_share_keeps_the_window_to_answer_in(self):
+        """Capping it to what is left would answer a real question in a stub."""
         payload = _uncapped([{"role": "user", "content": "x" * SHARE}])
         assert _cap(payload) is None
 
@@ -228,9 +227,63 @@ class TestDenseText:
         assert _cost(payload, resolved.extra_prompt_tokens) == SHARE - HEADROOM
 
     def test_a_blob_that_fills_the_share_keeps_the_whole_window(self):
-        """Pessimism costs an answer, never the cache."""
+        """Pessimism costs concurrency, never the cache: it is charged that window."""
         payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * (SHARE // 4)}])
         assert _cap(payload) is None
+        assert _cost(payload, _resolve(payload).extra_prompt_tokens) == CTX
+
+
+class TestAPromptTooBigForAShare:
+    """The request the flat allowance undercharges worst.
+
+    Its byte bound leaves no usable answer inside a share, so there is no cap worth
+    sending. Handing it the window UNBOUNDED is what #10070 does and what overruns the
+    cache; handing it the window and CHARGING the window keeps the answer and makes it
+    run alone.
+    """
+
+    def _too_big(self):
+        return _uncapped([{"role": "user", "content": "x" * SHARE}])
+
+    def test_no_cap_is_sent(self):
+        assert _resolve(self._too_big()).max_tokens is None
+
+    def test_it_is_charged_the_whole_window(self):
+        payload = self._too_big()
+        assert _cost(payload, _resolve(payload).extra_prompt_tokens) == CTX
+
+    def test_so_a_second_one_does_not_fit(self):
+        """Charged the window, it runs alone, which is the whole point of charging it."""
+
+        async def scenario():
+            queue = LlamaAdmissionQueue("test")
+            for _ in range(2):
+                payload = self._too_big()
+                last = queue.reserve(
+                    capacity = SLOTS,
+                    config = LlamaAdmissionConfig(),
+                    tokens = _cost(payload, _resolve(payload).extra_prompt_tokens),
+                    budget = CTX,
+                )
+            return last.lease_nowait()
+
+        assert _run(scenario()) is None
+
+    def test_the_charge_covers_what_it_may_generate(self):
+        """The invariant across both branches: nothing may generate past its charge."""
+        for content in ("hello", "x" * (SHARE // 2), "x" * SHARE, "x" * (CTX * 2)):
+            payload = _uncapped([{"role": "user", "content": content}])
+            resolved = _resolve(payload)
+            extra = resolved.extra_prompt_tokens if resolved else 0
+            if resolved is not None and resolved.max_tokens is not None:
+                payload.max_tokens = resolved.max_tokens
+            may_generate = (
+                resolved.max_tokens
+                if resolved is not None and resolved.max_tokens is not None
+                else CTX
+            )
+            occupies = min(CTX, _charged(payload) + may_generate)
+            assert _cost(payload, extra) >= occupies
 
 
 class TestWhichRequestsStateNoCap:

@@ -2071,9 +2071,14 @@ _OPENAI_LLAMA_UNCAPPED_MIN_SHARE_HEADROOM_TOKENS = 128
 
 
 class _UncappedMaxTokens(NamedTuple):
-    """The cap to send, and the prompt tokens admission has to be told about on top."""
+    """The cap to send, and the prompt tokens admission has to be told about on top.
 
-    max_tokens: int
+    ``max_tokens`` is None when no cap is worth sending and only the charge is corrected:
+    the request keeps the whole window to answer in and is charged that window, so it runs
+    alone. Either way what it is charged covers what it may generate.
+    """
+
+    max_tokens: Optional[int]
     extra_prompt_tokens: int
 
 
@@ -2115,7 +2120,8 @@ def _openai_llama_uncapped_max_tokens(
 
     None means "leave the cap alone", keeping #10070's flat allowance: one slot (whose
     share is the whole cache), an unreadable cache size, admission or token accounting
-    off, a request carrying tools, or a prompt with no usable answer left inside a share.
+    off, a request carrying tools, or a prompt with no usable answer left even in a whole
+    slot.
     """
     config = llama_admission_config_from_env()
     # Slot-only admission does not charge tokens, so an uncapped request costs a slot
@@ -2144,14 +2150,26 @@ def _openai_llama_uncapped_max_tokens(
         return None
     if injects_current_date:
         prompt_tokens += _openai_llama_uncapped_injected_date_tokens(request)
-    headroom = max(
-        _OPENAI_LLAMA_UNCAPPED_MIN_SHARE_HEADROOM_TOKENS,
-        share // _OPENAI_LLAMA_UNCAPPED_SHARE_HEADROOM_DIVISOR,
-    )
-    output_tokens = share - prompt_tokens - headroom
-    if output_tokens < _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS:
-        return None
+
+    def _room_inside(ceiling: int) -> int:
+        headroom = max(
+            _OPENAI_LLAMA_UNCAPPED_MIN_SHARE_HEADROOM_TOKENS,
+            ceiling // _OPENAI_LLAMA_UNCAPPED_SHARE_HEADROOM_DIVISOR,
+        )
+        return ceiling - prompt_tokens - headroom
+
     priced = _openai_llama_admission_prompt_tokens(payload, image_tokens = image_tokens)
+    output_tokens = _room_inside(share)
+    if output_tokens < _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS:
+        # No usable answer fits inside a share. Capping it to what is left would answer a
+        # real question in a stub, so leave the cap alone and let it keep the whole window
+        # -- but charge that window, so it runs ALONE instead of being admitted beside
+        # others on a flat allowance it will generate straight past. This is the request
+        # the allowance undercharges worst, and the byte bound reaches it well before the
+        # real prompt fills a share: concurrency is what the pessimism costs, not
+        # correctness.
+        window = _openai_llama_admission_context_window(llama_backend) or budget
+        return _UncappedMaxTokens(None, max(0, window - (priced or 0)))
     return _UncappedMaxTokens(output_tokens, prompt_tokens - (priced or 0))
 
 
@@ -20503,11 +20521,12 @@ async def produce_openai_chat_completions(
             injects_current_date = True,
         )
         if _shared_max_tokens is not None:
-            _field = _openai_effective_max_tokens_field(payload)
-            _uncapped_max_tokens_restore = (_field, getattr(payload, _field))
-            setattr(payload, _field, _shared_max_tokens.max_tokens)
             _uncapped_extra_prompt_tokens = _shared_max_tokens.extra_prompt_tokens
-            effective_max_tokens = _effective_openai_max_tokens(payload)
+            if _shared_max_tokens.max_tokens is not None:
+                _field = _openai_effective_max_tokens_field(payload)
+                _uncapped_max_tokens_restore = (_field, getattr(payload, _field))
+                setattr(payload, _field, _shared_max_tokens.max_tokens)
+                effective_max_tokens = _effective_openai_max_tokens(payload)
 
     _has_tool_messages = _has_openai_tool_history(payload.messages)
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
@@ -20807,9 +20826,11 @@ async def produce_openai_chat_completions(
         # A tool loop's first round may spend the whole output allowance before re-costing
         # runs, so it is charged the whole window below either way: a share-sized cap would
         # only shorten it. Given back here, where `use_tools` is final.
-        if use_tools and _uncapped_max_tokens_restore is not None:
-            setattr(payload, *_uncapped_max_tokens_restore)
-            effective_max_tokens = _effective_openai_max_tokens(payload)
+        if use_tools:
+            if _uncapped_max_tokens_restore is not None:
+                setattr(payload, *_uncapped_max_tokens_restore)
+                _uncapped_max_tokens_restore = None
+                effective_max_tokens = _effective_openai_max_tokens(payload)
             _uncapped_extra_prompt_tokens = 0
 
         if use_tools:
@@ -26107,12 +26128,13 @@ async def _responses_stream(
             llama_backend = llama_backend,
         )
         if _shared_max_tokens is not None:
-            setattr(
-                chat_req,
-                _openai_effective_max_tokens_field(chat_req),
-                _shared_max_tokens.max_tokens,
-            )
             _uncapped_extra_prompt_tokens = _shared_max_tokens.extra_prompt_tokens
+            if _shared_max_tokens.max_tokens is not None:
+                setattr(
+                    chat_req,
+                    _openai_effective_max_tokens_field(chat_req),
+                    _shared_max_tokens.max_tokens,
+                )
     body = await _build_openai_passthrough_body_async(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
