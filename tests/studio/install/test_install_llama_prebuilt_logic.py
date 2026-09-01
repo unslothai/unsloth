@@ -1741,6 +1741,27 @@ def test_activate_install_tree_preserves_busy_exit_with_acl_aware_message(
     assert not staging_dir.exists()
 
 
+def test_install_prebuilt_uses_cause_neutral_heading_for_acl_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    def denied_install_lock(_path: Path):
+        raise BusyInstallConflict(
+            "Windows denied access; close a process or repair unreadable ACLs using the "
+            "guidance above"
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "install_lock", denied_install_lock)
+
+    with pytest.raises(SystemExit) as excinfo:
+        install_prebuilt(tmp_path / "llama.cpp", "latest", "unslothai/llama.cpp", "")
+
+    assert excinfo.value.code == INSTALL_LLAMA_PREBUILT.EXIT_BUSY
+    output = "".join(capsys.readouterr())
+    assert "prebuilt install path is blocked; existing install could not be replaced" in output
+    assert "blocked by an in-use llama.cpp install" not in output
+    assert "repair unreadable ACLs using the guidance above" in output
+
+
 def test_activate_install_tree_restores_previous_install_when_failed_move_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
