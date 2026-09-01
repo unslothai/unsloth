@@ -59,6 +59,7 @@ class RecordingClient:
         self.connected = False
         self.probes = 0
         self.probe_error = False
+        self.probe_delay = 0.0
         self.connect_delay = 0.0
         self.call_delay = 0.0
         self.live = 0
@@ -71,6 +72,8 @@ class RecordingClient:
         self.probes += 1
         if self.probe_error:
             raise RuntimeError("session expired")
+        if self.probe_delay:
+            await asyncio.sleep(self.probe_delay)
         return SimpleNamespace(tools = [])
 
     async def __aenter__(self):
@@ -577,6 +580,93 @@ def test_closing_many_sessions_does_not_run_serially(monkeypatch, clients):
     elapsed = time.monotonic() - started
     assert len(closes) == 6
     assert elapsed < 6 * 0.4 * 0.75, f"closes ran serially: {elapsed:.2f}s"
+
+
+def test_a_slow_but_live_idle_session_survives_the_recheck(monkeypatch, clients):
+    """The recheck exists to catch a session the server dropped. A server that is
+    merely slow to answer tools/list has not dropped anything, and retiring it
+    there would discard exactly the state this cache is for."""
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
+    monkeypatch.setattr(mcp_client, "_SESSION_LIVENESS_TIMEOUT", 0.2)
+    _call(HTTP_URL, scope = SCOPE)
+    clients[0].probe_delay = 0.6  # answers, but well past the probe window
+    assert _call(HTTP_URL, scope = SCOPE, timeout = 30.0) == "call-2"
+    assert len(clients) == 1, "a slow probe retired a healthy session"
+
+
+def test_a_slow_probe_still_condemns_a_dirty_session(monkeypatch, clients):
+    """The counterpart that must not change: a session whose last call was
+    abandoned is under suspicion, so silence within the window condemns it."""
+    monkeypatch.setattr(mcp_client, "_SESSION_LIVENESS_TIMEOUT", 0.2)
+    _call(HTTP_URL, scope = SCOPE)
+    clients[0].probe_delay = 0.6
+    mcp_client._mcp_sessions[next(iter(mcp_client._mcp_sessions))].dirty = True
+    assert _call(HTTP_URL, scope = SCOPE, timeout = 30.0) == "call-1"
+    assert len(clients) == 2, "a wedged session was reused"
+
+
+def test_a_failed_session_is_uncached_before_the_borrow_is_released(clients):
+    """HTTP callers do not queue on call_lock, so between releasing the borrow and
+    dropping the key another same-scope call could check the broken transport out
+    and dispatch on it."""
+    _call(HTTP_URL, scope = SCOPE)
+    key = next(iter(mcp_client._mcp_sessions))
+    seen = {}
+    real_release = mcp_client._release_session
+
+    def watching_release(session):
+        # Whatever a concurrent caller could observe at this instant.
+        seen["cached"] = mcp_client._mcp_sessions.get(key) is session
+        seen["defunct"] = session.defunct
+        return real_release(session)
+
+    async def _boom(name, args, raise_on_error = True):
+        raise RuntimeError("stream closed")
+
+    clients[0].call_tool = _boom
+    mcp_client._release_session = watching_release
+    try:
+        assert _call(HTTP_URL, scope = SCOPE).startswith("Error:")
+    finally:
+        mcp_client._release_session = real_release
+    assert seen["cached"] is False, "the failed session was still checkout-able"
+    assert seen["defunct"] is True
+
+
+def test_closing_sessions_works_during_interpreter_exit():
+    """close_mcp_sessions is the atexit handler. Python tears the
+    ThreadPoolExecutor machinery down before normal atexit callbacks, so a pooled
+    close raises there and the cleanup aborts with stdio subprocesses still up.
+
+    Run in a child process: the failure only exists at real interpreter exit."""
+    import subprocess
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import sys
+        sys.path.insert(0, %r)
+        from types import SimpleNamespace
+        from core.inference import mcp_client
+
+        closed = []
+
+        class S:
+            def __init__(self, n): self.n = n
+            def close(self): closed.append(self.n)
+
+        # More than one, so the parallel path is taken.
+        import atexit
+        atexit.register(lambda: print("CLOSED:" + ",".join(sorted(closed))))
+        atexit.register(mcp_client._close_all, [S("a"), S("b"), S("c")])
+        """
+    ) % (_BACKEND_DIR,)
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output = True, text = True, timeout = 120
+    )
+    assert "CLOSED:a,b,c" in proc.stdout, f"stdout={proc.stdout!r} stderr={proc.stderr[-2000:]!r}"
+    assert "can't register atexit" not in proc.stderr, proc.stderr[-2000:]
+    assert "cannot schedule new futures" not in proc.stderr, proc.stderr[-2000:]
 
 
 def test_a_fork_resets_the_inherited_cache(clients):

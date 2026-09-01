@@ -576,25 +576,35 @@ def _session_responsive(
     session,
     budget: Optional[float] = None,
     cancel_event = None,
+    timeout_is_fatal: bool = True,
 ) -> bool:
     """Whether a session left dirty by an abandoned call can be reused: the
     server must answer inside ``budget`` (the caller's remaining deadline).
     Proves the server is alive, not that the abandoned call finished -- MCP
     requests are concurrent. Probes with a raw single-page tools/list: ping
     answers "Method not found" on a modern-era connection, and list_tools()
-    auto-paginates up to 250 pages."""
+    auto-paginates up to 250 pages.
+
+    ``timeout_is_fatal`` separates the two callers. A dirty session is under
+    suspicion, so silence within the window condemns it. An idle one is only
+    being spot-checked: a slow answer says nothing about whether the transport
+    is gone, and retiring it there would throw away the very state this cache
+    exists to keep. Only a definite failure retires that one."""
     client = session.client
     if client is None:
         return False
     window = _SESSION_LIVENESS_TIMEOUT if budget is None else min(_SESSION_LIVENESS_TIMEOUT, budget)
     if window <= 0:
-        return False
+        # No budget left to ask in; that is not evidence either way.
+        return not timeout_is_fatal
     probe = getattr(client, "list_tools_mcp", None) or client.list_tools
     try:
         # margin=0: a wedged loop must fail inside the window, not 15s past it.
         session.run(_race_tool_call(probe(), window, cancel_event), window, margin = 0.0)
     except _MCPCancelled:
         raise
+    except (asyncio.TimeoutError, _SessionWedged):
+        return not timeout_is_fatal
     except Exception:  # noqa: BLE001
         return False
     session.dirty = False
@@ -1072,15 +1082,25 @@ def _close_all(sessions: list) -> None:
     if len(sessions) == 1:
         sessions[0].close()
         return
-    workers = min(len(sessions), 8)
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers = workers, thread_name_prefix = "mcp-close"
-    ) as pool:
-        for future in [pool.submit(s.close) for s in sessions]:
-            try:
-                future.result()
-            except Exception:  # noqa: BLE001
-                logger.exception("Closing an MCP session failed")
+
+    def _close(session) -> None:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001
+            logger.exception("Closing an MCP session failed")
+
+    # Bare threads, not a ThreadPoolExecutor: this also runs as the atexit
+    # handler, and Python shuts the executor machinery down before normal atexit
+    # callbacks, so submitting there raises ("can't register atexit after
+    # shutdown") and the whole cleanup aborts with stdio subprocesses still up.
+    threads = [
+        threading.Thread(target = _close, args = (s,), name = "mcp-close", daemon = True)
+        for s in sessions
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(_SESSION_CLOSE_TIMEOUT + 5.0)
 
 
 # The cache stopped being stdio-only, but an in-place upgrade can leave a caller
@@ -1513,7 +1533,9 @@ def _call_session_tool(
                     raise RuntimeError("MCP server connection is not available")
             elif (
                 session.dirty or _needs_idle_recheck(session, idle_for)
-            ) and not _session_responsive(session, _remaining(), cancel_event):
+            ) and not _session_responsive(
+                session, _remaining(), cancel_event, timeout_is_fatal = session.dirty
+            ):
                 # Dirty: still stuck on the abandoned call. Idle HTTP: the server
                 # may have expired the session while nothing was using it, and no
                 # HTTP transport lets us ask. Either way it failed to answer, so
@@ -1562,12 +1584,16 @@ def _call_session_tool(
                 discard_session = True
             raise
         finally:
-            # Set defunct + remove from the cache BEFORE releasing the call lock,
-            # so a queued same-scope borrower observes the retirement and opens a
-            # fresh session instead of reusing this one.
-            _release_session(session)
+            # Remove from the cache and mark defunct BEFORE giving up the borrow,
+            # so no other caller can check this session out after it failed. The
+            # order matters more now that HTTP callers do not queue on call_lock:
+            # released first, a concurrent same-scope call could check out the
+            # broken transport while it was still cached, and _release_session can
+            # sit closing LRU victims for seconds first. in_flight is still held
+            # here, so the close defers to the release below.
             if discard_session:
                 _drop_session(key, session)
+            _release_session(session)
             if locked:
                 session.call_lock.release()
         if not retry:
