@@ -20,6 +20,7 @@ from core.inference.checkpoint import (
     fit_checkpoint_context,
     render_checkpoint,
 )
+from core.inference.context_window import estimate_message_tokens
 
 INSTRUCTION = (
     "Standing instruction for the rest of this task: always report results as a markdown "
@@ -3858,10 +3859,56 @@ def test_an_instruction_typed_beside_an_image_is_still_carried():
 
 
 def test_an_image_turn_costs_the_same_as_the_words_it_carries():
-    with_image = carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024)
-    plain = carried_forward_items([{"role": "user", "content": INSTRUCTION}], max_tokens = 1024)
+    """At the EXACT price of the bullet, so the assertion is about the price.
 
-    assert with_image == plain
+    A roomy cap passes whatever the turn is charged, which is the assertion this test
+    was named for. One token below the bullet's own cost neither shape fits; at that
+    cost both do, and any surcharge for the attachment shows up as the image side
+    dropping out.
+    """
+    cost = estimate_message_tokens({"role": "user", "content": INSTRUCTION})
+    plain = carried_forward_items([{"role": "user", "content": INSTRUCTION}], max_tokens = cost)
+
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = cost - 1) == []
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = cost) == [INSTRUCTION]
+    assert plain == [INSTRUCTION]
+
+
+def test_a_text_only_turn_costs_the_same_whether_it_arrives_as_a_list_or_a_string():
+    """The same words, priced the same, however the client wrapped them.
+
+    An attachment is the loud case, but the `[{"type": "text", ...}]` shape is the
+    ordinary OpenAI wire form and carries no image at all. Pricing the whole message
+    charged that turn for its JSON part wrapper -- 50 tokens against the 43 the words
+    cost -- so between those two caps an instruction was carried when the client sent a
+    string and dropped when it sent the identical text as a list.
+    """
+    cost = estimate_message_tokens({"role": "user", "content": INSTRUCTION})
+    listed = {"role": "user", "content": [{"type": "text", "text": INSTRUCTION}]}
+
+    assert estimate_message_tokens(listed) > cost
+    assert carried_forward_items([listed], max_tokens = cost) == [INSTRUCTION]
+
+
+def test_the_block_is_priced_with_the_estimator_the_caller_passed_in():
+    """`fit_checkpoint_context` takes the pricing rule; the block has to honour it.
+
+    The carried block used to price itself with the module-level estimate whatever the
+    caller asked for, so a caller counting a shape differently sized this block by a
+    rule it had already replaced.
+    """
+    charged = []
+
+    def double(message):
+        charged.append(message)
+        return 2 * estimate_message_tokens(message)
+
+    cost = estimate_message_tokens({"role": "user", "content": INSTRUCTION})
+    turn = [{"role": "user", "content": INSTRUCTION}]
+
+    assert carried_forward_items(turn, max_tokens = cost) == [INSTRUCTION]
+    assert carried_forward_items(turn, max_tokens = cost, estimate_message = double) == []
+    assert charged
 
 
 def test_a_thread_opened_with_a_screenshot_still_names_its_task_after_a_reset():
