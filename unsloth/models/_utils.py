@@ -986,6 +986,7 @@ def _run_temporary_patches(phase):
 
 _run_temporary_patches("init")
 
+# =============================================
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "huggingface_hub")
@@ -1963,6 +1964,7 @@ transformers.trainer.get_model_param_count = get_model_param_count
 
 
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
+# =============================================
 def patch_mistral_nemo_config(config):
     if "head_dim (" not in config:
         add_head_dim = (
@@ -2060,6 +2062,7 @@ for model_name in model_architectures:
         continue
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
+# =============================================
 torch_version = torch.__version__
 if DEVICE_TYPE in ("cuda", "hip"):
     if Version(torch_version) < Version("2.4.0"):
@@ -2079,6 +2082,7 @@ elif DEVICE_TYPE == "xpu":
 
 
 # Weird Databricks errors.
+# =============================================
 from transformers.utils import is_openai_available
 
 if is_openai_available():
@@ -2093,6 +2097,7 @@ if is_openai_available():
 
         transformers.utils.is_openai_available = _is_openai_available
 
+# =============================================
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
@@ -2318,6 +2323,7 @@ if False:
 # Fix new Xformers versions "TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'".
 
 # Transformers 4.46 breaks dynamic caching; this is a hack.
+# =============================================
 import transformers.generation.configuration_utils
 
 if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIONS"):
@@ -2326,6 +2332,7 @@ if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIO
             transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
 
 # Torch compile settings.
+# =============================================
 UNSLOTH_COMPILE_DEBUG = os.environ.get("UNSLOTH_COMPILE_DEBUG", "0") == "1"
 UNSLOTH_COMPILE_MAXIMUM = os.environ.get("UNSLOTH_COMPILE_MAXIMUM", "0") == "1"
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
@@ -2417,6 +2424,7 @@ def patch_regional_compilation():
     return
 
 
+# =============================================
 def prepare_model_for_kbit_training(
     model: Any,
     use_gradient_checkpointing: Optional = True,
@@ -2435,6 +2443,7 @@ def prepare_model_for_kbit_training(
 
 
 # LoraLayer.update_layer downcasts PEFT layers to float16; mixed precision needs float32.
+# =============================================
 from peft import __version__ as peft_version
 from peft.utils.integrations import dequantize_module_weight
 
@@ -2469,6 +2478,7 @@ if Version(peft_version) < Version("0.12.0"):
             "Luckily, your training run will still work in the meantime!"
         )
 
+# =============================================
 import importlib
 
 global USE_MODELSCOPE
@@ -2670,6 +2680,7 @@ def get_statistics(local_files_only = False):
         enable_progress_bars()
 
 
+# =============================================
 from transformers.utils.quantization_config import (
     BitsAndBytesConfig,
     QuantizationMethod,
@@ -2752,6 +2763,7 @@ import transformers.utils.quantization_config
 transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
 
 # Offloading to disk for modules (lm_head, embed_tokens).
+# =============================================
 import pickle
 
 
@@ -4111,6 +4123,7 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     return token
 
 
+# =============================================
 def is_moe_model(model) -> bool:
     """
     Detect if a model is a Mixture of Experts (MoE) model.

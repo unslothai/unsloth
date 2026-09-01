@@ -1682,6 +1682,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # forward replaces the padded [B, Lmax] loop and fixes the left-pad RoPE error. Self-verified
             # against the per-row forward, re-checked as T grows, and falls back if a backend ignores
             # packed_seq_lengths.
+            # ---- Sequence packing (default-on; disable with UNSLOTH_GRPO_SEQ_PACKING=0) ----
             logprobs = None
 
             # PrefixGrouper (GRPO shared-prompt dedup, default ON): G completions share the prompt, so
@@ -2072,6 +2073,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # PrefixGrouper first-use self-verify (no-grad): compare the untrusted PG result to the packed
             # result over the completion mask. Below tol_ok trust the structure, at or above TOL_KILL mark
             # it unsafe forever, borderline falls back for this shape.
+            # ---- PrefixGrouper first-use self-verify (no-grad) ----
             if _pg_forward_fn is not None and not _pg_use:
                 if _pk_use and _pk_result is not None:
                     try:

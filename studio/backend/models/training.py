@@ -923,6 +923,7 @@ class DiffusionTrainingStartRequest(BaseModel):
             "(auto for qwen-image, 1.0 otherwise)."
         ),
     )
+    # ── resume ────────────────────────────────────────────────────────────────
     save_steps: int = Field(
         0,
         ge = 0,

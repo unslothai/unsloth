@@ -7,6 +7,7 @@ GitHub's GraphQL rejects queries with unused fragments, so each query includes
 only the fragments it references.
 """
 
+# ---- Fragments (raw strings, composed per query) ----
 F_ACTOR = """
 fragment ActorFields on Actor {
   __typename

@@ -103,6 +103,7 @@ def _pad_len(T: int) -> int:
     return ((T + _PAD_MULTIPLE - 1) // _PAD_MULTIPLE) * _PAD_MULTIPLE
 
 
+# ---------------------------------------------------------------------------
 @dataclass
 class PrefixSegInfo:
     """Per-flat-token segment metadata driving the shared-prefix block mask.
@@ -253,6 +254,7 @@ def build_seg_info_multigroup(
 # Block-mask builder and cache, keyed on (signature, device): the mask depends only on the per-token
 # labels and T, so it is reused across layers and steps.
 
+# ---------------------------------------------------------------------------
 _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
 
 
@@ -366,6 +368,7 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
     return out[:, :, :T, :]
 
 
+# ---------------------------------------------------------------------------
 def flex_shared_prefix_attention(
     Q: torch.Tensor,
     K: torch.Tensor,

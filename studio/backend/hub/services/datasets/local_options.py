@@ -257,6 +257,7 @@ def _read_card_metadata(path: Path) -> Any:
 # whose symlink leaves the repository is refused, and only trainable extensions are offered.
 
 # Past this the result would depend on traversal order, so nothing is offered.
+# --- Split inference for cached datasets whose card declares nothing ------------------
 _MAX_SNAPSHOT_DATA_FILES = 200_000
 # datasets drops these by basename before it infers anything, so a metadata-only cache is empty
 # rather than a bogus train split.

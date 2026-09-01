@@ -6595,6 +6595,7 @@ def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expecte
         assert promoted.capabilities.can_chat is expected
 
 
+# ── local diffusers pipelines reach the Images / Video pickers ───────────────
 def _write_pipeline(root: Path, *, components = ("transformer", "vae", "text_encoder")) -> Path:
     """A diffusers PIPELINE directory: a root model_index.json, no root config.json, and the
     weights inside component subdirs. Every image and video model downloaded as a pipeline

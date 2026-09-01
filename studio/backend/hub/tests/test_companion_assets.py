@@ -91,6 +91,7 @@ def _install(monkeypatch, *repos):
     return scans
 
 
+# --------------------------------------------------------------------------------------------
 def test_two_quants_of_one_family_resolve_to_a_single_companion_base():
     """Both quants derive the same base id, so the cache holds one copy, not two."""
     scans = [SimpleNamespace(repos = [_gguf_repo(("Q2_K", Q2_K_BYTES), ("Q4_K_M", Q4_K_M_BYTES))])]
@@ -99,6 +100,7 @@ def test_two_quants_of_one_family_resolve_to_a_single_companion_base():
     assert required[BASE_REPO.lower()] == {GGUF_REPO}
 
 
+# --------------------------------------------------------------------------------------------
 def test_deleting_one_of_two_quants_retains_the_companions(monkeypatch):
     _install(monkeypatch, _gguf_repo(("Q2_K", Q2_K_BYTES), ("Q4_K_M", Q4_K_M_BYTES)), _base_repo())
     impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO, "Q2_K"))
@@ -129,6 +131,7 @@ def test_whole_repo_delete_reclaims_every_quant(monkeypatch):
     assert [f["repo_id"] for f in impact["freeable_companions"]] == [BASE_REPO]
 
 
+# --------------------------------------------------------------------------------------------
 def test_shared_base_cannot_be_deleted_while_a_quant_is_installed(monkeypatch):
     """The whole point of the issue: this delete succeeded before the guard, and silently
     left both installed quants unloadable."""
@@ -205,6 +208,7 @@ def test_the_guard_leaves_ordinary_repos_alone(monkeypatch):
     assert companion_assets.is_companion_base(BASE_REPO)
 
 
+# --------------------------------------------------------------------------------------------
 def test_orphan_listing_is_empty_while_a_quant_is_installed(monkeypatch):
     _install(monkeypatch, _gguf_repo(("Q4_K_M", Q4_K_M_BYTES)), _base_repo())
     result = asyncio.run(companion_cleanup.orphan_companions_response())

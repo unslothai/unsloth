@@ -1778,6 +1778,7 @@ def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) 
 
 
 # One writer and one reader for BOTH trainers, so an SDXL and a DiT run resume from the same bundle shape.
+# ── resume checkpoints ────────────────────────────────────────────────────────
 def trainable_state_dict(model: Any) -> dict[str, Any]:
     """The trainable (LoRA) parameters of ``model``, keyed by parameter name.
 

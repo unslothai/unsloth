@@ -75,6 +75,7 @@ class RepoScraper:
         ):
             self.writers[key] = JsonlWriter(self.repo_dir / f"{key}.jsonl")
 
+    # ----- helpers -----
     def _trial_stop(self, key: str, counter: int) -> bool:
         lim = self.trial_limits.get(key)
         if lim is None:
@@ -92,6 +93,7 @@ class RepoScraper:
                 rl.get("resetAt"),
             )
 
+    # ----- repo meta -----
     def scrape_repo_meta(self) -> Dict[str, Any]:
         data = self.client.graphql(Q.REPO_META_QUERY, {"owner": self.owner, "name": self.name})
         self._log_rate("repo_meta", data)
@@ -100,6 +102,7 @@ class RepoScraper:
         self.writers["repo_meta"].write(repo)
         return repo
 
+    # ----- issues -----
     def scrape_issues(self) -> int:
         key = "issues"
         cursor = self.state.get(f"{key}_cursor")
@@ -206,6 +209,7 @@ class RepoScraper:
             info = tl.get("pageInfo") or {}
             cur = info.get("endCursor") if info.get("hasNextPage") else None
 
+    # ----- PRs -----
     def scrape_prs(self) -> int:
         key = "pull_requests"
         cursor = self.state.get(f"{key}_cursor")
@@ -389,6 +393,7 @@ class RepoScraper:
             info = rt.get("pageInfo") or {}
             cur = info.get("endCursor") if info.get("hasNextPage") else None
 
+    # ----- Discussions -----
     def scrape_discussions(self) -> int:
         key = "discussions"
         cursor = self.state.get(f"{key}_cursor")
@@ -487,6 +492,7 @@ class RepoScraper:
             info = replies.get("pageInfo") or {}
             cur = info.get("endCursor") if info.get("hasNextPage") else None
 
+    # ----- Commits -----
     def scrape_commits(self, branch: str = "refs/heads/main") -> int:
         key = "commits"
         cursor = self.state.get(f"{key}_cursor")
@@ -537,6 +543,7 @@ class RepoScraper:
                 break
         return total_new
 
+    # ----- Releases/Labels/Milestones -----
     def scrape_releases(self) -> int:
         return self._scrape_simple("releases", Q.RELEASES_QUERY, "releases")
 

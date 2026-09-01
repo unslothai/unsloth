@@ -343,6 +343,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 # No lock needed: INSERT OR IGNORE is atomic and concurrent populations converge on the same value.
+# ── API-key PBKDF2 salt ────────────────────────────────────────────────
 _api_key_pbkdf2_salt_cache: Optional[bytes] = None
 
 
@@ -998,6 +999,7 @@ def clear_desktop_secret() -> None:
         conn.close()
 
 
+# ---------------------------------------------------------------------------
 API_KEY_PREFIX = "sk-unsloth-"
 
 # The name is the only thing distinguishing internal keys by authority: Deep Research keys must

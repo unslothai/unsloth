@@ -3445,6 +3445,7 @@ class TrainingBackend:
         return fig
 
 
+# ========== GLOBAL INSTANCE ==========
 _training_backend = None
 
 

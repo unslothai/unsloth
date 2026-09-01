@@ -79,6 +79,7 @@ class ResumeError(ValueError):
 
 
 # Human labels for the identity fields that HARD-REJECT a resume, in report order.
+# ── identity ──────────────────────────────────────────────────────────────────
 _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("kind", "training type"),
     ("family", "model family"),
@@ -603,6 +604,7 @@ def identity_for_config(
     )
 
 
+# ── RNG capture / restore ─────────────────────────────────────────────────────
 def capture_rng_state(streams: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Snapshot every random stream a diffusion run draws from.
 
@@ -734,6 +736,7 @@ def _random_state_from_json(value: Any) -> Optional[tuple]:
         return None
 
 
+# ── writing ───────────────────────────────────────────────────────────────────
 def save_checkpoint(
     *,
     output_dir: str | os.PathLike[str],
@@ -1379,6 +1382,7 @@ def _bundle_identity(path: Path) -> Optional[tuple]:
     return (manifest.get("created_at"), manifest.get("global_step"))
 
 
+# ── reading + validation ──────────────────────────────────────────────────────
 def checkpoint_step(path: Path) -> int:
     """The step encoded in a ``checkpoint-<N>`` directory name, or -1."""
     name = path.name
@@ -1695,6 +1699,7 @@ def describe_resume_state(
     }
 
 
+# ── resume preflight ──────────────────────────────────────────────────────────
 def resolve_resume_dir(path_value: str) -> Path:
     """Contain a client-supplied resume path under the Unsloth outputs root.
 
@@ -1941,6 +1946,7 @@ def _validated_resume(
     return str(path), step
 
 
+# ── loading ───────────────────────────────────────────────────────────────────
 @dataclass
 class LoadedCheckpoint:
     """A validated bundle, with its tensors read lazily so a preflight never pays for them."""

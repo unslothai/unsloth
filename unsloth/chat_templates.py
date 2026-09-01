@@ -90,6 +90,7 @@ DEFAULT_SYSTEM_MESSAGE = {}
 def _ollama_template(name: str):
     return OLLAMA_TEMPLATES[name]
 
+# =========================================== Unsloth
 unsloth_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -119,6 +120,7 @@ CHAT_TEMPLATES["unsloth"] = (unsloth_template, unsloth_eos_token, False, unsloth
 DEFAULT_SYSTEM_MESSAGE["unsloth"] = "You are a helpful assistant to the user"
 
 # Zephyr has no BOS!
+# =========================================== Zephyr
 zephyr_template = \
     "{% for message in messages %}"\
         "{% if message['role'] == 'user' %}"\
@@ -140,6 +142,7 @@ CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token, False, zephyr_oll
 DEFAULT_SYSTEM_MESSAGE["zephyr"] = None
 
 # ChatML has no BOS and no EOS: <|im_start|> / <|im_end|> act as BOS / EOS.
+# =========================================== ChatML
 chatml_template = \
     "{% for message in messages %}"\
         "{% if message['role'] == 'user' %}"\
@@ -161,6 +164,7 @@ CHAT_TEMPLATES["chatml"] = (chatml_template, chatml_eos_token, True, chatml_olla
 DEFAULT_SYSTEM_MESSAGE["chatml"] = None
 
 # Mistral Instruct doesn't allow system prompts, so we append it to the user message.
+# =========================================== Mistral-1
 mistral_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -192,6 +196,7 @@ CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False, mistral
 DEFAULT_SYSTEM_MESSAGE["mistral"] = None
 
 # Adds BOS to every convo! And weird <<SYS>> system messages.
+# =========================================== Llama-2
 llama_template = \
     "{% if messages[0]['role'] == 'system' %}"\
         "{% if messages[1]['role'] == 'user' %}"\
@@ -222,6 +227,7 @@ CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False, llama_ollama,
 DEFAULT_SYSTEM_MESSAGE["llama"] = None
 
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
+# ===========================================  Vicuna
 vicuna_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -252,6 +258,7 @@ CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_oll
 DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
 
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
+# =========================================== Vicuna Old
 vicuna_old_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -284,6 +291,7 @@ CHAT_TEMPLATES["vicuna old"] = CHAT_TEMPLATES["vicuna_old"]
 DEFAULT_SYSTEM_MESSAGE["vicuna old"] = DEFAULT_SYSTEM_MESSAGE["vicuna_old"]
 
 # https://github.com/tatsu-lab/stanford_alpaca Changed for multi-turn convos
+# =========================================== Alpaca multi turn
 alpaca_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -314,6 +322,7 @@ DEFAULT_SYSTEM_MESSAGE["alpaca"] = "Below are some instructions that describe so
 
 # |trim is required for lstrip/rstrip. <start_of_turn> maps to 106 and <end_of_turn> to 107; user
 # and model are normal 1-word tokens.
+# =========================================== Gemma
 gemma_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -341,6 +350,7 @@ CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token, True, gemma_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma"] = None
 
 # <eos> is still more appropriate here than a ChatML end token.
+# =========================================== Gemma with ChatML instead
 gemma_chatml_template = "{{ bos_token }}" + chatml_template
 
 gemma_chatml_ollama = _ollama_template("gemma_chatml")
@@ -354,12 +364,14 @@ DEFAULT_SYSTEM_MESSAGE["gemma_chatml"] = None
 
 # Same as Gemma 1, but with sliding window attention!
 # https://ollama.com/library/gemma2/blobs/6522ca797f47
+# =========================================== Gemma 2
 gemma2_template = gemma_template
 gemma2_ollama = _ollama_template("gemma2")
 gemma2_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma2"] = (gemma2_template, gemma2_eos_token, True, gemma2_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma2"] = None
 
+# =========================================== Gemma 2 with ChatML instead
 gemma2_chatml_template = gemma_chatml_template
 gemma2_chatml_ollama = _ollama_template("gemma2_chatml")
 gemma2_chatml_eos_token = gemma_chatml_eos_token
@@ -367,6 +379,7 @@ CHAT_TEMPLATES["gemma2_chatml"] = (gemma2_chatml_template, gemma2_chatml_eos_tok
 DEFAULT_SYSTEM_MESSAGE["gemma2_chatml"] = None
 
 # The \n\n really is needed.
+# =========================================== Llama-3
 llama3_template = \
     "{{ bos_token }}"\
     "{% for message in messages %}"\
@@ -395,6 +408,7 @@ DEFAULT_SYSTEM_MESSAGE["llama3"] = None
 
 
 # "{{ bos_token }}"\ # Phi-3.5 removes BOS?
+# =========================================== Phi-3
 phi3_template = \
     "{% for message in messages %}"\
         "{% if message['role'] == 'user' %}"\
@@ -565,6 +579,7 @@ for version in ("llama-3.2", "llama-3.3", "llama-32", "llama-33"):
     DEFAULT_SYSTEM_MESSAGE[version] = ""
 
 
+# =========================================== Qwen 2.5
 qwen25_template = \
 """{%- if tools %}
     {{- \'<|im_start|>system\\n\' }}
@@ -635,6 +650,7 @@ CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False,
 DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message
 
 # "{{ bos_token }}"\ # Phi-4 removes BOS?
+# =========================================== Phi-4
 phi4_template = \
     "{% for message in messages %}"\
         "{% if (message['role'] == 'system') %}"\
@@ -663,6 +679,7 @@ DEFAULT_SYSTEM_MESSAGE["phi-4"] = None
 
 
 # Obtained via print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
+# =========================================== Gemma-3
 gemma3_template = \
 """{{ bos_token }}
 {%- if messages[0]['role'] == 'system' -%}
@@ -717,6 +734,7 @@ CHAT_TEMPLATES["gemma3"] = (gemma3_template, gemma3_template_eos_token, False, g
 DEFAULT_SYSTEM_MESSAGE["gemma3"] = None
 
 # Official Qwen-3 chat template (see https://ollama.com/library/qwen3/blobs/eb4402837c78)
+# =========================================== Qwen-3
 qwen3_template = \
 """
 {%- if tools %}
@@ -828,6 +846,7 @@ CHAT_TEMPLATES["qwen3"] = (qwen3_template, qwen3_template_eos_token, False, qwen
 DEFAULT_SYSTEM_MESSAGE["qwen3"] = None
 
 # Obtained via print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
+# =========================================== Gemma-3n
 gemma3n_template = \
 """{{ bos_token }}
 {%- if messages[0]['role'] == 'system' -%}
@@ -883,6 +902,7 @@ CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False
 DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None
 
 # Gemma-4 uses <|turn>role\n...<turn|>\n format
+# =========================================== Gemma-4
 gemma4_template = \
 """{%- macro strip_thinking(text) -%}
     {%- set ns = namespace(result='') -%}
@@ -1039,6 +1059,7 @@ CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_e
 DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 
 # Obtained via print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
+# =========================================== GPT-OSS
 gptoss_template = \
 """{#-
   In addition to the normal inputs of `messages` and `tools`, this template also accepts the
@@ -1578,6 +1599,7 @@ DEFAULT_SYSTEM_MESSAGE["gpt-oss"] = None
 CHAT_TEMPLATES["gptoss"] = (gptoss_template, gptoss_template_template_eos_token, False, gptoss_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gptoss"] = None
 
+# =========================================== Qwen3-Instruct
 qwen3_instruct_template = \
 '''{%- if tools %}
     {{- '<|im_start|>system\\n' }}
@@ -1671,6 +1693,7 @@ CHAT_TEMPLATES["qwen3-instruct"] = (qwen3_instruct_template, qwen3_template_eos_
 DEFAULT_SYSTEM_MESSAGE["qwen3-instruct"] = None
 
 
+# =========================================== Qwen3-Thinking
 qwen3_thinking_template = \
 '''{%- if tools %}
     {{- '<|im_start|>system\\n' }}
@@ -1768,6 +1791,7 @@ CHAT_TEMPLATES["qwen3-thinking"] = (
 DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None
 
 
+# =========================================== Liquid-LFM2
 liquid_lfm2_template = \
 '''
 {{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
@@ -1783,6 +1807,7 @@ DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 
 
 
+# =========================================== Starling-LM
 starling_template = \
 """{{ bos_token }}
 {%- for message in messages %}
@@ -1801,6 +1826,7 @@ DEFAULT_SYSTEM_MESSAGE["starling"] = None
 
 
 
+# =========================================== Yi-chat
 yi_chat_template = \
 """
 {% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '

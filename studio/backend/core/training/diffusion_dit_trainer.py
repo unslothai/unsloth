@@ -165,6 +165,7 @@ class _FamilySpec:
     save: Callable[..., None]
 
 
+# ── shared flow-matching helpers ──────────────────────────────────────────────
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
     """Gather per-sample sigmas for schedule ``indices`` and broadcast to ``n_dim``.
     Index-based (no per-item search): ``indices`` are the positions ``_sample_timesteps``
@@ -623,6 +624,7 @@ def _resolve_base_precision(cfg, spec, device) -> str:
     )
 
 
+# ── FLUX.1-dev ────────────────────────────────────────────────────────────────
 def _flux_load_conditioners(cfg, device, weight_dtype):
     from diffusers import FluxPipeline
     return _load_pipe_without_transformer(FluxPipeline, cfg, device)
@@ -734,6 +736,7 @@ def _flux_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# ── Qwen-Image ────────────────────────────────────────────────────────────────
 def _qwen_load_conditioners(cfg, device, weight_dtype):
     from diffusers import QwenImagePipeline
     return _load_pipe_without_transformer(QwenImagePipeline, cfg, device)
@@ -855,6 +858,7 @@ def _qwen_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# ── Z-Image ───────────────────────────────────────────────────────────────────
 def _zimage_load_conditioners(cfg, device, weight_dtype):
     from diffusers import ZImagePipeline
     return _load_pipe_without_transformer(ZImagePipeline, cfg, device)
@@ -930,6 +934,7 @@ def _zimage_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# ── Krea 2 ────────────────────────────────────────────────────────────────────
 def _krea2_load_conditioners(cfg, device, weight_dtype):
     # The krea repo ships transformers-5.x style configs the pinned 4.x line cannot parse, so the
     # conditioning pipeline is assembled per-component (diffusion_krea2.py).
@@ -1025,6 +1030,7 @@ def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
 # Both variants share Flux2Transformer2DModel and the upstream packing/forward conventions,
 # differing only in the conditioning stack (dev: Mistral-3-Small; Klein: Qwen3) and size. Latents
 # train patchified and batch-norm-normalised, from the posterior MODE (deterministic).
+# ── FLUX.2 (dev + Klein) ──────────────────────────────────────────────────────
 _FLUX2_COMMON_TARGETS = (
     # Double-stream blocks: separate q/k/v plus the ModuleList out proj.
     "to_k",
@@ -1188,6 +1194,7 @@ def _flux2_klein_save(pipe_cls, out_dir, transformer_lora_layers):
 # runs both stages and caches only the small connector output.
 # Video-stream attention only, fully qualified: a bare "to_q" would also match
 # audio_attn1/audio_attn2 and the cross-modality attentions.
+# ── LTX-2 (video) ─────────────────────────────────────────────────────────────
 _LTX2_TARGETS = (
     "attn1.to_q",
     "attn1.to_k",

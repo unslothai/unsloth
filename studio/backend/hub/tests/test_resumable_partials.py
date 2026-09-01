@@ -70,6 +70,7 @@ def _patched_writer(module):
     return module._download_to_tmp_and_move
 
 
+# ---------------------------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "version, expected",
     [("0.36.2", False), ("1.17.0", False), ("1.18.0", True), ("1.28.0", True), ("2.0.0", False)],
@@ -391,6 +392,7 @@ def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
     hf_cache_state.invalidate_partial_resumability()
 
 
+# ---------------------------------------------------------------------------------------------
 def test_it_appends_to_the_stable_name_and_says_how_far_it_got(monkeypatch, tmp_path):
     module, calls = _fake_file_download(monkeypatch)
     assert rp.restore_resumable_partials() is True
@@ -806,6 +808,7 @@ def test_patching_twice_keeps_one_layer(monkeypatch):
     assert module._download_to_tmp_and_move is first
 
 
+# ---------------------------------------------------------------------------------------------
 def test_the_ui_is_told_partials_are_resumable_again(monkeypatch):
     from hub.utils import hf_cache_state
 

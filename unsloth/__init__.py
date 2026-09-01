@@ -85,6 +85,7 @@ if platform.system() == "Darwin" and platform.machine() == "arm64":
 
 # Legacy Windows consoles (cp1252) cannot encode Unsloth's emoji/box-drawing glyphs and crash with
 # UnicodeEncodeError; errors="replace" guarantees no crash on an unencodable glyph.
+# ── Windows console UTF-8 safety ─────────────────────────────────────────────
 if platform.system() == "Windows":
     import sys as _sys
     for _name in ("stdout", "stderr"):

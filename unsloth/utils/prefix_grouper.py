@@ -57,6 +57,7 @@ import torch
 from .prefix_grouper_kernel import build_seg_info_multigroup, PrefixSegInfo
 
 
+# ---------------------------------------------------------------------------
 def env_on(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no", "off")
 

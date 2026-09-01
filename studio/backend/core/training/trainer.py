@@ -3026,6 +3026,7 @@ class UnslothTrainer:
                 processed = self._preprocess_dac_dataset(dataset, custom_format_mapping)
                 return ({"dataset": processed, "final_format": "audio_dac"}, None)
 
+            # ========== RAW TEXT BYPASS ==========
             if raw_text_mode:
                 # Say which variable said so: a stale size from an earlier mpirun or an HPC container image
                 # reads as a multi-rank launch on a one-process machine, and the only symptom is this run being
@@ -3082,6 +3083,7 @@ class UnslothTrainer:
                 formatted = self._format_audio_vlm_dataset(dataset, custom_format_mapping)
                 return (formatted, None)
 
+            # ========== FORMAT FIRST ==========
             logger.info(f"Formatting dataset with format_type='{format_type}'...\n")
 
             dataset_info = format_and_template_dataset(
@@ -3774,6 +3776,7 @@ class UnslothTrainer:
                     f"Audio training for '{self._audio_type}' not yet implemented"
                 )
 
+            # ========== DATA COLLATOR SELECTION ==========
             model_name_lower = self.model_name.lower()
             is_deepseek_ocr = "deepseek" in model_name_lower and "ocr" in model_name_lower
 
@@ -3882,6 +3885,7 @@ class UnslothTrainer:
                     )
                 logger.info("Vision data collator configured\n")
 
+            # ========== TRAINING CONFIGURATION ==========
             warmup_steps_val = training_args.get("warmup_steps", None)
             warmup_ratio_val = training_args.get("warmup_ratio", None)
 
@@ -4054,6 +4058,7 @@ class UnslothTrainer:
             logger.info(f"The configuration is: {config_args}")
 
             logger.info("Training configuration prepared\n")
+            # ========== TRAINER INITIALIZATION ==========
             if self.is_audio_vlm and not raw_text_mode:
                 # Image VLM: dict wrapper from format_and_template_dataset (raw-text uses the text path).
                 # Audio VLM (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset. Notebook uses
@@ -4293,6 +4298,7 @@ class UnslothTrainer:
 
             self._update_progress(total_steps = total_steps)
             # Fail fast on an invalid first batch (empty/float input_ids) vs a step-1 crash.
+            # ========== START TRAINING ==========
             preflight_error = self._preflight_first_batch()
             if preflight_error:
                 logger.error(preflight_error)
@@ -4310,6 +4316,7 @@ class UnslothTrainer:
                 # hold a fork of this process.
                 self._release_online_dataloader()
 
+            # ========== SAVE MODEL ==========
             self._finalize_training(output_dir)
 
         except Exception as e:

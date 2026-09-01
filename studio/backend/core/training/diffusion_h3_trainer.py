@@ -539,6 +539,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     to_encode = sorted(set(captions))
 
     # Phase 1: the 63 GiB Qwen3-VL conditioner and both VAEs are resident here and nowhere else.
+    # ── phase 1: conditioning. The 63 GiB Qwen3-VL conditioner and both VAEs are resident
     pipe = _load_conditioners(cfg, device)
     caption_embeds = {cap: _encode_prompt(pipe, cap, device) for cap in to_encode}
     _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode))
@@ -551,6 +552,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
     # One canvas for the run, from the FIRST clip's aspect ratio: every other clip is cover-cropped
     # onto it, so a mixed-aspect dataset trains on one geometry.
+    # ── phase 2: the clip cache. One canvas for the run, taken from the FIRST clip's aspect
     width, height = _dataset_canvas(clip_paths[0], cfg.resolution)
     latent_h, latent_w = height // H3_SPATIAL_COMPRESSION, width // H3_SPATIAL_COMPRESSION
     cache: list[tuple[Any, Any, Any]] = []
@@ -603,6 +605,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     if device == "cuda":
         torch.cuda.empty_cache()
 
+    # ── phase 3: the denoiser.
     base_precision = cfg.base_precision if cfg.base_precision != "auto" else "nf4"
     if base_precision in ("fp8", "mxfp8"):
         raise ValueError(

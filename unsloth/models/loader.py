@@ -1631,6 +1631,7 @@ class FastModel(FastBaseModel):
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom
         # block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile
         # patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
+        # ---- Text-diffusion models (e.g. DiffusionGemma) take a transformers-only slow path. ----
         if is_diffusion_model_type(model_types):
             return _dispatch_diffusion()
 

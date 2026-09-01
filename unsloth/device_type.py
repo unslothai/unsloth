@@ -113,6 +113,7 @@ DEVICE_COUNT: int = get_device_count()
 # but not Instinct (bitsandbytes-foundation/bitsandbytes#1748); since 0.49.2 blocksize=64 4-bit
 # is supported on CDNA (MI Instinct / gfx9xx) too (#1856).
 
+# |-----------------|-----------|------------|
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True

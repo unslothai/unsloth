@@ -105,6 +105,7 @@ def _llm_training_active() -> bool:
 
 
 # One JSON file per terminal run, not the LLM sqlite, so diffusion runs stay off the LLM Runs page.
+# ── persisted run history ──────────────────────────────────────────────────────
 def _runs_dir() -> Path:
     from utils.paths.storage_roots import studio_root
 
@@ -451,6 +452,7 @@ class DiffusionTrainingService:
         # The active job's start config, scrubbed of secrets, kept for the run record.
         self._config: dict[str, Any] = {}
 
+    # ── lifecycle ────────────────────────────────────────────────────────────
     def is_active(self) -> bool:
         with self._lock:
             if self._reserved:
@@ -669,6 +671,7 @@ class DiffusionTrainingService:
             snap["active"] = self._proc is not None and self._proc.is_alive()
             return snap
 
+    # ── event pump ───────────────────────────────────────────────────────────
     def _pump_loop(self, event_queue: Any, proc: Any) -> None:
         while True:
             try:
