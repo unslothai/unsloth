@@ -88,8 +88,13 @@ def test_public_client_keeps_client_id_in_body(tmp_path, monkeypatch):
 def test_unpatchable_context_does_not_break_oauth():
     """Reaching into the SDK must never be what breaks OAuth: if a future version
     makes the context unwritable, callers still get a working provider."""
+
     class Frozen:
-        def prepare_token_auth(self, data, headers = None):
+        def prepare_token_auth(
+            self,
+            data,
+            headers = None,
+        ):
             return data, headers or {}
 
         def __setattr__(self, name, value):
