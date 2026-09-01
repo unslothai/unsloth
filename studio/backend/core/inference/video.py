@@ -1288,9 +1288,7 @@ class VideoBackend:
             root = Path(repo_id).expanduser()
             # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
             indexes = (
-                ("modular_model_index.json",)
-                if fam.modular_workflow
-                else ("model_index.json",)
+                ("modular_model_index.json",) if fam.modular_workflow else ("model_index.json",)
             )
             if root.exists() and not (
                 root.is_dir() and any((root / name).is_file() for name in indexes)

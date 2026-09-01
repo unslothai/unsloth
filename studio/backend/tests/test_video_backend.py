@@ -734,7 +734,9 @@ def test_validate_modular_family_requires_modular_manifest(tmp_path):
     with pytest.raises(ValueError, match = "modular_model_index.json"):
         backend.validate_load_request(str(root), family_override = "minimax-h3")
     (root / "modular_model_index.json").write_text("{}")
-    assert backend.validate_load_request(str(root), family_override = "minimax-h3").name == "minimax-h3"
+    assert (
+        backend.validate_load_request(str(root), family_override = "minimax-h3").name == "minimax-h3"
+    )
 
 
 def test_validate_rejects_local_file_picked_as_pipeline(tmp_path):
