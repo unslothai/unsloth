@@ -12,7 +12,6 @@ Converts IPython magics to plain Python:
     /content/...      -> _WORKING_DIR + /...
 """
 
-import nbformat
 import re
 import shlex
 import sys
@@ -193,6 +192,10 @@ def convert_notebook(
     allow_shell: bool = True,
 ) -> str:
     """Convert notebook JSON content to Python script."""
+    # Local, so the string helpers below import without nbformat. The CPU test job
+    # does not install it, and a module-level import failed collection there.
+    import nbformat
+
     # Parse notebook
     if isinstance(notebook_content, str):
         notebook = nbformat.reads(notebook_content, as_version = 4)
@@ -253,6 +256,17 @@ def convert_notebook(
     return "\n".join(lines)
 
 
+def converted_filename(filename: str) -> str:
+    """The .py name this script writes for a given notebook filename.
+
+    One spelling of the rule. notebooks-ci.yml had a second one in shell whose
+    `tr -c '[:alnum:]_' _` turned basename's trailing newline into a trailing
+    underscore, so the smoke job looked for `<name>_.py` and never found it.
+    """
+    out = filename.replace(".ipynb", ".py")
+    return out.replace("(", "").replace(")", "").replace("-", "_")
+
+
 def convert_notebook_to_script(
     source: str,
     output_dir: str | None = None,
@@ -277,8 +291,7 @@ def convert_notebook_to_script(
             content = f.read()
         source_name = source
 
-    output_filename = filename.replace(".ipynb", ".py")
-    output_filename = output_filename.replace("(", "").replace(")", "").replace("-", "_")
+    output_filename = converted_filename(filename)
 
     if output_dir:
         output_path = os.path.join(output_dir, output_filename)

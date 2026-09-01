@@ -16,15 +16,19 @@ Usage:
         ...
 """
 
+import ast
 import copy
 import gc
 import glob
+import importlib.util
+import json
 import os
 import platform
 import re
 import subprocess
 import sys
 import threading
+import time
 import types
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version as pkg_version
@@ -76,7 +80,10 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 # Why CHAT_ONLY is True (Train/Export disabled). None when training is enabled.
 # "mlx_unavailable": Apple Silicon but the MLX stack is missing, too old, or broken
 # (the usual cause of "Train/Export greyed out" on Macs after a reinstall dropped MLX);
-# "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host.
+# "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host;
+# "torch_cpu_build" / "torch_cuda_unavailable": the host HAS GPUs, this PyTorch cannot
+# use them -- see classify_torch_build(). Those two must not read as "no_gpu": the fix
+# is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What exactly blocked the reason above, when there is something specific to say. Only
 # "mlx_unavailable" sets it today: the gate is all-or-nothing across mlx, mlx-lm and
@@ -84,6 +91,11 @@ CHAT_ONLY_REASON: Optional[str] = None
 # had just run it. Naming the package that is missing, too old, or refusing to import
 # is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
+# The vendors whose cards established the two mismatch reasons above, empty otherwise.
+# current_chat_only_verdict() freezes a mismatch while the inventory cannot answer; without
+# this it freezes on uncertainty about an unrelated vendor, so a detached AMD eGPU stays
+# "unusable" for as long as nvidia-smi is broken on a host that never had an NVIDIA card.
+CHAT_ONLY_MISMATCH_VENDORS: frozenset = frozenset()
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
 # Detection has concurrent callers (the warm thread plus any early get_device()).
@@ -133,10 +145,12 @@ def owning_detection_epoch(epoch: Optional[int]):
 def _discard_detection_locked() -> None:
     """Drop a verdict produced for an epoch that has been retired."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
+    global CHAT_ONLY_MISMATCH_VENDORS
     DEVICE = None
     CHAT_ONLY = True
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
+    CHAT_ONLY_MISMATCH_VENDORS = frozenset()
     IS_ROCM = False
     DETECTION_COMPLETE.clear()
 
@@ -331,6 +345,1196 @@ def _mlx_stack_detail() -> Optional[str]:
     return "; ".join(blockers[:3])
 
 
+# Every other GPU probe here starts from get_device(), so all go quiet the moment
+# torch.cuda.is_available() is False (issue #8473). This one asks what the OS sees.
+# Display-only: nothing here may be merged into the runtime device lists, which feed the
+# model-fit estimate and the training device pin. TTL cache, since an eGPU changes it.
+_PHYSICAL_GPU_INVENTORY_TTL_SECONDS = 60.0
+_physical_gpu_inventory_lock = threading.Lock()
+_physical_gpu_inventory_refresh_lock = threading.Lock()
+_physical_gpu_inventory_refreshing = False
+# One re-detection request per recovery, or a poll every few seconds starves detection.
+_REDETECTION_REQUESTED = False
+_physical_gpu_inventory_cache: Optional[tuple[float, Dict[str, Any]]] = None
+# Same treatment for the torch side: classify_torch_build() calls availability probes that
+# block on a wedged driver, and /api/health and /api/liveness reach it through the verdict.
+_TORCH_BUILD_SNAPSHOT_TTL_SECONDS = 60.0
+_torch_build_snapshot_lock = threading.Lock()
+_torch_build_snapshot_refresh_lock = threading.Lock()
+_torch_build_snapshot_refreshing = False
+_torch_build_snapshot_cache: Optional[tuple[float, Dict[str, Any]]] = None
+# "No measurement yet", distinct from a measured {"reason": None} meaning torch is fine.
+_UNKNOWN_TORCH_BUILD_SNAPSHOT: Dict[str, Any] = {
+    "reason": None,
+    "usable": False,
+    "unknown": True,
+}
+
+
+def _probe_physical_gpu_inventory() -> Dict[str, Any]:
+    """One uncached pass over the vendor probes. Never raises.
+
+    ``index`` is the probe's own row number and is vendor-local, so it identifies a
+    device only together with ``vendor``. It is not a pin: see the note above.
+    """
+    devices: list[Dict[str, Any]] = []
+    sources: list[str] = []
+    # "No devices" and "no probe could answer" are different facts: collapsing them let a
+    # transient nvidia-smi timeout read as "the GPU disappeared". PER VENDOR, so an Intel
+    # sysfs row cannot answer for an NVIDIA probe that timed out.
+    unanswered: set = set()
+
+    try:
+        from . import nvidia
+        result = nvidia.get_physical_gpu_inventory()
+    except Exception as e:
+        logger.debug("NVIDIA physical inventory probe failed: %s", e)
+        unanswered.add("nvidia")
+    else:
+        # An absent nvidia-smi is an answer: the normal state of every AMD, Intel and CPU host.
+        if result.get("error") and not result.get("absent"):
+            unanswered.add("nvidia")
+        nvidia_devices = result.get("devices") or []
+        if nvidia_devices:
+            devices.extend(nvidia_devices)
+            sources.append(result.get("source") or "nvidia-smi")
+
+    # Windows AMD has no vendor CLI guaranteed present (amd-smi elevates a child without a
+    # HIP SDK), but the DirectX registry records every adapter with its dedicated memory.
+    if platform.system() == "Windows":
+        # The registry outlives the hardware, so a record only RE-LABELS an adapter the live WMI
+        # scan also returned, never adds one (setup.ps1 has the same rule).
+        _live = _windows_live_adapter_names()
+        for _vendor, _vendor_id in (
+            ("amd", _AMD_PCI_VENDOR_ID),
+            # Same registry, one more vendor id: an Arc host whose XPU wheel became a CPU one.
+            ("intel", _INTEL_PCI_VENDOR_ID),
+        ):
+            try:
+                records = _windows_amd_adapter_records_by_luid(_vendor_id, distinguish_failure = True)
+            except Exception as e:
+                logger.debug("Windows %s adapter inventory probe failed: %s", _vendor, e)
+                records = None
+            if records is None:
+                # A registry key that could not be read is not "this vendor has no adapters":
+                # the aggregate would publish unknown=False with nothing in it, and the settled
+                # mismatch would collapse to no_gpu for a whole TTL.
+                unanswered.add(_vendor)
+                continue
+            if not records:
+                continue
+            if _live is None:
+                # The live scan could not answer, so contribute nothing and say so.
+                unanswered.add(_vendor)
+                continue
+            # Consumed one-to-one, or a reusable predicate matches one surviving adapter to both.
+            _unclaimed = list(_live)
+            _corroborated = []
+            for luid in sorted(records):
+                _match = _claim_live_adapter(records[luid].get("name"), _unclaimed)
+                if _match is not None:
+                    _unclaimed.pop(_match)
+                    _corroborated.append(luid)
+            for ordinal, luid in enumerate(_corroborated):
+                record = records[luid]
+                dedicated = record.get("dedicated_memory_bytes")
+                devices.append(
+                    {
+                        "vendor": _vendor,
+                        "index": ordinal,
+                        "name": record.get("name"),
+                        "memory_total_gb": (round(dedicated / 1024**3, 2) if dedicated else None),
+                        **({"gfx": record["gfx"]} if record.get("gfx") else {}),
+                        "source": "directx-registry",
+                    }
+                )
+            if _corroborated and "directx-registry" not in sources:
+                sources.append("directx-registry")
+
+    # Linux AMD, the shape #8473 actually reported. sysfs rather than amd-smi: amd-smi is a
+    # separate ROCm userspace package, and the ROCm install is exactly what is in question
+    # here; the amdgpu kernel driver publishes these files with no subprocess at all.
+    if platform.system() == "Linux":
+        try:
+            sysfs_devices = _linux_drm_sysfs_records(distinguish_failure = True)
+        except Exception as e:
+            logger.debug("Linux DRM sysfs inventory probe failed: %s", e)
+            sysfs_devices = None
+        if sysfs_devices is None:
+            sysfs_devices = []
+            unanswered.update(("amd", "intel"))
+        if sysfs_devices:
+            if any(device.get("vendor") == "amd" for device in sysfs_devices):
+                # The installers only ship a ROCm wheel for _ROCM_SUPPORTED_GFX, so an older card left on
+                # CPU torch on purpose must not read as broken. Attached to every AMD record, not matched
+                # one-to-one: setup.sh says the orderings do not have to agree.
+                _gfx = _linux_amd_gfx_candidates()
+                if _gfx:
+                    for device in sysfs_devices:
+                        if device.get("vendor") == "amd":
+                            device["gfx_candidates"] = _gfx
+            devices.extend(sysfs_devices)
+            sources.append("sysfs-drm")
+
+    _unanswered = sorted(unanswered - {device.get("vendor") for device in devices})
+    return {
+        "available": bool(devices),
+        "devices": devices,
+        "sources": sources,
+        "unknown": bool(_unanswered),
+        # Which vendors, not just that one exists: the cache carries the previous answer
+        # forward per vendor, and only a vendor named here may be carried.
+        "unanswered": _unanswered,
+    }
+
+
+def _linux_amd_gfx_candidates() -> list[str]:
+    """gfx targets the ROCm userspace reports for this host, sorted, or [].
+
+    rocminfo is what studio/setup.sh itself reads to pick an arch, and amd-smi is its
+    fallback there too. Neither is required to exist: a host with no ROCm userspace at
+    all reports nothing here, and the caller then keeps the card rather than guessing
+    an arch for it. Bounded and never raises; this runs inside the inventory probe,
+    which is cached and refreshed off the request path.
+    """
+    for command, pattern in (
+        (["rocminfo"], r"\bgfx[0-9a-f]+\b"),
+        (["amd-smi", "static", "--asic"], r"\bgfx[0-9a-f]+\b"),
+    ):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                check = False,
+            )
+        except FileNotFoundError:
+            continue
+        except (OSError, subprocess.TimeoutExpired) as e:
+            logger.debug("%s could not report a gfx target: %s", command[0], e)
+            continue
+        found = {match.group(0).lower() for match in re.finditer(pattern, result.stdout or "")}
+        if found:
+            return sorted(found)
+    return []
+
+
+def _hidden_console_kwargs() -> Dict[str, Any]:
+    """subprocess kwargs that keep a console window from flashing on Windows.
+
+    Imported here rather than at module scope on purpose: this module is loaded very
+    early, and tests/python/test_e2e_no_torch_sandbox.py executes it against a minimal
+    stub tree with no utils.subprocess_compat in it, so a top-level import would make
+    the module unloadable on a host without the rest of the package. Empty kwargs are
+    the correct answer everywhere but Windows anyway.
+    """
+    try:
+        from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+    except Exception:
+        return {}
+    return windows_hidden_subprocess_kwargs()
+
+
+def _windows_live_adapter_names() -> Optional[list[str]]:
+    """Display adapter names Windows reports as PRESENT, or None when it could not say.
+
+    Win32_VideoController is the same live source setup.ps1 scans. None is the important
+    third answer: "the scan failed" must not read as "no adapters", or a corroboration
+    step would silently drop every real card on a host whose WMI is unavailable.
+    """
+    if platform.system() != "Windows":
+        return None
+    try:
+        ps = (
+            # -ErrorAction Stop, NOT SilentlyContinue: the suppressed form exits 0 with empty
+            # stdout, indistinguishable from "no adapters" on a host with damaged WMI.
+            "$ErrorActionPreference='Stop';"
+            "(Get-CimInstance Win32_VideoController"
+            ' | Select-Object -ExpandProperty Name) -join "`n"'
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            **_hidden_console_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("Live Windows adapter scan failed: %s", e)
+        return None
+    if r.returncode != 0:
+        return None
+    return [line.strip() for line in (r.stdout or "").splitlines() if line.strip()]
+
+
+def _claim_live_adapter(name: Optional[str], live_names: list[str]) -> Optional[int]:
+    """Index of the first unclaimed live adapter this record matches, or None.
+
+    Returned rather than a bool so the caller can consume the entry: see the
+    same-named-duplicates note at the call site.
+    """
+    candidate = (name or "").strip().lower()
+    if not candidate:
+        return None
+    # Exact first: a stale "RX 7900 XT" record would otherwise claim a live "RX 7900 XTX". The
+    # prefix rule still has to exist, because the registry carries the driver description and
+    # WMI the display name.
+    for index, live in enumerate(live_names):
+        if live.strip().lower() == candidate:
+            return index
+    for index, live in enumerate(live_names):
+        if _adapter_name_is_live(name, [live]):
+            return index
+    return None
+
+
+def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
+    """Whether a registry adapter name corresponds to one the live scan returned.
+
+    Substring in either direction, because the two sources spell the same card
+    differently: the registry carries the driver's own description while WMI carries the
+    display name, and one is often a prefix of the other. setup.ps1 joins them the same
+    way, with Contains.
+    """
+    candidate = (name or "").strip().lower()
+    if not candidate:
+        return False
+    return any(
+        candidate in live.lower() or live.lower() in candidate
+        for live in live_names
+        if live.strip()
+    )
+
+
+def _linux_drm_sysfs_records(*, distinguish_failure: bool = False) -> "list[Dict[str, Any]] | None":
+    """Every AMD or Intel card the DRM drivers have bound, from /sys/class/drm.
+
+    ``vendor`` is 0x1002 for AMD/ATI and 0x8086 for Intel, and amdgpu's
+    ``mem_info_vram_total`` is a byte count, both documented kernel interfaces. Intel
+    publishes no equivalent total on the discrete path, so an Arc card is reported with
+    an unknown capacity rather than left out: knowing the GPU exists is the point.
+    Only ``cardN`` is walked: the connector entries (``card0-DP-1``) and render nodes
+    point at the same device and would double-count.
+
+    No name is reported. The kernel publishes no marketing string here, and inventing
+    one, or borrowing an amd-smi row whose ordering is not guaranteed to match this
+    walk, would attach the wrong name to a card. A card with no name still tells the
+    user their GPU exists, which is the whole point.
+
+    Never raises: an unreadable or malformed file skips that card.
+
+    ``distinguish_failure`` returns None when the walk could not be trusted, so the
+    inventory marks AMD and Intel unanswered rather than publishing "no cards" for a TTL.
+    A MISSING /sys/class/drm is an answer, not a failure. The limit: a driver that unbinds
+    its cards leaves the directory readable and empty, which reads as a host with none.
+    """
+    root = "/sys/class/drm"
+    unreadable = False
+    try:
+        entries = sorted(os.listdir(root))
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return None if distinguish_failure else []
+    records: list[Dict[str, Any]] = []
+    for entry in entries:
+        if not re.fullmatch(r"card\d+", entry):
+            continue
+        device = os.path.join(root, entry, "device")
+        try:
+            with open(os.path.join(device, "vendor"), encoding = "utf-8") as fh:
+                vendor = fh.read().strip().lower()
+        except FileNotFoundError:
+            # A cardN with no PCI vendor is a virtual or platform device, not a card
+            # this walk lost.
+            continue
+        except OSError:
+            unreadable = True
+            continue
+        vendors = {"0x1002": "amd", "0x8086": "intel"}
+        if vendor not in vendors:
+            continue
+        total_gb = None
+        try:
+            with open(os.path.join(device, "mem_info_vram_total"), encoding = "utf-8") as fh:
+                total_bytes = int(fh.read().strip())
+            total_gb = round(total_bytes / 1024**3, 2) if total_bytes > 0 else None
+        except (OSError, ValueError):
+            pass
+        records.append(
+            {
+                "vendor": vendors[vendor],
+                "index": len(records),
+                "name": None,
+                "memory_total_gb": total_gb,
+                "source": "sysfs-drm",
+            }
+        )
+    if unreadable and distinguish_failure:
+        # One card that could not be read makes the whole walk a partial answer, and a
+        # partial answer published as a complete one drops a card for a TTL.
+        return None
+    return records
+
+
+_UNKNOWN_PHYSICAL_GPU_INVENTORY: Dict[str, Any] = {
+    "available": False,
+    "devices": [],
+    "sources": [],
+    "unknown": True,
+    "unanswered": [],
+}
+
+
+def _carry_unanswered_vendors_forward(
+    inventory: Dict[str, Any], previous: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Re-add the devices only a vendor this pass could not ask had reported.
+
+    A refresh that cannot reach nvidia-smi is not news that the cards left, but caching it
+    as the new inventory says exactly that for a TTL: the Resources tab then reports no GPU
+    on the same response where the sidebar says PyTorch cannot use one.
+
+    Only for vendors in ``unanswered``: a vendor that answered "none" gave an answer, and a
+    card that really was removed has to be allowed to disappear.
+    """
+    stale_vendors = set(inventory.get("unanswered") or ())
+    if not stale_vendors or not previous:
+        return inventory
+    carried = [
+        device
+        for device in (previous.get("devices") or [])
+        if device.get("vendor") in stale_vendors
+    ]
+    if not carried:
+        return inventory
+    merged = dict(inventory)
+    merged["devices"] = list(inventory.get("devices") or []) + carried
+    merged["available"] = True
+    merged["sources"] = list(inventory.get("sources") or []) + [
+        source
+        for source in (previous.get("sources") or [])
+        if source not in (inventory.get("sources") or [])
+    ]
+    # Still unknown: these rows describe the host as it was, not as this pass measured it.
+    return merged
+
+
+def _run_physical_gpu_inventory_probe() -> Dict[str, Any]:
+    """One probe pass, stored in the cache. Never raises."""
+    global _physical_gpu_inventory_cache
+    previous = _physical_gpu_inventory_cache
+    try:
+        inventory = _probe_physical_gpu_inventory()
+    except Exception as e:
+        logger.debug("Physical GPU inventory probe failed: %s", e)
+        inventory = dict(_UNKNOWN_PHYSICAL_GPU_INVENTORY)
+        # A pass that raised asked nobody, so every vendor is unanswered.
+        inventory["unanswered"] = ["amd", "intel", "nvidia"]
+    inventory = _carry_unanswered_vendors_forward(
+        inventory, previous[1] if previous is not None else None
+    )
+    _physical_gpu_inventory_cache = (time.monotonic(), inventory)
+    return inventory
+
+
+def get_physical_gpu_inventory(*, block: bool = True) -> Dict[str, Any]:
+    """GPUs the OS enumerates, whether or not PyTorch can use them.
+
+    Returns ``{available, devices, sources, unknown}``. Runs regardless of ``DEVICE``
+    and never raises: a probe that cannot answer contributes nothing rather than
+    failing the caller, so an endpoint reaching here still returns a body.
+
+    ``block=False`` for anything on a request path. The NVIDIA half shells out with a
+    10 second timeout and the lock makes concurrent callers queue behind it, so a hung
+    or restarting driver -- the exact host this inventory exists for -- would stall the
+    event loop for ten seconds every time the TTL expired. /api/health and
+    /api/liveness both reach here through the chat-only verdict, and the desktop gives
+    a local request two seconds. A non-blocking caller takes the last known answer,
+    kicks the refresh onto a daemon thread, and gets the new value on a later call;
+    with nothing cached at all it gets the explicit unknown, which every consumer
+    already reads as "keep what you had".
+    """
+    now = time.monotonic()
+    cached_entry = _physical_gpu_inventory_cache
+    if cached_entry is not None and now - cached_entry[0] < _PHYSICAL_GPU_INVENTORY_TTL_SECONDS:
+        return cached_entry[1]
+    if not block:
+        _schedule_physical_gpu_inventory_refresh()
+        return (
+            cached_entry[1] if cached_entry is not None else dict(_UNKNOWN_PHYSICAL_GPU_INVENTORY)
+        )
+    with _physical_gpu_inventory_lock:
+        cached_entry = _physical_gpu_inventory_cache
+        if (
+            cached_entry is not None
+            and time.monotonic() - cached_entry[0] < _PHYSICAL_GPU_INVENTORY_TTL_SECONDS
+        ):
+            return cached_entry[1]
+        return _run_physical_gpu_inventory_probe()
+
+
+def _schedule_single_flight_refresh(
+    flag: str, refresh_lock, work_lock, run, thread_name: str, what: str
+) -> None:
+    """Run ``run`` off the caller's thread, one pass at a time.
+
+    Single-flight through ``refresh_lock``, tried without waiting: a refresh already
+    running is what a second caller wants, so this returns rather than queueing a
+    duplicate behind it. ``work_lock`` is the blocking path's lock, so the background
+    pass cannot publish underneath one.
+
+    ``flag`` names the module global holding the in-flight bit, kept a real global so a
+    test can reset it. Shared by the inventory and the torch snapshot, which carried
+    identical copies of this and would have drifted apart under a later fix.
+    """
+    with refresh_lock:
+        if globals()[flag]:
+            return
+        globals()[flag] = True
+
+    def _refresh() -> None:
+        try:
+            with work_lock:
+                run()
+        except Exception as e:
+            logger.debug("Background %s refresh failed: %s", what, e)
+        finally:
+            with refresh_lock:
+                globals()[flag] = False
+
+    try:
+        threading.Thread(target = _refresh, name = thread_name, daemon = True).start()
+    except Exception as e:
+        logger.debug("Could not start the %s refresh thread: %s", what, e)
+        with refresh_lock:
+            globals()[flag] = False
+
+
+def _schedule_physical_gpu_inventory_refresh() -> None:
+    """Refresh the inventory off the caller's thread, one pass at a time."""
+    _schedule_single_flight_refresh(
+        "_physical_gpu_inventory_refreshing",
+        _physical_gpu_inventory_refresh_lock,
+        _physical_gpu_inventory_lock,
+        _run_physical_gpu_inventory_probe,
+        "gpu-inventory-refresh",
+        "inventory",
+    )
+
+
+def _reported_torch_label(published: Optional[str] = None) -> Optional[str]:
+    """The version to show for this torch, without ever retrying a failed import.
+
+    ``_torch_version_label()`` imports torch, and on a host whose native runtime will
+    not load that import is the thing that fails: it can take seconds, and _has_torch()
+    purges the partial module afterwards so the next attempt genuinely re-runs the
+    native load. /api/health and /api/liveness reach the label through the chat-only
+    verdict, so on exactly the host this feature exists for it would block the event
+    loop on every call. Whatever detection already published wins, then the label the
+    wheel carries on disk.
+    """
+    if TORCH_IMPORT_ERROR is not None:
+        return published or _installed_torch_label_on_disk() or None
+    return _torch_version_label() or _installed_torch_label_on_disk() or None
+
+
+def _torch_version_label() -> Optional[str]:
+    """``torch.__version__`` when it can be read, else None. Never raises."""
+    try:
+        import torch
+        return str(torch.__version__)
+    except Exception:
+        return None
+
+
+# A mask hides that vendor's devices and nothing else.
+_VISIBILITY_MASK_VENDORS: Dict[str, frozenset] = {
+    # HIP honours CUDA_VISIBLE_DEVICES too, so an AMD-only box launched with it emptied is a
+    # deliberately masked host, not a broken one.
+    "CUDA_VISIBLE_DEVICES": frozenset({"nvidia", "amd"}),
+    "HIP_VISIBLE_DEVICES": frozenset({"amd"}),
+    "ROCR_VISIBLE_DEVICES": frozenset({"amd"}),
+    "ZE_AFFINITY_MASK": frozenset({"intel"}),
+}
+
+
+def _mask_is_emptied(var: str) -> bool:
+    """True when ``var`` is set to a value that hides every device it addresses.
+
+    Set-but-empty and "-1" are the two spellings; a mask NAMING devices is not this,
+    since that host expects those devices to work.
+    """
+    value = os.environ.get(var)
+    return value is not None and value.strip() in ("", "-1")
+
+
+def _masks_hide_every_accelerator(*, block_inventory: bool = False) -> bool:
+    """True when the masks account for every accelerator this host has.
+
+    Then torch reporting none is the configuration working, not a broken install, and
+    the whole classification is suppressed. A mask that covers only SOME of the cards
+    is not this: an emptied ZE_AFFINITY_MASK beside an unmasked NVIDIA GPU hides the
+    Arc and nothing else, and cancelling the classification there would let a CPU-only
+    wheel go unreported for a card the user never masked. Those cards are dropped from
+    the mismatch inventory instead.
+
+    An inventory that found nothing, or could not answer, stays conservative: a mask
+    may well be hiding the only accelerator, and that is the case this existed for.
+    """
+    masked = _vendors_masked_off(block_inventory = block_inventory)
+    if not masked:
+        return False
+    try:
+        inventory = get_physical_gpu_inventory(block = block_inventory)
+    except Exception:
+        inventory = dict(_UNKNOWN_PHYSICAL_GPU_INVENTORY)
+    devices = inventory.get("devices") or []
+    if devices:
+        return all(device.get("vendor") in masked for device in devices)
+    # An inventory that could not ANSWER stays conservative; one that answered nothing has no
+    # card to hide. A cold non-blocking read is unknown, and an irrelevant empty mask would
+    # then cache "torch is fine" for a TTL, so the caching path passes block_inventory = True.
+    return True
+
+
+def _vendors_masked_off(*, block_inventory: bool = False) -> set:
+    """Vendors whose devices are all hidden by a mask that can take effect here."""
+    relevant = _relevant_visibility_masks(block_inventory = block_inventory)
+    masked: set = set()
+    for var in relevant:
+        if _mask_is_emptied(var):
+            masked |= _VISIBILITY_MASK_VENDORS.get(var, frozenset())
+    # HIP reads these three in order and stops at the first one SET (the precedence
+    # amd._first_visible_amd_gpu_id applies), so only that variable decides. Reading a
+    # lower-priority one would offer a repair for a host masked exactly as asked:
+    # HIP_VISIBLE_DEVICES=-1 beside ROCR_VISIBLE_DEVICES=0 hides every AMD card.
+    amd_mask = next(
+        (
+            var
+            for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+            if var in relevant and os.environ.get(var) is not None
+        ),
+        None,
+    )
+    if amd_mask is not None and _mask_is_emptied(amd_mask):
+        masked.add("amd")
+    else:
+        masked.discard("amd")
+    return masked
+
+
+def _relevant_visibility_masks(*, block_inventory: bool = False) -> tuple[str, ...]:
+    """The visibility variables that can actually hide a GPU on THIS host.
+
+    A mask that cannot take effect must not silence the mismatch. ROCR_VISIBLE_DEVICES
+    is the concrete case: Windows HIP has no ROCr layer, and this module's own
+    visibility resolver already ignores the variable there, so a stray empty one would
+    otherwise restore the "no GPU" verdict on a Windows NVIDIA host with a CPU wheel.
+
+    The HIP-layer variables are likewise only consulted when an AMD card is actually
+    present, so a leftover HIP_VISIBLE_DEVICES on an NVIDIA-only box cannot mask
+    anything it does not address. An inventory that found nothing, or could not answer,
+    keeps every variable: unknown must stay conservative rather than start ignoring
+    masks that may well be real.
+    """
+    masks = ["CUDA_VISIBLE_DEVICES"]
+    hip_masks = ["HIP_VISIBLE_DEVICES"]
+    if sys.platform != "win32":
+        hip_masks.append("ROCR_VISIBLE_DEVICES")
+    try:
+        # block=False: this is reached from the chat-only verdict, which /api/health and
+        # /api/liveness read. A vendor set does not change between refreshes.
+        devices = get_physical_gpu_inventory(block = block_inventory).get("devices") or []
+    except Exception:
+        devices = []
+    if not devices or any(d.get("vendor") == "amd" for d in devices):
+        masks.extend(hip_masks)
+    # ZE_AFFINITY_MASK is the XPU equivalent; the rest of this module already reads an
+    # emptied one as hiding every Intel device.
+    if not devices or any(d.get("vendor") == "intel" for d in devices):
+        masks.append("ZE_AFFINITY_MASK")
+    return tuple(masks)
+
+
+def _torch_index_leaf(url: str) -> str:
+    """Final path segment of a torch index URL, lowercased, query and fragment removed.
+
+    A token-authenticated pin is supported and common (.../whl/cpu?token=...), and a raw
+    final-segment split sees "cpu?token=..." there, so a deliberate CPU install on a GPU
+    host would be reported as broken and offered a repair. Trailing slashes come off the
+    PATH only, or a token ending in "/" is corrupted. Mirrors the installer's
+    _torch_index_leaf / _trim_index_path_slashes, which the same variable is read by.
+    """
+    value = str(url).strip().lower()
+    if not value:
+        return ""
+    path = re.fullmatch(r"([^?#]*)([?#].*)?", value)
+    path = path.group(1) if path else value
+    return path.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _stated_torch_index_source() -> str:
+    """The torch index this install was told to use, or "".
+
+    URL first, and the family ONLY when no URL is set: install.sh's get_torch_index_url()
+    returns on UNSLOTH_TORCH_INDEX_URL without ever reading UNSLOTH_TORCH_INDEX_FAMILY, so
+    a family that disagrees is dead, not a second opinion. Taking either let a stale
+    ..._FAMILY=cpu beside a new ..._URL=.../cu128 suppress the mismatch on a CUDA host.
+    """
+    url = (os.environ.get("UNSLOTH_TORCH_INDEX_URL") or "").strip()
+    if url:
+        return url
+    return (os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY") or "").strip()
+
+
+def _recorded_install_flavor() -> "tuple[str, bool]":
+    """``(expected_torch_tag, expected_torch_tag_pinned)`` from the venv's manifest.
+
+    ``("", False)`` when there is no manifest, it cannot be read, or the tag is not a
+    string: nothing recorded is not a choice, which is the rule
+    install_manifest.recorded_torch_flavor documents. Read straight off disk rather than
+    by importing that module, which lives outside the backend package. Never raises.
+    """
+    try:
+        path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
+        with open(path, encoding = "utf-8") as fh:
+            manifest = json.load(fh)
+        recorded = manifest.get("expected_torch_tag")
+        pinned = manifest.get("expected_torch_tag_pinned")
+    except (OSError, ValueError, AttributeError):
+        return "", False
+    if not isinstance(recorded, str):
+        return "", False
+    # `is True`, not bool(): bool("false") is True, so a hand-edited manifest carrying the
+    # string would read as a deliberate pin. install_manifest's reader applies the same rule.
+    return recorded.strip().lower(), pinned is True
+
+
+def _expected_cpu_flavor_was_chosen() -> bool:
+    """Whether THIS install deliberately selected a CPU wheel.
+
+    Two sources, both meaning "the user named cpu": an explicit index pin set for the
+    running process, and the flavor the last completed install recorded in the venv's
+    manifest, which install_python_stack.py writes from the same expectation the
+    Windows flavor invariant enforces.
+
+    Only "cpu" is acted on: an unknown or absent record means nothing was recorded and
+    must not be read as a choice. Never raises.
+    """
+    if _torch_index_leaf(_stated_torch_index_source()) == "cpu":
+        return True
+    # A recorded cpu is not by itself a choice: setup.ps1 selects /cpu automatically on a
+    # GPU-less host and records it exactly as it records a pinned one.
+    recorded, pinned = _recorded_install_flavor()
+    return recorded == "cpu" and pinned
+
+
+def classify_torch_build(*, block_inventory: bool = False) -> Optional[str]:
+    """Why this PyTorch exposes no accelerator, when the build itself is the reason.
+
+    "torch_cpu_build"        -- a CPU-only wheel: ``2.11.0+cpu``, or an untagged build
+                                with neither ``torch.version.cuda`` nor ``.hip``. No
+                                driver update fixes it; only reinstalling torch from
+                                the right index does.
+    "torch_cuda_unavailable" -- an accelerator wheel (``+cu124``, ``+rocm6.4``,
+                                ``+xpu``) whose runtime refuses to initialise: driver
+                                too old, no permission on the device nodes, a cudart
+                                that will not load. The wheel is right, the
+                                environment is not.
+    None                     -- torch is missing, unimportable, or has a working
+                                accelerator. Nothing to say.
+
+    Kept as two reasons rather than one flag because the advice differs, and telling
+    someone with a healthy cu124 wheel to reinstall torch sends them the wrong way.
+    Never raises.
+    """
+    # An emptied visibility mask has the exact shape of a broken install without anything
+    # being broken. A mask NAMING devices is not this: that host expects those to work.
+    if _masks_hide_every_accelerator(block_inventory = block_inventory):
+        return None
+    if _expected_cpu_flavor_was_chosen():
+        return None
+    if not _has_torch():
+        # Absent and unimportable differ, and the second is what this exists for. _has_torch()
+        # collapses both to False.
+        return _classification_from_disk_label()
+    try:
+        import torch
+
+        # XPU as well as CUDA, or a recovered Intel host stays torch_cuda_unavailable forever.
+        for _available in (
+            getattr(getattr(torch, "cuda", None), "is_available", None),
+            getattr(getattr(torch, "xpu", None), "is_available", None),
+        ):
+            try:
+                if callable(_available) and _available():
+                    return None
+            except Exception:
+                continue
+        version = str(getattr(torch, "__version__", ""))
+        # The installers' vocabulary: "2.11.0+cpu" -> "cpu", "2.6.0+cu124" -> "cu124".
+        local = version.partition("+")[2].strip().lower()
+        cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
+        hip_tag = getattr(getattr(torch, "version", None), "hip", None)
+        # An untagged wheel that sets torch.version.xpu is a GPU build whose runtime is down.
+        xpu_tag = getattr(getattr(torch, "version", None), "xpu", None)
+        if local == "cpu" or local.startswith("cpu."):
+            # PyTorch publishes extended CPU local tags such as "2.8.0+cpu.cxx11.abi".
+            return "torch_cpu_build"
+        if not local and cuda_tag is None and hip_tag is None and xpu_tag is None:
+            # Untagged and built against no GPU runtime: the PyPI macOS/CPU wheel shape. An untagged
+            # wheel that DOES set version.cuda (conda) belongs in the second case.
+            return "torch_cpu_build"
+        return "torch_cuda_unavailable"
+    except Exception as e:
+        # torch is INSTALLED but will not import. Classify from the wheel on disk instead.
+        logger.debug("torch build classification fell back to the on-disk label: %s", e)
+        return _classification_from_disk_label()
+
+
+def _classification_from_disk_label() -> Optional[str]:
+    """Classify from the wheel's own version label, with no interpreter started.
+
+    ``None`` when nothing is installed to read: an absent torch is not a mismatch.
+    """
+    label = _installed_torch_label_on_disk()
+    markers = _installed_torch_markers_on_disk()
+    if not label and not any(markers.values()):
+        return None
+    if "+cu" in label or "+rocm" in label or "+xpu" in label:
+        return "torch_cuda_unavailable"
+    if any(markers.values()):
+        return "torch_cuda_unavailable"
+    return "torch_cpu_build"
+
+
+# setup.ps1's rule: only Arc and Data Center GPU autodetect as XPU. An ordinary Intel
+# iGPU is a display adapter, not a training device.
+_XPU_ADAPTER_NAME_RE = re.compile(r"intel.*(arc|data center gpu)", re.IGNORECASE)
+
+
+def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """The subset of the inventory whose presence means PyTorch OUGHT to have a GPU.
+
+    NVIDIA and AMD qualify outright. Intel does not, by itself: setup.sh does not
+    autodetect Linux XPU at all, and setup.ps1 limits automatic XPU detection to Arc and
+    Data Center GPU by name. An Intel UHD iGPU beside a CPU wheel is the expected,
+    correct state of that machine, so counting it would report a mismatch and offer a
+    repair that reinstalls the very CPU build it just replaced.
+
+    An Intel card still counts when it is one this stack would have installed XPU torch
+    for: a name that matches setup.ps1's rule, or an XPU expectation recorded for this
+    venv, or a torch that carries an XPU runtime. The Linux sysfs walk publishes no
+    name, which is exactly why the expectation and the runtime are consulted too.
+    """
+    xpu_expected = _expected_xpu_flavor_was_chosen() or _torch_reports_an_xpu_runtime()
+    # Per vendor, not host-wide: an emptied ZE_AFFINITY_MASK beside an unmasked NVIDIA
+    # card hides the Arc and nothing else.
+    masked_off = _vendors_masked_off()
+    # A ROCm expectation, or a torch carrying a HIP runtime, settles it for every AMD
+    # card: this stack asked for that wheel, whatever the arch table says.
+    rocm_expected = _expected_rocm_flavor_was_chosen() or _torch_reports_a_hip_runtime()
+    keep: list[Dict[str, Any]] = []
+    for device in devices:
+        if device.get("vendor") in masked_off:
+            continue
+        if device.get("vendor") == "amd":
+            if rocm_expected or _amd_device_can_establish_a_mismatch(device):
+                keep.append(device)
+            continue
+        if device.get("vendor") != "intel":
+            keep.append(device)
+            continue
+        if xpu_expected or _XPU_ADAPTER_NAME_RE.search(str(device.get("name") or "")):
+            keep.append(device)
+    return keep
+
+
+# The gfx targets this stack will actually install a ROCm wheel for: install.sh's
+# _amd_arch_index_family_for_gfx, plus gfx906 from the ROCm 6.3 path. A card outside this
+# set (Polaris gfx803, RDNA 1 gfx101x) is left on CPU torch ON PURPOSE.
+_ROCM_SUPPORTED_GFX = frozenset(
+    {
+        "gfx906",
+        "gfx908",
+        "gfx90a",
+        "gfx1030",
+        "gfx1031",
+        "gfx1032",
+        "gfx1033",
+        "gfx1034",
+        "gfx1035",
+        "gfx1036",
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1103",
+        "gfx1150",
+        "gfx1151",
+        "gfx1152",
+        "gfx1200",
+        "gfx1201",
+    }
+)
+
+
+def _linux_kfd_reports_an_amd_gpu() -> bool:
+    """Whether the KFD topology enumerates an AMD GPU node. Never raises.
+
+    The same probe, and the same vendor guard, install_python_stack._has_rocm_gpu()
+    uses: gpu_id 0 is a CPU node, and the NVIDIA open kernel module registers KFD nodes
+    of its own with vendor_id 4318, so AMD ownership has to be confirmed rather than
+    assumed. A node whose properties cannot be read is skipped for that reason.
+    """
+    if platform.system() != "Linux":
+        return False
+    nodes = "/sys/class/kfd/kfd/topology/nodes"
+    try:
+        entries = os.listdir(nodes)
+    except OSError:
+        return False
+    for entry in entries:
+        try:
+            with open(os.path.join(nodes, entry, "gpu_id"), encoding = "utf-8") as fh:
+                gpu_id = fh.read().strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not gpu_id or gpu_id == "0":
+            continue
+        try:
+            with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
+                properties = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if re.search(r"\bvendor_id\s+4098\b", properties):
+            return True
+    return False
+
+
+def _is_pip_rocm_family_leaf(leaf: str) -> bool:
+    """True when a lowercased leaf names a pip ROCm family: EXACTLY rocm<digits>[.<digits>]
+    or gfx<digit>. install_python_stack._is_pip_rocm_family_leaf, kept in step with it.
+
+    A suffixed leaf (rocm-rel-7.2.1, gfx-mirror) is a custom pin the installer routes
+    verbatim. Reading one as ROCm waives the supported-architecture filter, so a gfx803
+    host deliberately left on CPU torch gets told its own install is broken.
+    """
+    return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or bool(re.match(r"gfx\d", leaf))
+
+
+def _expected_rocm_flavor_was_chosen() -> bool:
+    """Whether this install selected a ROCm wheel, by pin or by recorded flavor."""
+    if _is_pip_rocm_family_leaf(_torch_index_leaf(_stated_torch_index_source())):
+        return True
+    return _recorded_install_flavor()[0].startswith("rocm")
+
+
+def _torch_reports_a_hip_runtime() -> bool:
+    """Whether the installed torch is a ROCm build, however unusable it currently is."""
+    if TORCH_IMPORT_ERROR is not None:
+        return "+rocm" in _installed_torch_label_on_disk() or bool(
+            _installed_torch_markers_on_disk()["hip"]
+        )
+    try:
+        import torch
+        if "+rocm" in str(getattr(torch, "__version__", "")).lower():
+            return True
+        return getattr(getattr(torch, "version", None), "hip", None) is not None
+    except Exception:
+        return False
+
+
+# Marketing name -> gfx, mirroring setup.ps1's $nameArchTable and
+# install_python_stack._WIN_GPU_NAME_ARCH_TABLE. Only names those two route to a wheel
+# family: this decides whether a repair could change anything, so a card no index covers
+# must not match. Most specific first.
+_GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
+    (r"9070|9080|R9700", "gfx1201"),
+    (r"9060", "gfx1200"),
+    (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
+    (r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]", "gfx1150"),
+    (r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33", "gfx1152"),
+    (r"RX 7900|PRO W7900|PRO W7800", "gfx1100"),
+    (r"RX 7800|RX 7700(?!S)|PRO W7700|PRO V710", "gfx1101"),
+    (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),
+    (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
+    (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),
+    (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),
+    (r"RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500", "gfx1034"),
+]
+
+
+def _rocm_supported_gfx_from_gpu_name(name: str) -> Optional[str]:
+    """The gfx arch this marketing name maps to, when the ROCm wheels cover it."""
+    if not name:
+        return None
+    for pattern, arch in _GPU_NAME_GFX_TABLE:
+        if re.search(pattern, name, re.IGNORECASE) and arch in _ROCM_SUPPORTED_GFX:
+            return arch
+    return None
+
+
+def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
+    """Whether this AMD adapter is one the installers would have given a ROCm wheel.
+
+    A stack that deliberately declines to support a card cannot then call the CPU wheel
+    beside it a fault. The arch is consulted only when something could name it: the DRM
+    sysfs walk publishes no name, so a host with no ROCm userspace at all reports no
+    candidates and stays counted, which is the conservative direction and the shape the
+    original report had (an RX 7900 XT, which IS supported).
+    """
+    candidates = [
+        str(gfx).lower()
+        for gfx in (
+            device.get("gfx_candidates") or ([device.get("gfx")] if device.get("gfx") else [])
+        )
+        if gfx
+    ]
+    if not candidates:
+        # The DirectX registry publishes AdapterFamily only when the driver wrote one, so a
+        # supported Windows card (the reported RX 7900 XT) can arrive with no arch. setup.ps1
+        # answers that from the marketing name; the probe below can only speak for Linux.
+        _named = _rocm_supported_gfx_from_gpu_name(device.get("name") or "")
+        if _named:
+            return True
+        # Nothing NAMES the card, so ask what the installer asks: _has_rocm_gpu() falls back to
+        # the KFD topology, and a card `studio update` would repair is eligible here.
+        return _linux_kfd_reports_an_amd_gpu()
+    return any(gfx in _ROCM_SUPPORTED_GFX for gfx in candidates)
+
+
+def _expected_xpu_flavor_was_chosen() -> bool:
+    """Whether this install selected an XPU wheel, by pin or by recorded flavor."""
+    if _torch_index_leaf(_stated_torch_index_source()) == "xpu":
+        return True
+    return _recorded_install_flavor()[0] == "xpu"
+
+
+def _torch_reports_an_xpu_runtime() -> bool:
+    """Whether the installed torch is an XPU build, however unusable it currently is."""
+    if TORCH_IMPORT_ERROR is not None:
+        # Asking costs a full torch/__init__ against the partial module tree the import left.
+        return "+xpu" in _installed_torch_label_on_disk() or bool(
+            _installed_torch_markers_on_disk()["xpu"]
+        )
+    try:
+        import torch
+        if "+xpu" in str(getattr(torch, "__version__", "")).lower():
+            return True
+        return getattr(getattr(torch, "version", None), "xpu", None) is not None
+    except Exception:
+        return False
+
+
+def _installed_torch_label_on_disk() -> str:
+    """``torch.__version__`` read out of the installed torch/version.py, or "".
+
+    No interpreter is started, which is the point: this is reached when importing torch
+    is the thing that fails. The installers read the same file for the same reason.
+    Never raises.
+    """
+    try:
+        spec = importlib.util.find_spec("torch")
+    except Exception:
+        return ""
+    locations = list(getattr(spec, "submodule_search_locations", None) or []) if spec else []
+    for location in locations:
+        try:
+            with open(os.path.join(location, "version.py"), encoding = "utf-8") as fh:
+                for line in fh:
+                    if line.startswith("__version__"):
+                        return line.partition("=")[2].strip().strip("\"'").lower()
+        except OSError:
+            continue
+    return ""
+
+
+def _installed_torch_markers_on_disk() -> Dict[str, Optional[str]]:
+    """``{cuda, hip, xpu}`` as recorded in the installed torch/version.py.
+
+    The version LABEL is not the whole story: a conda or source CUDA build is untagged
+    and records its runtime here instead, and the importable path already reads exactly
+    these three attributes. Without them the failure path gave the same installation the
+    opposite diagnosis, telling the user to reinstall a GPU wheel it already has rather
+    than to fix the driver. Parsed, not executed, for the same reason as the label.
+    Never raises; a value the file does not set reads as None.
+    """
+    markers: Dict[str, Optional[str]] = {"cuda": None, "hip": None, "xpu": None}
+    try:
+        spec = importlib.util.find_spec("torch")
+    except Exception:
+        return markers
+    locations = list(getattr(spec, "submodule_search_locations", None) or []) if spec else []
+    for location in locations:
+        try:
+            with open(os.path.join(location, "version.py"), encoding = "utf-8") as fh:
+                source = fh.read()
+        except OSError:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            # torch has shipped both `cuda = '12.8'` and `cuda: Optional[str] = '12.8'`.
+            if isinstance(node, ast.Assign):
+                names = [n.id for n in node.targets if isinstance(n, ast.Name)]
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names = [node.target.id]
+            else:
+                continue
+            value = getattr(node, "value", None)
+            if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+                continue
+            for name in names:
+                if name in markers:
+                    markers[name] = value.value
+        return markers
+    return markers
+
+
+def _run_torch_build_snapshot() -> Dict[str, Any]:
+    """One uncached pass over torch, cached on the way out. Never raises."""
+    global _torch_build_snapshot_cache
+    snapshot = {
+        # block_inventory: never a request path, so masks compare against a MEASURED inventory.
+        "reason": classify_torch_build(block_inventory = True),
+        "usable": _torch_reports_a_usable_accelerator(),
+        "unknown": False,
+    }
+    _torch_build_snapshot_cache = (time.monotonic(), snapshot)
+    return snapshot
+
+
+def torch_build_snapshot(*, block: bool = True) -> Dict[str, Any]:
+    """``{reason, usable, unknown}`` for this venv's torch, cached with a TTL.
+
+    ``block=False`` for anything on a request path: both probes inside import torch and
+    ask the CUDA and XPU runtimes whether they are available, and a wedged or
+    restarting driver -- the very state ``torch_cuda_unavailable`` names -- can hold
+    those for as long as the driver takes. /api/health and /api/liveness reach here
+    through the chat-only verdict, against a two second desktop timeout, so a
+    non-blocking caller takes the last measurement, kicks the refresh onto a daemon
+    thread, and reads the new one later.
+
+    With nothing measured yet it gets ``unknown``, never a guess: detect_hardware()
+    takes the blocking path on exactly the hosts whose verdict can be re-derived, so
+    the cache is warm before any request can consult it.
+    """
+    now = time.monotonic()
+    cached_entry = _torch_build_snapshot_cache
+    if cached_entry is not None and now - cached_entry[0] < _TORCH_BUILD_SNAPSHOT_TTL_SECONDS:
+        return cached_entry[1]
+    if not block:
+        _schedule_torch_build_snapshot_refresh()
+        return cached_entry[1] if cached_entry is not None else dict(_UNKNOWN_TORCH_BUILD_SNAPSHOT)
+    with _torch_build_snapshot_lock:
+        cached_entry = _torch_build_snapshot_cache
+        if (
+            cached_entry is not None
+            and time.monotonic() - cached_entry[0] < _TORCH_BUILD_SNAPSHOT_TTL_SECONDS
+        ):
+            return cached_entry[1]
+        return _run_torch_build_snapshot()
+
+
+def _schedule_torch_build_snapshot_refresh() -> None:
+    """Refresh the torch snapshot off the caller's thread, one pass at a time."""
+    _schedule_single_flight_refresh(
+        "_torch_build_snapshot_refreshing",
+        _torch_build_snapshot_refresh_lock,
+        _torch_build_snapshot_lock,
+        _run_torch_build_snapshot,
+        "torch-build-refresh",
+        "torch build",
+    )
+
+
+def _seed_torch_build_snapshot(reason: Optional[str]) -> None:
+    """Record a classification that was reached without probing torch.
+
+    The broken-runtime host is classified from the wheel on disk, and that answer is
+    exactly what the request paths need; letting them re-measure would put the import
+    that already failed back on the health thread.
+    """
+    global _torch_build_snapshot_cache
+    _torch_build_snapshot_cache = (
+        time.monotonic(),
+        {"reason": reason, "usable": False, "unknown": False},
+    )
+
+
+def invalidate_torch_build_snapshot() -> None:
+    """Drop the cached measurement so the next blocking caller re-probes."""
+    global _torch_build_snapshot_cache
+    _torch_build_snapshot_cache = None
+
+
+def _mismatch_verdict_for_this_host(
+    reason: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """``(reason, detail)`` when this host's GPUs are real but PyTorch cannot use them.
+
+    ``(None, None)`` otherwise. Blocking, and only detection calls it: it runs off the
+    request path, and the blocking pass is what warms the caches that /api/health then
+    reads without probing anything itself.
+    """
+    if reason is None:
+        reason = torch_build_snapshot()["reason"]
+    if reason is None:
+        return None, None
+    establishing = _devices_that_can_establish_a_mismatch(
+        get_physical_gpu_inventory().get("devices") or []
+    )
+    if not establishing:
+        return None, None
+    # Which vendors said so, for the frozen verdict's own uncertainty test.
+    _remember_the_vendors_behind_the_mismatch(establishing)
+    detail = _reported_torch_label()
+    logger.warning(
+        "GPUs are present on this host but PyTorch cannot use them (%s%s); "
+        "Train/Export disabled (chat-only). Repair the installation to restore GPU "
+        "support.",
+        reason,
+        f", installed {detail}" if detail else "",
+    )
+    return reason, detail
+
+
+def _torch_gpu_mismatch_report() -> Dict[str, Any]:
+    """``physical_devices`` + ``mismatch`` for a host whose GPUs PyTorch cannot use.
+
+    ``{}`` when there is nothing to report: torch is absent, unimportable or healthy,
+    or no probe found a physical card. Both keys sit BESIDE ``devices`` in the
+    visibility payload and never inside it -- ``devices`` is the runtime-usable list
+    that model fit budgets against and that the training device picker pins from.
+    """
+    # block=False: request path, and the torch probes hold as long as a wedged driver.
+    reason = torch_build_snapshot(block = False)["reason"]
+    if reason is None:
+        return {}
+    # block=False: GET /api/system holds _system_gpu_cache_lock for the whole call.
+    inventory = get_physical_gpu_inventory(block = False)
+    physical = _devices_that_can_establish_a_mismatch(inventory.get("devices") or [])
+    if not physical:
+        return {}
+    return {
+        "physical_devices": physical,
+        "mismatch": {
+            "reason": reason,
+            "torch_version": _reported_torch_label(CHAT_ONLY_DETAIL),
+            "physical_count": len(physical),
+            "sources": inventory.get("sources") or [],
+        },
+    }
+
+
 def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
     """True when this settled verdict is one the MLX self-heal is about to overturn.
 
@@ -479,6 +1683,9 @@ def detect_hardware() -> DeviceType:
             return device
         DETECTION_GENERATION += 1
         DETECTION_COMPLETE.set()
+        # A pass has settled, so a later recovery may ask for another one.
+        global _REDETECTION_REQUESTED
+        _REDETECTION_REQUESTED = False
         return device
 
 
@@ -496,6 +1703,7 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     reading it here would bind the pass to the retirement it must lose to. Direct callers
     pass nothing and own the current epoch."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, DETECTION_GENERATION
+    global _REDETECTION_REQUESTED
     with _DETECT_LOCK:
         if epoch is None:
             # A nested read inside an owning scope belongs to that pass, not to whatever
@@ -540,16 +1748,22 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
         # waiter trusting it could publish training-enabled for a CPU/chat-only host.
         # Unconditional, unlike the counter: re-setting is a no-op and a late waiter needs it.
         DETECTION_COMPLETE.set()
+        if produced_here:
+            # A pass has settled, so a later recovery may ask for another one. Cleared here as well as
+            # in detect_hardware(), because recovery starts its pass through this function. After the
+            # epoch check, so a retired pass does not release a guard it did not satisfy.
+            _REDETECTION_REQUESTED = False
         return DEVICE
 
 
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
-    global _MLX_BLOCKERS_MEASURED
+    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
+    CHAT_ONLY_MISMATCH_VENDORS = frozenset()
     _MLX_BLOCKERS_MEASURED = None
     IS_ROCM = False
 
@@ -663,10 +1877,34 @@ def _detect_hardware_locked() -> DeviceType:
     elif TORCH_IMPORT_ERROR is not None:
         # torch installed but broken, so this host was never measured. "no_gpu" would lie.
         CHAT_ONLY_REASON = "detection_failed"
+        # Still measurable from the wheel on disk, and this host needs it most: detection_failed
+        # otherwise sends the user to the server log instead of offering the repair, and the
+        # verdict refresh deliberately freezes it. From DISK, because the import is what failed.
+        #
+        # Both suppressions classify_torch_build() applies before its own disk fallback: a
+        # deliberately CPU-only install is not broken, and the repair offered for it would
+        # reinstall the wheel that was asked for. Applied here rather than through that
+        # function, which goes via _has_torch() and would re-run the import that just failed.
+        _disk_reason = None
+        if not (
+            _masks_hide_every_accelerator(block_inventory = True) or _expected_cpu_flavor_was_chosen()
+        ):
+            _disk_reason = _classification_from_disk_label()
+        _seed_torch_build_snapshot(_disk_reason)
+        _build_reason, _build_detail = _mismatch_verdict_for_this_host(_disk_reason)
+        if _build_reason is not None:
+            CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
+        # torch imported cleanly and reported no accelerator, which is NOT "this host has no GPU":
+        # a Windows update installs PyPI's 2.11.0+cpu over cu124 while nvidia-smi lists every
+        # card (#8473). Ask the OS before blaming hardware.
         CHAT_ONLY_REASON = "no_gpu"
+        if torch_ok:
+            _build_reason, _build_detail = _mismatch_verdict_for_this_host()
+            if _build_reason is not None:
+                CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -680,6 +1918,179 @@ def get_device() -> DeviceType:
     Prefer calling detect_hardware() explicitly at startup.
     """
     return ensure_hardware_detected()
+
+
+def _torch_reports_a_usable_accelerator() -> bool:
+    """Whether torch can open a GPU right now. Never raises."""
+    try:
+        import torch
+        for probe in (
+            getattr(getattr(torch, "cuda", None), "is_available", None),
+            getattr(getattr(torch, "xpu", None), "is_available", None),
+        ):
+            try:
+                if callable(probe) and probe():
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        return False
+    return False
+
+
+def _request_hardware_redetection() -> None:
+    """Ask for a fresh detection pass, at most one per recovery. Never raises.
+
+    Retiring the epoch is what the rest of this module already uses to mean "the
+    published verdict is stale"; recomputing DEVICE here instead would publish from a
+    request thread and race the detection lock.
+    """
+    global _REDETECTION_REQUESTED
+    if _REDETECTION_REQUESTED:
+        return
+    try:
+        _REDETECTION_REQUESTED = True
+        # Retiring the epoch alone is NOT enough: invalidate_detection leaves DEVICE set and
+        # DETECTION_COMPLETE raised, so start_background_detection returns immediately. Both under
+        # the lock, so a running pass cannot publish over the reset.
+        invalidate_detection()
+        invalidate_torch_build_snapshot()
+        with _DETECT_LOCK:
+            _discard_detection_locked()
+        start_background_detection()
+        logger.info(
+            "An accelerator became usable after startup; discarded the cached hardware "
+            "verdict and started a fresh detection pass."
+        )
+    except Exception as e:
+        _REDETECTION_REQUESTED = False
+        logger.debug("Could not request hardware re-detection: %s", e)
+
+
+def _remember_the_vendors_behind_the_mismatch(devices: list[Dict[str, Any]]) -> None:
+    """Record which vendors' cards establish the mismatch being reported right now."""
+    global CHAT_ONLY_MISMATCH_VENDORS
+    CHAT_ONLY_MISMATCH_VENDORS = frozenset(
+        device.get("vendor") for device in devices if device.get("vendor")
+    )
+
+
+def _uncertainty_could_hide_the_frozen_mismatch(inventory: Dict[str, Any]) -> bool:
+    """Whether an inventory that could not answer might still hold the mismatched card.
+
+    Only for the vendors the mismatch came from. _carry_unanswered_vendors_forward has
+    already re-added what an unanswered vendor last reported, so nothing left here means
+    every vendor that named a card answered "none" this pass. Holding the mismatch on an
+    unrelated vendor's broken probe would then assert a GPU with nothing to point at: a
+    detached AMD eGPU staying "unusable" while nvidia-smi is broken on a host that never
+    had an NVIDIA card.
+
+    True when no vendor was recorded (every reason but the two mismatches, so those are
+    unchanged), and true for an unknown that names nobody, which is how a cold cache reads.
+    """
+    if not CHAT_ONLY_MISMATCH_VENDORS:
+        return True
+    unanswered = set(inventory.get("unanswered") or ())
+    if not unanswered:
+        return True
+    return bool(unanswered & CHAT_ONLY_MISMATCH_VENDORS)
+
+
+def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
+    """``(reason, detail)``, re-derived when the physical inventory can still change it.
+
+    detect_hardware() runs once at startup, but the inventory it consulted refreshes on
+    a 60 second TTL. An eGPU attached after launch, or a driver that finished restarting
+    after the first probe, flips the answer while the frozen verdict keeps saying
+    ``no_gpu``: /api/system would list the card and publish a mismatch while the sidebar
+    and the Export and Video pages went on insisting no accelerator exists. The reverse
+    is the same bug -- a card that goes away leaves a mismatch nobody can act on.
+
+    Only the three inventory-sensitive verdicts are re-derived, plus the one
+    detection_failed that is not really unmeasured: a torch that will not import was
+    classified from its wheel on disk at startup, so the inventory is the only thing still
+    missing, and freezing that host is the same split this function exists to close.
+    mlx_unavailable, intel_mac and a detection_failed with no importable torch and no
+    readable wheel describe things a 60 second probe cannot change, and re-deriving those
+    would fight detect_hardware() rather than follow it.
+
+    Never raises: a probe that cannot answer keeps the frozen verdict, as does an
+    inventory whose uncertainty is about the vendor the frozen mismatch came from.
+    """
+    reason, detail = CHAT_ONLY_REASON, CHAT_ONLY_DETAIL
+    frozen_but_measurable = reason == "detection_failed" and TORCH_IMPORT_ERROR is not None
+    if reason not in ("no_gpu", "torch_cpu_build", "torch_cuda_unavailable"):
+        if not frozen_but_measurable:
+            return reason, detail
+    try:
+        snapshot = torch_build_snapshot(block = False)
+        if snapshot["unknown"]:
+            # Nothing measured yet is not "torch is fine"; keep what detection published.
+            return reason, detail
+        build_reason = snapshot["reason"]
+        if build_reason is None and snapshot["usable"]:
+            # The accelerator came BACK. Only reason and detail refresh here, so DEVICE and CHAT_ONLY
+            # would stay frozen at CPU while this reported no_gpu, until a restart. Retire the
+            # detection instead and let the next pass publish the real answer.
+            _request_hardware_redetection()
+            return reason, detail
+        # block=False: /api/health and /api/liveness reach here, and the NVIDIA half shells out
+        # with a 10 second timeout on exactly the hung-driver host this exists for.
+        inventory = get_physical_gpu_inventory(block = False)
+        establishing = (
+            _devices_that_can_establish_a_mismatch(inventory.get("devices") or [])
+            if build_reason is not None
+            else []
+        )
+        if establishing:
+            # Re-record who says so: the mismatch can MOVE between vendors inside one process
+            # (swap an AMD eGPU for an NVIDIA one), and the startup answer would then freeze
+            # the verdict on a vendor a later refresh has already watched disappear.
+            _remember_the_vendors_behind_the_mismatch(establishing)
+            return build_reason, _reported_torch_label(detail)
+        if inventory.get("unknown") and _uncertainty_could_hide_the_frozen_mismatch(inventory):
+            return reason, detail
+    except Exception as e:
+        logger.debug("chat-only verdict refresh failed: %s", e)
+        return reason, detail
+    # "No GPU here" is a measurement, and a host whose torch will not import never made
+    # one: detect_hardware() refused to say it, so this cannot say it either.
+    return (reason, detail) if frozen_but_measurable else ("no_gpu", None)
+
+
+def _gpu_present_but_unusable_message(
+    feature: str, verdict: Optional[tuple[Optional[str], Optional[str]]] = None
+) -> Optional[str]:
+    """The capability message for a host whose GPUs are real but unreachable by torch.
+
+    ``None`` when this host is not in that state. detect_hardware() records
+    ``torch_cpu_build`` / ``torch_cuda_unavailable`` only after the OS inventory has
+    actually found a card, so reaching this point means the "no supported accelerator
+    was found" wording below would contradict the System tab and send the user after
+    hardware they already own. Both reasons are surfaced verbatim by the Export and
+    Video pages and by rejected export API calls.
+    """
+    # ``verdict`` lets one response read it ONCE: two reads across a TTL boundary can describe
+    # different hosts.
+    reason, detail = verdict if verdict is not None else current_chat_only_verdict()
+    if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
+        return None
+    installed = f" (installed {detail})" if detail else ""
+    # Both routes, always. The repair row exists only in the desktop app and only for a
+    # backend it manages, so a browser-hosted Studio, or a desktop attached to a server
+    # someone started from a terminal, was being sent to a control that is not on the page.
+    if reason == "torch_cpu_build":
+        return (
+            f"This host has a GPU, but the installed PyTorch is a CPU-only build{installed}, "
+            f"so {feature} cannot use it. Reinstall the GPU build: use Repair installation "
+            f"in Settings in the desktop app, or re-run the Unsloth installer."
+        )
+    return (
+        f"This host has a GPU, but the installed PyTorch{installed} cannot initialise it, so "
+        f"{feature} cannot use it. This is usually a driver or runtime mismatch; reinstalling "
+        f"a matching PyTorch build fixes it. Use Repair installation in Settings in the "
+        f"desktop app, or re-run the Unsloth installer."
+    )
 
 
 def export_capability() -> dict:
@@ -697,9 +2108,10 @@ def export_capability() -> dict:
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
         }
+    verdict = current_chat_only_verdict()
     # No accelerator: name the blocker. Detection failure first -- the branches below all
     # describe a measured host, so a broken probe would tell a GPU box to install PyTorch.
-    if CHAT_ONLY_REASON == "detection_failed":
+    if verdict[0] == "detection_failed":
         reason = "detection_failed"
         message = (
             "Hardware detection failed on this host, so export is disabled. The server log records "
@@ -711,6 +2123,11 @@ def export_capability() -> dict:
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
             "`unsloth studio update` to restore MLX and enable export."
         )
+    elif _gpu_present_but_unusable_message("export", verdict) is not None:
+        # BEFORE _has_torch(), which reports an unimportable wheel as absent while re-running the
+        # seconds-long import that already failed.
+        reason = verdict[0]
+        message = _gpu_present_but_unusable_message("export", verdict)
     elif not _has_torch():
         reason = "pytorch_not_installed"
         message = (
@@ -749,7 +2166,8 @@ def video_capability() -> dict:
         }
     # Detection failure first, as in export_capability: the branches below all describe a
     # measured host, so a broken probe would tell a GPU box to go buy a GPU.
-    if CHAT_ONLY_REASON == "detection_failed":
+    verdict = current_chat_only_verdict()
+    if verdict[0] == "detection_failed":
         reason = "detection_failed"
         message = (
             "Hardware detection failed on this host, so video generation is disabled. The server "
@@ -792,6 +2210,9 @@ def video_capability() -> dict:
             "Video generation requires Apple Silicon. This Intel Mac has no Metal (MPS) device "
             "for the video pipelines to run on."
         )
+    elif _gpu_present_but_unusable_message("video generation", verdict) is not None:
+        reason = verdict[0]
+        message = _gpu_present_but_unusable_message("video generation", verdict)
     elif not _has_torch():
         reason = "pytorch_not_installed"
         message = (
@@ -2015,6 +3436,7 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
 # 0x1002. NVIDIA's open kernel module also registers KFD nodes (vendor_id 0x10DE);
 # a non-AMD node is not a HIP device and must never take an ordinal.
 _AMD_PCI_VENDOR_ID = 4098
+_INTEL_PCI_VENDOR_ID = 0x8086
 
 
 def _rocm_kfd_gpu_pci_ids() -> list[str]:
@@ -2259,8 +3681,14 @@ def _parse_adapter_family_gfx(family: str) -> str:
     return ""
 
 
-def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, Any]]:
-    """DirectX registry metadata for AMD adapters, keyed by LUID.
+def _windows_amd_adapter_records_by_luid(
+    vendor_id_filter: int = _AMD_PCI_VENDOR_ID, *, distinguish_failure: bool = False
+) -> "dict[int, Dict[str, Any]] | None":
+    """DirectX registry metadata for one vendor's adapters, keyed by LUID.
+
+    ``vendor_id_filter`` defaults to AMD, which is every pre-existing caller. The
+    physical inventory passes Intel's id as well, so an Arc host whose XPU wheel was
+    replaced is reported rather than going silent.
 
     ``gfx`` is absent when the driver wrote no ``AdapterFamily``.
     ``dedicated_memory_bytes`` is absent when neither dedicated-memory value is available.
@@ -2268,16 +3696,31 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, Any]]:
     All or nothing: a record this cannot read makes the map incomplete, and an
     incomplete map is indistinguishable from a complete one at the join, which
     would then pair a visible card with a hidden same-named card's counter. So
-    any failure past the point where a subkey is known to be an adapter returns
-    ``{}``, which drops the caller back to capacity ranking. Same for off
-    Windows or without the key.
+    any failure past the point where a subkey is known to be an adapter gives up
+    on the whole map, which drops the caller back to capacity ranking. Same for
+    off Windows or without the key.
+
+    The ranking callers only need "no usable map", so they get ``{}``.
+    ``distinguish_failure`` returns ``None`` for that case instead: the inventory has
+    to tell a vendor with no adapters from a vendor it could not ask, because
+    publishing the first for the second erases a settled mismatch.
     """
-    if platform.system() != "Windows":
+    records = _windows_amd_adapter_records_or_none(vendor_id_filter)
+    if records is None and not distinguish_failure:
         return {}
+    return records
+
+
+def _windows_amd_adapter_records_or_none(
+    vendor_id_filter: int = _AMD_PCI_VENDOR_ID,
+) -> "dict[int, Dict[str, Any]] | None":
+    """The read itself. ``None`` whenever the registry could not answer."""
+    if platform.system() != "Windows":
+        return None
     try:
         import winreg
     except ImportError:
-        return {}
+        return None
     by_luid: dict[int, Dict[str, Any]] = {}
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DIRECTX_KEY) as dx_key:
@@ -2289,7 +3732,7 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, Any]]:
                     continue
                 with winreg.OpenKey(dx_key, subkey) as adapter_key:
                     vendor_id, _ = winreg.QueryValueEx(adapter_key, "VendorId")
-                    if int(vendor_id) != _AMD_PCI_VENDOR_ID:
+                    if int(vendor_id) != vendor_id_filter:
                         continue
                     luid, _ = winreg.QueryValueEx(adapter_key, "AdapterLuid")
                     description, _ = winreg.QueryValueEx(adapter_key, "Description")
@@ -2311,8 +3754,7 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, Any]]:
                             pass
                 name = str(description).strip()
                 if not name:
-                    # An AMD adapter this cannot name: see the all-or-nothing note.
-                    return {}
+                    return None
                 record = {"name": name}
                 gfx = _parse_adapter_family_gfx(str(family))
                 if gfx:
@@ -2322,7 +3764,7 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, Any]]:
                 by_luid[int(luid)] = record
     except Exception as e:
         logger.debug("DirectX adapter registry read declined: %s", e)
-        return {}
+        return None
     return by_luid
 
 
@@ -4868,6 +6310,9 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         "parent_visible_gpu_ids": [],
         "devices": [],
         "index_kind": "vulkan",
+        # Physically present cards this PyTorch cannot open, reported ALONGSIDE the empty
+        # `devices` above and never merged into it.
+        **_torch_gpu_mismatch_report(),
     }
 
 
