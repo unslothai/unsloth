@@ -82,6 +82,7 @@ def test_zero_layers_is_not_swallowed_as_falsy(llama_cpp):
 
 
 # ── shim capability probe ──
+
 def test_shim_without_ngl_is_detected(llama_cpp, tmp_path):
     shim = tmp_path / "shim.py"
     shim.write_text('ap.add_argument("--maxtok", type=int)\n', encoding = "utf-8")
@@ -99,6 +100,7 @@ def test_missing_shim_file_does_not_raise(llama_cpp, tmp_path):
 
 
 # ── wiring ──
+
 def test_diffusion_server_accepts_the_layer_split():
     fn = _function("_start_diffusion_server")
     names = {a.arg for a in fn.args.kwonlyargs} | {a.arg for a in fn.args.args}
@@ -153,6 +155,7 @@ def test_diffusion_no_longer_hardcodes_auto_over_the_users_choice():
 
 
 # ── dedup guards must see a split change ──
+
 def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
     """A backend that looks like a healthy diffusion runner, for the dedup guards."""
     b = llama_cpp.LlamaCppBackend()
@@ -271,6 +274,7 @@ def test_probe_falls_back_to_a_substring_scan_on_unparseable_source(llama_cpp, t
 
 # the probe must inspect the file that will be spawned, whatever its name ──
 # ── the probe must inspect the file that will be spawned, whatever its name ──
+
 @pytest.mark.parametrize("name", ["shim", "shim.pyw", "SHIM.PY"])
 def test_probe_keys_on_argv_shape_not_suffix(llama_cpp, tmp_path, name):
     """Any UNSLOTH_DG_SHIM file launches as-is, so the probe must answer for that exact
@@ -292,6 +296,7 @@ def test_probe_does_not_mistake_the_module_form_for_a_file(llama_cpp, monkeypatc
 
 # the guard must mirror what the launcher will actually do ──
 # ── the guard must mirror what the launcher will actually do ──
+
 def test_split_supported_mirrors_the_launch_gate(llama_cpp, tmp_path, monkeypatch):
     b = llama_cpp.LlamaCppBackend()
     shim = tmp_path / "shim.py"
@@ -346,11 +351,11 @@ def test_positive_split_scales_the_guard_estimate(llama_cpp, required, ngl, n_la
     )
 
 
-# a custom-named override answers for itself, not a sibling shim.py
 
 
 # a custom-named override answers for itself, not a sibling shim.py ──
 # ── a custom-named override answers for itself, not a sibling shim.py ──
+
 def test_probe_ignores_a_sibling_shim_next_to_a_custom_override(llama_cpp, tmp_path):
     """An override runs as-is; a capable sibling shim.py must not vouch for it, or the
     launch appends --ngl to a parser that exits on it."""
@@ -362,6 +367,7 @@ def test_probe_ignores_a_sibling_shim_next_to_a_custom_override(llama_cpp, tmp_p
 
 
 # ── a zoo upgrade mid-session must un-stick a dropped split ──
+
 def test_zoo_upgrade_reloads_a_dropped_split(llama_cpp):
     """manual/20 against an old shim launched with the default and deduped on the
     ask. Once the shim gains --ngl, the identical ask must reload to apply it."""
@@ -377,6 +383,7 @@ def test_zoo_upgrade_reloads_a_dropped_split(llama_cpp):
 
 
 # ── the dropped split must reach the client ──
+
 def test_response_models_expose_the_requested_split():
     """A refresh has no in-memory split left, so the wire has to carry the ask."""
     models_src = (REPO_ROOT / "studio" / "backend" / "models" / "inference.py").read_text(

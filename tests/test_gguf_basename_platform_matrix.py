@@ -31,6 +31,7 @@ _GPU_CELL = os.environ.get("UNSLOTH_SIM_GPU", "cpu").lower()
 
 # GPU cell: applied before anything torch-touching -------------------------
 # -- GPU cell: applied before anything torch-touching -------------------------
+
 def _apply_gpu_cell(cell: str) -> dict:
     """Returns a description of what the process now claims to be."""
     if cell == "cpu":
@@ -65,6 +66,7 @@ except Exception as exc:  # noqa: BLE001 -- torch absent is a legitimate cell
 
 # The helper under test, lifted without importing unsloth ------------------
 # -- The helper under test, lifted without importing unsloth ------------------
+
 def _load_helper():
     src = _SAVE_PY.read_text(encoding = "utf-8")
     for node in ast.parse(src).body:

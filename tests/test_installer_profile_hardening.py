@@ -86,6 +86,7 @@ def _ps_literal(value: object) -> str:
 
 
 # ── source-level: the couplings stay cut ──
+
 def test_prologue_neutralizes_profile_state():
     block = _extract_prologue()
     assert (
@@ -201,6 +202,7 @@ def test_setup_ps1_handoff_never_inherits_the_profile():
 
 
 # ── executable: run the extracted code under a hostile profile ──
+
 _HOSTILE_PROFILE = """
 Set-StrictMode -Version Latest
 Set-Alias uv Write-Host
@@ -668,6 +670,7 @@ def test_install_ps1_parses():
 
 
 # ── the proxy has to survive the process boundary, not just the filter ──
+
 def _proxy_prelude() -> str:
     """The PowerShell the setup launch prepends to its -Command, read from the shipped source."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
@@ -778,6 +781,7 @@ def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
 
 
 # ── the proxy handoff, hardened ───────────────────────────────────────────────
+
 def test_module_autoloading_is_restored_before_the_handoff_needs_it():
     """Ordering. The handoff calls ConvertTo-Json, which lives in Microsoft.PowerShell.Utility,
     so under a profile's $PSModuleAutoLoadingPreference = 'None' a fresh PowerShell 7 session

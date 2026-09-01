@@ -42,6 +42,7 @@ def _load_pid_alive(platform: str, fake_run = None):
 
 
 # ── AST: stop() must not use the broken bare liveness probe ──────────────────
+
 # `stop` delegates signalling to `_signal_stop`, so guarding only `stop` would let os.kill(pid, 0) come back one
 @pytest.mark.parametrize("func", ["stop", "_signal_stop"])
 def test_stop_does_not_use_bare_oskill_liveness_probe(func):
@@ -80,6 +81,7 @@ def test_pid_alive_helper_is_defined_and_used_by_stop():
 
 
 # ── Behavioral: the win32 tasklist branch ────────────────────────────────────
+
 def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
     def _run(
         cmd,
@@ -117,6 +119,7 @@ def test_pid_alive_windows_assumes_alive_when_tasklist_errors():
 
 
 # ── Behavioral: the POSIX signal-0 branch (skip on Windows runners) ───────────
+
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX os.kill(pid,0) branch")
 def test_pid_alive_posix_true_for_self_false_for_dead():
     pid_alive = _load_pid_alive("linux")

@@ -117,6 +117,7 @@ def _raiser(exc):
 
 
 # ---- the bug --------------------------------------------------------------
+
 def test_stale_torchao_becomes_false(peft_env):
     iu, _ = peft_env(_raiser(STALE))
     assert FIX() is True
@@ -142,6 +143,7 @@ def test_warning_is_emitted_once(peft_env):
 
 
 # ---- what must still fail -------------------------------------------------
+
 def test_an_unrelated_import_error_still_raises(peft_env):
     iu, _ = peft_env(_raiser(ImportError("libcudart.so.12: cannot open shared object file")))
     FIX()
@@ -192,6 +194,7 @@ def test_a_non_import_error_still_raises(peft_env):
 
 
 # ---- what must not change -------------------------------------------------
+
 def test_a_working_torchao_still_answers_true(peft_env):
     iu, _ = peft_env(lambda: True)
     FIX()
@@ -236,6 +239,7 @@ def test_metadata_survives(peft_env):
 
 
 # ---- wiring ---------------------------------------------------------------
+
 def test_called_from_gpu_init():
     src = (REPO_ROOT / "unsloth" / "_gpu_init.py").read_text(encoding = "utf-8")
     assert "fix_peft_stale_torchao_import_error,\n" in src, "not imported"

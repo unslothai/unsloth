@@ -273,6 +273,7 @@ def test_lora_merge_budgets_per_device():
 
 
 # ── the torchao ("portable" FP8/INT8) export shares the same release ──
+
 def _fake_torch_xpu():
     t = types.ModuleType("torch")
     t.cuda = types.SimpleNamespace(is_available = lambda: False)
@@ -319,6 +320,7 @@ def test_torchao_export_uses_the_shared_release():
 
 
 # ── regressions for the multi-GPU dispatch branch ──
+
 class _Child:
     """Minimal stand-in for an nn.Module leaf, enough for the dispatch walk."""
 

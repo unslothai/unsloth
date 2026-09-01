@@ -409,6 +409,7 @@ class _Builder(ast.NodeVisitor):
 
 
 # ---------------------------------------------------------------- resolution
+
 def _any_star(scope: Scope) -> bool:
     c = scope
     while c is not None:
@@ -473,6 +474,7 @@ def _legb_chain(scope: Scope) -> list[Scope]:
 
 
 # ---------------------------------------------------------------- analysis
+
 def _analyze(src: str):
     tree = ast.parse(src)
     b = _Builder()
@@ -667,6 +669,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
 
 
 # ---------------------------------------------------------------- self-test
+
 _SELF_TESTS = {
     "dangling_alias": (
         # before: inline aliased import, used as _b

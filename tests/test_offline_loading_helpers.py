@@ -12,6 +12,7 @@ from unsloth.models import loader_utils as L
 
 
 # ---------------------------------------------------------------------------
+
 _OFFLINE_TRUE = ("1", "true", "yes", "on", "ON", " 1 ", "\tyes\n")
 _OFFLINE_FALSE = ("0", "no", "false", "off", "", "  ", "maybe")
 
@@ -67,6 +68,7 @@ def test_effective_lfo_is_read_only():
 
 
 # ---------------------------------------------------------------------------
+
 def _http_error(status):
     import requests
 
@@ -227,6 +229,7 @@ def test_cause_context_cycle_terminates():
 
 
 # ---------------------------------------------------------------------------
+
 def _inprocess_offline_flags():
     flags = []
     try:
@@ -307,6 +310,7 @@ def test_reset_hf_sessions_is_safe():
 
 
 # ---------------------------------------------------------------------------
+
 def _touch(path, name):
     open(os.path.join(path, name), "w").close()
 
@@ -359,6 +363,7 @@ def test_resolve_tokenizer_nonexistent_dir_falls_back():
 
 
 # ---------------------------------------------------------------------------
+
 def test_retry_once_on_offline_error_then_succeed(monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -469,6 +474,7 @@ def test_retry_runs_gc_collect_between_attempts(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+
 def test_force_offline_restores_freshly_imported_constant(monkeypatch):
     # If huggingface_hub.constants is first imported inside the window, the saved value must be the pre-window state
     import sys
@@ -494,6 +500,7 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+
 def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
@@ -511,6 +518,7 @@ def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+
 def test_the_online_error_is_what_surfaces_when_the_cache_is_empty(monkeypatch):
     """The retry only succeeds on what is cached, so its own failure names an empty
     cache badly: offline mode skips Transformers' "does not appear to have a file
@@ -615,6 +623,7 @@ def test_a_successful_retry_is_unchanged(monkeypatch):
 
 # what the retry must not hold, hide, or overwrite
 # ---------------------------------------------------------------------------
+
 def test_the_failed_attempt_is_not_pinned_by_the_error_it_raised(monkeypatch):
     """Holding the online error holds its frames, and its frames hold the partial
     model. The retry then reallocates alongside it and a large VLM runs out of

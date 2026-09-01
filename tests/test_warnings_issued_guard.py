@@ -71,6 +71,7 @@ class _Bare(torch.nn.Module):
 
 
 # ---- the behaviour ---------------------------------------------------------
+
 def test_a_module_without_the_attribute_gets_a_dict():
     m = _Bare()
     with pytest.raises(AttributeError):
@@ -132,6 +133,7 @@ def test_running_twice_is_idempotent():
 
 
 # ---- what it deliberately does not touch -----------------------------------
+
 @pytest.mark.parametrize("value", [None, "Qwen/Qwen2.5-1.5B", 7, object()])
 def test_non_modules_are_left_alone_without_raising(value):
     """trl accepts a repo id string and builds the model itself. Attaching an
@@ -154,6 +156,7 @@ def test_a_model_that_refuses_the_assignment_does_not_raise():
 
 
 # ---- through the real wrapper, against a trl-shaped trainer ----------------
+
 @dataclasses.dataclass
 class _FakeConfig:
     learning_rate: float = 1e-4
@@ -228,6 +231,7 @@ def test_no_model_at_all_still_reaches_the_wrapped_init():
 
 
 # ---- the source, so the fix cannot be half-applied -------------------------
+
 def _new_init_body():
     tree = ast.parse(SRC)
     for node in ast.walk(tree):
@@ -277,6 +281,7 @@ def test_the_generated_compiled_guard_is_still_there():
 
 
 # ---- the upstream facts this rests on --------------------------------------
+
 def test_trl_still_writes_the_attribute_unconditionally():
     """If trl ever guards it themselves, the guard becomes a no-op.
 

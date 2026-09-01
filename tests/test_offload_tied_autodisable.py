@@ -235,6 +235,7 @@ if __name__ == "__main__":
 
 
 # --------------------------------------------------------------------------------------
+
 worth_offloading = _NS["_embedding_is_worth_offloading"]
 MIN_BYTES = _NS["_OFFLOAD_EMBEDDING_MIN_BYTES"]
 MIN_FRACTION = _NS["_OFFLOAD_EMBEDDING_MIN_FRACTION"]

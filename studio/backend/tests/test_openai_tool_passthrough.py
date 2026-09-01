@@ -163,6 +163,7 @@ class TestFriendlyUpstreamError:
 
 
 # =====================================================================
+
 # ChatMessage - tool role, tool_calls, optional content
 # =====================================================================
 
@@ -331,6 +332,7 @@ class TestChatMessageToolRoles:
 
 
 # =====================================================================
+
 # ChatCompletionRequest - standard OpenAI tool fields
 # =====================================================================
 
@@ -2233,6 +2235,7 @@ class TestChatCompletionRequestToolFields:
 
 
 # =====================================================================
+
 # anthropic_tool_choice_to_openai - pure translation helper
 # =====================================================================
 
@@ -2264,6 +2267,7 @@ class TestAnthropicToolChoiceToOpenAI:
 
 
 # =====================================================================
+
 # _build_passthrough_payload - tool_choice propagation
 # =====================================================================
 
@@ -2572,6 +2576,7 @@ class TestOpenAIPassthroughSSETerminalState:
 
 
 # =====================================================================
+
 # Passthrough reasoning kwargs - enable_thinking / reasoning_effort /
 # preserve_thinking must reach llama-server via chat_template_kwargs,
 # gated on template capabilities like the non-passthrough paths.
@@ -2682,6 +2687,7 @@ class TestPassthroughReasoningKwargs:
 
 
 # =====================================================================
+
 # OpenAI API compatibility helpers - verified spec edge cases
 # =====================================================================
 
@@ -3246,6 +3252,7 @@ class TestOpenAICompatibilityHelpers:
 
 
 # =====================================================================
+
 # _friendly_error - httpx transport failures
 # =====================================================================
 
@@ -9940,6 +9947,7 @@ class TestApiMonitorAudioInput:
 
 
 # =====================================================================
+
 # Responses API -> Chat Completions translation: chat_template_kwargs
 # (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
 # reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
@@ -10100,6 +10108,7 @@ class TestResponsesChatTemplateKwargs:
 
 
 # =====================================================================
+
 # GGUF chat-template role alternation: coalesce orphaned user turns left
 # behind when an empty assistant turn is dropped, so strict templates
 # (Gemma 3, ...) do not 400 on a role-parity break.

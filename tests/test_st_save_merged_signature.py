@@ -87,6 +87,7 @@ def test_the_reference_signature_is_what_we_matched():
 
 
 # ---- save_method is honoured, not swallowed -------------------------------
+
 def test_merge_and_unload_path_refuses_an_unsupported_method():
     src = ST_PY.read_text(encoding = "utf-8")
     node = _defs("_save_pretrained_merged", ST_PY)[0]
@@ -113,6 +114,7 @@ def test_an_explicit_tokenizer_is_not_shadowed_by_kwargs(i):
 
 
 # ---- behavioural check with a stand-in ------------------------------------
+
 def _extract_helper(name):
     """Pull a module-level helper out by source, so nothing imports unsloth."""
     src = ST_PY.read_text(encoding = "utf-8")
@@ -244,6 +246,7 @@ def test_unsupported_save_method_raises_not_implemented(tmp_path):
 
 
 # ---- the no_modules fallback honours save_method too -----------------------
+
 def test_no_modules_fallback_refuses_an_unsupported_method(tmp_path):
     """That branch drops save_method and merges unconditionally, so "lora"
     would return full weights for a request to write adapters."""
@@ -274,6 +277,7 @@ def test_the_forwarding_path_still_accepts_lora(tmp_path):
 
 # spellings mean the same thing as in unsloth_save_model ----------------
 # ---- spellings mean the same thing as in unsloth_save_model ----------------
+
 def test_the_reference_normalizes_before_validating():
     """Guards the premise: save.py lowercases and strips spaces first."""
     body = ast.get_source_segment(

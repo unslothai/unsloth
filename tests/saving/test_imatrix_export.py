@@ -37,6 +37,7 @@ class _Model:
 
 
 # -- registry + signatures -----------------------------------------------------------------
+
 def test_public_savers_accept_imatrix_file():
     for fn in (S.unsloth_save_pretrained_gguf, S.unsloth_push_to_hub_gguf):
         assert "imatrix_file" in inspect.signature(fn).parameters, fn.__name__
@@ -54,6 +55,7 @@ def test_imatrix_quants_registry():
 
 
 # -- _resolve_imatrix_file -----------------------------------------------------------------
+
 def test_resolve_none_and_false_return_none(tmp_path):
     assert S._resolve_imatrix_file(_Model(), None, None, str(tmp_path)) is None
     assert S._resolve_imatrix_file(_Model(), False, None, str(tmp_path)) is None
@@ -85,6 +87,7 @@ def test_resolve_gguf_file_is_renamed_to_gguf(tmp_path):
 
 
 # -- repo derivation -----------------------------------------------------------------------
+
 def test_repo_candidates_appends_gguf():
     repos = S._gguf_repo_candidates(_Model("unsloth/Llama-3.1-8B-Instruct"))
     assert "unsloth/Llama-3.1-8B-Instruct-GGUF" in repos
@@ -107,6 +110,7 @@ def test_repo_candidates_skips_local_dirs(tmp_path):
 
 
 # -- True: auto-download (mocked Hub) ------------------------------------------------------
+
 class _FakeApi:
     def __init__(self, files, **kw):
         self._files = files
@@ -171,6 +175,7 @@ def test_resolve_true_missing_raises(monkeypatch, tmp_path):
 
 
 # -- IQ gate in save_to_gguf ---------------------------------------------------------------
+
 def test_iq_quant_without_imatrix_is_rejected():
     with pytest.raises(RuntimeError) as e:
         S.save_to_gguf(

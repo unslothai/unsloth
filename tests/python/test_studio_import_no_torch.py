@@ -59,6 +59,7 @@ def no_torch_venv(request, tmp_path_factory):
 
 
 # ── AST structural checks ─────────────────────────────────────────────
+
 class TestDataCollatorsAST:
     """Static analysis: data_collators.py has no top-level torch imports."""
 
@@ -134,6 +135,7 @@ class TestChatTemplatesAST:
 
 
 # ── data_collators.py: exec + dataclass instantiation in no-torch venv ──
+
 class TestDataCollatorsNoTorchVenv:
     """Run data_collators.py in an isolated no-torch venv, verify classes load."""
 
@@ -224,6 +226,7 @@ class TestDataCollatorsNoTorchVenv:
 
 
 # ── chat_templates.py: exec in no-torch venv ─────────────────────────
+
 class TestChatTemplatesNoTorchVenv:
     """Run chat_templates.py in an isolated no-torch venv with stubs."""
 
@@ -321,6 +324,7 @@ class TestChatTemplatesNoTorchVenv:
 
 
 # ── format_conversion.py: AST + runtime tests ────────────────────────
+
 class TestFormatConversionAST:
     """Static analysis: format_conversion.py torch imports are guarded."""
 
@@ -489,6 +493,7 @@ class TestFormatConversionNoTorchVenv:
 
 
 # ── Negative controls ─────────────────────────────────────────────────
+
 class TestNegativeControls:
     """Prove the fix is necessary by showing what fails WITHOUT it."""
 

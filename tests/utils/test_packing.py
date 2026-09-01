@@ -174,10 +174,10 @@ def test_configure_padding_free():
     assert config.remove_unused_columns is False
 
 
-# Hybrid linear-attention guard + varlen shim (PR #7211 / #7249)
 
 
 # --- Hybrid linear-attention guard + varlen shim (PR #7211 / #7249) ---------------
+
 def _hybrid_config_model():
     # Qwen3.5 / Qwen3-Next style:
     return SimpleNamespace(config = _FakeConfig(layer_types = ["linear_attention", "full_attention"]))
@@ -1176,6 +1176,7 @@ def test_packing_sdpa(tmp_path):
 # Deliberately OMITS the "licensed under LGPLv3" header to emulate a newer Zoo whose header moved (dependency is only
 # lower-bounded).
 # --- wrapped-packing source-injection robustness (reviewer.py / fork findings) --------
+
 def sft_prepare_dataset(
     self, dataset, processing_class, args, packing, formatting_func, dataset_text_field
 ):

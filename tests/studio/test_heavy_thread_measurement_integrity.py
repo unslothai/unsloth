@@ -112,6 +112,7 @@ HARNESS = _load_harness()
 
 # performance.now() is the fake clock, requestAnimationFrame is a queue this file pumps, and setTimeout is a queue too
 # ── the node side: the harness's own JS on a virtual clock ────────────
+
 FAKE_ENV = """
 let now = 0;
 let rafs = [];
@@ -166,6 +167,7 @@ RECORDER_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT}
 
 
 # ── the recorder must not leak a loop into the next action ────────────
+
 LEAK_BODY = """
 eval(RECORDER_INIT);
 const hv = window.__hv;
@@ -201,6 +203,7 @@ def test_the_recorder_does_not_charge_the_between_action_gap_as_a_frame() -> Non
 
 
 # ── re-open must not stop the clock while Shiki is still running ──────
+
 REOPEN_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "REOPEN_JS": HARNESS.REOPEN_JS}
 
 # A thread that remounts instantly and then highlights for 40 frames, which is the shape re-open actually has:
@@ -378,6 +381,7 @@ def test_the_menu_window_takes_one_census_and_not_one_per_frame() -> None:
 
 
 # ── the menu total carries two paint floors, not one ──────────────────
+
 MENU_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "MENU_JS": HARNESS.MENU_JS}
 
 # A menu that opens and closes with NO work at all:
@@ -447,6 +451,7 @@ def test_the_menu_growth_value_has_both_floors_removed() -> None:
 
 
 # ── a null repetition is a failure, not a sample to drop ──────────────
+
 def menu_repetition(open_ms: float | None) -> dict:
     close_ms = 40.0
     total = None if open_ms is None else open_ms + close_ms
@@ -489,6 +494,7 @@ def test_the_median_of_three_good_repetitions_is_unchanged() -> None:
 
 
 # ── the verdict must reject an action that never settled ──────────────
+
 def clean_cell() -> dict:
     """One (engine, size) cell that harness_failures() has nothing to say about."""
     per_cycle = {"images": 3, "codeBlocks": 7, "codeChars": 12000}
@@ -630,6 +636,7 @@ def test_a_jump_that_never_settled_is_a_harness_failure() -> None:
 
 
 # ── the per-repetition fixture ────────────────────────────────────────
+
 class StubLocator:
     def __init__(self, log: list, selector: str) -> None:
         self.log = log
@@ -891,6 +898,7 @@ def test_an_action_that_ran_without_a_count_is_still_reported() -> None:
 
 # the wall axes carry the floor they actually paid ──────────────────
 # ── the wall axes carry the floor they actually paid ──────────────────
+
 def wall_cells(
     paint_waits: int,
     floor_ms: float = 33.0,
@@ -945,6 +953,7 @@ def test_a_missing_wait_count_subtracts_nothing_rather_than_crashing() -> None:
 
 
 # ── an application exception is not engine chatter ────────────────────
+
 def error_cell(seed_errors = 0, action_errors = 0) -> dict:
     cell = copy.deepcopy(clean_cell())
     cell["seed_console_errors"] = seed_errors
@@ -1217,6 +1226,7 @@ def wall_cells_for_report(paint_waits: int) -> dict:
 
 
 # ── halves, and counters that never left the noise ────────────────────
+
 def test_a_fractional_median_wait_count_is_not_truncated() -> None:
     """`summarise` medians the wait count across repetitions, so an even-repetition run whose
     repetitions paid 1 and 2 reports 1.5. Truncating that to 1 left half a vsync floor in the

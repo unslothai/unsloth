@@ -222,6 +222,7 @@ def test_the_mirror_override_is_honoured():
 
 
 # ── the neighbours this must not disturb ─────────────────────────────────────
+
 @pytest.mark.parametrize("gfx", ["gfx1100", "gfx1102", "gfx1030", "gfx1201"])
 def test_a_supported_arch_keeps_the_generic_index(gfx):
     calls = _run_install(gfx_devices = (gfx,))
@@ -260,6 +261,7 @@ def test_a_mixed_host_whose_runtime_target_is_supported_keeps_the_generic_index(
 
 # Measured on an AMD DevLab strix-halo host (amd-smi 26.2.2):
 # ── the probe the routing decision indexes into ──────────────────────────────
+
 _AMD_SMI_LIST = "GPU: 0\n    BDF: 0000:03:00.0\n    KFD_ID: 40251\n    NODE_ID: 1\n"
 
 
@@ -363,6 +365,7 @@ def test_a_repeated_arch_on_an_amd_smi_host_does_not_shift_the_mask():
 
 
 # ── the sources the runtime target falls back to ─────────────────────────────
+
 def test_kfd_topology_answers_when_neither_userland_probe_is_installed():
     """A runtime-only ROCm install ships no rocminfo and no amd-smi; the kernel's own
     topology still names the GPU, and _has_rocm_gpu() already reads that same sysfs."""
@@ -462,6 +465,7 @@ def test_the_inferred_arch_install_is_not_repeated_by_the_reroute():
 
 
 # ── not re-downloading what is already installed ─────────────────────────────
+
 def test_torch_already_on_the_right_per_arch_wheels_is_not_reinstalled():
     """_ensure_rocm_torch runs twice per install and again on every update, and the
     reroute is a --force-reinstall --no-cache-dir of a multi-GB stack."""
@@ -505,6 +509,7 @@ def test_a_leaf_that_needs_torch_211_keeps_its_floor():
 
 
 # ── the spoofed runtime the per-arch wheels cannot survive ───────────────────
+
 def test_a_kfd_only_spoofed_host_clears_the_override_before_installing():
     """With no rocminfo and no amd-smi the spoof check has nothing to distrust and declines,
     but amdkfd writes gfx_target_version itself, so a single-arch kernel reading the override
@@ -543,6 +548,7 @@ def test_a_mixed_kernel_reading_never_clears_the_override():
 
 
 # ── what the banners are allowed to print ────────────────────────────────────
+
 _SECRET_MIRROR = "https://user:s3cr3t-token@mirror.example/whl"
 
 
@@ -564,6 +570,7 @@ def test_the_strix_banner_redacts_mirror_credentials():
 
 
 # ── which card decides the family on a mixed host ────────────────────────────
+
 @pytest.mark.parametrize("apu", ["gfx1103", "gfx1036", "gfx1035", "gfx1033"])
 def test_a_leading_integrated_gpu_does_not_pick_the_family(apu):
     """Enumeration order alone puts the APU first on a Ryzen box with a Radeon card. The
@@ -600,6 +607,7 @@ def test_an_all_integrated_host_is_never_deposed():
 
 
 # ── building the index URL ───────────────────────────────────────────────────
+
 def test_the_leaf_lands_on_the_path_not_inside_a_mirror_token():
     """A mirror can carry its token in the query. rstrip + concat buried the arch inside
     it and left the request pointing at the bare mirror path."""
@@ -714,6 +722,7 @@ def test_an_all_unroutable_host_keeps_enumeration_order():
 
 
 # ── a per-arch install outliving the GPU it was made for ─────────────────────
+
 def test_a_stale_per_arch_family_is_replaced_when_the_target_goes_generic():
     """An earlier gfx1103-only run installs gfx110X-all. Add a dGPU, or point
     HIP_VISIBLE_DEVICES at one, and those wheels carry no kernels for the new target,
@@ -761,6 +770,7 @@ def test_an_unreadable_family_never_forces_a_reinstall(family, owns):
 
 
 # ── the three host shapes the reroutes reach only once a second signal is missing ──
+
 _ROCM_ARCH_TORCH_210 = stack_mod._TORCH_PROBE_MARKER + "2.10.0+rocm7.13.0|7.13|\n"
 
 
@@ -867,6 +877,7 @@ def test_keeping_the_matching_wheels_also_clears_a_confirmed_spoof():
 
 
 # ── the two mask layers, and the install they outlive ────────────────────────
+
 def test_the_rocr_layer_is_applied_before_the_hip_index_on_an_unfiltered_list():
     """ROCr is processed first and HIP indexes the SURVIVORS, so HIP's index is relative to
     what ROCr left. Neither amd-smi (driver) nor KFD sysfs (kernel) is ROCr-filtered:
@@ -949,6 +960,7 @@ def test_a_stale_per_arch_family_is_repaired_even_when_the_rocm_version_is_unrea
 
 
 # ── two orders, and the mask that cannot be applied to either ────────────────
+
 def _target(
     gfx_devices,
     probe_source,

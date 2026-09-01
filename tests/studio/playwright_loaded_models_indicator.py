@@ -108,6 +108,7 @@ def api(
 
 
 # ── Stub payloads, straight from the backend's own response models ───────
+
 NOTHING_CHAT = {
     "active_model": None,
     "loaded": [],

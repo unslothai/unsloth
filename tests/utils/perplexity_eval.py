@@ -37,6 +37,7 @@ def ppl_model(model, tokenizer, dataset):
 
 
 # ----------- Reporting helpers ----------- #
+
 def add_to_comparison(model_name, ppl):
     """Record a model's perplexity in the comparison tracker."""
     model_comparison_results[model_name] = {"ppl": ppl}

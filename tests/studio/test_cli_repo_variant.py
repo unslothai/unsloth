@@ -78,6 +78,7 @@ def test_no_colon_returns_none_variant(model_arg):
 
 
 # ── Local paths must NOT be split ------------------------------------
+
 @pytest.mark.parametrize(
     "local_path",
     [
@@ -99,6 +100,7 @@ def test_local_path_passthrough(local_path):
 
 
 # ── Edge cases -------------------------------------------------------
+
 def test_empty_string():
     assert _split("") == ("", None)
 

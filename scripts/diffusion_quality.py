@@ -52,6 +52,7 @@ DEFAULT_PROMPTS = [
 
 
 # ── image metrics (pure numpy) ───────────────────────────────────────────────
+
 def _to_gray(img: Any) -> Any:
     import numpy as np
     return np.asarray(img.convert("L"), dtype = np.float64)
@@ -117,6 +118,7 @@ def ssim(
 
 
 # ── optional CLIP (perceptual) ───────────────────────────────────────────────
+
 class _Clip:
     """Lazy CLIP scorer: prompt-image alignment + image-image cosine similarity."""
 
@@ -151,6 +153,7 @@ class _Clip:
 
 
 # ── GPU measurement helpers (mirrors diffusion_bench) ─────────────────────────
+
 def _cuda(call: str) -> Optional[int]:
     try:
         import torch
@@ -207,6 +210,7 @@ def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
 
 
 # ── one quant: load, render the grid, measure ────────────────────────────────
+
 def _render_grid(
     backend: Any, args: argparse.Namespace, gguf: str, out_dir: Path
 ) -> dict[str, Any]:
@@ -296,6 +300,7 @@ def _compare(
 
 
 # ── sweep ─────────────────────────────────────────────────────────────────────
+
 def _sweep(args: argparse.Namespace) -> int:
     from core.inference.diffusion import get_diffusion_backend
 
@@ -420,6 +425,7 @@ def _recommend(args: argparse.Namespace, rows: list[dict]) -> None:
 
 
 # ── self-test (CPU, no GPU/model) ─────────────────────────────────────────────
+
 def _selftest() -> int:
     import numpy as np
     from PIL import Image
@@ -455,6 +461,7 @@ def _selftest() -> int:
 
 
 # ── cli ───────────────────────────────────────────────────────────────────────
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description = "Image quality-vs-quant harness for the Unsloth diffusion backend.",

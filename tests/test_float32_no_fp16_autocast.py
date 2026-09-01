@@ -151,6 +151,7 @@ def _run(
 
 
 # ---- the bug -------------------------------------------------------------
+
 def test_float32_model_on_t4_stays_float32():
     args, env = _run(torch.float32, bf16_supported = False)
     assert args.fp16 is False, "float32 model must not get float16 autocast"
@@ -166,6 +167,7 @@ def test_float32_full_finetuning_on_t4_stays_float32():
 
 
 # ---- everything that must NOT change -------------------------------------
+
 def test_float32_model_on_bf16_gpu_still_autocasts():
     # bf16 shares float32's exponent range, so this stays safe and cheap.
     args, env = _run(torch.float32, bf16_supported = True)

@@ -51,6 +51,7 @@ PAD_ID, SEQ_LEN, KEEP = 0, 8, 4
 
 # Helpers: the real unsloth_zoo ones when importable, otherwise eager mirrors with identical semantics so a runner
 # ---------------------------------------------------------------------------
+
 def _fallback_chunked_selective_log_softmax(
     logits,
     index,
@@ -153,6 +154,7 @@ _left_pad_of = HELPERS["calculate_pad_tokens_in_prompt"]
 
 
 # ---------------------------------------------------------------------------
+
 class _Model(torch.nn.Module):
     """`hidden_states = False` ignores UNSLOTH_RETURN_HIDDEN_STATES and returns
     real [.., vocab] logits; True is Unsloth's generated forward.
@@ -201,6 +203,7 @@ class _Model(torch.nn.Module):
 
 
 # ---------------------------------------------------------------------------
+
 def _statement_lists(node):
     for child in ast.walk(node):
         for field in ("body", "orelse", "finalbody"):
@@ -274,6 +277,7 @@ def _packed_block_source():
 
 
 # ---------------------------------------------------------------------------
+
 def _batch():
     # already left-padded by the caller, uneven pad counts across rows
     return torch.tensor(
@@ -358,6 +362,7 @@ def _reference_logprobs(model, input_ids, max_left_pad):
 
 
 # ---------------------------------------------------------------------------
+
 def test_packed_path_survives_a_forward_that_returns_real_logits():
     namespace, model, _input_ids, _max_left_pad = _run_packed_block(hidden_states = False)
     assert getattr(model, "_unsloth_seq_packing_nograd_ok", None) is not False, (

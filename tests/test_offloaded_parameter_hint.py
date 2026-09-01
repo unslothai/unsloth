@@ -46,6 +46,7 @@ def _p(device):
 
 
 # ---- fires when it should --------------------------------------------------
+
 def test_a_meta_parameter_produces_a_hint():
     m = _Model([("model.layers.0.mlp.down_proj.weight", _p("meta"))])
     hint = _offloaded_parameter_hint(m)
@@ -82,6 +83,7 @@ def test_a_mix_of_real_and_meta_still_fires():
 
 
 # ---- stays silent when it should ------------------------------------------
+
 def test_a_fully_resident_model_gets_no_hint():
     """The mislabelling risk. An unrelated save failure must not be blamed
     on an offload that never happened."""
@@ -123,6 +125,7 @@ def test_a_parameter_with_no_device_does_not_crash():
 
 
 # ---- wiring ---------------------------------------------------------------
+
 SRC = (ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
 
 

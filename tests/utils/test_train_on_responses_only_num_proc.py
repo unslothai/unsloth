@@ -80,6 +80,7 @@ def _reset(monkeypatch):
 
 # The zoo's threshold, duplicated in ZOO_MIN_ROWS_FOR_MULTIPROC ──
 # ── The zoo's threshold, duplicated in ZOO_MIN_ROWS_FOR_MULTIPROC ──
+
 def _zoo_source():
     """Read unsloth_zoo's dataset_utils source without importing it.
 
@@ -118,6 +119,7 @@ def test_zoo_still_treats_none_as_auto_not_serial():
 
 
 # ── Explicit counts ──
+
 def test_explicit_count_is_bounded(monkeypatch):
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 4)
     assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(BIG)), 64) == 4
@@ -143,6 +145,7 @@ def test_explicit_count_ignores_split_size():
 
 
 # ── Auto counts: the zoo's small-split guard must survive ──
+
 def test_auto_small_split_passes_none_through():
     assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(SMALL)), None) is None
 

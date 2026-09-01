@@ -95,6 +95,7 @@ COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-i
 
 # torch.minor -> compatible torchcodec.minor strings. Source: pytorch/torchcodec README compatibility matrix.
 # ----- Compat tables. PRs add rows as new releases land. ----- #
+
 TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.10": {"0.10"},
     "2.9": {"0.8", "0.9"},
@@ -135,6 +136,7 @@ class Finding:
 
 
 # ----- Notebook walking ----- #
+
 def iter_notebooks(
     notebooks_dir: pathlib.Path, include_templates: bool = False
 ) -> Iterator[pathlib.Path]:
@@ -207,6 +209,7 @@ def target_environment(notebook_name: str) -> str:
 
 
 # ----- Pip-freeze parsing ----- #
+
 PINNED_RE = re.compile(r"^\s*([A-Za-z0-9._-]+)\s*==\s*([^\s;#]+)")
 
 
@@ -372,6 +375,7 @@ def explicit_pin(spec: SpecParts) -> str | None:
 
 
 # ----- PyPI metadata cache ----- #
+
 def pypi_metadata(name: str, version: str) -> dict[str, Any] | None:
     PYPI_CACHE_DIR.mkdir(parents = True, exist_ok = True)
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", f"{name.lower()}__{version}")
@@ -442,6 +446,7 @@ def constraint_satisfied(version: str, ops: list[tuple[str, str]]) -> bool:
 
 
 # ----- Resolved set ----- #
+
 def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     """Merge install-cell constraints with Colab pip-freeze (cell wins).
 
@@ -476,6 +481,7 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
 
 
 # ----- Rules ----- #
+
 def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
     findings: list[Finding] = []
     for inv in iter_pip_invocations(install_cell):
@@ -683,6 +689,7 @@ def rule_inst_006_double_bang(install_cell: str, file: str, cell_idx: int) -> li
 
 
 # ----- AST-level rules over user-facing cells ----- #
+
 class _APIScanner(ast.NodeVisitor):
     """Scan user-facing code cells for known deprecated patterns. R-API-001
     (`for_training`/`for_inference`) is intentionally absent: those helpers are
@@ -737,6 +744,7 @@ def scan_user_cells(nb: dict[str, Any], file: str) -> list[Finding]:
 
 
 # ----- DONT_UPDATE_EXCEPTIONS coverage ----- #
+
 POLICY_CLAUSES_DEFAULT = [
     (
         "torchao-floor",
@@ -802,6 +810,7 @@ def _extract_dont_update_exceptions(update_script: pathlib.Path) -> list[str]:
 
 
 # ----- Drift ----- #
+
 def cmd_drift(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     update_script = nbdir / "update_all_notebooks.py"
@@ -876,6 +885,7 @@ def cmd_drift(args: argparse.Namespace) -> int:
 
 
 # ----- Convert ----- #
+
 def cmd_convert(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     out = pathlib.Path(args.out).resolve()
@@ -912,6 +922,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
 
 # ----- Lint (combined) ----- #
+
 def cmd_lint(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     colab_path = pathlib.Path(args.colab_pin).resolve() if args.colab_pin else COLAB_FALLBACK_FILE
@@ -960,6 +971,7 @@ def cmd_lint(args: argparse.Namespace) -> int:
 
 
 # ----- Exceptions coverage ----- #
+
 def cmd_exceptions(args: argparse.Namespace) -> int:
     findings = rule_l12_exceptions_coverage(pathlib.Path(args.notebooks_dir).resolve())
     _emit(findings)
@@ -967,6 +979,7 @@ def cmd_exceptions(args: argparse.Namespace) -> int:
 
 
 # ----- API surface scan ----- #
+
 def cmd_api(args: argparse.Namespace) -> int:
     surface_path = pathlib.Path(args.surface).resolve()
     if not surface_path.is_file():
@@ -1013,6 +1026,7 @@ def cmd_api(args: argparse.Namespace) -> int:
 
 
 # ----- Orchestrator ----- #
+
 def cmd_all(args: argparse.Namespace) -> int:
     rcs: list[int] = []
     rcs.append(cmd_drift(argparse.Namespace(notebooks_dir = args.notebooks_dir)))
@@ -1198,6 +1212,7 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
 
 
 # ----- Helpers ----- #
+
 def _emit(findings: list[Finding]) -> None:
     n_err = sum(1 for f in findings if f.severity == "error")
     n_warn = sum(1 for f in findings if f.severity == "warning")

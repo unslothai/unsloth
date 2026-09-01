@@ -135,6 +135,7 @@ def test_satisfied_requirements_are_silent(monkeypatch, caplog, requires, instal
 
 
 # ----------------------------------------------------------------- violated
+
 def test_violated_floor_is_reported_and_names_the_dependency(monkeypatch, caplog):
     """The Kaggle LFM2 break: transformers main wants safetensors>=0.8.0, the
     image ships 0.7.0. The remedy must upgrade safetensors, not transformers."""
@@ -211,6 +212,7 @@ def test_prerelease_dependency_satisfying_the_floor_is_not_reported(monkeypatch,
 
 
 # ------------------------------------------------------- environment markers
+
 def test_inapplicable_environment_markers_are_skipped(monkeypatch, caplog):
     """Extras and python_version gates that do not apply must not be checked,
     even when a violating version of the named package is installed."""
@@ -248,6 +250,7 @@ def test_applicable_environment_marker_is_still_checked(monkeypatch, caplog):
 
 
 # ------------------------------------------------------------ absent package
+
 def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, caplog):
     """`--no-deps` leaves a dependency missing as often as it leaves it old.
 
@@ -357,6 +360,7 @@ def test_env_var_silences_the_check(monkeypatch, caplog):
 
 
 # --------------------------------------------------------------- live + wiring
+
 def test_runs_against_the_real_environment_without_raising(caplog):
     """No monkeypatching: the real installed transformers, read from real metadata."""
     result = IF._unsatisfied_transformers_requirements()

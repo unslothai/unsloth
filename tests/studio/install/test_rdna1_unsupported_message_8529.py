@@ -120,6 +120,7 @@ _NOT_RDNA1_NAMES = [
 
 
 # ── The lookup itself ────────────────────────────────────────────────────────
+
 class TestUnsupportedNameLookup:
     @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
     def test_rdna1_names_resolve_to_their_arch(self, name, expected):
@@ -152,6 +153,7 @@ class TestUnsupportedNameLookup:
 
 
 # ── The Windows WMI path end to end ──────────────────────────────────────────
+
 def _wmi_detect(names):
     """Drive _detect_windows_gfx_arch over `names` with no hipinfo and no amd-smi,
     which is the reporter's host: Adrenalin driver only. Returns (arch, stdout)."""
@@ -372,6 +374,7 @@ class TestWindowsWmiMessage:
 
 
 # ── The other four copies of the table ───────────────────────────────────────
+
 def _sh_function_body(source: str, name: str) -> str:
     needle = f"{name}() {{"
     start = source.find(needle)
@@ -501,6 +504,7 @@ class TestUnsupportedTableParity:
 
 
 # ── The wording, in the sources that print it ────────────────────────────────
+
 def _normalised(path: Path) -> str:
     """CRLF-normalised source text. install.ps1 / setup.ps1 ship CRLF, so a
     substring spanning a line break never matches without this."""
@@ -686,6 +690,7 @@ class TestAdviceIsNotEmittedForRdna1:
 
 
 # ── studio/setup.sh on a host with no ROCm userspace at all ──────────────────
+
 def _run_setup_kfd_lookup(gpu_name: str, lspci_lines: "list[str] | None", tmp_path) -> str:
     """Run studio/setup.sh's report-side lookup with a scripted lspci.
 
@@ -791,6 +796,7 @@ class TestSetupShKfdOnlyHost:
 
 
 # ── The new variable has to outlive the block that sets it ───────────────────
+
 def test_the_unsupported_arch_variable_is_declared_outside_the_amd_block():
     """install.ps1 reads it on paths an NVIDIA host takes.
 
@@ -828,6 +834,7 @@ def test_setup_ps1_hoists_the_unsupported_arch_variable_too():
 
 
 # ── An identified uncovered card outranks the generic ROCm report ────────────
+
 _ROCM_ARM = {
     "install.ps1": ("} elseif ($HasROCm", "$ROCmUnsupportedGfxArch"),
     "setup.ps1": ("} elseif ($HasROCm", "$script:ROCmUnsupportedGfxArch"),
@@ -891,6 +898,7 @@ def test_the_rocm_summary_chain_yields_to_an_identified_uncovered_card():
 # Deciding it at runtime was tried and dropped: "any adapter we cannot name" misfires on the Vega-class iGPU on most
 # Ryzen desktops, and "any covered peer" misses the Instinct and V620 parts no name table carries.
 # ── Scope: these sentences speak for one card, not for the host ───────────
+
 _ALL_SOURCES = [_INSTALL_SH, _SETUP_SH, _INSTALL_PS1, _SETUP_PS1, _STACK_PY]
 
 _HOST_WIDE_CLAIMS = [
@@ -951,6 +959,7 @@ def test_the_scoped_wording_is_the_one_that_ships(name, claims):
 
 
 # ── The shell copies, executed rather than parsed ────────────────────────────
+
 def _run_sh_lookup(source_path: Path, fn_name: str, gpu_name: str) -> str:
     body = _sh_function_body(source_path.read_text(encoding = "utf-8"), fn_name)
     script = f'{body}\n{fn_name} "$1" || true\n'
@@ -1012,6 +1021,7 @@ class TestShellLookupsRun:
 
 
 # ── The Vulkan pointer (#8458) ───────────────────────────────────────────────
+
 def _arm_window(lines: "list[str]", start: int) -> "list[str]":
     """The rest of the branch the line at `start` belongs to, not a fixed line count.
 
@@ -1326,6 +1336,7 @@ class TestVulkanAdvice:
 
 
 # ── Polaris, the second card in the cluster (#8458) ──────────────────────────
+
 _POLARIS_NAMES = [
     ("AMD Radeon RX 580", "gfx803"),
     ("AMD Radeon RX 580 Series", "gfx803"),

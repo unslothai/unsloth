@@ -48,6 +48,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 
 # ── small helpers ──────────────────────────────────────────────────────────
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -151,6 +152,7 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
 
 
 # ── load + generate ────────────────────────────────────────────────────────
+
 def _wait_for_load(backend: Any, timeout_s: int = 2400) -> None:
     deadline = time.time() + timeout_s
     last = None
@@ -301,6 +303,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 # ── modes ──────────────────────────────────────────────────────────────────
+
 def _write_baseline(args: argparse.Namespace) -> int:
     baseline_path = Path(args.write_baseline).resolve()
     ref_png = baseline_path.parent / "reference.png"
@@ -409,6 +412,7 @@ def _compare(args: argparse.Namespace) -> int:
 
 
 # ── cli ────────────────────────────────────────────────────────────────────
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description = "Benchmark + regression guard for the Unsloth diffusion backend.",

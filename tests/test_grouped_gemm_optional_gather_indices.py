@@ -52,11 +52,11 @@ def _operands(device, requires_grad = False):
     return X.requires_grad_(requires_grad), W.requires_grad_(requires_grad), m_sizes
 
 
-# the contract, without a GPU
 
 
 # the contract, without a GPU ----------------------------------------
 # ---- the contract, without a GPU ----------------------------------------
+
 def test_the_default_survives_the_wrapper_when_nothing_permutes():
     """On CPU the call has to die inside `grouped_gemm_forward` on its device
     assert. An AttributeError instead means the wrapper dereferenced None."""

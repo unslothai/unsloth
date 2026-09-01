@@ -36,6 +36,7 @@ def _render(template_name, messages, **kwargs):
 
 
 # ---------- system turn and <|think|> placement ----------
+
 def test_system_message_emits_dedicated_system_turn():
     msgs = [
         {"role": "system", "content": "You are helpful"},
@@ -90,6 +91,7 @@ def test_alternation_violation_raises_template_error():
 
 
 # ---------- strip_thinking macro semantics ----------
+
 def test_strip_thinking_strips_matched_pair():
     msgs = [
         {"role": "user", "content": "Q"},
@@ -150,6 +152,7 @@ def test_multi_turn_strips_all_historical_model_turns():
 
 
 # ---------- thinking-template gen-prompt injection ----------
+
 def test_thinking_template_injects_empty_thought_channel_by_default():
     # enable_thinking defaults False, so the gen-prompt injection fires.
     msgs = [{"role": "user", "content": "Hi"}]

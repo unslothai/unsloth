@@ -45,6 +45,7 @@ def _extract_sh_function_body(source: str, name: str) -> str:
 
 
 # ── install.sh: _run_bounded helper and its use at every nvidia-smi call ──
+
 class TestInstallShBoundedProbe:
     def _src(self) -> str:
         return INSTALL_SH.read_text(encoding = "utf-8")
@@ -97,6 +98,7 @@ class TestInstallShBoundedProbe:
 
 
 # ── install.ps1 / setup.ps1: bounded, GPU-row-validated Windows probe ──
+
 class TestPowerShellBoundedProbe:
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_bounded_helper_present(self, path):
@@ -139,6 +141,7 @@ class TestPowerShellBoundedProbe:
 
 
 # ── Behavioral: a hanging nvidia-smi must not hang _has_usable_nvidia_gpu ──
+
 def _have_timeout() -> bool:
     return shutil.which("timeout") is not None
 

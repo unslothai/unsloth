@@ -16,6 +16,7 @@ import pytest
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
 def _extract_fns_via_ast(
     source_path,
     fn_names,
@@ -107,6 +108,7 @@ def make_auto_validating_collator(check_dataset_for_missing_videos):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _make_video_dataset(*video_paths):
     return [
         {"messages": [{"role": "user", "content": [{"type": "video", "video": p}]}]}
@@ -119,6 +121,7 @@ def _batch(*video_paths):
 
 
 # ── Tests: check_dataset_for_missing_videos ───────────────────────────────────
+
 def test_missing_local_file_raises(check_dataset_for_missing_videos):
     """Missing local path raises FileNotFoundError."""
     ds = _make_video_dataset("/nonexistent/videos/clip.mp4")
@@ -172,6 +175,7 @@ def test_duplicate_paths_deduplicated(check_dataset_for_missing_videos):
 
 
 # ── Tests: UnslothVisionDataCollator auto-validation ─────────────────────────
+
 def test_collator_raises_on_first_batch_with_missing_video(make_auto_validating_collator):
     """Collator raises on a missing path with no user action needed."""
     collator = make_auto_validating_collator()
