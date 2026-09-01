@@ -2186,3 +2186,51 @@ def test_the_unstructured_chunk_cache_follows_the_calling_account(
         finally:
             reset_workspace_subject(token)
     assert seen["unsloth"] != seen["alice"]
+
+
+def test_two_accounts_can_use_the_same_chat_run_id():
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    supervisor = ChatGenerationSupervisor.__new__(ChatGenerationSupervisor)
+    supervisor._tasks = {}
+    supervisor._cancel_events = {}
+    supervisor._active_registrations = {}
+    supervisor._subjects = {}
+    supervisor._activities = {}
+    supervisor._shutdown_runs = set()
+    supervisor._stopping = False
+
+    alice_event = threading.Event()
+    bob_event = threading.Event()
+    for subject, event in (("alice", alice_event), ("bob", bob_event)):
+        token = _bind(subject)
+        try:
+            key = supervisor._key("same-run")
+            supervisor._cancel_events[key] = event
+            supervisor._subjects[key] = subject
+        finally:
+            reset_workspace_subject(token)
+
+    # Keyed by the id alone, Bob's entry replaced Alice's and his cancel signalled
+    # her producer while his own database run stayed queued forever.
+    assert supervisor.owns_run("same-run", "alice") is True
+    assert supervisor.owns_run("same-run", "bob") is True
+
+    token = _bind("bob")
+    try:
+        supervisor._cancel_locally("same-run")
+    finally:
+        reset_workspace_subject(token)
+    assert bob_event.is_set() and not alice_event.is_set()
+
+
+def test_a_run_id_registered_to_one_account_is_not_owned_by_another():
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    supervisor = ChatGenerationSupervisor.__new__(ChatGenerationSupervisor)
+    supervisor._subjects = {("alice", "run-1"): "alice"}
+    assert supervisor.owns_run("run-1", "bob") is False
+    # An id this supervisor has never seen, a run from before a restart say, stays
+    # cancellable by the owner, which is what the previous default did.
+    assert supervisor.owns_run("unknown-run", "unsloth") is True
+    assert supervisor.owns_run("unknown-run", "bob") is False

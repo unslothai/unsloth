@@ -392,7 +392,7 @@ async def test_cancel_before_registration_signals_load_event(durable_run, monkey
     supervisor.start("run-1")
     await asyncio.wait_for(entered.wait(), timeout = 2)
     supervisor.cancel("run-1")
-    await asyncio.wait_for(supervisor._tasks["run-1"], timeout = 2)
+    await asyncio.wait_for(supervisor._tasks[supervisor._key("run-1")], timeout = 2)
     assert cancel_ids == ["run-1"]
     assert runs_db.get_run("run-1", "alice")["status"] == "cancelled"
 
@@ -406,7 +406,7 @@ async def test_start_reserves_slot_and_lifecycle_before_worker_runs(durable_run,
     assert (llama_keepwarm._pending, active_generations.count()) == (1, 1)
     assert active_generations.snapshot()[0]["thread_id"] == "thread-1"
     supervisor.cancel("run-1")
-    await asyncio.wait_for(supervisor._tasks["run-1"], timeout = 2)
+    await asyncio.wait_for(supervisor._tasks[supervisor._key("run-1")], timeout = 2)
     assert runs_db.get_run("run-1", "alice")["status"] == "cancelled"
     assert (llama_keepwarm._pending, llama_keepwarm._inflight) == (0, 0)
 
@@ -426,7 +426,7 @@ async def test_cancelled_producer_error_is_cancelled(durable_run, monkeypatch):
     supervisor.start("run-1")
     await asyncio.wait_for(entered.wait(), timeout = 2)
     assert active_generations.cancel_all() == 1
-    await asyncio.wait_for(supervisor._tasks["run-1"], timeout = 2)
+    await asyncio.wait_for(supervisor._tasks[supervisor._key("run-1")], timeout = 2)
     assert runs_db.get_run("run-1", "alice")["status"] == "cancelled"
 
 
