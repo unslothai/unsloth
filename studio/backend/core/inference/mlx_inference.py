@@ -2393,14 +2393,22 @@ class MLXInferenceBackend:
                         # Re-decoding every id rebuilds rather than extends, so an
                         # invalid byte sequence can revise characters already shown.
                         # Predates stop handling and affects plain replies too.
-                        sampled = (
-                            native_token_decoder.decode(token_ids)
-                            if native_token_decoder is not None
-                            else self._tokenizer.decode(
+                        if native_token_decoder is not None:
+                            # skip_special_tokens used to swallow the stop id; the decoder
+                            # keeps allowlisted controls, and some runtimes stop on one
+                            # (TML Inkling's <|end_message|>). Drop only the TRAILING stop
+                            # id, so the same marker still closes a real tool envelope.
+                            _ids = list(token_ids)
+                            if _ids and _ids[-1] in _mlx_stop_token_ids(
+                                self._tokenizer, self._model
+                            ):
+                                _ids = _ids[:-1]
+                            sampled = native_token_decoder.decode(_ids)
+                        else:
+                            sampled = self._tokenizer.decode(
                                 token_ids,
                                 skip_special_tokens = True,
                             )
-                        )
                         if not sequences:
                             yield think_prefix + sampled
                         else:

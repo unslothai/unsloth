@@ -18,8 +18,10 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         '<function name="',
         "</function>",
         "<parameter=",
+        '<parameter name="',
         "</parameter>",
         "<param=",
+        '<param name="',
         "</param>",
         # GLM argument markup.
         "<arg_key>",

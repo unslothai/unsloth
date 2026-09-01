@@ -4131,9 +4131,9 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
 
     line = current_date_prompt_line(request = interactive)
     assert line, "the harness must actually produce a date line"
-    assert backend.system.startswith(
-        line
-    ), f"the count dropped the date line the completion prepends: {backend.system!r}"
+    assert backend.system.startswith(line), (
+        f"the count dropped the date line the completion prepends: {backend.system!r}"
+    )
 
 
 def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):
@@ -4154,15 +4154,15 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
         thread_id = "thread-with-an-archive",
     )
     names = [t["function"]["name"] for t in (backend.tools or [])]
-    assert (
-        "search_conversation" in names
-    ), f"the archive tool the completion renders was not priced: {names}"
+    assert "search_conversation" in names, (
+        f"the archive tool the completion renders was not priced: {names}"
+    )
     from routes.inference import _apply_compaction_nudge
 
     assert _apply_compaction_nudge("", backend.tools), "the nudge must be non-empty here"
-    assert (
-        _apply_compaction_nudge("", backend.tools) in backend.system
-    ), "the count omitted the compaction nudge the completion appends"
+    assert _apply_compaction_nudge("", backend.tools) in backend.system, (
+        "the count omitted the compaction nudge the completion appends"
+    )
 
 
 def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):
@@ -4190,9 +4190,9 @@ def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatc
 
     line = current_date_prompt_line(request = keyed)
     assert line, "the harness must produce a date line"
-    assert (
-        line in backend.system
-    ), f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
+    assert line in backend.system, (
+        f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
+    )
 
 
 def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
@@ -4338,3 +4338,47 @@ def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
         )
     )
     assert snapshots[-1] == '<|tool_call>call:terminal{command:"id"}<tool_call|>'
+
+
+def test_mlx_drops_a_trailing_stop_token_from_the_preserved_decode(monkeypatch):
+    """``skip_special_tokens`` used to swallow the stop id; the decoder keeps controls.
+
+    Some runtimes stop on an allowlisted one (TML Inkling's ``<|end_message|>``), so without
+    filtering it an ordinary answer is delivered with the protocol marker appended.
+    """
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    class _Tok:
+        _IDS = {5: "<|end_message|>"}
+        all_special_ids = (5,)
+        eos_token_id = 5
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            return "".join(
+                ""
+                if (skip_special_tokens and i in self.all_special_ids)
+                else self._IDS.get(i, chr(i))
+                for i in token_ids
+            )
+
+    tok = _Tok()
+    decoder = mlx_inference.NativeToolTokenDecoder(tok)
+    stop_ids = mlx_inference._mlx_stop_token_ids(tok, None)
+    assert 5 in stop_ids, stop_ids
+
+    ids = [ord("h"), ord("i"), 5]
+    assert decoder.decode(ids) == "hi<|end_message|>"
+    trimmed = ids[:-1] if ids[-1] in stop_ids else ids
+    assert decoder.decode(trimmed) == "hi"
+    # The marker still survives when it is not the turn's final token.
+    assert decoder.decode([ord("h"), 5, ord("i")]) == "h<|end_message|>i"

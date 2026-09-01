@@ -822,3 +822,23 @@ class _DecodeOnlyTokenizer:
             "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
             for i in token_ids
         )
+
+
+def test_the_attribute_form_parameter_opener_survives_decoding():
+    """The ``=`` and attribute spellings have to be preserved together.
+
+    Keeping ``<function name="`` while dropping ``<parameter name="`` leaves a call the
+    attribute-form parser still accepts, with its arguments silently emptied.
+    """
+    from core.inference.native_tool_tokens import NATIVE_TOOL_CONTROL_TOKENS
+
+    for token in ('<parameter name="', '<param name="', "<parameter=", "<param="):
+        assert token in NATIVE_TOOL_CONTROL_TOKENS, token
+
+    full = '<function name="get_weather"><parameter name="city">Paris</parameter></function>'
+    calls = parse_tool_calls_from_text(full, enabled_tool_names = {"get_weather"})
+    assert json.loads(calls[0]["function"]["arguments"]) == {"city": "Paris"}
+    # What losing the opener would have produced.
+    without = full.replace('<parameter name="city">', "")
+    emptied = parse_tool_calls_from_text(without, enabled_tool_names = {"get_weather"})
+    assert json.loads(emptied[0]["function"]["arguments"]) == {}
