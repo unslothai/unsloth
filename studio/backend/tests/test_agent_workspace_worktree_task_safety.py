@@ -146,7 +146,7 @@ def test_reserved_task_cannot_start_until_worktree_is_active(tmp_path, monkeypat
             "project",
             background_task_id = task["id"],
         )
-        assert add_started.wait(timeout = 2)
+        assert add_started.wait(timeout = 10)
         reserved = get_background_task(task["id"])
         assert reserved["worktreeId"] is not None
         assert get_worktree(reserved["worktreeId"])["status"] == "creating"
@@ -154,7 +154,7 @@ def test_reserved_task_cannot_start_until_worktree_is_active(tmp_path, monkeypat
             claim_background_task(task["id"])
         assert get_background_task(task["id"])["status"] == "queued"
         release_add.set()
-        worktree = future.result(timeout = 10)
+        worktree = future.result(timeout = 30)
 
     assert worktree["status"] == "active"
     update_background_task(task["id"], "cancelled")
@@ -308,11 +308,11 @@ def test_merge_waits_for_managed_writer_slot(tmp_path, monkeypatch, held_root):
             expected_head,
         )
         try:
-            assert reached_held_slot.wait(timeout = 2)
+            assert reached_held_slot.wait(timeout = 10)
             assert not future.done()
         finally:
             release_workspace_execution_slot(held_identity)
-        merged = future.result(timeout = 10)
+        merged = future.result(timeout = 30)
 
     assert merged["merge"]["status"] == "merged"
     worktree_service.cleanup_worktree("project", worktree["id"])

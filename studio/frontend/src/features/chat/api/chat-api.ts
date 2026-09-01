@@ -51,6 +51,7 @@ import {
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
 import { buildOpenProjectFolderRequestFromToken } from "./project-folder-request";
+import { maxTokensIsTheLimit } from "./generation-length.ts";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches
@@ -114,10 +115,31 @@ export class StreamInterruptedError extends Error {
  * content, so the chat UI can explain a completed stream holding only a thinking panel.
  */
 export class GenerationLengthError extends Error {
-  constructor() {
+  /**
+   * @param maxTokensWasSet whether the user actually configured a Max Tokens value.
+   *
+   * With Max Tokens left on "Max" the backend already requests the WHOLE context length
+   * (`payload["max_tokens"] = self._effective_context_length`), so generation stops at the
+   * context wall rather than at any setting, and "Increase Max Tokens" is advice that
+   * cannot be followed: it is at its maximum and raising it changes nothing. Observed on a
+   * 4096-token window where the prompt left roughly a thousand tokens to answer in, which
+   * medium thinking spent before writing anything.
+   *
+   * The false branch is NOT only that case. A finite cap the prompt left no room for
+   * lands here too (cap 2048, prompt 3000, window 4096), and the context-length remedy
+   * is right there as well -- which is why the wording says raising the cap cannot
+   * create room, rather than describing the cap itself as having no limit. That
+   * description would contradict the finite value the user can see in Settings.
+   */
+  constructor(maxTokensWasSet = true) {
     super(
-      "The model reached the Max Tokens limit before producing a final answer. " +
-        "Increase Max Tokens or disable thinking, then retry.",
+      maxTokensWasSet
+        ? "The model reached the Max Tokens limit before producing a final answer. " +
+            "Increase Max Tokens or disable thinking, then retry."
+        : "The model ran out of room to answer: thinking used what the context window " +
+            "had left after the prompt, before any answer was written. Raising Max " +
+            "Tokens cannot create room the window does not have -- increase the " +
+            "Context Length in Model settings, or disable thinking, then retry.",
     );
     this.name = "GenerationLengthError";
   }
@@ -318,6 +340,7 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
+  studio_tool_history?: boolean;
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
@@ -475,8 +498,7 @@ export interface CachedGgufRepo {
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
-  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded quant; optional for older backends. */
   last_modified?: number;
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
@@ -488,6 +510,9 @@ export interface CachedGgufRepo {
    * for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte. False on a GGUF repo row by design:
+   *  transport is per quant, so the repo cannot answer for all of them. */
+  partial_resumable?: boolean;
   capabilities?: CachedRepoCapabilities | null;
 }
 
@@ -500,6 +525,7 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
+  hfToken?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -512,6 +538,7 @@ export async function getGgufDownloadProgress(
   });
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
+    { headers: hubTokenHeader(hfToken) },
   );
   return parseJsonOrThrow(response);
 }
@@ -536,18 +563,23 @@ export interface DownloadProgressResponse {
 
 export async function getDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/models/download-progress?${params}`);
+  const response = await authFetch(`/api/models/download-progress?${params}`, {
+    headers: hubTokenHeader(hfToken),
+  });
   return parseJsonOrThrow(response);
 }
 
 export async function getDatasetDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
   const response = await authFetch(
     `/api/hub/datasets/download-progress?${params}`,
+    { headers: hubTokenHeader(hfToken) },
   );
   return parseJsonOrThrow(response);
 }
@@ -586,6 +618,7 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter to diffusion ("text-to-image"). Optional for older backends.
   task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
 }
 
@@ -618,14 +651,16 @@ export interface CachedModelRepo {
   /** Weights format; "adapter" is a LoRA with no base weights of its own.
    * Optional for older-backend compatibility. */
   model_format?: string | null;
-  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
   /** True when the snapshot is incomplete (a cancelled/partial download): such a repo must not count as downloaded, or a click re-downloads the full weights. */
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte, rather than restarting its file. */
+  partial_resumable?: boolean;
   /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
   single_file?: boolean;
   /** True for an sd.cpp companion mirror (VAE / text encoders, no denoiser): listed so it can be seen and deleted, never offered as a load. */
@@ -1126,6 +1161,29 @@ export async function getChatMessage(
   return parseJsonOrThrow<MessageRecord>(response);
 }
 
+/** The server owns this message and will reject every save of it.
+ *
+ * Distinct from a transient failure: retrying can never succeed, so callers must stop
+ * rather than back off. Without this the per-chunk autosave treated the rejection as an
+ * anonymous error and re-sent on the next chunk for the whole generation.
+ */
+/** Set by routes/chat_history.py; exposed through the CORS middleware in main.py. */
+const CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind";
+const CONFLICT_KIND_PROTECTED = "protected";
+
+export class ChatMessageProtectedError extends Error {
+  readonly messageId: string;
+  readonly threadId: string;
+
+  constructor(threadId: string, messageId: string, detail?: string) {
+    // Keep the server's wording: a manual edit surfaces this text to the user.
+    super(detail || `Message ${messageId} is server-managed and cannot be edited`);
+    this.name = "ChatMessageProtectedError";
+    this.threadId = threadId;
+    this.messageId = messageId;
+  }
+}
+
 export async function saveChatMessage(
   message: MessageRecord,
   options: { allowGenerationEdit?: boolean; coalesce?: boolean } = {},
@@ -1141,6 +1199,21 @@ export async function saveChatMessage(
       body: JSON.stringify(message),
     },
   );
+  // Two failures share this status: a protected message, where the autosave must stop, and
+  // a thread-id collision, which the caller must see or the message is lost. Only the header
+  // separates them, so anything else (an older backend included) takes the normal error path.
+  if (
+    response.status === 409 &&
+    response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
+  ) {
+    // Read here, not in parseJsonOrThrow: a body is single-use.
+    const body = await response.json().catch(() => null);
+    throw new ChatMessageProtectedError(
+      message.threadId,
+      message.id,
+      formatApiErrorBody(body) ?? undefined,
+    );
+  }
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
   // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual
   // edit is one deliberate change and publishes at once.
@@ -1509,6 +1582,12 @@ function classifyStructuredDeltaContent(content: unknown): {
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
+  /**
+   * The window this request is served by, when the caller knows it. Used only to tell a
+   * user-chosen Max Tokens apart from the backend's stand-in for "Max", which is the whole
+   * context length -- the two need opposite advice when generation stops on length.
+   */
+  loadedContextLength?: number | null,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
@@ -1535,6 +1614,10 @@ export async function* streamChatCompletions(
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
   let sawReasoningContent = false;
+  // Reported by the server on the final chunk. Needed to tell the two walls apart: a
+  // finite Max Tokens below the context length does not mean Max Tokens is what stopped
+  // the generation.
+  let promptTokens: number | null = null;
 
   const throwIfReasoningOnlyLength = () => {
     if (
@@ -1542,7 +1625,16 @@ export async function* streamChatCompletions(
       sawReasoningContent &&
       !sawAssistantContent
     ) {
-      throw new GenerationLengthError();
+      // The backend substitutes the full context length when the user left Max Tokens on
+      // "Max", so a payload value equal to it is indistinguishable from unset here -- and
+      // both mean the same thing to the user: the setting is not the lever.
+      throw new GenerationLengthError(
+        maxTokensIsTheLimit({
+          cap: payload.max_tokens ?? null,
+          contextLength: loadedContextLength ?? null,
+          promptTokens,
+        }),
+      );
     }
   };
 
@@ -1629,6 +1721,10 @@ export async function* streamChatCompletions(
           } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
+        }
+        const parsedUsage = (parsed as { usage?: { prompt_tokens?: number } }).usage;
+        if (typeof parsedUsage?.prompt_tokens === "number") {
+          promptTokens = parsedUsage.prompt_tokens;
         }
         // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
         const parsedChoices = (

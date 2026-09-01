@@ -22,7 +22,7 @@ to be displaying. What that buys, gate by gate:
     n_parallel, gpu_memory_mode). A row that re-renders without re-pricing, or one wired
     to a stale request object, fails here (HARD).
   - Response reaches the screen: the figures shown are the ones the stub returned, to
-    the byte -- `formatMemoryGb` of the stubbed totals, and, once the row is expanded,
+    the byte -- `formatBytesGiB` of the stubbed totals, and, once the row is expanded,
     the breakdown lines plus the KV note built from the echoed context and cache dtype
     (HARD).
   - The row hides rather than errors: `available: false` hides it, restoring the
@@ -118,7 +118,7 @@ ESTIMATE_WAIT_MS = int(os.environ.get("STUDIO_UI_ESTIMATE_WAIT_MS", "20000"))
 TRANSCRIPT_NAME = "memory-estimate-exchanges.json"
 
 GIB = 1024**3
-# Exact quarter-GiB figures on purpose: `formatMemoryGb` is `(bytes / 1024**3).toFixed(2)`,
+# Exact quarter-GiB figures on purpose: `formatBytesGiB` is `(bytes / 1024**3).toFixed(2)`,
 # and a quarter of a GiB is exactly representable, so the string the app renders is
 # predictable to the last digit on every engine rather than a rounding argument.
 STUB_WEIGHTS_BYTES = int(3.25 * GIB)
@@ -130,9 +130,19 @@ STUB_LAYER_COUNT = 27
 STUB_GPU_LAYERS = 12
 
 
-def _gb(num_bytes: int) -> str:
-    """Python-side mirror of formatMemoryGb in api/memory-estimate.ts."""
-    return f"{num_bytes / GIB:.2f} GB"
+def _gib(num_bytes: int) -> str:
+    """Python-side mirror of `formatBytesGiB` in `lib/memory/format.ts`.
+
+    The label is GiB, not GB, and that is the assertion rather than a detail.
+    This mirror used to print "GB" because the panel did, so the test agreed
+    with the app about a divide by 1024**3 that both of them called a decimal
+    gigabyte. Consolidating the formatters corrected the app; correcting the
+    mirror to match is what keeps this test measuring the app rather than
+    re-stating whatever the app currently happens to do.
+
+    Only the unit moved. Every figure here is byte-for-byte what it was.
+    """
+    return f"{num_bytes / GIB:.2f} GiB"
 
 
 _n = [0]
@@ -676,12 +686,23 @@ with sync_playwright() as p:
             page.wait_for_timeout(200)
         return estimate_visible() == present
 
+    def _readable(raw: str | None) -> str:
+        """`inner_text` with the row's layout glue normalised back to plain spaces.
+
+        The breakdown captions join their items with U+00A0 so a narrow panel breaks
+        between "262,144 tokens" and "4 slots" rather than inside either. That is a
+        line-breaking detail and not something a reader distinguishes, but it does
+        defeat a plain `"6,144 tokens" in text` check, so every assertion below reads
+        the caption the way it looks rather than the way it is encoded.
+        """
+        return (raw or "").replace(" ", " ").strip()
+
     def header_text() -> str:
         button = estimate_button()
         if button is None:
             return ""
         try:
-            return (button.locator("xpath=..").inner_text() or "").strip()
+            return _readable(button.locator("xpath=..").inner_text())
         except Exception:
             return ""
 
@@ -701,7 +722,7 @@ with sync_playwright() as p:
         if _count(panel) == 0:
             return ""
         try:
-            return (panel.inner_text() or "").strip()
+            return _readable(panel.inner_text())
         except Exception:
             return ""
 
@@ -893,27 +914,27 @@ with sync_playwright() as p:
         # an exact-case check fails on a pill that is right there on screen.
         if not re.search(r"\bbeta\b", head, re.I):
             soft_fail(f"the row lost its Beta pill (header text={head!r})")
-        total_gb = _gb(STUB_TOTAL_BYTES)
-        gpu_gb = _gb(STUB_GPU_BYTES)
+        total_gib = _gib(STUB_TOTAL_BYTES)
+        gpu_gib = _gib(STUB_GPU_BYTES)
         # The total is shown in BOTH memory topologies: as the sole figure where the GPU
         # and the host share one pool, and beside the GPU share where they do not. The GPU
         # figure only exists in the second, so it is asserted only when its label is there
         # -- a CPU-only runner and an Apple machine legitimately show neither.
-        if total_gb not in head:
+        if total_gib not in head:
             fail(
-                f"the row does not show the returned total {total_gb!r} "
+                f"the row does not show the returned total {total_gib!r} "
                 f"(total_bytes={STUB_TOTAL_BYTES}); header text={head!r}"
             )
         else:
-            info(f"OK figures: total {total_gb} is on screen")
+            info(f"OK figures: total {total_gib} is on screen")
         if re.search(r"\bGPU\b", head):
-            if gpu_gb not in head:
+            if gpu_gib not in head:
                 fail(
-                    f"the row shows a GPU figure but not the returned gpu_bytes {gpu_gb!r}; "
+                    f"the row shows a GPU figure but not the returned gpu_bytes {gpu_gib!r}; "
                     f"header text={head!r}"
                 )
             else:
-                info(f"OK figures: GPU {gpu_gb} is on screen")
+                info(f"OK figures: GPU {gpu_gib} is on screen")
         else:
             info("single-pool layout: no separate GPU figure to check")
         shoot("04-row-collapsed")
@@ -936,9 +957,9 @@ with sync_playwright() as p:
             )
         else:
             for label, value in (
-                ("Weights", _gb(STUB_WEIGHTS_BYTES)),
-                ("KV cache", _gb(STUB_KV_BYTES)),
-                ("Compute buffers", _gb(STUB_COMPUTE_BYTES)),
+                ("Weights", _gib(STUB_WEIGHTS_BYTES)),
+                ("KV cache", _gib(STUB_KV_BYTES)),
+                ("Compute buffers", _gib(STUB_COMPUTE_BYTES)),
             ):
                 if label not in detail:
                     fail(f"the breakdown has no {label!r} line; text={detail!r}")
@@ -1006,7 +1027,7 @@ with sync_playwright() as p:
         )
     if wait_for_row(True):
         head = header_text()
-        if _gb(STUB_TOTAL_BYTES) in head:
+        if _gib(STUB_TOTAL_BYTES) in head:
             info("OK restore: the row came back with the returned total")
         else:
             fail(f"the row came back without the returned total; header={head!r}")

@@ -16,6 +16,7 @@ import {
   ChatPage,
   type ChatSearch,
   clearNewChatDraft,
+  hydrateModelDisclaimerPreference,
   StopRunningChatsDialog,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -154,6 +155,7 @@ function ChatSettingsHydrationMount() {
   );
   useEffect(() => {
     void hydratePersistedSettings();
+    hydrateModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
   return null;
 }
@@ -445,14 +447,17 @@ function RootLayout() {
 
   // Gated like the workspace chords below: /login has no shell, and /chat
   // bounces straight back off requireAuth.
-  useShortcut("newChat", () => startNewChat(), { enabled: !isAuthFlowRoute });
+  const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;
+  useShortcut("newChat", () => startNewChat(), {
+    enabled: routeShortcutEnabled,
+  });
   useShortcut(
     "newTemporaryChat",
     () => startNewChat({ incognito: true, standalone: true }),
-    { enabled: !isAuthFlowRoute },
+    { enabled: routeShortcutEnabled },
   );
   useShortcut("newStandaloneChat", () => startNewChat({ standalone: true }), {
-    enabled: !isAuthFlowRoute,
+    enabled: routeShortcutEnabled,
   });
 
   // Workspaces. The shell is mounted on every route, so the chords live here.
@@ -462,32 +467,40 @@ function RootLayout() {
   useShortcut(
     "switchToChat",
     () => void navigate({ to: "/chat", search: chatSearch }),
-    { enabled: !isAuthFlowRoute },
+    { enabled: routeShortcutEnabled },
   );
   useShortcut("switchToProjects", goTo("/projects"), {
-    enabled: !isAuthFlowRoute,
+    enabled: routeShortcutEnabled,
   });
-  useShortcut("switchToHub", goTo("/hub"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToHub", goTo("/hub"), {
+    enabled: routeShortcutEnabled,
+  });
   // Train is the one workspace the chat-only guard turns away, so its chord is
   // the one that has to ask first: firing it on a host without the hardware
   // would bounce off /studio and land the user on /chat, away from whatever
   // they had open. The sidebar disables the row on the same measured check,
   // and only once measured, since the guess is what the row waits out too.
   useShortcut("switchToTrain", goTo("/studio"), {
-    enabled: !isAuthFlowRoute && !chatOnlyMeasured,
+    enabled: routeShortcutEnabled && !chatOnlyMeasured,
   });
   useShortcut("switchToRecipes", goTo("/data-recipes"), {
-    enabled: !isAuthFlowRoute,
+    enabled: routeShortcutEnabled,
   });
-  useShortcut("switchToImages", goTo("/images"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToImages", goTo("/images"), {
+    enabled: routeShortcutEnabled,
+  });
   // /video checks auth and nothing else, so an ungated chord would put the
   // unsupported-hardware gate where the user's workspace was. Train's chord
   // waits on the same measurement; this one has its own predicate to wait on.
   useShortcut("switchToVideo", goTo("/video"), {
-    enabled: !isAuthFlowRoute && !videoDisabled,
+    enabled: routeShortcutEnabled && !videoDisabled,
   });
-  useShortcut("switchToAudio", goTo("/audio"), { enabled: !isAuthFlowRoute });
-  useShortcut("switchToExport", goTo("/export"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToAudio", goTo("/audio"), {
+    enabled: routeShortcutEnabled,
+  });
+  useShortcut("switchToExport", goTo("/export"), {
+    enabled: routeShortcutEnabled,
+  });
 
   useEffect(() => {
     if (isChatRoute) return;

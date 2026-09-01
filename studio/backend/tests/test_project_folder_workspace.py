@@ -511,7 +511,10 @@ def test_project_session_cache_rebinds_to_the_current_workspace_identity(tmp_pat
     assert tools._get_workdir(session_id) == str(second_root.resolve())
     result = tools.execute_tool(
         "edit_file",
-        {"path": "current.txt", "old_string": "", "new_string": "current"},
+        {
+            "path": "current.txt",
+            "edits": [{"old_string": "", "new_string": "current"}],
+        },
         session_id = session_id,
         disable_sandbox = True,
     )
@@ -591,7 +594,10 @@ def test_folder_project_edit_file_never_escapes_workspace(tmp_path, disable_sand
 
     result = tools.execute_tool(
         "edit_file",
-        {"path": path, "old_string": "keep", "new_string": "escaped"},
+        {
+            "path": path,
+            "edits": [{"old_string": "keep", "new_string": "escaped"}],
+        },
         session_id = tools.project_session_id(project["id"]),
         disable_sandbox = disable_sandbox,
     )
@@ -609,13 +615,21 @@ def test_folder_project_edit_file_writes_inside_workspace(tmp_path, disable_sand
 
     created = tools.execute_tool(
         "edit_file",
-        {"path": "src/app.py", "old_string": "", "new_string": "value = 1\n"},
+        {
+            "path": "src/app.py",
+            "edits": [{"old_string": "", "new_string": "value = 1\n"}],
+        },
         session_id = session_id,
         disable_sandbox = disable_sandbox,
     )
     edited = tools.execute_tool(
         "edit_file",
-        {"path": "src/app.py", "old_string": "value = 1", "new_string": "value = 2"},
+        {
+            "path": "src/app.py",
+            "edits": [
+                {"old_string": "value = 1", "new_string": "value = 2"},
+            ],
+        },
         session_id = session_id,
         disable_sandbox = disable_sandbox,
     )
@@ -654,7 +668,10 @@ def test_folder_project_edit_file_rejects_parent_symlink_swap(
     monkeypatch.setattr(tools.os, "open", racing_open)
     result = tools.execute_tool(
         "edit_file",
-        {"path": "nested/target.txt", "old_string": "inside", "new_string": "changed"},
+        {
+            "path": "nested/target.txt",
+            "edits": [{"old_string": "inside", "new_string": "changed"}],
+        },
         session_id = tools.project_session_id(project["id"]),
         disable_sandbox = disable_sandbox,
     )

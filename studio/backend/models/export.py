@@ -3,6 +3,8 @@
 
 """Pydantic schemas for Export API."""
 
+import re
+import sys
 from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, Field, field_validator
@@ -31,6 +33,31 @@ def _validate_save_directory(value: str) -> str:
     ):
         raise ValueError("save_directory may not contain '..' segments")
     return raw
+
+
+_GGUF_SHARD_SIZE_RE = re.compile(r"^(\d+)\s*([MG])B?$", re.IGNORECASE)
+
+
+def _validate_gguf_shard_size(value: Optional[str]) -> Optional[str]:
+    """Validate and normalize a Studio GGUF shard-size request."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("gguf_shard_size must be a string or null")
+    raw = value.strip()
+    if raw.casefold() in ("", "0", "none"):
+        return "0"
+    match = _GGUF_SHARD_SIZE_RE.fullmatch(raw)
+    if match is None:
+        raise ValueError("gguf_shard_size must be a positive whole number in MB or GB, or '0'")
+    magnitude = int(match.group(1))
+    unit = match.group(2).upper()
+    if magnitude == 0:
+        raise ValueError("gguf_shard_size must be positive, or exactly '0'")
+    multiplier = 1_000_000 if unit == "M" else 1_000_000_000
+    if magnitude > sys.maxsize // multiplier:
+        raise ValueError("gguf_shard_size is too large for this platform")
+    return f"{magnitude}{unit}B"
 
 
 class LoadCheckpointRequest(BaseModel):
@@ -224,6 +251,17 @@ class ExportGGUFRequest(BaseModel):
         None,
         description = "Path to a custom imatrix file; overrides the auto-download when set.",
     )
+    gguf_shard_size: Optional[str] = Field(
+        None,
+        description = "Maximum final f32, f16 or bf16 GGUF shard size in MB or GB. "
+        "Pass '0' for one file. Quantized outputs remain single-file.",
+    )
+
+    @field_validator("gguf_shard_size", mode = "before")
+    @classmethod
+    def _check_gguf_shard_size(cls, value):
+        return _validate_gguf_shard_size(value)
+
     private: bool = Field(
         False,
         description = "If True, create a private Hugging Face Hub repository",

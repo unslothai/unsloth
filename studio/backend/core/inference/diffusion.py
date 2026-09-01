@@ -175,6 +175,7 @@ from .diffusion_transformer_quant import (
     TQ_AUTO,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
+    dense_transformer_unsupported_reason,
     explain_unusable_scheme,
     normalize_transformer_quant,
     quantize_transformer,
@@ -1407,9 +1408,7 @@ class DiffusionBackend:
                     "quant is skipped"
                 )
             elif not dense_transformer_supported(target):
-                reason = (
-                    "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
-                )
+                reason = dense_transformer_unsupported_reason(target)
             elif (
                 select_transformer_quant_scheme(
                     target,

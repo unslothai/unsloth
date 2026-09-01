@@ -23,6 +23,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status
+from hub.utils.hf_tokens import is_anonymous
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
@@ -1113,6 +1114,7 @@ async def get_gguf_variants_answer(
                         quant = v.quant,
                         display_label = v.display_label,
                         size_bytes = v.size_bytes,
+                        shard_count = int(getattr(v, "shard_count", 0) or 0),
                         download_size_bytes = v.size_bytes,
                         download_remaining_bytes = (
                             None
@@ -1144,6 +1146,7 @@ async def get_gguf_variants_answer(
                         quant = v.quant,
                         display_label = v.display_label,
                         size_bytes = v.size_bytes,
+                        shard_count = int(getattr(v, "shard_count", 0) or 0),
                         download_size_bytes = v.download_size_bytes or v.size_bytes,
                         download_remaining_bytes = variant_remaining_bytes_from_state(
                             response_repo_id,
@@ -1185,6 +1188,7 @@ async def get_gguf_variants_answer(
                     quant = v.quant,
                     display_label = v.display_label,
                     size_bytes = v.size_bytes,
+                    shard_count = int(getattr(v, "shard_count", 0) or 0),
                     download_size_bytes = v.download_size_bytes or v.size_bytes,
                     download_remaining_bytes = variant_remaining_bytes_from_state(
                         repo_id,
@@ -1243,6 +1247,14 @@ async def get_gguf_variants_answer(
                 # The load resolver's own extractor over the context it reads, so the quant is
                 # what the echoed load resolves (the hub one differs on F16-checkpoint-Q4_K_M).
                 from utils.models.model_config import _extract_quant_label
+                from utils.models.model_config import colocated_split_shards
+
+                shards, split_complete = colocated_split_shards(local_target)
+                if split_complete and len(shards) > 1:
+                    try:
+                        size = sum(shard.stat().st_size for shard in shards)
+                    except OSError:
+                        size = 0
 
                 variants = [
                     GgufVariantInfo(
@@ -1251,6 +1263,7 @@ async def get_gguf_variants_answer(
                             f"{local_target.parent.name}/{local_target.name}"
                         ),
                         size_bytes = size,
+                        shard_count = len(shards) if split_complete and len(shards) > 1 else 0,
                     )
                 ]
                 # The shard scan resolves a file to its marked parent, so an unmarked one walks
@@ -1275,9 +1288,14 @@ async def get_gguf_variants_answer(
         if not _is_valid_repo_id(repo_id):
             raise HTTPException(status_code = 400, detail = f"Invalid repo_id: {repo_id!r}")
 
+        # The HF cache answers from disk without authorizing, so a denied caller could name
+        # a cached private repo and read back its filenames, sizes and vision flag. A
+        # local_path the caller named itself is not the Hub cache and stays available.
+        cache_reads_authorized = not is_anonymous(hf_token)
+
         def _scoped_local_response():
             """The pinned snapshot's own answer, or None when it holds nothing."""
-            if snapshot_scope is None:
+            if snapshot_scope is None or not cache_reads_authorized:
                 return None
             variants, has_vision = list_local_gguf_variants(str(snapshot_scope))
             if not (variants or has_vision):
@@ -1294,7 +1312,11 @@ async def get_gguf_variants_answer(
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
-            cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
+            cached = (
+                select_gguf_cache_snapshot(repo_id, root = hub_cache)
+                if cache_reads_authorized
+                else None
+            )
             if cached is not None:
                 variants, has_vision, complete, snapshot = _merge_when_the_repo_id_loads(
                     repo_id, cached, hub_cache
@@ -1314,7 +1336,7 @@ async def get_gguf_variants_answer(
                     return _local_response(
                         repo_id, variants, has_vision, _complete_quants_under(local_path)
                     )
-            partial = _quants_from_state(repo_id, hub_cache)
+            partial = _quants_from_state(repo_id, hub_cache) if cache_reads_authorized else None
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
@@ -1337,6 +1359,10 @@ async def get_gguf_variants_answer(
             The lister's own cache read is repo-wide, so redoing it here pins the listing and,
             through ``answered_from``, its context metadata to the named copy.
             """
+            if not cache_reads_authorized:
+                # An unauthorized caller whose hub call failed gets that failure, not the
+                # cache's answer to it.
+                return None
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
@@ -1360,6 +1386,7 @@ async def get_gguf_variants_answer(
         try:
             variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
         except Exception:
+            # Ungated: _cache_fallback_response already refuses an unauthorized caller.
             fallback = _cache_fallback_response()
             if fallback is not None:
                 return fallback
@@ -1368,6 +1395,13 @@ async def get_gguf_variants_answer(
         # siblings is None only when the lister answered from its own repo-wide cache. Falling
         # through is deliberate: readiness below still counts against this request's own cache.
         if siblings is None:
+            if not cache_reads_authorized:
+                # `variants` is already the cache's answer, so declining a second one is
+                # not enough; falling through would serialize the first.
+                raise HTTPException(
+                    status_code = 404,
+                    detail = "No GGUF variants available without Hub authorization.",
+                )
             fallback = _cache_fallback_response()
             if fallback is not None:
                 return fallback
@@ -1604,6 +1638,7 @@ async def get_gguf_variants_answer(
                 quant = v.quant,
                 display_label = v.display_label,
                 size_bytes = v.size_bytes,
+                shard_count = int(getattr(v, "shard_count", 0) or 0),
                 download_size_bytes = (
                     requirement.download_size_bytes if requirement is not None else v.size_bytes
                 ),

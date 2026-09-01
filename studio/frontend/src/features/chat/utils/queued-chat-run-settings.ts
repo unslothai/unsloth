@@ -33,11 +33,14 @@ const QUEUED_SETTING_KEYS = [
   "ragTopK",
   "ragAutoInject",
   "ragAutoInjectMinScore",
-  "ggufContextLength",
+  "loadedContextLength",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
+  "autoCompactEnabled",
+  "contextPolicy",
+  "compactionHeadroomRatio",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;

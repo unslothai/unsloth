@@ -95,7 +95,9 @@ def _send_path_slice() -> str:
     """
     body = slice_between(
         read(ADAPTER),
-        "const survivingMessages = pruneOutboundHistory(",
+        "      const survivingMessages = pruneOutboundHistory(\n"
+        "        messages,\n"
+        "        !isExternalRequest,\n",
         "if (selectedImageEditReference) {",
     )
     return (

@@ -179,12 +179,15 @@ def _offload_frozen_module_for_training(
     module: ModulesToSaveWrapper,
     device_type: str,
     offload_device: Optional[str] = "cpu",
+    original_device = None,
 ) -> None:
     """Move the trainable copy to ``device_type`` and offload the frozen original.
 
     float16 is promoted to float32 for GPU compatibility (e.g. Tesla T4).
     ``offload_device`` currently only supports "cpu"; None leaves the frozen
-    module in place. Modifies ``module`` in-place.
+    module in place. ``original_device`` is the placement recorded before any
+    disk offload rebuilt the module, used when the copy no longer carries one.
+    Modifies ``module`` in-place.
     See https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32).
     """
     if not hasattr(module, "modules_to_save"):
@@ -196,7 +199,20 @@ def _offload_frozen_module_for_training(
         # Tesla T4 must use float32 and not float16
         new_dtype = torch.float32
 
-    module.modules_to_save.default.to(device = device_type, dtype = new_dtype, non_blocking = True)
+    # `device_type` is a bare type like "cuda", and `.to("cuda")` resolves to the
+    # CURRENT device, which is cuda:0, so on a split model it drags the trainable
+    # copy off its own card and the forward then mixes devices. Prefer the index
+    # the copy already has; under the default `use_gradient_checkpointing =
+    # "unsloth"` it has none, because the disk offload above rebuilt it on CPU,
+    # so fall back to the placement recorded before that. Only then the bare type.
+    wanted_type = torch.device(device_type).type
+    target_device = device_type
+    for candidate in (module.modules_to_save.default.weight.device, original_device):
+        if candidate is not None and torch.device(candidate).type == wanted_type:
+            target_device = candidate
+            break
+
+    module.modules_to_save.default.to(device = target_device, dtype = new_dtype, non_blocking = True)
     module.modules_to_save.default.requires_grad_(True)
 
     # [TODO] Move old module to CPU - should be disk!
@@ -3142,6 +3158,24 @@ class FastLlamaModel:
                                 ):
                                     continue
                                 module.weight[module.padding_idx] = 0
+
+        # LAST: `post_patch` replaces the embedding modules and the QKV/MLP
+        # patching below it replaces the forwards a hook wraps, so an earlier
+        # attach is lost. Skipped under vLLM, which owns the weights.
+        if not fast_inference:
+            try:
+                from unsloth.models.vision import _repair_dispatch_hooks
+                _repaired = _repair_dispatch_hooks(model)
+                if _repaired:
+                    logger.info(
+                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                        "left unhooked by the split, so the model trains."
+                    )
+            except Exception as _exc:
+                logger.warning(
+                    f"Unsloth: could not check the dispatch hooks "
+                    f"({type(_exc).__name__}: {_exc})."
+                )
         return model, tokenizer
 
     @staticmethod
@@ -3639,6 +3673,17 @@ class FastLlamaModel:
                 clean_gpu_cache()
 
         model = _get_peft_model(model, lora_config)
+
+        try:
+            from .vision import _lift_endpoint_hooks_onto_adapters
+            _lifted = _lift_endpoint_hooks_onto_adapters(model)
+            if _lifted:
+                logger.info(
+                    f"Unsloth: lifted dispatch hooks onto {_lifted} adapter-wrapped "
+                    "embedding module(s), so a split model trains them."
+                )
+        except Exception as _exc:
+            logger.warning_once(f"Unsloth: could not lift adapter hooks: {_exc}")
         # Fix LoraConfig.auto_mapping is None
         fix_lora_auto_mapping(model)
 
@@ -3705,7 +3750,10 @@ class FastLlamaModel:
             assert hasattr(model.get_input_embeddings(), "modules_to_save")
 
             _offload_frozen_module_for_training(
-                model.get_input_embeddings(), DEVICE_TYPE_TORCH, offload_device = None
+                model.get_input_embeddings(),
+                DEVICE_TYPE_TORCH,
+                offload_device = None,
+                original_device = input_embeddings_device,
             )
 
         if train_lm_head:
@@ -3713,7 +3761,10 @@ class FastLlamaModel:
             assert hasattr(model.get_output_embeddings(), "modules_to_save")
 
             _offload_frozen_module_for_training(
-                model.get_output_embeddings(), DEVICE_TYPE_TORCH, offload_device = None
+                model.get_output_embeddings(),
+                DEVICE_TYPE_TORCH,
+                offload_device = None,
+                original_device = output_embeddings_device,
             )
 
         # Patch tokenizer to pad to the right

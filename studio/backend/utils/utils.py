@@ -40,6 +40,24 @@ def hf_env_offline() -> bool:
     return False
 
 
+def anonymous_and_offline(hf_token) -> bool:
+    """The one condition under which a Hub-reaching request can only be answered by disk.
+
+    ``token=False`` denies authentication, not the cache: offline, huggingface_hub and
+    datasets both resolve a previously downloaded private repo without ever authorizing.
+    A caller holding the anonymous sentinel has no network to establish access over, so
+    every downstream read is a disk read it never earned.
+
+    Guarding this at the route entry rather than at each call site is deliberate. The
+    per-site version was fixed six times -- the snapshot walk, the config probes, the
+    embedding marker, the GGUF listing, the preview slices, AutoConfig -- and each fix
+    only moved the boundary to the next reader. This states the rule once, before any of
+    them run, so a path nobody has enumerated is covered too.
+    """
+    from hub.utils.hf_tokens import is_anonymous
+    return is_anonymous(hf_token) and hf_env_offline()
+
+
 def canonical_model_repo_id(model_name: str) -> str:
     """Normalize a Hugging Face model repository ID selected in Unsloth."""
     return model_name.strip()
@@ -839,6 +857,7 @@ def log_and_http_error(
     *,
     event: str = "request_failed",
     log = None,
+    headers: Optional[dict] = None,
 ):
     """Log ``error`` in full server-side and return an ``HTTPException`` whose
     ``detail`` is only ``public_message`` -- never the raw exception text.
@@ -847,9 +866,15 @@ def log_and_http_error(
     """
     from fastapi import HTTPException
 
-    # exc_info=error works for both structlog and stdlib loggers.
-    (log or logger).error(f"{event}: {error}", exc_info = error)
-    return HTTPException(status_code = status_code, detail = public_message)
+    # A 4xx is a normal outcome the caller handles, so one warning line and no traceback:
+    # at error with exc_info, one generation buried the log under 54 rejected saves. 5xx
+    # keeps the traceback, since that is a server bug. exc_info works for structlog too.
+    emitter = log or logger
+    if 400 <= status_code < 500:
+        emitter.warning(f"{event}: {error}")
+    else:
+        emitter.error(f"{event}: {error}", exc_info = error)
+    return HTTPException(status_code = status_code, detail = public_message, headers = headers)
 
 
 @contextmanager

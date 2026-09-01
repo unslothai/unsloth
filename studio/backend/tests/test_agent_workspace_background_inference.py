@@ -388,13 +388,19 @@ def test_primary_task_session_is_immutable_and_revalidated_after_stop(tmp_path):
         observed["sessionId"] = session_id
         observed["insideEdit"] = execute_tool(
             "edit_file",
-            {"path": "inside.txt", "old_string": "", "new_string": "inside\n"},
+            {
+                "path": "inside.txt",
+                "edits": [{"old_string": "", "new_string": "inside\n"}],
+            },
             session_id = session_id,
             disable_sandbox = True,
         )
         observed["outsideEdit"] = execute_tool(
             "edit_file",
-            {"path": "../outside.txt", "old_string": "", "new_string": "outside\n"},
+            {
+                "path": "../outside.txt",
+                "edits": [{"old_string": "", "new_string": "outside\n"}],
+            },
             session_id = session_id,
             disable_sandbox = True,
         )

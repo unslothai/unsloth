@@ -824,7 +824,7 @@ test("the chat adapter routes locally before inference and uses persisted histor
   );
   assert.match(
     runtime,
-    /await saveStoredChatMessage\(\{[\s\S]*?role: message\.role,[\s\S]*?content:/,
+    /await saveStoredChatMessage\(\{[\s\S]*?role: message\.role,[\s\S]*?\bcontent,/,
   );
   const compareInterceptAt = sharedComposer.indexOf(
     "await interceptCompareProjectSlashCommand({",
@@ -840,7 +840,7 @@ test("the chat adapter routes locally before inference and uses persisted histor
     /appendAssistantMessage: \(text\)[\s\S]*?role: "assistant"[\s\S]*?startRun: false/,
   );
   const tokenCountBuilder = adapter.slice(
-    adapter.indexOf("export async function buildOutboundMessagesForTokenCount"),
+    adapter.indexOf("export async function buildLocalTokenCountHistory"),
     adapter.indexOf("export function buildLocalTokenCountReasoning"),
   );
   assert.match(

@@ -30,6 +30,7 @@ MAX_VIDEO_NUM_FRAMES = 1024
 VIDEO_NOT_LOADED_MSG = "No video model is loaded."
 VIDEO_CANCELLED_MSG = "Video generation was cancelled."
 VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
+VIDEO_MODEL_CHANGED_MSG = "The requested video model changed before generation was reserved."
 
 
 @dataclass(frozen = True)

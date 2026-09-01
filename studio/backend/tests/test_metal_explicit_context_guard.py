@@ -55,7 +55,11 @@ if "jwt" not in sys.modules:
         _jwt_stub.InvalidTokenError = type("InvalidTokenError", (Exception,), {})
         sys.modules["jwt"] = _jwt_stub
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import (  # noqa: E402
+    _FIT_MIN_CTX,
+    GgufLoadIntent,
+    LlamaCppBackend,
+)
 
 _message = LlamaCppBackend._metal_context_overcommit_message
 _ENV = LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV
@@ -169,7 +173,7 @@ def _launch(
     backend._amd_apu_wants_unified_memory = lambda *a, **k: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: False
-    backend._wait_for_health = lambda timeout: True
+    backend._wait_for_health = lambda timeout, **_kw: True
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda _detected: True
     backend._context_length = native
@@ -772,10 +776,17 @@ class TestWhenNothingFitsAtAll:
         assert _ctx_values(cmd)[-1] == "8192"
 
     def test_auto_is_untouched(self, tmp_path, monkeypatch):
-        """Auto has always launched at the 4096 floor on this host. Changing that is a
-        larger claim than this guard makes, and it is not what was reported."""
+        """Auto launches at this arm's floor on this host, and the guard still does not
+        move it.
+
+        That floor was a hardcoded 4096 and is now _FIT_MIN_CTX, which is the larger
+        claim this docstring used to decline to make -- made deliberately elsewhere, so
+        that Metal stops publishing half the context a discrete GPU does for the same
+        model. What this test owns is unchanged: the explicit-context guard leaves Auto
+        alone. Spelled against the constant so the next floor move does not land here.
+        """
         cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.NOTHING_FITS)["cmd"]
-        assert _ctx_values(cmd)[-1] == "4096"
+        assert _ctx_values(cmd)[-1] == str(_FIT_MIN_CTX)
 
     def test_a_fixed_manual_layer_count_is_still_exempt(self, tmp_path, monkeypatch):
         cmd = _launch(

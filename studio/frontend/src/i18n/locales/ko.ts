@@ -686,7 +686,7 @@ export const ko = {
         sectionTitle: "모델 자동 전환 (OpenAI API)",
         enable: "요청에 따라 모델 전환",
         enableDescription:
-          "API 요청에 지정된 GGUF가 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
+          "API 요청에 지정된 모델이 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
         idleUnload: "유휴 시 자동 해제",
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
@@ -826,6 +826,16 @@ export const ko = {
         copied: "경로가 복사되었습니다",
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
+      },
+      repairInstall: {
+        label: "설치 복구",
+        description:
+          "관리 환경에 대해 설치 프로그램을 다시 실행합니다. GPU가 감지되지 않거나 앱이 시작되지 않을 때 사용하세요.",
+        action: "설치 복구",
+        confirmTitle: "이 설치를 복구할까요?",
+        confirmDescription:
+          "서버를 중지하고 설치 프로그램을 다시 실행하여 이 컴퓨터의 GPU에 맞는 PyTorch를 다시 설치합니다. 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmAction: "지금 복구",
       },
       resetPreferences: {
         sectionTitle: "위험 구역",
@@ -1082,6 +1092,8 @@ export const ko = {
         currentLoad: "현재 부하",
         free: "{value} 여유",
         noGpu: "인식되는 GPU 없음",
+        gpuUnusable: "GPU 사용 불가",
+        gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
       },
       gpu: {
         title: "GPU 장치",
@@ -1090,6 +1102,12 @@ export const ko = {
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
         noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
+        noUsableGpu: "이 컴퓨터의 GPU 중 PyTorch에서 사용할 수 있는 것이 없습니다.",
+        mismatchCpuBuild:
+          "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
+        mismatchUnavailable:
+          "PyTorch({version})가 아래 GPU를 초기화하지 못해 사용할 수 없습니다. GPU 드라이버를 확인하거나 설치를 복구하세요.",
+        unusableDevice: "사용 불가",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1357,10 +1375,36 @@ export const ko = {
       rememberParamsPerModel: "모델별로 설정 기억",
       rememberParamsPerModelDescription:
         "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
+      autoCompact: "긴 채팅 자동 압축",
+      autoCompactDescription:
+        "로컬 GGUF 채팅이 설정한 컨텍스트 길이에 도달하면 오류를 반환하는 대신 오래된 턴을 삭제합니다. 사용 가능한 VRAM을 기준으로 하지 않습니다.",
+      compactionStyle: "컨텍스트가 가득 찼을 때",
+      compactionStyleDescription:
+        "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
+      compactionStyleInherit: "서버 기본값 사용",
+      compactionStyleCheckpoint: "대화 재설정",
+      compactionStyleRollingDefault: "오래된 턴 삭제(약 25% 추가 여유)",
+      compactionStyleRolling10: "오래된 턴 삭제(약 10% 추가 여유)",
+      compactionStyleRolling5: "오래된 턴 삭제(약 5% 추가 여유)",
+      compactionStyleRollingNone: "오래된 턴 삭제(추가 잘라내기 없음)",
+      autoCompactKeywords:
+        "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+      },
+      currentDate: {
+        label: "모델에 오늘 날짜 알려주기",
+        description:
+          "프롬프트에 현재 날짜를 추가해 웹 검색과 Deep Research가 모델의 학습 데이터 기준 시점을 가정하지 않고 최신 출처를 찾도록 합니다.",
+        loadError: "현재 날짜 설정을 불러오지 못했습니다",
+        saveError: "현재 날짜 설정을 업데이트하지 못했습니다",
+      },
+      tools: {
+        collapseByDefault: "기본적으로 도구 활동 접기",
+        collapseByDefaultDescription:
+          "도구가 실행되는 동안 입력과 출력을 접어 둡니다. 확인하려면 도구 행을 펼치세요.",
       },
       webSearch: {
         title: "웹 검색",
@@ -1379,6 +1423,11 @@ export const ko = {
         blockedBanner: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
         blockedBannerPlural: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
         blockedBannerAction: "이 Canvas에서 허용",
+        blockedTitle: "Canvas 네트워크 액세스가 꺼져 있습니다",
+        blockedHint:
+          "설정 → 채팅에서 “{setting}”을 켜면 Canvas가 외부 리소스를 불러올 수 있습니다. 이 Canvas에서만 허용할 수도 있습니다.",
+        blockedSettingsAction: "설정 열기",
+        blockedDismiss: "닫기",
       },
       data: "데이터",
       exportHistory: "채팅 기록 내보내기",
@@ -1452,6 +1501,8 @@ export const ko = {
       archivedImagesDescription: "보관한 이미지를 확인하고 관리합니다.",
       archivedVideos: "보관된 동영상",
       archivedVideosDescription: "보관한 동영상을 확인하고 관리합니다.",
+      archivedAudio: "보관된 오디오",
+      archivedAudioDescription: "보관한 오디오 클립을 확인하고 관리합니다.",
       manageAction: "관리",
       manageChats: "채팅 관리",
       manageChatsDescription:
@@ -1634,7 +1685,7 @@ export const ko = {
         desktopCheckingDescription: "보통 몇 초 정도 걸립니다.",
         desktopAvailable: "데스크톱 앱 {version} 버전을 사용할 수 있습니다",
         desktopAvailableDescription:
-          "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
+          "지금 업데이트하면 백그라운드에서 준비됩니다. 계속 작업하다가 준비되면 다시 시작하세요.",
         desktopExternalServer:
           "서버를 시작한 터미널에서 `unsloth studio update`를 실행하세요.",
         desktopManualInstall:
@@ -1644,11 +1695,17 @@ export const ko = {
           "연결 상태를 확인한 후 다시 시도하세요.",
         desktopCurrent: "데스크톱 앱이 최신 버전입니다",
         desktopCurrentDescription: "Unsloth가 계속 자동으로 확인합니다.",
+        desktopPreparingDescription: "업데이트를 백그라운드에서 준비하고 있습니다. 계속 작업할 수 있습니다.",
+        desktopReadyToRestartDescription: "모두 준비되었습니다. 다시 시작하면 업데이트 설치가 완료됩니다.",
+        desktopReadyToInstallDescription: "앱 업데이트를 다운로드했습니다. 설치하려면 백엔드 업데이트를 완료하세요.",
         checkForUpdates: "업데이트 확인",
         checkAgain: "다시 확인",
         retryCheck: "다시 시도",
         checking: "확인 중...",
+        preparing: "준비 중...",
         updateNow: "지금 업데이트",
+        restartToUpdate: "다시 시작하여 업데이트",
+        finishUpdate: "업데이트 완료",
         openReleasePage: "릴리스 페이지 열기",
         unknownInstall:
           "Unsloth 설치 방식을 감지할 수 없습니다. 설치 프로그램 또는 PyPI 설치의 경우 위 명령을 사용하세요.",

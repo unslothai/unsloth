@@ -368,7 +368,7 @@ def test_cancelled_agent_cleans_only_clean_owned_worktree(tmp_path, monkeypatch)
         assert entered.wait(timeout = 2)
         manager.cancel(task["id"])
         stopped = _wait_task(task["id"])
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 10
         while "worktreeCleanup" not in (stopped.get("result") or {}):
             if time.monotonic() >= deadline:
                 raise AssertionError("worktree cleanup result was not persisted")

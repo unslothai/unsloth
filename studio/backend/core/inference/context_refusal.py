@@ -200,6 +200,23 @@ _ROLE_ADVICE = {
         "A tool returned more than this context window can hold",
         "ask for a smaller slice of the file or page",
     ),
+    # The model passed a file-sized argument to a tool. The user did not type it and
+    # cannot split it, and the tool cannot be asked for less: `edit_file` with an empty
+    # `old_string` is whole-file creation, so the content IS the argument. The only levers
+    # are the window itself and not asking for a file this size in a window this small.
+    "assistant_tool_call": (
+        "Most of this prompt is the file the model passed to a tool",
+        "The file the model passed to a tool does not fit on its own",
+        "ask for a smaller file, or raise the Context Length before retrying",
+    ),
+    # The same shape with no file in it: an oversized program, command, query or MCP
+    # payload. "Ask for a smaller file" names the wrong thing and cannot be acted on, so
+    # this one says what is actually true of every tool.
+    "assistant_tool_payload": (
+        "Most of this prompt is what the model passed to a tool",
+        "What the model passed to a tool does not fit on its own",
+        "ask for less in one call, or raise the Context Length before retrying",
+    ),
     # The reply resumed after it hit Max Tokens: the user cannot split or shorten it.
     "assistant": (
         "Most of this prompt is the reply being continued",
@@ -257,4 +274,62 @@ def describe_oversize(request_tokens: int, context_tokens: int) -> str:
     return (
         f"{head}{cause}, so shortening the conversation {hedge}. Increase the Context "
         f"Length in Model settings, or {lever}."
+    )
+
+
+# What the user can actually shorten, per tool. Anything absent gets the neutral line:
+# an MCP tool's payload is not a file and not a program, and guessing at it is worse
+# than saying the one thing that is true of every tool.
+_TOOL_LEVERS = {
+    "edit_file": "ask for a smaller file",
+    "python": "run a shorter program",
+    "terminal": "run a shorter command",
+    "render_html": "render a smaller page",
+    "web_search": "ask a narrower question",
+    "search_knowledge_base": "ask a narrower question",
+    "search_conversation": "ask a narrower question",
+}
+
+
+def describe_unservable_tool_call(
+    tool_name: str,
+    request_tokens: int,
+    context_tokens: int,
+    *,
+    compacted_calls: int = 0,
+) -> str:
+    """The message for a tool call refused BEFORE it ran, because its turn cannot be served.
+
+    `describe_oversize` reconstructs blame from a recorded diagnosis, because by the time it
+    speaks the request has already been rejected and the cause has to be inferred. This one
+    is said by the loop that is holding the call, so it names the tool outright instead of
+    guessing at a role, and it is the only refusal on this path that can promise nothing was
+    written -- which is the fact the user most needs and the 400 could never offer.
+
+    ``compacted_calls`` is reported when history was already spent trying to make room, so
+    "increase the Context Length" does not read as advice nobody tried.
+    """
+    # Says "leaving no room to reply" rather than only quoting the two numbers. The bar is
+    # the window minus a small reply floor, so a refusal at 3,740 against 4,096 reads as a
+    # contradiction unless the message accounts for the gap it is refusing over.
+    head = (
+        f"Not enough context left to run {tool_name}: the next request would be about "
+        f"{request_tokens} tokens of a {context_tokens}-token window, leaving no room to "
+        "reply. "
+    )
+    tried = ""
+    if compacted_calls > 0:
+        calls = "call" if compacted_calls == 1 else "calls"
+        tried = (
+            f"Arguments from {compacted_calls} earlier tool {calls} were already compacted "
+            "to make room. "
+        )
+    # The gate runs for EVERY enabled tool, so the file wording was reaching an oversized
+    # `python`, `terminal`, web or MCP call and telling the user to ask for a smaller
+    # file when no file was involved -- advice that cannot make the actual program,
+    # command or payload any smaller. `edit_file` keeps the line it was written for.
+    lever = _TOOL_LEVERS.get(tool_name, "ask for less in one call")
+    return (
+        head + tried + "Nothing was written. Increase the Context Length in Model settings, "
+        f"or {lever}, then try again."
     )

@@ -516,6 +516,11 @@ def fit_checkpoint_context(
     keeps_boundary: bool = False,
     can_reset: bool = False,
     searchable: bool = True,
+    estimate_message: Callable[[dict], int] = estimate_message_tokens,
+    # Signature compatibility with `fit_rolling_context`. A checkpoint reset already
+    # drops to the latest turn plus X; an extra bite of the window would only shrink
+    # the standing-instruction block, which is the half worth keeping.
+    headroom_ratio: Optional[float] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat by resetting the epoch, keeping the newest turn and a carried-forward X.
 
@@ -599,6 +604,7 @@ def fit_checkpoint_context(
             1.0,
             protected_message_ids = protected_message_ids,
             min_dropped = sticky_dropped,
+            estimate_message = estimate_message,
         )
         if replayed:
             fitted = candidate
@@ -615,7 +621,10 @@ def fit_checkpoint_context(
     # user groups.
     if current_tokens > prompt_target and _resolved(can_reset):
         candidate, reset_dropped = truncate_oldest_messages(
-            messages, 0.0, protected_message_ids = protected_message_ids
+            messages,
+            0.0,
+            protected_message_ids = protected_message_ids,
+            estimate_message = estimate_message,
         )
         if reset_dropped:
             fitted = candidate

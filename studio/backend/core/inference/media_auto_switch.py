@@ -103,6 +103,20 @@ def _resident_answers_exactly(resident: dict[str, Any], name: str) -> bool:
     )
 
 
+def resident_answers_media_request(
+    resident: dict[str, Any], requested_model: Optional[str], *, owner: str
+) -> bool:
+    """Whether one exact resident state still answers an auto-switch request."""
+    if not isinstance(requested_model, str) or not requested_model.strip():
+        return False
+    name = requested_model.strip()
+    if _resident_answers_exactly(resident, name):
+        return True
+    task = IMAGE_TASK if owner == DIFFUSION else VIDEO_TASK
+    pick = resolve_local_media_model(name, task = task)
+    return pick is not None and satisfied_by(resident, name, pick)
+
+
 async def _require_local(
     owner: str,
     pick: MediaModelPick,
@@ -518,5 +532,6 @@ __all__ = [
     "available_media_model_ids",
     "invalidate_index",
     "maybe_auto_switch_media_model",
+    "resident_answers_media_request",
     "resolve_local_media_model",
 ]

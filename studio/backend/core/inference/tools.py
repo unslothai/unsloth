@@ -9872,18 +9872,17 @@ def _edit_file_confined_project(
     target: str,
     workdir: str,
     expected_root_identity: "tuple[int, int] | None",
-    old: str,
-    new: str,
-    replace_all: bool,
+    edits: "list[tuple[str, str, bool]]",
 ) -> str:
-    """Perform a project edit through descriptor-relative, no-follow operations."""
+    """Perform a batch project edit through descriptor-relative, no-follow operations."""
     name = os.path.basename(target)
     try:
         boundary = _ConfinedProjectEdit(workdir, target, expected_root_identity)
     except OSError as exc:
         return f"Error: cannot safely open the project workspace for '{name}': {exc}."
     try:
-        if not old:
+        if not edits[0][0]:
+            new = edits[0][1]
             payload = new.encode("utf-8")
             try:
                 created = boundary.create(payload, 0o666)
@@ -9940,20 +9939,11 @@ def _edit_file_confined_project(
         before, newline, bom, error = _edit_file_decode(data, target)
         if error:
             return error
-        count = before.count(old)
-        if count == 0:
-            return (
-                f"Error: 'old_string' was not found in {name}. It must match the "
-                "file byte for byte, including indentation. Read the file and copy "
-                "the text to replace out of it."
-            )
-        if count > 1 and not replace_all:
-            return (
-                f"Error: 'old_string' matches {count} places in {name}. Include "
-                "surrounding lines to make it unique, or pass replace_all=true to "
-                f"change all {count}."
-            )
-        after = before.replace(old, new) if replace_all else before.replace(old, new, 1)
+        after, total, first_old, first_new, change_at, error = _edit_file_apply_all(
+            before, edits, name
+        )
+        if error:
+            return error
         payload = (bom + after.replace("\n", newline)).encode("utf-8")
         try:
             changed = boundary.replace(
@@ -9971,14 +9961,195 @@ def _edit_file_confined_project(
             )
         return _edit_file_receipt(
             before,
-            old,
-            new,
+            first_old,
+            first_new,
             name,
-            count if replace_all else 1,
-            change_at = max(before.find(old), 0),
+            total,
+            change_at = change_at,
         )
     finally:
         boundary.close()
+# Each entry costs a full `count` scan of the file plus a search pass, and the file may be
+# up to 16 MiB, so the work is entries x size. Unbounded, a model-generated batch of a few
+# thousand one-line edits turns a single call into gigabytes of repeated scanning and holds
+# the tool worker for minutes. High enough that no honest refactor hits it, low enough that
+# the worst case stays bounded.
+_MAX_EDITS_PER_CALL = 100
+
+# And a bound on the matches ONE replace_all may expand into. The entry limit above caps
+# how many patterns are searched, not how many places any of them hits, so a single
+# pathological entry can still swamp the worker on its own.
+_MAX_MATCH_SPANS = 10_000
+
+
+def _edit_file_parse_edits(raw) -> "tuple[list[tuple[str, str, bool]], str]":
+    """Validate the `edits` array into `(old, new, replace_all)` triples.
+
+    Every string is normalized the way the file is, so a snippet copied out of `cat`
+    output with plain newlines still matches a Windows-authored file.
+
+    The surrogate check is per entry and up front, before anything is written: a
+    truncated emoji escape ("\\ud83d") survives `json.loads` as a lone surrogate that
+    cannot be encoded, and the UnicodeEncodeError the write raises is swallowed upstream
+    into "Unknown tool: edit_file" -- the one answer that sends the model back to the
+    whole-file rewrite. `old_string` needs no check, being only ever compared.
+    """
+    if not isinstance(raw, list) or not raw:
+        return [], (
+            "Error: 'edits' must be a non-empty array of {old_string, new_string} "
+            "objects. Send every change to this file as separate entries in it."
+        )
+    if len(raw) > _MAX_EDITS_PER_CALL:
+        return [], (
+            f"Error: {len(raw)} edits in one call is over the limit of "
+            f"{_MAX_EDITS_PER_CALL}; nothing was written. Send them in batches of "
+            f"{_MAX_EDITS_PER_CALL} or fewer, applying each batch before the next."
+        )
+    edits: list[tuple[str, str, bool]] = []
+    for index, entry in enumerate(raw, 1):
+        if not isinstance(entry, dict):
+            return [], f"Error: edit {index} is not an object with old_string/new_string."
+        old = entry.get("old_string")
+        new = entry.get("new_string")
+        # Checked, not coerced: str(None) would write the literal "None" into a file.
+        if not isinstance(old, str) or not isinstance(new, str):
+            return [], (
+                f"Error: edit {index} needs 'old_string' and 'new_string' to both be strings."
+            )
+        try:
+            new.encode("utf-8")
+        except UnicodeEncodeError:
+            return [], (
+                f"Error: edit {index} has unpaired surrogate characters in "
+                "'new_string', usually a half-written emoji; nothing was written. "
+                "Send it again as plain text."
+            )
+        replace_all = _edit_file_replace_all(entry.get("replace_all"))
+        if replace_all is None:
+            return [], f"Error: edit {index} needs 'replace_all' to be true or false."
+        edits.append((old.replace("\r\n", "\n"), new.replace("\r\n", "\n"), replace_all))
+    return edits, ""
+
+
+def _edit_file_apply_all(
+    before: str, edits: "list[tuple[str, str, bool]]", name: str
+) -> "tuple[str, int, str, str, int, str]":
+    """Apply every edit against the ORIGINAL text, or none of them.
+
+    Matched against `before` rather than against the running result, which is the rule
+    llama.cpp's own `edit_file` states and the only one a model can reason about: it
+    copied each `old_string` out of the file it read, so an entry that silently matched
+    the output of an earlier entry would land somewhere it never saw.
+
+    Spans are resolved for all entries first and checked for overlap, then applied right
+    to left so the earlier offsets stay valid. Every failure returns before a single byte
+    is written -- a partly applied batch is the one outcome worse than a refused one,
+    because the model cannot tell which half landed.
+    """
+    spans: list[tuple[int, int, str, int]] = []
+    for index, (old, new, replace_all) in enumerate(edits, 1):
+        if not old:
+            # Defence in depth, not a live path: `_edit_file` rejects every empty
+            # `old_string` before calling this. It matters because the failure mode if
+            # that guard ever moves is not a wrong answer but a HANG -- `find(old, start
+            # + len(old))` cannot advance on a zero-length pattern, and the worker keeps
+            # a core after its caller has timed out.
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edit {index} has an empty 'old_string'. Only a single edit "
+                    "may be empty, and only to create the file."
+                ),
+            )
+        count = before.count(old)
+        if count == 0:
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edit {index}'s 'old_string' was not found in {name}. It must "
+                    "match the file byte for byte, including indentation. Read the file and "
+                    "copy the text to replace out of it."
+                ),
+            )
+        if count > 1 and not replace_all:
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edit {index}'s 'old_string' matches {count} places in {name}. "
+                    "Include surrounding lines to make it unique, or set replace_all on that "
+                    f"entry to change all {count}."
+                ),
+            )
+        # One entry needs no spans at all. There is nothing to overlap with, so the whole
+        # reason to enumerate matches disappears and `str.replace` does the work in linear
+        # space. Enumerating cost about 16 million tuples plus a sort on a 16 MiB file of a
+        # one-character pattern -- over a gigabyte for an edit the single-edit spelling had
+        # always done cheaply. The batch limit does not help here: one entry is enough.
+        if replace_all and len(edits) == 1:
+            after = before.replace(old, new)
+            first = before.find(old)
+            return after, count, old, new, first, ""
+        if replace_all and count > _MAX_MATCH_SPANS:
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edit {index}'s 'old_string' matches {count} places in {name}, "
+                    f"over the limit of {_MAX_MATCH_SPANS} for one entry in a batch; "
+                    "nothing was written. Send it as a call of its own, or use a longer "
+                    "'old_string'."
+                ),
+            )
+        start = before.find(old)
+        while start >= 0:
+            spans.append((start, start + len(old), new, index))
+            if not replace_all:
+                break
+            start = before.find(old, start + len(old))
+    spans.sort()
+    for (start, end, _, index), (next_start, _, _, next_index) in zip(spans, spans[1:]):
+        if next_start < end:
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edits {index} and {next_index} overlap in {name}. Every "
+                    "old_string is matched against the file as it was before this call, so "
+                    "two edits cannot cover the same text. Combine them into one entry."
+                ),
+            )
+    # One pass with a cursor, not a slice-and-concat per span. Rebuilding the whole string
+    # for every replacement is quadratic, and `replace_all` over a large file is exactly
+    # where that bites: a file with tens of thousands of matches took 10s where the single
+    # `str.replace` it succeeded took well under one.
+    parts: list[str] = []
+    cursor = 0
+    for start, end, new, _ in spans:
+        parts.append(before[cursor:start])
+        parts.append(new)
+        cursor = end
+    parts.append(before[cursor:])
+    after = "".join(parts)
+    first_start, first_end, first_new, _ = spans[0]
+    return after, len(spans), before[first_start:first_end], first_new, first_start, ""
 
 
 def _edit_file(
@@ -9986,24 +10157,10 @@ def _edit_file(
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
 ) -> str:
-    """Replace an exact string in a file. See the notes above."""
-    old = arguments.get("old_string")
-    new = arguments.get("new_string")
-    # Checked, not coerced: str(None) would write the literal "None" into a file.
-    if not isinstance(old, str) or not isinstance(new, str):
-        return "Error: 'old_string' and 'new_string' must both be strings."
-    # A truncated emoji escape ("\ud83d") survives json.loads as a lone surrogate
-    # that cannot be encoded, and the UnicodeEncodeError the write raises is
-    # swallowed upstream into "Unknown tool: edit_file" -- the one answer that
-    # sends the model back to the whole-file rewrite. old_string needs no check,
-    # being only ever compared.
-    try:
-        new.encode("utf-8")
-    except UnicodeEncodeError:
-        return (
-            "Error: 'new_string' contains unpaired surrogate characters, usually "
-            "a half-written emoji; nothing was written. Send it again as plain text."
-        )
+    """Replace exact strings in a file. See the notes above."""
+    edits, error = _edit_file_parse_edits(arguments.get("edits"))
+    if error:
+        return error
     try:
         project_scoped, expected_root_identity = _project_edit_scope(session_id)
     except Exception:
@@ -10015,35 +10172,49 @@ def _edit_file(
     if error:
         return error
     name = os.path.basename(target)
-    # Normalized for the same reason the file is, so the two can match.
-    old = old.replace("\r\n", "\n")
-    new = new.replace("\r\n", "\n")
-    replace_all = _edit_file_replace_all(arguments.get("replace_all"))
-    if replace_all is None:
-        return "Error: 'replace_all' must be true or false."
+    # Decided before the no-op check below, not after: both strings empty is the
+    # documented way to create __init__.py or .gitkeep, and read as "identical,
+    # nothing to change" it was refused, leaving no way to write a zero-byte
+    # file.
+    if not edits[0][0]:
+        if len(edits) > 1:
+            return (
+                "Error: an empty 'old_string' creates the file, so it cannot be "
+                f"combined with the other {len(edits) - 1} edit(s). Create the file "
+                "in one call, then edit it in the next."
+            )
+        if project_scoped:
+            return _edit_file_confined_project(
+                target = target,
+                workdir = _get_workdir(session_id),
+                expected_root_identity = expected_root_identity,
+                edits = edits,
+            )
+        return _edit_file_create(
+            target,
+            edits[0][1],
+            name,
+            "\n",
+            workdir = None if effective_disable_sandbox else _get_workdir(session_id),
+        )
+    for index, (old, new, _) in enumerate(edits, 1):
+        if not old:
+            return (
+                f"Error: edit {index} has an empty 'old_string'. Only a single edit "
+                "may be empty, and only to create the file."
+            )
+        if old == new:
+            return (
+                f"Error: edit {index} has identical 'old_string' and 'new_string'; "
+                "nothing to change."
+            )
     if project_scoped:
         return _edit_file_confined_project(
             target = target,
             workdir = _get_workdir(session_id),
             expected_root_identity = expected_root_identity,
-            old = old,
-            new = new,
-            replace_all = replace_all,
+            edits = edits,
         )
-    # Decided before the no-op check below, not after: both strings empty is the
-    # documented way to create __init__.py or .gitkeep, and read as "identical,
-    # nothing to change" it was refused, leaving no way to write a zero-byte
-    # file.
-    if not old:
-        return _edit_file_create(
-            target,
-            new,
-            name,
-            "\n",
-            workdir = None if effective_disable_sandbox else _get_workdir(session_id),
-        )
-    if old == new:
-        return "Error: 'old_string' and 'new_string' are identical; nothing to change."
     try:
         st = os.stat(target)
     except FileNotFoundError:
@@ -10070,20 +10241,9 @@ def _edit_file(
     before, newline, bom, error = _edit_file_decode(data, target)
     if error:
         return error
-    count = before.count(old)
-    if count == 0:
-        return (
-            f"Error: 'old_string' was not found in {name}. It must match the "
-            "file byte for byte, including indentation. Read the file and copy "
-            "the text to replace out of it."
-        )
-    if count > 1 and not replace_all:
-        return (
-            f"Error: 'old_string' matches {count} places in {name}. Include "
-            "surrounding lines to make it unique, or pass replace_all=true to "
-            f"change all {count}."
-        )
-    after = before.replace(old, new) if replace_all else before.replace(old, new, 1)
+    after, total, first_old, first_new, change_at, error = _edit_file_apply_all(before, edits, name)
+    if error:
+        return error
     error = _edit_file_write(
         target,
         after,
@@ -10097,11 +10257,11 @@ def _edit_file(
     # Windowed around the first replacement, rather than diffing the whole file.
     return _edit_file_receipt(
         before,
-        old,
-        new,
+        first_old,
+        first_new,
         name,
-        count if replace_all else 1,
-        change_at = max(before.find(old), 0),
+        total,
+        change_at = change_at,
     )
 
 
@@ -10434,14 +10594,16 @@ EDIT_FILE_TOOL = {
         # The description does the steering: given the tool but no preference,
         # a model keeps writing heredocs because that is what it was trained on.
         "description": (
-            "Change a file by replacing an exact string in it. Prefer this over "
-            "rewriting a file with python or a shell heredoc: it sends only the "
-            "lines that change, so editing a large file costs a fraction of the "
-            "tokens and cannot drop the parts you did not retype. Read the file "
-            "first and copy old_string out of it verbatim, including indentation. "
-            "old_string must match exactly one place unless replace_all is true; "
-            "if it matches none or several you get an error and nothing is "
-            "written. Paths are relative to the working directory."
+            "Change a file by replacing exact strings. Prefer this over rewriting a "
+            "file with python or a shell heredoc: it sends only what changes. Copy each "
+            "old_string verbatim from the file, indentation included. Batch every change "
+            "to one file into edits rather than calling repeatedly, since each call "
+            "replays the whole conversation. Every old_string matches the file as it was "
+            "BEFORE this call, not the result of earlier edits, and no two may overlap. "
+            "Each must match exactly one place unless it sets replace_all; if any matches "
+            "none or several, nothing is written. Paths are relative to the working "
+            "directory. A successful call means the file holds what you sent, so do not "
+            "read it back."
         ),
         "parameters": {
             "type": "object",
@@ -10450,26 +10612,40 @@ EDIT_FILE_TOOL = {
                     "type": "string",
                     "description": "File to edit, relative to the working directory.",
                 },
-                "old_string": {
-                    "type": "string",
+                "edits": {
+                    "type": "array",
                     "description": (
-                        "Exact text to replace, copied from the file. Pass an "
-                        "empty string to create a new file."
+                        "One or more replacements to apply together. A single "
+                        "entry whose old_string is empty creates a new file."
                     ),
-                },
-                "new_string": {
-                    "type": "string",
-                    "description": "Text to put in its place.",
-                },
-                "replace_all": {
-                    "type": "boolean",
-                    "description": (
-                        "Replace every occurrence instead of requiring a unique "
-                        "match. Defaults to false."
-                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_string": {
+                                "type": "string",
+                                "description": (
+                                    "Exact text to replace, copied from the file. "
+                                    "Empty creates a new file."
+                                ),
+                            },
+                            "new_string": {
+                                "type": "string",
+                                "description": "Text to put in its place.",
+                            },
+                            "replace_all": {
+                                "type": "boolean",
+                                "description": (
+                                    "Replace every occurrence of this entry's "
+                                    "old_string instead of requiring a unique "
+                                    "match. Defaults to false."
+                                ),
+                            },
+                        },
+                        "required": ["old_string", "new_string"],
+                    },
                 },
             },
-            "required": ["path", "old_string", "new_string"],
+            "required": ["path", "edits"],
         },
     },
 }
@@ -10863,6 +11039,25 @@ def execute_tool(
     # turn's own tool exchanges existed, which is precisely the undercount that lets the
     # last result overflow.
     _REQUEST_RESULT_BUDGET.set(result_budget_tokens)
+    # Arguments that never parsed, for a tool with no single argument they could be.
+    # Answered here rather than by the tool, which can only report the keys it wanted and
+    # would blame the model for omitting them: `edit_file` said "'old_string' and
+    # 'new_string' must both be strings" about a call that sent neither because its JSON
+    # was cut off mid-string. Naming the real fault is what makes the retry the right one.
+    # Imported here for the same reason `strip_result_for_model` is: at module scope this
+    # closes an import cycle, since the controller reads this module's own schemas.
+    from .tool_loop_controller import UNPARSED_ARGUMENTS_KEY  # noqa: PLC0415
+
+    if isinstance(arguments, dict) and UNPARSED_ARGUMENTS_KEY in arguments:
+        raw = str(arguments.get(UNPARSED_ARGUMENTS_KEY) or "")
+        truncated = raw.lstrip().startswith(("{", "[")) and not raw.rstrip().endswith(("}", "]"))
+        cause = (
+            "were cut off part-way and could not be read" if truncated else "were not valid JSON"
+        )
+        return (
+            f"Error: {name} arguments {cause}, so nothing ran. Resend as complete JSON, "
+            "split across smaller calls if the content is long."
+        )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _fit_result_to_room(
@@ -10920,16 +11115,22 @@ def execute_tool(
             mcp_scope = None
         headers = parse_server_headers(server)
         url = server["url"]
+        use_oauth = bool(server.get("use_oauth"))
 
         def _config_current() -> bool:
-            # Re-read before a stdio session is cached: this call may have read
+            # Re-read before an MCP session is cached: this call may have read
             # the row just before an update/delete closed its sessions.
+            # use_oauth belongs here with the rest: a row switched to OAuth after
+            # we read it must not be reached through the unauthenticated client
+            # this call is about to open, and a close cannot stop that on its own
+            # (nothing is cached yet, so it has no generation to bump).
             row = mcp_servers_db.get_server(server_id)
             return (
                 row is not None
                 and bool(row.get("is_enabled"))
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
+                and bool(row.get("use_oauth")) == use_oauth
             )
 
         return _fit_result_to_room(
@@ -10939,7 +11140,7 @@ def execute_tool(
                 name = tool_name,
                 args = arguments,
                 timeout = effective_timeout,
-                use_oauth = bool(server.get("use_oauth")),
+                use_oauth = use_oauth,
                 cancel_event = cancel_event,
                 scope = mcp_scope,
                 config_check = _config_current,
@@ -11577,6 +11778,45 @@ def build_conversation_recall(
     return built
 
 
+def rag_autoinject_reaches_retrieval(
+    conversation: list[dict], rag_scope: dict | None
+) -> tuple[bool, bool]:
+    """Everything checked before pre-retrieval searches: switched on, something to search
+    for, somewhere to search, and a store to search it in. Whether a hit then clears the
+    score floor is the one part not knowable without running the search.
+
+    Shared with token counting, which cannot run it and so must not decline a turn that
+    stops short of the search here.
+    """
+    if not rag_scope:
+        return False, False
+    enabled = rag_scope.get("autoinject")
+    if enabled is None:
+        enabled = _autoinject_enabled()
+    thread_id = rag_scope.get("thread_id")
+    whole_doc_requested = (
+        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
+    )
+    if not enabled and not whole_doc_requested:
+        return False, False
+    # What _resolve_scope resolves to nothing: an unpersisted New Chat carries a scope with
+    # none of the three ids, and the search stops there.
+    if not (rag_scope.get("kb_id") or rag_scope.get("project_id") or thread_id):
+        return False, False
+    if not _last_user_text(conversation):
+        return False, False
+    try:
+        from storage import rag_db
+
+        # rag_available(), not the import flag: the vec0 native library is a separate file a
+        # venv can be missing, and nothing finds out until a connection tries.
+        if not rag_db.rag_available():
+            return False, False
+    except Exception:  # noqa: BLE001
+        return False, False
+    return bool(enabled), whole_doc_requested
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
     ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
@@ -11586,24 +11826,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     Also the small-model fallback: models below ~4B often answer from memory
     instead of calling ``search_knowledge_base``, so forcing retrieval here keeps
     attachments consulted regardless of model size."""
-    if not rag_scope:
-        return None
-    enabled = rag_scope.get("autoinject")
-    if enabled is None:
-        enabled = _autoinject_enabled()
-    thread_id = rag_scope.get("thread_id")
-    whole_doc_requested = (
-        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
-    )
+    enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
     if not enabled and not whole_doc_requested:
         return None
+    thread_id = rag_scope.get("thread_id")
     query = _last_user_text(conversation)
-    if not query:
-        return None
     try:
-        from storage import rag_db
-        if not rag_db.RAG_AVAILABLE:
-            return None
         from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)

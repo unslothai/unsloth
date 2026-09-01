@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from storage.studio_db import get_connection
+from storage.studio_db import get_connection, is_sqlite_busy_error
 
 
 # Kept aligned with the API monitor's defensive upper bound. The storage layer
@@ -94,8 +94,8 @@ def canonical_api_model(model: object) -> str:
 
 
 def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
-    message = str(exc).lower()
-    return "locked" in message or "busy" in message
+    # One definition, in the module that owns the contended file.
+    return is_sqlite_busy_error(exc)
 
 
 def _sleep_after_busy(delay: float) -> None:

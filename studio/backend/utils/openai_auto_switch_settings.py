@@ -5,8 +5,10 @@
 
 All off by default so existing API behavior is unchanged:
 - ``openai_api_auto_switch_model``: when on, a ``/v1`` request whose ``model``
-  names a downloaded local GGUF different from the loaded one transparently
-  loads it before serving (llama-swap-style). Unknown names pass through.
+  names a downloaded local model different from the loaded one transparently
+  loads it before serving (llama-swap-style). Covers GGUF through llama.cpp and
+  non-GGUF weights (safetensors, MLX) through the inference orchestrator.
+  Unknown names pass through.
 - ``openai_api_auto_download_model``: when on, a ``/v1`` request naming an
   undownloaded GGUF repo starts a background download instead of failing.
   Gated on auto-switch, which is what serves the model once it lands.

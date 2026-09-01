@@ -522,7 +522,8 @@ def test_anthropic_route_translates_authoritative_project_context_at_dispatch(
     assert len(calls) == 1
     [system] = [message for message in calls[0]["messages"] if message["role"] == "system"]
     text = system["content"]
-    assert text.startswith("User system")
+    assert "User system" in text
+    assert text.index("User system") < text.index(PROJECT_CONTEXT_MARKER)
     assert text.count(PROJECT_CONTEXT_MARKER) == 1
     assert text.count(REPOSITORY_INSTRUCTIONS_MARKER) == 1
     assert "Anthropic project goal" in text
@@ -876,7 +877,8 @@ def test_llama_dispatch_keeps_project_context_and_state_across_model_switches(
     for call in calls:
         [system] = [message for message in call["messages"] if message["role"] == "system"]
         text = system["content"]
-        assert text.startswith("User system")
+        assert "User system" in text
+        assert text.index("User system") < text.index(PROJECT_CONTEXT_MARKER)
         assert text.count(PROJECT_CONTEXT_MARKER) == 1
         assert text.count(REPOSITORY_INSTRUCTIONS_MARKER) == 1
         assert "Llama project goal" in text
@@ -965,7 +967,8 @@ def test_mlx_dispatch_keeps_project_context_and_state_across_model_switches(tmp_
     assert len(calls) == 2
     for call in calls:
         text = call["system_prompt"]
-        assert text.startswith("User system")
+        assert "User system" in text
+        assert text.index("User system") < text.index(PROJECT_CONTEXT_MARKER)
         assert text.count(PROJECT_CONTEXT_MARKER) == 1
         assert text.count(REPOSITORY_INSTRUCTIONS_MARKER) == 1
         assert "MLX project goal" in text

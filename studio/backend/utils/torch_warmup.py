@@ -34,7 +34,8 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
-from functools import partial
+from functools import partial, wraps
+from importlib._bootstrap import _ModuleLockManager
 from typing import Optional
 
 from loggers import get_logger
@@ -61,6 +62,48 @@ def _is_extension_module(name: str) -> bool:
     return origin.endswith(tuple(importlib.machinery.EXTENSION_SUFFIXES))
 
 
+_DATASETS_ARROW_EXTENSION_TYPES = tuple(
+    f"datasets.features.features.Array{dimensions}DExtensionType" for dimensions in range(2, 6)
+)
+
+
+def _clear_external_import_state(package: str) -> list[str]:
+    """Undo native registrations made by a pure-Python module before it failed."""
+    if package != "datasets":
+        return []
+    pyarrow = sys.modules.get("pyarrow")
+    unregister = getattr(pyarrow, "unregister_extension_type", None)
+    if unregister is None:
+        return []
+    cleared: list[str] = []
+    for type_name in _DATASETS_ARROW_EXTENSION_TYPES:
+        try:
+            unregister(type_name)
+        except KeyError:
+            continue
+        cleared.append(type_name)
+    if cleared:
+        logger.warning(
+            "unregistered %d PyArrow extension type(s) left by the failed %s "
+            "import so its modules can be executed again",
+            len(cleared),
+            package,
+        )
+    return cleared
+
+
+def _synchronize_with_imports(fn):
+    """Run cleanup under the same per-module lock used by CPython imports."""
+
+    @wraps(fn)
+    def synchronized(package: str):
+        with _ModuleLockManager(package):
+            return fn(package)
+
+    return synchronized
+
+
+@_synchronize_with_imports
 def purge_partial_import(package: str) -> list:
     """Drop the submodules a failed package import left behind in sys.modules.
 
@@ -77,6 +120,8 @@ def purge_partial_import(package: str) -> list:
     Declines when any submodule is a loaded C extension: evicting one re-runs its
     module init, and pybind11 answers a duplicate type registration with
     std::terminate. A torch missing attributes is bad; SIGABRT mid-serve is worse.
+    Known native registries populated by pure-Python modules are reset only after
+    every stale module has been removed and no importer has republished the parent.
     """
     if package in sys.modules:
         return []
@@ -116,6 +161,9 @@ def purge_partial_import(package: str) -> list:
             break
         if sys.modules.pop(name, None) is not None:
             removed.append(name)
+    fully_purged = package not in sys.modules and not any(name in sys.modules for name in stale)
+    if fully_purged:
+        _clear_external_import_state(package)
     if removed:
         logger.warning(
             "purged %d half-imported %s submodule(s) so the next import re-runs clean: %s",
@@ -133,23 +181,40 @@ _STAGE_PACKAGE = {
     "datasets": "datasets",
 }
 
+# Hold the import lock across a bare import and its failure cleanup. Locking only
+# the purge leaves a window where a queued importer can reuse stale submodules.
+# Hardware and transformers acquire additional locks, so exclude them to avoid
+# lock-order inversions.
+_BARE_IMPORT_STAGES = frozenset({"datasets"})
+
+
+@contextmanager
+def _held_import_lock(name: str, package: Optional[str]):
+    """Hold ``package``'s import lock for a bare-import stage; a no-op for the rest."""
+    if package is None or name not in _BARE_IMPORT_STAGES:
+        yield
+        return
+    with _ModuleLockManager(package):
+        yield
+
 
 def _run_stage(name: str, fn) -> None:
+    package = _STAGE_PACKAGE.get(name)
     started = time.perf_counter()
-    try:
-        fn()
-    except BaseException as exc:  # noqa: BLE001 - a warm failure must be visible, not fatal
-        _status["stages"][name] = {"ok": False, "error": repr(exc)}
-        # warning, not debug: the stage stays cold and the first request pays for it.
-        logger.warning("torch warm stage %r failed: %r", name, exc)
-        package = _STAGE_PACKAGE.get(name)
-        if package:
-            purge_partial_import(package)
-    else:
-        _status["stages"][name] = {
-            "ok": True,
-            "seconds": round(time.perf_counter() - started, 3),
-        }
+    with _held_import_lock(name, package):
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 - a warm failure must be visible, not fatal
+            _status["stages"][name] = {"ok": False, "error": repr(exc)}
+            # warning, not debug: the stage stays cold and the first request pays for it.
+            logger.warning("torch warm stage %r failed: %r", name, exc)
+            if package:
+                purge_partial_import(package)
+        else:
+            _status["stages"][name] = {
+                "ok": True,
+                "seconds": round(time.perf_counter() - started, 3),
+            }
 
 
 def _warm_hardware(epoch: Optional[int] = None) -> None:

@@ -495,12 +495,20 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         set_progress(1.0)
         offset += weight
         with job_lock:
-            job["phases"][name].update(
-                state = PHASE_SUCCESS,
-                to_tag = result.get("to_tag"),
-                reload_required = result.get("reload_required"),
-                message = result.get("message") or "",
-            )
+            if result.get("skipped"):
+                # Skipped with a reason, not a success with no message: deciding late
+                # must not mean explaining less.
+                job["phases"][name].update(
+                    state = PHASE_SKIPPED,
+                    reason = result.get("skip_reason") or "up_to_date",
+                )
+            else:
+                job["phases"][name].update(
+                    state = PHASE_SUCCESS,
+                    to_tag = result.get("to_tag"),
+                    reload_required = result.get("reload_required"),
+                    message = result.get("message") or "",
+                )
         if result.get("message"):
             done_messages.append(result["message"])
         # Only phases affecting the primary (llama) server may raise the job-level

@@ -694,7 +694,7 @@ export const ptBR = {
         sectionTitle: "Troca automática de modelo (API OpenAI)",
         enable: "Trocar de modelo por requisição",
         enableDescription:
-          "Carrega, antes de responder, um GGUF baixado indicado em uma requisição da API. Desativado por padrão.",
+          "Carrega, antes de responder, um modelo baixado indicado em uma requisição da API. Desativado por padrão.",
         idleUnload: "Descarregamento automático por inatividade",
         idleUnloadDescription:
           "Libera a VRAM após esta quantidade de segundos de inatividade. 0 mantém o modelo carregado; o mínimo é 60.",
@@ -841,6 +841,16 @@ export const ptBR = {
         copied: "Caminho copiado",
         openError: "Não foi possível abrir a pasta",
         copyError: "Não foi possível copiar o caminho",
+      },
+      repairInstall: {
+        label: "Reparar a instalação",
+        description:
+          "Executa o instalador novamente sobre o ambiente gerenciado. Útil se a GPU não for detectada ou se o aplicativo não iniciar.",
+        action: "Reparar instalação",
+        confirmTitle: "Reparar esta instalação?",
+        confirmDescription:
+          "Para o servidor e executa o instalador novamente, que reinstala o PyTorch para a GPU desta máquina. As conversas e as configurações são mantidas. Isso pode levar alguns minutos.",
+        confirmAction: "Reparar agora",
       },
       resetPreferences: {
         sectionTitle: "Zona de perigo",
@@ -1096,6 +1106,8 @@ export const ptBR = {
         currentLoad: "Carga atual",
         free: "{value} livres",
         noGpu: "Nenhuma GPU visível",
+        gpuUnusable: "GPU inutilizável",
+        gpuUnusableDetail: "Detectada, mas o PyTorch não consegue usá-la",
       },
       gpu: {
         title: "Dispositivos de GPU",
@@ -1104,6 +1116,12 @@ export const ptBR = {
         detecting: "Procurando GPUs...",
         unreadable: "Não foi possível ler o hardware deste servidor.",
         noGpu: "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
+        noUsableGpu: "Nenhuma GPU desta máquina pode ser usada pelo PyTorch.",
+        mismatchCpuBuild:
+          "O PyTorch é uma compilação somente CPU ({version}), então as GPUs abaixo não podem ser usadas. Repare a instalação para restaurar o suporte a GPU.",
+        mismatchUnavailable:
+          "O PyTorch ({version}) não consegue inicializar as GPUs abaixo, então elas não podem ser usadas. Verifique o driver da GPU ou repare a instalação.",
+        unusableDevice: "inutilizável",
         unknownDevice: "GPU desconhecida",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1375,10 +1393,40 @@ export const ptBR = {
       rememberParamsPerModel: "Lembrar as configurações por modelo",
       rememberParamsPerModelDescription:
         "Ao trocar de modelo, a temperatura, o prompt e as demais configurações usadas por último com aquele modelo são restauradas. Desativado, um único conjunto de configurações vale para todos os modelos.",
+      autoCompact: "Compactar automaticamente chats longos",
+      autoCompactDescription:
+        "Quando um chat GGUF local atingir o tamanho de contexto definido, descarte turnos antigos em vez de retornar um erro. Isso não depende da VRAM livre.",
+      compactionStyle: "Quando o contexto estiver cheio",
+      compactionStyleDescription:
+        "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
+      compactionStyleInherit: "Usar padrão do servidor",
+      compactionStyleCheckpoint: "Redefinir conversa",
+      compactionStyleRollingDefault:
+        "Descartar turnos antigos (~25% de espaço extra)",
+      compactionStyleRolling10:
+        "Descartar turnos antigos (~10% de espaço extra)",
+      compactionStyleRolling5:
+        "Descartar turnos antigos (~5% de espaço extra)",
+      compactionStyleRollingNone:
+        "Descartar turnos antigos (sem corte extra)",
+      autoCompactKeywords:
+        "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem compaction rolling headroom",
       thinking: {
         collapseByDefault: "Recolher o raciocínio por padrão",
         collapseByDefaultDescription:
           "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+      },
+      currentDate: {
+        label: "Informar a data de hoje ao modelo",
+        description:
+          "Adiciona a data atual ao prompt para que a busca na web e o Deep Research procurem fontes recentes em vez de assumir a data de corte do treinamento do modelo.",
+        loadError: "Não foi possível carregar as configurações de data atual",
+        saveError: "Não foi possível atualizar as configurações de data atual",
+      },
+      tools: {
+        collapseByDefault: "Recolher atividade de ferramentas por padrão",
+        collapseByDefaultDescription:
+          "Mantém entradas e saídas das ferramentas recolhidas durante a execução. Expanda uma linha para inspecioná-la.",
       },
       webSearch: {
         title: "Busca na web",
@@ -1397,6 +1445,11 @@ export const ptBR = {
         blockedBanner: "{count} recurso externo de {hosts} bloqueado.",
         blockedBannerPlural: "{count} recursos externos de {hosts} bloqueados.",
         blockedBannerAction: "Permitir neste Canvas",
+        blockedTitle: "O acesso à rede do Canvas está desativado",
+        blockedHint:
+          "Ative “{setting}” em Configurações → Chat para que os Canvas carreguem recursos externos, ou permita apenas neste Canvas.",
+        blockedSettingsAction: "Abrir configurações",
+        blockedDismiss: "Dispensar",
       },
       data: "Dados",
       exportHistory: "Exportar histórico de chat",
@@ -1469,6 +1522,8 @@ export const ptBR = {
       archivedImagesDescription: "Veja e gerencie as imagens que você arquivou.",
       archivedVideos: "Vídeos arquivados",
       archivedVideosDescription: "Veja e gerencie os vídeos que você arquivou.",
+      archivedAudio: "Áudios arquivados",
+      archivedAudioDescription: "Veja e gerencie os clipes de áudio que você arquivou.",
       manageAction: "Gerenciar",
       manageChats: "Gerenciar chats",
       manageChatsDescription:
@@ -1655,7 +1710,7 @@ export const ptBR = {
         desktopAvailable:
           "A versão {version} do aplicativo de desktop está disponível",
         desktopAvailableDescription:
-          "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
+          "Atualize agora para preparar em segundo plano. Você continua trabalhando e reinicia quando estiver pronto.",
         desktopExternalServer:
           "Execute `unsloth studio update` no terminal usado para iniciar o servidor.",
         desktopManualInstall:
@@ -1666,11 +1721,20 @@ export const ptBR = {
         desktopCurrent: "O aplicativo de desktop está atualizado",
         desktopCurrentDescription:
           "O Unsloth continuará verificando automaticamente.",
+        desktopPreparingDescription:
+          "A atualização está sendo preparada em segundo plano. Você pode continuar trabalhando.",
+        desktopReadyToRestartDescription:
+          "Tudo pronto. Reinicie para concluir a instalação da atualização.",
+        desktopReadyToInstallDescription:
+          "A atualização do aplicativo foi baixada. Conclua a atualização do backend para instalá-la.",
         checkForUpdates: "Verificar se há atualizações",
         checkAgain: "Verificar novamente",
         retryCheck: "Tentar novamente",
         checking: "Verificando...",
+        preparing: "Preparando...",
         updateNow: "Atualizar agora",
+        restartToUpdate: "Reiniciar para atualizar",
+        finishUpdate: "Concluir atualização",
         openReleasePage: "Abrir página de lançamentos",
         unknownInstall:
           "Não foi possível detectar como o Unsloth foi instalado. Para instalações via instalador ou PyPI, use os comandos acima.",

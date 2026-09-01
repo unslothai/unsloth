@@ -25,6 +25,7 @@ on:
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
       - 'tests/studio/playwright_keyboard_shortcuts.py'
+      - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
@@ -433,6 +434,12 @@ jobs:
       - name: Browser smoke for keyboard shortcuts
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_keyboard_shortcuts.py
+
+      - name: Browser smoke for tool activity collapse
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_ENGINE: chromium
+        run: python3 tests/studio/playwright_tool_activity.py --json
 
       # A panel that cannot be fetched is new with lazy loading, and nothing above the
       # root-mounted dialog catches, so unguarded it unmounts Unsloth, not one panel.

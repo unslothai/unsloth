@@ -65,6 +65,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
     learningRateManuallySet: false,
     modelAdapterLearningRate: null,
     datasetFormatBeforeCpt: null,
+    targetModulesBeforeCpt: null,
   },
   datasetSource: "huggingface",
   browseDatasetSelection: createHfBrowseDatasetSelection(null),

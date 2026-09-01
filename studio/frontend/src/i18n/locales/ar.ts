@@ -688,7 +688,7 @@ export const ar = {
         sectionTitle: "التبديل التلقائي للنموذج (OpenAI API)",
         enable: "تبديل النموذج حسب الطلب",
         enableDescription:
-          "تحميل ملف GGUF منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
+          "تحميل نموذج منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
         idleUnload: "التفريغ التلقائي عند الخمول",
         idleUnloadDescription:
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
@@ -830,6 +830,16 @@ export const ar = {
         copied: "تم نسخ المسار",
         openError: "تعذّر فتح المجلد",
         copyError: "تعذّر نسخ المسار",
+      },
+      repairInstall: {
+        label: "إصلاح التثبيت",
+        description:
+          "يعيد تشغيل المثبّت على البيئة المُدارة. استخدمه إذا لم يتم اكتشاف وحدة معالجة الرسومات أو إذا تعذّر بدء التطبيق.",
+        action: "إصلاح التثبيت",
+        confirmTitle: "هل تريد إصلاح هذا التثبيت؟",
+        confirmDescription:
+          "يوقف الخادم ويعيد تشغيل المثبّت، الذي يعيد تثبيت PyTorch لوحدة معالجة الرسومات في هذا الجهاز. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmAction: "إصلاح الآن",
       },
       resetPreferences: {
         sectionTitle: "منطقة الخطر",
@@ -1086,6 +1096,8 @@ export const ar = {
         currentLoad: "الحمل الحالي",
         free: "{value} متاح",
         noGpu: "لا يوجد GPU مرئي",
+        gpuUnusable: "GPU غير قابل للاستخدام",
+        gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
       },
       gpu: {
         title: "أجهزة GPU",
@@ -1094,6 +1106,12 @@ export const ar = {
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
+        noUsableGpu: "لا يوجد على هذا الجهاز أي GPU يمكن لـ PyTorch استخدامه.",
+        mismatchCpuBuild:
+          "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
+        mismatchUnavailable:
+          "لا يستطيع PyTorch ({version}) تهيئة وحدات GPU أدناه، لذا لا يمكن استخدامها. تحقق من تعريف كرت الشاشة أو أصلح التثبيت.",
+        unusableDevice: "غير قابل للاستخدام",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1360,10 +1378,36 @@ export const ar = {
       rememberParamsPerModel: "تذكر الإعدادات لكل نموذج",
       rememberParamsPerModelDescription:
         "عند تبديل النموذج تُستعاد درجة الحرارة والموجّه وبقية الإعدادات التي استخدمتها آخر مرة مع ذلك النموذج. عند الإيقاف تبقى مجموعة إعدادات واحدة لكل النماذج.",
+      autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
+      autoCompactDescription:
+        "عندما تصل محادثة GGUF محلية إلى طول السياق المحدد، احذف الأدوار الأقدم بدلًا من إرجاع خطأ. لا يعتمد ذلك على ذاكرة VRAM المتاحة.",
+      compactionStyle: "عند امتلاء السياق",
+      compactionStyleDescription:
+        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
+      compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
+      compactionStyleCheckpoint: "إعادة ضبط المحادثة",
+      compactionStyleRollingDefault: "حذف الأدوار الأقدم (مساحة إضافية نحو 25%)",
+      compactionStyleRolling10: "حذف الأدوار الأقدم (مساحة إضافية نحو 10%)",
+      compactionStyleRolling5: "حذف الأدوار الأقدم (مساحة إضافية نحو 5%)",
+      compactionStyleRollingNone: "حذف الأدوار الأقدم (دون اقتطاع إضافي)",
+      autoCompactKeywords:
+        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+      },
+      currentDate: {
+        label: "إخبار النموذج بتاريخ اليوم",
+        description:
+          "أضف التاريخ الحالي إلى المطالبة حتى يبحث البحث على الويب و Deep Research عن مصادر حديثة بدلًا من افتراض تاريخ انتهاء تدريب النموذج.",
+        loadError: "تعذّر تحميل إعدادات التاريخ الحالي",
+        saveError: "تعذّر تحديث إعدادات التاريخ الحالي",
+      },
+      tools: {
+        collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
+        collapseByDefaultDescription:
+          "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
       },
       webSearch: {
         title: "البحث على الويب",
@@ -1382,6 +1426,11 @@ export const ar = {
         blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
         blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
         blockedBannerAction: "السماح لهذا الـ Canvas",
+        blockedTitle: "الوصول إلى الشبكة لـ Canvas معطّل",
+        blockedHint:
+          "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
+        blockedSettingsAction: "فتح الإعدادات",
+        blockedDismiss: "تجاهل",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",
@@ -1455,6 +1504,8 @@ export const ar = {
       archivedImagesDescription: "اعرض الصور التي أرشفتها وأدرها.",
       archivedVideos: "الفيديوهات المؤرشفة",
       archivedVideosDescription: "اعرض الفيديوهات التي أرشفتها وأدرها.",
+      archivedAudio: "الصوتيات المؤرشفة",
+      archivedAudioDescription: "اعرض المقاطع الصوتية التي أرشفتها وأدرها.",
       manageAction: "إدارة",
       manageChats: "إدارة المحادثات",
       manageChatsDescription:
@@ -1637,7 +1688,7 @@ export const ar = {
         desktopCheckingDescription: "يستغرق ذلك عادةً بضع ثوانٍ.",
         desktopAvailable: "يتوفر إصدار جديد من تطبيق سطح المكتب: {version}",
         desktopAvailableDescription:
-          "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
+          "حدّث الآن ليُجهَّز التحديث في الخلفية. يمكنك متابعة عملك وإعادة التشغيل عندما يصبح جاهزًا.",
         desktopExternalServer:
           "شغّل الأمر `unsloth studio update` في الطرفية التي شغّلت الخادم.",
         desktopManualInstall:
@@ -1646,11 +1697,20 @@ export const ar = {
         desktopCheckFailedDescription: "تحقق من اتصالك ثم حاول مرة أخرى.",
         desktopCurrent: "تطبيق سطح المكتب محدّث",
         desktopCurrentDescription: "سيواصل Unsloth التحقق تلقائيًا.",
+        desktopPreparingDescription:
+          "يجري تجهيز التحديث في الخلفية. يمكنك متابعة عملك.",
+        desktopReadyToRestartDescription:
+          "كل شيء جاهز. أعد التشغيل لإكمال تثبيت التحديث.",
+        desktopReadyToInstallDescription:
+          "تم تنزيل تحديث التطبيق. أكمل تحديث الواجهة الخلفية لتثبيته.",
         checkForUpdates: "التحقق من وجود تحديثات",
         checkAgain: "التحقق مرة أخرى",
         retryCheck: "إعادة المحاولة",
         checking: "جارٍ التحقق...",
+        preparing: "جارٍ التجهيز...",
         updateNow: "التحديث الآن",
+        restartToUpdate: "إعادة التشغيل للتحديث",
+        finishUpdate: "إكمال التحديث",
         openReleasePage: "فتح صفحة الإصدار",
         unknownInstall:
           "تعذّر اكتشاف طريقة تثبيت Unsloth. لعمليات تثبيت المثبّت أو PyPI، استخدم الأوامر أعلاه.",

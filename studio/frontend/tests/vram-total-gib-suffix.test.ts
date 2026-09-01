@@ -102,25 +102,74 @@ test("helper-formatted totals pick the GiB helper, not the disk one", () => {
   }
 });
 
-// The memory bar names its own unit rather than going through formatGiB, and it
-// divides by 1024**3 throughout, including the gpuGb it measures against. Listed
-// separately because the check is on its formatter, not on a call site.
+// Both memory surfaces name their own units rather than going through
+// formatGiB, and both divide by 1024 throughout -- including the gpuGb they
+// measure against. Their formatters used to live in two feature modules, one per
+// surface, and this guard only knew about one of them: the OTHER divided by
+// 1024**3 and labelled the result "GB" across seven figures on the Load Model
+// panel, which is exactly the defect this file exists to prevent, sitting
+// outside its reach the whole time.
+//
+// They are now one module, so the check is on that module and covers every
+// formatter in it. Listed by name rather than swept, so deleting one is a
+// failure here rather than a silent reduction in what is guarded.
 const BINARY_FORMATTERS: [string, string][] = [
-  ["lib/model-memory.ts", "formatMemoryGb"],
+  ["lib/memory/format.ts", "formatGiB"],
+  ["lib/memory/format.ts", "formatBytesGiB"],
+  ["lib/memory/format.ts", "formatKvRate"],
 ];
 
-test("the memory bar's own formatter names a binary unit", () => {
+test("every shared memory formatter names a binary unit", () => {
   for (const [relative, fn] of BINARY_FORMATTERS) {
     const source = readFileSync(new URL(relative, SRC), "utf8");
     const helper = source.match(
       new RegExp(`export function ${fn}[\\s\\S]*?\\n}`),
     );
     assert.ok(helper, `${relative}: no ${fn}`);
+    // Any B-suffixed literal that is not preceded by "Ki", "Mi" or "Gi".
     assert.doesNotMatch(
       helper[0],
-      /(?<!Gi)B["'`]/,
+      /(?<!Ki|Mi|Gi)B["'`]/,
       `${relative}: ${fn} labels a binary value with a decimal unit`,
     );
-    assert.match(helper[0], /GiB/, `${relative}: ${fn} does not suffix GiB`);
+    assert.match(
+      helper[0],
+      /(KiB|MiB|GiB)/,
+      `${relative}: ${fn} names no binary unit at all`,
+    );
+  }
+});
+
+// The two surfaces reach those formatters through back-compat aliases that kept
+// their old names. The aliases are the reason no call site had to change, and
+// they are also how a future edit could quietly reintroduce a second
+// implementation: redefining formatMemoryGb as a function in either module would
+// shadow the shared one and this file would be none the wiser, since the check
+// above only reads lib/memory/format.ts.
+const ALIAS_ONLY = [
+  "lib/model-memory.ts",
+  "features/model-picker/model-config/memory-fit.ts",
+];
+
+test("the surfaces alias the shared formatters rather than redefining them", () => {
+  for (const relative of ALIAS_ONLY) {
+    const source = readFileSync(new URL(relative, SRC), "utf8");
+    assert.doesNotMatch(
+      source,
+      /export function formatMemoryGb\b/,
+      `${relative}: formatMemoryGb is defined here again. There were once two of ` +
+        `these, with the same name and signature but different input units and ` +
+        `different labels, and importing the wrong one typechecked cleanly.`,
+    );
+    assert.doesNotMatch(
+      source,
+      /export function formatKvRate\b/,
+      `${relative}: formatKvRate is defined here again`,
+    );
+    assert.match(
+      source,
+      /from "\.\.?\/[^"]*memory\/format\.ts"/,
+      `${relative}: no longer sources its formatters from the shared module`,
+    );
   }
 });

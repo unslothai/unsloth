@@ -24,6 +24,7 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     download_remaining_bytes: Optional[int] = Field(
         None,
         description = (
@@ -163,7 +164,7 @@ class LocalModelInfo(BaseModel):
     )
     audio_type: Optional[str] = Field(
         None,
-        description = "Detected output-audio codec used to decide whether Audio can run the row",
+        description = "Detected output-audio architecture or codec used by Audio runtime policy",
     )
     base_model: Optional[str] = Field(
         None,
@@ -260,9 +261,11 @@ class CachedGgufRepo(CachedRepoBase):
 
 class CachedGgufResponse(BaseModel):
     cached: List[CachedGgufRepo] = Field(default_factory = list)
+    scan_confirmed: bool = True
 
 
 class CachedModelRepo(CachedRepoBase):
+    audio_type: Optional[str] = None
     quant_method: Optional[str] = None
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
@@ -283,6 +286,7 @@ class CachedModelRepo(CachedRepoBase):
 
 class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
+    scan_confirmed: bool = True
 
 
 class HiddenModelsResponse(BaseModel):

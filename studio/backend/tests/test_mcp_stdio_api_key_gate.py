@@ -59,6 +59,36 @@ def no_probe(monkeypatch):
 STDIO_CMD = "/bin/sh -c id"
 
 
+# ── stdio form codec: command material is UI-session-only ──────────
+
+
+@pytest.mark.parametrize("operation", ["encode", "decode"])
+def test_stdio_command_codec_refuses_api_key_before_work(
+    monkeypatch, stdio_on, no_probe, operation
+):
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+
+    def _never(*args, **kwargs):
+        raise AssertionError("refused codec request must not access storage")
+
+    monkeypatch.setattr(mcp_servers_db, "list_servers", _never)
+    with pytest.raises(HTTPException) as exc:
+        if operation == "encode":
+            routes_mcp.encode_stdio_command(
+                McpStdioCommand(command = "python", arguments = ["--token", "secret"]),
+                current_subject = "api-key-user",
+                via_api_key = True,
+            )
+        else:
+            routes_mcp.decode_stdio_command(
+                McpStdioDecodeRequest(url = "python --token secret"),
+                current_subject = "api-key-user",
+                via_api_key = True,
+            )
+    assert exc.value.status_code == 403
+
+
 # ── /test: an unstored, caller-supplied command ─────────────────────
 
 
@@ -436,6 +466,8 @@ def test_default_is_ui_session_so_direct_calls_are_unaffected():
         "refresh_mcp_server_tools",
         "import_mcp_servers",
         "test_mcp_server",
+        "decode_stdio_command",
+        "encode_stdio_command",
     ):
         param = inspect.signature(getattr(routes_mcp, name)).parameters["via_api_key"]
         assert param.default is False, name

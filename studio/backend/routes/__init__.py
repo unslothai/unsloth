@@ -10,6 +10,7 @@ from routes.models import router as models_router
 from routes.inference import router as inference_router
 from routes.inference import studio_router as inference_studio_router
 from routes.video import router as video_router
+from routes.video import openai_router as video_openai_router
 from routes.datasets import router as datasets_router
 from routes.auth import router as auth_router
 from routes.data_recipe import router as data_recipe_router
@@ -32,6 +33,7 @@ __all__ = [
     "inference_router",
     "inference_studio_router",
     "video_router",
+    "video_openai_router",
     "datasets_router",
     "auth_router",
     "data_recipe_router",
@@ -49,4 +51,11 @@ __all__ = [
 ]
 
 # Bind the re-export so the import-hoist verifier counts it as used.
-_ = (rag_router, video_router, research_runs_router, chat_generation_runs_router, youtube_router)
+_ = (
+    rag_router,
+    video_router,
+    video_openai_router,
+    research_runs_router,
+    chat_generation_runs_router,
+    youtube_router,
+)

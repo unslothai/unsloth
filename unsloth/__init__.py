@@ -356,6 +356,35 @@ if _IS_MLX:
         if clear_cache is None and hasattr(mx, "metal"):
             clear_cache = getattr(mx.metal, "clear_cache", None)
         if callable(clear_cache):
+            # MLX pins buffers a live command buffer reads, but not a dropped output array.
+            # Generation runs on its own streams, which a no-argument mx.synchronize()
+            # would not wait on. Best effort: this helper is torch.cuda.empty_cache() on
+            # MLX, called from finally arms on any thread, and synchronizing a stream
+            # bound on another thread raises (mlx 0.31.2 made encoders thread local).
+            _synchronize = getattr(mx, "synchronize", None)
+            if callable(_synchronize):
+                _drained = []
+                for _module in (
+                    "mlx_lm.generate",
+                    "mlx_vlm.generate",
+                    "mlx_vlm.generate.dispatch",
+                    "mlx_vlm.generate.ar",
+                    # Speculative decoding owns a second stream wired_limit never sees.
+                    "mlx_vlm.speculative.common",
+                ):
+                    try:
+                        _stream = getattr(sys.modules.get(_module), "generation_stream", None)
+                        # 0.6.x aliases one object across every mlx_vlm.generate name.
+                        if _stream is None or any(_stream is _seen for _seen in _drained):
+                            continue
+                        _drained.append(_stream)
+                        _synchronize(_stream)
+                    except Exception:
+                        continue
+                try:
+                    _synchronize()
+                except Exception:
+                    pass
             clear_cache()
 
     def _patch_mlx_torch_cuda_compat_api():
@@ -1564,3 +1593,15 @@ else:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+# Both paths, GPU and MLX: a `pip install --target` / PYTHONPATH layout makes
+# dill pickle whole modules by value, and every training path here builds a
+# `datasets.Dataset`, which fingerprints through dill. No-op on an ordinary
+# install. See `import_fixes.fix_dill_module_by_value_pickling`.
+try:
+    from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill
+    _fix_dill()
+    del _fix_dill
+except Exception:
+    pass

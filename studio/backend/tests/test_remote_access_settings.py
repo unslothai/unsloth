@@ -27,12 +27,14 @@ def _state(
     intent = "unset",
     is_colab = False,
     launch_managed = False,
+    request_host = "127.0.0.1",
 ):
     return SimpleNamespace(
         remote_access_intent = intent,
         remote_access_is_colab = is_colab,
         remote_access_launch_managed = launch_managed,
         remote_access_port = 8888,
+        server_request_host = request_host,
         remote_access_ready = True,
     )
 
@@ -211,7 +213,8 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
         "block_reason": None,
     }
 
-    def _start(*_args, **_kwargs):
+    def _start(*_args, **kwargs):
+        assert kwargs["origin_host"] == "::1"
         ready.set()
         return "https://example.trycloudflare.com"
 
@@ -227,12 +230,24 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
     )
 
     if trigger == "auto":
-        assert remote_access.maybe_auto_start_remote_access(_state())
+        assert remote_access.maybe_auto_start_remote_access(_state(request_host = "::1"))
     else:
-        remote_access.start_remote_access(_state())
+        remote_access.start_remote_access(_state(request_host = "::1"))
     assert ready.wait(1)
     remote_access._start_worker.join(1)
     assert messages == ["Secure link access via Cloudflare: https://example.trycloudflare.com"]
+
+
+def test_settings_start_fails_closed_without_a_bound_address(monkeypatch):
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_start_worker_admission", None)
+    status = {"state": "off", "managed_by": None, "can_start": True, "block_reason": None}
+    monkeypatch.setattr(remote_access, "remote_access_status", lambda _: status)
+    monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 1))
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 1))
+
+    with pytest.raises(RuntimeError, match = "server_address_unavailable"):
+        remote_access.start_remote_access(_state(request_host = None))
 
 
 @pytest.mark.parametrize("operation", ["start", "stop"])

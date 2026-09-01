@@ -54,6 +54,11 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  hydrateModelDisclaimerPreference,
+  refreshModelDisclaimerPreference,
+  saveModelDisclaimerPreference,
+} from "./sync-model-disclaimer-preference";
 export { useChatActive, useInComparePane } from "./runtime-provider";
 export {
   CHAT_RAG_CAPTION_KEY,
@@ -210,7 +215,10 @@ export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
-export { extractYoutubeVideoId } from "./utils/youtube-url";
+export {
+  extractYoutubeVideoId,
+  extractYoutubeVideoUrlFromClipboard,
+} from "./utils/youtube-url";
 export {
   isSearchImagesToolResult,
   searchImagePath,

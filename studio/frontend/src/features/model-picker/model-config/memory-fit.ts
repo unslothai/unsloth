@@ -5,74 +5,54 @@
  * How the estimated footprint sits against the memory available to hold it, and the
  * single note the row prints about it.
  *
- * Import-free, like the sibling estimate-context.ts, so `tests/` can load it under
- * `node --experimental-strip-types`, which does not resolve the `@/` alias. Inside a
- * 3,400-line .tsx this chain was unreachable from the test runner, and a ternary arm
- * that could never be taken survived review for exactly that reason. Everything is
- * pure and typed structurally, so a MemoryEstimate satisfies the inputs.
+ * Split out of model-config-page.tsx for the reason the sibling estimate-context.ts
+ * gives: kept free of `@/` ALIAS imports so `tests/` can load it under
+ * `node --experimental-strip-types`, which does not resolve that alias. Living
+ * inside a 3,400-line .tsx made this chain unreachable from the test runner, and a
+ * ternary arm that could never be taken survived review there for exactly that
+ * reason (see the pool note on the advisory below).
+ *
+ * The imports below are RELATIVE and with explicit extensions, which the strip-types
+ * loader does resolve, so the three tests that load this module directly
+ * (memory-fit, memory-estimate-skew, memory-estimate-free-vram) still work without
+ * registering a bundler resolver. An `@/` spelling here breaks all three.
+ *
+ * Everything here is pure and typed structurally, so a MemoryEstimate satisfies the
+ * inputs without importing it.
  */
 
-/** How an estimated footprint sits against the memory available to hold it. */
-export type MemoryFitVerdict = "fits" | "tight" | "exceeds" | "unknown";
+// The fit vocabulary and the unit formatting now live in src/lib/memory/, shared
+// with the Hub memory bar so the two surfaces cannot describe one load
+// differently while being fed identical bytes. Re-exported here rather than
+// moved out of reach, because this module is the panel's entry point and its
+// call sites are unchanged.
+export {
+  classifyMemoryFit,
+  worseMemoryFit,
+  type MemoryFitVerdict,
+} from "../../../lib/memory/verdict.ts";
+export { MEMORY_FIT_TIGHT_RATIO } from "../../../lib/memory/thresholds.ts";
 
-/** Above this share of the capacity the fit is reported as tight rather than clean. */
-export const MEMORY_FIT_TIGHT_RATIO = 0.85;
+import { classifyMemoryFit, worseMemoryFit } from "../../../lib/memory/verdict.ts";
+import type { MemoryFitVerdict } from "../../../lib/memory/verdict.ts";
+import { formatBytesGiB } from "../../../lib/memory/format.ts";
 
 /**
- * Classify a footprint against a capacity.
+ * A memory figure in bytes, to two decimals.
  *
- * Every non-finite input is "unknown", and `<= 0` alone does not cover it: NaN and
- * Infinity fail every comparison, so `NaN <= 0` is false and the ratio test falls
- * through to "fits" -- a green verdict from a number that does not exist. JSON.parse
- * turns `1e999` into Infinity and a `?? 0` default never sees it.
- */
-export function classifyMemoryFit(
-  bytes: number,
-  capacityGb: number,
-): MemoryFitVerdict {
-  // Nothing probed or nothing to weigh: no verdict rather than a false "fits".
-  if (!Number.isFinite(bytes) || !Number.isFinite(capacityGb)) {
-    return "unknown";
-  }
-  if (capacityGb <= 0 || bytes <= 0) {
-    return "unknown";
-  }
-  const ratio = bytes / (capacityGb * 1024 ** 3);
-  if (ratio > 1) {
-    return "exceeds";
-  }
-  if (ratio > MEMORY_FIT_TIGHT_RATIO) {
-    return "tight";
-  }
-  return "fits";
-}
-
-/** The worse of two verdicts, for a load that has to satisfy both at once. */
-export function worseMemoryFit(
-  a: MemoryFitVerdict,
-  b: MemoryFitVerdict,
-): MemoryFitVerdict {
-  const rank: Record<MemoryFitVerdict, number> = {
-    unknown: 0,
-    fits: 1,
-    tight: 2,
-    exceeds: 3,
-  };
-  // unknown loses to any real verdict: one half being unmeasurable must not erase the
-  // other half's answer.
-  return rank[a] >= rank[b] ? a : b;
-}
-
-/**
- * GB, to two decimals, as the rest of the panel talks about memory.
+ * @deprecated Prefer `formatBytesGiB` from `@/lib/memory/format`, whose name
+ * says which unit it takes. This alias exists because there used to be a SECOND
+ * exported `formatMemoryGb`, in `lib/model-memory.ts`, which took gigabytes
+ * rather than bytes and printed a different label -- the same name and the same
+ * `(number) => string` signature for two incompatible things.
  *
- * Clamped, not trusted: these come off the wire, and "-3.00 GB" or "NaN GB" reads as
- * a measurement rather than as the missing reading it is.
+ * Note the label has changed from "GB" to "GiB". The divide was always by
+ * 1024^3, so every figure this printed was a gibibyte value labelled as a
+ * gigabyte, overstating each by 7.4%. That is the defect #9570 fixed elsewhere;
+ * it reached seven figures on the Load Model panel and the guard test could not
+ * see it, because its regex only matches interpolations naming a `*TotalGb`.
  */
-export function formatMemoryGb(bytes: number): string {
-  const safe = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
-  return `${(safe / 1024 ** 3).toFixed(2)} GB`;
-}
+export const formatMemoryGb = formatBytesGiB;
 
 /** At most one note under the figures, most actionable first. */
 export interface MemoryAdvisory {

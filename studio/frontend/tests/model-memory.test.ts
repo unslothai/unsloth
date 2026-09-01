@@ -14,9 +14,12 @@ const { computeModelMemory, formatKvRate, formatMemoryGb } = await import(
 
 const GB = 1024 ** 3;
 
-// 16 GB card -> 14.4 GB usable at the shared 0.90 headroom.
+// 16 GiB card -> 15.52 GiB usable at the shared 0.97 fraction, which is what
+// the loader admits at (_CTX_FIT_VRAM_FRACTION). This was 0.90 / 14.4, a value
+// llama_cpp.py records as already tried and reverted: "0.90 dropped 91-94% fits
+// to CPU offload, #5106".
 const GPU_GB = 16;
-const BUDGET_GB = 14.4;
+const BUDGET_GB = 15.52;
 
 test("no GPU or no weights cannot be charted", () => {
   assert.equal(
@@ -71,11 +74,13 @@ test("speculative reserve counts toward the context segment", () => {
   const withSpec = computeModelMemory({
     weightsBytes: 10 * GB,
     kvBytes: 3 * GB,
-    specBytes: 2 * GB,
+    // 3, not 2: at the 0.97 budget the old figure no longer tipped this over,
+    // so the test would have passed while measuring nothing.
+    specBytes: 3 * GB,
     gpuGb: GPU_GB,
   });
   assert.equal(withoutSpec.status, "fits");
-  assert.equal(withSpec.kvGb + withSpec.specGb, 5);
+  assert.equal(withSpec.kvGb + withSpec.specGb, 6);
   // Turning on speculative decoding is what tips this one over.
   assert.equal(withSpec.status, "context-exceeds");
 });
@@ -163,9 +168,14 @@ test("no context length means no rate rather than a wrong one", () => {
 });
 
 test("KV rate labels pick sane units", () => {
-  assert.equal(formatKvRate(0), "0 KB");
-  assert.equal(formatKvRate(6234), "6.1 KB");
-  assert.equal(formatKvRate(1024 * 1024 * 3), "3.0 MB");
+  // KiB/MiB, not KB/MB. The divides are by 1024, so the old labels were the
+  // same mislabel as the GB/GiB one a scale up.
+  assert.equal(formatKvRate(0), "0 KiB");
+  assert.equal(formatKvRate(6234), "6.1 KiB");
+  assert.equal(formatKvRate(1024 * 1024 * 3), "3.0 MiB");
+  // Non-finite input has no honest rendering and must not print "NaN KiB".
+  assert.equal(formatKvRate(Number.NaN), "0 KiB");
+  assert.equal(formatKvRate(-1), "0 KiB");
 });
 
 test("an unloadable model is flagged, not silently drawn as full", () => {
@@ -194,8 +204,10 @@ test("bar holds the accent below 80% of budget", () => {
 });
 
 test("bar warns from 80% and turns critical from 90%", () => {
+  // Figures rescaled for the 15.52 GiB budget: 13/15.52 = 83.8%, 14.5/15.52 =
+  // 93.4%. The bands themselves are unchanged.
   const high = computeModelMemory({
-    weightsBytes: 10 * GB,
+    weightsBytes: 11 * GB,
     kvBytes: 2 * GB,
     gpuGb: GPU_GB,
   });
@@ -203,8 +215,8 @@ test("bar warns from 80% and turns critical from 90%", () => {
   assert.equal(high.pressure, "high");
 
   const critical = computeModelMemory({
-    weightsBytes: 12 * GB,
-    kvBytes: 1 * GB,
+    weightsBytes: 13 * GB,
+    kvBytes: 1.5 * GB,
     gpuGb: GPU_GB,
   });
   assert.ok(critical.fillPct >= 90, `got ${critical.fillPct}`);

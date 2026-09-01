@@ -700,7 +700,7 @@ export const fr = {
         sectionTitle: "Changement automatique de modèle (API OpenAI)",
         enable: "Changer de modèle par requête",
         enableDescription:
-          "Charger, avant de répondre, un GGUF téléchargé indiqué dans une requête API. Désactivé par défaut.",
+          "Charger, avant de répondre, un modèle téléchargé indiqué dans une requête API. Désactivé par défaut.",
         idleUnload: "Déchargement automatique en cas d'inactivité",
         idleUnloadDescription:
           "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
@@ -852,6 +852,16 @@ export const fr = {
         copied: "Chemin copié",
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
+      },
+      repairInstall: {
+        label: "Réparer l'installation",
+        description:
+          "Relance le programme d'installation sur l'environnement géré. Utile si le GPU n'est pas détecté ou si l'application ne démarre pas.",
+        action: "Réparer l'installation",
+        confirmTitle: "Réparer cette installation ?",
+        confirmDescription:
+          "Arrête le serveur et relance le programme d'installation, qui réinstalle PyTorch pour le GPU de cette machine. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmAction: "Réparer maintenant",
       },
       resetPreferences: {
         sectionTitle: "Zone de danger",
@@ -1111,6 +1121,8 @@ export const fr = {
         currentLoad: "Charge actuelle",
         free: "Disponible : {value}",
         noGpu: "Aucun GPU visible",
+        gpuUnusable: "GPU inutilisable",
+        gpuUnusableDetail: "Détecté, mais PyTorch ne peut pas l'utiliser",
       },
       gpu: {
         title: "Périphériques GPU",
@@ -1120,6 +1132,12 @@ export const fr = {
         unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
           "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
+        noUsableGpu: "Aucun GPU de cette machine n'est utilisable par PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch est une version CPU uniquement ({version}), les GPU ci-dessous ne peuvent donc pas être utilisés. Réparez l'installation pour rétablir la prise en charge du GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) ne parvient pas à initialiser les GPU ci-dessous, ils ne peuvent donc pas être utilisés. Vérifiez le pilote graphique ou réparez l'installation.",
+        unusableDevice: "inutilisable",
         unknownDevice: "GPU inconnu",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1393,10 +1411,40 @@ export const fr = {
       rememberParamsPerModel: "Mémoriser les réglages par modèle",
       rememberParamsPerModelDescription:
         "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
+      autoCompact: "Compacter automatiquement les longues discussions",
+      autoCompactDescription:
+        "Lorsqu’une discussion GGUF locale atteint la longueur de contexte définie, supprimez les anciens tours au lieu de renvoyer une erreur. Ce réglage ne dépend pas de la VRAM libre.",
+      compactionStyle: "Lorsque le contexte est plein",
+      compactionStyleDescription:
+        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
+      compactionStyleInherit: "Utiliser la valeur du serveur",
+      compactionStyleCheckpoint: "Réinitialiser la discussion",
+      compactionStyleRollingDefault:
+        "Supprimer les anciens tours (~25 % d’espace supplémentaire)",
+      compactionStyleRolling10:
+        "Supprimer les anciens tours (~10 % d’espace supplémentaire)",
+      compactionStyleRolling5:
+        "Supprimer les anciens tours (~5 % d’espace supplémentaire)",
+      compactionStyleRollingNone:
+        "Supprimer les anciens tours (sans réduction supplémentaire)",
+      autoCompactKeywords:
+        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
           "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+      },
+      currentDate: {
+        label: "Indiquer la date du jour au modèle",
+        description:
+          "Ajoute la date actuelle au prompt pour que la recherche web et Deep Research cherchent des sources récentes au lieu de se fier à la date de fin d’entraînement du modèle.",
+        loadError: "Impossible de charger les paramètres de date actuelle",
+        saveError: "Impossible de mettre à jour les paramètres de date actuelle",
+      },
+      tools: {
+        collapseByDefault: "Replier l’activité des outils par défaut",
+        collapseByDefaultDescription:
+          "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
       },
       webSearch: {
         title: "Recherche web",
@@ -1415,6 +1463,11 @@ export const fr = {
         blockedBanner: "{count} ressource externe bloquée depuis {hosts}.",
         blockedBannerPlural: "{count} ressources externes bloquées depuis {hosts}.",
         blockedBannerAction: "Autoriser pour ce Canvas",
+        blockedTitle: "L'accès réseau du Canvas est désactivé",
+        blockedHint:
+          "Activez « {setting} » dans Paramètres → Chat pour que les Canvas chargent des ressources externes, ou autorisez-le uniquement pour ce Canvas.",
+        blockedSettingsAction: "Ouvrir les paramètres",
+        blockedDismiss: "Ignorer",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",
@@ -1492,6 +1545,8 @@ export const fr = {
       archivedImagesDescription: "Consultez et gérez les images que vous avez archivées.",
       archivedVideos: "Vidéos archivées",
       archivedVideosDescription: "Consultez et gérez les vidéos que vous avez archivées.",
+      archivedAudio: "Audio archivé",
+      archivedAudioDescription: "Consultez et gérez les clips audio que vous avez archivés.",
       manageAction: "Gérer",
       manageChats: "Gérer les discussions",
       manageChatsDescription:
@@ -1681,7 +1736,7 @@ export const fr = {
         desktopAvailable:
           "La version {version} de l’application de bureau est disponible",
         desktopAvailableDescription:
-          "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
+          "Mettez à jour maintenant pour la préparer en arrière-plan. Vous continuez à travailler et redémarrez lorsqu’elle est prête.",
         desktopExternalServer:
           "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
         desktopManualInstall:
@@ -1692,11 +1747,20 @@ export const fr = {
         desktopCurrent: "L’application de bureau est à jour",
         desktopCurrentDescription:
           "Unsloth continuera à rechercher automatiquement les mises à jour.",
+        desktopPreparingDescription:
+          "La mise à jour est préparée en arrière-plan. Vous pouvez continuer à travailler.",
+        desktopReadyToRestartDescription:
+          "Tout est prêt. Redémarrez pour terminer l’installation de la mise à jour.",
+        desktopReadyToInstallDescription:
+          "La mise à jour de l’application a été téléchargée. Terminez la mise à jour du backend pour l’installer.",
         checkForUpdates: "Rechercher les mises à jour",
         checkAgain: "Rechercher à nouveau",
         retryCheck: "Réessayer",
         checking: "Vérification...",
+        preparing: "Préparation...",
         updateNow: "Mettre à jour maintenant",
+        restartToUpdate: "Redémarrer pour mettre à jour",
+        finishUpdate: "Terminer la mise à jour",
         openReleasePage: "Ouvrir la page des versions",
         unknownInstall:
           "Impossible de détecter le mode d'installation d'Unsloth. Pour les installations via installateur ou PyPI, utilisez les commandes ci-dessus.",

@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { useTauriUpdateController } from "@/hooks/tauri-update-context";
 import { useT } from "@/i18n";
+import { restartPlan } from "@/lib/update-preparation";
 import type { ReactElement } from "react";
 import { SettingsRow } from "./settings-row";
 
@@ -32,12 +33,15 @@ export function DesktopUpdateControl(): ReactElement | null {
   if (!update) return null;
 
   const checking = update.status === "checking";
+  const preparing = update.status === "preparing";
+  const ready = update.status === "ready";
+  const fastRestart = ready && restartPlan(update.preparation) === "fast";
   // A running install owns the update screen; no second "Update now".
   const inFlight =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
     update.status === "installing";
-  const busy = checking || inFlight;
+  const busy = checking || inFlight || preparing;
   const available = update.info !== null && !checking;
   const checkFailed = update.checkError !== null && !available;
 
@@ -54,7 +58,13 @@ export function DesktopUpdateControl(): ReactElement | null {
       ? t("settings.about.update.desktopExternalServer")
       : update.updatePolicyMode === "manual_linux_package"
         ? t("settings.about.update.desktopManualInstall")
-        : t("settings.about.update.desktopAvailableDescription");
+        : fastRestart
+          ? t("settings.about.update.desktopReadyToRestartDescription")
+          : ready
+            ? t("settings.about.update.desktopReadyToInstallDescription")
+            : preparing
+              ? t("settings.about.update.desktopPreparingDescription")
+              : t("settings.about.update.desktopAvailableDescription");
   } else if (checkFailed) {
     label = t("settings.about.update.desktopCheckFailed");
     // Keep the raw reason: failures can come from the network, HTTP response,
@@ -71,7 +81,13 @@ export function DesktopUpdateControl(): ReactElement | null {
   const action = available
     ? update.updatePolicyMode === "manual_linux_package"
       ? t("settings.about.update.openReleasePage")
-      : t("settings.about.update.updateNow")
+      : fastRestart
+        ? t("settings.about.update.restartToUpdate")
+        : ready
+          ? t("settings.about.update.finishUpdate")
+          : preparing
+            ? t("settings.about.update.preparing")
+            : t("settings.about.update.updateNow")
     : checkFailed
       ? t("settings.about.update.retryCheck")
       : update.hasChecked

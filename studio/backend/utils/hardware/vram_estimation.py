@@ -101,6 +101,10 @@ class ModelArchConfig:
     moe_has_dense_mlp: bool = False
     dense_layer_indices: tuple = ()
     dense_intermediate_size: Optional[int] = None
+    model_type: Optional[str] = None
+    block_auto_adjust_ff_dim: bool = False
+    block_ffn_dim_multiplier: Optional[float] = None
+    block_multiple_of: int = 1
 
 
 @dataclass
@@ -376,6 +380,10 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         moe_has_dense_mlp = bool(getattr(text_config, "enable_moe_block", False)),
         dense_layer_indices = dense_layer_indices,
         dense_intermediate_size = dense_intermediate_size,
+        model_type = getattr(text_config, "model_type", None),
+        block_auto_adjust_ff_dim = bool(getattr(text_config, "block_auto_adjust_ff_dim", False)),
+        block_ffn_dim_multiplier = getattr(text_config, "block_ffn_dim_multiplier", None),
+        block_multiple_of = getattr(text_config, "block_multiple_of", 1),
     )
 
 
@@ -524,6 +532,46 @@ def _text_linear_dims(arch: ModelArchConfig, layer_idx: int) -> Dict[str, tuple[
         }
     )
     return dims
+
+
+def _lora_linear_dims(arch: ModelArchConfig, layer_idx: int) -> Dict[str, tuple[int, int]]:
+    if arch.model_type != "lfm2":
+        return _text_linear_dims(arch, layer_idx)
+
+    hd = arch.hidden_size
+    mlp_size = arch.intermediate_size
+    if arch.block_auto_adjust_ff_dim:
+        mlp_size = int(2 * mlp_size / 3)
+        if arch.block_ffn_dim_multiplier is not None:
+            mlp_size = int(arch.block_ffn_dim_multiplier * mlp_size)
+            multiple = max(arch.block_multiple_of, 1)
+            mlp_size = multiple * ((mlp_size + multiple - 1) // multiple)
+    dims = {
+        "w1": (hd, mlp_size),
+        "w3": (hd, mlp_size),
+        "w2": (mlp_size, hd),
+    }
+    if _layer_types(arch)[layer_idx] == "conv":
+        dims.update({"in_proj": (hd, 3 * hd), "out_proj": (hd, hd)})
+        return dims
+
+    q_size, kv_size, has_k, has_v = _layer_attention_dims(arch, layer_idx)
+    dims.update({"q_proj": (hd, q_size), "out_proj": (q_size, hd)})
+    if has_k:
+        dims["k_proj"] = (hd, kv_size)
+    if has_v:
+        dims["v_proj"] = (hd, kv_size)
+    return dims
+
+
+def _is_lora_attention_linear(arch: ModelArchConfig, name: str) -> bool:
+    return name in ATTENTION_TARGET_MODULES or (
+        arch.model_type == "lfm2" and name in {"in_proj", "out_proj"}
+    )
+
+
+def _is_lora_mlp_linear(arch: ModelArchConfig, name: str) -> bool:
+    return name in MLP_TARGET_MODULES or (arch.model_type == "lfm2" and name in {"w1", "w2", "w3"})
 
 
 def _module_path_matches(skip_module: str, alias: str) -> bool:
@@ -931,17 +979,16 @@ def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> in
 
 
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:
-    all_linear = _targets_all_linear(target_modules)
-    selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else target_modules
-    # Unsloth's CPT path hands the trainer everything but the embedding names, where an
-    # empty remainder becomes the default projections and "all-linear" expands to them
-    # (worker.py). Count those, or the estimate picks a GPU that then OOMs.
-    if not all_linear and _full_weight_embedding_elements(arch, target_modules):
-        remainder = [
-            m for m in selected_modules if str(m).rsplit(".", 1)[-1] not in EMBEDDING_TARGET_MODULES
+    embedding_params = _full_weight_embedding_elements(arch, target_modules)
+    lora_targets = target_modules
+    if embedding_params:
+        lora_targets = [
+            m for m in target_modules if str(m).rsplit(".", 1)[-1] not in EMBEDDING_TARGET_MODULES
         ]
-        if not remainder or _targets_all_linear(remainder):
-            selected_modules = list(selected_modules) + list(DEFAULT_TARGET_MODULES)
+        if not lora_targets:
+            lora_targets = list(DEFAULT_TARGET_MODULES)
+    all_linear = _targets_all_linear(lora_targets)
+    selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else lora_targets
     hd = arch.hidden_size
     r = lora_rank
     n_layers = arch.num_hidden_layers
@@ -954,15 +1001,15 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
         per_layer_dense_mlp = []
         for layer_idx in range(n_layers):
             layer_dense = 0
-            for name, (in_dim, out_dim) in _text_linear_dims(
+            for name, (in_dim, out_dim) in _lora_linear_dims(
                 arch,
                 layer_idx,
             ).items():
-                if name not in selected_modules:
+                if not all_linear and name not in selected_modules:
                     continue
-                if name in ATTENTION_TARGET_MODULES:
+                if _is_lora_attention_linear(arch, name):
                     attn_total += in_dim * r + r * out_dim
-                elif name in MLP_TARGET_MODULES:
+                elif _is_lora_mlp_linear(arch, name):
                     layer_dense += in_dim * r + r * out_dim
             per_layer_dense_mlp.append(layer_dense)
             structured_dense_mlp += layer_dense
@@ -1007,8 +1054,8 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
         return (
             attn_total
             + mlp_total
-            + _per_layer_input_lora_params(arch, r, target_modules)
-            + _full_weight_embedding_elements(arch, selected_modules)
+            + _per_layer_input_lora_params(arch, r, lora_targets)
+            + embedding_params
         )
     elif n_experts > 1:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
@@ -1064,8 +1111,8 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
     return (
         attn_total
         + mlp_total
-        + _per_layer_input_lora_params(arch, r, target_modules)
-        + _full_weight_embedding_elements(arch, selected_modules)
+        + _per_layer_input_lora_params(arch, r, lora_targets)
+        + embedding_params
     )
 
 

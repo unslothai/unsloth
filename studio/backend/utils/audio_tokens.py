@@ -13,10 +13,29 @@ import json
 from pathlib import Path
 from typing import Optional
 
-VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
+NATIVE_OUTPUT_AUDIO_TYPES = frozenset(
+    {
+        "higgs_tts2",
+        "moss_tts_local",
+        "moss_tts_nano",
+        "higgs_tts3",
+        "minimax_music3",
+    }
+)
+
+VALID_AUDIO_TYPES = (
+    "snac",
+    "csm",
+    "bicodec",
+    "dac",
+    *sorted(NATIVE_OUTPUT_AUDIO_TYPES),
+    "whisper",
+    "audio_vlm",
+)
 
 # Emit speech; a chat turn sent to one comes back as audio, never as text.
 TTS_AUDIO_TYPES = frozenset({"snac", "csm", "bicodec", "dac"})
+OUTPUT_AUDIO_TYPES = TTS_AUDIO_TYPES | NATIVE_OUTPUT_AUDIO_TYPES
 
 
 def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
@@ -100,6 +119,11 @@ def is_tts_audio_type(audio_type: Optional[str]) -> bool:
     """True for a speech-emitting codec. audio_vlm is absent on purpose: Gemma 3n takes
     audio in and answers in text."""
     return audio_type in TTS_AUDIO_TYPES
+
+
+def is_output_audio_type(audio_type: Optional[str]) -> bool:
+    """True for a model that emits audio instead of a text chat response."""
+    return audio_type in OUTPUT_AUDIO_TYPES
 
 
 def detect_local_tts_audio_type(directory) -> Optional[str]:

@@ -30,6 +30,7 @@ from storage import research_runs_db as db
 from core.inference.providers import provider_runs_local_tools
 from storage import providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
+from utils.current_date_prompt_settings import current_date_prompt_line
 
 router = APIRouter()
 _SENSITIVE_KEY_EXACT = {
@@ -199,7 +200,11 @@ def _contains_sensitive_key(value: object) -> bool:
     return False
 
 
-def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
+def _sanitize_config(
+    payload: CreateResearchRun,
+    thread: dict,
+    http_request: Request = None,
+) -> dict:
     request = dict(payload.inferenceRequest)
     if _contains_sensitive_key(request):
         raise HTTPException(status_code = 400, detail = "Inference credentials cannot be persisted")
@@ -372,6 +377,8 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "budgets": budgets,
         "websitePolicy": website_policy,
         "instructions": (payload.instructions or "").strip(),
+        # stamped once so a run spanning midnight or a settings change keeps its starting date.
+        "currentDate": current_date_prompt_line(request = http_request),
         "question": (payload.question or "").strip(),
     }
 
@@ -430,7 +437,7 @@ def create_research_run(
             status_code = 400,
             detail = "Deep research requires a user message with non-empty text",
         )
-    config = _sanitize_config(payload, thread)
+    config = _sanitize_config(payload, thread, request)
     expected_project_id = str(thread.get("projectId") or "").strip() or None
     stripped_question = (payload.question or "").strip()
     project_context_snapshot = _project_context_snapshot_for_thread(

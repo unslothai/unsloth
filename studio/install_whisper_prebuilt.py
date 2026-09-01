@@ -1403,6 +1403,19 @@ def resolver_payload_extra(artifact: dict[str, Any]) -> dict[str, Any]:
     return {"install_kind": "slim" if artifact.get("install_kind") == "slim" else "fat"}
 
 
+def unavailable_payload(published_repo: str, exc: BaseException) -> dict[str, Any]:
+    """The resolver's negative answer, carrying WHY: the same split the install path
+    makes (ReleaseCompatibilityError is exit 2, everything else exit 1). Flattened, a
+    caller cannot tell a confirmed pairing gap from a probe that never answered."""
+    return {
+        "prebuilt_available": False,
+        "repo": published_repo,
+        "unavailable_reason": (
+            "incompatible" if isinstance(exc, ReleaseCompatibilityError) else "unresolved"
+        ),
+    }
+
+
 def resolve_prebuilt(
     host: HostInfo,
     *,
@@ -1422,8 +1435,8 @@ def resolve_prebuilt(
             requested_backend = requested_backend,
             verify_checksums = False,
         )
-    except PrebuiltFallback:
-        return {"prebuilt_available": False, "repo": published_repo}
+    except PrebuiltFallback as exc:
+        return unavailable_payload(published_repo, exc)
     os_token, arch_token = host_platform_tokens(host)
     payload = {
         "prebuilt_available": True,
@@ -1545,11 +1558,11 @@ def main(argv: list[str] | None = None) -> int:
                 backend = args.backend,
                 cpu_fallback = args.cpu_fallback,
             )
-        except PrebuiltFallback:
-            payload = {"prebuilt_available": False, "repo": args.published_repo}
+        except PrebuiltFallback as exc:
+            payload = unavailable_payload(args.published_repo, exc)
         except Exception as exc:  # noqa: BLE001 - probe must never crash the caller
             log(f"resolve failed: {exc}")
-            payload = {"prebuilt_available": False, "repo": args.published_repo}
+            payload = unavailable_payload(args.published_repo, exc)
         emit_resolver_output(payload, output_format = args.output_format)
         return EXIT_SUCCESS
 
