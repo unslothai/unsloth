@@ -105,3 +105,44 @@ test("a browser copy that could not be deleted is reported, not swallowed", asyn
   // The server entry is gone whatever the browser did, so the list still refetches.
   assert.equal(state.reloads, 1);
 });
+
+// A quant can name a directory or a whole filename stem, not just a bare token
+// (is_qualified_gguf_variant_key in hub/utils/gguf.py). The key still joins on one colon,
+// so the server row is removed either way, but reading the whole key as the model id sent
+// the browser cleanup at a record that does not exist and reported success.
+test("a path-qualified variant splits off the repo it belongs to", async () => {
+  const state = trace();
+
+  await forgetModelOverride(
+    "unsloth/Repo-GGUF:distilled/model-Q6_K",
+    state.deps,
+  );
+
+  assert.deepEqual(state.removedRemote, [
+    ["unsloth/Repo-GGUF", "distilled/model-Q6_K"],
+  ]);
+  assert.deepEqual(state.removedLocal, state.removedRemote);
+});
+
+test("a filename-stem variant splits off the repo too", async () => {
+  const state = trace();
+
+  await forgetModelOverride(
+    "unsloth/H3-GGUF:minimax_h3_ref2va_pruned-Q6_K",
+    state.deps,
+  );
+
+  assert.deepEqual(state.removedRemote, [
+    ["unsloth/H3-GGUF", "minimax_h3_ref2va_pruned-Q6_K"],
+  ]);
+});
+
+test("a colon inside a local path is part of the name, not a separator", async () => {
+  const state = trace();
+
+  await forgetModelOverride("/home/u/models/foo:bar/baz.gguf", state.deps);
+
+  assert.deepEqual(state.removedRemote, [
+    ["/home/u/models/foo:bar/baz.gguf", null],
+  ]);
+});

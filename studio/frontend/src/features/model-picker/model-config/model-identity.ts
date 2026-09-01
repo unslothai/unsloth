@@ -154,8 +154,30 @@ export function splitQuantSuffix(value: string): [string, string] | null {
     : null;
 }
 
+/**
+* `[modelId, variant]` for an override key, or `[value, null]` when it names no variant.
+*
+* splitQuantSuffix answers for a bare quant token, which is what a stored key usually spells.
+* A qualified variant is not one: it can name a directory (`distilled/model-Q6_K`) or a whole
+* filename stem, and both are refused there. A repo id carries no colon, so for anything that
+* is not a local path the last colon is the separator whatever the tail spells. A path is left
+* whole for the reason the backend's resolver leaves it whole: a colon is legal in a POSIX
+* filename, so "/models/foo:bar/baz.gguf" is one name and splitting it would answer for a
+* different model. */
 export function splitModelOverrideKey(value: string): [string, string | null] {
-  return splitQuantSuffix(value) ?? [value, null];
+  const quant = splitQuantSuffix(value);
+  if (quant) {
+    return quant;
+  }
+  const separator = value.lastIndexOf(":");
+  if (
+    separator <= 0 ||
+    separator === value.length - 1 ||
+    looksLikeLocalPath(value)
+  ) {
+    return [value, null];
+  }
+  return [value.slice(0, separator), value.slice(separator + 1)];
 }
 
 /**
