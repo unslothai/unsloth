@@ -9,6 +9,11 @@ from collections.abc import Iterator, Mapping
 from itertools import chain
 from typing import Any, Optional
 
+#: Longest context a load may ask for, and the ceiling a resolved window is held to.
+#: LoadRequest.max_seq_length bounds requests by this; a backend that reads a wider
+#: window from the model reports it as native but does not serve past it.
+MAX_REQUESTABLE_CONTEXT = 1048576
+
 
 def _field(source: Any, name: str) -> Any:
     """Key or attribute, since mlx.nn.Module is a dict; a raiser is absent, never a failed load."""

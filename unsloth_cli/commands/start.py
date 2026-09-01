@@ -7,7 +7,9 @@ import atexit
 import base64
 import contextlib
 import errno
+import functools
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -2519,7 +2521,16 @@ def _answer_offers_variant(
     return False
 
 
-def _fail_codex_variant_missing(model_id: str, variant: str, variants: list) -> NoReturn:
+class _GgufAgent(NamedTuple):
+    label: str
+    command: str
+
+
+_CODEX_GGUF_AGENT = _GgufAgent("Codex", "codex")
+_CLAUDE_GGUF_AGENT = _GgufAgent("Claude Code", "claude")
+
+
+def _fail_gguf_variant_missing(model_id: str, variant: str, variants: list) -> NoReturn:
     offered = [
         row.get("quant")
         for row in variants
@@ -2531,23 +2542,26 @@ def _fail_codex_variant_missing(model_id: str, variant: str, variants: list) -> 
     _fail(message)
 
 
-def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
-    message = f"Codex needs a GGUF model served by llama-server, but {model_id} is not one."
+def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
+    message = (
+        f"{agent.label} needs a GGUF model served by llama-server, " f"but {model_id} is not one."
+    )
     guess = f"{model_id}-GGUF"
     if "gguf" not in model_id.lower() and _is_hub_model_id(guess) and _hub_gguf_files(guess):
-        message += f" Try: unsloth start codex --model {guess}"
+        message += f" Try: unsloth start {agent.command} --model {guess}"
     _fail(message)
 
 
-def _preflight_codex_gguf(
+def _preflight_agent_gguf(
+    agent: _GgufAgent,
     model: Optional[str],
     *,
     serve: bool = True,
     launch: bool = True,
 ) -> None:
     # Hub-listing preflight for the auto-start path only: with a server running, identifiers
-    # resolve against its cwd/cache/token, so _attach_gguf_check_for_codex asks the server
-    # instead. Only a complete listing with no .gguf files rejects; unknown defers to the
+    # resolve against its cwd/cache/token, so _attach_gguf_check asks the server instead.
+    # Only a complete listing with no .gguf files rejects; unknown defers to the
     # post-connect check. Mirrors _require_studio's auto-start condition, so with no start
     # possible its "no running server" error comes first, without a hub probe.
     if not (serve and launch and model):
@@ -2572,10 +2586,11 @@ def _preflight_codex_gguf(
         return
     files = _hub_gguf_files(repo)
     if files is not None and not files:
-        _fail_codex_needs_gguf(repo)
+        _fail_agent_needs_gguf(agent, repo)
 
 
-def _attach_gguf_check_for_codex(
+def _attach_gguf_check(
+    agent: _GgufAgent,
     base: str,
     key: str,
     model: Optional[str],
@@ -2615,7 +2630,7 @@ def _attach_gguf_check_for_codex(
         # consults it only for a DIRECTORY), though an explicit one still reaches the probe.
         refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
         if refused:
-            _fail_codex_needs_gguf(repo)
+            _fail_agent_needs_gguf(agent, repo)
         # A drafter folder further up is the server's call.
         uncertain = _direct_gguf_companion_is_uncertain(repo)
         # The variant does not exempt this: a direct file is loaded as itself, so a complete
@@ -2651,11 +2666,14 @@ def _attach_gguf_check_for_codex(
                     except OSError:
                         missing = False
                     if missing:
-                        _fail(f"{repo} does not exist. Check the path before pointing Codex at it.")
+                        _fail(
+                            f"{repo} does not exist. Check the path before "
+                            f"pointing {agent.label} at it."
+                        )
                     if not _direct_gguf_file_is_ready(repo):
                         _fail(
                             f"{repo} is incomplete (zero bytes or a split missing shards); "
-                            "re-download or re-copy it before pointing Codex at it."
+                            f"re-download or re-copy it before pointing {agent.label} at it."
                         )
                     # Only a spelling this OS can judge is settled here: a Windows path read
                     # from WSL skipped the absence check above and reads as ready, so returning
@@ -2707,18 +2725,18 @@ def _attach_gguf_check_for_codex(
             # the variantless verdict decides. Only a server omitting the field falls through.
             if variant and offered is None and isinstance(info.get("loadable"), bool):
                 if not info["loadable"]:
-                    _fail_codex_needs_gguf(candidate)
+                    _fail_agent_needs_gguf(agent, candidate)
                 return
             if variant and isinstance(offered, list):
                 wanted_variant = str(variant).strip().lower()
                 if not any(
                     isinstance(q, str) and q.strip().lower() == wanted_variant for q in offered
                 ):
-                    _fail_codex_variant_missing(candidate, variant, variants)
+                    _fail_gguf_variant_missing(candidate, variant, variants)
                 return
             if not variant and isinstance(info.get("loadable"), bool):
                 if not info["loadable"]:
-                    _fail_codex_needs_gguf(candidate)
+                    _fail_agent_needs_gguf(agent, candidate)
                 return
         if isinstance(variants, list) and variants:
             # llama.cpp kills the resident model before resolving the quant, so a quant this
@@ -2745,7 +2763,7 @@ def _attach_gguf_check_for_codex(
             ):
                 _fail(
                     f"{candidate} has only incomplete GGUF weights on the server; "
-                    "finish or re-copy the download before pointing Codex at it."
+                    f"finish or re-copy the download before pointing {agent.label} at it."
                 )
             # A variantless local load picks from the directory's top level, so rows living
             # only in quant subdirectories need the variant that resolves them -- else this
@@ -2774,7 +2792,7 @@ def _attach_gguf_check_for_codex(
                     + (f" (available: {offered})." if offered else ".")
                 )
             if variant and not _answer_offers_variant(variants, variant, strict = local_answer):
-                _fail_codex_variant_missing(candidate, variant, variants)
+                _fail_gguf_variant_missing(candidate, variant, variants)
             return
         if isinstance(variants, list):
             # Explicit local syntax resolves locally on every server version, so its live empty
@@ -2792,20 +2810,32 @@ def _attach_gguf_check_for_codex(
                         return
                 except OSError:
                     return
-            _fail_codex_needs_gguf(candidate)
+            _fail_agent_needs_gguf(agent, candidate)
 
 
-def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
-    # Codex always streams, and Unsloth only streams /v1/responses from llama-server.
+def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: str) -> None:
+    # Only a definite "no" rejects: the callers wrap this in `except BaseException:
+    # _shutdown_auto_served()`, so guessing kills a server that may have just loaded a GGUF.
     try:
         status = _http_json("GET", f"{base}/api/inference/status", key)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return  # older server without the endpoint; don't block the launch
-        raise
-    if status.get("is_gguf"):
+    except urllib.error.HTTPError:
+        # Not evidence: get_status 500s from its own probes with a GGUF resident.
         return
-    _fail_codex_needs_gguf(model_id)
+    except (OSError, ValueError, http.client.HTTPException):
+        # Named explicitly, not `except Exception`, so typer.Exit and real bugs still surface.
+        return
+    if not isinstance(status, dict):
+        return
+    is_gguf = status.get("is_gguf")
+    # InferenceStatusResponse declares is_gguf non-optional under a response_model, so a
+    # current server always sends it. Absent means "not that endpoint", never "non-GGUF".
+    if is_gguf is None or is_gguf:
+        return
+    # is_gguf carries a False default, so an idle server answers False while naming no
+    # model. The request that follows gets the server's own "No GGUF model loaded" anyway.
+    if not (status.get("active_model") or status.get("model_identifier")):
+        return
+    _fail_agent_needs_gguf(agent, model_id)
 
 
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
@@ -4899,6 +4929,9 @@ def claude(
         if os.name == "nt"
         else "curl -fsSL https://claude.ai/install.sh | bash"
     )
+    # Before the install prompt: _install_agent runs a remote installer, and this can
+    # refuse outright, so asking first fetches a tool the run cannot use.
+    _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("claude", install_hint, launch)
     base, key, entry = _connect(
         api_key,
@@ -4908,6 +4941,7 @@ def claude(
         ),
         serve = serve,
         launch = launch,
+        preload_check = functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT),
         server_options = ServerOptions(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
@@ -4922,6 +4956,12 @@ def claude(
             presence_penalty = presence_penalty,
         ),
     )
+    # Before the launch owns the server, so a rejection tears it down, not atexit.
+    try:
+        _require_gguf_for_agent(_CLAUDE_GGUF_AGENT, base, key, entry["id"])
+    except BaseException:
+        _shutdown_auto_served()
+        raise
     model_id = entry["id"]
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
@@ -5021,8 +5061,10 @@ def codex(
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     install_hint = _npm_install_hint("@openai/codex")
+    # Before the install prompt: _install_agent runs a remote installer, and this can
+    # refuse outright, so asking first fetches a tool the run cannot use.
+    _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("codex", install_hint, launch)
-    _preflight_codex_gguf(model, serve = serve, launch = launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -5031,7 +5073,7 @@ def codex(
         ),
         serve = serve,
         launch = launch,
-        preload_check = _attach_gguf_check_for_codex,
+        preload_check = functools.partial(_attach_gguf_check, _CODEX_GGUF_AGENT),
         server_options = ServerOptions(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
@@ -5050,7 +5092,7 @@ def codex(
     # takes over its lifecycle, so tear the server down here if it rejects the model
     # (e.g. a transformers-backend model) rather than leaving it on the atexit backstop.
     try:
-        _require_gguf_for_codex(base, key, entry["id"])
+        _require_gguf_for_agent(_CODEX_GGUF_AGENT, base, key, entry["id"])
     except BaseException:
         _shutdown_auto_served()
         raise
