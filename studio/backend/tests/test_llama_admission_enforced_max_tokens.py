@@ -48,9 +48,7 @@ def _backend(*, window, total, slots):
 
 
 def _enforced(payload, backend):
-    return _openai_llama_admission_enforced_max_tokens(
-        payload, request = None, llama_backend = backend
-    )
+    return _openai_llama_admission_enforced_max_tokens(payload, request = None, llama_backend = backend)
 
 
 class TestTheInvariant:
@@ -62,9 +60,9 @@ class TestTheInvariant:
         enforced = _enforced(payload, backend)
         assert enforced is not None
         prompt_plus_output = _prompt_tokens(payload) + enforced
-        assert prompt_plus_output * 4 <= 16384, (
-            f"four chats may occupy {prompt_plus_output * 4} of a 16384 cache"
-        )
+        assert (
+            prompt_plus_output * 4 <= 16384
+        ), f"four chats may occupy {prompt_plus_output * 4} of a 16384 cache"
 
     def test_it_holds_at_every_cache_size(self):
         for total in (2048, 4096, 8192, 16384, 65536, 262144):
@@ -143,9 +141,9 @@ class TestTheEdges:
             payload, budget = 16384, capacity = 4, context_window = 16384
         )
         enforced = _enforced(payload, backend)
-        assert _prompt_tokens(payload) + enforced == charged, (
-            f"charged {charged} but permits {_prompt_tokens(payload) + enforced}"
-        )
+        assert (
+            _prompt_tokens(payload) + enforced == charged
+        ), f"charged {charged} but permits {_prompt_tokens(payload) + enforced}"
         # And it is still generous: a chat gets its share, not a flat thousand tokens.
         assert enforced > _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
 
@@ -161,7 +159,6 @@ class TestTheEdges:
 
 def _prompt_tokens(payload):
     from routes.inference import _openai_llama_admission_prompt_tokens
-
     return _openai_llama_admission_prompt_tokens(payload) or 0
 
 
@@ -180,7 +177,6 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         from pathlib import Path
 
         import core.inference.llama_cpp as llama_cpp
-
         return Path(llama_cpp.__file__).read_text()
 
     def test_both_payload_sites_apply_the_allowance(self):
@@ -188,9 +184,9 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         applied = source.count(
             'payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)'
         )
-        assert applied == 2, (
-            f"expected the plain stream and the tool loop to bound the wire cap, found {applied}"
-        )
+        assert (
+            applied == 2
+        ), f"expected the plain stream and the tool loop to bound the wire cap, found {applied}"
 
     def test_the_loop_budget_never_sees_it(self):
         """`_loop_budget_left` answers "did the CALLER cap this", and an admission bound
@@ -199,20 +195,19 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         start = next(i for i, l in enumerate(lines) if "def _loop_budget_left" in l)
         indent = len(lines[start]) - len(lines[start].lstrip())
         body = []
-        for line in lines[start + 1:]:
+        for line in lines[start + 1 :]:
             if line.strip() and (len(line) - len(line.lstrip())) <= indent:
                 break
             body.append(line)
         assert body, "could not read the body of _loop_budget_left"
-        assert "admission_output_allowance" not in "\n".join(body), (
-            "the admission bound leaked into the caller's continuation budget"
-        )
+        assert "admission_output_allowance" not in "\n".join(
+            body
+        ), "the admission bound leaked into the caller's continuation budget"
 
     def test_both_entry_points_accept_it(self):
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
-
         for name in ("generate_chat_completion", "generate_chat_completion_with_tools"):
             params = inspect.signature(getattr(LlamaCppBackend, name)).parameters
             assert "admission_output_allowance" in params, name
@@ -232,7 +227,6 @@ class TestChargedAndPermittedCannotDrift:
 
     def _charged(self, budget, share, prompt):
         from routes.inference import _openai_llama_admission_output_allowance
-
         allowance = _openai_llama_admission_output_allowance(
             None,
             budget = budget,
@@ -254,9 +248,9 @@ class TestChargedAndPermittedCannotDrift:
                 used += charged
                 admitted.append(prompt)
         permitted = sum(prompt + max(1, share - prompt) for prompt in admitted)
-        assert permitted <= budget, (
-            f"admitted {admitted} charged {used} but may occupy {permitted} of {budget}"
-        )
+        assert (
+            permitted <= budget
+        ), f"admitted {admitted} charged {used} but may occupy {permitted} of {budget}"
 
     def test_nothing_is_admitted_on_less_than_it_may_use(self):
         """The general property, which is what actually makes the bound sound."""
@@ -281,6 +275,6 @@ class TestChargedAndPermittedCannotDrift:
         for budget, slots in ((16384, 4), (4096, 4), (32768, 8), (262144, 4)):
             share = budget // slots
             charged = self._charged(budget, share, 8)
-            assert charged * slots <= budget, (
-                f"budget={budget} slots={slots}: {slots} small chats charge {charged * slots}"
-            )
+            assert (
+                charged * slots <= budget
+            ), f"budget={budget} slots={slots}: {slots} small chats charge {charged * slots}"
