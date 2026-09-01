@@ -51,7 +51,10 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<|tool_call_begin|>",
         "<|tool_call_argument_begin|>",
         "<|tool_call_end|>",
-        "<|message_model|>",
+        # TML Inkling's role opener is deliberately NOT here: nothing consumes a standalone
+        # one, so it would begin every ordinary reply with raw markup, and the invocation
+        # marker below is what makes a call recognizable. ``parse_tool_calls_from_text``
+        # folds the bare name echo into the span either way, so the call still strips clean.
         "<|content_invoke_tool_json|>",
         "<|end_message|>",
         # Kept whenever tool controls are: the parser skips a call rehearsed inside one, so

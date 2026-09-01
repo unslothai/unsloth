@@ -916,6 +916,18 @@ def test_the_transformers_cleanup_keeps_a_stop_token_that_closes_an_envelope():
         False
     )
     assert closes_an_open_envelope(f"<|message_model|>get_weather{envelope}", "<|end_message|>")
+    # And the role opener is not preserved on its own either, or the reply would begin with
+    # raw markup: nothing strips a standalone one. The call still parses and strips clean
+    # without it, because the span swallows the bare name echo ahead of the marker.
+    from core.inference.native_tool_tokens import NATIVE_TOOL_CONTROL_TOKENS
+    from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
+
+    assert "<|message_model|>" not in NATIVE_TOOL_CONTROL_TOKENS
+    assert "<|content_invoke_tool_json|>" in NATIVE_TOOL_CONTROL_TOKENS
+    call = f"get_weather{envelope}"  # ``envelope`` already carries the closer
+    calls, spans = parse_with_spans(call, enabled_tool_names = {"get_weather"}, with_spans = True)
+    assert [c["function"]["name"] for c in calls] == ["get_weather"]
+    assert spans == [(0, len(call))]
 
 
 class _ReasoningChannelTokenizer:
