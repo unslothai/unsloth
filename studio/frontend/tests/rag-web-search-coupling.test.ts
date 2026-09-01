@@ -25,11 +25,15 @@ const LARGE = "Llama-3.3-70B-Instruct";
 const UNKNOWN = "some-local-checkpoint";
 const CHECKPOINTS = [SMALL, LARGE, UNKNOWN];
 
-test("a project-only scope pre-retrieves under Auto whatever the model size", () => {
-  // The Search pill is off in this case, so nothing else would ground the answer.
-  for (const checkpoint of CHECKPOINTS) {
-    assert.equal(resolveRagAutoinject("auto", checkpoint, true), true);
-  }
+test("Auto honours the size cutoff, including for project-only scopes", () => {
+  // An earlier revision forced pre-retrieval on for a project-only scope at every size,
+  // so the Search pill could not block grounding. Measured against main over 1260
+  // generations, that override only ever fired above the cutoff -- below it Auto is
+  // already true -- and above the cutoff it cost a redundant second retrieval on 26.7%
+  // of turns and dropped distractor disambiguation from 90% to 37%, buying no accuracy.
+  assert.equal(resolveRagAutoinject("auto", SMALL), true);
+  assert.equal(resolveRagAutoinject("auto", UNKNOWN), true);
+  assert.equal(resolveRagAutoinject("auto", LARGE), false);
 });
 
 test("an explicit Auto-retrieve Off is never overridden", () => {
@@ -37,30 +41,17 @@ test("an explicit Auto-retrieve Off is never overridden", () => {
   // slider is disabled when Off, so a forced retrieval could be neither stopped nor
   // tuned. Off is a user decision, not a default to improve on.
   for (const checkpoint of CHECKPOINTS) {
-    for (const projectOnlyScope of [true, false]) {
-      assert.equal(
-        resolveRagAutoinject("off", checkpoint, projectOnlyScope),
-        false,
-        `off must win for ${checkpoint} projectOnly=${projectOnlyScope}`,
-      );
-    }
+    assert.equal(
+      resolveRagAutoinject("off", checkpoint),
+      false,
+      `off must win for ${checkpoint}`,
+    );
   }
 });
 
-test("mixed and KB scopes fall through to the size heuristic", () => {
-  assert.equal(resolveRagAutoinject("auto", LARGE, false), false);
-  assert.equal(resolveRagAutoinject("auto", SMALL, false), true);
-  assert.equal(resolveRagAutoinject("auto", UNKNOWN, false), true);
-});
-
-test("On forces retrieval for every scope and model", () => {
+test("On forces retrieval for every model", () => {
   for (const checkpoint of CHECKPOINTS) {
-    for (const projectOnlyScope of [true, false]) {
-      assert.equal(
-        resolveRagAutoinject("on", checkpoint, projectOnlyScope),
-        true,
-      );
-    }
+    assert.equal(resolveRagAutoinject("on", checkpoint), true);
   }
 });
 
@@ -69,12 +60,7 @@ test("every emitted autoinject is a boolean, never a mode string", () => {
   // backend read "off" as a non-empty string and enabled retrieval.
   for (const mode of ["auto", "on", "off"] as const) {
     for (const checkpoint of CHECKPOINTS) {
-      for (const projectOnlyScope of [true, false]) {
-        assert.equal(
-          typeof resolveRagAutoinject(mode, checkpoint, projectOnlyScope),
-          "boolean",
-        );
-      }
+      assert.equal(typeof resolveRagAutoinject(mode, checkpoint), "boolean");
     }
   }
 });
@@ -89,11 +75,13 @@ const SOURCE = readFileSync(
   "utf8",
 );
 
-test("mixed thread/project scopes preserve Auto-retrieve Off", () => {
-  const projectOnlyChecks = SOURCE.match(
-    /projectRagEnabled &&\s+(?:ragProjectId|researchProjectId) &&\s+!(?:runtime\.)?ragEnabled/g,
+test("the adapter no longer derives a project-only auto-inject override", () => {
+  // The override is gone from the policy, so an adapter still computing the flag would
+  // be dead code that a future edit could wire back up without going through a test.
+  assert.doesNotMatch(
+    SOURCE,
+    /projectRagEnabled &&\s+(?:ragProjectId|researchProjectId) &&\s+!(?:runtime\.)?ragEnabled/,
   );
-  assert.equal(projectOnlyChecks?.length, 3);
 });
 
 test("local enabled_tools still lists search_knowledge_base without web_search", () => {

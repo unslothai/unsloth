@@ -4232,7 +4232,6 @@ export function createOpenAIStreamAdapter(
                   autoinject: resolveRagAutoinject(
                     runtime.ragAutoInject,
                     params.checkpoint,
-                    false,
                   ),
                   autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
@@ -4248,9 +4247,6 @@ export function createOpenAIStreamAdapter(
                   autoinject: resolveRagAutoinject(
                     runtime.ragAutoInject,
                     params.checkpoint,
-                    Boolean(
-                      projectRagEnabled && researchProjectId && !runtime.ragEnabled,
-                    ),
                   ),
                   autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
@@ -5823,9 +5819,6 @@ export function createOpenAIStreamAdapter(
                             autoinject: resolveRagAutoinject(
                               ragAutoInject,
                               params.checkpoint,
-                              Boolean(
-                                projectRagEnabled && ragProjectId && !ragEnabled,
-                              ),
                             ),
                             autoinject_min_score: ragAutoInjectMinScore,
                             ...(ragAutoInject === "off"
@@ -6047,9 +6040,6 @@ export function createOpenAIStreamAdapter(
                           autoinject: resolveRagAutoinject(
                             ragAutoInject,
                             params.checkpoint,
-                            Boolean(
-                              projectRagEnabled && ragProjectId && !ragEnabled,
-                            ),
                           ),
                           autoinject_min_score: ragAutoInjectMinScore,
 

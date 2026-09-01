@@ -51,26 +51,34 @@ export function resolveAutoInject(
 /**
  * The `autoinject` flag to put on the wire.
  *
- * Project-only scopes are pre-retrieved so the Search pill cannot block grounding. KB and
- * mixed thread/project scopes keep the user's Auto-retrieve setting, matching
- * `build_rag_autoinject`, which forces only for a scope carrying `project_id` alone: a
- * thread attachment has to keep the caller's flag so the whole-document fallback runs
- * instead of one combined top-K search.
- *
- * An explicit Off outranks all of it. Always returns a boolean -- the deep-research
+ * An explicit Off outranks everything. Always returns a boolean -- the deep-research
  * request builder used to put the raw mode string on the wire, where `"off"` read as ON
  * server-side.
+ *
+ * This deliberately does NOT force pre-retrieval on for project-only scopes. An earlier
+ * revision did, so that the Search pill could not block grounding, but a 1260-generation
+ * A/B against main showed the size cutoff is what that override was fighting, and the
+ * cutoff was right. Above it, on Qwen3.8-27B over a project corpus:
+ *
+ * - the model already calls `search_knowledge_base` unprompted on 100% of document
+ *   questions (30/30), and answers 100% correctly either way, so forcing retrieval buys
+ *   no accuracy;
+ * - forcing it makes the model retrieve a second time on 26.7% of turns (0% on main),
+ *   because a pre-injected passage does not stop it calling the tool;
+ * - and it answers less usefully. Asked the question from #9947, main names the
+ *   near-miss distractor and rules it out 90% of the time; with forced pre-retrieval
+ *   that falls to 37%, even though the injected block contains the distractor passage.
+ *
+ * Below the cutoff the override was redundant: `resolveAutoInject` already returns true
+ * there, which is why the reporter's own 9B chat had pre-retrieval on the whole time.
+ * So the override could only ever change behaviour where it made things worse.
  */
 export function resolveRagAutoinject(
   mode: RagAutoInjectMode,
   checkpoint: string,
-  projectOnlyScope: boolean,
 ): boolean {
   if (mode === "off") {
     return false;
-  }
-  if (projectOnlyScope) {
-    return true;
   }
   return resolveAutoInject(mode, checkpoint);
 }
