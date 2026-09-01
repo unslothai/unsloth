@@ -30,11 +30,11 @@ GATE_NAME = "Check for desktop bundles"
 SUFFIXES = ("MacOS.dmg", "Linux.AppImage", "Ubuntu.deb", "Windows.exe")
 STABLE_ASSETS = tuple(f"Unsloth-Desktop-{suffix}" for suffix in SUFFIXES)
 
-# A `gh` that keeps state, so a PATCH is observable in the next read and an
-# unmodelled call is a loud failure rather than a silent success. The body is
-# Python because the state it keeps is JSON; it is reached through a /bin/sh
-# shim like every other fake in this directory, because a `python3` shebang does
-# not resolve on a Windows runner, where the interpreter is `python.exe`.
+# A `gh` that keeps state, so a PATCH is observable in the next read and an unmodelled call is a loud failure rather
+# than a silent success.
+# The body is Python because the state it keeps is JSON;
+# it is reached through a /bin/sh shim like every other fake in this directory, because a `python3` shebang does not
+# resolve on a Windows runner, where the interpreter is `python.exe`.
 FAKE_GH_BODY = r"""
 import json, os, pathlib, sys
 
@@ -291,7 +291,6 @@ def _latest_of(tmp_path):
     return json.loads((tmp_path / "github.json").read_text(encoding = "utf-8"))["latest"]
 
 
-# ------------------------------------------------------------------ the gate
 
 
 def _run_gate(tmp_path, *, release_tag, assets, repair_pointer):
@@ -316,7 +315,6 @@ LEGACY_ASSETS = tuple(f"Unsloth-Desktop-0_1_53_beta-{suffix}" for suffix in SUFF
 def test_the_gate_classifies_every_shape_of_release(tmp_path):
     """The four-way classification, executed rather than grepped."""
     cases = (
-        # assets, repair_pointer, expected proceed (None means the step must fail)
         ((), "false", "false"),
         ((), "true", "false"),
         (("notes.txt",), "false", "false"),
@@ -365,7 +363,6 @@ def test_the_gate_fails_closed_when_the_release_cannot_be_read(tmp_path):
     assert outputs == {}
 
 
-# ---------------------------------------------------------------- the repair
 
 
 def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(tmp_path):
@@ -420,7 +417,6 @@ def test_legacy_downloads_are_restored_during_migration(tmp_path):
     assert any("releases/801 -f make_latest=true" in line for line in commands)
     assert _latest_of(tmp_path) == "v0.1.801-beta"
     # A pre-rename release cannot serve the stable links, and the summary says so
-    # rather than reporting the downloads as repaired.
     summary = (tmp_path / "step-summary.md").read_text(encoding = "utf-8")
     assert "predates the stable asset names" in summary
 
@@ -454,7 +450,6 @@ def test_incomplete_draft_and_prerelease_releases_are_never_restored(tmp_path):
         manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
     )
     # An explicit repair request that cannot be honoured leaves production broken,
-    # so it must go red rather than finish green with nothing done.
     assert result.returncode == 1
     assert "nothing to restore" in result.stderr
     assert not [line for line in commands if "--method PATCH" in line]
@@ -617,7 +612,6 @@ def test_a_manifest_without_a_usable_version_is_refused(tmp_path):
 def test_a_draft_or_prerelease_target_is_refused(tmp_path):
     # /releases/latest never resolves to a draft or prerelease, so a repair aimed at
     # one cannot affect the endpoint. The source filter already refuses them; the
-    # target is held to the same rule.
     for state in ("draft", "prerelease"):
         target = _release("v0.1.53-beta", release_id = 53, complete = False)
         target[state] = True
@@ -634,10 +628,6 @@ def test_a_draft_or_prerelease_target_is_refused(tmp_path):
 
 
 def test_a_target_missing_from_the_release_listing_is_refused(tmp_path):
-    # The listing is the only view of the target's draft state: /releases/tags/{tag}
-    # answers 404 for a draft, which has no git tag until it is published. A target
-    # absent from that single page has an unverifiable state, so the draft/prerelease
-    # refusal above would degrade into no check. Fail closed instead.
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
@@ -652,6 +642,8 @@ def test_a_target_missing_from_the_release_listing_is_refused(tmp_path):
 
 def test_a_pointer_that_moved_on_is_left_alone(tmp_path):
     """Between the dispatch and the PATCH someone else fixed or replaced Latest."""
+    # The listing is the only view of the target's draft state: /releases/tags/{tag} answers 404 for a draft, which has
+    # no git tag until it is published.
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",

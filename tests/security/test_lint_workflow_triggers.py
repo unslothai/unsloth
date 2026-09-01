@@ -368,8 +368,8 @@ def test_publish_cache_key_collision_found_under_both_suffixes(tmp_path, suffix)
 @pytest.mark.parametrize(
     "command",
     [
-        # -i drops into the REPL after the script; on EOF the interpreter
-        # exits 0 even though the lint called sys.exit(1).
+        # -i drops into the REPL after the script;
+        # on EOF the interpreter exits 0 even though the lint called sys.exit(1).
         "python3 -i scripts/lint_workflow_triggers.py",
         # Anything outside the allowlist fails closed.
         "python3 -d scripts/lint_workflow_triggers.py",
@@ -785,11 +785,9 @@ def test_workflow_changes_require_code_owner_review():
         # Unanchored patterns may start at any depth.
         ("workflows/", ".github/workflows/lint.yml", True),
         ("**/workflows/", ".github/workflows/lint.yml", True),
-        # An internal slash anchors at the root, gitignore style, so this
-        # names a top-level workflows/ and not the one under .github/.
+        # An internal slash anchors at the root, gitignore style, so this names a top-level workflows/ and not the one
         ("workflows/lint.yml", ".github/workflows/lint.yml", False),
         ("workflows/lint.yml", "workflows/lint.yml", True),
-        # Non-matches.
         ("/unsloth/", ".github/workflows/lint.yml", False),
         ("/unsloth", "unsloth_zoo/x.py", False),
     ],

@@ -29,9 +29,9 @@ _SAVE_PY = _REPO_ROOT / "unsloth" / "save.py"
 _GPU_CELL = os.environ.get("UNSLOTH_SIM_GPU", "cpu").lower()
 
 
-# -- GPU cell: applied before anything torch-touching -------------------------
 
 
+# GPU cell: applied before anything torch-touching -------------------------
 def _apply_gpu_cell(cell: str) -> dict:
     """Returns a description of what the process now claims to be."""
     if cell == "cpu":
@@ -64,9 +64,9 @@ except Exception as exc:  # noqa: BLE001 -- torch absent is a legitimate cell
     _GPU_STATE = {"cell": _GPU_CELL, "error": str(exc)}
 
 
-# -- The helper under test, lifted without importing unsloth ------------------
 
 
+# The helper under test, lifted without importing unsloth ------------------
 def _load_helper():
     src = _SAVE_PY.read_text(encoding = "utf-8")
     for node in ast.parse(src).body:
@@ -81,13 +81,14 @@ def _load_helper():
 _OS_CELLS = {
     "windows": (ntpath, r"D:\Models\Merged Models\MyModel"),
     "linux": (posixpath, "/home/u/models/MyModel"),
-    # WSL reaches a Windows drive through drvfs; it is an ordinary POSIX path.
+    # WSL reaches a Windows drive through drvfs;
+    # it is an ordinary POSIX path.
     "wsl": (posixpath, "/mnt/d/Models/MyModel"),
     "macos": (posixpath, "/Users/u/models/MyModel"),
 }
 
-# Cells that are not real products. Kept as invariance checks only -- passing
-# here is NOT a claim that Unsloth supports CUDA or ROCm on macOS.
+# Cells that are not real products.
+# passing here is NOT a claim that Unsloth supports CUDA or ROCm on macOS.
 _UNREAL_CELLS = {("macos", "nvidia"), ("macos", "rocm")}
 
 

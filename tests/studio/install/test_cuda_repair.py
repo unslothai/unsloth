@@ -18,7 +18,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# Load module under test (mirrors test_rocm_support.py).
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
@@ -31,8 +30,7 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 
 _SETUP_SRC = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
-# The probe prints its answer behind this marker, so chatter on either side of it cannot
-# be mistaken for the answer. Mocked stdout has to carry it too.
+# The probe prints its answer behind this marker, so chatter on either side of it cannot be mistaken for the answer.
 _MARK = stack_mod._TORCH_PROBE_MARKER
 
 _ensure_cuda_torch = stack_mod._ensure_cuda_torch
@@ -139,8 +137,7 @@ def _run_cuda_repair(
             return smi_path
         return None
 
-    # The torch classification is memoized for the life of an install run, so each
-    # scenario has to start from a clean slate.
+    # The torch classification is memoized for the life of an install run, so each scenario has to start from a clean
     stack_mod._invalidate_torch_runtime_probe()
 
     with (
@@ -178,9 +175,9 @@ def _index_url(mock_pip) -> str:
     return args[args.index("--index-url") + 1]
 
 
+
+
 # Repair fires only on the poisoning signature.
-
-
 class TestCudaRepairFires:
     def test_hip_build_on_nvidia_triggers_repair(self):
         mock_pip = _run_cuda_repair(torch_state = "hip", cuda_version = "12.8")
@@ -193,13 +190,11 @@ class TestCudaRepairFires:
 
     def test_rocm_in_version_string_triggers_repair(self):
         # AMD SDK / Radeon wheels may encode rocm in __version__ without torch.version.hip;
-        # the probe prints "hip" for both.
         mock_pip = _run_cuda_repair(torch_state = "hip")
         assert mock_pip.call_count == 1
 
     def test_no_gpu_but_explicit_cuda_pin_repairs(self):
-        # Headless / CI cross-install: an explicit cu* pin commits to CUDA wheels with no
-        # NVIDIA GPU visible, so a ROCm-poisoned venv is still repaired to the pinned family.
+        # Headless / CI cross-install:
         mock_pip = _run_cuda_repair(
             nvidia = False,
             backend = "cuda",
@@ -210,8 +205,8 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_cvd_hidden_but_explicit_cuda_pin_repairs(self):
-        # CVD=-1/"" hides the GPU, but an explicit cu* pin skips ALL host-GPU probing, so the
         # CVD hide gate must not suppress the repair (GPU-less CI: CVD=-1, FAMILY=cu128).
+        # CVD=-1/"" hides the GPU, but an explicit cu* pin skips ALL host-GPU probing, so the CVD hide gate must not
         for _cvd in ("-1", ""):
             mock_pip = _run_cuda_repair(
                 nvidia = False,
@@ -224,7 +219,6 @@ class TestCudaRepairFires:
             assert "cu128" in _index_url(mock_pip)
 
     def test_tagged_cuda_mismatch_repairs(self):
-        # A healthy CUDA torch whose +cuXXX differs from the pin is repaired.
         mock_pip = _run_cuda_repair(
             index_family = "cu128",
             torch_state = "cuda|cu126",
@@ -234,24 +228,23 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_untagged_cuda_build_under_pin_repairs(self):
-        # An untagged CUDA build (no +cuXXX tag -> empty installed cu) can't be confirmed
-        # to match the pin, so the pin is enforced with a reinstall.
+        # A healthy CUDA torch whose +cuXXX differs from the pin is repaired.
         mock_pip = _run_cuda_repair(
             index_family = "cu128",
-            torch_state = "cuda",  # marker cuda, empty installed cu
+            torch_state = "cuda",
             cuda_version = "12.8",
         )
         assert mock_pip.call_count == 1
         assert "cu128" in _index_url(mock_pip)
 
     def test_broken_probe_with_cuda_pin_repairs(self):
-        # torch present but unimportable under a CUDA pin: the base update won't repair a
-        # broken already-installed torch, so reinstall from the pin instead of stranding it.
+        # torch present but unimportable under a CUDA pin:
         mock_pip = _run_cuda_repair(torch_state = "hip", torch_rc = 1, index_family = "cu128")
         assert mock_pip.call_count == 1
         assert "cu128" in _index_url(mock_pip)
 
     def test_broken_probe_with_cuda_url_pin_repairs(self):
+        # An untagged CUDA build (no +cuXXX tag -> empty installed cu) can't be confirmed
         mock_pip = _run_cuda_repair(
             torch_state = "cpu",
             torch_rc = 1,
@@ -261,7 +254,6 @@ class TestCudaRepairFires:
         assert "https://mirror.local/cu128" in _index_url(mock_pip)
 
 
-# No-op cases.
 
 
 class TestCudaRepairSkips:
@@ -290,8 +282,7 @@ class TestCudaRepairSkips:
         mock_pip.assert_not_called()
 
     def test_torch_missing_no_pin_skips(self):
-        # Non-zero probe exit = torch missing/un-importable. With NO CUDA pin the base
-        # install owns it, so leave it alone (a pinned build reinstalls).
+        # Non-zero probe exit = torch missing/un-importable.
         mock_pip = _run_cuda_repair(torch_state = "hip", torch_rc = 1)
         mock_pip.assert_not_called()
 
@@ -325,7 +316,6 @@ class TestCudaRepairSkips:
         assert mock_pip.call_count == 1
 
     def test_matching_tagged_cuda_pin_no_repair(self):
-        # Healthy CUDA torch whose +cuXXX already matches the pin: no reinstall.
         mock_pip = _run_cuda_repair(
             index_family = "cu128",
             torch_state = "cuda|cu128",
@@ -334,8 +324,8 @@ class TestCudaRepairSkips:
         mock_pip.assert_not_called()
 
     def test_custom_mirror_leaf_not_treated_as_cuda_pin(self):
-        # A mirror leaf starting with "cu" but not cuXXX (.../custom, .../current) must
         # NOT be treated as a CUDA pin, so it can't bypass the NVIDIA gate.
+        # A mirror leaf starting with "cu" but not cuXXX (.../custom, .../current) must NOT be treated as a CUDA pin
         for _leaf in ("custom", "current"):
             mock_pip = _run_cuda_repair(
                 nvidia = False,
@@ -373,8 +363,7 @@ class TestTorchBackendDerivationFromPin:
 
     @staticmethod
     def _derive(env):
-        # Re-run the module's import-time derivation, using its own _is_cuda_family_leaf
-        # so this stays in lockstep.
+        # Re-run the module's import-time derivation, using its own _is_cuda_family_leaf so this stays in lockstep.
         idx_override = (
             env.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
             or env.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
@@ -400,8 +389,8 @@ class TestTorchBackendDerivationFromPin:
         assert self._derive({"UNSLOTH_TORCH_INDEX_FAMILY": "cu128"}) == "cuda"
 
     def test_current_leaf_not_cuda(self):
-        # ^cu[0-9] rejects /current -> backend stays "" (probe GPU), so an AMD host still
         # repairs a CPU/wrong torch instead of short-circuiting.
+        # ^cu[0-9] rejects /current -> backend stays "" (probe GPU), so an AMD host still repairs a CPU/wrong torch
         assert self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://mymirror.example/current"}) == ""
 
     def test_custom_leaf_not_cuda(self):
@@ -428,7 +417,6 @@ class TestTorchBackendDerivationFromPin:
         ), "_TORCH_BACKEND derivation must not use a bare startswith('cu')"
 
 
-# CUDA index ladder.
 
 
 class TestCudaIndexResolution:
@@ -453,7 +441,6 @@ class TestCudaIndexResolution:
         assert "cu126" in _index_url(mock_pip)
 
     def test_proc_fallback_no_smi_defaults_cu126(self):
-        # NVIDIA usable via /proc fallback, nvidia-smi absent.
         mock_pip = _run_cuda_repair(smi_path = None)
         assert "cu126" in _index_url(mock_pip)
 
@@ -466,10 +453,10 @@ class TestCudaIndexResolution:
         assert url == f"{stack_mod._PYTORCH_WHL_BASE}/cu126"
 
 
-# PyTorch 2.11's cu128/cu130 start at sm_75, and their CUDA 13 runtime also costs a
+# PyTorch 2.11's cu128/cu130 start at sm_75, and their CUDA 13 runtime also costs a pre-Turing GPU its llama.cpp GGUF
+
+
 # pre-Turing GPU its llama.cpp GGUF bundle, so such hosts get cu126 (#7765).
-
-
 class TestPreTuringWheelFamily:
     def test_volta_host_selects_cu126_over_the_driver_family(self):
         assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.0",)))
@@ -486,14 +473,11 @@ class TestPreTuringWheelFamily:
             assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = caps))
 
     def test_mixed_host_outside_cu126_range_keeps_the_driver_family(self):
-        # Blackwell is past cu126's ceiling and Kepler is under its floor, so no family
-        # covers either mix whole. Capping would strand the newer card entirely.
+        # Blackwell is past cu126's ceiling and Kepler under its floor, so no family covers either mix whole;
         for caps in (("7.0", "12.0"), ("3.7", "8.6")):
             assert "cu130" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = caps))
 
     def test_cu126_venv_is_repaired_after_a_blackwell_upgrade(self):
-        # The span cuts both ways: a cu126 venv predating a GPU swap has nothing for
-        # sm_120, and a fresh install on that host would pick cu130.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu126|2.11.0",
             cuda_version = "13.0",
@@ -503,8 +487,6 @@ class TestPreTuringWheelFamily:
         assert "cu130" in _index_url(mock_pip)
 
     def test_cu126_venv_is_kept_when_the_driver_allows_nothing_newer(self):
-        # Same host, CUDA 12.6 driver: cu130 is not installable, so leave it rather
-        # than reinstall cu126 over itself on every update.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu126|2.11.0",
             cuda_version = "12.6",
@@ -513,8 +495,6 @@ class TestPreTuringWheelFamily:
         mock_pip.assert_not_called()
 
     def test_partial_family_is_not_traded_for_another_partial_family(self):
-        # A working V100 + cu126 box gains a Blackwell card. Neither family covers both,
-        # so swapping to cu130 would kill the Volta to revive the Blackwell.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu126|2.11.0",
             cuda_version = "13.0",
@@ -523,8 +503,8 @@ class TestPreTuringWheelFamily:
         mock_pip.assert_not_called()
 
     def test_cu118_kepler_build_is_kept(self):
-        # torch 2.7's cu118 still built sm_37 and nothing newer does, so the replacement
-        # would strand the GPU that works today.
+        # torch 2.7's cu118 still built sm_37 and nothing newer does, so the replacement would strand the GPU that
+        # The span cuts both ways: a cu126 venv predating a GPU swap has nothing for sm_120, and a fresh install on
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu118|2.7.1",
             cuda_version = "13.0",
@@ -533,7 +513,6 @@ class TestPreTuringWheelFamily:
         mock_pip.assert_not_called()
 
     def test_uncovered_mix_is_not_repaired_in_a_loop(self):
-        # The cap declines, so the replacement equals the installed family.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu130|2.11.0",
             cuda_version = "13.0",
@@ -542,6 +521,7 @@ class TestPreTuringWheelFamily:
         mock_pip.assert_not_called()
 
     def test_mixed_host_within_cu126_range_is_repaired(self):
+        # Same host, CUDA 12.6 driver:
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu130|2.11.0",
             cuda_version = "13.0",
@@ -556,6 +536,7 @@ class TestPreTuringWheelFamily:
         )
 
     def test_incompatible_family_is_repaired(self):
+        # A working V100 + cu126 box gains a Blackwell card.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu130|2.11.0",
             cuda_version = "13.0",
@@ -565,7 +546,6 @@ class TestPreTuringWheelFamily:
         assert "cu126" in _index_url(mock_pip)
 
     def test_pre_211_cu128_volta_build_is_kept(self):
-        # torch 2.10's cu128 wheels still shipped sm_70; no reinstall is warranted.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu128|2.10.0",
             cuda_version = "13.0",
@@ -574,7 +554,6 @@ class TestPreTuringWheelFamily:
         mock_pip.assert_not_called()
 
     def test_pre_211_cu128_pascal_build_is_repaired(self):
-        # ... but they never shipped sm_61, which only cu126 carries.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu128|2.10.0",
             cuda_version = "13.0",
@@ -605,11 +584,8 @@ class TestPreTuringWheelFamily:
             mock_pip.assert_not_called()
 
     def test_untagged_cuda_build_uses_the_runtime_family(self):
-        # An untagged build still reports torch.version.cuda, so _family falls back to
-        # the runtime value and the architecture policy applies.
-        # The "family unknown, leave it alone" branch needs BOTH the tag and
-        # torch.version.cuda empty, which reads as a CPU build, so an untagged CUDA
-        # build is always classifiable.
+        # ... but they never shipped sm_61, which only cu126 carries.
+        # torch 2.10's cu128 wheels still shipped sm_70;
         mock_pip = _run_cuda_repair(
             torch_state = "cuda||2.11.0",
             cuda_version = "13.0",
@@ -638,8 +614,7 @@ class TestPreTuringWheelFamily:
         mock_run.assert_not_called()
 
     def test_family_spans_track_the_pytorch_wheel_matrix(self):
-        # Read off pytorch's .ci/manywheel/build_cuda.sh at each release tag. cu118 kept
-        # Kepler: torch 2.7 still built sm_37 for it.
+        # Read off pytorch's .ci/manywheel/build_cuda.sh at each release tag.
         assert stack_mod._cuda_family_sm_range("cu118") == (37, 90)
         assert stack_mod._cuda_family_sm_range("cu124") == (50, 90)
         assert stack_mod._cuda_family_sm_range("cu126") == (50, 90)
@@ -652,11 +627,13 @@ class TestPreTuringWheelFamily:
         assert stack_mod._cuda_family_sm_range("") is None
 
     def test_cu128_volta_window_opens_at_torch_28(self):
-        # 2.7's cu128 dropped sm_50-70 when CUDA 12.8 deprecated them; 2.8 put sm_70
-        # back and 2.11 took it away again.
+        # 2.7's cu128 dropped sm_50-70 when CUDA 12.8 deprecated them; 2.8 put sm_70 back and 2.11 took it away again.
         assert stack_mod._cuda_family_sm_range("cu128", "2.7.1")[0] == 75
         assert stack_mod._cuda_family_sm_range("cu128", "2.8.0")[0] == 70
         assert stack_mod._cuda_family_sm_range("cu128", "2.10.0")[0] == 70
+        # An untagged build still reports torch.version.cuda, so _family falls back to the runtime value and the
+        # architecture policy applies.
+        # The "family unknown, leave it alone" branch needs BOTH the tag and torch.version.cuda empty, which reads as a
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu128|2.7.1",
             cuda_version = "13.0",
@@ -667,7 +644,6 @@ class TestPreTuringWheelFamily:
 
     def test_untagged_pypi_wheel_is_classified_by_its_cuda_runtime(self):
         # PyPI forbids local versions, so a torch from PyPI has no +cuXXX tag;
-        # torch.version.cuda is the only clue that it is a CUDA 13 build.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda||2.11.0|cu130",
             cuda_version = "13.0",
@@ -684,8 +660,7 @@ class TestPreTuringWheelFamily:
         healthy.assert_not_called()
 
     def test_repair_is_skipped_when_it_would_reinstall_the_same_family(self):
-        # aarch64 has no CUDA family below sm_80, so the cap declines and the replacement
-        # would be the condemned wheel itself, once per update forever.
+        # aarch64 has no CUDA family below sm_80, so the cap declines and the replacement would be the condemned wheel
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu130|2.11.0",
             cuda_version = "13.0",
@@ -710,9 +685,8 @@ class TestPreTuringWheelFamily:
         assert _sms("7.0\n", returncode = 1) is None
 
 
-# The updater runs setup.ps1 -> install_python_stack.py, never install.ps1, which held the
-# only flavor repair.
 
+# The updater runs setup.ps1 -> install_python_stack.py, never install.ps1, which held the
 _ensure_expected_torch_flavor = stack_mod._ensure_expected_torch_flavor
 _UNSET = object()
 
@@ -797,6 +771,8 @@ def _run_flavor_invariant(
 
     def _pip(*args, **kwargs):
         # The real pip_install invalidates the memoized classification.
+        # list.append() returns None, so a stub that only appended reported failure on every call and every test here
+        # silently exercised the could-not-install branch.
         stack_mod._invalidate_torch_runtime_probe()
         if repaired is not None:
             state["version"] = repaired
@@ -879,7 +855,6 @@ class TestExpectedTorchFlavorRepairs:
         assert _index_url(mock_pip).endswith("/cu128")
 
     def test_a_wedged_probe_classifies_from_disk_and_still_repairs(self):
-        # A stalled driver hangs `import torch`; version.py on disk still names the wheel.
         ok, mock_pip = _run_flavor_invariant(
             probe_timeout = True,
             repaired = "2.10.0+cu124",
@@ -895,7 +870,7 @@ class TestExpectedTorchFlavorFailsTheUpdate:
         assert mock_pip.call_count == 1
 
     def test_the_failure_verdict_reads_torch_version_cuda_not_just_the_tag(self):
-        # Untagged but carrying a CUDA runtime is a GPU build: reinstall, do not fail.
+        # Untagged but carrying a CUDA runtime is a GPU build:
         ok, _mock_pip = _run_flavor_invariant(installed = "2.11.0", repaired = "2.11.0+cu124")
         assert ok is True
 
@@ -970,13 +945,14 @@ class TestExpectedTorchFlavorSkips:
 
     @pytest.mark.parametrize("tag", ["current", "custom", "simple", "cu"])
     def test_an_unenforceable_expectation_is_a_no_op(self, tag):
-        # "xpu" and "rocm" are NOT here: both are published and both are enforced.
+        # "xpu" and "rocm" are NOT here:
         ok, mock_pip = _run_flavor_invariant(expected_env = tag)
         assert ok is True
         mock_pip.assert_not_called()
 
     def test_an_empty_handover_tag_falls_through_rather_than_deciding(self):
-        # PowerShell 7.5+ keeps an entry assigned "", which must read as "nobody said".
+        # A stalled driver hangs `import torch`;
+        # version.py on disk still names the wheel.
         ok, mock_pip = _run_flavor_invariant(
             expected_env = "",
             recorded = "cu128",
@@ -999,6 +975,7 @@ class TestExpectedTorchFlavorSkips:
 
 class TestExpectedTorchFlavorResolution:
     def test_the_manifest_answers_when_the_environment_is_silent(self):
+        # PowerShell 7.5+ keeps an entry assigned "", which must read as "nobody said".
         ok, mock_pip = _run_flavor_invariant(
             expected_env = None,
             recorded = "cu128",
@@ -1036,7 +1013,6 @@ class TestExpectedTorchFlavorResolution:
         mock_pip.assert_not_called()
 
     def test_the_setup_scripts_index_url_is_used_when_its_leaf_matches(self):
-        # Credentials are not reconstructible from a family leaf.
         _ok, mock_pip = _run_flavor_invariant(
             install_index_url = "https://mirror.local/whl/cu124?token=secret",
             repaired = "2.10.0+cu124",
@@ -1044,7 +1020,6 @@ class TestExpectedTorchFlavorResolution:
         assert _index_url(mock_pip) == "https://mirror.local/whl/cu124?token=secret"
 
     def test_an_index_url_naming_another_family_is_ignored(self):
-        # setup.ps1 hands over /cpu alongside a "rocm" tag on the AMD Windows path.
         _ok, mock_pip = _run_flavor_invariant(
             install_index_url = "https://download.pytorch.org/whl/cpu",
             repaired = "2.10.0+cu124",
@@ -1052,6 +1027,8 @@ class TestExpectedTorchFlavorResolution:
         assert _index_url(mock_pip) == f"{stack_mod._PYTORCH_WHL_BASE}/cu124"
 
     def test_a_matching_family_pin_supplies_the_index(self):
+        # Credentials are not reconstructible from a family leaf.
+        # setup.ps1 hands over /cpu alongside a "rocm" tag on the AMD Windows path.
         _ok, mock_pip = _run_flavor_invariant(
             index_url = "https://mirror.local/whl/cu124",
             repaired = "2.10.0+cu124",
@@ -1167,7 +1144,6 @@ class TestExpectedXpuFlavorIsEnforced:
             expected_env = "rocm",
         )
         mock_pip.rocm_repair.assert_called_once()
-        # Not called directly: this pass must not invent a repo.amd.com URL of its own.
         mock_pip.assert_not_called()
         assert ok is True
 
@@ -1259,14 +1235,13 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         assert "--force-reinstall" in [str(a) for a in mock_pip.call_args.args]
 
     def test_a_published_cpu_tag_with_no_pin_is_still_left_alone(self):
-        # setup.ps1 publishes "cpu" when nvidia-smi answers nothing; the healthy cu124
-        # venv underneath must not be downgraded.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.6.0+cu124",
             expected_env = "cpu",
             nvidia = False,
         )
         assert ok is True
+        # Not called directly: this pass must not invent a repo.amd.com URL of its own.
         mock_pip.assert_not_called()
 
     def test_a_cpu_venv_under_a_cpu_pin_is_a_no_op(self):
@@ -1291,7 +1266,6 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         assert mock_pip.call_count == 1
 
     def test_a_cpu_backend_under_a_gpu_expectation_is_still_left_alone(self):
-        # A deliberate CPU backend must not be dragged up to cu124.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = "cu124",
@@ -1319,6 +1293,8 @@ class TestWindowsOnArmKeepsTheNoTorchaudioException:
         assert _index_url(mock_pip).endswith("/cu124")
 
     def test_the_xpu_trio_drops_it_too(self):
+        # venv underneath must not be downgraded.
+        # setup.ps1 publishes "cpu" when nvidia-smi answers nothing;
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             repaired = "2.9.1+xpu",
@@ -1392,6 +1368,7 @@ class TestAnUntaggedGpuWheelIsNotACpuMatch:
     """
 
     def test_an_untagged_cuda_wheel_under_a_cpu_pin_is_repaired(self):
+        # A deliberate CPU backend must not be dragged up to cu124.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.6.0",
             repaired = "2.11.0+cpu",
@@ -1450,7 +1427,6 @@ class TestAnExplicitPinOutranksTheManifest:
         assert _index_url(mock_pip) == pin
 
     def test_a_rocm_pin_collapses_to_the_flavor_vocabulary(self):
-        # Every AMD leaf (rocm6.4, gfx1151) is "rocm" in the tag vocabulary.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+rocm7.2",
             expected_env = None,
@@ -1462,7 +1438,6 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_a_cpu_pin_beats_a_gpu_manifest(self):
-        # A deliberate move to CPU must not be reverted by the previous install.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = None,
@@ -1473,7 +1448,6 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_an_unrecognised_pin_still_falls_through_to_the_manifest(self):
-        # A /simple mirror names no family; the caller's unknown-pin gate is the guard.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = None,
@@ -1484,7 +1458,6 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_the_setup_handover_still_wins_over_a_pin(self):
-        # The handover describes the run that just installed; the pin may predate it.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.10.0+cu124",
             repaired = "2.10.0+cu126",
@@ -1513,6 +1486,7 @@ class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
         mock_pip.assert_called_once()
 
     def test_a_pinned_rocm_backend_is_enforced_when_it_agrees(self):
+        # Every AMD leaf (rocm6.4, gfx1151) is "rocm" in the tag vocabulary.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             repaired = "2.11.0+rocm7.2",
@@ -1538,6 +1512,9 @@ class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
 
     def test_an_unknown_pin_is_still_left_alone(self):
         """Regression guard: narrowing the veto must not reopen the case it closed."""
+        # A deliberate move to CPU must not be reverted by the previous install.
+        # A /simple mirror names no family;
+        # The handover describes the run that just installed;
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = None,
@@ -1559,7 +1536,7 @@ class TestSetupPs1CudaOnDiskFallback:
         assert "function Get-VenvTorchCudaTag" in _SETUP_SRC
         assert "function Test-VenvTorchIsCuda" in _SETUP_SRC
         block = _SETUP_SRC[_SETUP_SRC.index("function Get-VenvTorchCudaTag") :][:1400]
-        # The family, not a flat "cuda": the stale comparison below it is cu126-vs-cu128.
+        # The family, not a flat "cuda":
         assert "cu[0-9]+" in block
         assert "site-packages\\torch\\version.py" in block
 
@@ -1608,9 +1585,7 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         calls = {"torchao": [], "removed": []}
 
         def _try(*a, **k):
-            # Returns a BOOL, as the real pip_install_try does. list.append() returns
-            # None, so a stub that only appended reported failure on every call and every
-            # test here silently exercised the could-not-install branch.
+            # Returns a BOOL, as the real pip_install_try does:
             calls["torchao"].append([str(x) for x in a])
             return not torchao_install_fails
 
@@ -1653,7 +1628,6 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["ok"] is True
 
     def test_a_cuda_major_change_alone_re_pins_torchao(self):
-        # _select_torchao_spec branches on cuda>=13, so cu124 -> cu130 moves the build.
         calls = self._resync("2.10.0+cu124", "2.10.0+cu130")
         assert calls["torchao"], "the CUDA major moved, so the pin has to be re-selected"
         assert any("torchao==0.17.0" in " ".join(c) for c in calls["torchao"])
@@ -1670,12 +1644,12 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["ok"] is True, "nothing here touched torch"
 
     def test_the_torchao_reinstall_cannot_drag_torch_back(self):
-        # torchao depends on torch: resolving deps re-pulls the wheel just removed.
         calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
         assert calls["torchao"], "the release moved, so torchao is re-pinned"
         assert all("--no-deps" in c for c in calls["torchao"])
 
     def test_a_pass_that_ran_a_torch_touching_install_asks_to_be_re_verified(self):
+        # torchao depends on torch:
         calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
         assert calls["ok"] is False
 
@@ -1718,6 +1692,7 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["removed"] == [], "a same-major torchao is slower, not broken"
 
     def test_a_torchao_that_reinstalls_cleanly_is_not_removed(self):
+        # _select_torchao_spec branches on cuda>=13, so cu124 -> cu130 moves the build.
         calls = self._resync("2.10.0+cu124", "2.10.0+cu130")
         assert calls["torchao"], "the CUDA major moved"
         assert calls["removed"] == [], "the replacement landed; nothing to remove"
@@ -1829,8 +1804,7 @@ class TestTheResyncNoticesItsOwnFailures:
 
 class TestThePostRepairCheckUsesTheSameRuleAsThePreRepairOne:
     def test_an_untagged_gpu_wheel_does_not_satisfy_a_cpu_expectation(self):
-        # Untagged reads as cpu, so the post-repair check would accept the very wheel
-        # the pre-repair check rejected.
+        # Untagged reads as cpu, so the post-repair check would accept the very wheel the pre-repair check rejected.
         with (
             patch.object(
                 stack_mod,
@@ -2058,7 +2032,7 @@ class TestTheWindowsXpuTritonSwapReachesADirectRun:
         block = source[source.index(marker) :][:1200]
         assert "_ensure_expected_torch_flavor" in block
         assert "_ensure_xpu_triton()" in block
-        # After, for the reason step 13 puts it last: the swap keys off the +xpu label.
+        # After, for the reason step 13 puts it last:
         assert block.index("_ensure_expected_torch_flavor") < block.index("_ensure_xpu_triton()")
 
 
@@ -2188,7 +2162,6 @@ class TestARepairedTorchThatCannotImport:
         monkeypatch.setattr(stack_mod, "_installed_torch_label_on_disk", lambda: state["version"])
 
         def _pip(_label, *_a, **_k):
-            # The repair lands the right family, and it does not import.
             state.update(ran = True, importable = False, version = "2.6.0+cu124")
 
         monkeypatch.setattr(stack_mod, "pip_install", _pip)

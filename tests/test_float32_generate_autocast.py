@@ -70,7 +70,7 @@ def _the_autocaster_call():
         if not isinstance(call, ast.Call):
             continue
         kwargs = {k.arg: k.value for k in call.keywords}
-        # The forced-float16 branch passes a literal; this one forwards `dtype`.
+        # The forced-float16 branch passes a literal;
         if isinstance(kwargs.get("dtype"), ast.Name) and kwargs["dtype"].id == "dtype":
             return kwargs
     raise AssertionError("no autocaster assignment forwarding `dtype` found")

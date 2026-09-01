@@ -25,7 +25,8 @@ _section = [0]
 _failed: list[str] = []
 _warned: list[str] = []
 
-# When 1, audit-finding assertions become hard fails. Off by default: surfaced as WARN.
+# When 1, audit-finding assertions become hard fails.
+# Off by default: surfaced as WARN.
 STRICT_AUDIT = os.environ.get("STUDIO_API_STRICT_AUDIT", "0") == "1"
 
 
@@ -113,12 +114,9 @@ def login(password: str) -> tuple[int, str | None]:
     return code, None
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 1. CORS hardening
-# ─────────────────────────────────────────────────────────────────────────
 section("CORS hardening")
 
-# Cross-origin OPTIONS preflight. Bad pattern: wildcard origin echoed alongside credentials=true.
+# Cross-origin OPTIONS preflight.
 req = urllib.request.Request(
     f"{BASE}/api/auth/login",
     method = "OPTIONS",
@@ -164,9 +162,6 @@ else:
     ok("(bootstrap pw file already cleared, skipping leak check)")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 2. /api/system + /api/system/hardware require auth
-# ─────────────────────────────────────────────────────────────────────────
 section("/api/system endpoints require auth")
 for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibility"):
     code, _ = http("GET", endpoint)
@@ -176,7 +171,7 @@ for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibil
         fail(f"GET {endpoint} unauthenticated returned {code} (expected 401/403)")
 
 
-# Rotate password to NEW for a working bearer: bootstrap login -> change-password -> login NEW.
+# Rotate password to NEW for a working bearer:
 section("Rotate bootstrap password for downstream tests")
 code, old_token = login(OLD)
 if code != 200 or not old_token:
@@ -200,7 +195,6 @@ if code != 200 or not NEW_TOKEN:
 ok("login with NEW -> 200")
 AUTH_HEADER = {"Authorization": f"Bearer {NEW_TOKEN}"}
 
-# Re-test /api/system endpoints WITH auth.
 for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibility"):
     code, _ = http("GET", endpoint, headers = AUTH_HEADER)
     if code == 200:
@@ -208,7 +202,6 @@ for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibil
     else:
         fail(f"GET {endpoint} authenticated returned {code} (expected 200)")
 
-# Sections 5 + 7 below need a loaded model.
 section("Load the GGUF for /v1 tests")
 code, body = http(
     "POST",
@@ -228,12 +221,8 @@ if code != 200:
 ok(f"loaded {GGUF_REPO}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 3. Auth state machine
-# ─────────────────────────────────────────────────────────────────────────
 section("Auth state machine")
 
-# OLD bootstrap pw must now be rejected.
 code, _ = login(OLD)
 if code == 401:
     ok("login with OLD bootstrap pw -> 401")
@@ -248,8 +237,9 @@ else:
     fail(f"/api/auth/refresh without body returned {code} (expected 400/422)")
 
 
-# Wrong-password burst: 401 until the per-IP bucket fills, then 429 with Retry-After.
+# Wrong-password burst:
 # Bucket can't be reset between tests, so assert the invariant, not a fixed transition index.
+# Wrong-password burst: 401 until the per-IP bucket fills, then 429 with Retry-After.
 def _login_with_headers(password: str) -> tuple[int, str | None]:
     """Like ``login`` but returns ``(status, retry_after_header)``."""
     url = f"{BASE}/api/auth/login"
@@ -289,9 +279,6 @@ else:
     ok(f"login burst -> 401x{codes.count(401)} then 429 with Retry-After={retry_after}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 4. JWT-expiry rejection
-# ─────────────────────────────────────────────────────────────────────────
 section("JWT expiry")
 # Forge a JWT with exp=now-1 using the install's signing secret.
 # get_user_and_secret('unsloth') returns (salt, hash, jwt_secret, must_change_pw).
@@ -310,7 +297,6 @@ try:
             / "backend"
         ),
     )
-    # Best-effort import; not all installs ship the backend at this path.
     import jwt  # type: ignore[import-not-found]
     from auth import storage  # type: ignore[import-not-found]
 
@@ -337,9 +323,6 @@ except Exception as exc:
     ok(f"(skipped JWT-forge: {exc.__class__.__name__})")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 5. API key lifecycle E2E
-# ─────────────────────────────────────────────────────────────────────────
 section("API key lifecycle")
 
 code, body = http(
@@ -351,7 +334,8 @@ code, body = http(
 if code != 200 or not isinstance(body, dict):
     fail(f"POST /api/auth/api-keys -> {code}: {_shape(body)}")
 else:
-    # Flat "key" is the one-time bearer; the "api_key" sub-dict carries metadata.
+    # Flat "key" is the one-time bearer;
+    # the "api_key" sub-dict carries metadata.
     api_key = body.get("key")
     api_meta = body.get("api_key") if isinstance(body.get("api_key"), dict) else {}
     api_id = api_meta.get("id") or body.get("id")
@@ -359,7 +343,6 @@ else:
         fail(f"create-key missing key/id: {_shape(body)}")
     else:
         ok(f"created key id={api_id}")
-        # List must include this id.
         code, body = http("GET", "/api/auth/api-keys", headers = AUTH_HEADER)
         if code == 200 and isinstance(body, dict):
             ids = [k.get("id") for k in body.get("api_keys", body.get("keys", []))]
@@ -370,7 +353,6 @@ else:
         else:
             fail(f"GET /api/auth/api-keys -> {code}: {_shape(body)}")
 
-        # Use the key against /v1/chat/completions.
         code, body = http(
             "POST",
             "/v1/chat/completions",
@@ -388,7 +370,6 @@ else:
         else:
             fail(f"/v1/chat/completions with API key -> {code}: {_shape(body)}")
 
-        # Delete + verify rejection.
         code, _ = http(
             "DELETE",
             f"/api/auth/api-keys/{api_id}",
@@ -415,9 +396,6 @@ else:
             fail(f"deleted API key still works: {code}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 6. Auth file-mode hardening (Linux only)
-# ─────────────────────────────────────────────────────────────────────────
 section("Auth file-mode hardening")
 import platform as _platform
 
@@ -443,12 +421,8 @@ else:
             audit(f"{path} mode={oct(actual_mode)} (expected {oct(expected_mode)})")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 7. Inference lifecycle gaps
-# ─────────────────────────────────────────────────────────────────────────
 section("Inference lifecycle")
 
-# /v1/models must list the loaded model.
 code, body = http("GET", "/v1/models", headers = AUTH_HEADER)
 if code == 200 and isinstance(body, dict):
     ids = [m.get("id") for m in body.get("data", [])]
@@ -459,7 +433,6 @@ if code == 200 and isinstance(body, dict):
 else:
     fail(f"/v1/models -> {code}: {_shape(body)}")
 
-# /v1/embeddings returns an embedding OR a structured 4xx (501 OK for non-embedding models).
 code, body = http(
     "POST",
     "/v1/embeddings",
@@ -474,7 +447,7 @@ elif 400 <= code < 600 and code != 500:
 else:
     fail(f"/v1/embeddings -> {code} (expected 200 or 4xx/501)")
 
-# /v1/responses minimal request.
+# /v1/embeddings returns an embedding OR a structured 4xx (501 OK for non-embedding models).
 code, body = http(
     "POST",
     "/v1/responses",
@@ -491,7 +464,6 @@ if code == 200 or 400 <= code < 500:
 else:
     fail(f"/v1/responses -> {code} (expected 200 or 4xx)")
 
-# Bogus variant must be rejected with 4xx. Backend currently 500s; surface as AUDIT until fixed.
 code, _ = http(
     "POST",
     "/api/inference/load",
@@ -512,7 +484,7 @@ else:
     fail(f"bogus gguf_variant returned {code} (expected 4xx)")
 
 
-# Force-reload of the same repo: child PID must change.
+# Force-reload of the same repo:
 def _llama_pid() -> int | None:
     code, body = http("GET", "/api/inference/status", headers = AUTH_HEADER)
     if code != 200 or not isinstance(body, dict):
@@ -521,6 +493,8 @@ def _llama_pid() -> int | None:
 
 
 before_pid = _llama_pid()
+# Bogus variant must be rejected with 4xx.
+# Backend currently 500s;
 code, _ = http(
     "POST",
     "/api/inference/load",
@@ -544,11 +518,8 @@ else:
         ok(f"force-reload -> 200 (PID change check skipped: {before_pid}/{after_pid})")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 8. Endpoint-by-endpoint auth audit
-# ─────────────────────────────────────────────────────────────────────────
 section("Endpoint auth audit")
-# Pin the EXPECTED auth posture per route; a new unlisted route fails the audit.
+# Pin the EXPECTED auth posture per route;
 PUBLIC = {
     ("GET", "/api/health"),
     ("GET", "/api/auth/status"),
@@ -557,7 +528,6 @@ PUBLIC = {
     ("POST", "/api/auth/refresh"),
 }
 EXPECTED_AUTH_ENDPOINTS = [
-    # Auth-required (sample -- not exhaustive; covers the key surfaces)
     ("GET", "/api/inference/status"),
     ("GET", "/api/inference/models"),
     ("GET", "/v1/models"),
@@ -566,7 +536,7 @@ EXPECTED_AUTH_ENDPOINTS = [
     ("GET", "/api/system/gpu-visibility"),
     ("GET", "/api/auth/api-keys"),
     ("POST", "/api/inference/load"),
-    ("POST", "/api/shutdown"),  # don't actually fire it!
+    ("POST", "/api/shutdown"),
 ]
 for method, path in EXPECTED_AUTH_ENDPOINTS:
     if (method, path) in PUBLIC:
@@ -592,9 +562,6 @@ for method, path in PUBLIC:
         fail(f"{method} {path} public returned unexpected {code}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Summary
-# ─────────────────────────────────────────────────────────────────────────
 os.write(1, b"\n")
 if _warned:
     _emit(

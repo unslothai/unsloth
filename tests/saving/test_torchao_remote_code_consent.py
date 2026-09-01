@@ -62,7 +62,6 @@ def test_none_module_is_not_remote_code():
 
 def test_auto_map_in_config_alone_does_not_grant_trust():
     # The core bypass: a built-in-loadable model whose config merely declares auto_map must NOT
-    # be treated as remote-code-loaded (that is exactly what enabled the consent-gate bypass).
     cfg = type("Cfg", (), {"auto_map": {"AutoModelForCausalLM": "modeling_x.Model"}})()
     assert (
         _loaded_via_remote_code(_obj("transformers.models.llama.modeling_llama", config = cfg))
@@ -89,8 +88,7 @@ def test_wrapper_over_builtin_stays_false():
 
 
 def test_processor_held_custom_tokenizer_is_detected():
-    # A built-in ProcessorMixin can hold an approved custom-code tokenizer; the walk must
-    # descend into processor components or the export reload loses that approved trust.
+    # A built-in ProcessorMixin can hold an approved custom-code tokenizer;
     tok = _obj("transformers_modules.acme.tokenization_x")
     proc = _obj("transformers.processing_utils", tokenizer = tok)
     assert _loaded_via_remote_code(proc) is True
@@ -118,7 +116,6 @@ def test_cyclic_wrappers_terminate():
     assert _loaded_via_remote_code(a) is False
 
 
-# -- call-site assertions: the auto_map-derived trust is gone from every export path -----------
 
 
 def test_torchao_export_derives_trust_from_load_decision():
@@ -131,16 +128,14 @@ def test_torchao_export_derives_trust_from_load_decision():
 
 
 def test_compressed_and_gguf_lora_paths_drop_auto_map_trust():
-    # No path derives a trust decision straight from config auto_map anymore, and no path
-    # collapses model and tokenizer trust into one flag.
+    # No path derives a trust decision straight from config auto_map anymore, and no path collapses model and tokenizer
     assert 'bool(getattr(model.config, "auto_map", None))' not in _SRC
     assert "_loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)" not in _SRC
-    assert "if _loaded_via_remote_code(model):" in _SRC  # GGUF-LoRA converter flag
+    assert "if _loaded_via_remote_code(model):" in _SRC
 
 
 def test_compressed_export_keeps_model_and_tokenizer_trust_separate():
-    # The subprocess gets one flag per component, so an approved custom tokenizer cannot
-    # enable an unapproved model's code during compressed quantization (or vice versa).
+    # The subprocess gets one flag per component, so an approved custom tokenizer cannot enable an unapproved model's
     assert 'cmd.append("--trust-remote-code")' in _SRC
     assert 'cmd.append("--trust-remote-code-tokenizer")' in _SRC
     qsrc = (_SAVE_PY.parent / "_compressed_quantize.py").read_text(encoding = "utf-8")

@@ -91,8 +91,8 @@ DEFAULT_MODEL = "unsloth/gemma-4-E2B-it-GGUF"
 GEMMA_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
 LOCAL_GGUF_PATH = "/home/john-doe/models/qwen3-1.7b-instruct-q4_k_m.gguf"
 
-# Stubs for everything autoLoadSmallestModel imports; each scenario supplies the cache inventory
-# and how /validate and /load answer per model_path.
+# Stubs for everything autoLoadSmallestModel imports;
+# each scenario supplies the cache inventory and how /validate and /load answer per model_path.
 PREAMBLE = """
 type LastLocalModelKind = "gguf" | "model";
 type GgufVariantDetail = {
@@ -811,7 +811,7 @@ def _require_node():
             ["node", "--experimental-strip-types", "--version"],
             capture_output = True,
             text = True,
-            # A cold Windows runner is slow to start node; an impatient probe would fail the gate.
+            # A cold Windows runner is slow to start node;
             timeout = 60,
         )
     except (OSError, subprocess.SubprocessError):
@@ -840,22 +840,17 @@ def _build_harness(run_dir: Path):
     ), "could not locate the auto-load region in chat-adapter.ts"
     body = "\n".join(lines[start:end])
     assert "async function autoLoadSmallestModel" in body
-    # Anything the adapter imports and the sliced region uses has to exist in the
-    # preamble. Otherwise it is a bare ReferenceError at runtime, the retry loop
-    # catches it and scores it as a failed load, and the scenario fails as a
     # wrong-model assertion that says nothing about the real cause. That is what
     # #7699 did by adding a syncModelCapabilities call here.
+    # Anything the adapter imports and the sliced region uses has to exist in the preamble.
     imported = set()
     source = "\n".join(lines)
-    # Default and namespace forms bind a name too, and it is the same
-    # ReferenceError when the harness lacks it. chat-adapter.ts has none today,
-    # so this is for the first one somebody adds.
     for match in re.finditer(
         r"^import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)", source, re.M
     ):
         imported.add(match.group(1))
-    # The optional prefix is the mixed form, `import def, { named } from`, whose
-    # braces a `^import\s+\{` anchor would skip entirely.
+    # Default and namespace forms bind a name too, and it is the same ReferenceError when the harness lacks it.
+    # chat-adapter.ts has none today, so this is for the first one somebody adds.
     for match in re.finditer(
         r"^import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s+from", source, re.M
     ):
@@ -868,11 +863,9 @@ def _build_harness(run_dir: Path):
             name = spec.split(" as ")[-1].strip()
             if name:
                 imported.add(name)
-    # Any mention, not just a call. useChatRuntimeStore, toast and GPU_LAYERS_AUTO
-    # are all used in this region without a following paren, and each would be the
-    # same ReferenceError; they pass today only because the preamble happens to
-    # define them. Comments are stripped first so a name discussed in prose does
-    # not count as a use.
+    # Any mention, not just a call.
+    # useChatRuntimeStore, toast and GPU_LAYERS_AUTO are all used in this region without a following paren, and each
+    # would be the same ReferenceError;
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
     preamble = PREAMBLE + PONYFILLS + _wait_gate_source()
@@ -910,7 +903,7 @@ def _run(
     queued: bool = False,
 ) -> dict:
     _require_node()
-    # Its own directory per invocation: a shared file lets one runner read another's rewrite.
+    # Its own directory per invocation:
     TEMP.mkdir(parents = True, exist_ok = True)
     run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
     _build_harness(run_dir)
@@ -962,8 +955,7 @@ def _run(
         cwd = str(run_dir),
         capture_output = True,
         text = True,
-        # Explicit: text alone decodes with the Windows ANSI code page, which
-        # mangles the non-ASCII toast copy node emits as UTF-8.
+        # Explicit: text alone decodes with the Windows ANSI code page, which mangles the non-ASCII toast copy node
         encoding = "utf-8",
         timeout = 60,
         env = dict(os.environ, NODE_NO_WARNINGS = "1"),
@@ -1189,9 +1181,10 @@ def test_a_rejected_validation_still_lets_a_later_cached_model_load():
     assert _toasts(out, "toast.error") == []
 
 
+# #7374: a model already on disk must be found before anything is fetched
+
+
 # --- #7374: a model already on disk must be found before anything is fetched ---
-
-
 def test_an_indexed_local_gguf_loads_instead_of_downloading_the_default():
     """The reported bug. The user has a GGUF in their models dir, but the cascade
     only read the two managed-cache lists, so Send fetched a model instead."""
@@ -1264,7 +1257,6 @@ def test_a_local_row_the_picker_would_hide_is_never_auto_loaded():
     )
     out = _run(f"scenario({{ localModels: [{hidden}] }})")
 
-    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
     assert _downloads_started(out) == [DEFAULT_MODEL]
 
@@ -1280,7 +1272,6 @@ def test_the_remembered_local_model_is_tried_before_a_smaller_one():
     assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
 
 
-# --- the default download is a managed, cancellable job ---
 
 
 def test_the_default_model_is_fetched_through_the_download_manager():
@@ -1292,6 +1283,7 @@ def test_the_default_model_is_fetched_through_the_download_manager():
     # The bytes land before the load is attempted.
     kinds = [event["kind"] for event in out["events"]]
     assert kinds.index("download.start") < kinds.index("loadModel")
+    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
@@ -1356,7 +1348,6 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
     assert _loaded_paths(out) == ["/models/mlx"]
 
 
-# --- review fixes on the on-device cascade ---
 
 
 def test_an_image_generation_row_is_never_auto_loaded_for_chat():
@@ -1559,7 +1550,7 @@ def test_a_failed_cancel_does_not_latch_the_toast_action_off():
     # In flight only, cleared when the request settles.
     assert 'if (cancelInFlight || active.state === "cancelling") return true;' in helper
     assert "cancelInFlight = false;\n    });" in helper
-    # The subscription fires the deferred attempt once; retries come from clicks.
+    # The subscription fires the deferred attempt once;
     assert "if (!cancelEverIssued) issueCancel();" in helper
 
 
@@ -1704,7 +1695,6 @@ def test_a_cached_adapter_repo_is_never_auto_loaded():
     )
 
     assert "org/lora" not in _loaded_paths(out)
-    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
@@ -1740,6 +1730,7 @@ def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
     out = _run(f"scenario({{ localModels: [{row}] }})")
 
     assert LOCAL_GGUF_PATH not in _loaded_paths(out)
+    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 

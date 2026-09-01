@@ -63,7 +63,6 @@ class _Config:
         self.__dict__.update(fields)
 
 
-# ------------------------------- rule one: nobody rewrites the checkpoint's own list
 
 
 def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
@@ -76,8 +75,8 @@ def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
     """
     source = open(VISION, encoding = "utf-8").read()
     assert "merge_checkpoint_skip_modules" not in source
-    # It may still build its own runtime list (the next test pins that); what it must
     # never do is assign into the config that came off the checkpoint.
+    # It may still build its own runtime list (the next test pins that);
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Assign):
             continue
@@ -127,7 +126,6 @@ def test_the_bnb_config_chain_is_still_one_piece():
     raise AssertionError("could not find the bnb_config if/elif chain in vision.py")
 
 
-# ------------------------------------ rule two: the saved config matches the load
 
 
 def test_the_stamp_keeps_the_list_the_load_actually_used():

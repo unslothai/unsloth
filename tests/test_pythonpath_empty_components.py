@@ -55,11 +55,9 @@ def _stage(monkeypatch, tmp_path, pythonpath):
         IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
     )
     monkeypatch.setattr(IF, "_torch_really_has", lambda F, name: False)
-    # Keep the generated sitecustomize in tmp_path, so no staged directory
-    # is left behind in the real temp dir.
+    # Keep the generated sitecustomize in tmp_path, so no staged directory is left behind in the real temp dir.
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-    # monkeypatch.setenv/delenv restores PYTHONPATH at teardown even though
-    # the function writes os.environ directly, so no restore fixture is needed.
+    # monkeypatch.setenv/delenv restores PYTHONPATH at teardown even though the function writes os.environ directly, so
     if pythonpath is None:
         monkeypatch.delenv("PYTHONPATH", raising = False)
     else:
@@ -75,10 +73,10 @@ def _stage(monkeypatch, tmp_path, pythonpath):
 @pytest.mark.parametrize(
     "before",
     [
-        os.pathsep + "/opt/lib",  # PYTHONPATH=$PYTHONPATH:/opt/lib, unset
-        "/opt/lib" + os.pathsep,  # PYTHONPATH=/opt/lib:$PYTHONPATH, unset
-        "/opt/a" + os.pathsep + os.pathsep + "/opt/b",  # interior empty
-        os.pathsep,  # separator only
+        os.pathsep + "/opt/lib",  # PYTHONPATH=$PYTHONPATH:/opt/lib, unset PYTHONPATH=/opt/lib:$PYTHONPATH, unset
+        "/opt/lib" + os.pathsep,
+        "/opt/a" + os.pathsep + os.pathsep + "/opt/b",
+        os.pathsep,
     ],
 )
 def test_empty_components_survive(monkeypatch, tmp_path, before):
@@ -103,7 +101,6 @@ def test_it_is_still_idempotent(monkeypatch, tmp_path):
     assert os.environ["PYTHONPATH"] == after
 
 
-# ---- the premise and the consequence, with real child processes -----------
 
 
 def _probe_tree(tmp_path):

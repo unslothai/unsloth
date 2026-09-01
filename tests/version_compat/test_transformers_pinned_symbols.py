@@ -18,13 +18,13 @@ from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 # 4.57.6 floor + every 5.x minor since 5.0.0, up to the current PyPI latest, + main.
 TRANSFORMERS_TAGS = [
-    "v4.57.6",  # anchor (must work)
+    "v4.57.6",
     "v5.0.0",
     "v5.1.0",
     "v5.2.0",
     "v5.3.0",
     "v5.4.0",
-    "v5.5.0",  # anchor (must work)
+    "v5.5.0",
     "v5.5.4",
     "v5.6.2",
     "v5.7.0",
@@ -35,7 +35,6 @@ TRANSFORMERS_TAGS = [
     "v5.10.1",
     "v5.10.2",
     # Upstream tagged PyPI 5.10.4 as v5.10.3 (the tag's __init__ says 5.10.4);
-    # there is no v5.10.4 tag and no 5.10.3 on PyPI, so fetch by the tag name.
     "v5.10.3",
     "v5.11.0",
     "v5.12.0",
@@ -43,14 +42,14 @@ TRANSFORMERS_TAGS = [
     "v5.13.0",
     "v5.13.1",
     "v5.14.0",
-    "v5.14.1",  # current PyPI latest
+    "v5.14.1",
     "main",
 ]
 
 
+
+
 # Trainer surface: unsloth/models/_utils.py rewrites Trainer.{__init__, training_step, get_batch_samples, compute_loss}.
-
-
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_trainer_class_importable_path(tag: str):
     """transformers.Trainer must remain at trainer.py or trainer/__init__.py."""
@@ -90,7 +89,7 @@ def test_trainer_training_step_grad_accum_pattern(tag: str):
         "self.accelerator.backward(loss",
     )
     missing = [s for s in needed if s not in src]
-    # Hard-fail only when ALL substrings missing; partial drift is informational.
+    # Hard-fail only when ALL substrings missing;
     if len(missing) == len(needed):
         pytest.fail(
             f"{tag}: Trainer.training_step has none of the grad-accum "
@@ -130,9 +129,9 @@ def test_trainer_inner_training_loop_inplace_loss_v5(tag: str):
     )
 
 
+
+
 # modeling_utils: checkpoint, PushToHubMixin, ALL_ATTENTION_FUNCTIONS.
-
-
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_modeling_utils_exposes_checkpoint(tag: str):
     """unsloth-zoo#549: transformers 5.2+ uses modeling_utils.checkpoint; patch must replace it, not just torch's."""
@@ -162,11 +161,9 @@ def test_pushtohubmixin_create_repo_status(tag: str):
     if src is None:
         pytest.skip(f"{tag}: modeling_utils.py missing")
     has_create = bool(re.search(r"def _create_repo\b", src) or "_create_repo" in src)
-    # Informational only.
     _ = has_create
 
 
-# integrations.bitsandbytes: _replace_with_bnb_linear vs new path.
 
 
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
@@ -181,6 +178,7 @@ def test_integrations_bitsandbytes_module_present(tag: str):
     ), f"{tag}: integrations/bitsandbytes.py has no Linear4bit reference"
 
 
+# integrations.bitsandbytes:
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_quantizers_should_convert_module_signature(tag: str):
     """unsloth-zoo#491/#488: 5.x moved is_replaceable to quantizers_utils.should_convert_module; snapshot its form."""
@@ -193,15 +191,13 @@ def test_quantizers_should_convert_module_signature(tag: str):
         pytest.skip(f"{tag}: quantizers/quantizers_utils.py missing")
     if not has_def(src, "should_convert_module", "func"):
         pytest.skip(f"{tag}: should_convert_module not yet present (4.x)")
-    # Catch substring matching in `.{key}.` form.
     has_dot_form = ".{key}." in src or "f'.{key}.'" in src or 'f".{key}."' in src
-    # Informational only.
     _ = has_dot_form
 
 
+
+
 # integrations.finegrained_fp8.FP8Linear: bias/has_bias rename in v5.
-
-
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_fp8linear_init_param_names(tag: str):
     """unsloth-zoo#572: transformers 5.x renamed FP8Linear.__init__ `bias` -> `has_bias`."""
@@ -221,7 +217,6 @@ def test_fp8linear_init_param_names(tag: str):
     ), f"{tag}: FP8Linear.__init__ has neither `bias` nor `has_bias` param"
 
 
-# processing_utils: Unpack importable.
 
 
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
@@ -237,7 +232,6 @@ def test_processing_utils_unpack_importable(tag: str):
     )
 
 
-# Models: gemma3, gpt_oss forward signature drift.
 
 
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
@@ -252,6 +246,7 @@ def test_gemma3_attention_forward_present(tag: str):
     assert has_def(src, "Gemma3Attention", "class"), f"{tag}: class Gemma3Attention missing"
 
 
+# Models: gemma3, gpt_oss forward signature drift.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_gpt_oss_model_forward_present(tag: str):
     src = fetch_text(
@@ -290,7 +285,6 @@ def test_auto_factory_lazy_mapping_private_api(tag: str):
     )
 
 
-# configuration_utils: PreTrainedConfig vs PretrainedConfig in 5.x.
 
 
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
@@ -311,9 +305,9 @@ def test_configuration_utils_alias(tag: str):
     )
 
 
-# tokenization: apply_chat_template return_dict default flip in v5.
 
 
+# configuration_utils: PreTrainedConfig vs PretrainedConfig in 5.x.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_apply_chat_template_signature_present(tag: str):
     """unsloth-zoo#572: apply_chat_template `return_dict` default flipped False -> True in transformers 5.x."""
@@ -329,9 +323,9 @@ def test_apply_chat_template_signature_present(tag: str):
     ), f"{tag}: apply_chat_template missing in tokenization_utils_base.py"
 
 
-# Generic-importability sweep: every transformers symbol unsloth/zoo imports must stay reachable.
 
 
+# tokenization: apply_chat_template return_dict default flip in v5.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_modeling_attn_mask_utils_symbols(tag: str):
     """_prepare_4d_attention_mask_for_sdpa is imported by unsloth/models/llama.py + sentence_transformer.py."""
@@ -349,6 +343,7 @@ def test_modeling_attn_mask_utils_symbols(tag: str):
     ), f"{tag}: _prepare_4d_attention_mask_for_sdpa missing"
 
 
+# Generic-importability sweep:
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_cache_utils_classes(tag: str):
     src = fetch_text("huggingface/transformers", tag, "src/transformers/cache_utils.py")

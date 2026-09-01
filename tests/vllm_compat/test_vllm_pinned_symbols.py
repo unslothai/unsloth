@@ -75,9 +75,9 @@ def _has_def(
     return False
 
 
+
+
 # HARD-import symbols: must be present in every tested version.
-
-
 @pytest.mark.parametrize("tag", VLLM_TAGS)
 def test_vllm_lora_request_hard_imports(tag: str):
     """LoRARequest, get_adapter_absolute_path, PEFTHelper -- hard-imported by unsloth-zoo's vllm_lora_worker_manager."""
@@ -139,7 +139,7 @@ def test_vllm_lora_models_either_path(tag: str):
     )
     if old_src is not None:
         if all(_has_def(old_src, n, k) for n, (k, _) in needed.items()):
-            return  # All resolve through the legacy single-file path.
+            return
 
     # New path (post vLLM PR #30253):
     lora_model_src = _fetch_text("vllm-project/vllm", tag, "vllm/lora/lora_model.py")
@@ -162,15 +162,15 @@ def test_vllm_lora_models_either_path(tag: str):
         )
 
 
-# Optional / version-gated symbols: assert presence only on minors claiming support.
 
 
+# Optional / version-gated symbols:
 @pytest.mark.parametrize("tag", VLLM_TAGS)
 def test_vllm_worker_lora_manager_class(tag: str):
     """vllm.lora.worker_manager.WorkerLoRAManager -- unsloth-zoo subclasses it; signature drives old_init vs new_init."""
     src = _fetch_text("vllm-project/vllm", tag, "vllm/lora/worker_manager.py")
     if src is None:
-        # Some vLLM versions split this; check fallback locations.
+        # Some vLLM versions split this;
         alt = _fetch_text("vllm-project/vllm", tag, "vllm/v1/worker/lora_model_runner_mixin.py")
         if alt and ("WorkerLoRAManager" in alt or "LoRAModelRunnerMixin" in alt):
             return
@@ -193,10 +193,10 @@ def test_lora_request_no_removed_kwargs(tag: str):
     assert has_dir or has_path, f"{tag}: vllm.lora.request has neither lora_dir nor lora_path"
 
 
-# UNSLOTH_VLLM_STANDBY hard-error windows: unsloth-zoo refuses standby on
-#   0.10.0 <= vllm < 0.11.0 (std::bad_alloc) and 0.14.0 <= vllm < 0.15.0 (cudaErrorIllegalAddress).
 
 
+# UNSLOTH_VLLM_STANDBY hard-error windows: unsloth-zoo refuses standby on 0.10.0 <= vllm < 0.11.0 (std::bad_alloc) and
+# 0.14.0 <= vllm < 0.15.0 (cudaErrorIllegalAddress).
 def _vllm_zoo_local_path() -> str | None:
     """Return the on-runner path to unsloth_zoo.vllm_utils source, or None."""
     try:

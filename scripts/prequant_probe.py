@@ -56,7 +56,6 @@ def _build():
     quantize_(t, _fp8_cfg(), filter_fn = _filt)
     CKPT.parent.mkdir(parents = True, exist_ok = True)
     sd = t.state_dict()
-    # move to cpu for a portable, gpu-free checkpoint
     sd = {k: (v.detach().to("cpu") if hasattr(v, "detach") else v) for k, v in sd.items()}
     torch.save(sd, CKPT)
     sz = CKPT.stat().st_size / 1e9
@@ -106,7 +105,7 @@ def _baseline(steps, seed, res):
     quantize_(t, _fp8_cfg(), filter_fn = _filt)
     load_peak = torch.cuda.max_memory_allocated() / 1e9
     pipe = _make_pipe_from_transformer(t)
-    img, dt = _gen(pipe, steps, seed, res)  # warmup
+    img, dt = _gen(pipe, steps, seed, res)
     img, dt = _gen(pipe, steps, seed, res)
     OUT.mkdir(parents = True, exist_ok = True)
     img.save(OUT / "baseline.png")
@@ -128,7 +127,7 @@ def _prequant(steps, seed, res):
         t = diffusers.ZImageTransformer2DModel.from_config(cfg)
     sd = torch.load(CKPT, weights_only = False, map_location = "cpu")
     missing, unexpected = t.load_state_dict(sd, strict = False, assign = True)
-    # any param/buffer still on meta (e.g. non-persistent buffers) -> materialise on cuda
+    # any param/buffer still on meta (e.g.
     leftover = [n for n, p in t.named_parameters() if p.is_meta] + [
         n for n, b in t.named_buffers() if b.is_meta
     ]
@@ -137,7 +136,7 @@ def _prequant(steps, seed, res):
             f"[prequant] {len(leftover)} meta leftovers (non-persistent buffers): {leftover[:4]}",
             flush = True,
         )
-        t = t.to_empty(device = "cuda")  # fallback path; re-loads sd below
+        t = t.to_empty(device = "cuda")
         t.load_state_dict(sd, strict = False, assign = True)
     t = t.to(torch.bfloat16).to("cuda")
     load_peak = torch.cuda.max_memory_allocated() / 1e9
@@ -147,11 +146,10 @@ def _prequant(steps, seed, res):
         flush = True,
     )
     pipe = _make_pipe_from_transformer(t)
-    img, dt = _gen(pipe, steps, seed, res)  # warmup
+    img, dt = _gen(pipe, steps, seed, res)
     img, dt = _gen(pipe, steps, seed, res)
     OUT.mkdir(parents = True, exist_ok = True)
     img.save(OUT / "prequant.png")
-    # LPIPS vs baseline if present
     bpath = OUT / "baseline.png"
     lp = None
     if bpath.exists():

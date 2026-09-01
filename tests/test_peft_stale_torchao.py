@@ -46,8 +46,7 @@ def peft_env(monkeypatch):
         import_utils = types.ModuleType("peft.import_utils")
         import_utils.is_torchao_available = raiser
         consumer = types.ModuleType("peft.tuners.lora.torchao")
-        # `from peft.import_utils import ...` binds the ORIGINAL here, and
-        # this is the copy that actually gets called.
+        # `from peft.import_utils import ...` binds the ORIGINAL here, and this is the copy that actually gets called.
         consumer.is_torchao_available = raiser
         pkg = types.ModuleType("peft")
         pkg.__path__ = []
@@ -117,7 +116,6 @@ def _raiser(exc):
     return is_torchao_available
 
 
-# ---- the bug --------------------------------------------------------------
 
 
 def test_stale_torchao_becomes_false(peft_env):
@@ -127,8 +125,7 @@ def test_stale_torchao_becomes_false(peft_env):
 
 
 def test_the_module_that_actually_calls_it_is_patched(peft_env):
-    # dispatch_torchao holds its own reference; patching import_utils alone
-    # would leave the real call site raising.
+    # dispatch_torchao holds its own reference;
     _, consumer = peft_env(_raiser(STALE))
     FIX()
     assert consumer.is_torchao_available() is False
@@ -145,9 +142,9 @@ def test_warning_is_emitted_once(peft_env):
     assert "upgrade" in seen[0].lower()
 
 
+
+
 # ---- what must still fail -------------------------------------------------
-
-
 def test_an_unrelated_import_error_still_raises(peft_env):
     iu, _ = peft_env(_raiser(ImportError("libcudart.so.12: cannot open shared object file")))
     FIX()
@@ -158,8 +155,7 @@ def test_an_unrelated_import_error_still_raises(peft_env):
 @pytest.mark.parametrize(
     "message",
     [
-        # Half-installed torchao: says "torchao", is not a version complaint,
-        # and calling it "unavailable" would hide a broken install.
+        # Half-installed torchao: says "torchao", is not a version complaint, and calling it "unavailable" would hide a
         "No module named 'torchao.quantization'",
         "cannot import name 'quantize_' from 'torchao'",
         # An extension built against a different torch/CUDA.
@@ -198,9 +194,9 @@ def test_a_non_import_error_still_raises(peft_env):
         iu.is_torchao_available()
 
 
+
+
 # ---- what must not change -------------------------------------------------
-
-
 def test_a_working_torchao_still_answers_true(peft_env):
     iu, _ = peft_env(lambda: True)
     FIX()
@@ -244,7 +240,6 @@ def test_metadata_survives(peft_env):
     assert iu.is_torchao_available.__name__ == "is_torchao_available"
 
 
-# ---- wiring ---------------------------------------------------------------
 
 
 def test_called_from_gpu_init():

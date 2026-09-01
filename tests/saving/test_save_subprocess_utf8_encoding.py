@@ -106,7 +106,7 @@ def test_utf8_replace_decodes_non_cp1252_subprocess_output():
     )
 
     raw = subprocess.run([sys.executable, "-c", child], capture_output = True).stdout
-    assert b"\x9d" in raw  # precondition: output carries the cp1252-undefined byte
+    assert b"\x9d" in raw
 
     # Before the fix: cp1252 (the Windows default) cannot decode this output.
     with pytest.raises(UnicodeDecodeError):

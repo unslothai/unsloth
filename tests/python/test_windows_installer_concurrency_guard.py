@@ -35,10 +35,10 @@ def _extract(pattern: str, source: str) -> str:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
-    # Through a FILE, not -Command: these scripts carry the whole extracted helper
-    # chain, and Windows caps a command line at 32767 characters. Passed inline,
-    # the moment the chain grows past that every test here dies as WinError 206
-    # "The filename or extension is too long" instead of testing anything.
+    # Through a FILE, not -Command: these scripts carry the whole extracted helper chain, and Windows caps a command
+    # line at 32767 characters.
+    # Passed inline, the moment the chain grows past that every test here dies as WinError 206 "The filename or
+    # extension is too long" instead of testing anything.
     # utf-8-sig because Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI.
     handle, name = tempfile.mkstemp(suffix = ".ps1")
     os.close(handle)
@@ -49,9 +49,8 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
             check = True,
             capture_output = True,
             text = True,
-            # Decoded as utf-8 with replacement, not the console codepage: cp1252
             # cannot decode what PowerShell writes and the whole test then dies as
-            # a UnicodeDecodeError on a byte in an error message.
+            # Decoded as utf-8 with replacement, not the console codepage:
             encoding = "utf-8",
             errors = "replace",
             env = env,
@@ -72,9 +71,7 @@ def _ps_file(directory: Path, name: str, script: str) -> str:
     return str(path)
 
 
-# The chain Get-StudioFinalPath dispatches to. It used to compile the native helper
-# inline, so a test could extract it alone; extracting the dispatcher by itself now
-# yields a body whose calls are all undefined, which reads as "could not resolve"
+# The chain Get-StudioFinalPath dispatches to.
 # rather than as a missing helper (issue #9140).
 _FINAL_PATH_CHAIN = (
     "Write-StudioLine",
@@ -103,16 +100,14 @@ def _mutex_helpers(source: str) -> str:
     return "\n".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
-            # Test-StudioPathEqual reports an unresolvable identity through this,
-            # and these scripts run under -ErrorActionPreference Stop, so leaving it
-            # out made the CATCH path throw CommandNotFound and every test that
-            # reaches it fail for a reason that has nothing to do with what it
-            # measures. Extracted rather than stubbed: it is self-contained, and a
-            # stub would keep passing if the real call ever went wrong.
+            # Test-StudioPathEqual reports an unresolvable identity through this, and these scripts run under
+            # -ErrorActionPreference Stop, so leaving it out made the CATCH path throw CommandNotFound and every test
+            # that reaches it fail for a reason that has nothing to do with what it measures.
             "Write-StudioLine",
             "Enter-StudioNamedMutex",
-            # Get-StudioFinalPath is a dispatcher now: it falls back to the pure
+            # Get-StudioFinalPath is a dispatcher now:
             # PowerShell resolver when the native helper did not compile (#9140).
+            # Get-StudioFinalPath is a dispatcher now:
             "Test-StudioDirectoryUsable",
             "Remove-StudioStalePrivateTempDirectories",
             "Get-StudioPrivateTempRoots",
@@ -175,11 +170,9 @@ def test_running_venv_process_is_reported(tmp_path: Path, shell: str):
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    # Long enough that the child outlives the scan itself. Windows PowerShell 5.1
-    # pays a cold start plus a real csc.exe compile of the native helper before it
-    # can look at anything, which alone can outlast a six-ping child; the process
-    # would then be gone by the time the scan ran, and the test would read as
-    # "the in-use check missed it".
+    # Long enough that the child outlives the scan itself.
+    # Windows PowerShell 5.1 pays a cold start plus a real csc.exe compile of the native helper before it can look at
+    # anything, which alone can outlast a six-ping child;
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = creationflags,
@@ -227,8 +220,7 @@ def test_x86_powershell_reports_64_bit_managed_process(tmp_path: Path):
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
-    # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile, so a
-    # short probe can exit before the scan runs.
+    # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile, so a short probe can exit before the scan
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -343,10 +335,10 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert "$process.Path" not in detector
     assert "Get-StudioProcessImagePath -ProcessId $process.Id" in detector
 
-    # The same contract has to hold on every rung of that helper's fallback: a
+    # The same contract holds on every rung:
     # confirmed image, never a command line. Its Win32_Process rung exists because a
-    # host that cannot compile the native helper would otherwise find no running
     # processes and overwrite a venv Unsloth has open (issue #9140).
+    # The same contract has to hold on every rung of that helper's fallback:
     image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
     assert ".CommandLine" not in image
     assert "ExecutablePath" in image
@@ -901,7 +893,7 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     )
     assert "if ($StudioRedirectMode -eq 'legacy')" not in source
     assert "& $UnslothExe studio -p 8888" not in source
-    # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
+    # Anchored past the command token:
     assert "--clear" not in source[source.index("venv $VenvDir") :][:200]
 
 
@@ -953,11 +945,9 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     provision_wait = desktop_auth_source.index("child.wait_with_output()", provision_spawn)
     assert provision_guard < provision_spawn < provision_wait
 
-    # run_child owns the whole child lifetime.
     update_child_fn = update_source.index("let run_child = || {")
     update_spawn = update_source.index("spawn_update(&bin, &state", update_child_fn)
     update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
-    # a live update inherits the parent gate through its whole lifetime.
     update_call = update_source.index(
         "crate::process::with_studio_runtime_launch_guard(",
         update_wait,
@@ -1104,9 +1094,8 @@ def test_the_extracted_helpers_can_call_everything_they_call(helpers):
     """
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     extracted = helpers(source)
-    # Every top-level installer function, i.e. everything the harness COULD be
-    # missing. A call to a cmdlet or to a function defined inside the scripts is
-    # not this test's business.
+    # Every top-level installer function, i.e.
+    # everything the harness COULD be missing.
     installer_functions = set(re.findall(r"^    function ([\w-]+) \{", source, flags = re.M))
     provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
     assert provided, "the helper extraction produced nothing"

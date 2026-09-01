@@ -31,7 +31,6 @@ ART.mkdir(parents = True, exist_ok = True)
 TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TIMEOUT_MS", "30000"))
 
 # The installation-wide slots the per-chat edits below must not touch. The legacy confirm toggle
-# is here on purpose: loadPermissionMode falls back to it, so writing it would leak globally.
 GLOBAL_KEYS = (
     "unsloth_chat_tools_enabled",
     "unsloth_chat_code_tools_enabled",
@@ -318,8 +317,7 @@ def main():
         page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60_000)
 
         step("an unsaved chat still edits the installation defaults")
-        # plain /chat runs on a runtime-made thread id with no row: treating that as an open
-        # chat would stop every toggle made before the first message from persisting at all.
+        # plain /chat runs on a runtime-made thread id with no row:
         settle(page)
         pill(page, "Search").click()
         page.wait_for_timeout(600)
@@ -333,11 +331,7 @@ def main():
             fail(f"toggling back never reached the defaults: {disabled_globals!r}")
 
         step("pin the installation default every later step compares against")
-        # The install is shared, not fresh: the UI workflow boots this server on the same
-        # Unsloth home the chat-ui and cross-browser permission tests have already used, and
-        # those leave a permission level behind in the mirrored settings. Every assertion
-        # below names a literal level, so the default is set here rather than assumed.
-        # No chat is open, so this writes the installation default itself.
+        # The install is shared, not fresh:
         choose_permission(page, "Approve for me")
         print(
             f"[thread-settings]   defaults now {read_globals(page)!r}",
@@ -345,9 +339,7 @@ def main():
         )
 
         step("seed two saved chats")
-        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the
-        # row's primary key, imported and older rows do not. Seeding only uuids is what let
-        # this run miss the prefix being read as "no row yet".
+        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the row's primary key
         thread_a = seed_thread(page, token, "Chat A", app_created_thread_id())
         thread_b = seed_thread(page, token, "Chat B")
         print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)
@@ -398,8 +390,7 @@ def main():
         expect_pills(page, "B after switching back", False, True, "Run automatically")
 
         step("and a sidebar switch, with no reload, does the same")
-        # The reload-free path is the one users take, and the only one where the store still
-        # holds the outgoing chat's values when the incoming snapshot is applied.
+        # The reload-free path is the one users take, and the only one where the store still holds the outgoing chat's
         open_thread_in_page(page, "Chat A")
         expect_pills(page, "A after an in-page switch", True, False, "Ask for approval")
         open_thread_in_page(page, "Chat B")
@@ -407,8 +398,7 @@ def main():
         shoot(page, "03-in-page-switch")
 
         step("leaving a chat for a new one restores the installation defaults in place")
-        # No reload here either, so the defaults have to come from the captured copy rather
-        # than from the store being rebuilt out of localStorage.
+        # No reload here either, so the defaults have to come from the captured copy rather than from the store being
         new_chat_in_page(page)
         expect_pills(page, "new chat after an in-page switch", False, False, "Approve for me")
 

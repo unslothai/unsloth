@@ -19,8 +19,7 @@ from pathlib import Path
 
 import pytest
 
-# node_runtime imports sibling backend packages by top-level name, so put
-# studio/backend on sys.path before importing it.
+# node_runtime imports sibling backend packages by top-level name, so put studio/backend on sys.path before importing
 _BACKEND = Path(__file__).resolve().parents[3] / "studio" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -75,8 +74,8 @@ def _raise_oserror():
 
 
 def test_managed_dir_fallback_honors_override(monkeypatch, tmp_path):
-    # If utils.paths cannot be loaded / studio_root() fails, the resolver must
-    # still honor an explicit STUDIO_HOME override (not silently use legacy).
+    # If utils.paths cannot be loaded / studio_root() fails, the resolver must still honor an explicit STUDIO_HOME
+    # override (not silently use legacy).
     import utils.paths.storage_roots as sr
 
     monkeypatch.setattr(sr, "studio_root", _raise_oserror)
@@ -106,8 +105,8 @@ def test_managed_dir_unsloth_studio_home_wins_over_alias(monkeypatch, tmp_path):
 
 
 def test_managed_dir_legacy_valued_override_uses_sibling(monkeypatch):
-    # An override set explicitly to the legacy default maps to the sibling
-    # ~/.unsloth/node (matching setup.sh / setup.ps1), not ~/.unsloth/studio/node.
+    # An override set explicitly to the legacy default maps to the sibling ~/.unsloth/node (matching setup.sh /
+    # setup.ps1), not ~/.unsloth/studio/node.
     legacy = Path.home() / ".unsloth" / "studio"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(legacy))
     assert nr.managed_node_dir() == Path.home() / ".unsloth" / "node"
@@ -132,7 +131,6 @@ def test_resolve_falls_back_to_managed_when_no_system(monkeypatch, tmp_path):
 
 
 def test_resolve_prefers_managed_over_unsuitable_system(monkeypatch, tmp_path):
-    # System node present but too old; managed isolated Node is adequate.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     managed = nr.managed_node_binary()
     managed.parent.mkdir(parents = True, exist_ok = True)
@@ -143,7 +141,7 @@ def test_resolve_prefers_managed_over_unsuitable_system(monkeypatch, tmp_path):
 
 
 def test_resolve_returns_old_system_as_last_resort(monkeypatch, tmp_path):
-    # Old system node, no managed install -> preserve pre-isolation behaviour.
+    # System node present but too old;
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(nr.shutil, "which", lambda name: "/old/node")
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: False)
@@ -151,15 +149,16 @@ def test_resolve_returns_old_system_as_last_resort(monkeypatch, tmp_path):
 
 
 def test_resolve_returns_none_when_nothing_available(monkeypatch, tmp_path):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))  # managed dir is empty
+    # Old system node, no managed install -> preserve pre-isolation behaviour.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(nr.shutil, "which", lambda name: None)
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: False)
     assert nr.resolve_node_executable() is None
 
 
 def test_negative_result_is_not_cached(monkeypatch, tmp_path):
-    # A Node that appears after the first (empty) probe must be picked up without
     # a restart, so None must not be memoized.
+    # A Node that appears after the first (empty) probe must be picked up without a restart, so None must not be
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(nr.shutil, "which", lambda name: None)
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: False)

@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -11,7 +10,6 @@ _require_opt_in(
     "GPU + Hub saving script; its body runs at import.",
 )
 
-## Import required libraries
 
 from unsloth import FastVisionModel, is_bf16_supported
 from unsloth.trainer import UnslothVisionDataCollator
@@ -32,7 +30,6 @@ sys.path.insert(0, str(REPO_ROOT))
 from tests.utils.cleanup_utils import safe_remove_directory
 
 
-## Dataset Preparation"""
 
 print("\n📊 Loading and preparing dataset...")
 dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
@@ -44,7 +41,6 @@ print(f"   📈 Training samples: {len(train_dataset)}")
 print(f"   📊 Evaluation samples: {len(eval_dataset)}")
 
 
-# Convert to OAI messages format
 def format_data(sample):
     return {
         "messages": [
@@ -75,7 +71,7 @@ def format_data(sample):
 
 print("\n🔄 Formatting dataset for vision training...")
 system_message = "You are an expert french ocr system."
-# Use a list comprehension (not .map) to keep PIL.Image type; .map converts images to bytes.
+# Use a list comprehension (not .map) to keep PIL.Image type;
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 print("✅ Dataset formatting completed!")
@@ -89,34 +85,32 @@ print("=" * 80 + "\n")
 print("🤖 Loading base vision model...")
 try:
     model, tokenizer = FastVisionModel.from_pretrained(
-        # model_name = "unsloth/Qwen2-VL-7B-Instruct",
         model_name = "unsloth/Qwen2-VL-2B-Instruct",
-        max_seq_length = 2048,  # Choose any for long context!
-        load_in_4bit = True,  # 4 bit quantization to reduce memory
-        load_in_8bit = False,  # [NEW!] A bit more accurate, uses 2x memory
-        full_finetuning = False,  # [NEW!] We have full finetuning now!
+        max_seq_length = 2048,
+        load_in_4bit = True,
+        load_in_8bit = False,
+        full_finetuning = False,
     )
 except Exception as e:
     print(f"❌ Failed to load base model: {e}")
     raise
 
 print("\n🔧 Setting up LoRA configuration...")
-## Lora Finetuning
 try:
     model = FastVisionModel.get_peft_model(
         model,
-        finetune_vision_layers = True,  # Turn off for just text!
-        finetune_language_layers = True,  # Should leave on!
-        finetune_attention_modules = True,  # Attention good for GRPO
-        finetune_mlp_modules = True,  # Should leave on always!
-        r = 16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+        finetune_vision_layers = True,
+        finetune_language_layers = True,
+        finetune_attention_modules = True,
+        finetune_mlp_modules = True,
+        r = 16,
         lora_alpha = 32,
-        lora_dropout = 0,  # Supports any, but = 0 is optimized
-        bias = "none",  # Supports any, but = "none" is optimized
-        use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
+        lora_dropout = 0,
+        bias = "none",
+        use_gradient_checkpointing = "unsloth",
         random_state = 3407,
-        use_rslora = False,  # We support rank stabilized LoRA
-        loftq_config = None,  # And LoftQ
+        use_rslora = False,
+        loftq_config = None,
     )
     print("✅ LoRA configuration applied successfully!")
     print(f"   🎯 LoRA rank (r): 16")
@@ -133,7 +127,7 @@ print("=" * 80 + "\n")
 
 
 print("🏋️ Preparing trainer...")
-FastVisionModel.for_training(model)  # Enable for training!
+FastVisionModel.for_training(model)
 
 try:
     trainer = SFTTrainer(
@@ -142,15 +136,12 @@ try:
         data_collator = UnslothVisionDataCollator(model, tokenizer),
         train_dataset = train_dataset,
         args = SFTConfig(
-            # per_device_train_batch_size = 4,
-            # gradient_accumulation_steps = 8,
             per_device_train_batch_size = 2,
             gradient_accumulation_steps = 4,
             gradient_checkpointing = True,
             gradient_checkpointing_kwargs = {"use_reentrant": False},
-            max_grad_norm = 0.3,  # from QLoRA paper
+            max_grad_norm = 0.3,
             warmup_ratio = 0.03,
-            # num_train_epochs = 2, # Set this instead of max_steps for full training runs
             max_steps = 10,
             learning_rate = 2e-4,
             fp16 = not is_bf16_supported(),
@@ -162,8 +153,7 @@ try:
             lr_scheduler_type = "linear",
             seed = 3407,
             output_dir = "checkpoints",
-            report_to = "none",  # For Weights and Biases
-            # You MUST put the below items for vision finetuning:
+            report_to = "none",
             remove_unused_columns = False,
             dataset_text_field = "",
             dataset_kwargs = {"skip_prepare_dataset": True},

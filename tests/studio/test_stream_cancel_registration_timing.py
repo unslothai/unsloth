@@ -22,7 +22,6 @@ SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(SRC)
 
 
-# ── Structural (AST) helpers ─────────────────────────────────
 
 
 def _collect_async_functions(tree: ast.AST):
@@ -76,7 +75,6 @@ def _calls_name(node: ast.AST, name: str) -> bool:
     return False
 
 
-# ── Structural tests ─────────────────────────────────────────
 
 
 def test_no_tracker_enter_inside_async_generators():
@@ -243,7 +241,6 @@ def test_audio_input_stream_installs_disconnect_watcher():
     assert has_cleanup, "audio_input_stream must stop its disconnect watcher in finally"
 
 
-# ── Behavioral helpers ───────────────────────────────────────
 
 _WANTED = {
     "_CANCEL_REGISTRY",
@@ -340,8 +337,7 @@ async def _consume(agen):
 
 
 def _llama_stub_raises_on_preset_cancel(cancel_event):
-    # Reproduces llama_cpp.py _stream_with_retry `raise GeneratorExit` when
-    # cancel_event is already set at entry.
+    # Reproduces llama_cpp.py _stream_with_retry `raise GeneratorExit` when cancel_event is already set at entry.
     if cancel_event.is_set():
         raise GeneratorExit
     yield "cumulative-1"
@@ -363,7 +359,6 @@ async def _post_fix_gguf_loop(cancel_event):
     yield "[DONE]"
 
 
-# ── Behavioral tests ─────────────────────────────────────────
 
 
 def test_finally_cleanup_on_normal_completion():
@@ -380,8 +375,7 @@ def test_finally_cleanup_on_normal_completion():
 
 
 def test_finally_cleanup_on_mid_stream_exception():
-    # OSError mid-stream: the exact case where pre-fix `background=BackgroundTask(...)`
-    # was skipped and leaked the registry entry.
+    # OSError mid-stream: the exact case where pre-fix `background=BackgroundTask(...)` was skipped and leaked the
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     ev = threading.Event()
@@ -394,7 +388,7 @@ def test_finally_cleanup_on_mid_stream_exception():
 
 
 def test_finally_cleanup_on_aclose():
-    # Starlette calls aclose() on client disconnect; the finally block must run.
+    # Starlette calls aclose() on client disconnect;
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     ev = threading.Event()
@@ -430,7 +424,7 @@ def test_same_task_response_closes_body_iterator_on_send_disconnect():
         response = m["_SameTaskStreamingResponse"].__new__(m["_SameTaskStreamingResponse"])
         response.body_iterator = agen
         response.background = None
-        # __new__ bypasses __init__; __call__'s disconnect branch reads _unstarted_cleanup.
+        # __new__ bypasses __init__;
         response._unstarted_cleanup = None
 
         async def stream_response(_send):
@@ -449,8 +443,6 @@ def test_same_task_response_closes_body_iterator_on_send_disconnect():
 
 
 def test_preset_cancel_event_exits_cleanly_with_done():
-    # Pending-replay: a stashed cancel pre-set cancel_event. The loop must break
-    # cleanly with final_chunk + [DONE], not propagate GeneratorExit from the GGUF wrapper.
     ev = threading.Event()
     ev.set()
     chunks = asyncio.run(_consume(_post_fix_gguf_loop(ev)))
@@ -463,13 +455,15 @@ def test_preset_cancel_event_exits_cleanly_with_done():
 
 
 def test_normal_path_streams_all_tokens():
-    # Regression: the top-of-loop cancel_event check must not short-circuit when unset.
+    # Pending-replay: a stashed cancel pre-set cancel_event.
+    # The loop must break cleanly with final_chunk + [DONE], not propagate GeneratorExit from the GGUF wrapper.
     ev = threading.Event()
     chunks = asyncio.run(_consume(_post_fix_gguf_loop(ev)))
     assert chunks == ["first_chunk", "cumulative-1", "cumulative-2", "final_chunk", "[DONE]"]
 
 
 def test_cancel_during_streaming_stops_iteration_promptly():
+    # Regression: the top-of-loop cancel_event check must not short-circuit when unset.
     # Setting cancel_event between yields breaks on the next iteration, not draining the generator.
     ev = threading.Event()
 
@@ -490,12 +484,11 @@ def test_cancel_during_streaming_stops_iteration_promptly():
     assert "[DONE]" in seen
 
 
-# ── Cancel-event responsiveness in the streaming loops ───────
 
 
 def _loop_has_cancel_event_check(fn) -> bool:
-    # An `if cancel_event.is_set():` inside a loop body is sufficient -- without it
     # a cancel POST can't interrupt, since Colab-style proxies drop request.is_disconnected().
+    # An `if cancel_event.is_set():` inside a loop body is sufficient -- without it a cancel POST can't interrupt
     for sub in ast.walk(fn):
         if not isinstance(sub, (ast.While, ast.For, ast.AsyncFor)):
             continue
@@ -536,8 +529,7 @@ def test_streaming_generators_check_cancel_event_in_loop():
 
 
 def test_audio_input_stream_offloads_blocking_next_to_thread():
-    # Guards against regressing to `for chunk_text in audio_input_generate():`, which
-    # blocks the event loop per whisper chunk and stalls POST /api/inference/cancel.
+    # Guards against regressing to `for chunk_text in audio_input_generate():`, which blocks the event loop per whisper
     audio = None
     for fn in ast.walk(_TREE):
         if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "audio_input_stream":
@@ -694,8 +686,7 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
             )
         if isinstance(sub, ast.Try) and sub.finalbody:
             final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
-            # Accumulate: an existence claim, and the cleanup sits in a nested try whose
-            # own finally only unregisters the swap-gate entry.
+            # Accumulate: an existence claim, and the cleanup sits in a nested try whose own finally only unregisters
             found_finally_cleanup = found_finally_cleanup or (
                 "not completed" in final_src
                 and "not cancel_event.is_set()" in final_src
@@ -720,8 +711,7 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
 
 
 def test_stream_chunks_cancel_branch_resets_backend_state():
-    # The cancel branch must call backend.reset_generation_state() to flush
-    # GPU/KV-cache state, else cancel-via-POST leaves the subprocess dirty.
+    # The cancel branch must call backend.reset_generation_state() to flush GPU/KV-cache state, else cancel-via-POST
     fn = None
     top = None
     for n in ast.walk(_TREE):
@@ -758,7 +748,6 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
     )
 
 
-# ── Behavioral simulations for the iter-1 fixes ──────────────
 
 
 def test_unsloth_stream_loop_breaks_on_external_cancel_event():
@@ -809,8 +798,7 @@ def test_unsloth_stream_loop_breaks_on_external_cancel_event():
 
 
 def test_generate_stream_stays_responsive_under_blocking_next():
-    # Same sync-generator shape as generate_stream, with resp_queue.get modeled
-    # by sleep. The output must stay unchanged while next() moves off-loop.
+    # Same sync-generator shape as generate_stream, with resp_queue.get modeled by sleep.
     chunks = ["alpha", "beta", "gamma", "delta"]
 
     def _generate_chat_response():
@@ -909,8 +897,7 @@ def test_generate_stream_stays_responsive_under_blocking_next():
 
 
 def test_audio_stream_stays_responsive_under_blocking_next():
-    # Assert the pre-fix `for chunk in audio_input_generate()` pattern blocks the
-    # event loop, then confirm the post-fix pattern exits promptly.
+    # Assert the pre-fix `for chunk in audio_input_generate()` pattern blocks the event loop, then confirm the post-fix
     cancel_event = threading.Event()
 
     def _audio_gen():
@@ -969,8 +956,6 @@ def test_audio_stream_stays_responsive_under_blocking_next():
 
 
 def test_unsloth_stream_loop_emits_zero_tokens_on_preset_cancel():
-    # Pending-cancel replay: cancel_event pre-set, so the top-of-loop check must
-    # short-circuit iteration 1 (zero tokens). Catches moving the check below next().
     cancel_event = threading.Event()
     cancel_event.set()
     reset_calls = [0]
@@ -1018,8 +1003,8 @@ def test_unsloth_stream_loop_emits_zero_tokens_on_preset_cancel():
 
 
 def test_audio_stream_emits_zero_chunks_on_preset_cancel():
-    # Symmetric to the Unsloth pre-set test: the audio loop must skip
-    # asyncio.to_thread(next, ...) when cancel_event was pre-set via pending-replay.
+    # Symmetric to the Unsloth pre-set test: the audio loop must skip asyncio.to_thread(next, ...) when cancel_event was
+    # pre-set via pending-replay.
     cancel_event = threading.Event()
     cancel_event.set()
 

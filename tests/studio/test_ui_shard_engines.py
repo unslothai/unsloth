@@ -61,17 +61,13 @@ def _engines_driven_by(shard: str) -> set[str]:
     for step in _doc()["jobs"]["ui-smoke"]["steps"]:
         run = step.get("run") or ""
         name = step.get("name") or ""
-        # Only steps that RUN something can drive a browser. A `uses:` step cannot, and
-        # reading their names produced a false positive the first time one mentioned an
-        # engine: the apt archive cache is named for the .deb set it holds, which is
-        # webkit's, and that made two chromium-only shards look like webkit users.
+        # Only steps that RUN something can drive a browser.
         if not run:
             continue
         if "playwright install" in run or "probe " in run:
             continue
         cond = str(step.get("if") or "")
-        # A step gated on another shard does not run for this one. Anything ungated
-        # runs for every shard.
+        # A step gated on another shard does not run for this one. Anything ungated runs for every shard.
         others = re.findall(r"matrix\.shard\s*==\s*'([a-z]+)'", cond)
         if others and shard not in others:
             continue
@@ -122,8 +118,7 @@ def test_shard_installs_every_engine_it_drives(cell: dict) -> None:
 def test_shard_installs_nothing_it_never_drives(cell: dict) -> None:
     installed = set(cell["engines"].split())
     driven = _engines_driven_by(cell["shard"])
-    # chromium is the default engine for every suite here, so it is legitimately
-    # installed whether or not a step names it out loud.
+    # chromium is the default engine for every suite here, so it is legitimately installed whether or not a step names
     extra = installed - driven - {"chromium"}
     assert not extra, (
         f"shard {cell['shard']!r} installs {sorted(extra)} but no step drives them. "

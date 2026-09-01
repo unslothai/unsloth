@@ -14,6 +14,7 @@
 #
 # Tests for Q-GaLore integration (unsloth/optimizers/).
 
+# http://www.apache.org/licenses/LICENSE-2.0
 import pytest
 import sys
 import os
@@ -37,7 +38,7 @@ def _load_module(name, filepath):
     return mod
 
 
-# Projector has no unsloth dependencies; load it first.
+# Projector has no unsloth dependencies;
 _projector_mod = _load_module(
     "unsloth.optimizers.q_galore_projector",
     os.path.join(_optimizers_dir, "q_galore_projector.py"),
@@ -54,9 +55,6 @@ _adamw_mod = _load_module(
 )
 make_q_galore_param_groups = _adamw_mod.make_q_galore_param_groups
 
-# ======================================================================
-# Projector tests
-# ======================================================================
 
 
 class TestGaLoreProjector:
@@ -65,7 +63,7 @@ class TestGaLoreProjector:
     def test_project_and_back_tall(self):
         """Project → project_back preserves shape for tall matrices."""
         proj = GaLoreProjector(rank = 4, update_proj_gap = 1)
-        grad = torch.randn(16, 8)  # tall
+        grad = torch.randn(16, 8)
         low = proj.project(grad, step = 0)
         assert low.shape == (16, 4)
 
@@ -75,7 +73,7 @@ class TestGaLoreProjector:
     def test_project_and_back_wide(self):
         """Project → project_back preserves shape for wide matrices."""
         proj = GaLoreProjector(rank = 4, update_proj_gap = 1)
-        grad = torch.randn(8, 16)  # wide
+        grad = torch.randn(8, 16)
         low = proj.project(grad, step = 0)
         assert low.shape == (4, 16)
 
@@ -90,10 +88,10 @@ class TestGaLoreProjector:
         assert proj.svd_count == 1
 
         proj.project(grad, step = 1)
-        assert proj.svd_count == 1  # No recomputation
+        assert proj.svd_count == 1
 
         proj.project(grad, step = 100)
-        assert proj.svd_count == 2  # Recomputed
+        assert proj.svd_count == 2
 
     def test_quantized_projection(self):
         """Quantized projection matrix stores and restores with bounded error."""
@@ -147,9 +145,6 @@ class TestGaLoreProjector:
         assert abs(ratio - 0.5) < 1e-5, f"Expected ratio ~0.5, got {ratio:.8f}"
 
 
-# ======================================================================
-# Quantization utility tests
-# ======================================================================
 
 
 class TestQuantizationUtils:
@@ -161,7 +156,6 @@ class TestQuantizationUtils:
         q, scales, zeros, shape = _quantize(w, n_bit = 8)
         w_hat = _dequantize(q, scales, zeros, shape)
 
-        # Error bounded by the quantization step size.
         error = (w - w_hat).abs().max()
         assert error < 0.1, f"Max error {error} exceeds threshold"
 
@@ -170,6 +164,7 @@ class TestQuantizationUtils:
         w = torch.randn(32, 64)
         q, scales, zeros, shape = _quantize(w, q_group_size = 32, n_bit = 8)
         w_hat = _dequantize(q, scales, zeros, shape)
+        # Error bounded by the quantization step size.
         error = (w - w_hat).abs().max()
         assert error < 0.1
 
@@ -200,9 +195,6 @@ class TestQuantizationUtils:
         assert abs(mean_error) < 0.01, f"Mean error {mean_error} suggests biased rounding"
 
 
-# ======================================================================
-# Param group helper tests
-# ======================================================================
 
 
 class TestParamGroupHelper:
@@ -219,15 +211,13 @@ class TestParamGroupHelper:
 
         groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
 
-        # galore + non-galore.
         assert len(groups) == 2
 
         galore_group = [g for g in groups if "rank" in g][0]
         non_galore_group = [g for g in groups if "rank" not in g][0]
 
-        # q_proj + k_proj in galore group.
         assert len(galore_group["params"]) == 2
-        assert len(non_galore_group["params"]) == 3  # embed weight + norm weight + norm bias
+        assert len(non_galore_group["params"]) == 3
 
     def test_custom_target_modules(self):
         """Custom target_modules narrows GaLore scope."""
@@ -246,12 +236,12 @@ class TestParamGroupHelper:
         )
 
         galore_group = [g for g in groups if "rank" in g][0]
-        assert len(galore_group["params"]) == 1  # Only q_proj
+        assert len(galore_group["params"]) == 1
 
     def test_bias_excluded_from_galore(self):
         """1-D bias params matching target names must be excluded (project needs 2-D grads)."""
         model = nn.Module()
-        model.q_proj = nn.Linear(64, 64, bias = True)  # has .weight AND .bias
+        model.q_proj = nn.Linear(64, 64, bias = True)
         model.embed = nn.Embedding(100, 64)
 
         groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
@@ -283,9 +273,6 @@ class TestParamGroupHelper:
         assert len(galore_groups) == 0, "Expected no GaLore groups when target_modules=[]"
 
 
-# ======================================================================
-# Optimizer tests (CPU-only, no bitsandbytes dependency)
-# ======================================================================
 
 
 class TestQGaLoreIntegration:
@@ -315,7 +302,7 @@ class TestQGaLoreIntegration:
                     low = proj.project(p.grad, step)
                     p._saved = p.data.clone()
                     update = torch.zeros_like(low)
-                    update.add_(low)  # Simplified update
+                    update.add_(low)
                     full_update = proj.project_back(update)
                     p.grad.copy_(full_update)
 
@@ -328,7 +315,7 @@ class TestQGaLoreIntegration:
         torch.manual_seed(42)
         u = torch.randn(32, 4)
         v = torch.randn(4, 16)
-        grad = u @ v  # rank-4 gradient
+        grad = u @ v
 
         proj = GaLoreProjector(rank = 4, update_proj_gap = 1, scale = 1.0)
         low = proj.project(grad, step = 0)
@@ -367,7 +354,6 @@ class TestQGaLoreIntegration:
 
         groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
 
-        # Simulate splitting the non-GaLore group for embedding LR.
         embed_lr = 5e-5
         new_groups = []
         for group in groups:
@@ -377,8 +363,7 @@ class TestQGaLoreIntegration:
             embed_params = []
             other_params = []
             for p in group["params"]:
-                # Real usage checks names; here we split by shape.
-                if p.shape[0] == 100:  # embedding
+                if p.shape[0] == 100:
                     embed_params.append(p)
                 else:
                     other_params.append(p)
@@ -392,7 +377,6 @@ class TestQGaLoreIntegration:
                 g["lr"] = embed_lr
                 new_groups.append(g)
 
-        # 3 groups: galore, non-galore non-embed, embed.
         embed_groups = [g for g in new_groups if g.get("lr") == embed_lr]
         assert len(embed_groups) == 1
         assert embed_groups[0]["lr"] == embed_lr
@@ -415,9 +399,8 @@ class TestQGaLoreIntegration:
         _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
 
         p = torch.nn.Parameter(torch.ones(4, 4))
-        p._saved_data = torch.ones(4, 4) * 2.0  # Pre-update weights
-        # Simulate project-back: p.data = p._saved_data + projected update.
-        p.data = p._saved_data.add_(torch.ones(4, 4) * 1.0)  # p.data is now 3.0
+        p._saved_data = torch.ones(4, 4) * 2.0  # Pre-update weights Simulate project-back: p.data = p._saved_data +
+        p.data = p._saved_data.add_(torch.ones(4, 4) * 1.0)
 
         group = {"weight_decay": 0.1, "lr": 1.0, "_wd_saved": 0.1}
 
@@ -429,7 +412,6 @@ class TestQGaLoreIntegration:
 
         del p._saved_data  # Clean up after all uses, matching fixed code
 
-        # 3.0 - (1.0 * 0.1 * 3.0) = 2.7
         assert torch.allclose(
             p.data, torch.tensor(2.7)
         ), "Weight decay didn't use p.data for decoupled decay!"
@@ -484,7 +466,7 @@ class TestQGaLoreIntegration:
         # Hook should restore float weights on forward.
         handles = install_hook(linear)
         x = torch.randn(2, 16)
-        out = linear(x)  # triggers pre-hook
+        out = linear(x)
 
         assert linear.weight.data.shape == (8, 16), "weight shape not restored"
         assert linear.weight.data.is_floating_point(), "weight not float after hook"

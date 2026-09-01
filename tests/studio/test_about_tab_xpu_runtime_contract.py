@@ -19,7 +19,7 @@ LOCALES = REPO / "studio/frontend/src/i18n/locales"
 
 
 def test_backend_still_emits_an_xpu_version():
-    # If this stops being true the frontend field below is dead weight; fail loudly.
+    # If this stops being true the frontend field below is dead weight;
     src = HARDWARE.read_text(encoding = "utf-8")
     assert 'versions["xpu"]' in src
 
@@ -41,24 +41,20 @@ def test_about_tab_renders_the_xpu_runtime_row():
 
 
 def test_about_tab_shows_every_runtime_not_just_the_first():
-    # hardware.py sets versions["cuda"] and versions["xpu"] independently, so a dual build in
-    # forced-XPU mode reports both; returning the first match hid the xpu row on that host.
+    # hardware.py sets versions["cuda"] and versions["xpu"] independently, so a dual build in forced-XPU mode reports
     src = ABOUT.read_text(encoding = "utf-8")
     assert "acceleratorRuntimes" in src, "the runtime picker must return all matches"
     assert src.count("rows.push(") == 3, "cuda, rocm and xpu must each be pushed"
     assert "runtimes.map(" in src, "every reported runtime must be rendered"
-    # An early return is what caused the bug; the picker must collect instead.
+    # An early return is what caused the bug;
     picker = src.split("function acceleratorRuntimes")[1].split("\n}")[0]
     assert picker.count("return") == 1, "the picker must not return early on the first hit"
 
 
 def test_the_xpu_label_resolves_in_every_locale():
-    # en is the fallback source, so it is the only file that MUST carry the key (check-parity.ts
-    # allows partial overlays). Requiring it everywhere would break the next locale added for no
-    # gain: the label is a proper noun, so the fallback equals a translation.
+    # en is the fallback source, so it is the only file that MUST carry the key (check-parity.ts allows partial
     assert 'xpu: "XPU",' in (LOCALES / "en.ts").read_text(encoding = "utf-8")
     # Overlays must not DISAGREE with en. check-parity.ts rejects a key absent from en; this
-    # catches the value.
     wrong = [
         p.name
         for p in sorted(LOCALES.glob("*.ts"))

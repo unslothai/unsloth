@@ -36,8 +36,8 @@ import pytest
 
 GB = 1024**3
 
-# A weight shard of the merge, as opposed to anything else that ends in
-# `.safetensors` (an adapter) or `.bin` (`training_args.bin`).
+# A weight shard of the merge, as opposed to anything else that ends in `.safetensors` (an adapter) or `.bin`
+# (`training_args.bin`).
 _MERGE_SHARD = re.compile(r"^(model|pytorch_model|consolidated)\.|-\d+-of-\d+\.")
 
 
@@ -56,10 +56,10 @@ def _layout(tmp_path, merge_gb, base_gb):
     gguf = tmp_path / "model_gguf"
     merge.mkdir()
     gguf.mkdir()
-    # Sparse files: only the sizes are read, and writing 60GB of zeroes to prove a
-    # point about disk space would be its own joke. The names are the
-    # `-NNNNN-of-NNNNN` set `save_pretrained` really writes, which is what the
-    # reclamation matches on; `model-00001.safetensors` is not a shape it produces.
+    # Sparse files: only the sizes are read, and writing 60GB of zeroes to prove a point about disk space would be its
+    # own joke.
+    # The names are the `-NNNNN-of-NNNNN` set `save_pretrained` really writes, which is what the reclamation matches on;
+    # `model-00001.safetensors` is not a shape it produces.
     merge_shards = list(_split(merge_gb))
     for i, gb in enumerate(merge_shards):
         name = f"model-{i + 1:05d}-of-{len(merge_shards):05d}.safetensors"
@@ -205,9 +205,9 @@ def test_the_helper_is_called_before_quantizing(save_mod):
     assert source.index("_free_merge_if_disk_is_tight(") < source.index("def _quantize_one")
 
 
+
+
 # ---- what reclamation must never do ---------------------------------------
-
-
 def test_a_complete_stale_shard_set_is_not_inherited(tmp_path, monkeypatch, save_mod):
     """A finished earlier save in the same directory, index and every shard.
 
@@ -320,7 +320,6 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
     import types as _types
 
     output = tmp_path / "model.Q4_K_M.gguf"
-    # Sparse, for the same reason the layout above is.
     with open(output, "wb") as f:
         f.truncate(5 * GB)
 
@@ -328,7 +327,6 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
     try:
         failure = RuntimeError("unknown model architecture")
 
-        # 12GB free at the start, 5GB of the 10GB output written, so 7GB left.
         save_mod.shutil.disk_usage = lambda *_a, **_k: _types.SimpleNamespace(
             total = 0, used = 0, free = 7 * GB
         )
@@ -339,8 +337,7 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
             partial_output = str(output),
         )
 
-        # A disk that really is short is still short: 1GB left plus the 5GB
-        # written is 6GB, and the output wanted 10GB.
+        # A disk that really is short is still short: 1GB left plus the 5GB written is 6GB, and the output wanted 10GB.
         save_mod.shutil.disk_usage = lambda *_a, **_k: _types.SimpleNamespace(
             total = 0, used = 0, free = 1 * GB
         )
@@ -351,8 +348,7 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
             partial_output = str(output),
         )
 
-        # A pass that wrote nothing at all is unchanged, and so is a caller
-        # that names an output which is not there.
+        # A pass that wrote nothing at all is unchanged, and so is a caller that names an output which is not there.
         assert save_mod._gguf_failure_looks_like_disk(
             failure,
             str(tmp_path),
@@ -469,8 +465,8 @@ def test_a_caller_can_keep_a_directory_it_owns(tmp_path, monkeypatch, save_mod):
         generic.update(kw)
 
     monkeypatch.setattr(save_mod, "unsloth_generic_save", _generic_save)
-    # isinstance() against a stand-in class is what puts the export on its PEFT
-    # branch, which is the one that calls unsloth_generic_save.
+    # isinstance() against a stand-in class is what puts the export on its PEFT branch, which is the one that calls
+    # unsloth_generic_save.
     monkeypatch.setattr(save_mod, "PeftModelForCausalLM", _FakeModel)
     model = _FakeModel("some-org/some-model")
     seen = _run_export(
@@ -798,8 +794,7 @@ def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
     """
     upper = save_mod._gguf_output_size_ratio("q4_k_m", "bf16")
     lower = save_mod._gguf_output_size_ratio("q4_k_m", "bf16", upper_bound = False)
-    # llama.cpp's own 7B table puts Q4_K_M near 4.8 bits a weight; the two bounds
-    # have to sit either side of it.
+    # llama.cpp's own 7B table puts Q4_K_M near 4.8 bits a weight; the two bounds have to sit either side of it.
     assert lower < 4.5 / 16 < upper
 
     # Codex's case, run through the helper the way the call site does.
@@ -827,7 +822,6 @@ def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
             save_mod._gguf_output_size_ratio(dtype, "bf16", upper_bound = False)
         )
     # A width the diagnosis cannot measure is not guessed at: None puts the
-    # caller back on the fixed floor rather than charging a whole base copy.
     assert save_mod._gguf_output_size_ratio("something_new", "bf16") == 1.0
     assert save_mod._gguf_output_size_ratio("something_new", "bf16", upper_bound = False) is None
 
@@ -862,7 +856,6 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
         with open(os.path.join(merge, "model.safetensors.index.json"), "w", encoding = "utf-8") as fh:
             json.dump(index, fh)
 
-    # First export: the directory is this export's own, so everything goes.
     _write_merge()
     _with_free(monkeypatch, save_mod, 20)
     assert _reclaim(save_mod, merge, gguf, bases) > 0
@@ -872,9 +865,9 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
         os.path.join(merge, "model.safetensors.index.json")
     ), "the index named the shards that were just deleted and cannot outlive them"
 
-    # Second export into the same directory, provenance snapshotted the way
-    # `unsloth_save_pretrained_gguf` does, before the merge writes.
+    # Second export into the same directory, provenance snapshotted the way `unsloth_save_pretrained_gguf` does, before
     preexisting = frozenset(os.listdir(merge))
+    # First export: the directory is this export's own, so everything goes.
     _write_merge()
     freed = _reclaim(save_mod, merge, gguf, bases, preexisting_weights = preexisting)
     assert freed > 0, "the second export reclaimed nothing"

@@ -10,14 +10,14 @@ import zipfile
 from pathlib import Path
 
 SOURCE_DATE_EPOCH = 0
-# Zip stores DOS time which starts at 1980; map epoch to 1980-01-01.
+# Zip stores DOS time which starts at 1980;
 _ZIP_DOS_EPOCH = (1980, 1, 1, 0, 0, 0)
 
 HERE = Path(__file__).resolve().parent
 
 
-# IOC literal scan_packages.py must trip on. Keep in sync with
-# KNOWN_IOC_STRINGS (scan_npm_packages.py) and RE_MAY12_IOC (scan_packages.py).
+# IOC literal scan_packages.py must trip on.
+# Keep in sync with KNOWN_IOC_STRINGS (scan_npm_packages.py) and RE_MAY12_IOC (scan_packages.py).
 MALICIOUS_SETUP_PY = '''"""Test fixture: do NOT install.
 
 This file embeds the May-12 Mini Shai-Hulud IOC literal so the
@@ -66,7 +66,7 @@ def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(filename = name, date_time = _ZIP_DOS_EPOCH)
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = (0o644 & 0xFFFF) << 16
-    info.create_system = 3  # Unix
+    info.create_system = 3
     zf.writestr(info, data)
 
 
@@ -83,7 +83,6 @@ def _build_wheel(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
     record_lines.append(f"{dist_info}/RECORD,,")
     members[f"{dist_info}/RECORD"] = ("\n".join(record_lines) + "\n").encode()
 
-    # Write with sorted order for deterministic byte output.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression = zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(members):
@@ -140,7 +139,6 @@ def build_all() -> dict[str, Path]:
     _build_wheel(mal_whl, name = "malicious_fixture", payload_files = mal_payload)
     outputs["malicious_wheel"] = mal_whl
 
-    # Clean wheel: empty placeholder.
     clean_payload = {
         "clean_fixture/__init__.py": CLEAN_INIT_PY.encode(),
     }

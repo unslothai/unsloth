@@ -27,7 +27,7 @@ def _load_change_system_message():
     return namespace["_change_system_message"]
 
 
-CUSTOM = "mycustom"  # no predefined default
+CUSTOM = "mycustom"
 
 
 def test_custom_template_fills_placeholder():
@@ -40,8 +40,7 @@ def test_custom_template_fills_placeholder():
 
 
 def test_custom_template_preserves_backslashes():
-    # str.replace not re.sub: re.sub treats backslashes specially (r"C:\Users"
-    # bad-escape, r"\1" group ref), so messages must be inserted verbatim.
+    # str.replace not re.sub: re.sub treats backslashes specially (r"C:\Users" bad-escape, r"\1" group ref), so
     fn = _load_change_system_message()
     for msg in (r"C:\Users\me", r"\frac{a}{b}", r"see \1 here"):
         template, used = fn("System: {system_message}", CUSTOM, msg)
@@ -50,13 +49,13 @@ def test_custom_template_preserves_backslashes():
 
 
 def test_custom_template_requires_system_message():
-    # A placeholder with no system message must raise, not stay literal.
     fn = _load_change_system_message()
     with pytest.raises(ValueError):
         fn("System: {system_message}", CUSTOM, None)
 
 
 def test_custom_template_without_placeholder_unchanged():
+    # A placeholder with no system message must raise, not stay literal.
     fn = _load_change_system_message()
     template, used = fn("System: fixed", CUSTOM, "ignored")
     assert template == "System: fixed"
@@ -73,10 +72,9 @@ def test_predefined_template_uses_default_then_override():
 
 def test_predefined_template_escapes_but_custom_does_not():
     # Predefined templates hold {system_message} inside a Jinja literal, so it is escaped;
-    # a custom template's placeholder may be raw text, so it stays verbatim.
     fn = _load_change_system_message()
     msg = """it's a \\test "x"."""
     predefined, used = fn("System: {system_message}", "unsloth", msg)
     assert predefined == """System: it\\'s a \\\\test \\"x\\"."""
-    assert used == msg  # returned message is the raw one, not the escaped source
+    assert used == msg
     assert fn("System: {system_message}", CUSTOM, msg)[0] == f"System: {msg}"

@@ -75,9 +75,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("bin", help = "path to the unsloth CLI")
     ap.add_argument("--port", type = int, default = 0, help = "0 picks a free port")
     ap.add_argument("--out", default = "probe", help = "directory for probe artefacts")
-    # The desktop's own grace, BACKEND_STARTUP_GRACE_PERIOD = 5 min (commands.rs:9): less
-    # fails a leg the app would wait out. It cannot mask the bug -- a missing import kills
-    # the backend and the loop breaks on proc.poll(), so this only bounds a LIVE backend.
+    # The desktop's own grace, BACKEND_STARTUP_GRACE_PERIOD = 5 min (commands.rs:9): less fails a leg the app would wait
+    # out.
+    # a missing import kills the backend and the loop breaks on proc.poll(), so this only bounds a LIVE backend.
     ap.add_argument("--boot-timeout", type = int, default = 300)
     a = ap.parse_args(argv)
 
@@ -94,11 +94,11 @@ def main(argv: list[str]) -> int:
         facts[k] = v
         print(f"[probe] {k:28} = {v}")
 
-    # ── the two probes Tauri preflight actually runs ─────────────────────────
-    # The DESKTOP's deadline, not a generous CI one: preflight allows each call 10s
-    # (managed.rs:337 for `-h`, :390 for desktop-capabilities) then reports Stale
-    # (managed.rs:471, :521). Longer would call a slow torn venv HEALTHY and skip the re-run
-    # assertion; run() reports a timeout as a non-zero rc, the same REPAIRABLE arm.
+    # ── the two probes Tauri preflight actually runs ───────────────────────── The DESKTOP's deadline, not a generous
+    # CI one: preflight allows each call 10s (managed.rs:337 for `-h`, :390 for desktop-capabilities) then reports Stale
+    # (managed.rs:471, :521).
+    # Longer would call a slow torn venv HEALTHY and skip the re-run assertion;
+    # run() reports a timeout as a non-zero rc, the same REPAIRABLE arm.
     PREFLIGHT_TIMEOUT = 10
 
     t0 = time.time()
@@ -118,16 +118,13 @@ def main(argv: list[str]) -> int:
     say("capabilities_ok", caps_rc == 0)
     say("capabilities_seconds", round(time.time() - t0, 2))
 
-    # Parse EXACTLY as the desktop does: managed.rs:414 hands the whole stdout buffer to
-    # serde_json, which rejects leading or trailing non-JSON, and stderr was already
-    # discarded at managed.rs:358. Folding stderr in made one warning line enough to fail
-    # the parse and report FALSE_READY over an install the real app offers to repair.
-    # "absent" (studio_install_ok predates the install manifest) and "unparseable" split
-    # only for a readable artefact: the desktop reports Stale for both
-    # ("desktop_capability_probe_failed", managed.rs:521). The field is Option<bool>
-    # (managed.rs:43), so serde rejects a non-boolean and the whole payload fails to
-    # deserialize -> Stale; bool() instead read the JSON string "false" as True and
-    # reported HEALTHY over a torn install. Only a literal JSON true counts.
+    # Parse EXACTLY as the desktop does: managed.rs:414 hands the whole stdout buffer to serde_json, which rejects
+    # leading or trailing non-JSON, and stderr was already discarded at managed.rs:358.
+    # Folding stderr in made one warning line enough to fail the parse and report FALSE_READY over an install the real
+    # app offers to repair.
+    # "absent" (studio_install_ok predates the install manifest) and "unparseable" split only for a readable artefact:
+    # the desktop reports Stale for both ("desktop_capability_probe_failed", managed.rs:521).
+    # bool() instead read the JSON string "false" as True and reported HEALTHY over a torn install.
     install_ok: object = "absent"
     try:
         parsed = json.loads(caps_out)
@@ -145,19 +142,16 @@ def main(argv: list[str]) -> int:
         install_ok = "unparseable"
     say("capabilities.studio_install_ok", install_ok)
 
-    # The desktop's own conclusion: Ready only on rc 0 plus a true studio_install_ok. The
-    # predicate is `!= Some(true)` (managed.rs:445), so an ABSENT field is Stale exactly
-    # like a false one; a CLI too old to answer is rejected one check earlier on
-    # desktop_manageability_version. Leaving "absent" undecided reported HEALTHY on every
-    # booting leg and skipped the repair assertion -- the regression
-    # `unsloth_cli/commands/studio.py` sits in the path filter to catch.
+    # The desktop's own conclusion: Ready only on rc 0 plus a true studio_install_ok.
+    # The predicate is `!= Some(true)` (managed.rs:445), so an ABSENT field is Stale exactly like a false one;
+    # a CLI too old to answer is rejected one check earlier on desktop_manageability_version.
+    # Leaving "absent" undecided reported HEALTHY on every booting leg and skipped the repair assertion
     caps_ready = caps_rc == 0 and install_ok is True
     say("desktop_would_call_install_ok", caps_ready)
 
-    # ── the deeper probes the fix PRs add ────────────────────────────────────
-    # RECORDED, not repair evidence: preflight runs only `-h` and
-    # `studio desktop-capabilities --json` (managed.rs:357, :445), so counting these would
-    # pass a leg while the real app still reports ManagedReady over a torn install.
+    # ── the deeper probes the fix PRs add ──────────────────────────────────── RECORDED, not repair evidence: preflight
+    # runs only `-h` and `studio desktop-capabilities --json` (managed.rs:357, :445), so counting these would pass a leg
+    # while the real app still reports ManagedReady over a torn install.
     for label, args in (
         ("verify_install", ["studio", "verify-install"]),
         ("desktop_runtime_check", ["studio", "desktop-runtime-check"]),
@@ -169,29 +163,25 @@ def main(argv: list[str]) -> int:
         (out / f"{label}.log").write_text(merged(r), encoding = "utf-8", errors = "replace")
         say(label, "ok" if r[0] == 0 else "failed")
 
-    # The in-progress marker #7490 writes before spawning the installer. RECORDED ONLY:
-    # both drivers seed it and never clear it, so it is true on every leg by construction,
-    # and using it in the verdict would make FALSE_READY, the one failing outcome, unreachable.
+    # The in-progress marker #7490 writes before spawning the installer.
+    # RECORDED ONLY: both drivers seed it and never clear it, so it is true on every leg by construction, and using it
+    # in the verdict would make FALSE_READY, the one failing outcome, unreachable.
     home = Path(os.environ.get("UNSLOTH_STUDIO_HOME") or (Path.home() / ".unsloth" / "studio"))
     say("install_in_progress_marker", (home / ".desktop-install-in-progress").exists())
 
-    # ── ground truth: does the backend actually boot? ────────────────────────
-    # Own the whole process tree: the CLI spawns uvicorn/python children that would hold the
-    # port and hang the next leg's probe. Same reason the driver kills the group.
+    # ground truth: does the backend actually boot? ──────────────────────── Own the whole process tree:
     popen_kw: dict = {}
     if os.name == "posix":
         popen_kw["start_new_session"] = True
     else:
         popen_kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    # Straight to the artefact file, never a PIPE: nothing drains a pipe until after the
-    # polling loop, so a backend whose imports outrun the OS buffer (64 KiB on Linux and
-    # macOS, one page on Windows) blocks BEFORE binding the port, and backend_ok -- what
-    # the verdict pivots on -- would be false for a perfectly good install.
+    # Straight to the artefact file, never a PIPE: nothing drains a pipe until after the polling loop, so a backend
+    # whose imports outrun the OS buffer (64 KiB on Linux and macOS, one page on Windows) blocks BEFORE binding the
+    # port, and backend_ok
     blog_path = out / "backend.log"
     blog_fh = blog_path.open("w", encoding = "utf-8", errors = "replace")
     # An interrupted install can leave the console script with its venv interpreter gone.
-    # An unguarded spawn raises, so no verdict.json is written and both workflows die on
-    # json.load. An unlaunchable CLI is a broken backend that `-h` flags.
+    # An unguarded spawn raises, so no verdict.json is written and both workflows die on json.load.
     proc = None
     try:
         proc = subprocess.Popen(
@@ -226,12 +216,13 @@ def main(argv: list[str]) -> int:
         if os.name == "posix":
             import signal
 
-            # start_new_session made this child its own group leader. Read the pgid BEFORE
-            # the reap: once waited on, os.getpgid() raises and escalation hits nothing.
             try:
                 pgid = os.getpgid(proc.pid)
             except OSError:
                 pgid = proc.pid
+            # Unconditional, and to the GROUP, the same escalation interrupt-install.sh makes: the leader exits
+            # promptly on SIGTERM while a uvicorn worker does not, so returning once proc.wait() succeeded left
+            # that worker holding the port and venv.
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
                     os.killpg(pgid, sig)
@@ -242,20 +233,17 @@ def main(argv: list[str]) -> int:
                     break
                 except subprocess.TimeoutExpired:
                     continue
-            # Unconditional, and to the GROUP, the same escalation interrupt-install.sh
-            # makes. The leader exits promptly on SIGTERM while a uvicorn worker does not, so
-            # returning once proc.wait() succeeded left that worker holding the port and venv
-            # while the repair reinstalled underneath. Signalling an empty group is a no-op.
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except OSError:
                 pass
         else:
-            # On win32 the CLI re-spawns the server as a CHILD and waits on it
-            # (unsloth_cli/commands/studio.py:1543), and CREATE_NEW_PROCESS_GROUP does not
-            # make terminate() reach descendants, so killing the wrapper alone leaves the venv
-            # locked against the repair. taskkill /T takes the tree.
+            # On win32 the CLI re-spawns the server as a CHILD and waits on it (unsloth_cli/commands/studio.py:1543),
+            # and CREATE_NEW_PROCESS_GROUP does not make terminate() reach descendants, so killing the wrapper alone
+            # leaves the venv locked against the repair.
             run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], timeout = 30)
+            # start_new_session made this child its own group leader.
+            # Read the pgid BEFORE the reap: once waited on, os.getpgid() raises and escalation hits nothing.
             try:
                 proc.wait(timeout = 10)
             except subprocess.TimeoutExpired:
@@ -277,14 +265,13 @@ def main(argv: list[str]) -> int:
     if missing:
         say("backend_error", missing)
 
-    # ── verdict ──────────────────────────────────────────────────────────────
-    # A booting backend is not enough. The manifest is written LAST
-    # (install_python_stack.py:3255), so the data-designer leg boots while
-    # desktop-capabilities still says studio_install_ok=false and preflight reports Stale
-    # (managed.rs:445); calling that HEALTHY skipped the re-run step. `-h` gates it for the
-    # same reason: probe_managed_bin runs it FIRST and returns Stale "cli_unusable" without
-    # reaching the capability probe (managed.rs:465-478), so consulting cli_h_ok only in the
-    # repairable arm called a help-less CLI HEALTHY.
+    # ── verdict ────────────────────────────────────────────────────────────── A booting backend is not enough.
+    # The manifest is written LAST (install_python_stack.py:3255), so the data-designer leg boots while
+    # desktop-capabilities still says studio_install_ok=false and preflight reports Stale (managed.rs:445);
+    # calling that HEALTHY skipped the re-run step.
+    # `-h` gates it for the same reason: probe_managed_bin runs it FIRST and returns Stale "cli_unusable" without
+    # reaching the capability probe (managed.rs:465-478), so consulting cli_h_ok only in the repairable arm called a
+    # help-less CLI HEALTHY.
     if backend_ok and caps_ready and facts.get("cli_h_ok"):
         verdict = "HEALTHY"
     elif not caps_ready or not facts.get("cli_h_ok"):

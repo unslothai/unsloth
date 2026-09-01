@@ -55,7 +55,6 @@ def _names_in(node):
 
 
 def _param_default(method, name):
-    # Default-value AST node for a named parameter, or None.
     args = method.args
     params = list(args.args) + list(args.kwonlyargs)
     defaults = list(args.defaults) + list(args.kw_defaults)
@@ -63,8 +62,7 @@ def _param_default(method, name):
 
 
 def _load_text_only_namespace():
-    # Exec the _utils text-only helpers into one namespace (no unsloth import),
-    # in dependency order so cross-references resolve.
+    # Exec the _utils text-only helpers into one namespace (no unsloth import), in dependency order so cross-references
     source = _source(UTILS_PATH)
     import transformers
     from packaging.version import Version
@@ -123,7 +121,7 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastLanguageModel", "from_pretrained")
 
-    # text_only defaults False (opt-in); both FastModel delegations forward it.
+    # text_only defaults False (opt-in);
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
@@ -212,7 +210,6 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
     full_config = transformers.Gemma3Config()
     text_config = helper(full_config, "google/gemma-3-27b-it")
 
-    # Shrink for cheap CPU instantiation.
     text_config.num_hidden_layers = 1
     text_config.hidden_size = 32
     text_config.intermediate_size = 32
@@ -226,7 +223,6 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
 
     assert hasattr(model, "lm_head"), "text-only Gemma3 model should expose lm_head"
 
-    # No vision tower / multimodal projector remains.
     assert not hasattr(
         model, "vision_tower"
     ), "text-only Gemma3 model should not have a vision_tower"
@@ -281,8 +277,7 @@ def test_text_only_guard_predicate_across_vlm_families():
     # Dedicated text decoder remaps language_model.* -> strip vision.
     assert takes_text_only(transformers.Gemma3Config()) is True
 
-    # No text class (Qwen2-VL/Mllama) or a generic reused decoder that would
-    # load random weights (Llava/PaliGemma/Idefics3/InternVL) -> keep full model.
+    # No text class (Qwen2-VL/Mllama) or a generic reused decoder that would load random weights
     for name in [
         "Qwen2VLConfig",
         "Qwen2_5_VLConfig",
@@ -299,8 +294,6 @@ def test_text_only_guard_predicate_across_vlm_families():
 
 
 def test_text_only_helper_preserves_quantization_config():
-    # quantization_config must survive the strip so pre-quantized repos load. A
-    # sentinel object avoids a bitsandbytes dependency on transformers 4.51.3.
     transformers = pytest.importorskip("transformers")
     helper = _load_text_only_helper()
     config = transformers.Gemma3Config()
@@ -313,8 +306,8 @@ def test_text_only_helper_preserves_quantization_config():
 
 
 def test_text_only_key_mapping_targets_published_prefixes():
-    # Remap the published VLM decoder prefixes, applying only on transformers >=5
-    # (on 4.x base_model_prefix handles it and a mapping hurts).
+    # quantization_config must survive the strip so pre-quantized repos load.
+    # A sentinel object avoids a bitsandbytes dependency on transformers 4.51.3.
     transformers = pytest.importorskip("transformers")
     get_key_mapping = _load_util_func("_get_text_only_key_mapping")
     mapping = get_key_mapping(transformers.Gemma3Config(), transformers.Gemma3TextConfig())
@@ -322,14 +315,14 @@ def test_text_only_key_mapping_targets_published_prefixes():
         assert mapping is None
     else:
         assert isinstance(mapping, dict)
-        assert mapping.get(r"^language_model\.model\.") == "model."  # gemma3
-        assert mapping.get(r"^model\.language_model\.") == "model."  # gemma3n
+        assert mapping.get(r"^language_model\.model\.") == "model."
+        assert mapping.get(r"^model\.language_model\.") == "model."
         assert mapping.get(r"^language_model\.lm_head\.") == "lm_head."
 
 
 def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_path):
-    # PR #5816: text-only loading of a Gemma 3 VLM checkpoint must load real
-    # language weights, not random ones. Fails on tf >=5 without the key_mapping fix.
+    # PR #5816: text-only loading of a Gemma 3 VLM checkpoint must load real language weights, not random ones.
+    # Fails on tf >=5 without the key_mapping fix.
     transformers = pytest.importorskip("transformers")
     torch = pytest.importorskip("torch")
     import shutil
@@ -381,8 +374,8 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
     save_dir = tmp_path / "vlm"
     full_model.save_pretrained(save_dir, safe_serialization = True)
 
-    # tf >=5 saves under an outer "model." prefix; strip it to reproduce the
-    # language_model.model.* layout the published Gemma 3 checkpoints use.
+    # tf >=5 saves under an outer "model." prefix;
+    # strip it to reproduce the language_model.model.* layout the published Gemma 3 checkpoints use.
     real_dir = tmp_path / "real"
     real_dir.mkdir()
     weights = {}

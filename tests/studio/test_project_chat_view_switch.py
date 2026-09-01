@@ -49,7 +49,6 @@ TEMP = WORKDIR / "temp" / "project_chat_view_switch"
 
 SOURCES = (PROVIDER, STORE, QUEUE)
 
-# Every name the emulator can supply to a sliced dependency array.
 BOUND_NAMES = {
     "aui",
     "checkpoint",
@@ -141,8 +140,6 @@ def _set_active_thread_id_reducer() -> str:
 
 
 # `export { X } from "./y"` and `import type { X } from "./y"`, at the top level.
-# The harness inlines one file, so a surviving specifier is a module Node cannot
-# resolve in the temp dir; the names themselves are stubbed in the prelude.
 _REEXPORT = re.compile(
     r"^(?:export|import)\s+(?:type\s+)?\{[^}]*\}\s+from\s+[\"'][^\"']+[\"'];\s*$",
     re.MULTILINE,
@@ -583,8 +580,7 @@ def _harness_source() -> str:
     return prelude + _prompt_queue_boundary_body() + render
 
 
-# A rejected switchToNewThread() is only caught on the deferred path, so node would abort
-# the whole process on the immediate one. Recorded here instead, and asserted on.
+# A rejected switchToNewThread() is only caught on the deferred path, so node would abort the whole process on the
 SCRIPT_HEADER = """
 const unhandled: string[] = [];
 process.on("unhandledRejection", (reason: any) => {
@@ -607,16 +603,12 @@ def _run(imports: str, body: str) -> dict:
     return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
-# A resident GGUF, so the second effect has something it could price. Only the tests about
-# the pause gate need it; everywhere else the bar has nothing to count and stands down.
+# A resident GGUF, so the second effect has something it could price.
 LOADED_MODEL = """
     seed({ params: { checkpoint: "unsloth/gguf-model" }, loadedContextLength: 8192 });
 """
 
 
-# ---------------------------------------------------------------------------
-# Structural guards for what the emulator restates rather than replays.
-# ---------------------------------------------------------------------------
 
 
 def test_the_provider_wires_the_pause_and_the_shared_ref():
@@ -630,9 +622,7 @@ def test_the_provider_wires_the_pause_and_the_shared_ref():
         "ThreadNewChatSwitch must render only for a new-chat nonce, and never alongside "
         "ThreadAutoSwitch: both write the same shared switch state"
     )
-    # Three, not two: ThreadBackendAutosave reads the same ref so its active-thread
-    # publication can tell "this pane is on screen" from "a switch away from it has not
-    # landed yet". Both switch children still share it, which is what the count protects.
+    # Three, not two: ThreadBackendAutosave reads the same ref so its active-thread publication can tell "this pane is
     assert jsx.count("newThreadSwitchStateRef={newThreadSwitchStateRef}") == 3, (
         "both switch children must share ONE ref, or leaving a new chat for a saved one "
         "cannot tell the next new chat that the composer is no longer fresh -- and the "
@@ -670,9 +660,6 @@ def test_the_harness_stubs_every_name_the_queue_boundary_imports():
     assert not missing, f"prompt-queue-boundary.ts imports {missing}, which this harness omits"
 
 
-# ---------------------------------------------------------------------------
-# (a) Nonce transitions.
-# ---------------------------------------------------------------------------
 
 
 def test_a_first_new_chat_switches_once_and_clears_nothing():
@@ -885,9 +872,6 @@ def test_a_paused_new_chat_does_not_price_the_shared_context_bar():
     assert out["switched"] == 1
 
 
-# ---------------------------------------------------------------------------
-# (b) Staged attachments, immediate and deferred.
-# ---------------------------------------------------------------------------
 
 
 def test_an_implicit_new_chat_defers_the_clear_until_the_new_thread_arrives():
@@ -964,8 +948,7 @@ def test_a_composer_that_is_not_mounted_yet_does_not_break_the_switch():
 @pytest.mark.parametrize(
     ("setup", "path", "attempts"),
     [
-        # activeNonce is non-null when the second nonce arrives, so the clear is the
-        # synchronous one, outside any promise chain of its own.
+        # activeNonce is non-null when the second nonce arrives, so the clear is the synchronous one, outside any
         pytest.param(
             'await renderSettled({ newThreadNonce: "n0" });', "immediate", 2, id = "immediate"
         ),
@@ -1011,9 +994,6 @@ def test_an_attachment_remove_that_fails_is_not_an_unhandled_rejection(setup, pa
     assert out["activeThreadId"] is None, "and the switch below it still ran"
 
 
-# ---------------------------------------------------------------------------
-# (c) ThreadAutoSwitch resets the shared nonce.
-# ---------------------------------------------------------------------------
 
 
 def test_opening_a_saved_thread_releases_the_nonce_so_the_same_one_switches_again():
@@ -1121,9 +1101,6 @@ def test_a_saved_thread_that_is_already_the_main_one_still_releases_the_nonce():
     assert out["cleared"] == 1
 
 
-# ---------------------------------------------------------------------------
-# (d) Rapid switching, faster than switchToNewThread resolves.
-# ---------------------------------------------------------------------------
 
 
 def test_a_deferred_clear_for_a_nonce_that_moved_on_is_dropped():
@@ -1224,9 +1201,6 @@ def test_three_nonces_faster_than_the_switch_resolves_clear_once_each_at_most():
     assert out["pending"] == 0
 
 
-# ---------------------------------------------------------------------------
-# (e) A switchToNewThread() that rejects.
-# ---------------------------------------------------------------------------
 
 
 def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
@@ -1658,9 +1632,6 @@ def test_a_rejected_saved_thread_switch_blanks_the_bar_only_while_visible():
     assert out["unhandled"] == 0, "ThreadAutoSwitch catches its own rejection"
 
 
-# ---------------------------------------------------------------------------
-# (f) requestTemporaryPromptQueueStop: how often, and whose queue.
-# ---------------------------------------------------------------------------
 
 
 def test_a_full_compare_round_trip_stops_the_temporary_queue_once():
@@ -1786,9 +1757,6 @@ def test_a_failed_saved_thread_switch_retries_only_while_the_view_is_on_screen()
     assert out["unhandled"] == 0
 
 
-# ---------------------------------------------------------------------------
-# (g) Bounded work across many view switches.
-# ---------------------------------------------------------------------------
 
 
 def test_a_hundred_and_twenty_view_switches_stay_bounded():

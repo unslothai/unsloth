@@ -246,8 +246,8 @@ def _symbols(source, relax_device, relax_inversion):
 def test_vendored_module_has_not_drifted_from_upstream():
     upstream_src = _upstream_source()
     version = _transformers_version()
-    relax_device = version < (5, 0)  # xpu gate forward-ported from 5.x
-    relax_inversion = version < (4, 53)  # 0-dim inversion forward-ported from 4.53.0
+    relax_device = version < (5, 0)  # xpu gate forward-ported from 5.x 0-dim inversion forward-ported from 4.53.0
+    relax_inversion = version < (4, 53)
 
     upstream = _symbols(upstream_src, relax_device, relax_inversion)
     vendored = _symbols(_COMPAT_PATH.read_text(encoding = "utf-8"), relax_device, relax_inversion)
@@ -277,7 +277,6 @@ def test_vendored_module_exports_everything_unsloth_imports():
     upstream = _symbols(upstream_src, False, False)
     vendored = _symbols(_COMPAT_PATH.read_text(encoding = "utf-8"), False, False)
 
-    # Anything vendored must actually exist upstream; inventing symbols under an
-    # upstream module's name would be a silent behavioural fork.
+    # Anything vendored must actually exist upstream;
     invented = sorted(set(vendored) - set(upstream))
     assert invented == [], f"vendored symbols with no upstream counterpart: {invented}"

@@ -22,9 +22,9 @@ def _load_device_type(
     mlx_available = False,
     allow_cpu = False,
 ):
-    # Always pinned, never inherited. UNSLOTH_ALLOW_CPU short-circuits
-    # get_device_type() to "cuda", so a GPU-less host that exports it silently
-    # rewrites what the hip and xpu cases are testing.
+    # Always pinned, never inherited.
+    # UNSLOTH_ALLOW_CPU short-circuits get_device_type() to "cuda", so a GPU-less host that exports it silently rewrites
+    # what the hip and xpu cases are testing.
     if allow_cpu:
         monkeypatch.setenv("UNSLOTH_ALLOW_CPU", "1")
     else:
@@ -145,8 +145,7 @@ def test_xpu_cache_and_current_device_dispatch(monkeypatch):
 
 
 def test_cpu_fallback_does_not_override_mlx(monkeypatch):
-    # UNSLOTH_ALLOW_CPU used to be checked first, so an MLX Mac reported "cuda"
-    # and get_device_count() then hit torch, which is never imported there.
+    # UNSLOTH_ALLOW_CPU used to be checked first, so an MLX Mac reported "cuda" and get_device_count() then hit torch
     device_type = _load_device_type(
         monkeypatch,
         torch_module = None,

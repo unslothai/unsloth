@@ -20,9 +20,7 @@ def _mapper_source():
 
 
 def _extract_get_new_mapper(namespace):
-    # loader_utils imports this from .mapper, so the stand-in module globals need it
-    # too. Without it the probe raises NameError into its own bare except and hands
-    # back empty tables, which looks exactly like "the fetch did not run".
+    # loader_utils imports this from .mapper, so the stand-in module globals need it too.
     from unsloth.models.mapper import build_mappers
     import unsloth.models.loader_utils as loader_utils
 
@@ -46,8 +44,8 @@ class _FakeRaw:
     decode_content = False
 
     def read1(self, amount = -1):
-        # The probe must ASK for decoding; `requests` only enables it inside
-        # `iter_content`, so a raw read of a gzip response would hand compressed bytes
+        # The probe must ASK for decoding;
+        # `requests` only enables it inside `iter_content`, so a raw read of a gzip response would hand compressed bytes
         # to `ast.parse`.
         if not self.decode_content:
             return b"not-decoded"
@@ -118,12 +116,10 @@ def test_get_new_mapper_does_not_rebind_the_installed_fp8_tables(monkeypatch):
 
     int_to_float, float_to_int, map_to_16bit, fp8_block, fp8_row = get_new_mapper()
 
-    # _get_new_mapper swallows every exception and returns empty dicts, so assert
-    # it actually ran before trusting anything below.
+    # _get_new_mapper swallows every exception and returns empty dicts, so assert it actually ran before trusting
     assert int_to_float and float_to_int and map_to_16bit, "the fetch/exec path did not run"
 
-    # the probe has to hand the FETCHED fp8 tables back, or a newly added fp8 repo would
-    # miss both the installed tables and the probe and skip the upgrade message
+    # the probe has to hand the FETCHED fp8 tables back, or a newly added fp8 repo would miss both the installed tables
     assert fp8_block and fp8_row
     assert fp8_block is not block and fp8_row is not row
 
@@ -152,7 +148,7 @@ def test_the_byte_cap_stops_the_read_instead_of_measuring_it_afterwards(monkeypa
     def endless():
         while True:
             served.append(1)
-            if len(served) > 5_000:  # the probe should have stopped long before this
+            if len(served) > 5_000:
                 raise AssertionError("the probe kept reading past its cap")
             yield b"x" * 65_536
 
@@ -160,8 +156,7 @@ def test_the_byte_cap_stops_the_read_instead_of_measuring_it_afterwards(monkeypa
     get_new_mapper = _extract_get_new_mapper({})
 
     assert get_new_mapper() == ({}, {}, {}, {}, {})
-    # The cap at 64KB a chunk is a few dozen chunks; anything near the guard above means the
-    # cap is not being enforced while reading.
+    # The cap at 64KB a chunk is a few dozen chunks;
     assert len(served) < 200, len(served)
 
 
@@ -174,11 +169,10 @@ def test_a_redirect_body_is_bounded_too(monkeypatch):
     def endless():
         while True:
             served.append(1)
-            if len(served) > 5_000:
+            if len(served) > 5_000:  # the probe should have stopped long before this
                 raise AssertionError("the probe kept reading a redirect body past its cap")
             yield b"x" * 65_536
 
-    # A redirect body must not be read at all, so `served` should stay empty.
 
     module = types.ModuleType("requests")
     module.compat = types.SimpleNamespace(urljoin = lambda base, url: url)
@@ -201,6 +195,7 @@ def test_a_redirect_loop_ends(monkeypatch):
     """A peer that redirects forever must not keep the probe going forever."""
     hops = []
 
+    # A redirect body must not be read at all, so `served` should stay empty.
     module = types.ModuleType("requests")
     module.compat = types.SimpleNamespace(urljoin = lambda base, url: url)
 
@@ -263,6 +258,5 @@ def test_a_trickled_body_ends_at_the_deadline_not_at_the_chunk_size(monkeypatch)
 
     get_new_mapper = _extract_get_new_mapper({})
     assert get_new_mapper() == ({}, {}, {}, {}, {})
-    # A 10s deadline at 2s a read is a handful of reads. A chunked loop would not look
-    # at the clock until 65_536 of them had gone by.
+    # A 10s deadline at 2s a read is a handful of reads.
     assert clock["now"] < 60, clock["now"]

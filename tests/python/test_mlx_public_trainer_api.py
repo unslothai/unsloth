@@ -17,8 +17,7 @@ _MLX_SKIP_REASON = "MLX public trainer API is only active on the MLX backend"
 
 def _import_mlx_unsloth():
     """Import unsloth and skip when the current platform is not using MLX."""
-    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps
-    # (e.g. bitsandbytes) skip cleanly instead of erroring at collection.
+    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps (e.g.
     if not (
         platform.system() == "Darwin"
         and platform.machine() == "arm64"
@@ -73,10 +72,7 @@ def test_non_mlx_exports_public_trainer_api_when_available():
     try:
         unsloth = importlib.import_module("unsloth")
     except ImportError as exc:
-        # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo,
-        # bitsandbytes/triton, and _gpu_init can re-raise missing deps as
-        # ImportError). Skip when any of it is unavailable rather than failing
-        # collection on CPU/ROCm/XPU review hosts.
+        # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo, bitsandbytes/triton, and _gpu_init can
         pytest.skip(f"non-MLX import dependency unavailable: {exc}")
     if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
         pytest.skip("non-MLX export smoke test only runs on GPU/ROCm backends")
@@ -1091,8 +1087,8 @@ def test_mlx_compatibility_shims_are_installed():
     assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
     assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
-    # chat_templates now wraps the zoo function (issue #2693), so the re-export
-    # is no longer the same object; functools.wraps records the original.
+    # chat_templates now wraps the zoo function (issue #2693), so the re-export is no longer the same object;
+    # functools.wraps records the original.
     assert (
         getattr(
             chat_templates.train_on_responses_only,
@@ -1188,7 +1184,6 @@ def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
         assert "MLX" in str(exc.value) and name in str(exc.value)
     # trainers trl never exposed must not be invented
     assert not hasattr(trl, "PPOTrainer")
-    # idempotent: a second install keeps the same stub
     stub = trl.GRPOTrainer
     unsloth._install_mlx_trl_sft_shim()
     assert trl.GRPOTrainer is stub
@@ -1212,7 +1207,7 @@ def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
     trl.__getattr__ = _lazy_getattr
     monkeypatch.setitem(sys.modules, "trl", trl)
 
-    unsloth._install_mlx_trl_sft_shim()  # must not raise despite the lazy trl
+    unsloth._install_mlx_trl_sft_shim()
 
     # trainers declared in __all__ are stubbed WITHOUT ever resolving the real one
     assert resolved == []
@@ -1230,12 +1225,11 @@ def test_mlx_stubs_trl_trainers_outside_fixed_set(monkeypatch):
     trl.__all__ = ["SFTTrainer", "SFTConfig", "RLOOTrainer"]
     monkeypatch.setitem(sys.modules, "trl", trl)
 
-    unsloth._install_mlx_trl_sft_shim()
+    unsloth._install_mlx_trl_sft_shim()  # must not raise despite the lazy trl
 
     with pytest.raises(NotImplementedError) as exc:
         trl.RLOOTrainer(model = None)
     assert "MLX" in str(exc.value) and "RLOOTrainer" in str(exc.value)
-    # SFT stays usable; only non-SFT trainers are stubbed
     assert trl.SFTTrainer is unsloth.UnslothTrainer
 
 
@@ -1397,8 +1391,8 @@ def test_mlx_torch_cuda_compatibility_shim():
     assert torch.cuda.get_device_name(0) == stats.name
     assert torch.cuda.max_memory_reserved() == int(used * 1024 * 1024 * 1024)
     assert torch.cuda.max_memory_allocated() == torch.cuda.max_memory_reserved()
-    # current (non-max) APIs report live active memory, not the peak high-water
     # mark, and never exceed it.
+    # current (non-max) APIs report live active memory, not the peak high-water mark, and never exceed it.
     assert 0 <= torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
     assert torch.cuda.memory_allocated() == torch.cuda.memory_reserved()
     assert torch.cuda.device_count() == 1

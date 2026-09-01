@@ -44,10 +44,9 @@ from _playwright_robust import (  # noqa: E402
     wait_for_health,
 )
 
-# The wall this suite did not have, matching playwright_chat_ui.py and
-# playwright_extra_ui.py. It has six raw `page.evaluate` calls, which take no
-# `timeout=` at all, and it runs mid-lane on Windows sharing a server with the
-# suite before it -- so a wedge here stalled the lane with nothing printed.
+# The wall this suite did not have, matching playwright_chat_ui.py and playwright_extra_ui.py.
+# It has six raw `page.evaluate` calls, which take no `timeout=` at all, and it runs mid-lane on Windows sharing a
+# server with the suite before it
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
 BASE = os.environ["BASE_URL"]
@@ -59,14 +58,12 @@ ART.mkdir(parents = True, exist_ok = True)
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# The web check fires 5s after mount and the llama.cpp one after 1s; this is
-# the ceiling on waiting for them, not the wait itself.
+# The web check fires 5s after mount and the llama.cpp one after 1s;
 SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLE_MS", "9000"))
 # What the cards need after they mount, to animate in and lay out.
 SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "900"))
 
-# Must match the name use-web-update-check.ts reads. Kept short rather than zero so the
-# card still arrives after first paint, which is the situation the layout checks exist for.
+# Must match the name use-web-update-check.ts reads.
 E2E_DELAY_GLOBAL = "__unslothE2EWebUpdateDelayMs"
 E2E_DELAY_MS = int(os.environ.get("STUDIO_UI_BANNER_UPDATE_DELAY_MS", "150"))
 
@@ -184,8 +181,7 @@ WHISPER_STATUS = dict(
     },
 )
 
-# 921x534 and 768x500 are where the report reproduces; the taller ones prove the
-# fix costs nothing when there is room.
+# 921x534 and 768x500 are where the report reproduces;
 VIEWPORTS = [
     (1440, 900),
     (1280, 830),
@@ -197,17 +193,7 @@ VIEWPORTS = [
 ]
 ROUTES = [("new chat", "/"), ("train", "/train"), ("model hub", "/model-hub")]
 
-# Real display and window sizes, walked by RESIZING one already-loaded page
-# rather than booting one each: a resize is what a maximise, an unmaximise, a
-# restore from the dock and a drag of the window edge all are, so this is the
-# cheap sweep and the realistic one at the same time. Ordered largest first so
-# the run starts from the roomiest layout and squeezes.
-#
-# 3840x2160 and 2560x1440 are maximised on a 4K and a QHD display; 1920x1080 is
-# the commonest desktop there is; 1512x982 and 1440x900 are the default scaled
-# resolutions of a 14in MacBook Pro and a MacBook Air; 1366x768 is the commonest
-# Windows laptop; 900x600 is the desktop app's own minimum window; the rest are
-# ordinary small windows down to a phone in portrait.
+# Real display and window sizes, walked by RESIZING one already-loaded page rather than booting one each:
 RESIZE_SWEEP = [
     (3840, 2160),
     (2560, 1440),
@@ -234,13 +220,11 @@ RESIZE_SWEEP = [
     (320, 568),
 ]
 
-# What a resize needs before it has settled: the ResizeObserver, the placement
-# it feeds, and the reflow after that. Nothing is fetched, so this is short.
+# What a resize needs before it has settled:
 RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "700"))
 
 # The four runtime status endpoints the loaded models card reads, shaped as
-# tests/studio/playwright_loaded_models_indicator.py has them. Only chat holds
-# anything: one loaded model is all it takes to put the card in the rail.
+# tests/studio/playwright_loaded_models_indicator.py has them.
 CHAT_LOADED = {
     "active_model": "unsloth/Qwen3-4B",
     "loaded": ["unsloth/Qwen3-4B"],
@@ -269,14 +253,10 @@ NOTHING_STT = {
     "gguf": {"loaded_model": None, "device": None},
 }
 
-# Short windows on the chat route: the ones where the rail used to leave its
-# corner. Two is enough, since what is being checked does not vary with size.
+# Short windows on the chat route:
 INDICATOR_VIEWPORTS = [(921, 534), (768, 500)]
 
-# Where the rail actually is, against the corner it is anchored to. It was
-# placed from JS for a while, lifting clear of the boxes in the frame store,
-# and drifted to the middle and the top of the window as those boxes and its
-# own cards changed. Nothing on the page may move it now.
+# Where the rail actually is, against the corner it is anchored to.
 RAIL_CORNER = """
 () => {
   const card = document.querySelector('[data-testid="web-update-banner"]');
@@ -332,33 +312,23 @@ RAIL_CORNER = """
 }
 """
 
-# A minimised window has no layout to photograph, so what is actually testable
-# is the RESTORE: the geometry is measured by a ResizeObserver and cached in
-# React state, and a window that goes away and comes back is exactly how a stale
-# measurement would survive. Each pair is (parked, restored).
+# A minimised window has no layout to photograph, so what is actually testable is the RESTORE:
 RESTORE_CYCLES = [((320, 400), (1920, 1080)), ((320, 400), (900, 600))]
 
-# `spot` is the same suite cut down to what a SECOND browser engine is worth
-# running: the viewports that reproduce, one route, no resize sweep and no type
-# pass. Chromium runs `full`; Firefox and WebKit run this, because the job they
-# share has minutes rather than tens of minutes to spare and a third full pass
-# would mostly re-answer questions the first one already answered.
+# `spot` is the same suite cut down to what a SECOND browser engine is worth running:
 SCOPE = os.environ.get("STUDIO_UI_BANNER_SCOPE", "full").lower()
 SPOT = SCOPE == "spot"
 
 # The two that squeeze the rail hardest, re-run at the largest UI font size.
-# The whole matrix again would not fit the job's budget and would say the same
-# thing three times over.
-# 320x480 is not a spare small size, it is the one that bites. Below 384px the
-# card's action pair wraps onto a row of its own on top of the notes toggle's,
-# and at the 20px setting that is a whole extra row: 259px where the wide card
-# needs 209. The height matters as much as the width, because the harm needs a
-# rail cap BETWEEN the two. At 320x480 the cap is 293px, so a 209px floor let
-# the card shrink to 209 and its own overflow-hidden surface cut 34px off Copy
-# command; at 320x568 the cap is 528px and nothing is squeezed at all.
+# Below 384px the card's action pair wraps onto a row of its own on top of the notes toggle's, and at the 20px setting
+# that is a whole extra row: 259px where the wide card needs 209.
+# The height matters as much as the width, because the harm needs a rail cap BETWEEN the two.
+# At 320x480 the cap is 293px, so a 209px floor let the card shrink to 209 and its own overflow-hidden surface cut 34px
+# off Copy command;
+# at 320x568 the cap is 528px and nothing is squeezed at all.
 FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
-# appearance-custom-store.ts: UI_FONT_SIZE_RANGE, UI_FONT_SIZE_CSS_BASE and the
-# persist version. Kept in step by test_update_release_notes.py.
+# appearance-custom-store.ts: UI_FONT_SIZE_RANGE, UI_FONT_SIZE_CSS_BASE and the persist version.
+# Kept in step by test_update_release_notes.py.
 UI_FONT_SIZE_MAX = 20
 UI_FONT_SIZE_DEFAULT = 15
 UI_FONT_SIZE_CSS_BASE = 16
@@ -528,9 +498,8 @@ MEASURE = """
 """
 
 
-# Scroll each box into the rail's view and report what is still hidden. The
-# rail is the last resort the cards fall back on, so "below the fold" is a pass
 # and "cannot be brought into view" is the failure.
+# Scroll each box into the rail's view and report what is still hidden.
 REACH = """
 (selectors) => {
   const q = (sel) => document.querySelector(sel);
@@ -581,9 +550,7 @@ def overlap(a: dict | None, b: dict | None) -> float:
 
 
 def inside(box: dict | None, viewport: dict) -> bool:
-    # A missing box is not "inside": clip() returns None for an element that is
-    # entirely hidden, and reading that as a pass would make this whole suite
-    # green on the one failure it exists to catch.
+    # A missing box is not "inside":
     if not box:
         return False
     return (
@@ -609,8 +576,7 @@ def measure(page, label: str) -> dict:
         f"card={facts['card']} llama={facts['llama']}",
     )
     for name in ("card", "llama", "footer", "toggle"):
-        # As shown, where the rail can hide it; as measured otherwise. A card
-        # entirely under the fold is None here and is the reach check's to make.
+        # As shown, where the rail can hide it;
         shown = facts.get(f"{name}Shown", facts[name]) if name in ("card", "llama") else facts[name]
         if name in ("card", "llama") and shown is None:
             continue
@@ -619,8 +585,7 @@ def measure(page, label: str) -> dict:
             inside(shown, view),
             f"{name}={shown} viewport={view}",
         )
-    # Anything the rail is holding under its fold has to come back when the
-    # rail is scrolled to it, and land on screen when it does.
+    # Anything the rail is holding under its fold has to come back when the rail is scrolled to it, and land on screen
     reach = page.evaluate(REACH, REACHABLE)
     for name, seen in (reach or {}).items():
         if seen is None:
@@ -634,13 +599,10 @@ def measure(page, label: str) -> dict:
     if facts["cardLayoutWidth"] is not None:
         # 448px is the card's max width and 2rem the viewport inset it keeps.
         want = min(448, view["width"] - 32)
-        # Asked of the layout box, not the painted one. A scrollbar that takes
-        # its width out of the rail's content box shrinks the card's layout
-        # width, which is the whole subject here; the card's enter animation
-        # (opacity 0, y 12, scale .96 -- see components/*/update-banner.tsx)
-        # shrinks only the painted one, and measuring that raced the animation
-        # rather than the scrollbar. 448 * 0.96 = 430.08, which is exactly the
-        # 430 this reported on the WebKit leg while its own borderBox read 448
+        # Asked of the layout box, not the painted one.
+        # see components/*/update-banner.tsx) shrinks only the painted one, and measuring that raced the animation
+        # rather than the scrollbar.
+        # 448 * 0.96 = 430.08, which is exactly the 430 this reported on the WebKit leg while its own borderBox read 448
         # and railGutter read 0.
         check(
             f"{label}: the card keeps its full width whatever the scrollbar does",
@@ -652,27 +614,22 @@ def measure(page, label: str) -> dict:
         )
     if facts["railScrolls"] is not None:
         scrolls = facts["railScrolls"]
-        # Click-through in every state, scrolling or not. It used to take pointer
-        # input while it scrolled, which needed the JS that also placed it. The
-        # fold is reached by wheeling over a card, whose nearest scrollable
-        # ancestor is the rail, or by focus, which scrolls it into view.
         check(
             f"{label}: the rail stays click-through",
             facts["railPointerEvents"] == "none",
             f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']} "
             f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
-        # The gutter is the widest part of the rail that no card covers, so it
-        # is where a swallowed click would show up first.
         check(
             f"{label}: the rail's gutter never swallows a click",
             facts["gutterIsRail"] is False,
             f"scrolls={scrolls} gutterIsRail={facts['gutterIsRail']}",
         )
-    # The notes are allowed to yield all of their height, and do; the controls
-    # are not, and a card clipped to nothing is the failure being tested for.
+    # The notes are allowed to yield all of their height, and do;
     for name in ("card", "llama", "toggle", "snooze", "copy"):
         box = facts[name]
+        # Click-through in every state, scrolling or not.
+        # The gutter is the widest part of the rail that no card covers, so it is where a swallowed click would show up
         check(
             f"{label}: the card does not clip its own {name} away",
             box is not None and box["height"] > 1.0 and box["width"] > 1.0,
@@ -733,16 +690,14 @@ def settle_stack(
 
 def boot(page, path: str) -> None:
     page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
-    # Both cards are on a timer, so wait for them rather than for the worst case: this
-    # step runs 24 times and the job it shares has minutes, not tens of minutes, to
-    # spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed script, llama.cpp
-    # keeps its 1s, and both still mount after first paint.
+    # Both cards are on a timer, so wait for them rather than for the worst case: this step runs 24 times and the job it
+    # shares has minutes, not tens of minutes, to spare.
+    # The app card's 5s is shortened to E2E_DELAY_MS by the seed script, llama.cpp keeps its 1s, and both still mount
     for testid in ("web-update-banner", "llama-update-banner"):
         try:
             page.wait_for_selector(f'[data-testid="{testid}"]', state = "attached", timeout = SETTLE_MS)
         except PlaywrightTimeoutError:
-            # Let the caller's own checks report the missing card; a bare
-            # timeout here would say nothing about which one or where.
+            # Let the caller's own checks report the missing card;
             pass
     # The banners animate in, and a box measured mid-transition is not the box.
     page.wait_for_timeout(SETTLED_MS)
@@ -830,8 +785,7 @@ def exercise_llama_changelog(page, label: str) -> None:
 
 def main() -> int:
     wait_for_health(BASE, timeout = 60.0, info = info)
-    # OLD is already NEW on a rerun, or when an earlier suite in the same job
-    # rotated it, and that login fails before the rotation below can be skipped.
+    # OLD is already NEW on a rerun, or when an earlier suite in the same job rotated it, and that login fails before
     try:
         token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
     except urllib.error.HTTPError as exc:
@@ -846,7 +800,6 @@ def main() -> int:
                 token,
             )
         except urllib.error.HTTPError as exc:
-            # Already rotated by a previous run on the same install.
             if exc.code not in (400, 401, 403):
                 raise
     session = api("/api/auth/login", {"username": "unsloth", "password": NEW})
@@ -854,14 +807,7 @@ def main() -> int:
     # add_init_script takes raw source, not a function to call.
     seed_js = (
         "(() => {"
-        # The app arms its update check on a 5s timer so the request stays off the
-        # critical path at launch. This suite boots a fresh page for every case it
-        # measures and waits out that timer each time before the card it is measuring
-        # exists, which was over two and a half minutes of a five minute step. The
-        # override is read at mount from a global that exists only here, so the shortened
-        # delay reaches no build and no browser but this one, and it stays a timer rather
-        # than becoming synchronous, because a card that mounts on the first frame would
-        # not exercise the late-mount reflow this file is about.
+        # The app arms its update check on a 5s timer so the request stays off the critical path at launch.
         f"  window.{E2E_DELAY_GLOBAL} = {E2E_DELAY_MS};"
         f"  localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"
         f"  localStorage.setItem('unsloth_refresh_token', {json.dumps(session.get('refresh_token', ''))});"
@@ -959,10 +905,8 @@ def main() -> int:
             llama_payload[0] = LLAMA_STATUS
             context.close()
 
-        # The loaded models indicator, switched on. It is the last child of the
-        # rail, so it lands on the corner, and its arrival used to re-measure
-        # the rail and move the whole stack. That is the case to check.
         # #8346 ships it off by default, so nothing above this point sees it.
+        # The loaded models indicator, switched on.
         for width, height in INDICATOR_VIEWPORTS:
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
@@ -972,9 +916,6 @@ def main() -> int:
             context.add_init_script(
                 "localStorage.setItem('unsloth_show_loaded_models_indicator', 'true');"
             )
-            # The card only exists when something is loaded, so the preference
-            # alone would leave the rail exactly as it was and this whole pass
-            # would agree with itself about nothing.
             for pattern, payload in (
                 ("**/api/studio/update-status*", UPDATE_STATUS),
                 ("**/api/studio/release-notes*", RELEASE_NOTES),
@@ -989,8 +930,6 @@ def main() -> int:
             page = context.new_page()
             boot(page, "/")
             page.wait_for_selector("text=Loaded models", timeout = 30_000)
-            # A third card changes the rail's height, which is what used to
-            # move it; give the layout a frame to prove it does not.
             settle_stack(page)
             measure(page, f"{width}x{height} with the models indicator")
             seen = page.evaluate(RAIL_CORNER)
@@ -1022,11 +961,9 @@ def main() -> int:
             browser.close()
             return 1 if failures else 0
 
-        # One page, many window sizes. Every check the core matrix runs, at
-        # every resolution in RESIZE_SWEEP, for the price of one boot: the
-        # cards are already mounted and a resize is all a maximise or a restore
-        # ever is. It also exercises the path a fresh load never does, where
-        # the placement has to re-measure rather than measure once.
+        # One page, many window sizes.
+        # Every check the core matrix runs, at every resolution in RESIZE_SWEEP, for the price of one boot: the cards
+        # are already mounted and a resize is all a maximise or a restore ever is.
         context = browser.new_context(
             viewport = {"width": RESIZE_SWEEP[0][0], "height": RESIZE_SWEEP[0][1]},
             reduced_motion = "reduce",
@@ -1043,9 +980,8 @@ def main() -> int:
         boot(page, "/")
         for width, height in RESIZE_SWEEP:
             page.set_viewport_size({"width": width, "height": height})
-            # Long enough for the ResizeObserver, the placement it feeds and the
-            # reflow that follows. Short because nothing is being fetched.
             page.wait_for_timeout(RESIZE_SETTLE_MS)
+            # A third card changes the rail's height, which is what used to move it;
             settle_stack(page)
             measure(page, f"{width}x{height} resized")
         page.set_viewport_size({"width": 1280, "height": 830})
@@ -1053,13 +989,11 @@ def main() -> int:
         page.screenshot(path = str(ART / "resize-sweep-end.png"))
 
         # Parked small and brought back. A minimised window cannot be
-        # photographed, but the restore is where a cached measurement would
-        # show, and the claim is that it lands where a fresh load of the same
-        # size does rather than merely looking tidy.
         for (small_w, small_h), (back_w, back_h) in RESTORE_CYCLES:
             page.set_viewport_size({"width": small_w, "height": small_h})
             page.wait_for_timeout(RESIZE_SETTLE_MS)
             page.set_viewport_size({"width": back_w, "height": back_h})
+            # Long enough for the ResizeObserver, the placement it feeds and the reflow that follows.
             page.wait_for_timeout(RESIZE_SETTLE_MS)
             restored = measure(page, f"{back_w}x{back_h} restored from {small_w}x{small_h}")
             fresh_context = browser.new_context(
@@ -1067,6 +1001,7 @@ def main() -> int:
                 reduced_motion = "reduce",
             )
             fresh_context.add_init_script(seed_js)
+            # The card only exists when something is loaded, so the preference alone would leave the rail exactly as it
             for pattern, payload in (
                 ("**/api/studio/update-status*", UPDATE_STATUS),
                 ("**/api/studio/release-notes*", RELEASE_NOTES),
@@ -1090,17 +1025,9 @@ def main() -> int:
             fresh_context.close()
         context.close()
 
-        # Settings > Appearance scales the type, and the card's floor is
-        # written against that scale rather than measured once at the default.
-        # At the 20px maximum the action row wraps at every card width, so a
-        # default-font floor left the buttons clipped inside the card.
-        #
-        # Set on the server and put back in a finally, because the appearance
-        # store syncs up: leaving it at 20px hands every later suite in this job
-        # an Unsloth whose type is not the default, and they will not notice.
-        # Put BACK what was there, which is not always the default: run this
-        # against your own Unsloth and an unconditional reset would take your
-        # Appearance setting with it.
+        # Settings > Appearance scales the type, and the card's floor is written against that scale rather than measured
+        # once at the default.
+        # Put BACK what was there, which is not always the default: run this against your own Unsloth and an
         was = read_ui_font_size(session["access_token"])
         set_ui_font_size(session["access_token"], UI_FONT_SIZE_MAX)
         try:

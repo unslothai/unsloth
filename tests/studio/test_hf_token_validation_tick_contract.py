@@ -237,8 +237,7 @@ def test_accepted_training_start_stays_locked_during_preparation():
     pending = runtime_store.split("export function isTrainingStartPending", 1)[1]
     pending = pending.split("const initialState", 1)[0]
     assert "stopRequested" in pending
-    # Per term rather than one exact string: scoped cancellation added the
-    # startRequestId disjunct, and formatting of the expression is not the contract.
+    # Per term rather than one exact string:
     for term in (
         "state.stopRequested",
         "state.isStarting",
@@ -309,8 +308,7 @@ def test_training_start_aborts_when_semantic_config_or_token_changes():
     assert "payload.model_local_path =" not in snapshot
     assert "payload.dataset_known_cached =" not in snapshot
     assert "payload.dataset_local_path =" not in snapshot
-    # The identity shape now lives in createTrainingStartInputIdentity, so assert the
-    # snapshot delegates to it and that the identity still normalizes and carries the flags.
+    # The identity shape now lives in createTrainingStartInputIdentity, so assert the snapshot delegates to it and that
     assert "createTrainingStartInputIdentity(" in snapshot
     assert "normalizeTrainingStartPayloadForComparison(" in start_inputs
     assert "isUntrainableModelFormat(payload.model_format)" in start_inputs
@@ -412,8 +410,7 @@ def test_superseded_start_cleanup_scopes_both_backend_mutations():
     reset_transport = api.split("export async function resetTraining", 1)[1].split(
         "export async function getTrainingStatus", 1
     )[0]
-    # The scope is no longer conditional: resetTraining takes a RequiredTrainingJobScope
-    # and always sends the body, which is strictly stronger than the old hasScope branch.
+    # The scope is no longer conditional:
     assert "scope: RequiredTrainingJobScope" in reset_transport
     assert "body: scopedTrainingBody({}, scope)" in reset_transport
 
@@ -488,8 +485,7 @@ def test_training_stop_failure_preserves_the_runtime_latch():
     actions = TRAINING_ACTIONS.read_text(encoding = "utf-8")
     stop = actions.split("const stopTrainingRun = useCallback", 1)[1]
     stop = stop.split("const resumeTrainingRunFromHistory", 1)[0]
-    # Scoped cancellation moved the request behind a try/catch, so slice on that rather
-    # than on the first sync call, which is now the scope === null early return.
+    # Scoped cancellation moved the request behind a try/catch, so slice on that rather than on the first sync call
     attempt = stop.split("try {", 1)[1].split("} catch (error) {", 1)[0]
     failure = stop.split("} catch (error) {", 1)[1]
 
@@ -502,8 +498,7 @@ def test_training_stop_failure_preserves_the_runtime_latch():
     assert "currentRuntime.jobId === scope.jobId" in stop
     assert "currentRuntime.resetGeneration === expectedResetGeneration" in stop
 
-    # The latch survives a failed *job* stop. The start branch clears it deliberately so a
-    # pending-start cancel stays retryable, so assert per branch, not over the whole body.
+    # The latch survives a failed *job* stop.
     start_branch = failure.split('if (scope.kind === "start") {', 1)[1].split("} else {", 1)[0]
     job_branch = failure.split("} else {", 1)[1]
     assert "currentRuntime.setStopRequested(false)" in start_branch
@@ -547,8 +542,8 @@ def test_cancel_invalidates_fresh_and_resume_preflight_leases():
     stop = actions.split("const stopTrainingRun = useCallback", 1)[1].split(
         "const resumeTrainingRunFromHistory", 1
     )[0]
-    # Only the pending-start branch may clear the latch, and only to keep that cancel
     # retryable; a failed job stop must still leave it set.
+    # Only the pending-start branch may clear the latch, and only to keep that cancel retryable;
     job_branch = stop.split("const message =", 1)[1].split("} else {", 1)[1]
     assert "setStopRequested(false)" not in job_branch
 

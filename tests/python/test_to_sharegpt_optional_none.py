@@ -4,9 +4,8 @@ from pathlib import Path
 
 
 def _load_formatter_builders():
-    # Extract _parse_combined_prompt and _create_formatter without importing
-    # unsloth (importing unsloth needs unsloth_zoo / a GPU). Both are pure
-    # Python and only use the `re` module.
+    # Extract _parse_combined_prompt and _create_formatter without importing unsloth (importing unsloth needs
+    # unsloth_zoo / a GPU).
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     wanted = {"_parse_combined_prompt", "_create_formatter"}
@@ -33,8 +32,8 @@ def _render(merged_prompt, columns, batch):
 
 
 def test_optional_block_missing_second_column_does_not_render_none():
-    # A [[...]] block may reference several columns; only the first gates the
     # block. A later column that is None must not render as the literal "None".
+    # A [[...]] block may reference several columns;
     merged_prompt = "Location: [[{city}, {country}]] end"
     out = _render(
         merged_prompt,
@@ -56,8 +55,7 @@ def test_optional_block_all_columns_present_unchanged():
 
 
 def test_optional_block_gating_column_empty_is_dropped():
-    # When the gating (first) column is empty the whole block is omitted; this
-    # behaviour is unchanged by the None coercion.
+    # When the gating (first) column is empty the whole block is omitted;
     merged_prompt = "Location: [[{city}, {country}]] end"
     out = _render(
         merged_prompt,
@@ -68,8 +66,6 @@ def test_optional_block_gating_column_empty_is_dropped():
 
 
 def test_single_column_optional_block_gated_out_on_none():
-    # Single-column blocks were already gated correctly (the sole column is the
-    # gate); confirm they stay unaffected.
     merged_prompt = "Name: [[{name}]]!"
     out = _render(merged_prompt, ["name"], {"name": [None, "Bob"]})
     assert out == ["Name: !", "Name: Bob!"]
@@ -77,8 +73,6 @@ def test_single_column_optional_block_gated_out_on_none():
 
 def test_required_column_none_does_not_render_none():
     # A required (non-[[...]]) column that is None must not render as the
-    # literal "None" either; coercion happens at the row source, so both the
-    # required and optional branches are covered.
     merged_prompt = "Location: {city}, {country} end"
     out = _render(
         merged_prompt,
@@ -98,8 +92,7 @@ def test_optional_block_falsy_but_present_gating_value_still_renders():
 
 
 def _load_to_sharegpt():
-    # Same trick as above: pull to_sharegpt and the two helpers it calls out of
-    # the source without importing unsloth.
+    # Same trick as above: pull to_sharegpt and the two helpers it calls out of the source without importing unsloth.
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     wanted = {"_parse_combined_prompt", "_create_formatter", "to_sharegpt"}
@@ -124,9 +117,6 @@ def _alpaca():
 
 
 def test_default_merged_prompt_keeps_the_input_column():
-    # merged_prompt is optional: without one, merged_column_name names a column
-    # that is already there. The merging map used to run anyway and overwrite it
-    # with empty strings, so every human turn came out blank.
     to_sharegpt = _load_to_sharegpt()
     converted = to_sharegpt(_alpaca())
     users = [row["conversations"][0]["value"] for row in converted]
@@ -136,6 +126,7 @@ def test_default_merged_prompt_keeps_the_input_column():
 def test_default_merged_prompt_with_renamed_columns():
     from datasets import Dataset
 
+    # merged_prompt is optional: without one, merged_column_name names a column that is already there.
     to_sharegpt = _load_to_sharegpt()
     dataset = Dataset.from_dict({"Query": ["123?"], "Answer": ["456"]})
     converted = to_sharegpt(

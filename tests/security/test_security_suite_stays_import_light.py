@@ -57,8 +57,7 @@ def _module_level_statements(body):
     Function bodies are excluded; a CLASS body is not, since it runs at import."""
     for node in body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            # The BODY is deferred; decorators, defaults, annotations and bases are
-            # evaluated at import. Wrapped in an `Expr` for the walker below.
+            # The BODY is deferred; decorators, defaults, annotations and bases are evaluated at import.
             for part in _definition_time_expressions(node):
                 yield ast.Expr(value = part)
             if isinstance(node, ast.ClassDef):
@@ -106,8 +105,7 @@ def _definition_time_expressions(node):
         yield node.returns
 
 
-# Helpers that load with no `ast.Import` node, and the module each is imported FROM,
-# since a rename makes the spelling at the call site insufficient.
+# Helpers that load with no `ast.Import` node, and the module each is imported FROM, since a rename makes the spelling
 _LOADER_ORIGINS = {
     "import_module": "importlib",
     "__import__": "builtins",
@@ -139,9 +137,7 @@ def _scope_bindings(scope):
 def _settled_aliases(bindings, inherited):
     """Names bound to one of those helpers, by `from <origin> import <helper> as
     <alias>` or `alias = <helper>`. Nothing else is guessed at."""
-    # alias -> the helper it NAMES, so a renamed `import_module` is not read as a
-    # renamed `importorskip`. Last binding wins, and a binding to a non-loader takes
-    # the name out. Repeated until settled, for a chain written out of order.
+    # alias -> the helper it NAMES, so a renamed `import_module` is not read as a renamed `importorskip`.
     aliases: dict = dict(inherited)
     for _round in range(_ALIAS_ROUNDS):
         previous = aliases
@@ -330,7 +326,6 @@ def _guarded_roots(node, loaders):
         elif isinstance(statement, ast.AnnAssign):
             held = statement.value
         if not isinstance(held, ast.Call):
-            # An import ABOVE the guard is reached first, so the scan stops here.
             if _reaches_a_heavy_dependency(statement, loaders):
                 break
             continue
@@ -341,9 +336,10 @@ def _guarded_roots(node, loaders):
             if isinstance(function, ast.Attribute)
             else (function.id if isinstance(function, ast.Name) else "")
         )
-        # The alias's ORIGIN decides: an importlib alias lives in `loaders` too.
+        # The alias's ORIGIN decides:
         if not _is_pytest_skip(attribute, loaders):
-            # The same stop, for calls: a non-guard call may be the load itself.
+            # An import ABOVE the guard is reached first, so the scan stops here.
+            # The same stop, for calls:
             if _reaches_a_heavy_dependency(statement, loaders):
                 break
             continue
@@ -379,7 +375,7 @@ def test_the_workflow_still_runs_the_security_suite():
 def test_heavy_imports_are_declared_to_the_light_runner():
     ignored = _ignored_by_the_workflow()
     offenders = {}
-    # conftest.py and __init__.py too: no per-file --ignore can cover them.
+    # conftest.py and __init__.py too:
     support = [p for p in (_HERE / "conftest.py", _HERE / "__init__.py") if p.exists()]
     for path in sorted(_HERE.glob("test_*.py")) + support:
         heavy = _module_level_heavy_imports(path)
@@ -587,7 +583,7 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
                 for alias in node.names:
                     if alias.name.startswith("unsloth.models."):
                         protected.add(alias.name.split(".")[-1] + ".py")
-            # `__import__("unsloth.models.loader", ...)` too: a suite reads it so.
+            # `__import__("unsloth.models.loader", ...)` too:
             if isinstance(node, ast.Call) and node.args:
                 function = node.func
                 name = (

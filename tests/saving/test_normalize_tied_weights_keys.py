@@ -48,7 +48,7 @@ def test_empty_containers_become_dict():
     root._tied_weights_keys = []
     mixer._tied_weights_keys = ()
     _coerce_tied_weights_keys_to_dict(root)
-    # transformers skips only None; an empty list still hits .keys().
+    # transformers skips only None;
     assert root._tied_weights_keys == {} and mixer._tied_weights_keys == {}
 
 
@@ -59,8 +59,8 @@ def test_none_and_existing_dict_are_left_unchanged():
     mixer._tied_weights_keys = original
     originals = _coerce_tied_weights_keys_to_dict(root)
     assert root._tied_weights_keys is None
-    assert mixer._tied_weights_keys is original  # untouched, not rebuilt
-    assert originals == []  # nothing to restore
+    assert mixer._tied_weights_keys is original
+    assert originals == []
 
 
 def test_model_without_modules_method_does_not_raise():
@@ -81,7 +81,6 @@ def test_decorator_coerces_during_save_then_restores():
         return "ok"
 
     assert save(root) == "ok"
-    # Dict form was visible to the save, list form restored afterwards.
     assert seen["keys"] == {"lm_head.weight": "lm_head.weight"}
     assert mixer._tied_weights_keys == ["lm_head.weight"]
 
@@ -100,8 +99,7 @@ def test_decorator_restores_on_exception():
 
 
 def test_decorator_finds_model_in_kwargs_and_positional():
-    # unsloth_save_model / unsloth_generic_save pass model= as a keyword; the gguf path
-    # binds it as the first positional (method ``self``). Both must be coerced.
+    # unsloth_save_model / unsloth_generic_save pass model= as a keyword;
     for call in (lambda f, r: f(model = r), lambda f, r: f(r)):
         root, mixer = _build_tree()
         mixer._tied_weights_keys = ["w.weight"]

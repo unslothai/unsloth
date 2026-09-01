@@ -57,8 +57,7 @@ LLAMA_DESCRIPTOR = core.ComponentDescriptor(
     sha256_asset_name = "llama-prebuilt-sha256.json",
     metadata_filename = "UNSLOTH_LLAMA_PREBUILT_INFO.json",
     user_agent = "unsloth-studio-llama-prebuilt",
-    # A GPU-selection miss reports "no prebuilt" so the caller can fall back to
-    # a source build instead of silently degrading to CPU.
+    # A GPU-selection miss reports "no prebuilt" so the caller can fall back to a source build instead of silently
     fallback_backend = None,
     server_binary_name = lambda host: "llama-server",
     runtime_bin_dir = lambda install_dir, host: install_dir / "build" / "bin",
@@ -71,7 +70,7 @@ class Component:
     def __init__(self, descriptor):
         self.descriptor = descriptor
         self.namespace = core.component_namespace(descriptor)
-        self.namespace["log"] = lambda message: None  # keep test output quiet
+        self.namespace["log"] = lambda message: None
         self.ops = core.ModuleOps(self.namespace)
 
     @property
@@ -114,8 +113,8 @@ def make_host(
             rocm_gfx = rocm_gfx,
             macos_version = macos_version,
         )
-    # Descriptor-only component: the core default host_platform_tokens hook
-    # reads .os_token/.arch_token off a plain host object.
+    # Descriptor-only component: the core default host_platform_tokens hook reads .os_token/.arch_token off a plain host
+    # object.
     return SimpleNamespace(
         os_token = os_token,
         arch_token = arch_token,
@@ -153,7 +152,6 @@ def manifest_for(component, artifacts, **extra):
     return payload
 
 
-# ── Manifest parsing ──
 def test_parse_manifest_normalizes(component):
     manifest = component.ops.parse_manifest(
         manifest_for(component, [artifact(), "not-a-dict", {"os": "linux"}]), label = "m"
@@ -188,7 +186,6 @@ def test_parse_manifest_rejects_non_object(component):
         )
 
 
-# ── Selection matrix ──
 def test_select_cpu_first_match(component):
     manifest = component.ops.parse_manifest(
         manifest_for(
@@ -214,9 +211,7 @@ def test_select_respects_os_arch(component):
 
 
 def test_fallback_policy_differs_per_descriptor(component):
-    # No asset for the requested backend: whisper degrades to the CPU asset of
-    # the same release, the llama-flavored descriptor reports no prebuilt
-    # (source-build fallback).
+    # No asset for the requested backend:
     manifest = component.ops.parse_manifest(
         manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
     )
@@ -291,7 +286,6 @@ def _arm_mac_host(component, macos_version):
 
 
 def test_macos_min_os_filters_to_compatible_bundle(component):
-    # host 14.0 can't load the 15.0 bundle; the 13.0 bundle is picked instead.
     manifest = component.ops.parse_manifest(
         manifest_for(
             component,
@@ -307,7 +301,7 @@ def test_macos_min_os_filters_to_compatible_bundle(component):
 
 
 def test_macos_min_os_unknown_host_version_keeps_artifact(component):
-    # Unknown host macOS version -> defer to runtime validation, don't reject.
+    # host 14.0 can't load the 15.0 bundle; the 13.0 bundle is picked instead.
     manifest = component.ops.parse_manifest(
         manifest_for(component, [_metal_artifact("metal-new.tar.gz", "macos-15.0")]), label = "m"
     )
@@ -317,30 +311,30 @@ def test_macos_min_os_unknown_host_version_keeps_artifact(component):
 
 def test_macos_min_os_accepts_bare_version_format(component):
     # A bare "14.0" (no 'macos-' prefix) must still parse, for forward-compat.
+    # Unknown host macOS version -> defer to runtime validation, don't reject.
     manifest = component.ops.parse_manifest(
         manifest_for(component, [_metal_artifact("metal.tar.gz", "14.0")]), label = "m"
     )
     host = _arm_mac_host(component, (13, 0))
-    assert component.ops.select_artifact(manifest, host, "metal") is None  # 13.0 < 14.0
+    assert component.ops.select_artifact(manifest, host, "metal") is None
 
 
 def test_macos_min_os_ok_helper_handles_prefix_and_bare(component):
     host14 = _arm_mac_host(component, (14, 0))
-    # The live manifest format is 'macos-<ver>'; the prefix must be stripped.
+    # The live manifest format is 'macos-<ver>';
     assert component.ops.macos_min_os_ok(host14, "macos-14.0") is True
     assert component.ops.macos_min_os_ok(host14, "macos-15.0") is False
-    assert component.ops.macos_min_os_ok(host14, "13.3") is True  # bare also parses
-    assert component.ops.macos_min_os_ok(host14, None) is True  # unknown -> defer
+    assert component.ops.macos_min_os_ok(host14, "13.3") is True
+    assert component.ops.macos_min_os_ok(host14, None) is True
     host_unknown = _arm_mac_host(component, None)
     assert component.ops.macos_min_os_ok(host_unknown, "macos-15.0") is True
 
 
-# ── Backend resolution ──
 def test_resolve_backend_auto_and_validation(component):
     gpu_host = make_host(component, has_usable_nvidia = True)
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = False) == "cuda"
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = True) == "cpu"
-    # --cpu-fallback wins over an explicit backend too.
+    # cpu-fallback wins over an explicit backend too.
     assert component.ops.resolve_backend(gpu_host, "cuda", cpu_fallback = True) == "cpu"
     # An explicit supported backend passes through untouched.
     assert component.ops.resolve_backend(gpu_host, "vulkan", cpu_fallback = False) == "vulkan"
@@ -359,7 +353,6 @@ def test_resolve_backend_auto_and_validation(component):
         component.ops.resolve_backend(gpu_host, "tpu", cpu_fallback = False)
 
 
-# ── Checksum index: fail closed ──
 def _index_for(
     component,
     tag = "v1",
@@ -424,7 +417,6 @@ def test_expected_sha256_manifest_disagreement_fails_closed(component):
     )
 
 
-# ── Extraction guards ──
 def test_extract_archive_rejects_traversal(tmp_path):
     archive = tmp_path / "evil.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
@@ -561,7 +553,6 @@ def test_restore_tar_exec_bits(tmp_path):
     assert extracted.stat().st_mode & 0o111
 
 
-# ── Resolver payload ──
 def _fake_release(component, artifacts):
     ns = component.namespace
     manifest = component.ops.parse_manifest(manifest_for(component, artifacts), label = "m")
@@ -629,7 +620,6 @@ def test_emit_resolver_output_formats(capsys):
     assert json.loads(capsys.readouterr().out) == {"prebuilt_available": False}
 
 
-# ── Marker / fingerprint ──
 def test_install_fingerprint_is_stable_and_sensitive(component):
     kwargs = dict(
         published_repo = component.descriptor.published_repo,
@@ -662,12 +652,11 @@ def test_write_and_match_marker(component, tmp_path):
         backend = "cpu",
         asset_sha256 = "0" * 64,
     )
-    # No marker on disk yet -> not a match.
     assert not component.ops.existing_install_matches(install_dir, host, selection)
     bin_dir = component.ops.runtime_bin_dir(install_dir, host)
     bin_dir.mkdir(parents = True)
     component.ops.write_prebuilt_metadata(install_dir, selection)
-    # Marker alone is not enough: the server binary must exist too.
+    # Marker alone is not enough:
     assert not component.ops.existing_install_matches(install_dir, host, selection)
     (bin_dir / component.ops.server_binary_name(host)).write_bytes(b"bin")
     marker = json.loads((install_dir / component.descriptor.metadata_filename).read_text())
@@ -707,7 +696,7 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
         linked_from = "/llama/build/bin",
         linked_libraries = ("libggml.so.0", "libggml-base.so.0"),
     )
-    assert slim.fingerprint() == selection.fingerprint()  # no change to the computation
+    assert slim.fingerprint() == selection.fingerprint()
 
     fat_dir, slim_dir = tmp_path / "fat", tmp_path / "slim"
     fat_dir.mkdir(), slim_dir.mkdir()
@@ -730,8 +719,7 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
 
 
 def test_core_slim_hooks_default_inert(component, tmp_path):
-    # A component without its own hooks stages nothing extra and adds no
-    # resolver fields (llama's probe output must stay byte-identical).
+    # A component without its own hooks stages nothing extra and adds no resolver fields (llama's probe output must
     assert component.ops.resolver_payload_extra({"install_kind": "slim"}) == {}
     host = make_host(component)
     selection = object()
@@ -761,9 +749,6 @@ def test_busy_activation_restores_previous_install(monkeypatch, tmp_path):
     assert not list(tmp_path.glob(".whisper.cpp.old-*"))
 
 
-# ── Host/GPU token helpers (component-independent core functions) ──
-# Value tables moved verbatim from the llama characterization suite; these are
-# pure functions with no descriptor sensitivity, so they run unparameterized.
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -785,9 +770,9 @@ def test_normalize_compute_cap(value, expected):
 @pytest.mark.parametrize(
     "values,expected",
     [
-        (["8.6", "86", "8.6"], ["86"]),  # deduplication
-        (["9.0", "7.5", "8.6"], ["75", "86", "90"]),  # numeric sort
-        (["8.6", "bad", "", "7.5"], ["75", "86"]),  # drops invalid
+        (["8.6", "86", "8.6"], ["86"]),
+        (["9.0", "7.5", "8.6"], ["75", "86", "90"]),
+        (["8.6", "bad", "", "7.5"], ["75", "86"]),
         ([], []),
     ],
 )
@@ -795,6 +780,7 @@ def test_normalize_compute_caps(values, expected):
     assert core.normalize_compute_caps(values) == expected
 
 
+# Host/GPU token helpers (component-independent core functions) ── Value tables moved verbatim from the llama
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -834,12 +820,12 @@ _GPU_ROWS = [
 @pytest.mark.parametrize(
     "visible,expected_indices",
     [
-        (None, [0, 1, 2]),  # no filter returns all
+        (None, [0, 1, 2]),
         ([], []),
-        (["0", "2"], [0, 2]),  # filter by index
-        (["gpu-bbb"], [1]),  # UUID match is case insensitive
-        (["0", "0"], [0]),  # same device requested twice is deduplicated
-        (["99"], []),  # unknown token matches nothing
+        (["0", "2"], [0, 2]),  # filter by index UUID match is case insensitive same device requested twice is
+        (["gpu-bbb"], [1]),
+        (["0", "0"], [0]),
+        (["99"], []),
     ],
 )
 def test_select_visible_gpu_rows(visible, expected_indices):
@@ -854,7 +840,7 @@ def test_select_visible_gpu_rows(visible, expected_indices):
         ((11, 8), []),
         ((12, 4), ["cuda12"]),
         ((13, 0), ["cuda13", "cuda12"]),
-        ((14, 0), ["cuda14", "cuda13", "cuda12"]),  # future major derives lines
+        ((14, 0), ["cuda14", "cuda13", "cuda12"]),
     ],
 )
 def test_compatible_linux_runtime_lines(driver, expected):
@@ -881,26 +867,26 @@ def _caps_host(caps):
 
 
 def test_host_is_blackwell_includes_datacenter_parts():
-    assert core.host_is_blackwell(_caps_host(["10.0"])) is True  # B200 sm_100
-    assert core.host_is_blackwell(_caps_host(["10.3"])) is True  # B300 sm_103
-    assert core.host_is_blackwell(_caps_host(["12.0"])) is True  # RTX 50 sm_120
-    assert core.host_is_blackwell(_caps_host(["12.1"])) is True  # DGX Spark sm_121
-    assert core.host_is_blackwell(_caps_host(["9.0"])) is False  # Hopper
-    assert core.host_is_blackwell(_caps_host(["8.0"])) is False  # Ampere
-    assert core.host_is_blackwell(_caps_host(["9.0", "10.0"])) is True  # highest cap wins
+    assert core.host_is_blackwell(_caps_host(["10.0"])) is True
+    assert core.host_is_blackwell(_caps_host(["10.3"])) is True
+    assert core.host_is_blackwell(_caps_host(["12.0"])) is True
+    assert core.host_is_blackwell(_caps_host(["12.1"])) is True
+    assert core.host_is_blackwell(_caps_host(["9.0"])) is False
+    assert core.host_is_blackwell(_caps_host(["8.0"])) is False
+    assert core.host_is_blackwell(_caps_host(["9.0", "10.0"])) is True
 
 
 def test_blackwell_min_toolkit_is_sm_aware():
     # Family floor is 12.8; sm_103/sm_121 (no native target before 12.9) lift it.
     f = core.blackwell_min_toolkit_for_host
-    assert f(_caps_host(["10.0"])) == (12, 8)  # B200
-    assert f(_caps_host(["12.0"])) == (12, 8)  # RTX 50
-    assert f(_caps_host(["10.3"])) == (12, 9)  # B300
-    assert f(_caps_host(["12.1"])) == (12, 9)  # DGX Spark
-    assert f(_caps_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
+    assert f(_caps_host(["10.0"])) == (12, 8)
+    assert f(_caps_host(["12.0"])) == (12, 8)
+    assert f(_caps_host(["10.3"])) == (12, 9)
+    assert f(_caps_host(["12.1"])) == (12, 9)
+    assert f(_caps_host(["10.0", "10.3"])) == (12, 9)
 
 
-# ── The ops seam ──
+# The ops seam ──
 def test_module_ops_prefers_module_globals_over_core_defaults(component):
     ns = dict(component.namespace)
     calls = []

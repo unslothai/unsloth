@@ -66,9 +66,9 @@ def _working_tensorflow(tmp_path):
     return site
 
 
-# Every variable Transformers reads to pick a backend. `USE_TORCH` belongs here
-# too: `_tf_available` is gated on `USE_TORCH not in ENV_VARS_TRUE_VALUES`, so an
-# inherited `USE_TORCH=1` forces it False whatever is on the path.
+# Every variable Transformers reads to pick a backend.
+# `USE_TORCH` belongs here too: `_tf_available` is gated on `USE_TORCH not in ENV_VARS_TRUE_VALUES`, so an inherited
+# `USE_TORCH=1` forces it False whatever is on the path.
 _BACKEND_ENV = ("USE_TF", "USE_FLAX", "USE_TORCH", "FORCE_TF_AVAILABLE")
 
 
@@ -81,7 +81,7 @@ def _run(
     path = [str(_ROOT)] + ([str(site)] if site is not None else [])
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
-    # Importing Unsloth sets USE_TF/USE_FLAX here; each test says its own.
+    # Importing Unsloth sets USE_TF/USE_FLAX here;
     clean = {k: v for k, v in os.environ.items() if k not in _BACKEND_ENV}
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
@@ -154,7 +154,7 @@ def _guard_block():
 def test_the_backends_are_opted_out_of_before_transformers_loads():
     block = _guard_block()
     assert block is not None, "the opt-out block is gone"
-    # Run the block rather than grep its source: that tracked the spelling.
+    # Run the block rather than grep its source:
     environ = {}
     _exec_guard({}, environ)
     assert environ.get("USE_TF") == "0"
@@ -254,7 +254,6 @@ def test_the_environment_branch_honours_an_already_imported_backend():
 def test_a_broken_backend_still_loses_when_transformers_came_first(tmp_path):
     """The regression: `_tf_available` was cached True before Unsloth got a say."""
     _needs_unsloth()
-    # `getattr`, because 5.x has no such flag; "TF never loads" still asserts.
     out = _run(
         """
         import transformers
@@ -277,6 +276,7 @@ def test_a_broken_backend_still_loses_when_transformers_came_first(tmp_path):
 
 def test_the_environment_path_still_covers_the_transformers_not_loaded_case(tmp_path):
     _needs_unsloth()
+    # `getattr`, because 5.x has no such flag; "TF never loads" still asserts.
     out = _run(
         """
         import unsloth, os, sys
@@ -322,7 +322,6 @@ def test_an_imported_backend_is_not_opted_out_when_transformers_comes_later(tmp_
     out = _run_env_branch(tmp_path, "import tensorflow", site)
     assert out.returncode == 0, out.stderr[-3000:]
     assert "ENV_USE_TF None" in out.stdout, out.stdout
-    # The backend nobody is using still gets opted out.
     assert "ENV_USE_FLAX 0" in out.stdout, out.stdout
     # Only 4.x has a flag to read, and `_v4_names()` is empty without Transformers.
     if _v4_names().get("_tf_available"):
@@ -342,6 +341,7 @@ def test_a_broken_uninvolved_backend_is_still_opted_out(tmp_path):
     out = _run_env_branch(tmp_path, "", _fake_tensorflow(tmp_path))
     assert out.returncode == 0, out.stderr[-3000:]
     assert "ENV_USE_TF 0" in out.stdout, out.stdout
+    # The backend nobody is using still gets opted out.
     assert "ENV_USE_FLAX 0" in out.stdout, out.stdout
 
 
@@ -507,10 +507,10 @@ def test_the_flags_are_cleared_only_when_the_backend_is_unused():
     _exec_guard(modules, {})
     assert import_utils._tf_available is False
     assert import_utils._flax_available is False
-    # jax in play means Flax is genuinely in use.
     import_utils._flax_available = True
     _exec_guard(dict(modules, jax = object()), {})
     assert import_utils._flax_available is True
+    # jax in play means Flax is genuinely in use.
     import_utils._flax_available = True
     _exec_guard(modules, {"USE_FLAX": "yes"})
     assert import_utils._flax_available is True
@@ -518,7 +518,6 @@ def test_the_flags_are_cleared_only_when_the_backend_is_unused():
         import_utils._tf_available = True
         _exec_guard(modules, {_var: "1"})
         assert import_utils._tf_available is True, _var
-    # An imported TensorFlow is one in use.
     import_utils._tf_available = True
     _exec_guard(dict(modules, tensorflow = object()), {})
     assert import_utils._tf_available is True
@@ -545,6 +544,7 @@ def test_the_default_snapshot_is_not_an_opt_in():
     """All three default to `"AUTO"` when unset, which Transformers reads as "enable
     if installed": accepting it would make the guard a no-op on most machines."""
     import_utils = types.ModuleType("transformers.utils.import_utils")
+    # An imported TensorFlow is one in use.
     import_utils._tf_available = True
     import_utils._flax_available = True
     import_utils.USE_TF = "AUTO"
@@ -565,7 +565,7 @@ def test_the_snapshot_is_overwritten_while_import_utils_is_mid_body():
     _exec_guard({"transformers": object(), "transformers.utils.import_utils": import_utils}, {})
     assert import_utils.USE_TF == "0"
     assert import_utils.USE_JAX == "0"
-    # Not a blunter write than the flag clearing: the same opt-outs still hold.
+    # Not a blunter write than the flag clearing:
     for modules, environ, kept in (
         ({"tensorflow": object()}, {}, "USE_TF"),
         ({"jax": object()}, {}, "USE_JAX"),

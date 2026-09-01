@@ -22,18 +22,18 @@ STUDIO_BACKEND = REPO_ROOT / "studio" / "backend"
 @dataclass
 class HardwareProfile:
     name: str
-    system: str  # platform.system() value
-    machine: str  # platform.machine() value
-    cuda_available: bool  # torch.cuda.is_available() value
-    hip_version: Optional[str]  # torch.version.hip; None for NVIDIA, "6.1" etc. for ROCm
-    xpu_available: bool  # torch.xpu.is_available() value
-    has_mlx: bool  # whether to inject a fake mlx into sys.modules
-    mps_available: bool  # torch.backends.mps.is_available() value
+    system: str  # platform.system() value platform.machine() value torch.cuda.is_available() value torch.version.hip;
+    machine: str
+    cuda_available: bool
+    hip_version: Optional[str]
+    xpu_available: bool
+    has_mlx: bool
+    mps_available: bool
 
-    expect_is_mlx: bool  # unsloth._IS_MLX
-    expect_device_type: str  # Unsloth DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU")
-    expect_is_rocm: bool  # Unsloth IS_ROCM
-    expect_apple_silicon: bool  # Unsloth is_apple_silicon()
+    expect_is_mlx: bool  # unsloth._IS_MLX Unsloth DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU") Unsloth
+    expect_device_type: str
+    expect_is_rocm: bool
+    expect_apple_silicon: bool
     extra_notes: str = ""
 
 
@@ -154,12 +154,11 @@ def spoof_hardware(monkeypatch):
         import platform
         import torch
 
-        # platform spoof (used by both the unsloth gate and Unsloth's helpers)
         monkeypatch.setattr(platform, "system", lambda: profile.system)
         monkeypatch.setattr(platform, "machine", lambda: profile.machine)
 
         monkeypatch.setattr(torch.cuda, "is_available", lambda: profile.cuda_available)
-        # Stub get_device_properties: detect_hardware reads .name, which crashes on a CPU CI runner.
+        # Stub get_device_properties:
         if profile.cuda_available:
             stub_props = types.SimpleNamespace(
                 name = "Stub GPU" if not profile.hip_version else "Stub AMD GPU",
@@ -171,7 +170,7 @@ def spoof_hardware(monkeypatch):
                 raising = False,
             )
 
-        # torch.version.hip: None on NVIDIA, "6.1" etc. on ROCm
+        # torch.version.hip: None on NVIDIA, "6.1" etc.
         torch_version = torch.version
         monkeypatch.setattr(torch_version, "hip", profile.hip_version, raising = False)
 
@@ -191,11 +190,9 @@ def spoof_hardware(monkeypatch):
             )
             monkeypatch.setattr(torch, "xpu", xpu_stub, raising = False)
 
-        # torch.backends.mps.is_available
         if hasattr(torch.backends, "mps"):
             monkeypatch.setattr(torch.backends.mps, "is_available", lambda: profile.mps_available)
 
-        # mlx + mlx.core in sys.modules
         if profile.has_mlx:
             fake_mlx = types.ModuleType("mlx")
             fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader = None)
@@ -204,14 +201,13 @@ def spoof_hardware(monkeypatch):
             fake_mlx.core = fake_mlx_core
             monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
             monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
-            # detect_hardware gates MLX on the full stack via utils.mlx_repair (it
-            # imports mlx_lm/mlx_vlm and checks dist versions), which faking only
-            # mlx.core cannot satisfy. An mlx profile means a complete, healthy stack,
-            # so model that here; the internals are covered by test_mlx_repair.py.
-            # Both entry points, because the gate asks for the blocker LIST: one
-            # measurement decides the verdict and explains it. Stubbing only
-            # mlx_stack_available() runs the real check against a Linux runner with no
-            # MLX distributions, so the Apple Silicon profile detects CPU.
+            # detect_hardware gates MLX on the full stack via utils.mlx_repair (it imports mlx_lm/mlx_vlm and checks
+            # dist versions), which faking only mlx.core cannot satisfy.
+            # the internals are covered by test_mlx_repair.py.
+            # Both entry points, because the gate asks for the blocker LIST: one measurement decides the verdict and
+            # explains it.
+            # Stubbing only mlx_stack_available() runs the real check against a Linux runner with no MLX distributions,
+            # so the Apple Silicon profile detects CPU.
             if str(STUDIO_BACKEND) not in sys.path:
                 sys.path.insert(0, str(STUDIO_BACKEND))
             import utils.mlx_repair as _mlx_repair  # type: ignore
@@ -231,8 +227,8 @@ def spoof_hardware(monkeypatch):
 
             monkeypatch.setattr(importlib.util, "find_spec", _no_mlx)
 
-            # Unsloth's _has_mlx() does `import mlx.core`, not find_spec; block it
-            # with a meta_path finder that raises ImportError for mlx.*.
+            # Unsloth's _has_mlx() does `import mlx.core`, not find_spec;
+            # block it with a meta_path finder that raises ImportError for mlx.*.
             class _BlockMLXFinder:
                 def find_spec(
                     self_inner,
@@ -319,9 +315,9 @@ def test_studio_is_apple_silicon_matches_profile(profile, spoof_hardware):
     )
 
 
+
+
 # Negative-space tests: catch regressions where the dispatch order changes.
-
-
 def test_cuda_takes_priority_over_mlx_when_both_available(spoof_hardware):
     """CUDA wins over MLX when both available: canary against GPU users being routed to MLX after refactors."""
     profile = HardwareProfile(
@@ -365,16 +361,12 @@ def test_xpu_takes_priority_over_mlx_when_both_available(spoof_hardware):
 
 
 # Unsloth's placement, against the loader's opt-in device map.
-#
-# unsloth's loader upgrades a "sequential" device_map to the "unsloth" planning sentinel
+# Unsloth does not pass the sentinel and never sets that variable, but an operator can set it process-wide, and
+# Unsloth's "sequential" is not a default it forgot to change: it is get_device_map() saying "one device".
+
+
 # when UNSLOTH_AUTO_DEVICE_MAP=1. Unsloth does not pass the sentinel and never sets that
-# variable, but an operator can set it process-wide, and Unsloth's "sequential" is not a
-# default it forgot to change: it is get_device_map() saying "one device". These pin the
-# two facts that keep that safe on every profile above -- Unsloth's multi-GPU answer is
-# "balanced", which is never upgraded, and its single-GPU answer is reached only inside a
-# worker that has already narrowed the visible devices to the selection.
-
-
+# Unsloth's placement, against the loader's opt-in device map.
 def _loader_device_map_helpers():
     """The two loader functions, rebuilt over a fabricated torch.
 
@@ -458,8 +450,7 @@ def test_studio_placement_survives_the_loader_opt_in(
     else:
         monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", opt_in)
 
-    # The worker narrows CUDA_VISIBLE_DEVICES to the selection before torch initialises,
-    # so the loader counts the selected devices, not the machine's.
+    # The worker narrows CUDA_VISIBLE_DEVICES to the selection before torch initialises, so the loader counts the
     visible = len(gpu_ids) if gpu_ids else 1
     loader = _loader_device_map_helpers()(visible)
 

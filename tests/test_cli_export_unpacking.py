@@ -70,7 +70,6 @@ def cli_app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
     app.command("export")(export_cmd.export)
 
     # Typer flattens a single-command app, making "export" look like a stray positional;
-    # a harmless second command keeps "export" a real subcommand.
     @app.command("noop")
     def _noop() -> None:  # pragma: no cover - only exists to pin routing
         pass
@@ -115,7 +114,6 @@ def test_cli_export_unpacks_three_tuple(
         f"Output:\n{result.output}\n"
         f"Exception: {result.exception!r}"
     )
-    # Fake backend's success message should reach stdout.
     expected_prefix = format_flag.split("-")[0]
     assert f"{expected_prefix} ok" in result.output
 

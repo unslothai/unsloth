@@ -261,14 +261,10 @@ def test_import_falls_back_when_is_tracing_missing():
         return False
 
     fake_import_utils.is_torchdynamo_compiling = _is_torchdynamo_compiling
-    # Deliberately no `is_tracing` attribute.
 
-    # Ensure both the leaf and the parent's `transformers.utils` package
-    # resolve to our stub so the `from ... import is_tracing` inside the
-    # compat module body raises ImportError as it would on transformers
-    # < 4.52. We re-use `transformers.utils` if it's already in sys.modules
-    # (so we don't disturb the rest of the test suite), and only replace
-    # the leaf submodule.
+    # Ensure both the leaf and the parent's `transformers.utils` package resolve to our stub so the `from ...
+    # import is_tracing` inside the compat module body raises ImportError as it would on transformers < 4.52.
+    # We re-use `transformers.utils` if it's already in sys.modules (so we don't disturb the rest of the test suite),
     existing_utils_pkg = sys.modules.get("transformers.utils")
     with mock.patch.dict(
         sys.modules,
@@ -281,15 +277,12 @@ def test_import_falls_back_when_is_tracing_missing():
         "would not exercise the fallback path"
     )
 
-    # Dynamo idle and no JIT/FX active → False.
     assert reloaded.is_tracing() is False
-    # Sanity: accepts an optional tensor positional arg without raising.
     assert reloaded.is_tracing(torch.zeros(1)) is False
 
-    # ``torch.fx.Proxy`` should be detected even when Dynamo is idle, since
-    # symbolic_trace / export-only paths don't go through dynamo. Construct
-    # the Proxy from a real fx.Graph node (passing a Tensor directly to
-    # ``Proxy(...)`` is a common foot-gun that raises AttributeError).
+    # ``torch.fx.Proxy`` should be detected even when Dynamo is idle, since symbolic_trace / export-only paths don't go
+    # through dynamo.
+    # Construct the Proxy from a real fx.Graph node (passing a Tensor directly to ``Proxy(...)`` is a common foot-gun
     fx_graph = torch.fx.Graph()
     fx_node = fx_graph.create_node("call_function", torch.zeros, (torch.zeros(1).shape,))
     proxy = torch.fx.Proxy(fx_node)
@@ -299,10 +292,3 @@ def test_import_falls_back_when_is_tracing_missing():
     with mock.patch("torch.jit.is_tracing", return_value = True):
         assert reloaded.is_tracing() is True
 
-    # Dynamo compilation is also covered (the fallback calls
-    # ``is_torchdynamo_compiling`` from the module-level import, which is
-    # bound at fallback-definition time — exactly the same import binding
-    # that the real ``is_tracing`` uses). We don't re-test the dynamo path
-    # here because it's already exercised by the upstream test suite, and
-    # patching the import after the module is loaded would not affect the
-    # closure's reference.

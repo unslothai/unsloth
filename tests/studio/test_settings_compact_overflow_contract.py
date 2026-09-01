@@ -5,7 +5,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.tsx"
-# The monitor has its own page and Settings links to it; the shrink contract covers both.
+# The monitor has its own page and Settings links to it;
 API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
 REMOTE_ACCESS = REPO / "studio/frontend/src/features/settings/components/remote-access-section.tsx"
@@ -24,7 +24,7 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
     # Flex parents need min-w-0, or a long model id widens the layout past the viewport.
     assert '"flex w-full min-w-0 flex-col gap-1 border-b border-border/50' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
-    # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped.
+    # Prompt and reply are unbounded user text:
     assert "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50" in source
     # A model id or path has no spaces to wrap on, so it needs break-all.
     assert 'className="min-w-0 break-all font-mono' in source
@@ -48,12 +48,9 @@ def test_remote_access_card_can_shrink():
 
 
 def test_embedding_model_controls_stack_on_the_narrowest_viewports():
-    # The picker has already moved once, from the General tab to Documents & RAG, and
-    # pinning the filename turned that move into a red build even though both responsive
-    # classes came along untouched. Follow whichever settings surface renders the picker.
-    # Dropping the classes still fails; relocating them no longer does.
-    # The combobox became EmbeddingModelPicker; follow the component, since the
-    # contract is that the control stacks and fills the row under 360px.
+    # The picker has already moved once, from the General tab to Documents & RAG, and pinning the filename turned that
+    # move into a red build even though both responsive classes came along untouched.
+    # follow the component, since the contract is that the control stacks and fills the row under 360px.
     owners = [
         path
         for path in sorted(SETTINGS.rglob("*.tsx"))
@@ -67,8 +64,7 @@ def test_embedding_model_controls_stack_on_the_narrowest_viewports():
         if not (
             'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
             in (source := path.read_text(encoding = "utf-8"))
-            # The fixed width has to give way at the breakpoint: flex-1 for the
-            # combobox, a full row for the picker trigger.
+            # The fixed width has to give way at the breakpoint:
             and ("max-[360px]:w-full" in source or "max-[360px]:flex-1" in source)
         )
     ]

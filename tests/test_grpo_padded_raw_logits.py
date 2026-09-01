@@ -45,7 +45,7 @@ from _grpo_dispatch_source import load_dispatch_helpers  # noqa: E402
 _DISPATCH_HELPERS = load_dispatch_helpers()
 
 
-# ── The block under test, lifted structurally out of the live source ─────────
+# The block under test, lifted structurally out of the live source.
 
 _SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py"
 _TARGET_FUNCTION = "_get_per_token_logps_and_entropies"
@@ -113,7 +113,7 @@ _BLOCK_SOURCE = _extract_padded_loop_source()
 _BLOCK_CODE = compile(_BLOCK_SOURCE, "<rl_replacements padded loop>", "exec")
 
 
-# ── Helpers: the real unsloth_zoo ones when available, eager mirrors when not ─
+# The real unsloth_zoo helpers when available, eager mirrors when not.
 
 
 def _eager_chunked_hidden_states_selective_log_softmax(
@@ -195,7 +195,6 @@ def _load_helpers():
     return real_hidden, real_raw, "unsloth_zoo"
 
 
-# ── Stub model and reference ─────────────────────────────────────────────────
 
 _VOCAB = 17
 _HIDDEN = 8
@@ -282,12 +281,12 @@ def _build_namespace(
         (
             data.input_ids[i : i + 1],
             data.attention_mask[i : i + 1],
-            torch.zeros(1, 3) if is_vlm else None,  # pixel_values_chunk (the stub ignores it)
-            None,  # image_grid_thw_chunk
-            None,  # pixel_attention_mask_chunk
-            None,  # image_sizes_chunk
-            None,  # token_type_ids_chunk
-            None,  # mm_token_type_ids_chunk
+            torch.zeros(1, 3) if is_vlm else None,  # pixel_values_chunk (the stub ignores it) image_grid_thw_chunk
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         for i in range(_BATCH)
     ]
@@ -346,7 +345,6 @@ def _run_padded_loop(
     )
 
 
-# ── Tests ────────────────────────────────────────────────────────────────────
 
 
 def test_extracted_block_is_the_padded_loop():
@@ -359,10 +357,8 @@ def test_extracted_block_is_the_padded_loop():
     assert len(loops) == 1
     assert isinstance(loops[0].iter, ast.Name) and loops[0].iter.id == _LOOP_ITERABLE
 
-    # Both arms of the branch inside the loop must dispatch through the shared
-    # helper, which is what compares the width and consults the explicit
-    # UNSLOTH_RETURN_HIDDEN_STATES signal. Counted structurally, never by text
-    # search.
+    # Both arms of the branch inside the loop must dispatch through the shared helper, which is what compares the width
+    # and consults the explicit UNSLOTH_RETURN_HIDDEN_STATES signal.
     dispatch_tests = [
         node
         for node in ast.walk(loops[0])

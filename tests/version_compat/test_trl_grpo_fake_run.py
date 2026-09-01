@@ -32,13 +32,10 @@ import pytest
 
 
 # daily-fresh-fetch collects tests/version_compat/ with only pytest installed;
-# the spoof and the rest of this module need the real torch runtime. Skip the
-# whole module cleanly when torch is absent rather than crashing collection.
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed; fake-run needs the real runtime", allow_module_level = True)
 
-# Apply the spoof BEFORE any unsloth-touching import (mirrors
-# tests/vllm_compat/test_extended_module_imports.py).
+# Apply the spoof BEFORE any unsloth-touching import (mirrors tests/vllm_compat/test_extended_module_imports.py).
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SPOOF_DIR))
 import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
@@ -81,9 +78,7 @@ def _patch_grpo_and_get_source() -> str:
         f"{patched.__name__!r}, expected 'UnslothGRPOTrainer' (transform failed "
         f"or dispatch key drifted on this TRL)"
     )
-    # The transformed body (__init__ rewrites, injected per-token-logps) lives in
-    # the generated module's `_UnslothGRPOTrainer` base + module-level funcs, not
-    # the thin UnslothGRPOTrainer subclass -- read the whole generated module.
+    # The transformed body (__init__ rewrites, injected per-token-logps) lives in the generated module's
     mod = inspect.getmodule(patched)
     return inspect.getsource(mod) if mod is not None else inspect.getsource(patched)
 
@@ -94,9 +89,6 @@ def generated_grpo_source():
         pytest.skip("unsloth not installed")
     if importlib.util.find_spec("trl") is None:
         pytest.skip("trl not installed")
-    # Do NOT swallow import errors: unsloth is installed here, so a failing
-    # `import unsloth` is exactly the import-time TRL/transformers drift this
-    # canary must surface as a failure, not a skip.
     import unsloth  # noqa: F401  -- _gpu_init bootstrap under spoof
 
     return _patch_grpo_and_get_source()
@@ -164,17 +156,14 @@ def test_grpo_patch_neutralizes_ref_adapter_and_qlora_cast(generated_grpo_source
     ), "TRL's hardcoded QLoRA bf16 cast survived; rl.py neutralization no-oped"
 
 
-# SFT / DPO: the same source-transform patcher runs on them (a fake patch run,
-# no training), so a structural TRL change can break generation. Assert the patch
-# produces a valid, importable Unsloth trainer AND that the shared QLoRA
-# `_is_quantized_model` bf16 cast is neutralized (TRL 1.7's spelling), which the
-# patcher applies to every trainer. Catches "and or others" beyond GRPO.
 
 
+# SFT / DPO: the same source-transform patcher runs on them (a fake patch run, no training), so a structural TRL change
+# can break generation.
+# Catches "and or others" beyond GRPO.
 def _patch_and_get_source(trainer_file: str, trainer_cls: str) -> str:
     if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
         pytest.skip("unsloth or trl not installed")
-    # Let a real import failure fail the test (import-time drift is the target).
     import unsloth  # noqa: F401
     import trl.trainer  # noqa: F401
 
@@ -213,10 +202,9 @@ def test_dpo_patch_generates_valid_source():
     _assert_quantized_cast_neutralized(src, "DPOTrainer")
 
 
-# The installed TRL in CI is always >= 1.7.0, so the < 1.7.0 return-arity
-# downgrade is never exercised by the fake-run above. Lock both arities by
-# monkeypatching rl_replacements.trl_version and re-generating the injected
-# _get_per_token_logps_and_entropies source directly (no TRL install needed).
+# The installed TRL in CI is always >= 1.7.0, so the < 1.7.0 return-arity downgrade is never exercised by the fake-run
+# above.
+# Lock both arities by monkeypatching rl_replacements.trl_version and re-generating the injected
 def test_per_token_logps_arity_gate_both_directions(monkeypatch):
     if importlib.util.find_spec("unsloth") is None:
         pytest.skip("unsloth not installed")
@@ -234,8 +222,8 @@ def test_per_token_logps_arity_gate_both_directions(monkeypatch):
         "return logprobs.detach(), entropies, aux_loss" in src_new
     ), "3-tuple return missing for TRL >= 1.7.0"
 
-    # < 1.7.0: aux_loss element dropped -> 2-tuple. A no-op downgrade must raise
     # (fail loud), never silently ship a 3-tuple to older TRL.
+    # < 1.7.0: aux_loss element dropped -> 2-tuple.
     monkeypatch.setattr(_rlr, "trl_version", Version("1.6.0"), raising = False)
     src_old = gate("_get_per_token_logps_and_entropies", None)
     assert (

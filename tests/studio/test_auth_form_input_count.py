@@ -172,10 +172,7 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     root = (FRONTEND / "app/routes/__root.tsx").read_text(encoding = "utf-8")
     assert "{!isAuthFlowRoute && <SettingsDialog />}" in root
     assert "useSettingsDialogStore.getState().closeDialog();" in root
-    # The settings chord must stay inert on the auth routes. That used to be an
-    # early return inside a hand-rolled keydown handler; once the chords became
-    # rebindable it moved into useShortcut's `enabled` option. Lock the
-    # behaviour, not one spelling of it, so either form passes.
+    # The settings chord must stay inert on the auth routes.
     assert "if (isAuthFlowRoute) return;" in root or "{ enabled: !isAuthFlowRoute }" in root
     for route in ("login", "change-password"):
         assert "isAuthFlow: true" in (FRONTEND / f"app/routes/{route}.tsx").read_text(

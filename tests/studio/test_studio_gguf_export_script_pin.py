@@ -38,26 +38,23 @@ def _find_pin_try(tree: ast.AST):
     return None
 
 
-# The pin catches Exception, not ImportError: a half-built unsloth_zoo raises
-# RuntimeError or AttributeError too. Anything that still catches an ImportError
-# counts, so widening the handler again does not break this test.
+# The pin catches Exception, not ImportError:
 _CATCHES_IMPORT_ERROR = ("ImportError", "Exception", "BaseException")
 
 
 def _catches_import_error(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:  # bare except
+    if handler.type is None:
         return True
     names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
     return any(isinstance(n, ast.Name) and n.id in _CATCHES_IMPORT_ERROR for n in names)
 
 
-# A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which
-# ImportError alone does not cover.
+# A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which ImportError alone does not
 _CATCHES_EVERYTHING = ("Exception", "BaseException")
 
 
 def _covers_half_built_zoo(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:  # bare except
+    if handler.type is None:
         return True
     names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
     caught = {n.id for n in names if isinstance(n, ast.Name)}
@@ -113,10 +110,8 @@ def test_warning_handler_gated_on_module_flag():
     assert try_node is not None
     handlers = [h for h in try_node.handlers if _catches_import_error(h)]
     assert handlers
-    # And it has to keep covering the half-built cases, not just the missing-module one. That is
-    # what #8603 widened the handler for: an unsloth_zoo that imports but raises RuntimeError or
-    # AttributeError aborts the export otherwise, and a revert to ImportError alone still
-    # satisfies _catches_import_error above.
+    # And it has to keep covering the half-built cases, not just the missing-module one.
+    # what #8603 widened the handler for:
     covering = [h for h in handlers if _covers_half_built_zoo(h)]
     assert (
         covering

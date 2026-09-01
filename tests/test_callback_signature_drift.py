@@ -21,7 +21,6 @@ import sys
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-# Skip noisy paths during file discovery.
 SKIP_PARTS = {
     ".git",
     ".out",
@@ -33,7 +32,6 @@ SKIP_PARTS = {
     "venv",
     ".pytest_cache",
     "__pycache__",
-    # studio frontend is JS/TS plus a few stub .py files; skip.
     "frontend",
 }
 
@@ -52,7 +50,6 @@ def _iter_py(root: pathlib.Path):
         yield p
 
 
-# Parse cache so each file is parsed once across the run.
 _PARSE_CACHE: dict[pathlib.Path, ast.AST | None] = {}
 
 
@@ -76,7 +73,6 @@ def _callback_list_attrs_in_class(cls: ast.ClassDef) -> set[str]:
     """Find self._<name>_callbacks attributes assigned or appended-to inside cls."""
     found = set()
     for node in ast.walk(cls):
-        # self._x_callbacks = [...]
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if (
@@ -87,7 +83,6 @@ def _callback_list_attrs_in_class(cls: ast.ClassDef) -> set[str]:
                     and t.attr.endswith("_callbacks")
                 ):
                     found.add(t.attr)
-        # self._x_callbacks.append(fn)
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -152,8 +147,8 @@ def _func_arity(node: ast.AST) -> tuple[int, bool] | None:
     args = node.args
     arity = len(args.posonlyargs) + len(args.args)
     accepts_var = args.vararg is not None
-    # Don't subtract self: we can't tell statically if this is a method, and the
-    # consumer check skips `self.fn` registrations anyway.
+    # Don't subtract self: we can't tell statically if this is a method, and the consumer check skips `self.fn`
+    # registrations anyway.
     return arity, accepts_var
 
 
@@ -189,7 +184,6 @@ def check_registrations(
             tree = _safe_parse(src)
             if tree is None:
                 continue
-            # All function/lambda defs in this file, keyed by name.
             defs_by_name: dict[str, ast.AST] = {}
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -201,7 +195,6 @@ def check_registrations(
                         and isinstance(node.targets[0], ast.Name)
                     ):
                         defs_by_name[node.targets[0].id] = node.value
-            # Find <x>.add_*_callback(fn) sites.
             for call in ast.walk(tree):
                 if not isinstance(call, ast.Call):
                     continue
@@ -216,7 +209,7 @@ def check_registrations(
                         f"defines {cb_list} (third-party API?)"
                     )
                     continue
-                # Only bare-Name registrations; bound methods/partials skipped.
+                # Only bare-Name registrations;
                 if not (len(call.args) == 1 and isinstance(call.args[0], ast.Name)):
                     skipped.append(
                         f"{src}:{call.lineno}: {call.func.attr}(...) registers a "

@@ -36,16 +36,15 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
-_RADEON = "AMD Radeon(TM) 8060S Graphics"  # Strix Halo iGPU  -> gfx1151
-_RX9070 = "AMD Radeon RX 9070 XT"  # RDNA 4 discrete  -> gfx1201
-_R780M = "AMD Radeon 780M Graphics"  # Phoenix iGPU     -> gfx1103, a shadowing arch
+_RADEON = "AMD Radeon(TM) 8060S Graphics"  # Strix Halo iGPU -> gfx1151 RDNA 4 discrete -> gfx1201 Phoenix iGPU ->
+_RX9070 = "AMD Radeon RX 9070 XT"
+_R780M = "AMD Radeon 780M Graphics"
 _R9700 = "AMD Radeon AI PRO R9700"  # RDNA 4 workstation -> gfx1201 (#7624, #7307)
 _ARC = "Intel(R) Arc(TM) A770 Graphics"
 
 HANDOFF = "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF"
 
 
-# ── extracting the shipped source, so these tests exercise it rather than a copy ──────────────
 
 
 def _balanced(src: str, start: int, opener: str, closer: str) -> str:
@@ -69,11 +68,7 @@ def _setup_source() -> str:
     return SETUP_PS1.read_text(encoding = "utf-8")
 
 
-# The two fixes, as (fixed, unfixed) pairs. Undoing them textually is what the red/green check
-# below runs against, rather than an older commit: a revision that is "before the fix" is only
-# before it until this merges, and reaching for it through git also fails in a shallow CI clone.
-# Reverting the wraps in memory keeps the comparison immutable and isolates the one thing under
-# test, since everything else about the two sources is identical by construction.
+# The two fixes, as (fixed, unfixed) pairs.
 _ARRAY_WRAPS = (
     (
         "$wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })",
@@ -129,7 +124,6 @@ def _prelude(src: str) -> str:
     )
 
 
-# ── the driver: run the shipped blocks against a stubbed adapter list ─────────────────────────
 
 
 def _driver(
@@ -163,13 +157,12 @@ def _driver(
             "$wmiGpus = $null",
             _prelude(src),
             _amd_scan_block(src),
-            # Captured from inside the arch block's own scope: $gpuNames is the value the indexing
-            # bug corrupts, and its first element is what Get-GfxArchFromGpuName is actually handed.
+            # Captured from inside the arch block's own scope:
             _arch_resolution_block(src).replace(
                 "$nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
                 "$script:GpuNamesProbe = $gpuNames\n            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
             ),
-            # ConvertTo-Json, not string interpolation: a null stays null instead of becoming "".
+            # ConvertTo-Json, not string interpolation:
             "@{",
             "  wmi_type    = $(if ($null -ne $wmiGpus) { $wmiGpus.GetType().FullName } else { $null })",
             "  wmi_array   = [bool]($wmiGpus -is [array])",
@@ -196,8 +189,8 @@ def _run(
     script.write_text(
         _driver(source or _setup_source(), adapters, ps51 = ps51, strict = strict), encoding = "utf-8"
     )
-    # Only what each case names may reach the child: a developer's own exported
-    # UNSLOTH_ROCM_GFX_ARCH would otherwise silently win every inference assertion here.
+    # Only what each case names may reach the child: a developer's own exported UNSLOTH_ROCM_GFX_ARCH would otherwise
+    # silently win every inference assertion here.
     child_env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     child_env.update(env or {})
     proc = subprocess.run(
@@ -211,7 +204,6 @@ def _run(
     return json.loads(proc.stdout)
 
 
-# ── source assertions ─────────────────────────────────────────────────────────────────────────
 
 
 def test_scan_wraps_the_whole_if_in_an_array():
@@ -263,7 +255,6 @@ def test_setup_consumes_the_handoff_only_after_its_own_inference():
     assert block.index("gfx arch inferred from GPU name") < block.index(f"$env:{HANDOFF}")
 
 
-# ── runtime: the adapter scan ─────────────────────────────────────────────────────────────────
 
 
 @requires_pwsh
@@ -273,8 +264,7 @@ def test_single_amd_adapter_is_reported(tmp_path, ps51, strict):
     out = _run(tmp_path, [(_RADEON, 0)], ps51 = ps51, strict = strict)
     assert out["wmi_array"], f"one adapter must stay an array, got {out['wmi_type']}"
     assert out["labels"] == [_RADEON]
-    # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so
-    # "reported" has to mean the name reached the inference.
+    # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so "reported" has to mean
     assert out["arch"] == "gfx1151"
     assert out["label"] == "AMD ROCm (gfx1151)"
 
@@ -308,7 +298,6 @@ def test_a_host_with_no_amd_adapter_is_not_read_as_amd(tmp_path, adapters):
     assert out["arch"] is None
 
 
-# ── runtime: name inference, where the second unwrapped if bites ──────────────────────────────
 
 
 @requires_pwsh
@@ -365,7 +354,6 @@ def test_a_pinned_mask_is_honoured_over_the_shadowing_preference(tmp_path):
     assert out["arch"] == "gfx1103", "an explicit selection must never be repicked"
 
 
-# ── runtime: handoff precedence ───────────────────────────────────────────────────────────────
 
 
 @requires_pwsh
@@ -436,7 +424,6 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
     assert out["arch"] == "gfx1010"
 
 
-# ── runtime: install.ps1 picks the adapter setup would keep ───────────────────────────────────
 
 
 def _installer_scan_block() -> str:
@@ -461,8 +448,8 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                # Both names: the routing scan asks WMI (unchanged by #8529), the
-                # report-only peer scan asks CIM. Same answer either way here.
+                # Both names:
+                # Both names: the routing scan asks WMI (unchanged by #8529), the report-only peer scan asks CIM.
                 f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 "function substep { param($a, $b) }",
@@ -524,7 +511,6 @@ def test_the_installer_and_setup_agree_on_which_adapter_is_active(tmp_path):
     assert _run_installer_scan(tmp_path, adapters)["arch"] == setup["arch"] == "gfx1151"
 
 
-# ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
 
 
 def _handoff_lifecycle_block() -> str:
@@ -614,7 +600,6 @@ def test_only_this_runs_arch_is_handed_to_the_child(tmp_path, arch, inherited, e
     assert out["seen_by_child"] == expected
 
 
-# ── the guard on the guards ───────────────────────────────────────────────────────────────────
 
 
 @requires_pwsh

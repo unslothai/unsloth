@@ -36,10 +36,7 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 
 _MARK = stack_mod._TORCH_PROBE_MARKER
 
-# `rocm` Requires-Dist, torch Requires-Dist, distributions on disk. Two are pip behaviours,
-# not hypotheticals: installing a generic wheel over a per-arch one drops rocm[libraries]
-# from torch but leaves `rocm` naming the old family, and a family switch upgrades `rocm`
-# in place without uninstalling the superseded runtime.
+# `rocm` Requires-Dist, torch Requires-Dist, distributions on disk.
 AMBIENT_STATES: "dict[str, tuple]" = {
     "bare": (None, ["filelock"], []),
     "perarch-gfx1151": (
@@ -154,7 +151,7 @@ def _route(
     return str(pip.call_args_list) + str(pip_try.call_args_list)
 
 
-# The generic-ROCm hosts are the interesting ones: that is where the skip arms live.
+# The generic-ROCm hosts are the interesting ones:
 HOSTS = {
     "gfx1103-cpu-torch": ("gfx1103", "2.10.0+cpu||"),
     "gfx1103-generic-rocm": ("gfx1103", "2.10.0+rocm7.1|7.1|"),
@@ -186,8 +183,8 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
     [
         (None, False, True),
         ("gfx110x-all", True, False),
-        # Family matches but torch does not own it: the orphan, so the running torch is the
         # generic build with no gfx1103 kernels and the skip must not fire.
+        # Family matches but torch does not own it:
         ("gfx110x-all", False, True),
         ("gfx120x-all", True, True),
     ],
@@ -219,5 +216,5 @@ def test_the_states_are_distinguishable():
         assert stack_mod._installed_rocm_wheel_family() == "gfx110x-all"
         assert stack_mod._torch_requires_rocm_sdk() is False
     with ambient("two-families-after-switch"):
-        # Two runtimes, no `rocm` to arbitrate: unknowable, not a guess.
+        # Two runtimes, no `rocm` to arbitrate:
         assert stack_mod._installed_rocm_wheel_family() is None

@@ -134,9 +134,7 @@ def _load_resolver(installed_source):
     """Stand-in for loader_utils' module globals, built from `installed_source`."""
     from unsloth_zoo.utils import Version
 
-    # loader_utils imports this from .mapper; _get_new_mapper derives the fetched tables
-    # with it, so the stand-in globals need it or the probe NameErrors into its own bare
-    # except and returns empty tables.
+    # loader_utils imports this from .mapper;
     from unsloth.models.mapper import build_mappers
 
     mapper_ns = {}
@@ -149,8 +147,8 @@ def _load_resolver(installed_source):
         "FLOAT_TO_FP8_BLOCK_MAPPER": mapper_ns["FLOAT_TO_FP8_BLOCK_MAPPER"],
         "FLOAT_TO_FP8_ROW_MAPPER": mapper_ns["FLOAT_TO_FP8_ROW_MAPPER"],
         "build_mappers": build_mappers,
-        # Imported from loader_utils rather than rebuilt, so a new helper added there
         # cannot silently drop out of this stand-in and make the probe look broken.
+        # Imported from loader_utils rather than rebuilt, so a new helper added there cannot silently drop out of this
         "_MAPPER_HELPERS": _loader_utils_globals()["_MAPPER_HELPERS"],
         "SUPPORTS_FOURBIT": True,
         "transformers_version": Version("4.57.6"),

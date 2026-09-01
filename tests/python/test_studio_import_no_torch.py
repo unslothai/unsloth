@@ -58,7 +58,6 @@ def no_torch_venv(request, tmp_path_factory):
     return str(venv_python)
 
 
-# ── AST structural checks ─────────────────────────────────────────────
 
 
 class TestDataCollatorsAST:
@@ -135,7 +134,6 @@ class TestChatTemplatesAST:
             )
 
 
-# ── data_collators.py: exec + dataclass instantiation in no-torch venv ──
 
 
 class TestDataCollatorsNoTorchVenv:
@@ -227,7 +225,6 @@ class TestDataCollatorsNoTorchVenv:
         assert b"OK: VLMDataCollator instantiated" in result.stdout
 
 
-# ── chat_templates.py: exec in no-torch venv ─────────────────────────
 
 
 class TestChatTemplatesNoTorchVenv:
@@ -326,7 +323,6 @@ class TestChatTemplatesNoTorchVenv:
         assert b"OK: DEFAULT_ALPACA_TEMPLATE defined and valid" in result.stdout
 
 
-# ── format_conversion.py: AST + runtime tests ────────────────────────
 
 
 class TestFormatConversionAST:
@@ -496,7 +492,6 @@ class TestFormatConversionNoTorchVenv:
         assert b"OK: convert_alpaca_to_chatml works without torch" in result.stdout
 
 
-# ── Negative controls ─────────────────────────────────────────────────
 
 
 class TestNegativeControls:

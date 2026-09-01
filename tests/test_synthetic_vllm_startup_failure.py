@@ -89,8 +89,7 @@ class _FakeProcess:
         return self._returncode
 
 
-# Every kit built here, kept alive past the end of the test that made it so the
-# fixture below, and not the dying test frame, decides when it is collected.
+# Every kit built here, kept alive past the end of the test that made it so the fixture below, and not the dying test
 _LIVE_KITS = []
 
 
@@ -236,7 +235,6 @@ def test_the_message_says_what_the_user_should_do_next():
     assert "FileNotFoundError" in message
 
 
-# --- the readiness probe --------------------------------------------------
 
 
 def test_check_vllm_status_is_false_when_nothing_is_listening(monkeypatch):
@@ -299,12 +297,10 @@ def test_the_failure_path_is_not_a_bare_return_any_more():
     assert not re.search(r"terminate_tree\(self\.vllm_process\)\s*\n\s*return", source)
 
 
-# --- the timeout is a deadline, not a number of laps ----------------------
-# Both waits bound work by ELAPSED time. Attempt counts and flat poll intervals
-# only agree with that when each attempt is instant, which is exactly what the
-# failing cases below are not.
+# Both waits bound work by ELAPSED time.
 
 
+# the timeout is a deadline, not a number of laps ---------------------- Both waits bound work by ELAPSED time.
 class _RecordingCapture(_FakeCapture):
     """Remembers every timeout it was asked to wait for."""
 

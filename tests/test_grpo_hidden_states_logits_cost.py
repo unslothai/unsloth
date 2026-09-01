@@ -62,9 +62,7 @@ _drop_spare_hidden_states = WRAPPER["_drop_spare_hidden_states"]
 _install = WRAPPER["_install_grpo_hidden_states_forward_wrapper"]
 
 
-# --------------------------------------------------------------------------
 # a stand-in for transformers' ModelOutput, including the trap
-# --------------------------------------------------------------------------
 class FakeModelOutput(collections.OrderedDict):
     """`ModelOutput`'s actual assignment semantics, which are the whole point.
 
@@ -119,9 +117,6 @@ def test_the_fake_output_really_does_reproduce_the_trap():
         out.pop("hidden_states")
 
 
-# --------------------------------------------------------------------------
-# dropping the spare layers
-# --------------------------------------------------------------------------
 def test_the_spare_layers_leave_the_mapping_not_just_the_attribute():
     """A consumer that walks the object as a mapping is the one that matters."""
     out = FakeModelOutput(logits = "L", hidden_states = ("a", "b", "c"))
@@ -170,9 +165,7 @@ def test_an_unassignable_output_does_not_take_the_step_down():
     _drop_spare_hidden_states(Frozen())  # must not raise
 
 
-# --------------------------------------------------------------------------
 # not paying for the lm_head
-# --------------------------------------------------------------------------
 def _sig(fn):
     import inspect
     return inspect.signature(fn)
@@ -301,9 +294,6 @@ def test_labels_of_none_does_not_count_as_labels():
     assert _minimise_logits_kwarg(_sig(forward), (), kwargs) == "logits_to_keep"
 
 
-# --------------------------------------------------------------------------
-# end to end through the installed wrapper
-# --------------------------------------------------------------------------
 class _Recorder:
     """A model whose lm_head cost is proportional to the positions it is asked for."""
 
@@ -365,7 +355,7 @@ def hidden_states_on(monkeypatch):
 @pytest.mark.parametrize("accepts", ["logits_to_keep", "num_logits_to_keep"])
 def test_the_wrapper_asks_for_one_position_not_the_whole_sequence(hidden_states_on, accepts):
     model = _Recorder(accepts = accepts)
-    assert _install(model) is not False or True  # install, whatever it returns
+    assert _install(model) is not False or True
     model.forward(input_ids = "x")
     assert model.projected_positions == 1, (
         f"projected {model.projected_positions} of {model.seq} positions over the "

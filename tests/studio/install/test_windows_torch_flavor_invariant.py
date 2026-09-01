@@ -86,17 +86,16 @@ class TestSetupPs1NoWipeEscape:
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         for clause in (
-            "-not $InstallerManagedSetup",  # install.ps1 repairs in place instead
-            "-not $_pinnedIdx",  # a cpu index PIN is deliberate and still rebuilds
-            "Test-CudaFamilyLeaf $installedTorchTag",  # only a cu* wheel is preserved
-            "-not $HasNvidiaSmi",  # only when the NVIDIA probe gave no answer
-            '$expectedTorchTag -eq "cpu"',  # ... and that is why the expectation collapsed
+            "-not $InstallerManagedSetup",  # install.ps1 repairs in place instead a cpu index PIN is deliberate and
+            "-not $_pinnedIdx",
+            "Test-CudaFamilyLeaf $installedTorchTag",
+            "-not $HasNvidiaSmi",
+            '$expectedTorchTag -eq "cpu"',
         ):
             assert clause in condition, f"the escape must be gated on {clause!r}"
 
     def test_the_installed_tag_is_tested_before_the_variables_it_implies(self):
-        # $_pinnedIdx and $expectedTorchTag are assigned only inside `if (-not
-        # $shouldRebuild)`, so under Set-StrictMode the other -and order is a fatal read.
+        # $_pinnedIdx and $expectedTorchTag are assigned only inside `if (-not $shouldRebuild)`, so under
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         assert condition.index("$installedTorchTag -and") < condition.index("$_pinnedIdx")
@@ -115,8 +114,8 @@ class TestSetupPs1PublishesTheFlavor:
         assert export < handoff and index < handoff
 
     def test_the_rocm_index_decides_before_the_leaf(self):
-        # The AMD Windows path installs from repo.amd.com while $TorchInstallIndexUrl still
         # points at /cpu, so the leaf alone would publish the wrong flavor.
+        # The AMD Windows path installs from repo.amd.com while $TorchInstallIndexUrl still points at /cpu, so the leaf
         block = _SETUP_SRC[_SETUP_SRC.index("$_expectedTag = if ($ROCmIndexUrl)") :][:600]
         assert block.startswith('$_expectedTag = if ($ROCmIndexUrl) { "rocm" }')
         assert "Test-CudaFamilyLeaf $_expectedLeaf" in block
@@ -265,8 +264,7 @@ class TestStepThirteenWiring:
         )
 
     def test_the_existing_repair_set_is_untouched(self):
-        # Step 2b (which Windows enters; the four helpers return early there) and the
-        # Linux-only step 13.
+        # Step 2b (which Windows enters;
         guards = _guards_containing("_ensure_cuda_torch")
         assert [ast.unparse(guard.test) for guard in guards] == [
             "not IS_MACOS and (not NO_TORCH)",
@@ -318,10 +316,10 @@ class TestStepTotals:
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 16),  # Linux, torch
-            ({"NO_TORCH": True}, 13),  # Linux, GGUF-only
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 13),  # Apple Silicon
-            ({"IS_MACOS": True}, 12),  # Intel Mac
+            ({}, 16),
+            ({"NO_TORCH": True}, 13),
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 13),
+            ({"IS_MACOS": True}, 12),
         ],
     )
     def test_the_other_platforms_are_unchanged(self, flags, total):
@@ -345,8 +343,7 @@ class TestManifestRecordsTheFlavor:
         assert install_manifest.recorded_torch_flavor(tmp_path) == "cu128"
 
     def test_absent_reads_as_unknown_not_cpu(self, tmp_path):
-        # Claiming a flavor nobody selected would let a repair reinstall over a
-        # deliberate build.
+        # Claiming a flavor nobody selected would let a repair reinstall over a deliberate build.
         install_manifest.write_manifest(root = tmp_path, req_root = tmp_path)
         assert install_manifest.recorded_torch_flavor(tmp_path) is None
 
@@ -370,7 +367,7 @@ class TestManifestRecordsTheFlavor:
         assert payload["expected_torch_tag"] == "cu124"
 
     def test_no_index_url_is_ever_written(self, tmp_path):
-        # A pinned index can carry a token; this file sits in the venv and is read back.
+        # A pinned index can carry a token;
         install_manifest.write_manifest(
             root = tmp_path, req_root = tmp_path, expected_torch_tag = "cu124"
         )

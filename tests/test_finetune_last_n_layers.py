@@ -1,7 +1,7 @@
-# Unsloth - 2x faster, 70% less memory LLM finetuning
-# Tests for the `finetune_last_n_layers` parity knob (translation helper only,
-# no CUDA / real checkpoint); mirrors unsloth-zoo's MLX layers_to_transform path.
 
+# Unsloth - 2x faster, 70% less memory LLM finetuning Tests for the `finetune_last_n_layers` parity knob (translation
+# helper only, no CUDA / real checkpoint);
+# mirrors unsloth-zoo's MLX layers_to_transform path.
 from __future__ import annotations
 
 import pytest

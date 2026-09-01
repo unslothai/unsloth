@@ -184,7 +184,6 @@ WATCH_ITEM_JS = """
 }
 """
 
-# Find a real neutral target in the visible thread.
 WATCH_NEUTRAL_JS = """
 (wantUnfocusable) => {
   const v = window.__heavyThread.viewport();
@@ -214,7 +213,6 @@ WATCH_NEUTRAL_JS = """
 """
 
 
-# Record concurrent pointers and clicks for multi-pointer cases.
 MULTI_POINTER_INIT = """
 (() => {
   const st = { live: [], maxLive: 0, concurrentTypes: [], downs: [] };
@@ -250,7 +248,6 @@ MULTI_POINTER_INIT = """
 })()
 """
 
-# Find a non-item point inside the menu for the second pointer.
 MENU_BLANK_JS = """
 () => {
   const menu = document.querySelector('[role="menu"]');
@@ -320,7 +317,6 @@ async def one_case(
         await page.evaluate(BLOCK_JS, HOLD_MS)
         await page.mouse.up()
     elif case == "held_modifier":
-        # Modifiers may be pressed during a held gesture.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -329,7 +325,7 @@ async def one_case(
         await page.mouse.up()
         await page.keyboard.up("Shift")
     elif case == "held_enter":
-        # Enter activates the focused button while the pointer remains down.
+        # Modifiers may be pressed during a held gesture.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -337,7 +333,7 @@ async def one_case(
         await page.wait_for_timeout(120)
         await page.mouse.up()
     elif case == "held_space":
-        # Space activates on keyup, after the pointer click.
+        # Enter activates the focused button while the pointer remains down.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -347,6 +343,7 @@ async def one_case(
         await page.wait_for_timeout(120)
         await page.keyboard.up("Space")
     elif case == "held_space_then_space":
+        # Space activates on keyup, after the pointer click.
         # Ensure the swallowed press does not leave the button focused.
         await page.mouse.move(x, y)
         await page.mouse.down()
@@ -366,7 +363,7 @@ async def one_case(
         before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case in ("drag_then_space", "blur_then_space"):
-        # A drag may retarget the click; blur exercises the no-click cleanup path.
+        # A drag may retarget the click;
         spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
@@ -510,7 +507,6 @@ async def one_case(
             "deleted": after["assistantMessages"] < before["assistantMessages"],
         }
     elif case in ("rightclick_then_click", "dragoff_then_click"):
-        # These dismissing gestures may produce no click.
         spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
@@ -528,10 +524,8 @@ async def one_case(
             await page.mouse.down()
             await page.mouse.move(4, 4)
             await page.mouse.up()
-        # INSIDE the release-anchored grace window on purpose. Waiting it out was the first
-        # version of this case and it passed on a tree that was still eating the click, because
-        # it only ever asked whether the bound existed, not whether the guard should have armed
         # for a gesture that cannot produce a click at all.
+        # INSIDE the release-anchored grace window on purpose.
         await page.wait_for_timeout(150)
         await page.mouse.click(spot["x"], spot["y"])
         await page.wait_for_timeout(600)
@@ -542,7 +536,6 @@ async def one_case(
             "swallowedLaterClick": clicks < 1,
         }
     elif case == "select_then_quick_click":
-        # Exercise a click during the menu's exit animation.
         item = await page.evaluate(WATCH_ITEM_JS)
         if not item:
             return {"case": case, "error": "no menu item to select"}
@@ -622,7 +615,7 @@ async def run(engine: str, cases: list[str]) -> dict:
             )
             try:
                 out["cases"].append(await one_case(page, case, engine, context))
-            except Exception as exc:  # a failed case is a result, not a crash
+            except Exception as exc:
                 out["cases"].append({"case": case, "error": repr(exc)})
             await context.close()
         await browser.close()

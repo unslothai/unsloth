@@ -34,7 +34,6 @@ class _FakeTokenizer:
         self.saved_to.append(path)
 
 
-# -- merged_*  ->  compressed-tensors dispatch ---------------------------------------------
 
 
 def test_merged_fp8_routes_to_compressed(monkeypatch, tmp_path):
@@ -89,7 +88,6 @@ def test_merged_16bit_does_not_route_compressed(monkeypatch, tmp_path):
     assert calls["generic"] == 1, "merged_16bit must go through the normal merge path"
 
 
-# -- save_method='lora'  ->  LoRA GGUF dispatch --------------------------------------------
 
 
 def test_gguf_lora_passes_valid_outtype(monkeypatch, tmp_path):
@@ -190,8 +188,7 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
     assert tokenizer.saved_to == [str(checkpoint)]
 
 
-# The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path
-# has to work; it is only ever exercised here.
+# The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path has to work;
 
 
 def test_push_to_hub_gguf_lora_dispatches(monkeypatch):
@@ -264,7 +261,6 @@ def test_push_to_hub_gguf_preserves_positional_max_shard_size():
     assert "is_main_process" not in bound.arguments
 
 
-# -- torchao PTQ / QAT dispatch ------------------------------------------------------------
 
 
 def test_torchao_ptq_routes_to_given_config(monkeypatch, tmp_path):

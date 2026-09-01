@@ -287,26 +287,26 @@ def test_the_request_path_sends_the_same_constants():
     [
         # No reasoning support: send nothing, and llama-server keeps its own defaults.
         pytest.param("{ supportsReasoning: false }", {}, id = "no_reasoning_support"),
-        # Qwen3-style gate off: the template prefills an empty thinking block for this flag.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "enable_thinking", reasoningEnabled: false }',
             {"enable_thinking": False},
             id = "thinking_turned_off",
         ),
-        # gpt-oss-style: the effort level is rendered into the prompt.
+        # Qwen3-style gate off: the template prefills an empty thinking block for this flag.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "reasoning_effort", reasoningEnabled: true,'
             ' reasoningEffort: "low" }',
             {"reasoning_effort": "low"},
             id = "effort_level",
         ),
-        # GLM-style: gate plus a level, clamped to this template's levels as the request build is.
+        # gpt-oss-style: the effort level is rendered into the prompt.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "enable_thinking_effort",'
             ' reasoningEnabled: true, reasoningEffort: "high", reasoningEffortLevels: ["max"] }',
             {"enable_thinking": True, "reasoning_effort": "max"},
             id = "effort_clamped_to_the_template_levels",
         ),
+        # GLM-style: gate plus a level, clamped to this template's levels as the request build is.
         # Independent of the gate: decides whether past <think> blocks stay in the prompt.
         pytest.param(
             "{ supportsPreserveThinking: true, preserveThinking: true }",

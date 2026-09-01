@@ -172,7 +172,7 @@ def test_noop_when_fully_dequantized():
         restored, skipped = _restore_dropped_fp8_scales(model, d, local_files_only = True)
 
     assert (restored, skipped) == (0, 0)
-    assert torch.equal(model.layer.weight.data, raw)  # untouched
+    assert torch.equal(model.layer.weight.data, raw)
 
 
 def test_non_block_divisible_shape():
@@ -185,7 +185,7 @@ def test_non_block_divisible_shape():
     model = nn.Module()
     model.config = _fp8_config((2, 2))
     model.anchor = _fp8_anchor()
-    model.layer = _bf16_linear(3, 4, raw)  # weight shape [3, 4]
+    model.layer = _bf16_linear(3, 4, raw)
 
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(d, {"layer.weight_scale_inv": scale})
@@ -200,7 +200,7 @@ def test_transposed_scale_layout():
     """A scale stored in the transposed block grid is transposed before use."""
     if _FP8 is None:
         return
-    raw = torch.randn(4, 2, dtype = torch.bfloat16)  # weight [4, 2] -> grid (2, 1)
+    raw = torch.randn(4, 2, dtype = torch.bfloat16)
     scale_correct = torch.rand(2, 1, dtype = torch.float32) + 0.1
     scale_stored = scale_correct.t().contiguous()  # stored transposed as (1, 2)
 
@@ -299,7 +299,7 @@ def test_skips_variant_load():
         _write_checkpoint(d, {"layer.weight_scale_inv": scale})
         result = _restore_dropped_fp8_scales(model, d, local_files_only = True, variant = "fp8")
     assert result == (0, 0)
-    assert torch.equal(model.layer.weight.data, raw)  # untouched
+    assert torch.equal(model.layer.weight.data, raw)
 
 
 def test_vlm_language_model_model_alias():
@@ -315,7 +315,7 @@ def test_vlm_language_model_model_alias():
     model.model.language_model = nn.Module()
     model.model.language_model.gate_proj = _bf16_linear(
         2, 2, raw
-    )  # -> model.language_model.gate_proj
+    )
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(d, {"language_model.model.gate_proj.weight_scale_inv": scale})
         restored, _ = _restore_dropped_fp8_scales(model, d, local_files_only = True)

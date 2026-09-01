@@ -84,7 +84,7 @@ def test_terminal_update_holds_the_gate_through_environment_mutation():
     consume = body.index("_studio_runtime_gate.consume_runtime_gate_handoff()")
     guard = body.index("with _studio_runtime_launch_guard(", consume)
     idle_scan = body.index("_studio_runtime_gate.ensure_managed_environment_is_idle", guard)
-    # The launcher transaction wraps the mutation; it replaced the self-exe lock release.
+    # The launcher transaction wraps the mutation;
     launcher = body.index("_WindowsLauncherUpdateTransaction()", idle_scan)
     setup = body.index("_run_setup_script(", launcher)
     verify = body.index("_fail_if_install_damaged(", setup)
@@ -343,8 +343,7 @@ def test_idle_scan_excludes_verified_launcher_and_blocks_another_managed_image(
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
 def test_idle_scan_excludes_the_venv_python_redirector(tmp_path, monkeypatch):
-    # install.ps1 runs `Scripts\unsloth.exe studio setup` and Tauri runs the venv
-    # interpreter, so both arrive through the redirector and would self-block.
+    # install.ps1 runs `Scripts\unsloth.exe studio setup` and Tauri runs the venv interpreter, so both arrive through
     studio_home = tmp_path / "studio"
     scripts = studio_home / "unsloth_studio" / "Scripts"
     managed_python = scripts / "python.exe"
@@ -391,7 +390,7 @@ def test_idle_scan_excludes_the_venv_python_redirector(tmp_path, monkeypatch):
     payload[2]["ExecutablePath"] = str(tmp_path / "Unsloth" / "unsloth.exe")
     gate.ensure_managed_environment_is_idle(studio_home)
 
-    # Only the direct parent is the redirector; a managed image above is a consumer.
+    # Only the direct parent is the redirector;
     payload[2]["ExecutablePath"] = str(managed_python)
     with pytest.raises(RuntimeError, match = rf"PID {launcher_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)

@@ -29,7 +29,7 @@ def _table(raw_freqs):
     return blob
 
 
-# Raw values as the tables actually appear: M1-M3 in Hz, M4+ in kHz.
+# Raw values as the tables actually appear:
 _M3_PERF_TABLE = _table([702_000_000, 2_016_000_000, 4_056_000_000])
 _M4_PERF_TABLE = _table([1_050_000, 3_000_000, 4_512_000])
 _M4_EFF_TABLE = _table([1_020_000, 2_592_000])
@@ -117,7 +117,7 @@ class TestFreqRangeFromEntries:
         )
 
     def test_renumbered_tables_still_found(self):
-        # M5 renumbered the indexes; classification is by peak, not by index.
+        # M5 renumbered the indexes;
         entries = [{"voltage-states13-sram": _M4_PERF_TABLE}]
         assert IF._apple_cpu_freq_range_from_ioreg_entries(entries) == (1050.0, 4512.0)
 
@@ -148,9 +148,7 @@ class TestPatchApplication:
         assert psutil.cpu_freq is before
 
     def test_no_op_when_psutil_has_no_cpu_freq(self, monkeypatch, fake_m4):
-        # GitHub's Apple Silicon runners ship exactly this psutil: no cpu_freq
-        # attribute at all. There is nothing to wrap, and adding one would
-        # advertise support psutil deliberately does not claim.
+        # GitHub's Apple Silicon runners ship exactly this psutil: no cpu_freq attribute at all.
         import psutil
 
         monkeypatch.delattr(psutil, "cpu_freq", raising = False)
@@ -158,8 +156,8 @@ class TestPatchApplication:
         assert not hasattr(psutil, "cpu_freq")
 
     def test_caller_argument_mistakes_keep_their_error(self, monkeypatch, fake_m4):
-        # The wrapper stands in for psutil globally, so a TypeError from a bad
         # call must not be mistaken for psutil declining to read the clock.
+        # The wrapper stands in for psutil globally, so a TypeError from a bad call must not be mistaken for psutil
         import psutil
 
         def cpu_freq(percpu = False):
@@ -168,15 +166,14 @@ class TestPatchApplication:
         monkeypatch.setattr(psutil, "cpu_freq", cpu_freq)
         _fake_ioreg(monkeypatch, [{"voltage-states5-sram": _M4_PERF_TABLE}])
         IF.patch_psutil_cpu_freq()
-        assert psutil.cpu_freq().current == 4512.0  # the supported call still recovers
+        assert psutil.cpu_freq().current == 4512.0
         with pytest.raises(TypeError):
             psutil.cpu_freq(unknown = True)
         with pytest.raises(TypeError):
             psutil.cpu_freq(False, False)
 
     def test_probe_lock_exists_before_any_call(self):
-        # A lazily built lock is two locks when two threads reach it at once,
-        # and then neither excludes the other.
+        # A lazily built lock is two locks when two threads reach it at once, and then neither excludes the other.
         import threading
         assert isinstance(IF._apple_cpu_freq_lock, type(threading.Lock()))
 
@@ -254,7 +251,6 @@ class TestPatchApplication:
         assert psutil.cpu_freq() == value
 
     def test_psutil_exception_is_covered_by_ioreg(self, monkeypatch, fake_m4):
-        # psutil raises on M5, where the table indexes it hardcodes are absent.
         def boom(percpu = False):
             raise RuntimeError("no voltage-states table at the expected index")
 
@@ -270,6 +266,7 @@ class TestPatchApplication:
         import psutil
         import subprocess
 
+        # psutil raises on M5, where the table indexes it hardcodes are absent.
         def boom(percpu = False):
             raise RuntimeError("no voltage-states table at the expected index")
 
@@ -280,8 +277,7 @@ class TestPatchApplication:
             psutil.cpu_freq()
 
     def test_percpu_exception_is_covered_too(self, monkeypatch, fake_m4):
-        # macOS has no per-core clock, so psutil's own percpu answer there is a
-        # one-element list; the stand-in keeps that shape for both call forms.
+        # macOS has no per-core clock, so psutil's own percpu answer there is a one-element list;
         import psutil
 
         def boom(percpu = False):
@@ -405,22 +401,19 @@ class TestOnRealAppleSilicon:
         IF.patch_psutil_cpu_freq()
         reader = getattr(psutil, "cpu_freq", None)
         if reader is None:
-            # Nothing was wrapped, so there is nothing to assert about. Unsloth's
-            # own helper covers this host, and its test asserts that path.
+            # Nothing was wrapped, so there is nothing to assert about.
             pytest.skip("psutil exposes no cpu_freq on this host")
         try:
             sample = reader()
         except Exception as exception:
-            # psutil declined and the tables were unreadable too, so the wrapper
-            # correctly re-raised rather than inventing a number.
+            # psutil declined and the tables were unreadable too, so the wrapper correctly re-raised rather than
             pytest.skip(f"no CPU clock available on this host ({exception})")
         if sample is None:
             pytest.skip("psutil reports the clock as undeterminable on this host")
         assert IF._APPLE_MIN_PLAUSIBLE_CPU_MHZ <= sample.current <= IF._APPLE_MAX_PLAUSIBLE_CPU_MHZ
 
     def test_ioreg_reader_agrees_with_unaffected_psutil(self):
-        # On M1-M3 psutil is already right, so our reader must match it. On M4+
-        # psutil is the broken one, so compare against its x1000 rescale instead.
+        # On M1-M3 psutil is already right, so our reader must match it.
         freq_range = IF._apple_cpu_freq_range_mhz()
         if freq_range is None:
             pytest.skip("ioreg voltage-state tables unavailable on this host")

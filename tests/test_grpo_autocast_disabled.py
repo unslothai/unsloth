@@ -46,11 +46,6 @@ RL_REPLACEMENTS = REPO_ROOT / "unsloth" / "models" / "rl_replacements.py"
 SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
-# ---- the premise ---------------------------------------------------------
-#
-# Every check drives torch.amp.autocast(device_type = "cuda"), and on a CPU
-# runner torch hands back a no-op instead. Claiming the device is present is
-# what lets these run anywhere; only torch's dispatch decisions are needed.
 
 
 class _pretend_cuda:
@@ -85,7 +80,6 @@ def test_disabling_autocast_skips_that_check():
             pass
 
 
-# ---- _prepare_inputs, which is injected as source ------------------------
 
 
 def _prepare_inputs_snippet() -> str:
@@ -133,7 +127,6 @@ def test_the_injected_snippet_is_valid_python():
     "precision,has_bf16,expect_enabled",
     [
         # The T4/V100 case, where the bug bites. accelerate never asks for bf16
-        # on this hardware, so that pairing is not a case.
         ("no", False, False),
         ("fp16", False, True),
         (None, False, True),
@@ -157,9 +150,9 @@ def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, exp
     assert namespace["seen"] == [expect_enabled]
 
 
-# ---- _get_per_token_logps and friends, which run as ordinary code --------
 
 
+# _get_per_token_logps and friends, which run as ordinary code --------
 def test_every_autocast_call_passes_enabled():
     """Five call sites share one `self._autocast_dtype`; one left behind would
     still raise, and only on the hardware nobody develops on."""

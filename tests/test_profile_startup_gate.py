@@ -243,11 +243,9 @@ def test_terminate_tree_posix_uses_terminate():
     assert proc.terminated
 
 
-# ---------------------------------------------------------------------------
+
+
 # The budget is only a gate if the workflow asks for it and can see it fail
-# ---------------------------------------------------------------------------
-
-
 def _profile_job() -> dict:
     wf = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
     return wf["jobs"]["profile"]

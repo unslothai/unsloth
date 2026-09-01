@@ -58,7 +58,6 @@ def test_the_other_shapes_of_the_same_break_are_recognised(message):
     "message",
     [
         # A CPU-only or driverless box: torchvision cannot load, and that is
-        # not what this probe is for.
         "libcuda.so.1: cannot open shared object file: No such file or directory",
         "libnvrtc.so: cannot open shared object file: No such file or directory",
         "/lib/libjpeg.so: undefined symbol: jpeg_resync_to_restart",
@@ -179,7 +178,6 @@ def test_the_skip_variable_still_skips_everything():
     probe.assert_not_called()
 
 
-# --- the repair command has to name a wheel that matches the installed torch ---
 
 
 def test_the_repair_names_the_wheel_for_this_torch_patch():
@@ -248,8 +246,8 @@ def test_the_repair_command_keeps_the_backend_torch_was_built_for():
             )
         return str(excinfo.value)
 
-    # CUDA families included: PyPI ships exactly one of them, so `cu118only*`
-    # (pyproject.toml:176) is as mismatched against PyPI's build as ROCm is.
+    # CUDA families included:
+    # CUDA families included: PyPI ships exactly one of them, so `cu118only*` (pyproject.toml:176) is as mismatched
     for tag in ("rocm6.3", "rocm6.2.4", "xpu", "cpu", "cu118", "cu126", "cu128"):
         command = advice(f"2.7.0+{tag}")
         assert f"--index-url https://download.pytorch.org/whl/{tag}" in command, command
@@ -279,11 +277,10 @@ def test_a_build_no_public_index_carries_is_not_sent_to_pip():
         return str(excinfo.value)
 
     for raw, required in (
-        ("2.9.1+rocm7.2.0.lw.git7e1940d4", (0, 24, 1)),  # Radeon Linux extra
-        ("2.9.1+rocmsdk20260116", (0, 24, 1)),  # Radeon Windows extra
-        ("2.7.0+git1a2b3c", (0, 22, 0)),  # built from source
-        ("2.12.0.dev20260801+cpu", (0, 27, 0)),  # nightly
-        # Prereleases past the first: no `a0`/`b0` substring to match on.
+        ("2.9.1+rocm7.2.0.lw.git7e1940d4", (0, 24, 1)),  # Radeon Linux extra Radeon Windows extra built from source
+        ("2.9.1+rocmsdk20260116", (0, 24, 1)),
+        ("2.7.0+git1a2b3c", (0, 22, 0)),
+        ("2.12.0.dev20260801+cpu", (0, 27, 0)),
         ("2.11.0a1+cu128", (0, 26, 0)),
         ("2.11.0b2+cu128", (0, 26, 0)),
         ("2.7.0rc1", (0, 22, 0)),
@@ -318,9 +315,8 @@ def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
         conda = advice("2.5.1")
         assert "pip install" not in conda, conda
         assert "torch==2.5.1" in conda, conda
-        # A different version in the same prefix is pip's, and still gets pip's
-        # command: only the exact match is conda's.
+        # A different version in the same prefix is pip's, and still gets pip's command:
         assert "pip install" in advice("2.6.0")
 
-    # Without the ledger nothing changes: an absent tag still means PyPI.
+    # Without the ledger nothing changes:
     assert "pip install" in advice("2.5.1")

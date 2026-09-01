@@ -39,11 +39,13 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parent.parent
-# Everything that ships. `studio/` covers the installers too: install_python_stack.py
-# reads /sys/class/kfd, the same detection path as utils/hardware/hardware.py. Test
-# trees fall under the narrower import-time rule in test_source_read_encoding.py.
+# Everything that ships.
+# `studio/` covers the installers too: install_python_stack.py reads /sys/class/kfd, the same detection path as
+# utils/hardware/hardware.py.
+# Test trees fall under the narrower import-time rule in test_source_read_encoding.py.
 ROOTS = (REPO / "unsloth", REPO / "studio", REPO / "unsloth_cli")
-# The frontend tree is TypeScript; node_modules is vendored third-party code.
+# The frontend tree is TypeScript;
+# node_modules is vendored third-party code.
 SKIP_DIRS = {"build", "dist", "frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
 GUARDED_METHODS = {"read_text", "write_text"}
 # Path classes, so an unbound `Path.open(p)` shifts every argument one right.
@@ -52,9 +54,9 @@ PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
 PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
 # Calls that return the platform default, so naming one pins nothing.
 PLATFORM_DEFAULT_CALLS = {"getdefaultencoding", "getencoding", "getpreferredencoding"}
-# Modules whose `open` IS the builtin: same signature, same platform default.
+# Modules whose `open` IS the builtin:
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
-# Take an encoding in "t" mode but default to "rb". Value is its positional slot.
+# Take an encoding in "t" mode but default to "rb".
 COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
 # Distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
@@ -62,8 +64,7 @@ UNKNOWN_MODE = object()
 
 def _mode(call: ast.Call, positional_index: int):
     """The call's mode, or UNKNOWN_MODE when it is not a literal."""
-    # A splat hides the mode, so it is unknown rather than absent: falling through to
-    # "r" would flag a call that may resolve to binary, with no compliant way to fix it.
+    # A splat hides the mode, so it is unknown rather than absent:
     if any(isinstance(a, ast.Starred) for a in call.args):
         return UNKNOWN_MODE
     if any(kw.arg is None for kw in call.keywords):
@@ -234,15 +235,12 @@ def _offender(
     func = call.func
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
-        # `Path.read_text(p)` is `p.read_text()` unbound: the instance takes slot 0,
-        # so every argument shifts one place right.
+        # `Path.read_text(p)` is `p.read_text()` unbound:
         shift = 1 if _is_path_class(receiver, modules) or _is_path_attr(func.value) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
                 first = call.args[0]
-                # Bound read_text takes encoding first, so None or "locale" there is a
-                # platform-default read. Any other positional means the receiver is
-                # importlib.metadata's Distribution: a filename, and no encoding at all.
+                # Bound read_text takes encoding first, so None or "locale" there is a platform-default read.
                 if isinstance(first, ast.Constant) and first.value in PLATFORM_DEFAULT_ENCODINGS:
                     return "read_text()"
                 return None
@@ -259,8 +257,7 @@ def _offender(
                 if mode is UNKNOWN_MODE or "t" not in str(mode):
                     return None
                 return None if _names_encoding(call) else f"{compressed}.open()"
-            # Any other imported receiver is somebody else's opener: tarfile takes a
-            # compression mode, Image a binary file. Neither has an encoding to name.
+            # Any other imported receiver is somebody else's opener:
             if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
                 return None
             if _foreign_receiver(func.value, modules) or receiver in foreign:
@@ -318,7 +315,7 @@ def _tracked_sources():
         timeout = 60,
     )
     if listed.returncode != 0:
-        return None  # not a checkout, so fall back to walking
+        return None
     names = listed.stdout.decode("utf-8", errors = "replace").split("\0")
     return [REPO / n for n in names if n]
 
@@ -355,17 +352,16 @@ def test_shipping_code_names_an_encoding():
     )
 
 
+
+
 # The assertion above passes vacuously once the trees are clean, so it cannot tell a
-# working detector from one that always returns None. These pin the detector itself.
-
-
 def test_detects_the_plain_cases():
     assert _offenders_in("from pathlib import Path\np = Path('x')\ns = p.read_text()\n")
     assert _offenders_in("p.write_text('hi')\n")
     assert _offenders_in("f = open('x')\n")
     assert _offenders_in("f = open('x', 'w')\n")
     assert _offenders_in("f = p.open()\n")
-    # Inside a function body too: shipping reads are not import-time.
+    # Inside a function body too:
     assert _offenders_in("def load(p):\n    return p.read_text()\n")
 
 
@@ -382,7 +378,7 @@ def test_accepts_a_pinned_encoding():
 
 
 def test_skips_binary_handles():
-    # Binary has no encoding to name; passing one is a ValueError.
+    # Binary has no encoding to name;
     assert not _offenders_in("f = open('x', 'rb')\n")
     assert not _offenders_in("f = open('x', mode = 'wb')\n")
     assert not _offenders_in("f = p.open('rb')\n")

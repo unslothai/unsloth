@@ -63,13 +63,11 @@ ENGINE = os.environ.get("PW_ENGINE", "chromium")
 PORT = int(os.environ.get("SMOKE_PORT", "5219"))
 PREFERENCES_KEY = "unsloth_chat_preferences"
 
-# Radix animates for ANIMATION_DURATION = 200ms and the scroll lock holds for the
-# same window, so every reading is taken well clear of both.
+# Radix animates for ANIMATION_DURATION = 200ms and the scroll lock holds for the same window, so every reading is
 SETTLE_MS = 600
 
-# The tail of the command the approval card renders. Deliberately past the
 # 60-character slice the trigger shows, so "the user can read it" cannot be
-# satisfied by the trigger label alone.
+# The tail of the command the approval card renders.
 APPROVAL_TAIL = "--and-then-something-nobody-can-see"
 
 CARDS = ("controlled", "uncontrolled", "approval")
@@ -161,8 +159,8 @@ def run(base_url: str, pw) -> dict:
     p = results["problems"]
     s = results["scenes"]
 
-    # `msedge` is a chromium CHANNEL, not an engine: the branded build, which
     # trails Chromium by weeks, so a Chromium-first regression hides there.
+    # `msedge` is a chromium CHANNEL, not an engine:
     if ENGINE == "msedge":
         browser = pw.chromium.launch(channel = "msedge")
     else:
@@ -172,14 +170,12 @@ def run(base_url: str, pw) -> dict:
     console: list[str] = []
     page.on("console", lambda m: console.append(f"{m.type}: {m.text}"))
 
-    # --- 1 baseline -------------------------------------------------------
     fresh(page, base_url, False)
     s["1_baseline"] = probe(page)
     for card in CARDS:
         if s["1_baseline"][card]["aria_expanded"] != "true":
             p.append(f"1: {card} is not open with the preference OFF (baseline broken)")
 
-    # --- 2 fresh mount ----------------------------------------------------
     fresh(page, base_url, True)
     s["2_fresh_mount"] = probe(page)
     for card in ("controlled", "uncontrolled"):
@@ -190,7 +186,6 @@ def run(base_url: str, pw) -> dict:
     if s["2_fresh_mount"]["answer_top"] >= s["1_baseline"]["answer_top"]:
         p.append("2: the answer did not move up when activity collapsed")
 
-    # --- 3 manual expansion ----------------------------------------------
     page.click('[data-probe="controlled-trigger"]')
     page.click('[data-probe="uncontrolled-trigger"]')
     settle(page)
@@ -207,7 +202,6 @@ def run(base_url: str, pw) -> dict:
         elif after_updates[card]["aria_expanded"] != "true":
             p.append(f"3: {card} LOST its manual expansion across live updates")
 
-    # --- 4 live toggle, cards and group ----------------------------------
     fresh(page, base_url, False)
     page.click('[data-probe="group-trigger"]')
     settle(page)
@@ -221,7 +215,6 @@ def run(base_url: str, pw) -> dict:
         elif after[name]["aria_expanded"] == "true":
             p.append(f"4: {name} ignored the preference turning on while mounted")
 
-    # --- 5 persistence ----------------------------------------------------
     stored = page.evaluate("(k) => window.localStorage.getItem(k)", PREFERENCES_KEY)
     open_page(page, base_url)
     scene = probe(page)
@@ -234,7 +227,6 @@ def run(base_url: str, pw) -> dict:
         if scene[card]["aria_expanded"] == "true":
             p.append(f"5: {card} is open after a reload with the preference stored")
 
-    # --- 6 scroll ---------------------------------------------------------
     def close_one_card(via: str) -> tuple[int, int]:
         """Close ONE card, two ways, from an identical start.
 
@@ -271,7 +263,7 @@ def run(base_url: str, pw) -> dict:
         "chevron_answer_median": chevron_answer,
         "preference_answer_median": preference_answer,
     }
-    # A few pixels of slack for sub-pixel rounding; the two paths measure identical.
+    # A few pixels of slack for sub-pixel rounding;
     if abs(preference_answer - chevron_answer) > 8:
         p.append(
             "6: a preference-driven close moves the page differently from a clicked close "
@@ -281,7 +273,6 @@ def run(base_url: str, pw) -> dict:
         if any(m[1] != 0 for m in runs):
             p.append(f"6: a {label} close moved the scroll position: {[m[1] for m in runs]}")
 
-    # --- 7 approval -------------------------------------------------------
     fresh(page, base_url, True)
     page.evaluate("() => window.__setAwaitingApproval(true)")
     settle(page)
@@ -304,7 +295,6 @@ def run(base_url: str, pw) -> dict:
         if granted[card]["aria_expanded"] == "true":
             p.append(f"7: the {card} card stayed pinned open after approval was granted")
 
-    # --- 8 strict mode ----------------------------------------------------
     fresh(page, base_url, True, query = "&strict=1")
     scene = probe(page)
     s["8_strict_mode"] = scene
@@ -315,7 +305,6 @@ def run(base_url: str, pw) -> dict:
     if loop_errors:
         p.append(f"8: React reported a render loop: {loop_errors[0]}")
 
-    # --- 9 rtl ------------------------------------------------------------
     fresh(page, base_url, True, query = "&rtl=1")
     scene = probe(page)
     s["9_rtl"] = scene
@@ -323,7 +312,6 @@ def run(base_url: str, pw) -> dict:
         if scene[card]["aria_expanded"] == "true":
             p.append(f"9: {card} is open under dir=rtl with the preference ON")
 
-    # --- 10 reduced motion ------------------------------------------------
     reduced = browser.new_context(viewport = {"width": 1200, "height": 900}, reduced_motion = "reduce")
     reduced_page = reduced.new_page()
     fresh(reduced_page, base_url, True)
@@ -334,7 +322,6 @@ def run(base_url: str, pw) -> dict:
             p.append(f"10: {card} is open under prefers-reduced-motion")
     reduced.close()
 
-    # --- 11 toggle storm --------------------------------------------------
     fresh(page, base_url, False)
     page.evaluate(
         """() => {
@@ -349,9 +336,7 @@ def run(base_url: str, pw) -> dict:
     if scene["uncontrolled"]["aria_expanded"] != "false":
         p.append("11: the uncontrolled card did not converge after 40 preference flips")
 
-    # --- 12 storage denied -------------------------------------------------
-    # Safari private browsing and a cookies-blocked profile both surface as
-    # localStorage throwing rather than as an absent API.
+    # 12 storage denied ------------------------------------------------- Safari private browsing and a cookies-blocked
     denied = browser.new_context(viewport = {"width": 1200, "height": 900})
     denied.add_init_script(
         """() => {
@@ -373,8 +358,7 @@ def run(base_url: str, pw) -> dict:
         scene["declared_default"] = denied_page.evaluate("() => window.__getDefaultPreference()")
         scene["page_errors"] = denied_errors
         s["12_storage_denied"] = scene
-        # Against the DECLARED default, not a hard-coded one: which default
-        # ships is a product decision, this scene is about failing safe.
+        # Against the DECLARED default, not a hard-coded one:
         if scene["preference"] is not scene["declared_default"]:
             p.append(
                 "12: a denied localStorage did not land on the declared default "
@@ -391,7 +375,6 @@ def run(base_url: str, pw) -> dict:
         p.append(f"12: the page does not survive a denied localStorage: {exc}")
     denied.close()
 
-    # --- 13 malformed record -----------------------------------------------
     malformed: dict = {}
     for label, raw in [
         ('string "false"', '"false"'),
@@ -410,8 +393,8 @@ def run(base_url: str, pw) -> dict:
             if raw is None
             else '{"state":{"collapseToolActivityByDefault":' + raw + '},"version":0}'
         )
-        # add_init_script takes no arguments, so values are baked in; json.dumps
-        # also makes the corrupt-JSON case survive being a string literal.
+        # add_init_script takes no arguments, so values are baked in;
+        # json.dumps also makes the corrupt-JSON case survive being a string literal.
         seeded.add_init_script(
             f"window.localStorage.setItem({json.dumps(PREFERENCES_KEY)}, {json.dumps(blob)});"
         )
@@ -424,9 +407,8 @@ def run(base_url: str, pw) -> dict:
             p.append(f"13: {label} takes the page down")
         seeded.close()
     s["13_malformed_record"] = malformed
-    # Reported, not asserted: `??` accepts any non-nullish JSON value, which is
-    # true of every boolean in this store and unreachable from Studio's own UI.
 
+    # Reported, not asserted: `??` accepts any non-nullish JSON value, which is true of every boolean in this store and
     results["console"] = console
     browser.close()
     return results

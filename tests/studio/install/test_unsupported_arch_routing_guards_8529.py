@@ -66,26 +66,24 @@ def _load_stack_module():
 stack_mod = _load_stack_module()
 
 
-# The four arches the messaging table owns. Nothing here may produce an index.
+# The four arches the messaging table owns.
 _UNSUPPORTED_ARCHES = ["gfx803", "gfx1010", "gfx1011", "gfx1012"]
 
-# The same arches as the installers may actually receive them. UNSLOTH_ROCM_GFX_ARCH
-# is user-typed (so any case), and a gcnArchName copied out of hipinfo/rocminfo carries
-# the target features ("gfx1010:xnack-"), which is why the override reader lowercases
-# and splits on ":". A routing bypass written against a prefix would take these too.
+# The same arches as the installers may actually receive them.
+# UNSLOTH_ROCM_GFX_ARCH is user-typed (so any case), and a gcnArchName copied out of hipinfo/rocminfo carries the target
+# features ("gfx1010:xnack-"), which is why the override reader lowercases and splits on ":".
 _UNSUPPORTED_ARCH_INPUTS = (
     _UNSUPPORTED_ARCHES
     + [a.upper() for a in _UNSUPPORTED_ARCHES]
     + [f"{a}:xnack-" for a in _UNSUPPORTED_ARCHES]
 )
 
-# Arches that MUST route, so that "no index" cannot pass for the right answer when the
-# table has been renamed, emptied or parsed wrong. gfx1030 is RDNA 2 (RX 6800 XT) and
-# gfx1100 is RDNA 3 (RX 7900 XTX); both ship AMD wheels today.
+# Arches that MUST route, so that "no index" cannot pass for the right answer when the table has been renamed, emptied
+# or parsed wrong.
+# gfx1030 is RDNA 2 (RX 6800 XT) and gfx1100 is RDNA 3 (RX 7900 XTX);
 _ROUTABLE_ARCHES = [("gfx1030", "gfx103X-all"), ("gfx1100", "gfx110X-all")]
 
 
-# ── The Python resolvers, called rather than inspected ───────────────────────
 
 
 @pytest.fixture(autouse = True)
@@ -107,8 +105,7 @@ class TestPythonIndexResolversAreAskedDirectly:
     @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCH_INPUTS)
     @pytest.mark.parametrize("is_windows", [False, True], ids = ["linux", "windows"])
     def test_no_unsupported_arch_gets_an_index_url(self, arch, is_windows):
-        # IS_WINDOWS is read inside _amd_arch_index_url, so both platform arms are
-        # reachable from this host; the Windows arm is the one #8529 was filed from.
+        # IS_WINDOWS is read inside _amd_arch_index_url, so both platform arms are reachable from this host;
         with patch.object(stack_mod, "IS_WINDOWS", is_windows):
             url = stack_mod._amd_arch_index_url(arch)
         assert url is None, f"{arch} was routed to {url!r}; it must fall through to CPU torch"
@@ -125,6 +122,7 @@ class TestPythonIndexResolversAreAskedDirectly:
     def test_no_unsupported_arch_reaches_repo_amd_com(self, arch, is_windows):
         """The same claim stated as the consequence, so that a resolver which starts
         returning some other truthy non-index string still fails here."""
+        # reachable from this host; the Windows arm is the one #8529 was filed from.
         with patch.object(stack_mod, "IS_WINDOWS", is_windows):
             url = stack_mod._amd_arch_index_url(arch) or ""
         assert "repo.amd.com" not in url, f"{arch} reaches an AMD wheel index: {url!r}"
@@ -146,7 +144,6 @@ class TestPythonIndexResolversAreAskedDirectly:
         assert arch not in stack_mod._GFX_TO_AMD_INDEX_ARCH
 
 
-# ── install.sh's case table, executed under sh ───────────────────────────────
 
 
 def _sh_function_body(source: str, name: str) -> str:
@@ -216,14 +213,11 @@ class TestInstallShIndexFamilyRuns:
         assert calls >= 3, f"install.sh calls the index-family selector {calls} times, expected 3"
 
 
-# ── install.sh's whole index selector, executed under sh ─────────────────────
 
 
-# What get_torch_index_url calls that is not in the two functions extracted below. Each
-# stub is the shape of a host with an AMD GPU, no NVIDIA GPU and no readable ROCm
-# userspace, the arrangement that carries a user-pinned arch all the way to the routing
-# decision. The probe stub reproduces the override arm of the real _probe_amd_gfx_arch
-# so a case-shifted pin arrives at the selector as it would on a real host.
+# What get_torch_index_url calls that is not in the two functions extracted below.
+# Each stub is the shape of a host with an AMD GPU, no NVIDIA GPU and no readable ROCm userspace, the arrangement that
+# carries a user-pinned arch all the way to the routing decision.
 _INDEX_URL_STUBS = """
 uname() { case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac; }
 _has_usable_nvidia_gpu() { return 1; }
@@ -253,8 +247,7 @@ def _run_sh_get_torch_index_url(arch: str, rocm_tag: str = "") -> "tuple[str, st
         + "\nget_torch_index_url\n"
     )
     env = dict(os.environ)
-    # The two pins short-circuit the whole selector, and a mirror override would
-    # rewrite the base out from under the assertions.
+    # The two pins short-circuit the whole selector, and a mirror override would rewrite the base out from under the
     for _v in (
         "UNSLOTH_TORCH_INDEX_URL",
         "UNSLOTH_TORCH_INDEX_FAMILY",
@@ -320,21 +313,16 @@ class TestInstallShIndexSelectorRuns:
         assert url.endswith("/rocm6.4"), f"the AMD branch was not reached: {url!r}"
 
 
-# ── studio/setup.sh: the unsupported lookup is report-only ───────────────────
 
 
-# setup.sh forwards `--rocm-gfx "$_setup_gfx"` to install_llama_prebuilt.py and the whisper
-# installer, and keys the supported table on $_setup_mkt. The unsupported lookup exists to
 # print a line, so its result must not flow into either: assigning it to _setup_gfx passes
-# every arch assertion in this file and still ships --rocm-gfx gfx803.
+# setup.sh forwards `--rocm-gfx "$_setup_gfx"` to install_llama_prebuilt.py and the whisper installer, and keys the
 _SETUP_SH_UNSUPPORTED_HELPERS = ("_setup_unsupported_gfx_any", "_setup_unsupported_gfx_from_name")
 
 
 _ROUTED_SETUP_VARS = ("_setup_gfx", "_setup_mkt")
 
-# Assignment targets anywhere in a line, not only at its start: the lookup is
-# captured mid-condition (`elif _setup_unsup_gfx=$(...); then`), which is exactly
-# where the routed variable would be substituted for the report-only one.
+# Assignment targets anywhere in a line, not only at its start:
 _SH_ASSIGN_TARGET = re.compile(r"(?:^|[;&|(]|\s)([A-Za-z_][A-Za-z0-9_]*)=")
 
 
@@ -355,8 +343,7 @@ def test_setup_sh_never_feeds_the_unsupported_lookup_into_a_routed_variable():
                 f"That variable selects --rocm-gfx for the llama.cpp and whisper installers, "
                 f"so an uncovered card would be built for as if it had wheels"
             )
-    # The same ban one hop later: capturing the lookup in its own variable and then
-    # copying that into the routed one is the same mutation written in two lines.
+    # The same ban one hop later:
     relayed = [
         line.strip()
         for line in code
@@ -384,7 +371,6 @@ def test_setup_sh_never_assigns_an_unsupported_arch_to_the_routed_variable(arch)
     assert not hits, f"studio/setup.sh routes {arch} into --rocm-gfx: {hits}"
 
 
-# ── The PowerShell copies of the same map ────────────────────────────────────
 
 
 def _ps_block(source: str, header: str, opener: str, closer: str) -> str:
@@ -429,9 +415,9 @@ def _ps_arches(block: str) -> "list[str]":
     return re.findall(r"""['"]?(gfx[0-9a-z]+)(?![0-9a-zA-Z-])""", stripped)
 
 
-# Each PowerShell routing table, checked in its OWN file. The parity test in
-# test_rocm_arch_table_parity.py compares the copies against each other, which stays
-# green when the same wrong arch is added to all of them.
+# Each PowerShell routing table, checked in its OWN file.
+# The parity test in test_rocm_arch_table_parity.py compares the copies against each other, which stays green when the
+# same wrong arch is added to all of them.
 _PS_TABLES = [
     (_INSTALL_PS1, "$archFamilyMap = @{", "{", "}"),
     (_SETUP_PS1, "$archFamilyMap = @{", "{", "}"),
@@ -439,9 +425,7 @@ _PS_TABLES = [
 ]
 _PS_TABLE_IDS = [f"{p.name}:{h.split()[0][1:]}" for p, h, _o, _c in _PS_TABLES]
 
-# Every way PowerShell can change $archFamilyMap: a keyed assignment, a rebind, a
-# merge, or one of the IDictionary mutators. Reads (`.ContainsKey($a)`, `$map[$a]`
-# as a value) deliberately do not match.
+# Every way PowerShell can change $archFamilyMap:
 _PS_MAP_WRITE = re.compile(
     r"\$archFamilyMap\s*(?:\[[^\]]*\]\s*=(?!=)|=(?!=)|\+=|\.\s*(?:Add|Remove|Clear|set_Item)\s*\()",
     re.IGNORECASE,
@@ -490,8 +474,7 @@ class TestPowerShellRoutingTables:
             f"{path.name}: $archFamilyMap is modified after its declaration ({writes}), "
             f"so the routing this file checks is not the routing the installer performs"
         )
-        # Positive control: the map is still consulted below the declaration, so the
-        # region searched above is the one a late addition would have to live in.
+        # Positive control: the map is still consulted below the declaration, so the region searched above is the one a
         assert (
             "$archFamilyMap.ContainsKey" in rest
         ), f"{path.name}: nothing reads $archFamilyMap any more (renamed or removed?)"
@@ -515,9 +498,6 @@ class TestPowerShellMapEvaluated:
             f"}}\n"
             f"if ($archFamilyMap.ContainsKey('gfx1030')) {{ 'CONTROL_OK' }}\n"
         )
-        # run_pwsh, not subprocess.run: the returncode assertion below reads a non-zero exit
-        # as $archFamilyMap failing to evaluate, and a signal-killed interpreter would be
-        # filed as that same map being broken. See tests/_shared/unsloth_pwsh_runner.py.
         out = run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             stdout = subprocess.PIPE,
@@ -546,9 +526,9 @@ class TestPowerShellMapEvaluated:
             f"}}\n"
             f"if ($_rocmWheelArches -contains 'gfx1030') {{ 'CONTROL_OK' }}\n"
         )
-        # run_pwsh, not subprocess.run: a crashed interpreter prints nothing, so the
-        # CONTROL_OK check below would see the positive control missing and report
-        # setup.ps1's $_rocmWheelArches as wrong. See tests/_shared/unsloth_pwsh_runner.py.
+        # run_pwsh, not subprocess.run: a crashed interpreter prints nothing, so the CONTROL_OK check below would see
+        # the positive control missing and report setup.ps1's $_rocmWheelArches as wrong.
+        # See tests/_shared/unsloth_pwsh_runner.py.
         out = run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             stdout = subprocess.PIPE,
@@ -563,12 +543,10 @@ class TestPowerShellMapEvaluated:
         assert not routed, f"setup.ps1: {routed} reach an AMD wheel index"
 
 
-# ── The second, independent arch to repo.amd.com gate ────────────────────────
 
 
-# The Strix reroute picks a per-arch index without consulting either family map, so it is
 # a routing site the assertions above cannot see. Reachability is narrow, but "narrow" is
-# not the property this file defends, and the literal is one line per source.
+# The Strix reroute picks a per-arch index without consulting either family map, so it is a routing site the assertions
 _STRIX_SITES = [
     (_INSTALL_SH, r"^\s*(gfx[0-9a-z|]+)\)\s+_strix_gfx="),
     (_STACK_PY, r"^\s*_strix_gfx\s*=\s*\{([^}]*)\}"),
@@ -591,7 +569,6 @@ def test_the_strix_reroute_names_no_unsupported_arch(source_path, pattern):
     assert "gfx1151" in named, f"{source_path.name}: extraction matched nothing useful"
 
 
-# ── The CPU summary must blame the card the fallback is actually about ───────
 
 
 _SUMMARY_GUARD_ANCHOR = "_covered_disp_gfx=$(_infer_linux_amd_gfx_arch"
@@ -694,7 +671,6 @@ class TestInstallShCpuSummaryBlamesTheRightCard:
         assert _run_summary_guard(tmp_path, [_RX_7900]) == "GENERIC"
 
 
-# ── setup.sh's KFD report must blame the right card too ──────────────────────
 
 
 _SETUP_SH_FUNCS = (
@@ -782,8 +758,6 @@ class TestSetupShReportBlamesTheRightCard:
             stderr = subprocess.DEVNULL,
             text = True,
             timeout = 30,
-            # sh itself still has to be found; the point is that lspci is not on PATH,
-            # so a fallback that ran would come back empty and fail this.
             env = {"PATH": os.path.dirname(shutil.which("sh") or "/bin")},
         )
         assert out.stdout.strip() == "gfx803"
@@ -821,6 +795,8 @@ class TestSetupShReportBlamesTheRightCard:
             stderr = subprocess.DEVNULL,
             text = True,
             timeout = 30,
+            # sh itself still has to be found;
+            # the point is that lspci is not on PATH, so a fallback that ran would come back empty and fail this.
             env = {"PATH": os.path.dirname(shutil.which("sh") or "/bin")},
         )
         assert out.stdout.strip() == "gfx1010"
@@ -880,7 +856,6 @@ def test_setup_sh_treats_a_blank_index_pin_as_unset(url, family, pinned):
     )
 
 
-# ── The five unsupported tables must agree, not merely exist ─────────────────
 
 
 _PARITY_NAMES = [
@@ -959,9 +934,7 @@ def _ps_unsupported(path: Path, names):
         f"  Write-Output $hit\n"
         f"}}\n"
     )
-    # run_pwsh, not subprocess.run: this run's stdout is compared line by line against the
-    # Python table, so an interpreter that died mid-list would show up as the PowerShell
-    # name-to-arch rows disagreeing. See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh, not subprocess.run:
     out = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         stdout = subprocess.PIPE,

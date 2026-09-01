@@ -11,19 +11,18 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0
-# Test floor + each safe minor since.
+# pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
 BNB_TAGS = [
     "0.45.5",
-    "0.47.0",  # skip 0.46.0 (broken)
-    "0.49.2",  # skip 0.48.0 (broken)
+    "0.47.0",  # skip 0.46.0 (broken) skip 0.48.0 (broken)
+    "0.49.2",
     "main",
 ]
 
 
-# bnb.functional dequantize_4bit / quantize_4bit: the public 4-bit surface unsloth kernels call into.
 
 
+# bnb.functional dequantize_4bit / quantize_4bit:
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_functional_4bit(tag: str):
     candidates = [
@@ -40,9 +39,9 @@ def test_bnb_functional_4bit(tag: str):
     )
 
 
-# bnb.nn.Linear4bit / Params4bit: peft + unsloth isinstance-check these; renaming breaks 4-bit LoRA.
 
 
+# bnb.nn.Linear4bit / Params4bit:
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_nn_linear4bit_classes(tag: str):
     candidates = [
@@ -67,12 +66,12 @@ def test_bnb_nn_linear4bit_classes(tag: str):
     )
 
 
-# Coverage extension (2026-05): every bnb symbol unsloth + unsloth-zoo touch.
 
 
+
+
+# Coverage extension (2026-05):
 # Top-level export: unsloth/kernels/utils.py + zoo vllm_utils.py call bnb.matmul_4bit(...).
-
-
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_matmul_4bit_top_level(tag: str):
     src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py")

@@ -177,7 +177,7 @@ class TestMemoization:
             first = stack_mod._probe_torch_runtime()
         assert first[2] == "2.9.1+cu128"
 
-        # A repair path reinstalls torch; the next classification must see the new build.
+        # A repair path reinstalls torch;
         with (
             patch.object(stack_mod, "USE_UV", False),
             patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),
@@ -313,7 +313,6 @@ class TestConsumersShareTheProbe:
     def test_probe_installed_torch_version_uses_the_shared_result(self):
         with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
             assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
-            # Second consumer, same run: no new interpreter.
             assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
         assert mock_run.call_count == 1
 
@@ -337,7 +336,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_cuda_build(self, mock_pip):
-        out = _probe_result("||12.8")  # no version, cuda "12.8"
+        out = _probe_result("||12.8")
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -350,7 +349,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_rocm_build(self, mock_pip):
-        out = _probe_result("|7.1.12345|")  # no version, hip set
+        out = _probe_result("|7.1.12345|")
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -363,7 +362,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_leaves_a_cpu_build_with_no_version_alone(self, mock_pip):
-        # Every field empty is a CPU build with an unreadable version: nothing to repair.
+        # Every field empty is a CPU build with an unreadable version:
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -376,7 +375,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_leaves_the_venv_alone_when_the_probe_said_nothing(self, mock_pip):
-        # Exit 0 with no line of ours: we learned nothing, so we touch nothing.
+        # Exit 0 with no line of ours:
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",

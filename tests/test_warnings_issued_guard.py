@@ -70,7 +70,6 @@ class _Bare(torch.nn.Module):
     """A module with no `warnings_issued`, exactly like transformers >= 5.1."""
 
 
-# ---- the behaviour ---------------------------------------------------------
 
 
 def test_a_module_without_the_attribute_gets_a_dict():
@@ -133,7 +132,6 @@ def test_running_twice_is_idempotent():
     assert m.warnings_issued == {"estimate_tokens": True}
 
 
-# ---- what it deliberately does not touch -----------------------------------
 
 
 @pytest.mark.parametrize("value", [None, "Qwen/Qwen2.5-1.5B", 7, object()])
@@ -157,7 +155,6 @@ def test_a_model_that_refuses_the_assignment_does_not_raise():
     GUARD(_Locked())  # must not propagate
 
 
-# ---- through the real wrapper, against a trl-shaped trainer ----------------
 
 
 @dataclasses.dataclass
@@ -233,9 +230,9 @@ def test_no_model_at_all_still_reaches_the_wrapped_init():
         _wrapped()()
 
 
+
+
 # ---- the source, so the fix cannot be half-applied -------------------------
-
-
 def _new_init_body():
     tree = ast.parse(SRC)
     for node in ast.walk(tree):
@@ -266,7 +263,7 @@ def test_the_guard_is_outside_the_version_branch():
     found = []
     for node in ast.walk(ns):
         if isinstance(node, ast.FunctionDef) and node.name == "new_init":
-            for stmt in node.body:  # top level of new_init only
+            for stmt in node.body:
                 for sub in ast.walk(stmt):
                     if (
                         isinstance(sub, ast.Call)
@@ -284,7 +281,6 @@ def test_the_generated_compiled_guard_is_still_there():
     assert "model.warnings_issued = {}" in rl
 
 
-# ---- the upstream facts this rests on --------------------------------------
 
 
 def test_trl_still_writes_the_attribute_unconditionally():
@@ -340,20 +336,19 @@ def test_every_trl_trainer_that_writes_it_goes_through_the_wrapper():
     writers = set()
     for path in root.rglob("*_trainer.py"):
         if "experimental" in path.relative_to(root).parts:
-            continue  # not exported from trl.trainer, so never wrapped by design
+            continue
         try:
             text = path.read_text(encoding = "utf-8")
         except OSError:
-            continue
+            continue  # not exported from trl.trainer, so never wrapped by design
         if 'model.warnings_issued["estimate_tokens"] = True' in text:
             if 'hasattr(model, "warnings_issued")' in text:
-                continue  # trl guards it itself here
+                continue
             writers.add(path.stem[: -len("_trainer")])
 
     if not writers:
         pytest.skip("no trl trainer writes the attribute any more")
 
-    # trl file stems are snake_case; the wrapped names are CamelCase.
     normalized = {w.replace("_", "").lower() for w in wrapped}
     unwrapped = sorted(w for w in writers if w.replace("_", "") not in normalized)
     assert unwrapped == [], f"trl trainers writing warnings_issued but unwrapped: {unwrapped}"
@@ -363,11 +358,6 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
-# ---- the kwargs the wrapper exists to move -------------------------------
-#
-# A real trl config, not a stand-in: `new_init` branches on
-# isinstance(TrainingArguments), so a plain dataclass takes the other branch and
-# the tests would pass against the bug.
 
 
 def _sft_config():

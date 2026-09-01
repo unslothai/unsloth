@@ -109,9 +109,6 @@ def _build(
     return ns
 
 
-# --------------------------------------------------------------------------------------
-# 1. An explicit "sequential" is a placement, not the default.
-# --------------------------------------------------------------------------------------
 
 
 def test_the_env_opt_in_leaves_an_explicitly_requested_sequential_alone(monkeypatch):
@@ -179,9 +176,6 @@ def test_sentence_transformers_hands_the_nested_load_a_plain_value():
     ), "the process-wide pin is back; it is visible to every other thread"
 
 
-# --------------------------------------------------------------------------------------
-# 2. max_memory arrived twice.
-# --------------------------------------------------------------------------------------
 
 
 def test_a_caller_supplied_max_memory_does_not_collide_with_the_measured_one():
@@ -338,11 +332,9 @@ def test_the_callers_kwargs_dict_is_not_mutated():
     assert caller_kwargs == {"max_memory": {0: 4 * 2**30, 1: 4 * 2**30}, "retained_rows": 8}
 
 
-# --------------------------------------------------------------------------------------
+
+
 # 3. The legacy diffusion checkpoint the planner cannot rebuild.
-# --------------------------------------------------------------------------------------
-
-
 def test_the_legacy_diffusion_alias_declines_planning_with_its_own_reason():
     """`diffusion_gemma` loads only because `_load_diffusion_config` catches AutoConfig's
     unknown-model error and rewrites the type in memory. The planner is given a name, not a
@@ -369,9 +361,6 @@ def test_the_legacy_diffusion_alias_declines_planning_with_its_own_reason():
     raise AssertionError("no resolve_unsloth_device_map call in diffusion.py")
 
 
-# --------------------------------------------------------------------------------------
-# 4. Second round: the caller's device set, the marker, and the prequantized skip list.
-# --------------------------------------------------------------------------------------
 
 
 def test_the_caller_max_memory_keys_are_the_devices_the_load_may_use():
@@ -410,7 +399,7 @@ def test_a_device_the_caller_names_but_we_cannot_measure_survives():
     budgets = planner.calls[0][1]["max_memory"]
     assert budgets[0] == 4 * 2**30
     assert budgets["cpu"] == 30 * 2**30
-    # Unreadable and unmeasured: theirs, verbatim, for the planner to make sense of.
+    # Unreadable and unmeasured:
     assert budgets["disk"] == "unreadable"
 
 
@@ -486,11 +475,9 @@ def test_a_prequantized_hybrid_checkpoint_declines_rather_than_mis_sizing_mamba(
     )
 
 
-# --------------------------------------------------------------------------------------
+
+
 # 5. Probing is not free: a withheld card must not be touched.
-# --------------------------------------------------------------------------------------
-
-
 def test_gpus_the_caller_withheld_are_never_probed():
     """`mem_get_info` initialises a CUDA context on each device it touches, and a card the
     caller withheld is very likely busy with the workload they withheld it for."""

@@ -32,7 +32,6 @@ COLAB_2026_05 = {
 }
 
 
-# ---------- R-INST-001 : forbid git+ HEAD ------------------------------- #
 
 
 def test_r_inst_001_fires_on_transformers_git_head():
@@ -60,9 +59,9 @@ def test_r_inst_001_allowlist_unsloth_zoo_git():
     assert findings == []
 
 
+
+
 # ---------- R-INST-003 : peft / torchao floor (PR #258) ------------------ #
-
-
 def test_r_inst_003_fires_when_peft_19_with_no_torchao_bump():
     cell = """%%capture
 !pip install --no-deps peft trl unsloth_zoo
@@ -89,9 +88,9 @@ def test_r_inst_003_silent_when_torchao_pinned_high():
     assert findings == []
 
 
+
+
 # ---------- R-INST-004 : torch / torchcodec ABI (PR #261a) --------------- #
-
-
 def test_r_inst_004_fires_torch_2_7_with_torchcodec_0_6():
     cell = """%%capture
 !uv pip install "torch==2.7.1"
@@ -110,9 +109,10 @@ def test_r_inst_004_silent_when_torch_2_7_with_torchcodec_0_5():
     assert findings == []
 
 
+
+
 # ---------- R-INST-005 : transformers + tokenizers window (PRs #261b/#264) -- #
-
-
+# ---------- R-INST-001 : forbid git+ HEAD ------------------------------- #
 def test_r_inst_005_fires_no_deps_transformers_55_without_tokenizers_pin(monkeypatch):
     """PR #264: --no-deps transformers==5.5.0 leaves Colab tokenizers in place; breaks if Colab ships tokenizers > 0.23.0."""
     cell = """%%capture
@@ -167,8 +167,8 @@ def test_r_inst_005_silent_without_no_deps(monkeypatch):
     assert findings == []
 
 
-# ---------- R-API-003 : suboptimal optim warning (PR #221, partial) ------ #
 
+# ---------- R-API-003 : suboptimal optim warning (PR #221, partial) ------ #
 import json
 from pathlib import Path as _P
 
@@ -200,7 +200,6 @@ def test_r_api_003_silent_on_adamw_8bit():
     assert findings == []
 
 
-# ---------- Environment classifier --------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -221,21 +220,17 @@ def test_environment_classifier(path, expected):
     assert nv.target_environment(path) == expected
 
 
-# ---------- Integration: walk the live notebooks repo (skipped if absent) -- #
 
 
 def _live_notebooks_dir(candidates: list[Path] | None = None) -> Path | None:
     if candidates is None:
         candidates = [
-            Path(__file__).resolve().parents[3] / "notebooks",  # workspace sibling
+            Path(__file__).resolve().parents[3] / "notebooks",
             Path("/mnt/disks/unslothai/ubuntu/workspace_12/notebooks"),
         ]
     for p in candidates:
-        # is_file() only swallows ENOENT/ENOTDIR; an unreadable candidate raises
-        # EACCES on Python <= 3.13 (3.14 suppresses it, gh-101357). These are
-        # absolute paths outside the repo, so on a shared machine one can belong
-        # to another user. The skipif decorators below call this at import time,
-        # so a raise here aborts collection of the whole file.
+        # is_file() only swallows ENOENT/ENOTDIR;
+        # an unreadable candidate raises EACCES on Python <= 3.13 (3.14 suppresses it, gh-101357).
         try:
             if (p / "update_all_notebooks.py").is_file():
                 return p

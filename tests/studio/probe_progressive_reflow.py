@@ -56,8 +56,7 @@ def info(m: str) -> None:
     print(f"[pm-reflow] {m}", flush = True)
 
 
-# Re-open, scroll the reader up, grow one row ABOVE them by a known amount while the window is
-# still open, and watch the row they are looking at.
+# Re-open, scroll the reader up, grow one row ABOVE them by a known amount while the window is still open, and watch
 RUN_JS = """
 async ([growPx, settleMs]) => {
   const api = window.__heavyThread;
@@ -141,8 +140,8 @@ def main() -> int:
                 opened = pg.evaluate(RUN_JS, [GROW_PX, 2000])
                 pg.mouse.move(640, 450)
                 pg.mouse.wheel(0, -4000)
-                # The viewport is scroll-smooth, so the wheel animates. Let it finish or the probe
-                # measures its own gesture: the first version reported 4332px on BOTH arms.
+                # The viewport is scroll-smooth, so the wheel animates.
+                # Let it finish or the probe measures its own gesture: the first version reported 4332px on BOTH arms.
                 pg.wait_for_function(
                     """() => { const el = window.__heavyThread.viewport();
                         const settled = window.__rfTop === el.scrollTop;

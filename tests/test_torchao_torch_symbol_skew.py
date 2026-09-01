@@ -45,7 +45,6 @@ from unsloth.import_fixes import (  # noqa: E402
 GPU_INIT = ROOT / "unsloth" / "_gpu_init.py"
 
 
-# ---- the placeholder ------------------------------------------------------
 
 
 def test_it_can_be_imported():
@@ -89,7 +88,6 @@ def test_it_is_marked_as_ours():
     assert getattr(ph, "__unsloth_placeholder__", False) is True
 
 
-# ---- the gating -----------------------------------------------------------
 
 
 def test_it_is_a_no_op_when_torch_already_has_the_symbols():
@@ -137,7 +135,6 @@ def test_calling_it_twice_is_stable():
     assert second is False or first == second
 
 
-# ---- the wiring -----------------------------------------------------------
 
 
 def test_it_runs_before_unsloth_zoo_is_imported():
@@ -183,7 +180,6 @@ def test_symbols_torch_already_provides_are_never_replaced():
     assert F.scaled_dot_product_attention is real
 
 
-# ---- the fix actually unblocks the import --------------------------------
 
 
 def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
@@ -192,16 +188,13 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
 
-    # conftest.py imports unsloth, so on an affected environment the
-    # placeholders are already on F. Drop them, or the "before" half cannot
-    # raise, this test skips itself, and the guard test after it fails.
+    # conftest.py imports unsloth, so on an affected environment the placeholders are already on F.
     for n in _TORCHAO_TORCH_SYMBOLS:
         if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
             delattr(F, n)
 
-    # Gate on the two symbols the line below imports: `any` over the whole
-    # tuple is always true (scaled_dot_product_attention always exists), which
-    # made this test skip on every machine.
+    # Gate on the two symbols the line below imports: `any` over the whole tuple is always true
+    # (scaled_dot_product_attention always exists), which made this test skip on every machine.
     if all(hasattr(F, n) for n in ("ScalingType", "SwizzleType")):
         pytest.skip("this torch already provides ScalingType/SwizzleType")
 
@@ -220,7 +213,7 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
         from torch.nn.functional import ScalingType
 
         with pytest.raises(RuntimeError):
-            ScalingType.DYNAMIC  # still refuses to be used
+            ScalingType.DYNAMIC
     finally:
         for n in _TORCHAO_TORCH_SYMBOLS:
             if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
@@ -238,7 +231,6 @@ def test_the_cleanup_in_the_test_above_is_real():
         ), f"a placeholder for {n} leaked out of a test"
 
 
-# ---- the Mac / MLX path ---------------------------------------------------
 
 INIT = ROOT / "unsloth" / "__init__.py"
 
@@ -295,17 +287,16 @@ def test_the_mlx_call_cannot_break_the_import():
     assert "except Exception" in window and "pass" in window
 
 
-# ---- version gating across the strings that actually ship ----------------
 
 
 @pytest.mark.parametrize(
     "version,affected",
     [
         ("0.18.0", True),
-        ("0.18.0+cu130", True),  # wheels carry a local version
-        ("0.19.0.dev20260801", True),  # a dev build of a later release still has it
-        ("1.0.0", True),  # future majors, until upstream fixes it
-        ("0.17.0", False),  # guards its own import
+        ("0.18.0+cu130", True),  # wheels carry a local version a dev build of a later release still has it future
+        ("0.19.0.dev20260801", True),
+        ("1.0.0", True),
+        ("0.17.0", False),
         ("0.17.0+cu130", False),
         ("0.13.0", False),  # the floor in pyproject
     ],

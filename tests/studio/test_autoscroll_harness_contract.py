@@ -59,25 +59,20 @@ def verdict(name: str) -> str:
 
 
 def test_chat_autoscroll_asserts_the_detached_stream_actually_grew() -> None:
-    # `stillDetached` says streaming did not re-pin the reader. It says nothing at all if the
-    # streamed tokens added no height, which the harness measures as `grewWhileDetached`.
+    # `stillDetached` says streaming did not re-pin the reader.
     main = verdict("playwright_chat_autoscroll.py")
     assert 'intent["stillDetached"]' in main
     assert 'intent["grewWhileDetached"]' in main
 
 
 def test_research_freeze_asserts_the_dialog_took_the_modal_layer() -> None:
-    # The stranded-`pointer-events: none` checks are the reported symptom (an unclickable
-    # window). They only test anything if the dialog put the body on the modal layer first.
+    # The stranded-`pointer-events:
     main = verdict("playwright_research_freeze.py")
     assert 'modal["body_pointer_events_after_approve"]' in main
     assert 'modal["body_pointer_events_while_open"]' in main
 
 
 def test_research_freeze_asserts_the_stream_had_something_to_follow() -> None:
-    # An empty activity list runs no follow loop, so it clears the frame budgets by measuring
-    # nothing. `seed()` leaves activities behind, so the count has to be compared against the
-    # pre-stream baseline rather than against zero.
     main = verdict("playwright_research_freeze.py")
     assert 'stream["raf_per_second"]' in main
     assert 'stream["activities"]' in main
@@ -85,27 +80,25 @@ def test_research_freeze_asserts_the_stream_had_something_to_follow() -> None:
 
 
 def test_research_freeze_asserts_the_report_stall_and_its_own_probe() -> None:
-    # The stall budget is only a budget if a stall of zero fails too: no second sample means
-    # the probe measured nothing and the comparison below it passes on any tree.
+    # An empty activity list runs no follow loop, so it clears the frame budgets by measuring nothing.
     main = verdict("playwright_research_freeze.py")
     assert 'results["report"]["main_thread_stall_ms"] > MAIN_THREAD_STALL_BUDGET_MS' in main
     assert 'results["report"]["main_thread_stall_ms"] <= 0' in main
 
 
 def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
-    # A synthetic element.click() skips hit testing and passes on a stranded
-    # `pointer-events: none` tree, so the verdict must read actionability, not just the counter.
+    # A synthetic element.click() skips hit testing and passes on a stranded `pointer-events:
     source_text = source("playwright_research_freeze.py")
     assert "page.click('[data-smoke=\"click-probe\"]'" in source_text
+    # The stall budget is only a budget if a stall of zero fails too:
     main = verdict("playwright_research_freeze.py")
     assert 'results["report"]["click_landed"]' in main
     assert 'results["report"]["clicks_registered"]' in main
 
 
 def test_harnesses_report_why_the_page_failed() -> None:
-    # A thrown entry module and a merely slow one both end as a timeout on a locator that
     # was never created. Run 31935573269 was that: 15s of nothing, no console, no page
-    # error, no server output, on 7 of the 8 runs that reached this step.
+    # A thrown entry module and a merely slow one both end as a timeout on a locator that was never created.
     for name in (
         "playwright_chat_autoscroll.py",
         "playwright_research_freeze.py",
@@ -117,8 +110,7 @@ def test_harnesses_report_why_the_page_failed() -> None:
 
 
 def test_ansi_smoke_keeps_the_failed_page_and_the_server_output() -> None:
-    # The live log dies with the runner; the screenshot, body excerpt and vite's own
-    # transform errors are what remains.
+    # The live log dies with the runner;
     text = source("playwright_strip_ansi_smoke.py")
     assert "dump(page, vite)" in text, "the assertions do not run under the dump"
     assert "dump_diagnostics(page, ART" in text
@@ -126,10 +118,7 @@ def test_ansi_smoke_keeps_the_failed_page_and_the_server_output() -> None:
 
 
 def test_the_ansi_dump_survives_a_vite_server_that_is_still_talking(tmp_path, monkeypatch) -> None:
-    # A daemon thread appends to the tail deque for as long as vite lives, and the dump
-    # runs before the server stops. Iterating it live while printing (stdout releases the
-    # GIL) raises "deque mutated during iteration", losing the tail in the one case it was
-    # added for: a reload or transform storm.
+    # A daemon thread appends to the tail deque for as long as vite lives, and the dump runs before the server stops.
     import importlib.util
     import threading
     from collections import deque
@@ -161,8 +150,7 @@ def test_the_ansi_dump_survives_a_vite_server_that_is_still_talking(tmp_path, mo
     talker.start()
     try:
         for _ in range(5):
-            # `page` is unused by the tail print and dump_diagnostics is best-effort,
-            # so a stub reaches the loop.
+            # `page` is unused by the tail print and dump_diagnostics is best-effort, so a stub reaches the loop.
             smoke.dump(types.SimpleNamespace(), vite)
     finally:
         stop.set()
@@ -170,32 +158,25 @@ def test_the_ansi_dump_survives_a_vite_server_that_is_still_talking(tmp_path, mo
 
 
 def test_stream_pacing_asserts_its_long_task_probe_measured_something() -> None:
-    # longTaskMs is the metric the budgets turn on, and it is 0 both when the render is free
-    # and when the observer never ran: `observe({type: "longtask"})` aborts silently on an
-    # engine without the entry type. Without these, a firefox or webkit run, or a broken
-    # observer, scores a perfect zero and exits 0.
+    # longTaskMs is the metric the budgets turn on, and it is 0 both when the render is free and when the observer never
     main = verdict("playwright_stream_pacing.py")
     assert 'results.get("longTaskSupported")' in main
     assert 'results["longTasks"] <= 0' in main
-    # Same for an unthrottled run: the renderer keeps up with any rate this can feed, so
-    # every budget passes on any tree.
+    # Same for an unthrottled run:
     assert 'results["cpu_throttle"] <= 1' in main
 
 
 def test_stream_pacing_asserts_the_reply_was_actually_painted() -> None:
-    # A page that rendered nothing scores a perfect zero on every budget, so the workload
-    # has to be asserted before the numbers mean anything.
+    # A page that rendered nothing scores a perfect zero on every budget, so the workload has to be asserted before the
     main = verdict("playwright_stream_pacing.py")
     assert 'results["paintedChars"] < floor' in main
     assert 'results["arrivals"]' in main
-    # paintedChars only climbs, so the length at settlement must be checked too, or an empty
-    # final DOM passes on the peak it reached earlier.
+    # paintedChars only climbs, so the length at settlement must be checked too, or an empty final DOM passes on the
     assert 'results["settledChars"] < floor' in main
 
 
 def test_harnesses_own_their_dev_server() -> None:
-    # A server started beside the harness leaves the node child alive when the wrapper is
-    # killed, stranding the port and the step's stdout. Each harness owns its own instead.
+    # A server started beside the harness leaves the node child alive when the wrapper is killed, stranding the port
     for name in (
         "playwright_chat_autoscroll.py",
         "playwright_research_freeze.py",
@@ -210,12 +191,9 @@ def test_harnesses_own_their_dev_server() -> None:
         assert "wait_for_smoke_page" in text, f"{name} gates on status rather than on content"
 
 
-# The #8977 thread-weight harness deliberately asserts no timing budget: it exists to produce the
-# numbers a budget would later be set from. That removes the `main()` check the tests above rely
-# on, so the same rule is enforced one step earlier -- every metric it records has to reach the
-# printed table. An unprinted metric there is the same failure as an unasserted one here: the
-# number that would have shown the regression is collected and then thrown away.
+# The #8977 thread-weight harness deliberately asserts no timing budget:
 
+# number that would have shown the regression is collected and then thrown away.
 THREAD_WEIGHT = "playwright_thread_weight.py"
 
 
@@ -232,7 +210,7 @@ def _dict_keys(node: ast.AST, helpers: dict[str, set[str]]) -> set[str]:
     if not isinstance(node, ast.Dict):
         return keys
     for key, value in zip(node.keys, node.values):
-        if key is None:  # **spread
+        if key is None:
             call = value
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
                 keys |= helpers.get(call.func.id, set())
@@ -272,13 +250,11 @@ def _thread_weight_recorded() -> dict[str, set[str]]:
 
 
 def test_thread_weight_records_the_four_actions() -> None:
-    # Guards the parser above as much as the harness: an empty result set would make the
-    # coverage test below pass by finding nothing to check.
+    # Guards the parser above as much as the harness:
     recorded = _thread_weight_recorded()
     assert {"keystroke", "scroll", "menu", "delete"} <= set(recorded)
-    # Not `assert keys`: _thread_weight_recorded only stores an entry when it found keys, so
     # that could never fail. Each action records its own timings plus the five CDP counters and
-    # the three long-task fields, so anything under ten means the parser lost a spread.
+    # Not `assert keys`: _thread_weight_recorded only stores an entry when it found keys, so that could never fail.
     for action, keys in recorded.items():
         assert len(keys) >= 10, f"{action} recorded only {len(keys)} metrics: {sorted(keys)}"
 
@@ -314,29 +290,22 @@ def test_thread_weight_prints_every_metric_it_records() -> None:
 
 
 def test_thread_weight_proves_it_discriminates_rather_than_gating_on_a_budget() -> None:
-    # The one thing this harness must fail on. Without it a run where nothing was ever clicked
+    # Not `in source(...)`:
     # reports four identical columns and exits 0, which reads as "no regression".
-    # Not `in source(...)`: the verdict is a substring of the source, so an `or` against the
-    # whole file would make this unfailable.
-    # Asserted against the verdict region, not the whole file: a check that only ever appears
-    # in a comment or a table row would otherwise satisfy this.
+    # The one thing this harness must fail on.
     main = thread_weight_verdict()
     assert "GROWTH_AXES" in main
     assert "no measured axis rose with N" in main
     # The menu is opened non-modally now, so the body must NOT go onto the modal layer; what
-    # the verdict has to reject is a run that mixes the two across N, whose columns then price
-    # different mechanisms.
     assert 'menu["body_pointer_events_while_open"]' in main
     # An empty popover satisfies "the menu opened" and costs nothing to render.
     assert 'menu["items_while_open"]' in main
     # A delete that deleted nothing is a fast delete.
     assert 'deleted["messages_after"]' in main
     # A keystroke that never reached the runtime still reports the double-rAF paint floor, so
-    # the floor has to be compared rather than left implicit in the timings.
     assert 'row["paint_floor_ms"]' in main
     assert 'keystroke["runtime_text"] != keystroke["dom_text"]' in main
-    # Requests reaching the network and console warnings both cost a CDP round trip per
-    # message, so both would grow with N for reasons the app does not have.
+    # Requests reaching the network and console warnings both cost a CDP round trip per message, so both would grow
     assert 'row["stray_api_requests"]' in main
     assert 'row["console_warnings"]' in main
 

@@ -54,7 +54,7 @@ def plenty_of_free_space(monkeypatch):
     ample = _Usage(total = 100 * 1024**3, used = 1 * 1024**3, free = 99 * 1024**3)
 
     def plenty(path):
-        # Keep the real failure modes; only the numbers are ours.
+        # Keep the real failure modes;
         real_disk_usage(path)
         return ample
 
@@ -62,7 +62,6 @@ def plenty_of_free_space(monkeypatch):
     return ample
 
 
-# ---- failures that ARE about disk -----------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -88,7 +87,6 @@ def test_the_check_is_case_insensitive():
     assert _looks_like_disk(RuntimeError("NO SPACE LEFT ON DEVICE")) is True
 
 
-# ---- failures that are NOT about disk -------------------------------------
 
 
 @pytest.mark.usefixtures("plenty_of_free_space")
@@ -110,9 +108,9 @@ def test_a_bad_quant_method_is_not_a_disk_problem():
     assert _looks_like_disk(exc, os.getcwd()) is False
 
 
+
+
 # ---- the guard must never be what raises ---------------------------------
-
-
 def test_a_nonexistent_directory_does_not_raise():
     assert _looks_like_disk(RuntimeError("boom"), "/definitely/not/a/real/path") in (True, False)
 
@@ -125,7 +123,6 @@ def test_an_exception_with_no_message_does_not_raise():
     assert _looks_like_disk(RuntimeError()) in (True, False)
 
 
-# ---- the call site --------------------------------------------------------
 
 
 def test_the_kaggle_branch_is_gated_on_the_check():
@@ -163,7 +160,6 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
-# ---- a converter killed by the OOM-killer ---------------------------------
 
 
 def test_sigkill_is_recognised_from_the_message():
@@ -283,7 +279,6 @@ def test_it_chains_the_original():
     assert "from e" in src[i : i + 900]
 
 
-# ---- the inner conversion/quantize branches are gated too ------------------
 
 
 def test_no_kaggle_disk_message_is_left_ungated():

@@ -38,7 +38,6 @@ DEFAULT_WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 BANNED_TRIGGERS: tuple[str, ...] = ("pull_request_target",)
 RESTRICTED_TRIGGERS: tuple[str, ...] = ("workflow_run",)
-# Match both workflow extensions by stem.
 PUBLISH_WORKFLOW_STEMS: tuple[str, ...] = ("release-desktop",)
 
 # The host must run on every PR and be able to fail.
@@ -83,7 +82,7 @@ def _trigger_set(yaml_doc) -> set[str]:
     return _normalise_on(_on_field(yaml_doc))
 
 
-# Accept only a plain invocation of this script; fail closed on wrappers.
+# Accept only a plain invocation of this script;
 _PYTHON_BASENAME = re.compile(r"python(3(\.\d+)?)?")
 # Allow only flags that preserve script execution.
 _SAFE_OPTS = ("-u", "-E", "-s", "-S", "-B", "-O", "-OO", "-q")
@@ -100,10 +99,10 @@ def _is_trusted_python(token: str) -> bool:
     add an executable of that name.
     """
     if any(op in token for op in _SHELL_OPERATORS):
-        return False  # a substitution runs before the path is used
+        return False
     path = PurePosixPath(token)
     if not _PYTHON_BASENAME.fullmatch(path.name):
-        return False
+        return False  # a substitution runs before the path is used
     return token == path.name or token.startswith(("/usr/", "/bin/", "/opt/"))
 
 
@@ -311,7 +310,6 @@ def main() -> int:
         require_host = workflows_dir.resolve() == DEFAULT_WORKFLOWS_DIR.resolve()
 
     findings: list[str] = []
-    # GitHub Actions loads both workflow extensions.
     workflows = sorted(list(workflows_dir.glob("*.yml")) + list(workflows_dir.glob("*.yaml")))
     pr_triggered: list[tuple[Path, list[str]]] = []
     publish_triggered: list[tuple[Path, list[str]]] = []

@@ -44,12 +44,12 @@ CLAMPS = (
 )
 
 ALLOWED = (
-    # The two shapes that survive: a real capability limit, and a real resource limit.
+    # The two shapes that survive:
     "def load():\n    n_parallel = 1  # allow-slot-clamp: no --kv-unified\n",
     "def load():\n    n_parallel: int = 1  # allow-slot-clamp: no --kv-unified\n",
     "def load(fit):\n    n_parallel = fit.slots\n",
     "def load(n):\n    n_parallel = min(n, 1)  # allow-slot-clamp: no --kv-unified\n",
-    # A real bound, and a conditional between two live counts: neither pins to 1.
+    # A real bound, and a conditional between two live counts:
     "def load(n, cap):\n    n_parallel = min(n, cap)\n",
     "def load(n, hi):\n    n_parallel = n if n < hi else hi\n",
     "def load(gi, s):\n    gpu_indices, use_fit, n_parallel = gi, False, s\n",

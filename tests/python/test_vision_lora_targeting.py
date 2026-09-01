@@ -223,11 +223,9 @@ def test_tying_leaves_the_output_module_for_peft_to_reconstruct():
     both = ["embed_tokens", "lm_head"]
     assert _drop_tied_output_module(tied, both, True) == ["embed_tokens"]
     assert _drop_tied_output_module(tied, both, False) == both
-    # An untied model has no counterpart for PEFT to rebuild, so dropping lm_head there
-    # would leave the head the caller asked to train frozen.
+    # An untied model has no counterpart for PEFT to rebuild, so dropping lm_head there would leave the head the caller
     assert _drop_tied_output_module(untied, both, True) == both
-    # Only a real pair is split: tying can be requested with no pair to tie, and dropping
-    # the lone head would train nothing (or crash on None).
+    # Only a real pair is split:
     assert _drop_tied_output_module(tied, ["embed_tokens", "score"], True) == [
         "embed_tokens",
         "score",
@@ -365,12 +363,12 @@ def test_tying_normalizes_the_saved_embedding_to_its_bare_name():
         True,
     ) == ["embed_tokens"]
     assert _drop_tied_output_module(tied, ["embed_tokens", "lm_head"], True) == ["embed_tokens"]
-    # Untouched when tying does not apply, and non-embedding names keep their full path.
     assert _drop_tied_output_module(
         tied,
         ["model.embed_tokens", "lm_head"],
         False,
     ) == ["model.embed_tokens", "lm_head"]
+    # Untouched when tying does not apply, and non-embedding names keep their full path.
     assert _drop_tied_output_module(
         tied,
         ["model.embed_tokens", "lm_head", "custom.score"],
@@ -387,11 +385,9 @@ def test_tying_needs_the_input_embedding_saved():
     assert _effective_weight_tying(tied, ["embed_tokens", "lm_head"], None) is True
     assert _effective_weight_tying(tied, ["embed_tokens"], True) is True
     assert _effective_weight_tying(tied, ["model.embed_tokens"], True) is True
-    # No input embedding to tie from.
     assert _effective_weight_tying(tied, ["lm_head"], True) is False
     assert _effective_weight_tying(tied, None, True) is False
     assert _effective_weight_tying(tied, ["score"], True) is False
-    # Nothing to reconstruct on an untied model, however it is asked for.
     assert _effective_weight_tying(untied, ["embed_tokens", "lm_head"], True) is False
     # An explicit False always wins.
     assert _effective_weight_tying(tied, ["embed_tokens", "lm_head"], False) is False

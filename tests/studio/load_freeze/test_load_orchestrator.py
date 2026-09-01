@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 
-# Repo discovery
 def _find_repo_root() -> Path | None:
     env = os.environ.get("UNSLOTH_REPO_ROOT")
     if env:
@@ -50,9 +49,9 @@ import logging as _logging  # noqa: E402
 _loggers_stub = types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: _logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
-# structlog is a hard studio.txt requirement imported only lazily, so a bare setdefault would
-# shadow the real package. Stub only a genuinely absent one (check sys.modules first: find_spec()
-# raises ValueError on another module's bare stub), then backfill get_logger.
+# structlog is a hard studio.txt requirement imported only lazily, so a bare setdefault would shadow the real package.
+# Stub only a genuinely absent one (check sys.modules first: find_spec() raises ValueError on another module's bare
+# stub), then backfill get_logger.
 _structlog = sys.modules.get("structlog")
 if _structlog is None and importlib.util.find_spec("structlog") is None:
     _structlog = sys.modules.setdefault("structlog", types.ModuleType("structlog"))
@@ -68,7 +67,6 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 from llama_server_shim import FakeLlamaServer  # noqa: E402
 
 
-# Fixtures / helpers
 def _make_backend(port: int, *, loaded: bool = True) -> LlamaCppBackend:
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._port = port
@@ -147,7 +145,6 @@ def _build_app(backend, *, wrap_in_thread: bool):
     @app.get("/loop-thread")
     async def loop_thread():
         # An async route body runs on the event loop, so this is the loop's thread id.
-        # Tests compare it against the thread detect_audio_type actually ran on.
         return {"ident": threading.get_ident()}
 
     if wrap_in_thread:
@@ -199,17 +196,13 @@ def _drive_concurrent_probe_and_health(
     return max(latencies), elapsed, latencies
 
 
-# Used only by the canary below, which asserts a LOWER bound: that the pre-#5642 route
-# does hold /health. Measured with the shim's 0.6 + 0.6 second delays, the blocking route
-# holds it for 1.72s and does so every time (1.719, 1.729, 1.721, 1.719, 1.727 over five
-# runs), so contention can only push that number further above the bound, never below it.
+# Used only by the canary below, which asserts a LOWER bound: that the pre-#5642 route does hold /health.
+# Measured with the shim's 0.6 + 0.6 second delays, the blocking route holds it for 1.72s and does so every time (1.719,
+# 1.729, 1.721, 1.719, 1.727 over five runs), so contention can only push that number further above the bound, never
 _MAX_HEALTH_LATENCY_SEC = 0.25
 
-# Neither a latency budget nor a performance claim. Every wait it bounds is either
 # satisfied in milliseconds or never satisfied at all, so all it decides is how long a
-# genuine deadlock takes to be reported instead of hanging the job. The work underneath
-# it is a handful of loopback requests against a local uvicorn, so no amount of CPU
-# contention brings a correct run near it.
+# Neither a latency budget nor a performance claim.
 _DEADLOCK_GUARD_SEC = 30.0
 
 
@@ -236,11 +229,7 @@ class _GatedProbe:
         self.calls += 1
         self.thread_ident = threading.get_ident()
         self.entered.set()
-        # Deliberately the LONGEST wait in the file. If the route is blocking the loop,
-        # the /health calls have to be the ones that give up first, because they are the
-        # ones that can say so; a gate that let go earlier would unblock the loop, let
-        # those calls succeed late, and turn a clear diagnosis into a confusing one.
-        # This is a last-resort release so the server can still shut down.
+        # Deliberately the LONGEST wait in the file.
         if not self.released.wait(_DEADLOCK_GUARD_SEC * 3):
             raise AssertionError(
                 f"the gated probe was never released within {_DEADLOCK_GUARD_SEC * 3}s; "
@@ -308,7 +297,6 @@ def _health_burst(
     return codes
 
 
-# (1) Behavioural canary
 def test_buggy_route_blocks_event_loop():
     """Sync detect_audio_type call inside async route stalls /health."""
     with FakeLlamaServer(tok_delay = 0.6, detok_delay = 0.6) as shim:
@@ -350,8 +338,7 @@ def test_fixed_route_keeps_event_loop_responsive():
                 )
                 codes = _health_burst(base, 12)
                 assert codes == [200] * 12, f"/health returned {codes}"
-                # Nothing has released the call, so all twelve were answered with a
-                # synchronous detect_audio_type still in flight. That is the property.
+                # Nothing has released the call, so all twelve were answered with a synchronous detect_audio_type still
                 assert not gate.released.is_set()
                 assert not probe_f.done(), "/probe returned before the gate was released"
             finally:
@@ -365,7 +352,6 @@ def test_fixed_route_keeps_event_loop_responsive():
     )
 
 
-# (2) Functional equivalence -- sync == to_thread for each codec branch
 @pytest.fixture
 def shim_no_match():
     """Shim whose responses make detect_audio_type fall through every codec branch -> None."""
@@ -396,7 +382,6 @@ def test_functional_equivalence_no_match(shim_no_match):
 
 
 def test_functional_equivalence_snac_match():
-    # snac: both _detok(128258) and _detok(128259) start with "<custom_token_".
     with FakeLlamaServer(
         detok_map = {128258: "<custom_token_99>", 128259: "<custom_token_98>"}
     ) as srv:
@@ -408,7 +393,6 @@ def test_functional_equivalence_snac_match():
 
 
 def test_functional_equivalence_csm_match():
-    # csm: snac fails, then both <|AUDIO|> and <|audio_eos|> are 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {"<|AUDIO|>": [0], "<|audio_eos|>": [0]},
@@ -421,11 +405,11 @@ def test_functional_equivalence_csm_match():
 
 
 def test_functional_equivalence_whisper_match():
-    # whisper: snac/csm fail, then <|startoftranscript|> is 1 token.
+    # snac: both _detok(128258) and _detok(128259) start with "<custom_token_".
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
-            "<|AUDIO|>": [0, 1],  # csm fails (>1 token)
+            "<|AUDIO|>": [0, 1],
             "<|audio_eos|>": [0, 1],
             "<|startoftranscript|>": [0],
         },
@@ -438,15 +422,16 @@ def test_functional_equivalence_whisper_match():
 
 
 def test_functional_equivalence_audio_vlm_match():
-    # audio_vlm: snac/csm/whisper fail, then the Gemma 4 <|audio|> arm (#6000)
-    # tokenises to 1 token while <audio_soft_token> stays 2 to isolate it.
+    # audio_vlm:
+    # csm: snac fails, then both <|AUDIO|> and <|audio_eos|> are 1 token.
+    # whisper: snac/csm fail, then <|startoftranscript|> is 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
-            "<|AUDIO|>": [0, 1],  # csm fails (>1 token)
+            "<|AUDIO|>": [0, 1],
             "<|audio_eos|>": [0, 1],
-            "<|startoftranscript|>": [0, 1],  # whisper fails
-            "<audio_soft_token>": [0, 1],  # Gemma 3n arm fails ...
+            "<|startoftranscript|>": [0, 1],
+            "<audio_soft_token>": [0, 1],
             "<|audio|>": [0],  # ... Gemma 4 arm matches (#6000)
         },
     ) as srv:
@@ -458,13 +443,14 @@ def test_functional_equivalence_audio_vlm_match():
 
 
 def test_functional_equivalence_bicodec_match():
-    # bicodec: all prior branches fail, then bicodec_semantic_0/global_0 are 1 token.
+    # audio_vlm: snac/csm/whisper fail, then the Gemma 4 <|audio|> arm (#6000) tokenises to 1 token while
+    # <audio_soft_token> stays 2 to isolate it.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
             "<|AUDIO|>": [0, 1],
             "<|audio_eos|>": [0, 1],
-            "<|startoftranscript|>": [0, 1],
+            "<|startoftranscript|>": [0, 1],  # whisper fails Gemma 3n arm fails ...
             "<audio_soft_token>": [0, 1],
             "<|audio|>": [0, 1],
             "<|bicodec_semantic_0|>": [0],
@@ -478,9 +464,9 @@ def test_functional_equivalence_bicodec_match():
     assert sync_result == threaded
 
 
-# (3) Failure modes
 def test_shim_returns_500_on_tokenize_returns_none():
     """Non-200 responses fall through to None on both sync and threaded paths."""
+    # bicodec: all prior branches fail, then bicodec_semantic_0/global_0 are 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_status = 500,
@@ -514,7 +500,7 @@ def test_shim_connection_reset_returns_none():
 
 def test_unreachable_port_returns_none():
     """ConnectError on a dead port is swallowed -> None."""
-    backend = _make_backend(_free_port())  # nothing listening
+    backend = _make_backend(_free_port())
     assert backend.detect_audio_type() is None
     assert asyncio.run(asyncio.to_thread(backend.detect_audio_type)) is None
 
@@ -533,7 +519,6 @@ def test_backend_not_loaded_short_circuits():
     assert threaded_t < 0.05
 
 
-# (4) Stress / concurrency
 def test_50_concurrent_probes_complete_without_deadlock():
     """50 parallel /probe calls must not deadlock or serialise."""
     with FakeLlamaServer(tok_delay = 0.05, detok_delay = 0.05) as shim:
@@ -552,7 +537,6 @@ def test_50_concurrent_probes_complete_without_deadlock():
                 results = [f.result(60.0) for f in futs]
             elapsed = time.perf_counter() - t0
     assert all(r.status_code == 200 for r in results)
-    # Generous bound absorbs CI jitter but still catches serialisation (~20s).
     assert (
         elapsed < 15.0
     ), f"50 concurrent probes took {elapsed:.1f}s; threadpool may be serialising"
@@ -603,11 +587,11 @@ def test_load_model_caches_audio_type_inside_serial_load_lock():
     else a concurrent /load can replace the backend mid-probe (review on #5669)."""
     f = _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
     text = f.read_text(encoding = "utf-8")
+    # Generous bound absorbs CI jitter but still catches serialisation (~20s).
     assert (
         "with self._serial_load_lock" in text
     ), "LlamaCppBackend.load_model must hold self._serial_load_lock"
-    # Either call shape satisfies the guard; _detect_audio_type_strict was a
-    # follow-up to distinguish definitive non-audio from transient probe failure.
+    # Either call shape satisfies the guard;
     assert (
         "self._audio_type = self.detect_audio_type()" in text
         or "detected = self.detect_audio_type()" in text
@@ -642,8 +626,8 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
     that reintroduces the sync bug and the load race the lock fix closes."""
     routes_dir = _REPO_ROOT / "studio" / "backend" / "routes"
     offenders = []
-    # Matches both llama_backend. and self. prefixes; the model_config free
-    # function helper is excluded below.
+    # Matches both llama_backend.
+    # the model_config free function helper is excluded below.
     pattern = re.compile(r"\b\w+\.detect_audio_type\s*\(")
     for path in routes_dir.rglob("*.py"):
         for i, line in enumerate(path.read_text(encoding = "utf-8").splitlines(), start = 1):
@@ -654,7 +638,7 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
             if "llama_backend.detect_audio_type" not in line:
                 continue
             if "asyncio.to_thread" in line:
-                # Wrapped sync call is acceptable (not preferred); surface in PR.
+                # Wrapped sync call is acceptable (not preferred);
                 continue
             offenders.append(f"{path.relative_to(_REPO_ROOT)}:{i}: {line.strip()}")
     assert not offenders, (
@@ -663,7 +647,6 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
     )
 
 
-# (6) Timing budgets
 def test_load_response_under_2s_with_fast_shim():
     """Regression budget: fast shim must complete /probe in <2 s."""
     with FakeLlamaServer(tok_delay = 0.0, detok_delay = 0.0) as shim:
@@ -693,7 +676,6 @@ def test_repeated_loads_bounded_total_time():
     assert elapsed < 10.0
 
 
-# (7) Browser-compatibility surface
 def test_response_is_valid_browser_parseable_json():
     """The fix must not change the response shape a browser sees (valid JSON, expected keys)."""
     import json as _json
@@ -743,7 +725,6 @@ def test_response_shape_matches_pre_fix_for_no_match():
             assert body == {"audio_type": None}
 
 
-# (8) Cancellation
 def test_client_disconnect_during_probe_does_not_crash_server():
     """A client disconnect mid-probe must not crash the server; /health still responds."""
     with FakeLlamaServer(tok_delay = 0.5, detok_delay = 0.5) as shim:

@@ -41,13 +41,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-# Backend root on sys.path so `core.inference.diffusion` imports as the server does (deferred into main() so --help never triggers torch).
+# Backend root on sys.path so `core.inference.diffusion` imports as the server does (deferred into main() so --help
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent / "studio" / "backend"
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 
-# ── small helpers ──────────────────────────────────────────────────────────
 
 
 def _now_iso() -> str:
@@ -144,7 +143,7 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     with Image.open(cand_png) as im_b:
         b = np.asarray(im_b.convert("RGB"), dtype = np.float64)
     if a.shape != b.shape:
-        # Different geometry means the comparison is meaningless; report worst case.
+        # Different geometry means the comparison is meaningless;
         return 0.0
     mse = float(((a - b) ** 2).mean())
     if mse == 0.0:
@@ -152,7 +151,6 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     return 20.0 * math.log10(255.0) - 10.0 * math.log10(mse)
 
 
-# ── load + generate ────────────────────────────────────────────────────────
 
 
 def _wait_for_load(backend: Any, timeout_s: int = 2400) -> None:
@@ -202,7 +200,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     gen_metrics: dict[str, Any] = {}
 
     try:
-        # ── load ──
         _cuda_reset_peak()
         t0 = time.time()
         backend.begin_load(
@@ -231,11 +228,9 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         status = backend.status()
         print(f"  loaded: {status}", flush = True)
 
-        # ── warmup (discarded) ──
         for _ in range(max(0, args.warmup)):
             _generate_once(backend, args)
 
-        # ── measured generations (fixed seed -> deterministic) ──
         _cuda_reset_peak()
         latencies: list[float] = []
         first_image = None
@@ -306,7 +301,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-# ── modes ──────────────────────────────────────────────────────────────────
 
 
 def _write_baseline(args: argparse.Namespace) -> int:
@@ -367,7 +361,8 @@ def _compare(args: argparse.Namespace) -> int:
             print("   refusing noisy comparison (pass --force-compare to override).", flush = True)
             return 2
 
-    # PSNR vs the stored reference; reference_png is absolute, so fall back to reference.png beside the baseline.
+    # PSNR vs the stored reference;
+    # reference_png is absolute, so fall back to reference.png beside the baseline.
     ref_png = Path(baseline.get("accuracy", {}).get("reference_png", ""))
     if not ref_png.is_file():
         ref_png = baseline_path.parent / "reference.png"
@@ -415,7 +410,6 @@ def _compare(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── cli ────────────────────────────────────────────────────────────────────
 
 
 def _build_parser() -> argparse.ArgumentParser:

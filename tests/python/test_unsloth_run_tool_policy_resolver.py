@@ -55,8 +55,7 @@ class TestLocalhostHost:
 
 class TestZeroHost:
     def test_default_is_unset(self):
-        # A network bind installs no override, so the Unsloth UI's tool pills (which
-        # send enable_tools: false when all off) are honored rather than overridden.
+        # A network bind installs no override, so the UI's tool pills (which send enable_tools:
         assert (
             resolve_tool_policy(
                 host = "0.0.0.0",

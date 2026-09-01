@@ -24,8 +24,6 @@ from unsloth import import_fixes as IF
 
 
 # Base (no-extras) requirements as declared by two real transformers releases.
-# The names and floors differ between them, which is why the check reads them
-# from metadata instead of carrying a table that would rot.
 REQUIRES_4_57_6 = [
     "filelock",
     "huggingface-hub<1.0,>=0.34.0",
@@ -94,7 +92,6 @@ def _run_check(caplog):
     return _warnings(caplog)
 
 
-# ---------------------------------------------------------------- satisfied
 
 
 @pytest.mark.parametrize(
@@ -139,7 +136,6 @@ def test_satisfied_requirements_are_silent(monkeypatch, caplog, requires, instal
     assert _run_check(caplog) == []
 
 
-# ----------------------------------------------------------------- violated
 
 
 def test_violated_floor_is_reported_and_names_the_dependency(monkeypatch, caplog):
@@ -154,7 +150,7 @@ def test_violated_floor_is_reported_and_names_the_dependency(monkeypatch, caplog
         "regex": "2025.11.3",
         "tokenizers": "0.22.2",
         "typer": "0.15.1",
-        "safetensors": "0.7.0",  # the violation
+        "safetensors": "0.7.0",
         "tqdm": "4.67.3",
     }
     _install_env(monkeypatch, REQUIRES_5_14_1, installed)
@@ -217,7 +213,6 @@ def test_prerelease_dependency_satisfying_the_floor_is_not_reported(monkeypatch,
     assert _run_check(caplog) == []
 
 
-# ------------------------------------------------------- environment markers
 
 
 def test_inapplicable_environment_markers_are_skipped(monkeypatch, caplog):
@@ -256,7 +251,6 @@ def test_applicable_environment_marker_is_still_checked(monkeypatch, caplog):
     assert "safetensors" in _run_check(caplog)[0]
 
 
-# ------------------------------------------------------------ absent package
 
 
 def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, caplog):
@@ -280,7 +274,7 @@ def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, ca
     assert "typer is required, but it is not installed" in warning
     assert 'pip install --upgrade "safetensors>=0.8.0" "typer"' in warning
     assert "Install or upgrade the dependencies, not transformers" in warning
-    # An extras-only requirement stays out of it: not having it is correct.
+    # An extras-only requirement stays out of it:
     assert "fugashi" not in warning
     # Satisfied requirements stay out of it too.
     assert "tqdm" not in warning
@@ -310,7 +304,6 @@ def test_unreadable_metadata_is_still_silent(monkeypatch, caplog):
     assert _run_check(caplog) == []
 
 
-# --------------------------------------------------------- defensive silence
 
 
 @pytest.mark.parametrize(
@@ -370,7 +363,6 @@ def test_env_var_silences_the_check(monkeypatch, caplog):
     assert _run_check(caplog) == []
 
 
-# --------------------------------------------------------------- live + wiring
 
 
 def test_runs_against_the_real_environment_without_raising(caplog):
@@ -379,7 +371,7 @@ def test_runs_against_the_real_environment_without_raising(caplog):
     assert isinstance(result, list)
     for entry in result:
         assert len(entry) == 3
-    IF.check_transformers_dependency_versions()  # must not raise
+    IF.check_transformers_dependency_versions()
 
 
 def test_check_is_registered_in_gpu_init():
@@ -399,7 +391,7 @@ def test_check_warns_rather_than_raises_on_a_violation(monkeypatch, caplog):
         ["safetensors>=0.8.0"],
         {"transformers": "5.15.0.dev0", "safetensors": "0.7.0"},
     )
-    IF.check_transformers_dependency_versions()  # no exception
+    IF.check_transformers_dependency_versions()  # must not raise
     assert len(_run_check(caplog)) == 1
 
 
@@ -415,7 +407,7 @@ def test_a_transformers_stub_in_sys_modules_does_not_break_the_import(monkeypatc
     for stub in (types.ModuleType("transformers"), types.SimpleNamespace()):
         monkeypatch.setitem(sys.modules, "transformers", stub)
         with pytest.raises(ValueError):
-            importlib.util.find_spec("transformers")  # __spec__ None / not set
+            importlib.util.find_spec("transformers")  # __spec__ None / not set must not raise
         IF.check_transformers_dependency_versions()  # must not raise
         assert _warnings(caplog) == []
 

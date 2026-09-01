@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# http://www.apache.org/licenses/LICENSE-2.0
 """Pure-CPU, no-network unit tests for prefetch snapshot scoping in unsloth/models/_utils.py.
 
 maybe_prefetch_hf_snapshot warms the HF cache before the in-process load. The warm must cover at
@@ -62,8 +63,7 @@ def capture(monkeypatch):
     fake_module.DownloadStallError = type("DownloadStallError", (RuntimeError,), {})
     monkeypatch.setitem(sys.modules, "unsloth_zoo.hf_xet_fallback", fake_module)
 
-    # Neutralize the model_info network call by default; tests exercising format selection
-    # install their own.
+    # Neutralize the model_info network call by default;
     import huggingface_hub
 
     class _NoNetworkApi:
@@ -72,9 +72,8 @@ def capture(monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _NoNetworkApi)
 
-    # Same for the modules.json probe: unstubbed it reaches out for the fake repo, so every
-    # weights_at_root case in this no-network file made a live request. The probe is best-effort, so
-    # raising here is exactly its "not a sentence-transformers repo" answer.
+    # Same for the modules.json probe: unstubbed it reaches out for the fake repo, so every weights_at_root case in this
+    # no-network file made a live request.
     def _no_network_download(*a, **k):
         raise RuntimeError("no network in test")
 
@@ -88,7 +87,7 @@ def capture(monkeypatch):
     return run
 
 
-# Representative repo listing: root weights + aux, subdir, adapter, checkpoint, merged weights.
+# Representative repo listing:
 _SAMPLE_FILES = [
     "config.json",
     "tokenizer.json",
@@ -225,7 +224,6 @@ def _install_fake_model_info(monkeypatch, filenames):
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
 
 
-# ----- Finding P: variant-aware weight-format selection -----
 
 
 def test_variant_keeps_bin_when_only_default_safetensors(monkeypatch):
@@ -352,7 +350,7 @@ def test_st_native_loads_map_hf_cache_dir_to_cache_folder():
         assert "'cache_dir'" in ast.dump(
             kw.value
         ), "a native SentenceTransformer cache_folder must map the explicit HF cache_dir first"
-    # for_inference feeds cache_folder via st_kwargs; both native branches map cache_dir -> cache_folder.
+    # for_inference feeds cache_folder via st_kwargs;
     normalized = "".join(src.split())
     assert (
         'st_kwargs["cache_folder"]=' in normalized
@@ -457,7 +455,7 @@ def test_st_fallback_module_loads_resolve_env_cache():
             continue
         dumped = ast.dump(cache_dir_kw.value)
         if "cache_folder" not in dumped:
-            continue  # internal pass-through, not a resolution site
+            continue
         checked += 1
         assert (
             "SENTENCE_TRANSFORMERS_HOME" in dumped
@@ -486,13 +484,13 @@ def test_st_fallback_module_loads_forward_revision():
     }
     assert set(funcs) == {"_module_path", "_read_pooling_mode", "_load_modules"}
 
-    # (a) each helper takes a revision parameter.
     for name, fn in funcs.items():
         arg_names = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
         assert "revision" in arg_names, f"{name} must accept a revision argument"
 
     # (b) every download primitive inside the helpers forwards revision.
     downloads = 0
+    # (a) each helper takes a revision parameter.
     for name, fn in funcs.items():
         for node in ast.walk(fn):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
@@ -527,7 +525,7 @@ def test_st_fallback_module_loads_forward_revision():
             continue
         cache_dir_kw = next((kw for kw in node.keywords if kw.arg == "cache_dir"), None)
         if cache_dir_kw is None or "cache_folder" not in ast.dump(cache_dir_kw.value):
-            continue  # internal pass-through, not a fallback site
+            continue
         checked += 1
         rev_kw = next((kw for kw in node.keywords if kw.arg == "revision"), None)
         assert rev_kw is not None and "revision" in ast.dump(
@@ -733,7 +731,6 @@ def test_adapter_safetensors_check_scoped_to_root(monkeypatch):
         def model_info(self, *a, **k):
             return type("MI", (), {"siblings": [_Sib(n) for n in self._names]})()
 
-    # Subdir safetensors only -> not reported present.
     monkeypatch.setattr(
         huggingface_hub,
         "HfApi",
@@ -742,6 +739,7 @@ def test_adapter_safetensors_check_scoped_to_root(monkeypatch):
         ),
     )
     assert U._adapter_repo_has_safetensors("org/repo") is False
+    # Subdir safetensors only -> not reported present.
     # Root safetensors -> reported present.
     monkeypatch.setattr(
         huggingface_hub,
@@ -769,7 +767,6 @@ def test_gguf_file_warm_keeps_gguf(capture):
     assert "model-Q8_0.gguf" not in kept
 
 
-# ----- Finding Q: adapter weight-format selection -----
 
 
 def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):
@@ -846,7 +843,7 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
     fp = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
 
     def _prefetch_call(node):
-        # a bare call statement, or one whose return is captured (e.g. _st_prefetched = ...)
+        # a bare call statement, or one whose return is captured (e.g.
         value = node.value if isinstance(node, (ast.Expr, ast.Assign)) else None
         if (
             isinstance(value, ast.Call)
@@ -905,7 +902,7 @@ def test_st_native_sentence_transformer_calls_forward_cache_folder():
         ):
             continue
         kw_names = {kw.arg for kw in n.keywords}
-        # A modules-based build downloads nothing; only a repo-name load reads the cache.
+        # A modules-based build downloads nothing;
         if "modules" in kw_names:
             continue
         weight_loading_calls.append(n)

@@ -60,46 +60,31 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5186"))
-# Unset: start and stop our own server. Set: drive that one and leave it running.
-# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
+# Unset: start and stop our own server.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
-# Under logs/ like every sibling harness. A default of "." would drop an untracked
-# stream-pacing.json in the repo root every run; logs/ is gitignored, so the tree stays clean.
+# Under logs/ like every sibling harness.
+# A default of "." would drop an untracked stream-pacing.json in the repo root every run;
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-stream-pacing"))
 LABEL = "stream-pacing"
 
-# The reply and the rate it arrives at. Length is what the renderer's cost is superlinear
-# in, so it is the knob that matters; the arrival count stays modest because throttling
-# slows the feed's own timers too, and 1,000 arrivals at 6x stretched a one-second stream
-# to 43s of wall clock for no extra signal.
+# The reply and the rate it arrives at.
+# the arrival count stays modest because throttling slows the feed's own timers too, and 1,000 arrivals at 6x stretched
+# a one-second stream to 43s of wall clock for no extra signal.
 TOTAL_CHARS = int(os.environ.get("SMOKE_STREAM_CHARS", "24000"))
 CHUNK_CHARS = int(os.environ.get("SMOKE_STREAM_CHUNK", "96"))
 GAP_MS = int(os.environ.get("SMOKE_STREAM_GAP_MS", "2"))
 THROTTLE = int(os.environ.get("SMOKE_STREAM_THROTTLE", "6"))
 
-# Budgets, not targets, chosen against real regressions rather than by feel. Two merged
-# fixes were reverted in this harness, on two machines, and they move the two numbers in
-# opposite directions, which is why there are two budgets and not one headline metric.
-#
-#                        main   #8750 reverted   #7892 reverted
-#   long tasks      5.0-8.0s      13.1s/74.4s        6.7-7.9s
-#   long task count    49-71          144/598           14-23
-#   longest stall   1.05-1.23s     0.97-1.40s        5.03-6.35s
-#
-# Reverting #8750 (incremental Markdown parsing) blows up the long-task total and leaves
-# the longest stall alone. Reverting #7892 (Streamdown's `animated` config, which keeps
-# block updates out of an interruptible transition) does the opposite: the stall goes 4-5x
-# while the long-task total stays in the clean range. A single headline metric would have
-# missed one of the two outright.
-#
-# Machine spread: the "main" column above is 5,029/5,901ms on one machine and 6,687-8,003ms
-# on another, so clean readings vary ~60% ACROSS boxes even though a single box repeats to
-# within ~15%. That is what keeps the CI step non-gating. The 10,000ms budget is NOT raised
-# for that headroom, because the same two machines read the #8750 revert as 13,059ms and
-# 74,353ms: a budget loose enough for the slower box would stop catching that regression on
-# the faster one. Retune from observed runner numbers, not from one machine.
+# Budgets, not targets, chosen against real regressions rather than by feel.
+# main #8750 reverted #7892 reverted long tasks 5.0-8.0s 13.1s/74.4s 6.7-7.9s long task count 49-71 144/598 14-23
+# longest stall 1.05-1.23s 0.97-1.40s 5.03-6.35s Reverting #8750 (incremental Markdown parsing) blows up the long-task
+# total and leaves the longest stall alone.
+# Machine spread: the "main" column above is 5,029/5,901ms on one machine and 6,687-8,003ms on another, so clean
+# readings vary ~60% ACROSS boxes even though a single box repeats to within ~15%.
+# The 10,000ms budget is NOT raised for that headroom, because the same two machines read the #8750 revert as 13,059ms
+# and 74,353ms: a budget loose enough for the slower box would stop catching that regression on the faster one.
 MAX_LONGEST_STALL_MS = int(os.environ.get("SMOKE_STREAM_STALL_BUDGET_MS", "2500"))
 MAX_LONG_TASK_MS = int(os.environ.get("SMOKE_STREAM_LONG_TASK_BUDGET_MS", "10000"))
 
@@ -121,8 +106,8 @@ def run() -> dict:
             page.wait_for_function("() => window.__stream && window.__stream.ready", timeout = 60_000)
 
             cdp = context.new_cdp_session(page)
-            # After load so the harness bundle is not itself throttled in, and recorded
             # below so a difference can never be an artefact of uneven throttling.
+            # After load so the harness bundle is not itself throttled in, and recorded below so a difference can never
             if THROTTLE > 1:
                 cdp.send("Emulation.setCPUThrottlingRate", {"rate": THROTTLE})
 
@@ -131,9 +116,7 @@ def run() -> dict:
                 {"totalChars": TOTAL_CHARS, "chunkChars": CHUNK_CHARS, "gapMs": GAP_MS},
             )
 
-            # Poll the harness's own verdict rather than deciding out here: every round
-            # trip is slowed by the throttling, so an outside "has it finished" arrives
-            # late enough to hide the effect.
+            # Poll the harness's own verdict rather than deciding out here:
             deadline = time.monotonic() + 300
             results: dict = {}
             while time.monotonic() < deadline:
@@ -182,18 +165,15 @@ def main() -> int:
     info(f"wrote {out}")
 
     failures: list[str] = []
-    # A page that painted nothing scores a perfect zero on every budget below, so assert
-    # the workload first. Not an equality: Markdown syntax (fences, list markers, math
     # delimiters) never reaches textContent, so rendered length is a few per cent under the
-    # bytes sent. 90% is above that and far below "the render died early".
+    # A page that painted nothing scores a perfect zero on every budget below, so assert the workload first.
     floor = int(TOTAL_CHARS * 0.9)
     if results["paintedChars"] < floor:
         failures.append(
             f"only {results['paintedChars']} characters painted of {TOTAL_CHARS} sent "
             f"(floor {floor}); the budgets below measured no workload"
         )
-    # paintedChars is a high-water mark and survives a completion render that truncates the
-    # bubble. settledChars is the DOM a reader is actually left looking at.
+    # paintedChars is a high-water mark and survives a completion render that truncates the bubble.
     if results["settledChars"] < floor:
         failures.append(
             f"the reply settled at {results['settledChars']} characters of {TOTAL_CHARS} "
@@ -210,10 +190,9 @@ def main() -> int:
             f"longest stall {results['longestStallMs']:.0f}ms exceeds "
             f"{MAX_LONGEST_STALL_MS}ms (the bubble stopped growing while text arrived)"
         )
-    # The long-task total is the sensitive metric and the one that goes false-green most
-    # quietly: an engine without the longtask entry type, or an observer that stopped
-    # delivering, reports 0ms and sails under the budget without raising. Same reasoning as
-    # the painted-characters floor above.
+    # The long-task total is the sensitive metric and the one that goes false-green most quietly: an engine without the
+    # longtask entry type, or an observer that stopped delivering, reports 0ms and sails under the budget without
+    # raising.
     if not results.get("longTaskSupported"):
         failures.append(
             "this engine reports no longtask entries, so the long-task budget measured "

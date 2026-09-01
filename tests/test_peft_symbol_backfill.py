@@ -76,7 +76,7 @@ def test_backfilled_pattern_supports_copy_like_peft_does():
     pattern = sys.modules[CONV]._MODEL_TO_CONVERSION_PATTERN
     assert isinstance(pattern, dict)
     copied = pattern.copy()
-    copied["llama"] = object()  # peft assigns by key at module top
+    copied["llama"] = object()  # peft assigns by key at module top copy must not alias
     assert pattern == {}  # copy must not alias
 
 
@@ -129,12 +129,10 @@ def test_required_symbols_match_peft_import_list():
             assert hasattr(donor, s), f"{name} stub lacks {s}"
 
 
-# ---- saying so when the stand-in is not equivalent -----------------------
+
+
 # Inert donors are right wherever the symbol never existed, but not for a
-# transformers 5 that merely renamed one, so warn rather than silently skip
-# work peft should have done.
-
-
+# saying so when the stand-in is not equivalent ----------------------- Inert donors are right wherever the symbol
 def test_a_missing_mapping_function_is_announced():
     _fake_real_module(
         CONV,

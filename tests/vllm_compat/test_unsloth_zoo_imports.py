@@ -35,7 +35,7 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
-# Some unsloth_zoo modules read pynvml at import; stub it for the runner.
+# Some unsloth_zoo modules read pynvml at import;
 def _stub_module(name: str, attrs: dict | None = None) -> None:
     if name in sys.modules:
         return
@@ -85,9 +85,10 @@ def _has_vllm() -> bool:
     return importlib.util.find_spec("vllm") is not None
 
 
-# rl_replacements: zero direct vllm imports; the GRPO + fast_inference surface.
 
 
+# rl_replacements: zero direct vllm imports;
+# the GRPO + fast_inference surface.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_rl_replacements_imports_without_vllm():
     """unsloth_zoo.rl_replacements must NOT pull in vllm at import time."""
@@ -99,7 +100,6 @@ def test_rl_replacements_imports_without_vllm():
         "GRPO on environments without vllm installed (the use_vllm=False path "
         "is supposed to work without vllm)."
     )
-    # Spot-check a known public surface
     assert (
         hasattr(rl, "RL_REPLACEMENTS")
         or hasattr(rl, "RL_FUNCTIONS")
@@ -107,9 +107,10 @@ def test_rl_replacements_imports_without_vllm():
     ), "expected at least one GRPO-related export in rl_replacements"
 
 
-# empty_model: no vllm import; pure builder for the fast_inference=True path.
 
 
+# empty_model: no vllm import;
+# pure builder for the fast_inference=True path.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_empty_model_imports_without_vllm():
     sys.modules.pop("unsloth_zoo.empty_model", None)
@@ -124,10 +125,9 @@ def test_empty_model_imports_without_vllm():
     ), "expected a create_empty_* helper in empty_model"
 
 
-# vllm_lora_request / vllm_lora_worker_manager / vllm_utils: hard-import vllm,
-# so skip without it (pinned-symbols test covers version compat statically).
 
 
+# vllm_lora_request / vllm_lora_worker_manager / vllm_utils:
 @pytest.mark.skipif(
     not (_has_unsloth_zoo() and _has_vllm()), reason = "vllm not installed on this runner"
 )
@@ -142,8 +142,7 @@ def test_vllm_lora_request_imports():
 def test_vllm_lora_worker_manager_imports():
     sys.modules.pop("unsloth_zoo.vllm_lora_worker_manager", None)
     mod = importlib.import_module("unsloth_zoo.vllm_lora_worker_manager")
-    # e3072a23 added supports_tower_connector_lora for vLLM 0.14's
-    # gpu_model_runner; assert the patched class exposes it.
+    # e3072a23 added supports_tower_connector_lora for vLLM 0.14's gpu_model_runner;
     cls = getattr(mod, "WorkerLoRAManager", None)
     if cls is not None:
         assert (

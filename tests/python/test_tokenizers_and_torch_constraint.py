@@ -9,9 +9,8 @@ import textwrap
 
 import pytest
 
-# Locate source files relative to this test.
-_TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent  # tests/
-_REPO_ROOT = _TESTS_DIR.parent  # unsloth/
+_TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent
+_REPO_ROOT = _TESTS_DIR.parent
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
 _SETUP_SH = _REPO_ROOT / "studio" / "setup.sh"
@@ -32,7 +31,6 @@ def _lines(path: pathlib.Path) -> list[str]:
     ]
 
 
-# Group 1 -- Structural checks (no network, instant)
 class TestStructuralTokenizers:
     """Verify tokenizers presence and ordering in no-torch-runtime.txt."""
 
@@ -107,7 +105,6 @@ class TestStructuralTorchConstraint:
 
     def test_tightening_guarded_by_skip_torch(self):
         """The block must check SKIP_TORCH=false."""
-        # Find the tightening if-block
         m = re.search(
             r"if\s.*SKIP_TORCH.*=\s*false.*&&.*OS.*=.*macos.*&&.*_ARCH.*=.*arm64",
             self._sh,
@@ -193,9 +190,7 @@ class TestInstallShUvDefaultIndex:
 
     def test_torch_installs_do_not_use_deprecated_index_url(self):
         # uv deprecated --index-url in favour of --default-index; pip never had it, so the XPU
-        # triton pre-fetch (`pip download`) legitimately uses --index-url. Checked per
         # occurrence so a uv invocation still cannot slip one through. Backslash continuations
-        # are joined first, since the flag and its command are often on different lines.
         joined = self._sh.replace("\\\n", " ")
         offenders = [
             " ".join(line.split())
@@ -205,13 +200,12 @@ class TestInstallShUvDefaultIndex:
         assert not offenders, offenders
 
     def test_torch_installs_neutralize_all_uv_index_env_vars(self):
-        # --default-index installs run with all uv index env vars unset via `env -u`.
+        # default-index installs run with all uv index env vars unset via `env -u`.
         assert (
             "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in self._sh
         )
 
 
-# Group 2 -- Shell snippet tests (bash subprocess, mocked python)
 class TestTorchConstraintShell:
     """Test the TORCH_CONSTRAINT block via bash with mocked python minor versions."""
 
@@ -300,7 +294,6 @@ class TestTorchConstraintShell:
         out = self._run(tmp_path, py_minor = 11, os_val = "macos", arch = "arm64")
         assert out == "torch>=2.4,<2.11.0"
 
-    # Linux is unaffected by the tightening.
     def test_linux_x86_py313_default(self, tmp_path):
         out = self._run(tmp_path, py_minor = 13, os_val = "linux", arch = "x86_64")
         assert out == "torch>=2.4,<2.11.0"
@@ -309,12 +302,10 @@ class TestTorchConstraintShell:
         out = self._run(tmp_path, py_minor = 13, os_val = "linux", arch = "aarch64")
         assert out == "torch>=2.4,<2.11.0"
 
-    # Intel Mac: arch mismatch, no tightening.
     def test_intel_mac_x86_py313_default(self, tmp_path):
         out = self._run(tmp_path, py_minor = 13, os_val = "macos", arch = "x86_64")
         assert out == "torch>=2.4,<2.11.0"
 
-    # SKIP_TORCH bypasses the tightening.
     def test_skip_torch_arm64_macos_py313_default(self, tmp_path):
         out = self._run(
             tmp_path,
@@ -346,7 +337,6 @@ class TestTorchConstraintShell:
         """A mock uv receives the tightened constraint on py3.13 arm64 macOS."""
         venv = self._make_mock_python(tmp_path, minor = 13)
 
-        # Mock uv logs its arguments.
         mock_uv = tmp_path / "mock_uv"
         log_file = tmp_path / "uv_log.txt"
         mock_uv.write_text(
@@ -435,10 +425,8 @@ class TestTorchConstraintShell:
         logged = log_file.read_text()
         assert "torch>=2.4,<2.11.0" in logged, f"uv log: {logged}"
 
-    # Mirrors the _torch_index_leaf case in install.sh: rocm7.2 -> 2.11.x floor,
-    # CUDA -> widened <2.12.0 ceiling, else (CPU/older ROCm) -> default. Anchored
-    # on the final path segment, so a mirror base path containing cu*/rocm7.2 but
-    # ending in a cpu/older-rocm leaf keeps the default.
+    # Mirrors the _torch_index_leaf case in install.sh: rocm7.2 -> 2.11.x floor, CUDA -> widened <2.12.0 ceiling, else
+    # (CPU/older ROCm) -> default.
     _INDEX_SNIPPET = textwrap.dedent(r"""
         #!/bin/bash
         set -e
@@ -497,11 +485,9 @@ class TestTorchConstraintShell:
     )
     def test_cuda_in_mirror_path_but_noncuda_leaf_keeps_default(self, tmp_path, url):
         # A cu128 in the mirror base path must not widen when the leaf is cpu /
-        # older ROCm: the case anchors on _torch_index_leaf, not the whole URL.
         assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
 
 
-# Group 3 -- E2E tokenizers fix (requires network, ~2-5 min)
 @pytest.mark.e2e
 class TestE2ETokenizersFix:
     """Real uv venvs verify tokenizers + transformers work without torch installed."""
@@ -582,7 +568,6 @@ class TestE2ETokenizersFix:
         assert "tokenizers" in result.stderr.lower() or "ModuleNotFoundError" in result.stderr
 
 
-# Group 4 -- Integration: install.sh reads no-torch-runtime.txt correctly
 class TestInstallShNoTorchIntegration:
     """Verify install.sh has the correct no-torch-runtime.txt wiring."""
 
@@ -611,7 +596,6 @@ class TestInstallShNoTorchIntegration:
         assert found, "SKIP_TORCH=true block should call _find_no_torch_runtime"
 
 
-# Group 5 -- Full no-torch sandbox (requires network, ~5 min)
 @pytest.mark.e2e
 class TestE2EFullNoTorchSandbox:
     """Creates venvs and installs the actual no-torch-runtime.txt."""

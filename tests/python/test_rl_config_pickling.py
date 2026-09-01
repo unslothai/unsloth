@@ -44,8 +44,8 @@ def _make(config_class, output_dir):
 
 
 def test_patched_config_answers_to_the_trl_name(patched):
-    # Without this the class pickles under a module that only ships inside a
     # compiled cache, so the checkpoint cannot be read anywhere else.
+    # Without this the class pickles under a module that only ships inside a compiled cache, so the checkpoint cannot
     assert patched.__module__ == "trl.trainer.sft_config"
     assert patched.__qualname__ == "SFTConfig"
 
@@ -55,8 +55,7 @@ def test_patched_config_answers_to_the_trl_name(patched):
 
 
 def test_pristine_config_instance_still_pickles(patched, tmp_path):
-    # An instance built before Unsloth patched TRL, or handed back by TRL's own
-    # TrainingArguments -> SFTConfig conversion, belongs to the pristine class.
+    # An instance built before Unsloth patched TRL, or handed back by TRL's own TrainingArguments -> SFTConfig
     pristine = patched.__mro__[1]
     assert not pristine.__name__.startswith("Unsloth")
 
@@ -94,10 +93,9 @@ def test_checkpoint_loads_without_unsloth(patched, tmp_path):
     torch.save(_make(patched, tmp_path), path)
 
     script = (
-        # Baseline FIRST, so this measures what the load drags in rather than what the
-        # interpreter already had. An editable install of unsloth puts its own import
-        # finder (__editable___unsloth_..._finder) into sys.modules at startup, which
-        # answers to a name test but says nothing about the checkpoint.
+        # Baseline FIRST, so this measures what the load drags in rather than what the interpreter already had.
+        # An editable install of unsloth puts its own import finder (__editable___unsloth_..._finder) into sys.modules
+        # at startup, which answers to a name test but says nothing about the checkpoint.
         "import sys\n"
         "preloaded = set(sys.modules)\n"
         "import json, torch\n"
@@ -148,7 +146,6 @@ def test_training_arguments_conversion_keeps_unsloth_fields(patched, tmp_path):
     if "dict_args" not in source:
         pytest.skip("this TRL release does not convert TrainingArguments inline")
     # The conversion must not name the bare TRL class: that global was imported
-    # before the patching and so still points at the pristine class.
     assert "args = UnslothSFTConfig(**dict_args)" in source, source[:2000]
 
     training_arguments = TrainingArguments(
@@ -180,7 +177,6 @@ def test_every_patched_config_pickles_portably(tmp_path):
         try:
             args = config_class(output_dir = str(tmp_path))
         except TypeError:
-            # Not a TrainingArguments-shaped config (ModelConfig and friends).
             continue
         pickle.dumps(args, protocol = 2)
         assert not config_class.__module__.startswith("Unsloth"), (
@@ -273,13 +269,8 @@ def test_an_unrelated_class_is_not_reduced_through_the_patched_one(patched):
     assert _Unrelated not in copyreg.dispatch_table
 
 
-# ---------------------------------------------------------------------------
-# The reported ordering: a fresh interpreter that imports trl, builds a config,
-# and only then imports unsloth. The fixture above cannot reproduce it, because
-# by the time this module runs the session has already imported unsloth, so the
-# probe needs a subprocess of its own.
-# ---------------------------------------------------------------------------
 
+# and only then imports unsloth. The fixture above cannot reproduce it, because
 _PRISTINE_PROBE = r"""
 import json, os, pickle, sys, tempfile
 

@@ -23,9 +23,8 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
 PIN_FILE = REQ_ROOT / "diffusers-pin.txt"
 
-# The shape install_python_stack._filter_requirements writes: a dot, the source stem,
-# "-filtered-", then tempfile's random suffix. NamedTemporaryFile's suffixes are
 # [A-Za-z0-9_]{8}, so this cannot swallow a checked-in file that merely starts with a dot.
+# The shape install_python_stack._filter_requirements writes:
 _GENERATED_FILTER = re.compile(r"\.[\w.-]+-filtered-\w{8}\.txt")
 STACK = REPO_ROOT / "studio" / "install_python_stack.py"
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -60,15 +59,11 @@ def test_only_the_pin_file_names_diffusers():
     for path in sorted(REQ_ROOT.rglob("*.txt")):
         if path == PIN_FILE:
             continue
-        # install_python_stack._filter_requirements writes `.{stem}-filtered-XXXX.txt`
-        # BESIDE the source on purpose, so relative -r/-c includes still resolve, and it
-        # does not delete it. So a copy of the pin file can be sitting here while this
-        # runs -- transiently under pytest-xdist, where another worker is exercising that
-        # function, and durably on any machine that has run a real install. It is a
-        # generated temp, not a second source of the pin.
-        # Matched by that exact shape rather than by "starts with a dot": a checked-in
-        # hidden file such as .constraints.txt is a real requirements file and a real
-        # place the pin could be overridden from, so it stays in the scan.
+        # install_python_stack._filter_requirements writes `.{stem}-filtered-XXXX.txt` BESIDE the source on purpose, so
+        # relative -r/-c includes still resolve, and it does not delete it.
+        # Matched by that exact shape rather than by "starts with a dot": a checked-in hidden file such as
+        # .constraints.txt is a real requirements file and a real place the pin could be overridden from, so it stays in
+        # the scan.
         if _GENERATED_FILTER.fullmatch(path.name):
             continue
         named = [line for line in _requirements(path) if line.lower().startswith("diffusers")]
@@ -99,7 +94,7 @@ def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
     for func in ast.walk(tree):
         if not isinstance(func, ast.FunctionDef):
             continue
-        for stmt in func.body:  # top level of the function only, no if/else nesting
+        for stmt in func.body:
             if _installs_pin(stmt):
                 found = True
     assert found, (

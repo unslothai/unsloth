@@ -96,18 +96,9 @@ def _wait_for(
     raise AssertionError(f"Timed out waiting for {description}; last result: {last!r}")
 
 
-# The quant list is fetched once per expanded row, by an effect keyed on
-# [repoId, localSource, refreshKey, hfToken]. Its .catch() calls setError and stops:
-# there is no automatic retry, by design, and the row offers a Retry button instead.
-# So one transient transport blip at the moment the row expands leaves the row showing
-# an error for the rest of the run, and waiting longer cannot help -- nothing is still
-# in flight. Observed as "Unsloth isn't running -- please relaunch it." rendered inside
-# the FLUX.2-klein-4B row while /api/health kept answering for another 49 seconds, on a
-# job that fails on roughly three runs in four across unrelated branches.
-#
-# Clicking Retry is what a user does and what the row is built for. Bounded, and the
-# listing error is reported if the retries run out, so a backend that is genuinely
-# unreachable still fails the run rather than looping.
+# The quant list is fetched once per expanded row, by an effect keyed on [repoId, localSource, refreshKey, hfToken].
+# please relaunch it." rendered inside the FLUX.2-klein-4B row while /api/health kept answering for another 49 seconds,
+# on a job that fails on roughly three runs in four across unrelated branches.
 _VARIANT_RETRY_ATTEMPTS = 3
 _VARIANT_ERROR_TEXT = (
     "const box=[...document.querySelectorAll('div')].find("
@@ -150,7 +141,7 @@ def _wait_for_quantization(
             if attempt == _VARIANT_RETRY_ATTEMPTS:
                 break
             if not _execute(base, session_id, _VARIANT_RETRY_CLICK):
-                break  # The button went away; let the assertion below carry the text.
+                break
             time.sleep(1.0)
     raise AssertionError(
         f"Timed out waiting for {description} after {_VARIANT_RETRY_ATTEMPTS} listing "

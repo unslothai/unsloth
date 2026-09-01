@@ -80,8 +80,8 @@ def _load(
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
 
-    # planner_quantization_kwargs reads the shared skip list; stub it so the test never
-    # imports the real unsloth_zoo (and so the assertions do not track its contents).
+    # planner_quantization_kwargs reads the shared skip list;
+    # stub it so the test never imports the real unsloth_zoo (and so the assertions do not track its contents).
     peft_utils = types.ModuleType("unsloth_zoo.peft_utils")
     peft_utils.SKIP_QUANTIZATION_MODULES = list(_SKIP_MODULES)
     sys.modules["unsloth_zoo.peft_utils"] = peft_utils
@@ -101,17 +101,16 @@ class _Plan:
         return "  (fabricated plan)"
 
 
-# ------------------------------------------------- what an existing caller still gets
 
 
 @pytest.mark.parametrize(
     "device_map",
     [
-        "sequential",  # today's default
+        "sequential",  # today's default accelerate's, which this must never reinterpret what Unsloth Studio passes
         "auto",  # accelerate's, which this must never reinterpret
-        "balanced",  # what Unsloth Studio passes
+        "balanced",
         "balanced_low_0",
-        None,  # a single device
+        None,
     ],
 )
 def test_every_existing_device_map_is_returned_untouched(device_map):
@@ -174,9 +173,9 @@ def test_an_unset_switch_plans_so_a_bare_from_pretrained_needs_no_device_map(mon
     assert calls == ["unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit"]
 
 
+
+
 # ------------------------------------------------------- where planning cannot apply
-
-
 @pytest.mark.parametrize(
     "kwargs,why",
     [
@@ -237,7 +236,7 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
         assert "skip_reason" in passed, f"vision.py:{call.lineno} plans a text-only decoder"
         source = passed["skip_reason"] + assignments.get(passed["skip_reason"], "")
         assert "text_only_decoder" in source, f"vision.py:{call.lineno}"
-        # The other way the load can diverge from the plan; see the task-head test.
+        # The other way the load can diverge from the plan;
         assert "planner_class_mismatch_reason" in source, f"vision.py:{call.lineno}"
 
     # loader.py does the swap for FastModel/FastLanguageModel, so it has to say so too.
@@ -381,7 +380,6 @@ def test_an_infeasible_plan_is_raised_not_swallowed():
         ns["resolve_unsloth_device_map"]("unsloth", "m")
 
 
-# ------------------------------------------------- the second name, whose decline shards
 
 
 @pytest.mark.parametrize(
@@ -407,7 +405,7 @@ def test_the_balanced_sentinel_declines_to_balanced_not_sequential(kwargs, devic
     """
     ns = _load(devices = devices, planner = planner)
     assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m", **kwargs) == "balanced"
-    # The plain sentinel is unchanged: an existing caller keeps the answer it had.
+    # The plain sentinel is unchanged:
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", **kwargs) == "sequential"
 
 
@@ -449,7 +447,6 @@ def test_the_default_device_map_still_resolves_to_the_plain_sentinel():
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
 
 
-# ------------------------------------------------------------- when it does plan
 
 
 def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
@@ -718,11 +715,9 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
             ), f"diffusion.py:{call.lineno} plans without the skip list the load applies"
 
 
-# --------------------------------------------------------------------------------------
+
+
 # Planning by default reaches paths the opt-in never did.
-# --------------------------------------------------------------------------------------
-
-
 def _helpers():
     """`planner_kwargs_with_max_memory` / `planner_hub_kwargs`, without importing torch."""
     src = open(LOADER_UTILS, encoding = "utf-8").read()
@@ -973,8 +968,8 @@ def test_an_unresolvable_explicit_model_class_declines_planning():
     assert 'getattr(auto_model, "_model_mapping", None) is None' in vision
     assert "an explicit model class has no auto mapping" in vision
 
-    # Ahead of the class comparison it backstops, or that one returns None and the
     # caller-config branch below claims the slot with the wrong reason.
+    # Ahead of the class comparison it backstops, or that one returns None and the caller-config branch below claims
     veto = vision.index("an explicit model class has no auto mapping")
     caller = vision.index("a caller-supplied config may not describe the repo the planner")
     assert veto < caller, "the unresolvable-class veto never gets to run"

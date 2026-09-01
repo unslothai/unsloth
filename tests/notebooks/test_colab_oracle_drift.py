@@ -128,7 +128,6 @@ def test_refresh_without_all_still_writes_only_pip(oracle, tmp_path):
     """Back-compat: notebooks-ci.yml still calls the single-file form to feed
     `lint --colab-pin` live data."""
     _, _ = oracle
-    # A dir of its own: the fixture pre-seeds tmp_path with all three snapshots.
     dest = tmp_path / "pip_only"
     out = dest / "just_pip.txt"
     rc = nv.cmd_refresh_colab(argparse.Namespace(all = False, snapshot_dir = str(dest), out = str(out)))
@@ -147,8 +146,7 @@ def test_workflow_diffs_before_it_refreshes():
         nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
         body = rest[: nxt.start()] if nxt else rest
 
-        # Match the invocations, not the prose: both steps are described in
-        # comments that name the other subcommand.
+        # Match the invocations, not the prose:
         def _at(sub):
             m = re.search(rf"notebook_validator\.py {sub}\b", body)
             return m.start() if m else -1
@@ -214,13 +212,10 @@ def test_cron_lint_survives_a_strict_drift_failure():
     for step in ("Refresh Colab oracle", "Lint with live PyPI metadata"):
         at = body.index(f"- name: {step}")
         assert at > strict_at, f"{step} must stay after the strict gate"
-        # the step's own block, up to the next `- name:`
         blk = body[at:]
         end = blk.find("\n      - name:", 1)
         blk = blk[:end] if end != -1 else blk
-        # Match the directive on a line of its own: the step's own comment
-        # explains `if: always()` in prose, and a substring test would happily
-        # pass on that after the directive itself had been deleted.
+        # Match the directive on a line of its own:
         assert re.search(
             r"^\s*if: always\(\)\s*$", blk, re.M
         ), f"{step} would be skipped when strict drift fires"

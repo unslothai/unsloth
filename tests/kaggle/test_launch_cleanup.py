@@ -72,12 +72,10 @@ def _fake_kaggle(bin_dir: Path, record: Path) -> None:
 
 
 # Arm faulthandler against a FILE, not stderr.
-#
-# PYTHONFAULTHANDLER sends the dump to fd 2, and every launcher here has fd 2 redirected
-# onto the stdout pipe. One of these tests deliberately fills that pipe and stops draining
-# it, which is exactly the hang worth diagnosing, and a raw write bypasses Python's io
-# lock but not pipe backpressure: SIGABRT would kill the child with nothing written and
-# the failure message would be as empty as before. A file has no reader to block on.
+# PYTHONFAULTHANDLER sends the dump to fd 2, and every launcher here has fd 2 redirected onto the stdout pipe.
+# One of these tests deliberately fills that pipe and stops draining it, which is exactly the hang worth diagnosing, and
+# a raw write bypasses Python's io lock but not pipe backpressure: SIGABRT would kill the child with nothing written and
+# the failure message would be as empty as before.
 _FAULT_PREAMBLE = """\
 import faulthandler as _faulthandler, os as _os
 _fault_dump = open(_os.environ["LAUNCH_FAULT_DUMP"], "w", buffering = 1)
@@ -111,15 +109,13 @@ def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
     )
 
 
-# A guard against a launcher that never dies, not a latency target: four of these
-# subprocess tests now run at once on a four-core runner, where the SIGINT case
-# was observed to need over 30 seconds purely to be scheduled.
+# A guard against a launcher that never dies, not a latency target: four of these subprocess tests now run at once on a
+# four-core runner, where the SIGINT case was observed to need over 30 seconds purely to be scheduled.
 _DEATH_BUDGET_SEC = 120
 
-# How long the launcher stalls while a test signals it. Must OUTLAST the budget
-# above: a handler that swallows its signal leaves the process asleep and then
-# resuming, so a shorter stall lets it wake, run finish(), delete through the
-# ordinary path and exit inside the wait, passing every deletion test.
+# How long the launcher stalls while a test signals it.
+# Must OUTLAST the budget above: a handler that swallows its signal leaves the process asleep and then resuming, so a
+# shorter stall lets it wake, run finish(), delete through the ordinary path and exit inside the wait, passing every
 _STALL_SEC = 900
 
 
@@ -265,7 +261,7 @@ def _run_main(
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     kaggle(tmp_path / "bin", tmp_path / "kaggle_calls.txt")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    # The retry backoffs, not the retries: every attempt still runs.
+    # The retry backoffs, not the retries:
     monkeypatch.setattr(launch, "PUSH_BACKOFF_SEC", 0)
     monkeypatch.setattr(launch, "DELETE_BACKOFF_SEC", 0)
     monkeypatch.setattr(launch, "_api", _stub_api)
@@ -275,9 +271,7 @@ def _run_main(
         "fetch_evidence",
         lambda *a, **kw: {"notebooks": [], "log": None, "truncated": False},
     )
-    # Installing the real handlers here would leave a SIGTERM disposition and
-    # an atexit callback on the pytest interpreter for the rest of the session.
-    # They have their own tests, which drive a subprocess for that reason.
+    # Installing the real handlers here would leave a SIGTERM disposition and an atexit callback on the pytest
     monkeypatch.setattr(launch, "_install_release_handlers", lambda release: None)
     if push_impl is not None:
         monkeypatch.setattr(launch, "push", push_impl)
@@ -290,9 +284,6 @@ def _run_main(
     return json.loads((outdir / "launch_result.json").read_text(encoding = "utf-8"))
 
 
-# --------------------------------------------------------------------------
-# the registry
-# --------------------------------------------------------------------------
 def test_a_pushed_kernel_is_recorded_before_anything_else_can_fail(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     launch._inflight_add("me/k-1")
@@ -313,7 +304,6 @@ def test_a_live_owner_is_never_swept(tmp_path, monkeypatch):
     destroy a legitimate run and report its absence as a code failure."""
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     launch._inflight_write([{"slug": "me/live", "pid": os.getpid() + 0, "at": 0}])
-    # Our own pid counts as alive.
     assert launch.sweep_orphans() == []
     assert [e["slug"] for e in launch._inflight_read()] == ["me/live"]
 
@@ -322,7 +312,6 @@ def test_a_dead_owners_kernel_is_reclaimed(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     _fake_kaggle(tmp_path / "bin", tmp_path / "kaggle_calls.txt")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    # A pid that cannot be running: claim one and let it exit.
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     launch._inflight_write([{"slug": "me/orphan", "pid": dead.pid, "at": 0}])
@@ -334,6 +323,7 @@ def test_a_dead_owners_kernel_is_reclaimed(tmp_path, monkeypatch):
 def test_a_failed_delete_keeps_the_entry_for_next_time(tmp_path, monkeypatch):
     """Forgetting a kernel we could not delete is how one bills forever."""
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
+    # A pid that cannot be running: claim one and let it exit.
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     launch._inflight_write([{"slug": "me/orphan", "pid": dead.pid, "at": 0}])
@@ -471,14 +461,6 @@ def test_a_corrupt_registry_does_not_take_the_run_down(tmp_path, monkeypatch):
     assert launch.sweep_orphans() == []
 
 
-# --------------------------------------------------------------------------
-# the signals
-# --------------------------------------------------------------------------
-# A launcher that has pushed its kernel and is now waiting on it, which is
-# where a cancelled workflow finds it: almost all of a run's wall clock is
-# spent here, with the kernel up and billing. main() installs the real
-# handlers over the real release(), so the signal is delivered to production
-# code and nothing about cleanup is re-implemented in the runner.
 def _waiting_launcher(outdir: Path) -> str:
     return "\n".join(
         [
@@ -562,10 +544,8 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     assert any(
         "me/k-1" in c for c in _deletions(tmp_path)
     ), f"{signame} left the kernel behind; it would bill to its ceiling. Launcher said: {logged}"
-    # And the registry agrees, so no later sweep chases a kernel that is gone.
     assert json.loads((tmp_path / "inflight.json").read_text()) == []
-    # On the signal path, not on the way out of an ordinary run: finish() satisfies
-    # the deletion above on its own, so a swallowed signal would pass without this.
+    # On the signal path, not on the way out of an ordinary run:
     assert proc.returncode == -getattr(signal, signame), (
         f"the kernel was deleted, but the launcher exited {proc.returncode} rather than "
         f"dying of {signame}, so nothing here says the signal is what did it. "
@@ -630,7 +610,6 @@ def test_the_exit_status_survives_a_release_that_fails(tmp_path):
         f"a release() that raised turned SIGTERM into returncode {proc.returncode}; "
         f"a cancelled job would read as a completed one. Launcher said: {_tail(proc)}"
     )
-    # And the retry still did the budget control the handler exists for.
     assert any("me/k-1" in c for c in _deletions(tmp_path))
 
 
@@ -688,7 +667,8 @@ def test_the_handler_survives_its_own_logging_failing(tmp_path):
         f"a log call that raised inside the handler turned SIGTERM into returncode "
         f"{proc.returncode}. Launcher said: {_tail(proc)}"
     )
-    # And the kernel is still deleted: the logging is what failed, not the cleanup.
+    # And the retry still did the budget control the handler exists for.
+    # And the kernel is still deleted:
     assert any("me/k-1" in c for c in _deletions(tmp_path))
 
 
@@ -710,7 +690,7 @@ def test_the_handler_survives_a_stdout_nobody_is_draining(tmp_path):
     proc = _runner(tmp_path, _flooding_launcher(tmp_path / "out"))
     try:
         _await_ready(proc)
-        time.sleep(2)  # long enough for the pipe to fill and the write to park
+        time.sleep(2)
         proc.send_signal(signal.SIGTERM)
         _wait_for_death(proc, tmp_path)
     finally:
@@ -860,7 +840,7 @@ def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
     )
     try:
         _await_ready(proc)
-        time.sleep(2)  # let the pipe fill and the write park
+        time.sleep(2)
         proc.send_signal(signal.SIGTERM)
         _wait_for_death(proc, tmp_path)
     finally:
@@ -1013,8 +993,8 @@ def test_a_release_kaggle_refuses_is_not_marked_released(tmp_path, monkeypatch):
     assert entry["released_slugs"] == []
     assert result["unreleased"] == ["me/k-1"]
     assert [e["slug"] for e in launch._inflight_read()] == ["me/k-1"]
-    # Retried rather than written off, since a refusal says nothing about the
-    # kernel; see DELETE_ATTEMPTS.
+    # Retried rather than written off, since a refusal says nothing about the kernel;
+    # see DELETE_ATTEMPTS.
     assert len(_deletions(tmp_path)) == launch.DELETE_ATTEMPTS
 
 

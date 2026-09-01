@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -59,7 +58,6 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     max_seq_length = max_seq_length,
     dtype = None,
     load_in_4bit = False,
-    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
 base_model_class = model.__class__.__name__
@@ -133,11 +131,8 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     max_seq_length = max_seq_length,
     dtype = None,
     load_in_4bit = False,
-    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
-# from transformers import AutoProcessor
-# processor = AutoProcessor.from_pretrained("unsloth/csm-1b")
 
 print("✅ Model loaded for inference successfully!")
 
@@ -216,7 +211,6 @@ except Exception as e:
     assert False, f"Inference failed with exception: {e}"
 
 
-## assert that transcribed_text contains The birch canoe slid on the smooth planks. Glued the sheet to the dark blue background. It's easy to tell the depth of a well. Four hours of steady work faced us.
 
 print("✅ All sections passed successfully!")
 

@@ -126,12 +126,8 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     assert "const [retainStreamingHeight, setRetainStreamingHeight]" in src
     assert "setRetainStreamingHeight(false)" in src
     assert "setRetainStreamingHeight(isReasoningStreaming)" in src
-    # Still zero while streaming, and still the animation's length once it stops. The
-    # length is now chosen by the collapse mechanism rather than written inline: the
-    # height keyframes animate a height captured at toggle time, so releasing the cap
+    # Still zero while streaming, and still the animation's length once it stops.
     # cannot change what they animate and ANIMATION_DURATION is right for them, while
-    # `1fr` resolves against the live content every frame and has to outlast a
-    # transition that only starts a render after this timer is armed.
     assert "isReasoningStreaming ? 0 : closeDelay" in src
     assert "const closeDelay = GRID_COLLAPSE_REASONING_ENABLED" in src
     assert "? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS" in src

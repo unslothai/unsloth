@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -30,12 +29,11 @@ print(f"{'='*80}")
 
 model, tokenizer = FastModel.from_pretrained(
     model_name = "unsloth/whisper-large-v3",
-    dtype = None,  # Leave as None for auto detection
-    load_in_4bit = False,  # Set to True to do 4bit quantization which reduces memory
+    dtype = None,
+    load_in_4bit = False,
     auto_model = WhisperForConditionalGeneration,
     whisper_language = "English",
     whisper_task = "transcribe",
-    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
 print("✅ Base model loaded successfully!")

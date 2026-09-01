@@ -86,10 +86,8 @@ def _exec_search_roots_block(
     _resolved_studio_root_and_is_legacy() classifier it delegates to -- with a
     controlled studio_root() and resolve(), without importing the heavy module."""
     src = LLAMA_CPP.read_text(encoding = "utf-8")
-    # Shared root classifier (holds the defensive try/except for studio_root()).
-    # End the slice at the next sibling def/decorator at the same indent rather
-    # than the literal "@staticmethod" string, so a future docstring mentioning a
     # decorator can't truncate the helper mid-body and break exec().
+    # Shared root classifier (holds the defensive try/except for studio_root()).
     helper_start = src.index("def _resolved_studio_root_and_is_legacy")
     indent = " " * (helper_start - src.rfind("\n", 0, helper_start) - 1)
     nxt_def = src.find(f"\n{indent}def ", helper_start + 1)
@@ -154,5 +152,4 @@ def test_search_roots_default_mode_uses_legacy_only(tmp_path):
     legacy = home / ".unsloth" / "studio"
     legacy.mkdir(parents = True)
     roots = _exec_search_roots_block(home = home, studio_root_value = legacy, resolve_raises = False)
-    # Default mode: only legacy_llama.
     assert roots == [home / ".unsloth" / "llama.cpp"]

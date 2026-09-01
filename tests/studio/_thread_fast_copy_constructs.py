@@ -22,7 +22,7 @@ Adding a case here widens the proof for free; the driver iterates this dict.
 
 from __future__ import annotations
 
-#: A 1x1 transparent GIF, left unclosed so a caller appends its own `alt="..."` attribute.
+# : A 1x1 transparent GIF, left unclosed so a caller appends its own `alt="..."` attribute.
 IMG = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" '
 
 CONSTRUCTS = {
@@ -34,9 +34,8 @@ CONSTRUCTS = {
     "img_alt_empty": f'<p>{IMG}alt=""></p>',
     "img_no_alt": f"<p>{IMG}></p>",
     "img_alt_inline": f'<p>before{IMG}alt="Tool result 1">after</p>',
-    # An image the native iterator SKIPS. Raised in review and confirmed against the real
     # clipboard: inserting alt text for one of these ADDS text the clipboard never carried.
-    # The `invisible` case is Unsloth's own ImagePreview before the image has loaded.
+    # An image the native iterator SKIPS.
     "img_alt_display_none": f'<p>before {IMG}alt="SVG preview" style="display:none"> after</p>',
     "img_alt_hidden": f'<p>before {IMG}alt="SVG preview" style="visibility:hidden"> after</p>',
     "img_alt_unselectable": f'<p>before {IMG}alt="SVG preview" style="user-select:none"> after</p>',
@@ -67,18 +66,15 @@ CONSTRUCTS = {
     "collapse_ws": "<p>trailing   whitespace   collapse</p>",
 }
 
-#: The only constructs the serialiser is allowed to refuse on a mapped engine. Everything else
-#: must be answered AND must match the clipboard byte for byte.
+# : The only constructs the serialiser is allowed to refuse on a mapped engine.
 MUST_REFUSE = frozenset({"input_text", "input_password", "input_checkbox", "textarea", "select"})
 
-#: Constructs where the engine copies nothing at all, so there is no clipboard to compare with.
+# : Constructs where the engine copies nothing at all, so there is no clipboard to compare with.
 NO_COPY = frozenset({"user_select_none", "display_none", "visibility_hidden"})
 
-#: A SELECTION THAT LIES ENTIRELY INSIDE THE TRANSFORMED ELEMENT. Its common ancestor is the text
-#: node, so the scope is the transformed element ITSELF, which `querySelectorAll("*")` does not
-#: include. Raised in review against the earlier gate; it applies with more force to a serialiser
-#: that patches the scope's descendants, because the miss produces a wrong string rather than a
-#: slow copy. All three failed before the fix that added the root to the patched set.
+# : A SELECTION THAT LIES ENTIRELY INSIDE THE TRANSFORMED ELEMENT.
+# Its common ancestor is the text : node, so the scope is the transformed element ITSELF, which `querySelectorAll("*")`
+# does not : include.
 INSIDE_SCOPE = {
     "inside a transformed span": (
         '<p><span style="text-transform:uppercase" id="t">transformed heading</span></p>',

@@ -29,18 +29,14 @@ _LIVE_SERVERS: list[subprocess.Popen[str]] = []
 _PREV_HANDLERS: dict[int, Any] = {}
 
 # Chromium launch args.
-# Throttling flags stop Chromium deprioritising CPU/timers when it thinks the
-# headless window is backgrounded (run 25586583024 stalled inference + render).
-# TranslateUI strips a pointer-intercepting popup; ipc-flooding-protection off
-# lets rapid clicks through during the slider sweep.
-# No `--single-process`. It was darwin-only, for a pipeTransport.js JSON-RPC crash,
-# and it caps Chromium at exactly ONE BrowserContext: opening a second one kills the
-# browser with SIGTRAP, and the next new_page() raises "Target page, context or
-# browser has been closed". Closing a context does it too, even with another still
-# open. That is what made "Update banner layout regression" red on every macos-14 run
-# (it needs a context per viewport), and it is why playwright_chat_ui.py had to keep
-# every step inside one context. Measured with chromium-headless-shell 151: with the
-# flag, a second context dies immediately; without it, 12 open/close cycles pass.
+# Throttling flags stop Chromium deprioritising CPU/timers when it thinks the headless window is backgrounded (run
+# 25586583024 stalled inference + render).
+# It was darwin-only, for a pipeTransport.js JSON-RPC crash, and it caps Chromium at exactly ONE BrowserContext: opening
+# a second one kills the browser with SIGTRAP, and the next new_page() raises "Target page, context or browser has been
+# closed".
+# That is what made "Update banner layout regression" red on every macos-14 run (it needs a context per viewport), and
+# it is why playwright_chat_ui.py had to keep every step inside one context.
+# Measured with chromium-headless-shell 151: with the flag, a second context dies immediately;
 _BASE_CHROMIUM_ARGS = (
     "--disable-dev-shm-usage",
     "--no-sandbox",
@@ -61,11 +57,6 @@ def chromium_launch_args(platform: str | None = None) -> list[str]:
 
 
 # Init script injected into every Playwright context.
-# CSS view-transitions render a full-window pseudo-element that intercepts
-# pointer events after each theme/route swap, so Playwright reports
-# `<html> intercepts pointer events` on the next click. Killing the
-# pseudo-elements + shimming startViewTransition synchronously fixes both.
-# Idempotent and safe to install on every page.
 _VIEW_TRANSITION_KILLER_JS = """
 (function () {
     try {
@@ -106,17 +97,17 @@ def install_view_transition_killer(ctx: Any) -> None:
     ctx.add_init_script(_VIEW_TRANSITION_KILLER_JS)
 
 
+
+
+# The smoke pages are dev-server-only, so each harness owns its server.
+# Hence the process group, stdout drain and SIGKILL escalation.
+# A backgrounded `npm run dev &` puts the npm WRAPPER in $!, and killing that orphans the node child holding the port
+# and stdout.
+
+
 # Server health pre-flight.
-# On the macos-14 free runner /api/health can return 200 while /api/auth still
-# 503s (auth DB mid-migration); this in-script probe catches that gap before a
-# 60s change-password timeout.
-
-
-# The smoke pages are dev-server-only, so each harness owns its server. A backgrounded
-# `npm run dev &` puts the npm WRAPPER in $!, and killing that orphans the node child
-# holding the port and stdout. Hence the process group, stdout drain and SIGKILL escalation.
-
-
+# On the macos-14 free runner /api/health can return 200 while /api/auth still 503s (auth DB mid-migration);
+# this in-script probe catches that gap before a 60s change-password timeout.
 def drain_process_output(proc: subprocess.Popen[str], sink: deque[str] | None = None) -> None:
     """Consume vite's output so its pipe cannot fill and wedge; keep the tail for errors."""
     if proc.stdout is not None:
@@ -155,7 +146,7 @@ def _arm_teardown_signals() -> None:
         try:
             _PREV_HANDLERS[signum] = signal.signal(signum, _handle_fatal_signal)
         except (ValueError, OSError):
-            _PREV_HANDLERS.clear()  # not the main thread; leave signals alone
+            _PREV_HANDLERS.clear()
             return
 
 
@@ -204,8 +195,7 @@ def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
         if os.name == "nt"
         else {"start_new_session": True}
     )
-    # shutil.which honours PATHEXT, so this resolves npm.cmd on Windows. CreateProcess cannot
-    # run a .cmd directly, so a bare "npm" is a FileNotFoundError there.
+    # shutil.which honours PATHEXT, so this resolves npm.cmd on Windows;
     npm = shutil.which("npm") or "npm"
     proc = subprocess.Popen(
         [npm, "run", "dev", "--", "--host", host, "--port", str(port), "--strictPort"],
@@ -259,7 +249,6 @@ def stop_process(proc: subprocess.Popen[str]) -> None:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        # Called from a `finally`: never raise over the failure that sent us here.
         try:
             proc.wait(timeout = 10)
         except subprocess.TimeoutExpired:
@@ -282,12 +271,13 @@ def wait_for_smoke_page(
     deadline = time.monotonic() + timeout_s
     last = "no response"
     while time.monotonic() < deadline:
-        # Ours died (busy port, missing node_modules): stop instead of polling out the timeout.
+        # Ours died (busy port, missing node_modules):
         if proc is not None and proc.poll() is not None:
             tail = "\n".join(getattr(proc, "vite_tail", []))
             raise RuntimeError(
                 f"vite exited with code {proc.returncode} before serving {url}\n{tail}"
             )
+        # Called from a `finally`: never raise over the failure that sent us here.
         try:
             with urllib.request.urlopen(url, timeout = 3.0) as r:
                 body = r.read().decode("utf-8", errors = "replace")
@@ -350,10 +340,9 @@ def wait_for_health(
     return False
 
 
-# Page recovery: if the page died mid-test, open a fresh one in the same context
-# (localStorage auth survives); otherwise leave it alone. Optionally re-navigates.
 
 
+# Page recovery: if the page died mid-test, open a fresh one in the same context (localStorage auth survives);
 def recover_or_replace_page(
     page: Any,
     ctx: Any,
@@ -386,9 +375,6 @@ def recover_or_replace_page(
     return page
 
 
-# ─────────────────────────────────────────────────────────────────────
-# POST-and-wait: surface server errors immediately, fall back cleanly.
-# ─────────────────────────────────────────────────────────────────────
 
 
 def click_and_wait_for_response(
@@ -424,12 +410,10 @@ def click_and_wait_for_response(
         return None, exc
 
 
-# Console-error / page-error filtering.
-#   - BENIGN_PAGE_ERROR_PATTERNS: CI-infra JS errors with no user-visible effect;
-#     the page-error gate must not count these.
-#   - BENIGN_CONSOLE_ERROR_PATTERNS: same-cause console.error events, used only to
-#     filter noise from diagnostic dumps (tests don't gate on console.error).
 
+# Console-error / page-error filtering.
+# - BENIGN_PAGE_ERROR_PATTERNS: CI-infra JS errors with no user-visible effect;
+# - BENIGN_CONSOLE_ERROR_PATTERNS: same-cause console.error events, used only to filter noise from diagnostic dumps
 BENIGN_PAGE_ERROR_PATTERNS: tuple[str, ...] = (
     "Request failed (422)",
     "Failed to fetch",
@@ -440,15 +424,14 @@ BENIGN_PAGE_ERROR_PATTERNS: tuple[str, ...] = (
 )
 
 BENIGN_CONSOLE_ERROR_PATTERNS: tuple[str, ...] = (
-    # macos-14 buffer exhaustion; the test catches the underlying request
-    # failure via expect_response and retries.
+    # macos-14 buffer exhaustion;
+    # the test catches the underlying request failure via expect_response and retries.
     "net::ERR_NO_BUFFER_SPACE",
     # Intentional fetch aborts (unmount, route change) log a console.error.
     "AbortError",
     "The user aborted a request",
     # Lazy chunk no longer needed because the user navigated away mid-load.
     "Loading chunk",
-    # Also a benign page-error; here for the diagnostic dump path.
     "Failed to fetch",
 )
 
@@ -473,10 +456,7 @@ def wait_for_first(locator: Any, *, timeout_ms: int = 10_000) -> Any | None:
     caller's existing "is this control present at all" branch, including the
     fallbacks that legitimately expect a miss.
     """
-    # Imported here, not at module scope. Nothing else in this file imports
-    # playwright, and the harness-contract tests import it on runners that have
-    # no browser stack -- a top-level import would turn those into collection
-    # errors instead of skips.
+    # Imported here, not at module scope:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
     try:
@@ -508,17 +488,13 @@ def echo_browser_errors(page: Any, info: Callable[[str], None]) -> None:
         lambda m: info(f"console.{m.type}: {m.text}") if m.type == "error" else None,
     )
     page.on("requestfailed", lambda r: info(f"requestfailed: {r.url} {r.failure}"))
-    # Vite reloads the page after re-optimizing a late-discovered dep, unmounting the
-    # tree mid-assertion. Name it if it happens.
+    # Vite reloads the page after re-optimizing a late-discovered dep, unmounting the tree mid-assertion.
     page.on(
         "framenavigated",
         lambda f: info(f"navigated: {f.url}") if f is page.main_frame else None,
     )
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Diagnostic dump.
-# ─────────────────────────────────────────────────────────────────────
 
 
 def dump_diagnostics(
@@ -579,11 +555,7 @@ def dump_diagnostics(
             info(f"diagnostics: json sidecar {name} failed: {exc}")
 
 
-# Markers for the transient Playwright error raised when a navigation, reload, or
-# auth refresh destroys the JS execution context while an evaluate is in flight.
-# Stored lowercase and matched against a lowercased message: Playwright varies the
-# casing across versions ("Frame was detached" vs "frame was detached"), so a
-# case-sensitive check would miss the very races this is meant to catch.
+# Markers for the transient Playwright error raised when a navigation, reload, or auth refresh destroys the JS
 _CONTEXT_LOST_MARKERS = (
     "execution context was destroyed",
     "context with specified id",
@@ -593,17 +565,11 @@ _CONTEXT_LOST_MARKERS = (
     "execution context is not available",
 )
 
-# HTTP methods whose replay is side-effect-free, so an evaluate_fetch hit by a
-# mid-call context loss may safely re-run. Mutating methods are excluded by
-# default (see evaluate_fetch) to avoid double-applying an already-sent request.
+# HTTP methods whose replay is side-effect-free, so an evaluate_fetch hit by a mid-call context loss may safely re-run.
 _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 # Robust page/locator.evaluate.
-# A navigation mid-evaluate destroys the execution context and raises at the Python
-# level (not a JS result), which would crash the script. Retry that transient class
-# within a small budget, settling the page first; non-transient or persistent errors
-# still propagate.
 def robust_evaluate(
     target: Any,
     expression: str,
@@ -642,12 +608,10 @@ def robust_evaluate(
 
 
 # Bounded in-page fetch.
-# `page.evaluate(...)` has no `timeout=`, so a stuck fetch hangs the script until
-# the runner timeout (run 25696797934 / PR #5387 burned 27+ min). evaluate_fetch
-# wraps the fetch in an AbortController.signal so the JS side always resolves --
+# evaluate_fetch wraps the fetch in an AbortController.signal so the JS side always resolves
 # real response, or synthetic `{status: 0, error: "AbortError..."}` after timeout_ms.
-# It also retries the evaluate itself when a navigation destroys the execution
-# context mid-call (a transient Playwright race, not a real fetch failure).
+# `page.evaluate(...)` has no `timeout=`, so a stuck fetch hangs the script until the runner timeout (run 25696797934 /
+# PR #5387 burned 27+ min).
 def evaluate_fetch(
     page: Any,
     url: str,
@@ -714,20 +678,17 @@ def evaluate_fetch(
         "body": body_arg,
         "timeoutMs": int(timeout_ms),
     }
-    # Retry transport failures only: status != 0 (real HTTP) and AbortError
-    # (caller's deadline) propagate; status==0 (stale-keepalive / "Failed to
-    # fetch" after auth rotation) retries after backoff to evict the dead socket.
+    # Retry transport failures only:
     last: dict[str, Any] | None = None
     attempts = max(1, int(transport_retries) + 1)
     # Replay the in-page evaluate on a context loss only for idempotent reads;
-    # mutating methods (POST/PUT/PATCH/DELETE) may have already hit the backend,
-    # so retrying would re-send them (see docstring). Honor an explicit override.
+    # mutating methods (POST/PUT/PATCH/DELETE) may have already hit the backend, so retrying would re-send them (see
+    # docstring).
     if retry_on_context_loss is None:
         retry_on_context_loss = method.upper() in _IDEMPOTENT_METHODS
     ctx_retries = 2 if retry_on_context_loss else 0
     for attempt in range(attempts):
-        # robust_evaluate retries the evaluate when a navigation destroys the
-        # execution context mid-call; the loop here retries transport failures.
+        # robust_evaluate retries the evaluate when a navigation destroys the execution context mid-call;
         result = robust_evaluate(
             page, js, payload, retries = ctx_retries, backoff_ms = transport_backoff_ms
         )
@@ -757,10 +718,7 @@ def evaluate_fetch(
 
 
 # Wall-clock watchdog.
-# A browser wedge (CPU-pinned JS, silent renderer crash, asyncio deadlock) can
-# still hang the script. A daemon Timer calls os._exit(2) after deadline_s; exit
-# code 2 lets the workflow's `set -e` propagate. Pick deadline_s above the
-# slowest healthy run (macos-14 cold cache ~7-9 min) but under the 30-min cap.
+# A daemon Timer calls os._exit(2) after deadline_s;
 def install_wall_clock_watchdog(
     deadline_s: float,
     *,
@@ -824,6 +782,5 @@ def click_forced(
         locator.scroll_into_view_if_needed(timeout = timeout_ms)
     except Exception:
         pass
-    # Callers pass their own `timeout` through: several of these clicks wait longer
-    # than the default because the tab they open is doing work behind the overlay.
+    # Callers pass their own `timeout` through:
     locator.click(force = True, **click_kwargs)

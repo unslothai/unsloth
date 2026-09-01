@@ -124,8 +124,7 @@ def _call(
     tmp_path factory branches on it, so a session-wide patch breaks the fixture on
     a Windows test host."""
     with patch.object(sys, "platform", platform):
-        # isdir too: the llvm probe requires a directory, so a fake host that only
-        # answers exists() would report every nested llvm dir as missing.
+        # isdir too: the llvm probe requires a directory, so a fake host that only answers exists() would report every
         with (
             patch("os.path.exists", _fake_exists(present)),
             patch("os.path.isdir", _fake_exists(present)),
@@ -318,15 +317,14 @@ class TestNativeLinuxRootResolution:
         (root / "lib" / "llvm").mkdir()
         (root / "lib" / "llvm" / "lib").write_text("not a directory")
         real_exists = os.path.exists
-        # Pin both device nodes: a WSL test host really has /dev/dxg, which would
         # take the WSL early-return and make this pass for the wrong reason.
+        # Pin both device nodes: a WSL test host really has /dev/dxg, which would take the WSL early-return and make
         pinned = {"/dev/kfd": True, "/dev/dxg": False}
 
         def _exists(p):
             return pinned.get(str(p), None) if str(p) in pinned else real_exists(p)
 
-        # A test host may itself have a real /opt/rocm (the default candidate), so
-        # assert on the bogus entry rather than on the whole list.
+        # A test host may itself have a real /opt/rocm (the default candidate), so assert on the bogus entry rather
         for where, impl in _impls().items():
             with (
                 patch.object(sys, "platform", "linux"),

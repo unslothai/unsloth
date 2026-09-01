@@ -24,10 +24,9 @@ def _read(rel: str) -> str:
 
 
 def test_the_prompt_counts_conversations_not_generation_handles():
-    # One chat holds several handles while a tool continuation registers its next leg
-    # before the previous unwinds (active_generations.ActiveGeneration mints one per
-    # __enter__), so active.count exceeds the deduplicated thread_ids and the dialog
-    # offered to stop two chats while listing one title.
+    # One chat holds several handles while a tool continuation registers its next leg before the previous unwinds
+    # (active_generations.ActiveGeneration mints one per __enter__), so active.count exceeds the deduplicated thread_ids
+    # and the dialog offered to stop two chats while listing one title.
     src = _read("features/chat/utils/confirm-stop-running-chats.ts")
     assert "entry.thread_id" in src, "the unnamed entries have to be counted separately"
     # The raw handle count survives only for a backend too old to send the entries.
@@ -37,9 +36,7 @@ def test_the_prompt_counts_conversations_not_generation_handles():
 
 
 def test_an_unload_is_not_described_as_a_reload():
-    # ejectModel confirms through the same dialog, but confirming calls /unload and
-    # leaves no model loaded: "Unloading the model reloads the model" and "Stop and
-    # reload" promised the opposite for the destructive one.
+    # ejectModel confirms through the same dialog, but confirming calls /unload and leaves no model loaded:
     dialog = _read("features/chat/components/stop-running-chats-dialog.tsx")
     assert "Stop and unload" in dialog and "Stop and reload" in dialog
     assert "leaves no model loaded" in dialog
@@ -52,10 +49,7 @@ def test_an_unload_is_not_described_as_a_reload():
 
 
 def test_the_tts_request_names_its_thread():
-    # The audio branch registers its run locally under the thread key, and the backend
-    # tracker reads payload.thread_id. Omitting it filed the backend entry under no
-    # thread, so the prompt counted the named local run and the unnamed backend one as
-    # two requests for a single TTS chat.
+    # The audio branch registers its run locally under the thread key, and the backend tracker reads payload.thread_id.
     src = _read("features/chat/api/chat-adapter.ts")
     call = src.index("const result = await generateAudio(")
     assert (

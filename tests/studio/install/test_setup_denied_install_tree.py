@@ -47,8 +47,7 @@ def test_the_denial_exit_delegates_to_the_shared_reporter():
 def test_setup_defines_non_throwing_path_probes():
     for name in ("Test-AccessDeniedError", "Get-PathState", "Test-PathQuiet"):
         assert re.search(rf"^function {re.escape(name)} \{{", SETUP_PS1, re.M), name
-    # Get-PathState must keep the three-way answer: collapsing "Denied" into
-    # "Absent" would hide the failure again instead of reporting it.
+    # Get-PathState must keep the three-way answer:
     for state in ('return "Present"', 'return "Absent"', 'return "Denied"'):
         assert state in SETUP_PS1
 
@@ -79,18 +78,18 @@ def test_every_denial_route_reports_instead_of_proceeding():
     # The junction path replaces this destination, so it needs its own stop.
     assert "$destState = Get-PathState -Path $LlamaCppDir" in SETUP_PS1
     assert '$destState -eq "Denied"' in SETUP_PS1
-    # Denied counts as surviving removal; collapsing it would junction over it.
+    # Denied counts as surviving removal;
     assert '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' in SETUP_PS1
-    # Floor, not an exact count: losing a route is the bug, adding one is not.
     # Each route above is pinned by name, so a swap cannot hide under the floor.
+    # Floor, not an exact count:
     assert SETUP_PS1.count("Exit-PathAccessDenied -Path") >= 9
 
 
 def test_denied_install_reports_an_actionable_failure():
     body = _denial_reporter()
     assert "cannot be read: access is denied" in body
-    # The reporter reinstalled to a different drive and hit the same line; the
     # message has to say why that cannot help.
+    # The reporter reinstalled to a different drive and hit the same line;
     assert "reinstalling Unsloth Studio, to any drive, reuses it" in body
     assert "delete or rename $Path" in body
     assert "Controlled folder access" in body
@@ -125,8 +124,7 @@ def test_ownership_guard_distinguishes_denied_from_unowned():
         in guard
     )
     assert '$markerState -eq "Denied"' in guard
-    # The old wording blamed ownership, which is unknowable while the tree is
-    # unreadable; it must stay for the genuinely-unowned case only.
+    # The old wording blamed ownership, which is unknowable while the tree is unreadable;
     assert "is not marked as an Unsloth-owned $Label" in guard
     # Both stops stay gated, so default-home installs behave exactly as before.
     assert guard.count("$StudioHomeIsCustom -and") >= 3
@@ -141,7 +139,6 @@ def test_no_bare_test_path_probes_inside_the_llama_install_tree():
         r"|\$LlamaServerBin|\$CmakeCacheFile|\$QuantizeBin|\$altBin"
         r"|Join-Path \$BuildDir)"
     )
-    # A comment naming a probe is not a probe.
     offenders = [
         f"{index}: {line.strip()}"
         for index, line in enumerate(SETUP_PS1.splitlines(), start = 1)
@@ -153,6 +150,7 @@ def test_no_bare_test_path_probes_inside_the_llama_install_tree():
 def test_metadata_reads_are_literal_like_the_probes_that_gate_them():
     """A literal probe followed by a globbing read still fails on a path holding
     [ or ], so the probe passes and the read throws into the catch."""
+    # A comment naming a probe is not a probe.
     offenders = [
         f"{index}: {line.strip()}"
         for index, line in enumerate(SETUP_PS1.splitlines(), start = 1)
@@ -194,10 +192,9 @@ def test_local_llama_dir_probes_are_three_state():
     assert '$candState -eq "Denied"' in local_block
     assert '$candState -eq "Present"' in local_block
     assert "Test-PathQuiet $_cand" not in local_block
-    # The disk-space branch keeps Test-PathQuiet on purpose: it only decides
-    # whether a preserved binary is usable, and an unreadable one is not.
 
 
+# The disk-space branch keeps Test-PathQuiet on purpose:
 def test_phase_1b_git_scan_is_guarded_too():
     """The git prerequisite scan probes the same candidate binaries in Phase 1b,
     thousands of lines before the Phase 4 guards, and under "Stop". A denial
@@ -239,14 +236,12 @@ def test_user_supplied_paths_are_never_told_to_delete_themselves():
     assert "delete or rename" not in user_branch
     assert "managed cache" not in user_branch
     assert "UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build" in user_branch
-    # Every call site that reports a path the user pointed us at must pass the
-    # switch, including the canonical location: the override says that tree is
     # the user's build, so "delete it, we reinstall it" is wrong there too.
+    # Every call site that reports a path the user pointed us at must pass the switch, including the canonical location:
     for line in SETUP_PS1.splitlines():
         if "Exit-PathAccessDenied" in line and "UNSLOTH_LOCAL_LLAMA_CPP_DIR" in line:
             assert "-UserSupplied" in line, line
-    # Keyed on the path being reported, not on position: this block also reports
-    # the managed destination ($LlamaCppDir), where "delete it" is the right advice.
+    # Keyed on the path being reported, not on position:
     local_block = SETUP_PS1.split("$LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR", 1)[1]
     local_block = local_block.split("if ($LocalLlamaCppLinked) {", 1)[0]
     for line in local_block.splitlines():
@@ -357,21 +352,19 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
     exits the whole run, which would take llama.cpp inference down with it."""
     guard = SETUP_PS1.split("function Assert-StudioOwnedOrAbsent", 1)[1].split("\nfunction ", 1)[0]
     assert "[switch]$NonFatal" in guard
-    # Ordering, not just presence: below its exit the return is dead code.
+    # Ordering, not just presence:
     paired = re.findall(
         r'if \(\$NonFatal\) \{ return "Denied" \}\n\s*Exit-PathAccessDenied -Path \$Path', guard
     )
     assert len(paired) == guard.count("Exit-PathAccessDenied -Path $Path"), guard
-    # No unpaired return: one above the custom-home gate would call a fresh
-    # install unreadable.
+    # No unpaired return: one above the custom-home gate would call a fresh install unreadable.
     assert len(paired) == guard.count('if ($NonFatal) { return "Denied" }'), guard
     assert len(paired) >= 3, guard
     # Only the denial is handed back; an unowned tree must still stop.
     assert 'Exit-SetupFailure "$Label path is not an Unsloth-owned install' in guard
     whisper = _whisper_phase()
     assert '-Label "whisper.cpp install" -NonFatal) -eq "Denied"' in whisper, whisper
-    # Scoped to the new branch: both phrases occur elsewhere in the phase, so a
-    # phase-wide match proves nothing about this branch.
+    # Scoped to the new branch:
     marker = '-NonFatal) -eq "Denied") {'
     assert marker in whisper, whisper
     denial = whisper.split(marker, 1)[1].split("\n} elseif", 1)[0]
@@ -381,8 +374,7 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
     # The whole point is that this stays non-fatal.
     assert "Exit-SetupFailure" not in denial, denial
     assert not re.search(r"\bexit \d", denial), denial
-    # The skip must precede the branch whose guard would exit. Anchored on that
-    # branch's body, which survives a hardening of its own probe.
+    # The skip must precede the branch whose guard would exit.
     body = "$whisperArgs = @("
     assert body in whisper, whisper
     assert whisper.index("-NonFatal") < whisper.index(body)
@@ -397,7 +389,7 @@ def test_the_whisper_skip_stays_behind_the_installer_gate():
     head = whisper.split(marker, 1)[0]
     assert "} elseif" in head, head
     branch = head.rsplit("} elseif", 1)[1]
-    # A conjunct, not merely present: -or or a negation reopens this case.
+    # A conjunct, not merely present:
     assert re.search(r"-and\s*\([^\n]*\$WhisperInstaller[^\n]*\)\s*-and", branch), branch
     assert "-not (Test-Path" not in branch, branch
     assert " -or " not in branch, branch

@@ -46,13 +46,10 @@ VOCAB, HIDDEN = 17, 8
 PAD_ID, SEQ_LEN, KEEP = 0, 8, 4
 
 
-# ---------------------------------------------------------------------------
-# Helpers: the real unsloth_zoo ones when importable, otherwise eager mirrors
-# with identical semantics so a runner without unsloth_zoo still exercises the
-# same arithmetic.
-# ---------------------------------------------------------------------------
+# The real unsloth_zoo helpers when importable, otherwise eager mirrors with identical semantics so a runner without
 
 
+# Helpers: the real unsloth_zoo ones when importable, otherwise eager mirrors with identical semantics so a runner
 def _fallback_chunked_selective_log_softmax(
     logits,
     index,
@@ -154,9 +151,6 @@ _completion_mask_of = HELPERS["create_completion_attention_mask"]
 _left_pad_of = HELPERS["calculate_pad_tokens_in_prompt"]
 
 
-# ---------------------------------------------------------------------------
-# Stub model
-# ---------------------------------------------------------------------------
 
 
 class _Model(torch.nn.Module):
@@ -182,8 +176,8 @@ class _Model(torch.nn.Module):
         self.hidden_states = hidden_states
         self.calls = []
         if degraded:
-            # what _install_grpo_hidden_states_forward_wrapper in unsloth/models/rl.py
-            # leaves behind when it could not get hidden states out of the model
+            # What _install_grpo_hidden_states_forward_wrapper leaves behind when it could not get hidden states out of
+            # what _install_grpo_hidden_states_forward_wrapper in unsloth/models/rl.py leaves behind when it could not
             self._unsloth_grpo_hidden_states_forward_wrapped = True
             self._unsloth_grpo_hidden_states_warning_issued = True
 
@@ -206,9 +200,6 @@ class _Model(torch.nn.Module):
         return SimpleNamespace(logits = h if self.hidden_states else self.head(h))
 
 
-# ---------------------------------------------------------------------------
-# Structural extraction of the packed block
-# ---------------------------------------------------------------------------
 
 
 def _statement_lists(node):
@@ -283,9 +274,6 @@ def _packed_block_source():
     return textwrap.dedent("".join(lines))
 
 
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
 
 
 def _batch():
@@ -371,9 +359,6 @@ def _reference_logprobs(model, input_ids, max_left_pad):
     return out[:, -width:]
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 def test_packed_path_survives_a_forward_that_returns_real_logits():

@@ -66,10 +66,8 @@ backends = {
     "CUDNN": [SDPBackend.CUDNN_ATTENTION],
 }
 
+# Timings cannot say WHICH backend the dispatcher picked (forcing one adds sdpa_kernel overhead and two kernels can
 # The default dispatch's own dense output, so each forced backend can be checked against it.
-# Timings alone cannot say WHICH backend the dispatcher picked, because forcing one adds
-# sdpa_kernel overhead and two different kernels can land at similar times. Bitwise identity can:
-# the forced backend that reproduces this tensor exactly is the one the dispatcher chose.
 try:
     reference = F.scaled_dot_product_attention(q, k, v, attn_mask = dense)
 except Exception:  # noqa: BLE001 -- no reference: the identity column just reports n/a

@@ -168,7 +168,7 @@ def main(argv = None) -> int:
             except Exception as exc:  # noqa: BLE001
                 note += f" [compile FAILED {type(exc).__name__}]"
         print(f"  [{tag}]{note}", flush = True)
-        _gen(pipe, steps, seed, res)  # warmup / compile
+        _gen(pipe, steps, seed, res)
         dts = []
         img = None
         for _ in range(args.iters):
@@ -186,7 +186,6 @@ def main(argv = None) -> int:
         flush = True,
     )
     rows = []
-    # quality reference: dense bf16 eager (no compile, no quant)
     bref, ref, _ = run("bf16_eager", compile = False)
     rows.append(("bf16_eager", bref, float("inf"), 0.0, None))
     print(f"  bf16 eager ref: {bref:.3f}s", flush = True)
@@ -198,15 +197,15 @@ def main(argv = None) -> int:
         (
             "fake24_fp8_c",
             dict(quant = "fp8", fast_accum = True, prune = True),
-        ),  # quality of 2:4+fp8 (fake=no kernel)
+        ),
         (
             "real24_nocompile",
             dict(real_sparse = True, compile = False),
-        ),  # sparse SPEED (no quant, no compile)
+        ),
         (
             "real24_compile_try",
             dict(real_sparse = True, compile = True),
-        ),  # does sparse survive compile?
+        ),
     ]
     for tag, kw in specs:
         try:

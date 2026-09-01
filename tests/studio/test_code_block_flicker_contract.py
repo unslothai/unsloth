@@ -62,7 +62,7 @@ def frame(
     return base
 
 
-# ── the detector fires on the thing it is for ───────────────────────
+# the detector fires on the thing it is for
 
 
 def test_a_one_frame_collapse_to_the_placeholder_is_a_collapse() -> None:
@@ -118,7 +118,7 @@ def test_a_collapsing_block_takes_the_scroll_height_with_it() -> None:
     assert analyse_stream(frames)["scrollHeightDips"] == 1
 
 
-# ── and not on things that are not it ───────────────────────────────
+# and not on things that are not it
 
 
 def test_a_still_thread_reports_nothing() -> None:
@@ -201,7 +201,6 @@ def test_content_relaid_out_above_the_anchor_is_a_shift() -> None:
     assert analyse_stream(frames)["anchorShiftPx"] == 900.0
 
 
-# ── the sweep half ──────────────────────────────────────────────────
 
 
 def test_a_sweep_over_a_thread_that_knows_its_own_size_reports_no_shift() -> None:
@@ -231,7 +230,6 @@ def test_sub_pixel_wobble_is_not_a_shift() -> None:
     assert analyse_sweep([a, b])["shiftFrames"] == 0
 
 
-# ── the harness itself ──────────────────────────────────────────────
 
 
 def harness_source() -> str:

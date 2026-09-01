@@ -144,8 +144,7 @@ def main(argv = None) -> int:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
-    # Resolved BEFORE the load, so a rotated build with nowhere resolvable to publish fails in a
-    # second rather than after the quantise and the multi-gigabyte save.
+    # Resolved BEFORE the load, so a rotated build with nowhere resolvable to publish fails in a second rather than
     upload_dest = None
     if args.upload_repo:
         try:
@@ -166,11 +165,12 @@ def main(argv = None) -> int:
         args.base, subfolder = "transformer", torch_dtype = torch.bfloat16, token = args.hf_token
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
-    # Mirror the runtime exclusions: int8 skips the M=1 modulation projections (torch._int_mm needs M>16) plus per-family ones; family=None bakes linears the runtime rejects.
+    # Mirror the runtime exclusions: int8 skips the M=1 modulation projections (torch._int_mm needs M>16) plus
+    # per-family ones;
     exclude_name_tokens = exclude_tokens_for_scheme(scheme, fam.name)
-    # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears; nvfp4 handles fp32. Mirrors the runtime gate.
+    # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears;
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
-    # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
+    # fp8 bakes the accumulate mode in;
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
     filter_fn = make_filter_fn(
         args.min_features,
@@ -178,8 +178,8 @@ def main(argv = None) -> int:
         require_bf16 = require_bf16,
     )
 
-    # ConvRot, BEFORE quantize_: rotating the weights is only worth anything if the quantizer then
     # sees the rotated distribution. The fqn list is recorded, never re-derived at load time.
+    # ConvRot, BEFORE quantize_:
     rotation: dict = {}
     if args.convrot_groupsize:
         from core.inference.diffusion_convrot import (
@@ -205,7 +205,6 @@ def main(argv = None) -> int:
 
     quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
 
-    # CPU state dict for a portable, GPU-free artifact.
     state_dict = {
         k: (v.detach().to("cpu") if hasattr(v, "detach") else v)
         for k, v in transformer.state_dict().items()
@@ -231,8 +230,7 @@ def main(argv = None) -> int:
         metadata["fp8_granularity"] = FP8_GRANULARITY
     metadata.update(rotation)
     ckpt = {
-        # v2 when a rotation is baked in, so an Unsloth predating the online half refuses the file
-        # rather than running the rotated weights against unrotated activations.
+        # v2 when a rotation is baked in, so an Unsloth predating the online half refuses the file rather than running
         "format": prequant_format_for(metadata),
         "metadata": metadata,
         "state_dict": state_dict,

@@ -41,8 +41,7 @@ requires_cuda = pytest.mark.skipif(not CUDA, reason = "grouped GEMM needs a real
 NUM_EXPERTS = 2
 TOKENS_PER_EXPERT = 4
 TOTAL_TOKENS = NUM_EXPERTS * TOKENS_PER_EXPERT
-# The dX and dW kernels static_assert that N and K divide the autotuned block
-# sizes, and those go up to 256.
+# The dX and dW kernels static_assert that N and K divide the autotuned block sizes, and those go up to 256.
 N = K = 256
 
 
@@ -53,9 +52,10 @@ def _operands(device, requires_grad = False):
     return X.requires_grad_(requires_grad), W.requires_grad_(requires_grad), m_sizes
 
 
-# ---- the contract, without a GPU ----------------------------------------
+# the contract, without a GPU
 
 
+# the contract, without a GPU ----------------------------------------
 def test_the_default_survives_the_wrapper_when_nothing_permutes():
     """On CPU the call has to die inside `grouped_gemm_forward` on its device
     assert. An AttributeError instead means the wrapper dereferenced None."""
@@ -89,7 +89,7 @@ def test_permuting_without_indices_still_fails_with_the_explicit_message(permute
         )
 
 
-# ---- the numerics, on a real device --------------------------------------
+# the numerics, on a real device
 
 
 @requires_cuda

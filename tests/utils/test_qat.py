@@ -5,8 +5,7 @@ from typing import Dict
 import pytest
 import torch
 
-# torchao is an optional extra. Skip the module instead of printing and then failing
-# every test on NameError once the import did not land.
+# torchao is an optional extra.
 pytest.importorskip(
     "torchao.quantization.qat",
     reason = "install or upgrade with: pip install 'torchao>=0.15.0'",
@@ -21,7 +20,6 @@ from torchao.quantization.qat.fake_quantizer import (
 )
 
 # Loads a real model per qat_scheme and fake-quantizes it on the accelerator.
-# CI runs it under `-m gpu`.
 pytestmark = pytest.mark.gpu
 
 
@@ -77,7 +75,6 @@ def _test_linear_is_fake_quantized(linear: torch.nn.Linear, qat_scheme: str):
     else:
         raise ValueError(f"Unknown qat_scheme: {qat_scheme}")
 
-    # Check base layer activations and weights.
     base_layer = getattr(linear, "base_layer", linear)
     if base_layer.in_features >= min_in_features:
         assert isinstance(base_layer, FakeQuantizedLinear)
@@ -85,7 +82,6 @@ def _test_linear_is_fake_quantized(linear: torch.nn.Linear, qat_scheme: str):
             assert isinstance(base_layer.activation_fake_quantizer, act_fq_class)
         assert isinstance(base_layer.weight_fake_quantizer, weight_fq_class)
 
-    # Check lora A and B (full_finetuning=False only).
     if hasattr(linear, "lora_A") and hasattr(linear, "lora_B"):
         lora_A = linear.lora_A.default
         lora_B = linear.lora_B.default
@@ -120,8 +116,7 @@ def _test_fake_quantizers_are_called(
                         assert child.activation_fake_quantizer.count == 1
                     assert child.weight_fake_quantizer.count == 1
             else:
-                # LoRA fake-quantizes input activations once per block:
-                # self_attn via q_proj, mlp via gate_proj.
+                # LoRA fake-quantizes input activations once per block: self_attn via q_proj, mlp via gate_proj.
                 if name == "self_attn":
                     base_layer = child.q_proj.base_layer
                     if not weight_only:
@@ -167,13 +162,12 @@ def _test_model_fake_quantize(qat_scheme: str, full_finetuning: bool):
     _test_fake_quantizers_are_called(model, inputs, full_finetuning, qat_scheme)
 
 
-# TODO: there are bad interactions across tests right now, need to figure out
-# how to disable model caching before re-enabling this test
 @pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8", "cactus"])
 def _test_full_model_fake_quantize(qat_scheme: str):
     _test_model_fake_quantize(qat_scheme, full_finetuning = True)
 
 
+# TODO: there are bad interactions across tests right now, need to figure out how to disable model caching before
 @pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8", "cactus"])
 def test_lora_model_fake_quantize(qat_scheme: str):
     _test_model_fake_quantize(qat_scheme, full_finetuning = False)

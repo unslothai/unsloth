@@ -19,8 +19,7 @@ STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(
 SELECT = (SRC / "components/ui/select.tsx").read_text(encoding = "utf-8")
 UTILS = (SRC / "lib/utils.ts").read_text(encoding = "utf-8")
 
-# Raw numeric fontSize props are only allowed where a scaled stylesheet rule
-# (.recharts-text) overrides the presentation attribute at render time.
+# Raw numeric fontSize props are only allowed where a scaled stylesheet rule (.recharts-text) overrides the
 FONTSIZE_PROP_ALLOWED_DIRS = (
     "features/studio/sections/charts",
     "features/studio/sections/training-section.tsx",
@@ -53,7 +52,7 @@ def _rel(path):
 def test_preference_writes_a_scale_not_the_root_font_size():
     assert 'setVar("--ui-font-scale"' in STORE
     assert 'el.setAttribute("data-ui-font-size"' in STORE
-    # Older builds set an inline root font-size; the applier must clear it.
+    # Older builds set an inline root font-size;
     assert 'style.removeProperty("font-size")' in STORE
     assert "style.fontSize" not in STORE
 
@@ -141,8 +140,7 @@ def test_icons_follow_the_ui_font_size_itself():
     assert "& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }" in INDEX_CSS
     assert "font-size: calc(13px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
     assert "font-size: calc(12px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
-    # Menu rules that outrank the scoped block must carry the token too,
-    # without flattening the smaller thinking ticks.
+    # Menu rules that outrank the scoped block must carry the token too, without flattening the smaller thinking ticks.
     assert "width: var(--ui-icon-size) !important;" in INDEX_CSS
     assert "svg:not(.unsloth-tick) {" in INDEX_CSS
     # Oversized art glyphs stay proportional instead of uniform.
@@ -179,11 +177,11 @@ def test_css_font_sizes_reference_the_scale():
         for m in re.finditer(r"(font-size|line-height):[^;{}]*;", text):
             decl = m.group(0)
             if re.search(r"[0-9.]+(px|rem)", decl) is None:
-                continue  # unitless ratios and vars scale naturally
-            if "--ui-font-scale" in decl:
                 continue
-            if "1px" in decl:
+            if "--ui-font-scale" in decl:
                 continue  # library layout tricks (KaTeX-style), not text
+            if "1px" in decl:
+                continue  # unitless ratios and vars scale naturally
             offenders.append(f"{_rel(path)}: {decl.strip()[:80]}")
     assert offenders == [], (
         "CSS typography must multiply by var(--ui-font-scale, 1) or be "

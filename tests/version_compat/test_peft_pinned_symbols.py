@@ -15,8 +15,7 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# pyproject pin: peft>=0.18.0. Test the floor + each minor since.
-# `main` catches breakage before a release lands.
+# pyproject pin: peft>=0.18.0.
 PEFT_TAGS = [
     "v0.18.0",
     "v0.18.1",
@@ -26,10 +25,10 @@ PEFT_TAGS = [
 ]
 
 
-# Top-level re-exports: sentence_transformer.py:1948 does `from peft import
-# LoraConfig, get_peft_model`; unsloth_zoo saving_utils/lora extractors hit PeftModel.
 
 
+# Top-level re-exports: sentence_transformer.py:1948 does `from peft import LoraConfig, get_peft_model`;
+# unsloth_zoo saving_utils/lora extractors hit PeftModel.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_top_level_exports(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/__init__.py")
@@ -47,11 +46,9 @@ def test_peft_top_level_exports(tag: str):
     )
 
 
-# LoraConfig at the canonical sub-module path: peft.tuners.lora.LoraConfig
-# (or peft.tuners.lora.config.LoraConfig). unsloth-zoo's normaliser inspects
-# it via getattr() and dataclass field introspection.
 
 
+# LoraConfig at the canonical sub-module path:
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_config_class(tag: str):
     candidates = [
@@ -67,9 +64,9 @@ def test_peft_lora_config_class(tag: str):
     assert found_in, f"{tag}: peft.tuners.lora.LoraConfig not in any of {candidates}"
 
 
+
+
 # get_peft_model: top-level helper used by sentence_transformer.py:2043.
-
-
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_get_peft_model_function(tag: str):
     """get_peft_model may live in mapping.py or mapping_func.py (0.18+ split)."""
@@ -86,10 +83,9 @@ def test_get_peft_model_function(tag: str):
     pytest.fail(f"{tag}: def get_peft_model(...) not found in any of {candidates}")
 
 
-# LoraLayer base class: unsloth-zoo's MoE LoRA extractor walks subclasses of
-# peft.tuners.lora.LoraLayer. A rename/move makes the walk silently return 0.
 
 
+# LoraLayer base class: unsloth-zoo's MoE LoRA extractor walks subclasses of peft.tuners.lora.LoraLayer.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_layer_class(tag: str):
     candidates = [
@@ -108,10 +104,9 @@ def test_peft_lora_layer_class(tag: str):
     )
 
 
+
+
 # bnb-aware LoRA: peft.tuners.lora.bnb is the bitsandbytes integration point.
-# Missing it -> 4bit LoRA silently falls back to fp16 (bigger memory footprint).
-
-
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_bnb_integration(tag: str):
     candidates = [
@@ -140,14 +135,13 @@ def test_peft_lora_bnb_integration(tag: str):
     )
 
 
-# Coverage extension (added 2026-05): symbols from the 8-PR audit
-#   unsloth#5015, #5167, #5036, #4807 + unsloth-zoo#618, #596, #482, #430.
+# Symbols from the 8-PR audit: unsloth#5015, #5167, #5036, #4807 + unsloth-zoo#618, #596, #482, #430.
 
 
-# 1. peft.tuners.lora.layer.VARIANT_KWARG_KEYS — added in peft 0.18.
-#    unsloth-zoo#430 injects the import into the compiled forward.
+# 1. VARIANT_KWARG_KEYS, added in peft 0.18. unsloth-zoo#430 injects the import into the compiled forward.
 
 
+# Coverage extension (added 2026-05):
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_variant_kwarg_keys_const(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
@@ -160,10 +154,10 @@ def test_peft_variant_kwarg_keys_const(tag: str):
         )
 
 
-# 2. peft.tuners.lora.layer.ParamWrapper — peft 0.18 added the class for MoE
-#    3D-parameter LoRA. unsloth-zoo#618 monkey-patches the MoE LoRA extractor.
+# 2.
 
 
+# peft.tuners.lora.layer.VARIANT_KWARG_KEYS — added in peft 0.18.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_param_wrapper_class(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
@@ -174,15 +168,14 @@ def test_peft_param_wrapper_class(tag: str):
         f"unsloth_zoo/temporary_patches/qwen3_moe.py:43-130 + "
         f"moe_utils.py:757 ImportError (unsloth-zoo#618)"
     )
-    # Member names: informational only; the real bug to catch is full removal.
+    # Member names: informational only;
     for name in ("parameter_name", "forward", "lora_A", "get_base_layer"):
         _present = name in src
 
 
-# 3. peft.tuners.lora.LoraConfig.target_parameters — peft 0.19+. Used by
-#    unsloth-zoo's MoE target-parameter extractor.
 
 
+# peft.tuners.lora.layer.ParamWrapper — peft 0.18 added the class for MoE 3D-parameter LoRA.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_config_target_parameters(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/config.py")
@@ -198,10 +191,11 @@ def test_peft_lora_config_target_parameters(tag: str):
     )
 
 
-# 4. peft.tuners.lora.model.LoraModel._create_and_replace — unsloth#4807
-#    monkey-patches this for Gemma4ClippableLinear.
+# 4. LoraModel._create_and_replace: unsloth#4807 monkey-patches this for Gemma4ClippableLinear.
 
 
+# peft.tuners.lora.LoraConfig.target_parameters — peft 0.19+.
+# LoraConfig at the canonical sub-module path: peft.tuners.lora.LoraConfig (or peft.tuners.lora.config.LoraConfig).
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_model_create_and_replace(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/model.py")
@@ -214,10 +208,10 @@ def test_peft_lora_model_create_and_replace(tag: str):
     )
 
 
-# 5. peft.utils.transformers_weight_conversion.build_peft_weight_mapping —
-#    unsloth#5167 wraps it to handle WeightConversion.__init__ kwargs.
+# 5. build_peft_weight_mapping: unsloth#5167 wraps it to handle WeightConversion.__init__ kwargs.
 
 
+# 4. peft.tuners.lora.model.LoraModel._create_and_replace — unsloth#4807
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_transformers_weight_conversion_module(tag: str):
     candidates = [
@@ -236,10 +230,9 @@ def test_peft_transformers_weight_conversion_module(tag: str):
     )
 
 
-# 6. peft.utils.integrations.dequantize_module_weight — used by 3 unsloth/
-#    unsloth-zoo callsites.
 
 
+# peft.utils.transformers_weight_conversion.build_peft_weight_mapping — unsloth#5167 wraps it to handle
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_integrations_dequantize_module_weight(tag: str):
     candidates = [
@@ -256,9 +249,9 @@ def test_peft_integrations_dequantize_module_weight(tag: str):
     )
 
 
-# 7. peft.PeftType.LORA — used by unsloth-zoo vllm_utils.py:2520-2559.
 
 
+# peft.utils.integrations.dequantize_module_weight — used by 3 unsloth/ unsloth-zoo callsites.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_type_lora_enum(tag: str):
     candidates = [
@@ -270,8 +263,7 @@ def test_peft_type_lora_enum(tag: str):
         src = fetch_text("huggingface/peft", tag, p)
         if src is None:
             continue
-        # Either `class PeftType(...)` definition with LORA member, or
-        # re-export from a submodule.
+        # Either `class PeftType(...)` definition with LORA member, or re-export from a submodule.
         if "PeftType" in src and ("LORA" in src or "lora" in src.lower()):
             return
     pytest.fail(
@@ -280,10 +272,9 @@ def test_peft_type_lora_enum(tag: str):
     )
 
 
-# 8. peft.utils.ModulesToSaveWrapper — both peft.utils.* and
-#    peft.utils.other.* import paths used.
 
 
+# peft.PeftType.LORA — used by unsloth-zoo vllm_utils.py:2520-2559.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_modules_to_save_wrapper(tag: str):
     candidates = [
@@ -303,27 +294,29 @@ def test_peft_modules_to_save_wrapper(tag: str):
     )
 
 
-# 9. peft.PeftModel.from_pretrained signature pin — unsloth#4807.
+# 9. peft.PeftModel.from_pretrained signature pin (unsloth#4807).
 
 
+# peft.utils.ModulesToSaveWrapper — both peft.utils.* and peft.utils.other.* import paths used.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_peft_model_from_pretrained_signature(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/peft_model.py")
     assert src is not None, f"{tag}: src/peft/peft_model.py missing"
-    # Just check the method name; the full kwarg list is too brittle.
+    # Just check the method name;
     assert has_def(
         src, "from_pretrained", "func"
     ), f"{tag}: PeftModel.from_pretrained missing in peft_model.py"
 
 
-# 10. peft.__version__ exported via known mechanism.
 
 
+# 9. peft.PeftModel.from_pretrained signature pin — unsloth#4807.
+# peft.__version__ exported via known mechanism.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_version_parseable(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/__init__.py")
     assert src is not None
-    # Same gates as the TRL test: literal / submodule / metadata
+    # Same gates as the TRL test:
     has_literal = bool(re.search(r'^__version__\s*=\s*["\']', src, re.MULTILINE))
     has_subimport = bool(re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE))
     has_metadata = bool(

@@ -107,8 +107,8 @@ class TestPreTuringCapParity:
     a llama.cpp GGUF bundle. Four scripts pick the family; none may be left behind.
     """
 
-    # (file, call spelling, selection function that must invoke it, its end marker). The
     # spelling carries the first argument, so a prose mention cannot satisfy the assertion.
+    # (file, call spelling, selection function that must invoke it, its end marker).
     _SITES = (
         (INSTALL_SH, '_cap_cuda_family_for_pre_turing "', "get_torch_index_url() {", "\n}"),
         (
@@ -127,8 +127,7 @@ class TestPreTuringCapParity:
     )
 
     def test_cu126_span_agrees_across_the_python_modules(self):
-        # Neither module imports the other (the installer runs before dependencies
-        # exist), so assert the shared span here rather than let it drift silently.
+        # Neither module imports the other (the installer runs before dependencies exist), so assert the shared span
         span = "_CU126_SM_RANGE = (50, 90)"
         for path in (STACK_PY, REPO_ROOT / "studio" / "install_llama_prebuilt.py"):
             assert span in path.read_text(encoding = "utf-8"), f"{path.name} lost {span}"
@@ -141,8 +140,7 @@ class TestPreTuringCapParity:
         assert call in body, f"{path.name}'s selection function never applies {call!r}"
 
 
-# A ladder rung names its family either as an index-URL suffix ("$base/cu128") or as a
-# variable a later step can still cap ("_cuda_tag=cu128"), so accept both spellings.
+# A ladder rung names its family either as an index-URL suffix ("$base/cu128") or as a variable a later step can still
 _CUDA_LEAF_RE = r"""[/=]\s*["']?(cu\d+|cpu)"""
 
 
@@ -152,7 +150,6 @@ class TestCudaMappingParity:
     @staticmethod
     def _extract_cuda_thresholds_sh(text: str) -> list[str]:
         """Extract cu* suffixes from the major/minor comparison chain in install.sh."""
-        # Only match lines in the if/elif chain that compare _major/_minor
         in_func = False
         results = []
         for line in text.splitlines():
@@ -182,7 +179,6 @@ class TestCudaMappingParity:
                 depth += line.count("{") - line.count("}")
                 if depth <= 0:
                     break
-                # Only match the if-chain lines that compare $major/$minor
                 if "$major" in line or "$minor" in line:
                     m = re.search(_CUDA_LEAF_RE, line)
                     if m:
@@ -282,16 +278,13 @@ class TestTorchIndexOverrideParity:
         ids = ["install.ps1", "setup.ps1"],
     )
     def test_amd_reroute_guarded_when_pinned(self, path):
-        # The AMD ROCm reroute must be skipped when the index is explicitly pinned,
-        # so an explicit cpu / cu* / rocm pin on an AMD host is not overwritten.
+        # The AMD ROCm reroute must be skipped when the index is explicitly pinned, so an explicit cpu / cu* / rocm pin
         text = path.read_text(encoding = "utf-8")
         assert (
             "TorchIndexPinned" in text
         ), f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
 
     def test_cuda_pin_overrides_cvd_hide_gate(self):
-        # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must clear the
-        # CUDA_VISIBLE_DEVICES hide gate too (else the GPU-less CI case bails).
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
@@ -305,8 +298,8 @@ class TestTorchIndexOverrideParity:
         ), "the CVD hide gate must be bypassed when a CUDA index is pinned"
 
     def test_cpu_repair_pins_supported_torch_range(self):
-        # The explicit-CPU repair must use the bounded CPU/CUDA spec, not a bare trio (the
-        # /cpu index serves torch 2.11+, so a bare install could resolve out of range).
+        # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must clear the CUDA_VISIBLE_DEVICES hide
+        # The explicit-CPU repair must use the bounded CPU/CUDA spec, not a bare trio (the /cpu index serves torch
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_cpu_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cpu_torch"
@@ -317,8 +310,7 @@ class TestTorchIndexOverrideParity:
         )
 
     def test_setup_ps1_stale_check_gates_rocm_on_supported_arch(self):
-        # The stale check must expect ROCm torch only for arches the install path maps to a
-        # repo.amd.com index; expecting "rocm" for an unmapped arch marks a good CPU venv stale.
+        # Expect ROCm torch only for arches the install path maps to a repo.amd.com index;
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "_rocmWheelArches" in text, (
             "setup.ps1 stale check should restrict the ROCm expected-tag to the "
@@ -365,8 +357,8 @@ class TestGfx211AllowlistParity:
         )
 
     def test_setup_ps1_defines_single_allowlist_helper(self):
-        # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so
         # the stale check and install spec can't disagree.
+        # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so the stale check and install
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert (
             "function Test-RocmGfx211Leaf" in text
@@ -400,16 +392,13 @@ class TestCudaLeafDigitParity:
 
     def test_stack_py_requires_cu_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")
-        # EXACT cu+digits: a custom leaf like cu128-private must route to the
-        # verbatim/unknown path, not be compared against the installed +cu128 tag.
+        # EXACT cu+digits:
         assert re.search(
             r'r"cu\[0-9\]\+"', text
         ), "install_python_stack.py _is_cuda_family_leaf must fullmatch cu[0-9]+"
 
     def test_setup_ps1_requires_cu_digit(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        # EXACT cu+digits: cu128-private must not classify as CUDA (it would become
-        # the expected tag and rebuild the venv on every update).
         assert re.search(
             r"'\^cu\[0-9\]\+\$'", text
         ), "setup.ps1 Test-CudaFamilyLeaf must match ^cu[0-9]+$, not a cu* prefix"
@@ -420,33 +409,32 @@ class TestCudaLeafDigitParity:
 
     def test_install_ps1_requires_cu_digit_in_gpu_branch(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
+        # EXACT cu+digits: a custom leaf like cu128-private must route to the verbatim/unknown path, not be compared
         assert re.search(
             r"'\^cu\[0-9\]'", text
         ), "install.ps1 Get-TauriGpuBranch must require a digit after cu"
 
     def test_install_sh_requires_cu_digit_in_gpu_branch(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The _tauri_gpu_branch cuda case must be cu[0-9]*, not a bare cu*.
         assert re.search(
             r"cu\[0-9\]\*\)\s*echo \"cuda\"", text
         ), "install.sh _tauri_gpu_branch cuda case must be cu[0-9]*, not cu*"
 
     def test_install_sh_backend_export_requires_cu_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # Brand CUDA only on cu[0-9]*; a bare catch-all *) -> cuda would mis-brand
-        # /current, /custom pins and skip ROCm repair on AMD hosts.
+        # Brand CUDA only on cu[0-9]*;
+        # EXACT cu+digits: cu128-private must not classify as CUDA (it would become
         assert re.search(
             r'cu\[0-9\]\*\)\s*export UNSLOTH_TORCH_BACKEND="cuda"', text
         ), "install.sh backend export must brand cuda only on cu[0-9]*"
-        # An unknown leaf must NOT commit a cuda backend (it unsets instead).
         assert re.search(
             r"\*\)\s*unset UNSLOTH_TORCH_BACKEND", text
         ), "install.sh backend export must unset (not force cuda) on an unknown leaf"
 
     def test_install_sh_lowercases_backend_leaf(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The leaf feeding both the backend case and the 2.11 floor case must be
-        # lowercased so the canonical gfx120X-all (capital X) matches.
+        # The _tauri_gpu_branch cuda case must be cu[0-9]*, not a bare cu*.
+        # Brand CUDA only on cu[0-9]*;
         assert re.search(
             r"_torch_index_leaf=\$\(printf '%s' \"\$_torch_index_leaf\" \| tr '\[:upper:\]' '\[:lower:\]'\)",
             text,
@@ -460,9 +448,8 @@ class TestKnown211SetParity:
 
     def test_install_sh_known_211_leaf_is_rocm72_and_gfx_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The 2.11 floor case matches exactly rocm7.2 + the gfx allowlist, in
-        # any order: it is the same set as TestGfx211AllowlistParity.EXPECTED,
-        # asserted here so the rocm-version half cannot drift on its own.
+        # The 2.11 floor case matches exactly rocm7.2 + the gfx allowlist, in any order: it is the same set as
+        # TestGfx211AllowlistParity.EXPECTED, asserted here so the rocm-version half cannot drift on its own.
         m = re.search(r"^\s*(rocm7\.2\|[a-zA-Z0-9|.\-]*)\)", text, re.MULTILINE)
         assert m, "install.sh 2.11 floor case (rocm7.2|gfx...) not found / changed"
         alternatives = set(m.group(1).lower().split("|"))
@@ -485,15 +472,16 @@ class TestKnown211SetParity:
     def test_setup_ps1_known_211_helper_is_only_rocm72(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "Test-RocmKnown211Version" in text
-        # The predicate is Major -eq 7 -and Minor -eq 2 (only rocm7.2).
+        # An unknown leaf must NOT commit a cuda backend (it unsets instead).
+        # The leaf feeding both the backend case and the 2.11 floor case must be lowercased so the canonical
         assert re.search(
             r"Test-RocmKnown211Version[\s\S]{0,400}\$Major -eq 7 -and \$Minor -eq 2", text
         ), "setup.ps1 Test-RocmKnown211Version must accept only rocm7.2"
 
     def test_install_ps1_pin_floor_is_only_rocm72(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        # The pinned-ROCm install-spec floor must be Major -eq 7 -and Minor -eq 2,
-        # not the speculative >= 2 that would floor a non-existent rocm7.3.
+        # The predicate is Major -eq 7 -and Minor -eq 2 (only rocm7.2).
+        # The pinned-ROCm install-spec floor must be Major -eq 7 -and Minor -eq 2, not the speculative >= 2 that would
         assert re.search(
             r"\$_pinRocm211 = \(\[int\]\$Matches\[1\] -eq 7 -and \[int\]\$Matches\[2\] -eq 2\)",
             text,
@@ -527,12 +515,9 @@ class TestKnown211SetParity:
         assert (
             '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text
         ), "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
-        # No cu-family exemption: the bounds apply unconditionally.
         assert (
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
-        # The bounded companions must actually be passed to the install command.
-        # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
             '$_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)' in text
         ), "install.ps1 custom-pin install must build the bounded spec list"
@@ -567,13 +552,13 @@ class TestPinnedRocmLeafDigitParity:
 
     def test_install_ps1_pinned_reroute_requires_rocm_digit(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        # The pinned gfx*/rocm reroute must match rocm EXACTLY (anchored), so a suffixed
-        # rocm7.2-private / rocm-current falls through to the verbatim --default-index path.
+        # The pinned gfx*/rocm reroute must match rocm EXACTLY (anchored), so a suffixed rocm7.2-private falls through
         assert "-match '^rocm[0-9]+(\\.[0-9]+)?$'" in text, (
             "install.ps1 pinned-index reroute must anchor the rocm match "
             "(^rocm[0-9]+(\\.[0-9]+)?$), not a bare -like 'rocm*' or an unanchored ^rocm\\d"
         )
-        # Neither the broad glob nor the unanchored prefix may drive that reroute.
+        # No cu-family exemption: the bounds apply unconditionally.
+        # The bounded companions must actually be passed to the install command.
         assert (
             "-like 'rocm*'" not in text
         ), "install.ps1 must not route a pinned index on a bare -like 'rocm*' glob"
@@ -583,8 +568,6 @@ class TestPinnedRocmLeafDigitParity:
 
     def test_setup_ps1_pinned_reroute_requires_rocm_digit(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        # setup.ps1 routes every family decision through Test-PipRocmFamilyLeaf, which
-        # anchors the rocm match so a suffixed custom leaf stays on the verbatim path.
         assert (
             "function Test-PipRocmFamilyLeaf" in text
         ), "setup.ps1 must define Test-PipRocmFamilyLeaf (the exact rocm/gfx family gate)"
@@ -599,11 +582,9 @@ class TestPinnedRocmLeafDigitParity:
 
     def test_install_sh_repairable_requires_rocm_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # _torch_index_repairable routes rocm/gfx through the exact-match helper.
         assert (
             "_is_pip_rocm_family_leaf" in text
         ), "install.sh must define/use _is_pip_rocm_family_leaf for the exact rocm gate"
-        # gfx needs a following digit: gfx-private / gfxfoo are custom verbatim pins.
         assert re.search(
             r'case "\$1" in\n\s*gfx\[0-9\]\*\) return 0', text
         ), "install.sh _is_pip_rocm_family_leaf must treat only gfx<digit>* as a family"
@@ -613,10 +594,11 @@ class TestPinnedRocmLeafDigitParity:
 
     def test_stack_py_pip_rocm_family_requires_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")
+        # gfx needs a following digit:
         assert re.search(
             r'fullmatch\(r"rocm\\d\+\(\?:\\\.\\d\+\)\?", leaf\)', text
         ), "install_python_stack.py _is_pip_rocm_family_leaf must fullmatch rocm\\d+(?:\\.\\d+)?"
-        # The unanchored prefix must be gone from the family/flavor gates.
+        # Neither the broad glob nor the unanchored prefix may drive that reroute.
         assert (
             're.match(r"^rocm\\d"' not in text
         ), "install_python_stack.py must not gate a family on an unanchored re.match(^rocm\\d)"
@@ -627,6 +609,7 @@ class TestPinnedRocmLeafDigitParity:
         ^rocm[0-9] prefix that catches a custom CPU/CUDA index like /rocm-current or a
         suffixed /rocm7.2-private and force-repairs it from the wrong --default-index."""
         text = INSTALL_SH.read_text(encoding = "utf-8")
+        # setup.ps1 routes every family decision through Test-PipRocmFamilyLeaf, which anchors the rocm match so a
         assert (
             'if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then\n    _torch_index_is_rocm_family=true'
             in text
@@ -634,6 +617,7 @@ class TestPinnedRocmLeafDigitParity:
         assert (
             '[ "$_torch_index_is_rocm_family" = true ]' in text
         ), "install.sh ROCm bnb/repair hooks must gate on _torch_index_is_rocm_family"
+        # _torch_index_repairable routes rocm/gfx through the exact-match helper.
         assert (
             "*/rocm*|*/gfx*)\n                _install_bnb_rocm" not in text
         ), "install.sh must not gate _install_bnb_rocm on a bare */rocm* whole-URL glob"
@@ -650,6 +634,7 @@ class TestPinnedIndexClearsUvEnvParity:
 
     def test_install_sh_clears_uv_index_vars(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
+        # The unanchored prefix must be gone from the family/flavor gates.
         assert (
             "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in text
         ), "install.sh run_install_cmd must clear the uv index vars for --default-index installs"
@@ -730,19 +715,12 @@ class TestPinnedIndexClearsUvEnvParity:
         ):
             text = path.read_text(encoding = "utf-8")
             assert f"function {probe}" in text, f"{path.name} must define {probe}"
-            # WaitForExit takes a timeout: an unbounded wait on a freshly downloaded
-            # binary is exactly how an unattended install hangs.
+            # WaitForExit takes a timeout:
             assert "WaitForExit(20000)" in text, f"{path.name}'s uv probe must bound its wait"
             probe_at = text.index(f"({probe} -Path $stagedUv)")
-            # Tri-state, not a boolean. A launch that throws or a wait that times out got no
-            # verdict, and treating that as a broken binary turned three clean-machine CI legs
-            # into hard install failures: Start-Process -NoNewWindow with redirected streams
-            # does not behave in a Windows container or on arm64 as it does on a desktop. Only
-            # the binary answering non-zero may block the install.
+            # Tri-state, not a boolean:
             body = text.split(f"function {probe}", 1)[1].split("\n    }\n", 1)[0]
-            # An EMPTY exit code is no verdict either. WaitForExit(ms) can return before the
-            # code is cached, which is how arm64 and the Windows containers reported "exited ."
-            # and had a working uv read as broken.
+            # An EMPTY exit code is no verdict either:
             assert (
                 "try { $proc.WaitForExit() } catch {}" in body
             ), f"{path.name} must settle the exit code before reading it"
@@ -763,8 +741,6 @@ class TestPinnedIndexClearsUvEnvParity:
                 f"{path.name} must probe the extracted uv.exe before copying over the "
                 "destination"
             )
-            # The publish is not a transaction: a locked or ACL-denied destination fails the
-            # install rather than being skipped, which is what the caller's fallback is for.
             assert (
                 "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop" in text
             ), f"{path.name} must copy each executable under -ErrorAction Stop"
@@ -783,6 +759,8 @@ class TestPinnedIndexClearsUvEnvParity:
         for path in (INSTALL_PS1, SETUP_PS1):
             text = path.read_text(encoding = "utf-8")
             assert "'UV_CONFIG_FILE'" in text, f"{path.name} must drop UV_CONFIG_FILE"
+            # An EMPTY exit code is no verdict either.
+            # The publish is not a transaction:
             assert (
                 "$env:UV_NO_CONFIG = '1'" in text
             ), f"{path.name} must set UV_NO_CONFIG=1 for pinned installs"
@@ -824,8 +802,6 @@ class TestPinnedIndexClearsUvEnvParity:
         private mirror serving newer torch OR newer companions must not lift the venv
         above the supported range under the pin."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        # The custom-leaf branch bounds torch AND both companions (parity with the
-        # other installers' custom-pin trio bounds), gated on a non-cu-family leaf.
         for spec in (
             '$cudaTorchSpec = "torch>=2.4,<2.11.0"',
             '$cudaVisionSpec = "torchvision>=0.19,<0.26.0"',
@@ -835,7 +811,6 @@ class TestPinnedIndexClearsUvEnvParity:
         assert (
             "if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {" in text
         ), "the custom-leaf trio bounds must be gated on a pinned non-cu-family leaf"
-        # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
             "$_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec, $cudaAudioSpec)" in text
         ), "setup.ps1's CUDA branch must build the trio from the bounded spec variables"
@@ -849,6 +824,7 @@ class TestPinnedIndexClearsUvEnvParity:
         keeps any CPU build, so a bare pinned trio could land an unsupported version.
         An unpinned CPU host keeps the bare trio (pre-pin behavior unchanged)."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
+        # The custom-leaf branch bounds torch AND both companions (parity with the other installers' custom-pin trio
         for spec in (
             '$cpuTorchSpec  = "torch>=2.4,<2.12.0"',
             '$cpuVisionSpec = "torchvision>=0.19,<0.27.0"',
@@ -886,6 +862,7 @@ class TestPinnedIndexClearsUvEnvParity:
         assert (
             stale.count("-like 'rocm*'") == 0
         ), "setup.ps1 stale check must not use a bare -like 'rocm*' glob"
+        # Specs are splatted, so check both halves:
         assert (
             "-match '^rocm\\d'" not in stale
         ), "setup.ps1 stale check must not use an unanchored -match '^rocm\\d'"
@@ -928,8 +905,6 @@ class TestInstallOutputRedactionParity:
     def test_helper_wired_into_failure_print(self):
         # install.sh dumps the captured log through the redactor on failure.
         assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(encoding = "utf-8")
-        # Both ps1 installers redact the captured $output before printing it on a
-        # non-zero exit. Write-StudioLine is the UTF-8 stdout sink both now use.
         assert (
             "Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red"
             in INSTALL_PS1.read_text(encoding = "utf-8")
@@ -973,8 +948,7 @@ class TestNoTorchPersistenceParity:
         text = STACK_PY.read_text(encoding = "utf-8")
         assert "no_torch = NO_TORCH" in text
         assert "install_manifest.recorded_no_torch()" in text
-        # Written after the manifest is dropped and before the dependency pass, so
-        # a pass killed part-way still leaves the mode recorded somewhere.
+        # Written after the manifest is dropped and before the dependency pass, so a pass killed part-way still leaves
         assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
             "if not install_manifest.remove_manifest():"
         )
@@ -988,15 +962,13 @@ class TestNoTorchPersistenceParity:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "function Get-PersistedNoTorch" in text
         assert "function Set-PersistedNoTorch" in text
-        # setup.ps1 drops the manifest before running install_python_stack.py, so
-        # the resolved answer has to be handed down through the environment.
+        # setup.ps1 drops the manifest before running install_python_stack.py, so the resolved answer has to be handed
         assert text.index("Get-PersistedNoTorch -VenvPath $VenvDir") < text.index(
             '$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }'
         )
 
     def test_both_sides_accept_the_same_spellings(self):
-        # install.ps1 / install.sh accept 1|true|yes|on; the two consumers must not
-        # be narrower, or a value one layer honours another silently ignores.
+        # install.ps1 / install.sh accept 1|true|yes|on;
         assert "'^\\s*(?i:true|1|yes|on)\\s*$'" in SETUP_PS1.read_text(encoding = "utf-8")
         manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
         assert 'NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")' in manifest
@@ -1026,6 +998,7 @@ class TestAmdBnbFloorParity:
 
     def test_install_sh_pypi_fallback_floor(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
+        # Both ps1 installers redact the captured $output before printing it on a non-zero exit.
         assert (
             f'_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>={self.FLOOR}"' in text
         ), f"install.sh _install_bnb_rocm PyPI fallback must floor at {self.FLOOR}"

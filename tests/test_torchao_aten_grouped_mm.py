@@ -43,7 +43,6 @@ import torch  # noqa: E402
 from unsloth import import_fixes as IF  # noqa: E402
 
 
-# ---- the guard ----------------------------------------------------------
 
 
 def test_a_present_op_is_reported_as_present():
@@ -75,7 +74,6 @@ def test_a_non_attribute_error_means_do_not_touch_it(monkeypatch):
     assert IF._torch_op_is_missing("aten", "_grouped_mm") is False
 
 
-# ---- the fix, on a torch that does not need it --------------------------
 
 
 @pytest.mark.skipif(
@@ -108,7 +106,6 @@ def test_it_never_registers_twice(monkeypatch):
     assert IF._ensure_aten_grouped_mm("detail") is False
 
 
-# ---- the schema ---------------------------------------------------------
 
 
 def test_the_placeholder_schema_matches_upstream():
@@ -160,7 +157,6 @@ def test_the_placeholder_refuses_to_compute_rather_than_guessing():
         del lib
 
 
-# ---- wiring -------------------------------------------------------------
 
 
 def test_the_subprocess_fix_covers_the_op_too():

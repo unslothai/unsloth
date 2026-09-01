@@ -228,8 +228,8 @@ def test_cancel_by_keys_tolerates_empty_and_falsy_keys():
 
 
 def test_cancel_by_keys_fans_out_to_all_streams_on_same_session():
-    # Compare mode and other flows launch concurrent streams under a
-    # shared session_id; a single session cancel POST must hit all of them.
+    # Compare mode and other flows launch concurrent streams under a shared session_id;
+    # a single session cancel POST must hit all of them.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     m["_PENDING_CANCELS"].clear()
@@ -251,7 +251,6 @@ def test_cancel_by_keys_fans_out_to_all_streams_on_same_session():
 
 def test_cancel_by_cancel_id_is_exclusive_to_single_run():
     # cancel_id is per-run unique; cancelling run A must not touch run B
-    # even when both share a session_id.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     m["_PENDING_CANCELS"].clear()
@@ -272,8 +271,7 @@ def test_cancel_by_cancel_id_is_exclusive_to_single_run():
 
 
 def test_tracked_cancel_exit_is_idempotent():
-    # Outer except BaseException + the generator's finally may both call
-    # __exit__ under certain race combos; must not raise.
+    # Outer except BaseException + the generator's finally may both call __exit__ under certain race combos;
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     m["_PENDING_CANCELS"].clear()

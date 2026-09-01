@@ -45,7 +45,6 @@ def _load_split_repo_variant():
 _split = _load_split_repo_variant()
 
 
-# ── HF-style repo:variant inputs -------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -66,7 +65,6 @@ def test_repo_variant_split(model_arg, expected):
     assert _split(model_arg) == expected
 
 
-# ── No variant suffix ------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -83,9 +81,9 @@ def test_no_colon_returns_none_variant(model_arg):
     assert variant is None
 
 
+
+
 # ── Local paths must NOT be split ------------------------------------
-
-
 @pytest.mark.parametrize(
     "local_path",
     [
@@ -97,7 +95,7 @@ def test_no_colon_returns_none_variant(model_arg):
         ".",
         "C:\\Users\\me\\model.gguf",
         "C:/Users/me/model.gguf",
-        "D:/data/model:Q4",  # Windows drive + colon-suffixed filename: drive wins
+        "D:/data/model:Q4",  # Windows drive + colon-suffixed filename:
     ],
 )
 def test_local_path_passthrough(local_path):
@@ -106,7 +104,6 @@ def test_local_path_passthrough(local_path):
     assert variant is None
 
 
-# ── Edge cases -------------------------------------------------------
 
 
 def test_empty_string():
@@ -114,14 +111,14 @@ def test_empty_string():
 
 
 def test_trailing_colon_no_variant():
-    # "org/repo:" has no quant label; pass through unchanged so backend validation gives a clearer error.
+    # "org/repo:" has no quant label;
     repo, variant = _split("org/repo:")
     assert repo == "org/repo:"
     assert variant is None
 
 
 def test_slash_in_variant_disqualifies_split():
-    # "foo:bar/baz" suffix has a slash, so it's not a quant label; treat as opaque.
+    # "foo:bar/baz" suffix has a slash, so it's not a quant label;
     repo, variant = _split("foo:bar/baz")
     assert repo == "foo:bar/baz"
     assert variant is None

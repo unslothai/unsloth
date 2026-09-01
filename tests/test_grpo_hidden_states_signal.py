@@ -58,7 +58,6 @@ WRAPPED = "_unsloth_grpo_hidden_states_forward_wrapped"
 DEGRADED = "_unsloth_grpo_hidden_states_warning_issued"
 
 
-# ── The signal itself ────────────────────────────────────────────────────────
 
 
 class _Plain:
@@ -143,7 +142,6 @@ def test_a_self_referencing_wrapper_chain_terminates():
     assert hidden_states_signal(model) is None
 
 
-# ── The dispatch decision ────────────────────────────────────────────────────
 
 
 def _lm_head(vocab, hidden):
@@ -205,7 +203,6 @@ def test_a_negative_signal_cannot_overrule_a_decisive_width_test():
     assert returns_hidden_states(_wrapped(degraded = True), _tensor(8), head) is True
 
 
-# ── End to end through the shipped padded loop ───────────────────────────────
 
 SQUARE = 12  # vocab_size == hidden_size: the width comparison cannot decide
 BATCH, SEQ = 2, 7
@@ -282,8 +279,7 @@ class _SquareModel:
         self.lm_head = lm_head
         self.returns_hidden_states = returns_hidden_states
         if signal == "compiled":
-            # the compiler writes the marker onto the class it generated, so give
-            # this instance its own class rather than marking every _SquareModel
+            # The compiler writes the marker onto the class it generated, so give this instance its own class rather
             self.__class__ = type("_CompiledSquareModel", (_SquareModel,), {MARKER: True})
         elif signal in ("wrapped", "degraded"):
             setattr(self, WRAPPED, True)

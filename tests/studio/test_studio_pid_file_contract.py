@@ -41,8 +41,7 @@ def test_stop_finds_a_pid_file_named_the_way_the_backend_writes_it(tmp_path, mon
     from unsloth_cli.commands import studio as cli
 
     path = _backend_pid_path(tmp_path, 8901)
-    # The same three-line body _write_pid_file emits (create_time is blank when
-    # psutil is unavailable, and the CLI must tolerate that).
+    # The same three-line body _write_pid_file emits (create_time is blank when psutil is unavailable, and the CLI must
     path.write_text(f"{os.getpid()}\n\n127.0.0.1", encoding = "utf-8")
 
     monkeypatch.setattr(cli, "STUDIO_HOME", tmp_path)
@@ -52,8 +51,7 @@ def test_stop_finds_a_pid_file_named_the_way_the_backend_writes_it(tmp_path, mon
 
 
 def test_the_legacy_file_stays_a_bare_pid_an_older_cli_can_parse(tmp_path, monkeypatch):
-    # An older `unsloth studio stop` reads studio.pid and requires str.isdigit(),
-    # so the compatibility file must never gain the extra metadata lines.
+    # An older `unsloth studio stop` reads studio.pid and requires str.isdigit(), so the compatibility file must never
     ns = {
         "os": os,
         "Path": Path,

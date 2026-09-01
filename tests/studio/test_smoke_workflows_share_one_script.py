@@ -68,7 +68,7 @@ def test_a_divergent_second_run_is_a_failure_not_a_warning(script):
     fine and weakening it is not.
     """
     clean = ["1 is 2", "you asked about 2", "paris", "paris"]
-    script.check("ok", clean, list(clean))  # the baseline passes, or nothing below means anything
+    script.check("ok", clean, list(clean))
 
     with pytest.raises(AssertionError, match = "non-deterministic"):
         script.check("drift", clean, ["1 is 2", "you asked about 2", "paris", "london"])
@@ -112,9 +112,8 @@ def test_history_grounding_is_still_checked(script):
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("nohistory", ["1 is 2", good2, "c", "d"], ["1 is 2", good2, "c", "d"])
 
-    # The gap #10009 found: 'paris' in the JOINED transcript proves nothing, because
-    # turn 3 supplies it on its own. Checked per turn, a server that answers turn 3 and
-    # then loses the history still fails.
+    # The gap #10009 found:
+    # The gap #10009 found: 'paris' in the JOINED transcript proves nothing, because turn 3 supplies it on its own.
     lost_after_3 = ["1 is 2", "b", "paris", "Okay, I'm ready."]
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("joined-is-not-enough", lost_after_3, list(lost_after_3))
@@ -186,12 +185,11 @@ def test_the_replay_retry_cannot_pass_a_truly_nondeterministic_server(script, mo
     # Bounded: two runners per attempt, and it must not have looped past ATTEMPTS.
     assert calls["n"] == 2 * script.ATTEMPTS, calls["n"]
 
-    # And a single flip, followed by agreement, passes.
     calls["n"] = 0
 
     def flips_once():
         calls["n"] += 1
-        if calls["n"] == 2:  # the second replay of the first attempt
+        if calls["n"] == 2:
             return ["58 + 27 = 95", "the answer was 95", "paris", "paris!"]
         return list(clean)
 

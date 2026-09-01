@@ -13,9 +13,6 @@ Mirrors the conftest harness in unslothai/unsloth-zoo PR #624.
 
 from __future__ import annotations
 
-# --- torch.compile cache isolation -------------------------------------------------
-# Must run before torch is imported anywhere below, so it is here rather than in a
-# fixture. See tests/_shared/compile_cache_isolation.py for what it does and why.
 import importlib.util as _ilu  # noqa: E402
 import pathlib as _pathlib  # noqa: E402
 
@@ -25,22 +22,18 @@ for _up in _iso.parents:
     if _candidate.is_file():
         _spec = _ilu.spec_from_file_location("_unsloth_compile_cache_isolation", _candidate)
         _mod = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)  # sets the env vars on import
+        _spec.loader.exec_module(_mod)
         break
-# -----------------------------------------------------------------------------------
 
-# --- shared test helpers on sys.path -----------------------------------------------
-# tests/_shared holds no package marker and pytest only puts a *test file's* own
-# directory on sys.path, so tests/python/, tests/studio/install/ and tests/security/
-# cannot reach it by import. Adding it here (this conftest is collected for anything
-# under tests/) is what lets all four levels share one module rather than each growing
-# a private copy -- see tests/_shared/unsloth_pwsh_runner.py for the case that forced it.
+# --- shared test helpers on sys.path ----------------------------------------------- tests/_shared holds no package
+# marker and pytest only puts a *test file's* own directory on sys.path, so tests/python/, tests/studio/install/ and
+# tests/security/ cannot reach it by import.
+# see tests/_shared/unsloth_pwsh_runner.py for the case that forced it.
 import sys as _sys  # noqa: E402
 
 _shared_dir = _iso.parent / "_shared"
 if _shared_dir.is_dir() and str(_shared_dir) not in _sys.path:
     _sys.path.insert(0, str(_shared_dir))
-# -----------------------------------------------------------------------------------
 
 import importlib.util
 import os
@@ -140,8 +133,7 @@ def _patch_torch_cuda_for_import() -> None:
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
 
-        # (free, total). Zero free is an exhausted card, which callers that size
-        # against it treat as fatal.
+        # (free, total). Zero free is an exhausted card, which callers that size against it treat as fatal.
         _cuda_memory.mem_get_info = lambda *a, **k: (60 * 1024**3, 80 * 1024**3)
     except Exception:
         pass
@@ -194,7 +186,6 @@ def _preimport_bitsandbytes() -> None:
     try:
         import bitsandbytes  # noqa: F401
     except Exception:
-        # A genuinely absent or broken wheel is unsloth's own degradation path.
         pass
 
 
@@ -207,17 +198,13 @@ if not _has_real_accelerator():
     _patch_torch_cuda_for_import()
 
 
-# ---------------------------------------------------------------------------
-# Apply upstream-drift fixes (vllm/triton/peft) by triggering ``import unsloth``
-# (they run at import time in unsloth/import_fixes.py). The harness above lets
-# the import survive CPU-only runners; the ImportError is swallowed otherwise.
-# ---------------------------------------------------------------------------
 
 
 def _apply_upstream_import_fixes_for_tests() -> None:
     try:
         import unsloth  # noqa: F401  # runs unsloth/import_fixes.py
     except Exception:
+        # A genuinely absent or broken wheel is unsloth's own degradation path.
         pass
 
 

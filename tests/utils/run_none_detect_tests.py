@@ -23,7 +23,6 @@ LOG_DIR = REPO_ROOT / "tests" / "logs"
 LOG_DIR.mkdir(parents = True, exist_ok = True)
 LOG_PATH = LOG_DIR / "none_detect_results.log"
 
-# Helpers
 
 
 class Tee:
@@ -91,11 +90,10 @@ def assert_exact_recall(stats: dict, expected_bad: set, label: str):
     return all_caught
 
 
-# 1. Synthetic datasets
+
+
 
 # Minimal mock for hand-crafted rows pyarrow can't represent (e.g. messages=None / "not a list").
-
-
 class _MockDataset:
     """Behaves like an HF Dataset for iteration, len(), and index access."""
 
@@ -218,7 +216,7 @@ def test_p2_probe_skips_corrupt_prefers_valid():
     """P2 fix: probe continues past a corrupt 'messages' column to a valid 'conversations' column."""
     section("P2 Fix Verification — probe continues past corrupt first column to valid second")
 
-    # messages column is all-None; conversations is a valid ShareGPT column.
+    # messages column is all-None;
     rows = [
         {
             "messages": None,
@@ -264,7 +262,7 @@ def test_p2_explicit_fmt_col_priority():
     """P2 fix: explicit fmt='sharegpt' lets find_none_sharegpt pick its own column (conversations)."""
     section("P2 Fix Verification — explicit fmt='sharegpt' respects per-scanner column priority")
 
-    # messages has valid role/content turns (chatml-ish); conversations has bad sharegpt turns.
+    # messages has valid role/content turns (chatml-ish);
     rows = [
         {
             "messages": [
@@ -299,7 +297,7 @@ def test_p2_gptoss_col_priority():
     """P2 fix: fmt='gptoss' scans 'messages' only, not a clean 'conversations' fallback."""
     section("P2 Fix Verification — fmt='gptoss' scans messages only, not conversations")
 
-    # messages is all-None (corrupt); conversations is clean sharegpt.
+    # messages is all-None (corrupt);
     rows = [
         {
             "messages": None,
@@ -336,7 +334,7 @@ def test_new_p1_explicit_sharegpt_both_all_corrupt():
         "NEW P1 — explicit fmt='sharegpt' scans 'conversations' even when both columns all-corrupt"
     )
 
-    # Both columns are all-corrupt: every row has None.
+    # Both columns are all-corrupt:
     rows = [{"messages": None, "conversations": None}] * 5
     mock_ds = _MockDataset(rows, ["messages", "conversations"])
 
@@ -380,7 +378,7 @@ def test_new_p2_plain_string_messages_not_chatml():
         )
         return stats
     except ValueError as exc:
-        # ValueError is also acceptable: not a valid conversation format.
+        # ValueError is also acceptable:
         print(
             f"  [PASS] New-P2 plain-string messages: scan_dataset raised ValueError (not chatml): {exc}"
         )
@@ -428,7 +426,6 @@ def test_synthetic():
     return results
 
 
-# 2. HuggingFace: peteromallet/dataclaw-peteromallet
 
 
 def _brute_force_bad_rows(ds, fmt: str) -> set:
@@ -478,8 +475,8 @@ def _assert_hf_no_misses(ds, stats: dict, label: str) -> bool:
     print(f"  Running brute-force independent scan (fmt={fmt!r}, {len(ds)} rows)...")
     brute_bad = _brute_force_bad_rows(ds, fmt)
 
-    missed = brute_bad - module_bad  # brute-force found, module missed
-    extra = module_bad - brute_bad  # module flagged, brute-force didn't
+    missed = brute_bad - module_bad
+    extra = module_bad - brute_bad
 
     no_misses = len(missed) == 0
     snippet = ""
@@ -494,7 +491,7 @@ def _assert_hf_no_misses(ds, stats: dict, label: str) -> bool:
         f"missed: {len(missed)}{snippet}"
     )
     if extra:
-        # Module may legitimately flag more rows (extra structural checks); informational only.
+        # Module may legitimately flag more rows (extra structural checks);
         print(
             f"  [INFO] {label} — module flagged {len(extra)} rows not in brute-force "
             f"(may reflect additional structural checks, not false positives)"
@@ -524,13 +521,12 @@ def test_dataclaw():
         return None
 
 
-# 3. HuggingFace: peteromallet/my-personal-codex-data
 
 
 def test_codex_data():
     section("3. HuggingFace — peteromallet/my-personal-codex-data")
     try:
-        # load_dataset fails here (ujson chokes on the large JSONL batch); download + parse raw instead.
+        # load_dataset fails here (ujson chokes on the large JSONL batch);
         from huggingface_hub import hf_hub_download
         from datasets import Dataset
 
@@ -558,7 +554,6 @@ def test_codex_data():
         return None
 
 
-# Main
 
 
 def main():
@@ -591,7 +586,6 @@ def main():
         all_results["dataclaw"] = test_dataclaw()
         all_results["codex_data"] = test_codex_data()
 
-        # Summary table
         section("SUMMARY")
         rows = [
             ("Dataset", "Format", "Total rows", "Bad rows", "Bad turns"),
@@ -625,14 +619,12 @@ def main():
         for row in rows[1:]:
             print(fmt_str.format(*row))
 
-        # Write machine-readable JSON summary alongside the log
         json_path = LOG_DIR / "none_detect_results.json"
         summary = {}
         for key, val in all_results.items():
             if val is None:
                 summary[key] = None
             elif isinstance(val, dict):
-                # Flatten synthetic sub-keys
                 if key == "synthetic":
                     for subkey, subval in val.items():
                         summary[f"synthetic_{subkey}"] = (
@@ -662,7 +654,7 @@ def main():
         print(f"Log:      {LOG_PATH}")
         print(f"JSON:     {json_path}")
 
-        sys.stdout = sys.stdout.stdout  # restore
+        sys.stdout = sys.stdout.stdout
 
 
 if __name__ == "__main__":

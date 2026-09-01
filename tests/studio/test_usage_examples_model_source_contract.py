@@ -17,7 +17,7 @@ KEYLESS_ELIGIBILITY_TS = SETTINGS / "components/keyless-example-eligibility.ts"
 
 
 def test_examples_name_a_model_the_server_can_serve():
-    # A hardcoded repo id made copied curls 404; read the servable ids from /v1/models.
+    # A hardcoded repo id made copied curls 404;
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert 'from "../api/openai-models"' in src
     assert "function useExampleModelName(keylessOnly: boolean): string" in src
@@ -34,11 +34,11 @@ def test_examples_name_a_model_the_server_can_serve():
 
 
 def test_examples_never_print_a_hardcoded_model_id():
+    # The bug this exists for:
     # The bug this exists for: a `[]` catalog printed a snippet before /v1/models answered.
-    # It is tri-state now, and the panel asks for a model instead.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert "MODEL_FALLBACK" not in src
-    # No repo-shaped literal anywhere: a snippet may only name what /v1 returns.
+    # No repo-shaped literal anywhere:
     assert re.search(r'"unsloth/[^"]+"', src) is None
     assert "function useExampleModelName(keylessOnly: boolean): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
@@ -53,15 +53,11 @@ def test_examples_never_print_a_hardcoded_model_id():
 
 
 def test_catalog_refresh_follows_the_loaded_model():
-    # A dep list missing these never re-ran, so a finished load left the first fetch's
-    # name. Nor may it be gated on having no checkpoint: the store keeps one across an
-    # idle unload, which changes nothing React can see.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "}, [checkpoint, ggufVariant]);" in hook
     assert "needsCatalog" not in hook
-    # A finishing download moves no store state, so the fetch retries on a timer too,
-    # and residency only slows that timer rather than stopping it.
+    # A finishing download moves no store state, so the fetch retries on a timer too, and residency only slows that
     assert "CATALOG_RETRY_MS" in hook and "CATALOG_IDLE_MS" in hook
     assert "window.clearTimeout(timeoutId)" in hook
     assert "const CATALOG_RETRY_MS = 15000;" in src
@@ -69,9 +65,7 @@ def test_catalog_refresh_follows_the_loaded_model():
 
 
 def test_a_stored_checkpoint_needs_catalog_evidence():
-    # The store keeps a checkpoint across an idle unload and across a deletion, so
-    # preferring it on the switch setting alone named a model /v1/models had proved
-    # absent, and the snippets 404d instead of falling back.
+    # A dep list missing these never re-ran, so a finished load left the first fetch's
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
@@ -81,7 +75,7 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
 
 
 def test_idle_unload_does_not_guess_the_stashed_checkpoint():
-    # the idle stash is process-wide, but the browser checkpoint is not.
+    # The store keeps a checkpoint across an idle unload and across a deletion, so preferring it on the switch setting
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "idleReload" not in hook
@@ -89,9 +83,8 @@ def test_idle_unload_does_not_guess_the_stashed_checkpoint():
 
 
 def test_a_failed_refresh_does_not_erase_what_the_server_holds():
-    # Catching into [] and false made a transient error authoritative: the panel dropped
-    # a still-servable model and printed "No model". The catalog is deliberately
-    # tri-state, and a failure must stay the unknown state.
+    # Catching into [] and false made a transient error authoritative:
+    # the idle stash is process-wide, but the browser checkpoint is not.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "listOpenAIModels().catch(() => null)" in hook
@@ -105,9 +98,7 @@ def test_a_failed_refresh_does_not_erase_what_the_server_holds():
 
 
 def test_the_pinned_quant_comes_from_the_catalog():
-    # Catalog membership proves the repo, not the saved quant: the stored one can name
-    # a file deleted while another quant remains, so pinning it 404d on a missing quant
-    # with a runnable one listed.
+    # Catalog membership proves the repo, not the saved quant:
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "const quant = catalog === null ? ggufVariant : entry?.quant;" in hook
@@ -117,7 +108,7 @@ def test_the_pinned_quant_comes_from_the_catalog():
 def test_usage_examples_has_no_duplicate_auto_switch_control():
     # ModelAutoSwitchSection renders this setting just below and shares no state with it.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
-    # Reading the setting is fine; writing it here is what would be a second control.
+    # Reading the setting is fine;
     assert "updateOpenAIAutoSwitchSettings" not in src
     assert "SWITCH_NOTE" not in src
     assert "Switch model by request" not in src
@@ -129,17 +120,14 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
     assert "<ModelAutoSwitchSection />" in tab
 
 
-# The monitor moved onto its own page; Settings keeps configuration and links across.
+# The monitor moved onto its own page;
 API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
-# Their own module: the overlay mounts from __root.tsx, so importing from the page
-# pulled it into the eager bundle.
+# Their own module: the overlay mounts from __root.tsx, so importing from the page pulled it into the eager bundle.
 API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
 MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
 def test_api_monitor_history_does_not_reorder_under_the_reader():
-    # The backend moves an entry to the front as it finishes, so the page pauses the poll
-    # to hold the whole list still while a payload is read.
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
     assert "paused" in src
     assert "setPaused" in src
@@ -179,9 +167,10 @@ def test_api_monitor_renders_download_rows():
 
 
 def test_monitor_can_unload_the_loaded_model():
+    # The backend moves an entry to the front as it finishes, so the page pauses the poll to hold the whole list still
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
     assert "unloadActiveModel" in src
-    # Always rendered so the manual release stays discoverable; disabled, not hidden.
+    # Always rendered so the manual release stays discoverable;
     assert "disabled={unloading || !data?.active_model}" in src
     assert "{data?.active_model ? (" not in src
     # /unload matches on the internal id, omitted here (a host path), so read it from status.

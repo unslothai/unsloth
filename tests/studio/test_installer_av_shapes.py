@@ -59,8 +59,7 @@ def test_script_exists(name: str) -> None:
 
 @pytest.mark.parametrize("name", PS_SCRIPTS)
 def test_no_remote_script_is_executed_in_process(name: str) -> None:
-    # The construct AMSI and cloud ML scanners score hardest. Both files fetch a pinned
-    # archive instead.
+    # The construct AMSI and cloud ML scanners score hardest.
     for number, line in _code_lines(name):
         assert not re.search(
             r"Invoke-Expression\s*\(\s*Invoke-(RestMethod|WebRequest)", line
@@ -97,8 +96,8 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
-    # Microsoft's detections key on this pair; install.rs already refuses it for the app's
-    # own launch.
+    # Microsoft's detections key on this pair;
+    # install.rs already refuses it for the app's own launch.
     for number, line in enumerate(_text(name).splitlines(), start = 1):
         if re.search(r"-WindowStyle\s+Hidden", line, re.IGNORECASE):
             assert not re.search(
@@ -106,28 +105,28 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
             ), f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
 
 
-# Every runtime-compiled P/Invoke left in the installers. Each costs a csc.exe compile and is
-# scored, so a new entry needs a reason; a PowerShell equivalent usually exists.
+# Every runtime-compiled P/Invoke left in the installers.
+# Each costs a csc.exe compile and is scored, so a new entry needs a reason;
 ALLOWED_PINVOKES = {
-    # Canonicalising linked ancestors of security-relevant paths. No PS 5.1 equivalent:
-    # ResolveLinkTarget is .NET 6+, and .Target misses a linked ancestor of a non-link leaf.
-    # Not skippable either: Get-StudioRuntimePathHash hashes this spelling byte for byte and
-    # Python derives the same mutex name from its own, so a GetFullPath fast path differing on
-    # case or an 8.3 name would let two installers each believe they hold the lock.
+    # Canonicalising linked ancestors of security-relevant paths.
+    # No PS 5.1 equivalent: ResolveLinkTarget is .NET 6+, and .Target misses a linked ancestor of a non-link leaf.
+    # Not skippable either: Get-StudioRuntimePathHash hashes this spelling byte for byte and Python derives the same
+    # mutex name from its own, so a GetFullPath fast path differing on case or an 8.3 name would let two installers each
+    # believe they hold the lock.
     "CreateFileW",
     "GetFinalPathNameByHandleW",
-    # ANSI colour on a real console. Skipped entirely when stdout is redirected, see
+    # ANSI colour on a real console.
+    # Skipped entirely when stdout is redirected, see
     # test_virtual_terminal_answers_a_redirected_stream_without_compiling.
     "GetStdHandle",
     "GetConsoleMode",
     "SetConsoleMode",
-    # Per-item Explorer icon refresh, standalone path only. ie4uinit.exe -show is the global
-    # broadcast, which alone does not recover a stale .lnk, so it is not a substitute.
+    # Per-item Explorer icon refresh, standalone path only.
+    # ie4uinit.exe -show is the global broadcast, which alone does not recover a stale .lnk, so it is not a substitute.
     "SHChangeNotify",
-    # PID -> image path for the venv-holder check. Win32_Process answers the same question,
-    # but test_windows_installer_concurrency_guard.py bans it and $process.Path there: the
-    # races #7764 closed came from inferring "in use" from anything but a confirmed executable
-    # identity. A wrongly blocked install costs more than these imports.
+    # PID -> image path for the venv-holder check.
+    # Win32_Process answers the same question, but test_windows_installer_concurrency_guard.py bans it and $process.Path
+    # there: the races #7764 closed came from inferring "in use" from anything but a confirmed executable identity.
     "OpenProcess",
     "QueryFullProcessImageNameW",
     "CloseHandle",
@@ -180,8 +179,7 @@ def test_virtual_terminal_answers_a_redirected_stream_without_compiling(name: st
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_no_process_memory_apis(name: str) -> None:
-    # The installer reads image paths, nothing more. Reaching into another process's memory
-    # has no use here and is what the injection heuristics look for.
+    # The installer reads image paths, nothing more.
     for banned in (
         "VirtualAllocEx",
         "WriteProcessMemory",
@@ -193,7 +191,6 @@ def test_no_process_memory_apis(name: str) -> None:
 
 
 # What the installers print when they need the user to reinstall. Hardening must not touch
-# user-visible output, and a search-and-replace would take exactly these out.
 REQUIRED_OUTPUT = {
     "install.ps1": ['Write-StudioLine "          irm https://unsloth.ai/install.ps1 | iex"'],
     "studio/setup.ps1": ['Write-StudioLine "        irm https://unsloth.ai/install.ps1 | iex"'],

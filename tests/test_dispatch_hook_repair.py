@@ -29,8 +29,7 @@ def _repair():
     return _repair_dispatch_hooks
 
 
-# `init_hook` moves real tensors, so a CUDA name needs that card and the CPU
-# runner has none. "meta" is real everywhere; "cpu" must be left alone.
+# `init_hook` moves real tensors, so a CUDA name needs that card and the CPU runner has none.
 FAR = "meta"
 NEAR = "cpu"
 
@@ -113,8 +112,7 @@ def test_a_module_that_already_has_a_hook_is_left_alone():
 
 
 def test_a_single_device_map_is_left_completely_alone():
-    # Entries that WOULD attach, so dropping the early return changes the
-    # count. A map of unattachable devices passes either way and proves nothing.
+    # Entries that WOULD attach, so dropping the early return changes the count.
     model = _Model({"embed_tokens": FAR, "lm_head": FAR, "layer": FAR})
     assert _repair()(model) == 0
     assert _hooked(model) == set(), "hooks were attached on a single-device load"
@@ -154,8 +152,7 @@ def test_the_llama_loader_stands_aside_under_vllm():
 
     from unsloth.models.llama import FastLlamaModel
 
-    # dedent, not lstrip: this one is a method, so every line is indented and
-    # lstrip would leave the body hanging off a stripped `def`.
+    # dedent, not lstrip: this one is a method, so every line is indented and lstrip would leave the body hanging off a
     tree = ast.parse(textwrap.dedent(inspect.getsource(FastLlamaModel.from_pretrained)))
     calls = [
         node
@@ -291,7 +288,7 @@ def test_the_whole_sequence_against_real_accelerate():
     ), "the repair reallocated a weight that was already on its mapped device"
 
     with torch.no_grad():
-        model(ids)  # the crash above is gone
+        model(ids)
 
     for parameter in model.parameters():
         parameter.requires_grad_(True)

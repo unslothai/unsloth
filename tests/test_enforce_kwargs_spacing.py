@@ -118,7 +118,7 @@ def test_exact_output_try_block():
 
 
 def test_exact_output_multiple_consecutive_imports():
-    # Only the blank after the LAST import in a run is dropped; both imports kept.
+    # Only the blank after the LAST import in a run is dropped;
     src = "def f():\n    import a\n    import b\n\n    return a, b\n"
     expected = "def f():\n    import a\n    import b\n    return a, b\n"
     out, changed = remove_blank_after_short_import(src)
@@ -186,33 +186,33 @@ def test_enforce_spacing_noop_when_already_spaced():
     assert out == src
 
 
-# ── Rule D: def one-per-line iff >= 3 params AND a default ──────────────────
-# add comma -> force one-per-line; strip comma -> stay collapsible.
+# Rule D:
 
+# Rule D: def one-per-line iff >= 3 params AND a default ────────────────── add comma -> force one-per-line;
 # Comma must be ADDED: >= 3 params, has a default, no trailing comma yet.
 _DEF_ADD = {
     "three_with_default": "def f(a, b, c=1):\n    return a\n",
     "four_with_default": "def f(a, b, c, d=1):\n    return a\n",
-    "kwonly_default": "def f(a, b, *, c=1):\n    return a\n",  # 3 real params, kw default
+    "kwonly_default": "def f(a, b, *, c=1):\n    return a\n",
     "continuation_default": "def f(\n    a, b, c=1\n):\n    return a\n",
-    "starred_with_default": "def f(a, b, *args, c=1):\n    return a\n",  # 4 params
+    "starred_with_default": "def f(a, b, *args, c=1):\n    return a\n",
 }
 
 # Comma must be STRIPPED: NOT (>=3 params and default), but a trailing comma exists.
 _DEF_STRIP = {
     "three_no_default_multiline": "def f(\n    a,\n    b,\n    c,\n):\n    return a\n",
     "four_no_default_multiline": "def f(\n    a,\n    b,\n    c,\n    d,\n):\n    return a\n",
-    "two_with_default": "def f(\n    a,\n    b=1,\n):\n    return a\n",  # < 3 params -> one line
+    "two_with_default": "def f(\n    a,\n    b=1,\n):\n    return a\n",
     "single_arg": "def f(\n    a,\n):\n    return a\n",
 }
 
 # Left byte-for-byte unchanged.
 _DEF_NOCHANGE = {
     "three_no_default_oneline": "def f(a, b, c):\n    return a\n",
-    "two_with_default_oneline": "def f(a, b=1):\n    return a\n",  # < 3 -> one line, no comma
+    "two_with_default_oneline": "def f(a, b=1):\n    return a\n",
     "noparams": "def f():\n    return 1\n",
     "call_site": "x = foo(\n    a,\n    b,\n    c,\n    d,\n)\n",
-    "nested_default_call": "def f(a=g(1, 2,)):\n    return a\n",  # 1 param, no def comma
+    "nested_default_call": "def f(a=g(1, 2,)):\n    return a\n",
     "three_default_already_comma": "def f(\n    a,\n    b,\n    c=1,\n):\n    return a\n",
 }
 
@@ -259,7 +259,6 @@ def test_def_comma_exact_output_strip_and_add():
     )
 
 
-# ── Rule C: merge adjacent same-line string literals ───────────────────────
 
 
 @pytest.mark.parametrize(
@@ -277,7 +276,7 @@ def test_def_comma_exact_output_strip_and_add():
             'd = (f"{pkg}@{ver} is on the BLOCKED list")\n',
         ),
         ('x = f"a{z}" "{lit}"\n', 'x = f"a{z}{{lit}}"\n'),
-        ('m = "plain " f"then {y}"\n', 'm = f"plain then {y}"\n'),  # plain + f
+        ('m = "plain " f"then {y}"\n', 'm = f"plain then {y}"\n'),
     ],
 )
 def test_merge_adjacent_strings(src, expected):
@@ -292,14 +291,14 @@ def test_merge_adjacent_strings(src, expected):
 @pytest.mark.parametrize(
     "src",
     [
-        'x = "ab"\n',  # single literal
-        "x = \"ab\" 'cd'\n",  # mixed quote style
-        'x = b"a" b"b"\n',  # bytes: left side-by-side by request
-        'x = rb"a" rb"b"\n',  # raw-bytes: also left alone
-        'm = f"a {x} " f"after {y}"\n',  # pure f + f: left side-by-side
-        'x = rf"a{z}" "b"\n',  # raw f-string: brace/backslash too subtle -> skip
-        'x = f"a{z}" "\\N{BULLET}"\n',  # named escape: AST guard rejects the fold
-        'x = (\n    "a"\n    "b"\n)\n',  # different lines, not merged
+        'x = "ab"\n',  # single literal mixed quote style bytes:
+        "x = \"ab\" 'cd'\n",
+        'x = b"a" b"b"\n',
+        'x = rb"a" rb"b"\n',
+        'm = f"a {x} " f"after {y}"\n',
+        'x = rf"a{z}" "b"\n',
+        'x = f"a{z}" "\\N{BULLET}"\n',
+        'x = (\n    "a"\n    "b"\n)\n',
     ],
 )
 def test_merge_adjacent_strings_skips(src):
@@ -309,7 +308,6 @@ def test_merge_adjacent_strings_skips(src):
 
 
 def test_fstring_fold_skipped_when_statement_would_not_collapse():
-    # Folding a long f + plain assert message can't fit on one line, so leave it.
     src = (
         "def f():\n"
         "    assert some_condition_holds_here, (\n"
@@ -331,7 +329,8 @@ def test_fstring_fold_applied_when_statement_collapses():
 
 
 def test_fstring_fold_applied_inside_large_multiline_call():
-    # The fit guard only restricts asserts; an f + plain arg in a big call folds.
+    # Folding a long f + plain assert message can't fit on one line, so leave it.
+    # The fit guard only restricts asserts;
     src = (
         "findings.append(\n"
         "    Finding(\n"
@@ -347,10 +346,9 @@ def test_fstring_fold_applied_inside_large_multiline_call():
     assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(src))
 
 
-# ── collapse_short_asserts: strip the magic comma holding a short assert open ──
-# Strips the trailing comma so ruff joins the assert onto one line; AST unchanged.
 
 
+# collapse_short_asserts: strip the magic comma holding a short assert open ── Strips the trailing comma so ruff joins
 @pytest.mark.parametrize(
     "name,src",
     [
@@ -403,7 +401,6 @@ def test_collapse_short_assert_strips_trailing_comma(name, src):
             '        "alpha": 11111111,\n        "beta": 22222222,\n'
             '        "gamma": 33333333,\n        "delta": 44444444,\n    }\n',
         ),
-        # already one line: nothing to do.
         ("one_line", 'def t():\n    assert got == {"a": 1, "b": 2}\n'),
     ],
 )

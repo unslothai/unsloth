@@ -18,11 +18,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-# Smallest instruct model in the CI fixture family; ~270M params loads and
-# generates a few tokens in seconds on any GPU.
+# Smallest instruct model in the CI fixture family;
 MODEL_ID = "unsloth/gemma-3-270m-it"
-# A handful of forced real tokens: enough to prove GPU decode produced content,
-# short enough to stay a few seconds.
+# A handful of forced real tokens:
 MIN_NEW_TOKENS = 4
 MAX_NEW_TOKENS = 16
 
@@ -34,8 +32,7 @@ def test_gpu_generation_smoke():
     except Exception as exc:  # pragma: no cover - env without transformers
         pytest.skip(f"transformers unavailable: {exc}")
 
-    # Gemma is numerically unstable in fp16 (it emits only <pad>); use bf16 where
-    # supported, else fp32. The model is tiny, so fp32 is still fast.
+    # Gemma is numerically unstable in fp16 (it emits only <pad>);
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
     try:
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)

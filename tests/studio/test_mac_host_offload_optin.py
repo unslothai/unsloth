@@ -34,9 +34,7 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 ENV_VAR = "UNSLOTH_ALLOW_HOST_OFFLOAD"
 
-# The mac GGUF phases were absorbed into the Mac UI job, which is why this is
-# not the file the docstring above was written against. The opt-out moved with
-# them, to that job's env, and is still the only place in the repo it appears.
+# The mac GGUF phases were absorbed into the Mac UI job, which is why this is not the file the docstring above was
 MAC_GGUF = "studio-mac-ui-smoke.yml"
 OTHER_GGUF = ["studio-inference-smoke.yml", "studio-windows-inference-smoke.yml"]
 
@@ -79,10 +77,8 @@ def test_the_opt_out_explains_itself_in_place():
 def test_no_other_gguf_workflow_disables_the_guard(name):
     doc = _doc(name)
     offenders = []
-    # Workflow level first. GitHub propagates a top-level `env:` to every job, so it is
-    # the BROADEST way to set this and was the one place a job/step scan could not see:
-    # one line at the top of the Linux or Windows workflow would disable the guard across
-    # every job in it while this test, whose whole subject is blast radius, stayed green.
+    # Workflow level first.
+    # Workflow level first. GitHub propagates a top-level `env:` to every job, so it is the BROADEST way to set this
     if (doc.get("env") or {}).get(ENV_VAR) is not None:
         offenders.append("workflow env (applies to every job)")
     for jid, job in (doc.get("jobs") or {}).items():

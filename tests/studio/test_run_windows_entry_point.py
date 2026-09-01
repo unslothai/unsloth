@@ -93,7 +93,7 @@ def test_windows_respawns_through_the_interpreter_not_the_console_script():
     assert isinstance(
         branch, ast.IfExp
     ), f"expected launch_head to branch per platform, got {ast.dump(branch)}"
-    # Windows arm: _managed_cli_argv(studio_python), i.e. the interpreter form.
+    # Windows arm: _managed_cli_argv(studio_python), i.e.
     assert isinstance(branch.body, ast.Call), ast.dump(branch.body)
     assert isinstance(branch.body.func, ast.Name)
     assert branch.body.func.id == "_managed_cli_argv", (
@@ -122,8 +122,7 @@ def test_the_trampoline_is_the_one_the_rust_and_powershell_sides_use():
     Each side is read from its own file. An earlier version of this test only
     grepped studio.py, so drifting the Rust and PowerShell copies left it green.
     """
-    # Spelled out, not imported from any of the three, so editing any single copy
-    # fails here instead of quietly agreeing with itself.
+    # Spelled out, not imported from any of the three, so editing any single copy fails here instead of quietly
     canonical = (
         "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
         "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
@@ -177,8 +176,7 @@ def test_the_interpreter_argv_carries_no_isolation_flag_by_default():
     inherited = ast.literal_eval(ternaries[0].orelse)
 
     assert inherited == ["-X", "utf8"], "the default argv must stay `-X utf8 -c <trampoline>`"
-    # -X utf8 before -I: -I implies -E, which discards PYTHONUTF8 but cannot
-    # touch a flag already on the command line.
+    # X utf8 before -I: -I implies -E, which discards PYTHONUTF8 but cannot touch a flag already on the command line.
     assert isolated == ["-X", "utf8", "-I"]
     assert ternaries[0].test.id == "isolated", "the ternary must key off the isolated parameter"
 

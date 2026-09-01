@@ -50,15 +50,11 @@ INSTALLERS = (
     REPO / "studio" / "setup.ps1",
 )
 
-# Markers of the two filter dialects, each paired with the log-writing stage that must
-# come before it in the same pipeline.
+# Markers of the two filter dialects, each paired with the log-writing stage that must come before it in the same
 POSIX_FILTER = "printf '[%4ds] %s\\n' \"$SECONDS\""
 PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
 
 
-# --------------------------------------------------------------------------------------
-# The installers stay out of it
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("script", INSTALLERS, ids = lambda p: p.name)
@@ -82,9 +78,6 @@ def test_the_installers_carry_no_timing_machinery(script):
     )
 
 
-# --------------------------------------------------------------------------------------
-# Where the filter is, and what has to come before it
-# --------------------------------------------------------------------------------------
 
 
 def _run_bodies():
@@ -227,9 +220,8 @@ def test_a_failing_install_still_fails_its_step():
                 f"-- and a failed install passes"
             )
         if PWSH_FILTER in run:
-            # The comparison, not the bare variable name: `$child` already ends with
-            # `exit $LASTEXITCODE`, so a substring test for the name alone stays green
-            # after the outer check is deleted. Confirmed by mutation.
+            # The comparison, not the bare variable name: `$child` already ends with `exit $LASTEXITCODE`, so a
+            # substring test for the name alone stays green after the outer check is deleted.
             assert re.search(r"\$LASTEXITCODE\s+-ne\s+0", run), (
                 f"{path.name}:{jid}:{name} no longer throws on a non-zero $LASTEXITCODE "
                 f"after the pipeline. PowerShell does not fail a step for a native "
@@ -252,9 +244,6 @@ def test_the_posix_filter_does_not_swallow_the_last_line():
         )
 
 
-# --------------------------------------------------------------------------------------
-# Run the real filters, rather than only reading them
-# --------------------------------------------------------------------------------------
 
 
 def _posix_filter_body() -> str:

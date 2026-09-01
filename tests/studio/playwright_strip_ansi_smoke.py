@@ -54,9 +54,8 @@ def dump(page: Page, vite: subprocess.Popen[str] | None) -> None:
     dump_diagnostics(page, ART, "smoke-ansi-failure", info = info)
     if vite is not None:
         info("vite tail:")
-        # Snapshot first: the drain thread is still appending, and printing releases the
-        # GIL, so lazy iteration raises "deque mutated during iteration" and loses the
-        # tail in the noisy failure it exists for. `list()` runs in C, so it is atomic.
+        # Snapshot first:
+        # Snapshot first: the drain thread is still appending, and printing releases the GIL, so lazy iteration raises
         for line in list(getattr(vite, "vite_tail", [])) or ["(no output)"]:
             info(f"  {line.rstrip()}")
     info(f"artifacts in {ART}")

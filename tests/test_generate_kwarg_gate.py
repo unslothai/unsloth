@@ -23,7 +23,7 @@ accepts = _load_helper()
 
 
 class PrepHasKwargs_ForwardHasKey:
-    # **kwargs on prepare unions forward params; key in forward -> ACCEPTED.
+    # kwargs on prepare unions forward params;
     def prepare_inputs_for_generation(self, input_ids, **kwargs): ...
     def forward(
         self,
@@ -34,7 +34,7 @@ class PrepHasKwargs_ForwardHasKey:
 
 
 class PrepNoKwargs_ForwardHasKey:
-    # no **kwargs -> forward not unioned; key only in forward -> REJECTED (gpt-oss shape).
+    # no **kwargs -> forward not unioned;
     def prepare_inputs_for_generation(
         self,
         input_ids,

@@ -35,19 +35,16 @@ import json
 import sys
 from pathlib import Path
 
-# Only the bare names. `re.compile(pattern)` and `model.eval()` are not these builtins,
-# and matching on the attribute reported 69 of them across the two repositories.
+# Only the bare names. `re.compile(pattern)` and `model.eval()` are not these builtins, and matching on the attribute
 SINKS = ("exec", "eval", "compile")
 
-# Notebooks are scanned too: in the notebooks repository they are the maintained
-# source, and a cell runs the same interpreter a module does.
+# Notebooks are scanned too:
 SUFFIXES = (".py", ".ipynb")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = Path(__file__).resolve().parent / "exec_literals_baseline.json"
 
-# Not part of any commit, or not ours to fail on. `tests` is excluded because a test
-# legitimately keeps a real `exec` around as the thing it is asserting about.
+# Not part of any commit, or not ours to fail on.
 EXCLUDED_PARTS = frozenset(
     {
         "tests",
@@ -73,11 +70,10 @@ def _is_written_out(node: ast.AST) -> bool:
     if isinstance(node, ast.Constant):
         return isinstance(node.value, (str, bytes))
     if isinstance(node, ast.JoinedStr):
-        # An f-string with no placeholder is just a string. One with a placeholder is
-        # the whole point of this check.
+        # An f-string with no placeholder is just a string.
         return not any(isinstance(part, ast.FormattedValue) for part in node.values)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        # `"import " + "torch"` is still written out; `"import " + name` is not.
+        # `"import " + "torch"` is still written out;
         return _is_written_out(node.left) and _is_written_out(node.right)
     return False
 
@@ -127,12 +123,9 @@ def scan_file(path: Path, relative: str) -> list[dict]:
         tree = ast.parse(source, filename = str(path))
     except (SyntaxError, ValueError, MemoryError, RecursionError) as error:
         if path.suffix == ".ipynb":
-            # A notebook that does not parse as one module is ordinary: a cell may be
-            # mid-edit, or depend on an earlier `%%capture`. Nothing to check, and
-            # failing the build for it would be noise.
+            # A notebook that does not parse as one module is ordinary:
             return []
-        # A .py file that will not parse has not been checked, and reporting it clean
-        # is the bypass this whole gate exists to avoid.
+        # A .py file that will not parse has not been checked, and reporting it clean is the bypass this whole gate
         raise SystemExit(f"{relative}: could not be parsed ({error.__class__.__name__})")
     found = []
     for node in ast.walk(tree):
@@ -157,8 +150,7 @@ def collect(targets: list[str]) -> list[dict]:
         elif root.is_dir():
             paths = sorted(q for s in SUFFIXES for q in root.rglob(f"*{s}"))
         else:
-            # A target that resolves to nothing means the gate covers less than it
-            # claims to, which is a silent hole rather than a passing run.
+            # A target that resolves to nothing means the gate covers less than it claims to, which is a silent hole
             raise SystemExit(
                 f"{target}: scan target does not exist, so nothing under it was checked"
             )
@@ -168,8 +160,7 @@ def collect(targets: list[str]) -> list[dict]:
             try:
                 relative = path.relative_to(REPO_ROOT).as_posix()
             except ValueError:
-                # `--paths` may name a file outside the checkout, which is how the tests
-                # drive the gate. Report it by the name it was given.
+                # `--paths` may name a file outside the checkout, which is how the tests drive the gate.
                 relative = path.as_posix()
             if EXCLUDED_PARTS & set(Path(relative).parts):
                 continue
@@ -203,9 +194,7 @@ def main() -> int:
     found = collect(targets)
 
     if arguments.update:
-        # Existing reasons are carried over. Rebuilding the list from scratch reset
-        # every hand-written justification to nothing, which is how a reviewed entry
-        # silently becomes an unreviewed one.
+        # Existing reasons are carried over.
         reasons = {
             (e["file"], e["sink"], e["digest"]): e.get("reason", "") for e in document["entries"]
         }
@@ -255,8 +244,7 @@ def main() -> int:
 
     stale = sorted(k for k in allowed if k not in observed)
     if stale:
-        # A baseline that outlives its call site quietly re-permits whatever lands on
-        # that digest next, so it is an error rather than a note.
+        # A baseline that outlives its call site quietly re-permits whatever lands on that digest next, so it is an
         print(f"{len(stale)} baseline entr(y/ies) no longer match any call. Run --update:\n")
         for f, s, d in stale:
             print(f"  {f}  {s}  {d}")

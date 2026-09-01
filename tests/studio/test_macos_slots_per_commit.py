@@ -289,10 +289,7 @@ def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
     )
 
 
-# Images GitHub still schedules. macos-14 is absent deliberately: brownouts from
-# 2026-10-05, removal 2026-11-02. Add to this set when GitHub ships an image, and
-# remove from it when GitHub announces a retirement -- the removal is the point,
-# because that is when this guard starts naming the jobs that have to move.
+# Images GitHub still schedules.
 LIVE_MACOS_IMAGES = {
     "macos-15",
     "macos-15-intel",
@@ -312,16 +309,12 @@ def _macos_labels():
         for jid, job in doc["jobs"].items():
             if not isinstance(job, dict):
                 continue
-            # runs-on plus the matrix it may select from: a retired image hides in
-            # an `include:` list just as easily as in a literal runs-on.
+            # runs-on plus the matrix it may select from:
             blob = str(job.get("runs-on", ""))
             strategy = job.get("strategy") or {}
             blob += str((strategy.get("matrix") or {}) if isinstance(strategy, dict) else "")
-            # Only things shaped like a GitHub image name. The loose MACOS pattern
-            # used elsewhere in this file also matches build targets that merely
-            # contain "macos" -- release-desktop's matrix carries `macos-aarch64`,
-            # which is a Rust triple's nickname and never a runner label. Every
-            # real macOS image is macos-latest or macos-<version>[-intel].
+            # Only things shaped like a GitHub image name.
+            # The loose MACOS pattern used elsewhere in this file also matches build targets that merely contain "macos"
             for label in re.findall(r"\bmacos-(?:latest|\d+(?:-intel)?)\b", blob, re.I):
                 found.append((path.name, jid, label.lower()))
     return found

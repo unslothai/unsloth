@@ -205,7 +205,7 @@ def _staleness_inputs_ps1() -> set[str]:
     )
 
     found = set()
-    # The recursive subdirectory sweep: foreach ($subDir in @("src", "public")).
+    # The recursive subdirectory sweep:
     sub = re.search(r"foreach \(\$subDir in @\(([^)]*)\)\)", body)
     assert sub, "setup.ps1's staleness check no longer sweeps a list of subdirectories"
     for name in re.findall(r'"([^"]+)"', sub.group(1)):
@@ -346,11 +346,9 @@ def test_the_dist_cache_has_no_restore_keys() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
+
+
 # The touch, which is where a hit stops being a hit.
-# ---------------------------------------------------------------------------
-
-
 def _touch_steps() -> list[dict]:
     return [s for s in _steps(RESTORE_ACTION) if "outrank its sources" in str(s.get("name", ""))]
 
@@ -415,9 +413,9 @@ def test_the_posix_touch_still_touches() -> None:
     ), f"the POSIX branch no longer touches the dist directory: {_code(step)!r}"
 
 
-# What each branch has to do AFTER stamping the directory, expressed as the two things
-# that distinguish "I called the API" from "the dist actually ended up newer": re-READ
-# the timestamp, and COMPARE it against the sources with a branch that can fail.
+# What each branch has to do AFTER stamping the directory, expressed as the two things that distinguish "I called the
+# API" from "the dist actually ended up newer": re-READ the timestamp, and COMPARE it against the sources with a branch
+# that can fail.
 _READBACK = {
     # `find ... -newer "$DIST"` is setup.sh's own predicate, re-run.
     "posix": (r'-newer\s+"\$DIST"', r'if\s+\[\s+-n\s+"\$newer"\s+\]'),
@@ -536,9 +534,6 @@ def test_no_windows_job_reaches_the_posix_install_composite() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# The save half, and the assertion that a hit was actually reused.
-# ---------------------------------------------------------------------------
 
 
 def test_the_dist_cache_is_saved_on_main_only() -> None:
@@ -578,9 +573,7 @@ def test_a_cache_hit_that_rebuilt_anyway_fails_the_job() -> None:
     assert (
         "building frontend" in body
     ), "the reuse assertion does not look for the rebuild marker both installers emit"
-    # Each guarded condition, and the failure that must follow it. Counting `exit 1`s
-    # instead let a mutation through: turning the missing-log branch into a warning plus
-    # `exit 0` left the total unchanged, because the `exit 1` beneath it stayed.
+    # Each guarded condition, and the failure that must follow it.
     for condition, what in (
         (r'\[\s+!\s+-f\s+"\$INSTALL_LOG"\s+\]', "a missing install log"),
         (r'\[\s+!\s+-d\s+"\$DIST"\s+\]', "a dist that vanished during the install"),
@@ -624,11 +617,9 @@ def test_the_markers_the_reuse_assertion_greps_for_still_exist(script: Path, mar
     )
 
 
-# ---------------------------------------------------------------------------
+
+
 # One definition of the key, and where it may be referenced from.
-# ---------------------------------------------------------------------------
-
-
 def test_the_cache_key_has_exactly_one_definition() -> None:
     """Nine call sites with their own copy would drift, and the drift is silent.
 
@@ -861,11 +852,9 @@ def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
         }
         if "restore" not in idx:
             continue
-        # The step that INVOKES the installer, not every step that mentions it. These
-        # workflows also parse install.ps1 with the AST and grep logs/install.log, and a
-        # bare `install\.(ps1|sh)` match picks those up and reports a false ordering
-        # bug. Every call site passes --local (it is what overlays the checkout, so it
-        # is also what makes the workspace dist the one being built).
+        # The step that INVOKES the installer, not every step that mentions it.
+        # These workflows also parse install.ps1 with the AST and grep logs/install.log, and a bare `install\.(ps1|sh)`
+        # match picks those up and reports a false ordering bug.
         installs = [
             i
             for i, s in enumerate(steps)
@@ -881,12 +870,8 @@ def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
     assert not offenders, "\n  ".join(["misordered frontend-dist steps:"] + offenders)
 
 
-# ---------------------------------------------------------------------------
-# Cold lanes.
-# ---------------------------------------------------------------------------
 
-# Named, not detected: a lane whose whole point is a cold machine should have to be
-# removed from this list deliberately, in a diff someone reads.
+# Named, not detected: a lane whose whole point is a cold machine should have to be removed from this list
 COLD_INSTALL_WORKFLOWS = (
     "clean-machine-install-ci.yml",
     "desktop-app-clean-machine-ci.yml",
@@ -895,7 +880,6 @@ COLD_INSTALL_WORKFLOWS = (
 )
 
 # Cold at JOB level, inside a workflow whose other jobs legitimately use the cache.
-# `no-vs-cpu` installs with no Visual Studio build tools present, on purpose.
 COLD_INSTALL_JOBS = (("studio-windows-inference-smoke.yml", "no-vs-cpu"),)
 
 

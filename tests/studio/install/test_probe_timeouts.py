@@ -44,7 +44,6 @@ def _extract_sh_function_body(source: str, name: str) -> str:
     return source[start:]
 
 
-# ── install.sh: _run_bounded helper and its use at every nvidia-smi call ──
 
 
 class TestInstallShBoundedProbe:
@@ -58,7 +57,7 @@ class TestInstallShBoundedProbe:
             "command -v timeout" in body
         ), "_run_bounded must check for the `timeout` binary before using it"
         assert "timeout 10" in body, "_run_bounded must apply a 10s timeout"
-        # Falls back to unbounded when `timeout` is absent (e.g. macOS), keeping semantics there.
+        # Falls back to unbounded when `timeout` is absent (e.g.
         assert (
             "else" in body and '"$@"' in body
         ), "_run_bounded must run the command unbounded when `timeout` is absent"
@@ -98,7 +97,6 @@ class TestInstallShBoundedProbe:
         ), "found an unbounded LC_ALL=C $_smi execution in get_torch_index_url"
 
 
-# ── install.ps1 / setup.ps1: bounded, GPU-row-validated Windows probe ──
 
 
 class TestPowerShellBoundedProbe:
@@ -111,7 +109,6 @@ class TestPowerShellBoundedProbe:
         assert (
             "WaitForExit($TimeoutSec * 1000)" in src
         ), f"{path.name} bounded probe must use WaitForExit with a timeout"
-        # Kill + sentinel on timeout (mirrors Invoke-AmdSmiNoElevate).
         assert (
             "$proc.Kill()" in src and "124" in src
         ), f"{path.name} must kill nvidia-smi and signal a timeout exit code"
@@ -119,6 +116,7 @@ class TestPowerShellBoundedProbe:
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_probe_requires_gpu_row(self, path):
         src = path.read_text(encoding = "utf-8")
+        # Kill + sentinel on timeout (mirrors Invoke-AmdSmiNoElevate).
         assert (
             "function Test-NvidiaSmiHasGpu" in src
         ), f"{path.name} must define Test-NvidiaSmiHasGpu"
@@ -130,21 +128,21 @@ class TestPowerShellBoundedProbe:
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_detection_uses_validated_probe(self, path):
         src = path.read_text(encoding = "utf-8")
-        # The exit-code-only probe must be gone from the detection block.
         assert (
             "& $nvSmiCmd.Source *> $null" not in src
         ), f"{path.name} must not use the exit-code-only nvidia-smi probe"
         assert (
             "Test-NvidiaSmiHasGpu $nvSmiCmd.Source" in src
         ), f"{path.name} PATH probe must use Test-NvidiaSmiHasGpu"
+        # The exit-code-only probe must be gone from the detection block.
         assert (
             "Test-NvidiaSmiHasGpu $p" in src
         ), f"{path.name} hardcoded-path fallback must use Test-NvidiaSmiHasGpu"
 
 
+
+
 # ── Behavioral: a hanging nvidia-smi must not hang _has_usable_nvidia_gpu ──
-
-
 def _have_timeout() -> bool:
     return shutil.which("timeout") is not None
 

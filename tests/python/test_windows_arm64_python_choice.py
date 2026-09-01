@@ -115,9 +115,7 @@ if ($found) {{ Write-Output "$($found.Version)|$($found.Arch)" }} else {{ Write-
 
 
 def _pwsh(script: str) -> str:
-    # Every ARM64 case below is decided by the one "version|arch" line this run prints,
-    # and check = True means a pwsh that aborts at startup would surface as the resolver
-    # block itself throwing.
+    # Every ARM64 case below is decided by the one "version|arch" line this run prints, and check = True means a pwsh
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
@@ -134,10 +132,10 @@ def _pwsh(script: str) -> str:
     [
         # An x64 build of the requested minor wins outright, downloads irrelevant.
         ([("3.13", "arm64"), ("3.13", "x86_64")], False, "3.13|x86_64"),
-        # Requested minor is ARM64-only: bootstrap x64 rather than take the native one.
+        # Requested minor is ARM64-only:
         ([("3.13", "arm64")], True, "3.13|x86_64"),
-        # Offline, but an x64 build of a lower-priority minor is here. Use it: the native
         # 3.13 cannot resolve pyarrow or hf-transfer, and this one can.
+        # Offline, but an x64 build of a lower-priority minor is here.
         ([("3.13", "arm64"), ("3.11", "x86_64")], False, "3.11|x86_64"),
         # ARM64 everywhere: still returned, and the caller warns.
         ([("3.13", "arm64"), ("3.11", "arm64")], False, "3.13|arm64"),

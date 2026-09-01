@@ -21,14 +21,11 @@ def _duplicate_int_to_float_keys():
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            # Private names are mangled at code generation, which ``ast.parse``
-            # never reaches, so the identifier reads exactly as written.
+            # Private names are mangled at code generation, which ``ast.parse`` never reaches, so the identifier reads
             if isinstance(target, ast.Name) and target.id == "__INT_TO_FLOAT_MAPPER":
                 if not isinstance(node.value, ast.Dict):
                     continue
-                # mapper.py reads the nested per-precision dicts directly, so
-                # check every dict. Count per dict: "16" and "8" legitimately
-                # repeat across sibling entries.
+                # mapper.py reads the nested per-precision dicts directly, so check every dict.
                 duplicates = {}
                 for mapping in ast.walk(node.value):
                     if not isinstance(mapping, ast.Dict):

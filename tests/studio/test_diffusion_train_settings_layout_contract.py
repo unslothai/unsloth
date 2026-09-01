@@ -31,14 +31,13 @@ def test_settings_columns_key_off_the_pane_width_not_the_viewport():
 
     # The run area declares itself the query container...
     assert '<div className="@container flex flex-col gap-6">' in source
-    # ...and all three settings grids step up on ITS width. 324px fits two 150px
-    # cells plus the 24px gutter, 498px fits three.
+    # ...and all three settings grids step up on ITS width.
+    # 324px fits two 150px cells plus the 24px gutter, 498px fits three.
     assert source.count("@min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3") == 3
     # No viewport breakpoint left behind: that is what put 3 columns in a 280px pane.
     assert "lg:grid-cols-3" not in source
 
 
 def test_field_label_ellipses_instead_of_cutting_mid_glyph():
-    # Label's own display is flex and text-overflow does nothing on a flex
-    # container, so truncate only ellipses when paired with block.
+    # Label's own display is flex and text-overflow does nothing on a flex container, so truncate only ellipses when
     assert '<Label className="block min-w-0 truncate text-xs">{children}</Label>' in _source()

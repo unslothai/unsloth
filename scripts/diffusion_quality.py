@@ -51,7 +51,6 @@ DEFAULT_PROMPTS = [
 ]
 
 
-# ── image metrics (pure numpy) ───────────────────────────────────────────────
 
 
 def _to_gray(img: Any) -> Any:
@@ -67,7 +66,7 @@ def _to_rgb(path_or_img: Any) -> Any:
     return np.asarray(img.convert("RGB"), dtype = np.float64)
 
 
-# Finite PSNR cap for identical samples: well above the ~37 dB compile and ~21 dB quant noise floors.
+# Finite PSNR cap for identical samples:
 _PERFECT_MATCH_PSNR = 100.0
 
 
@@ -118,7 +117,6 @@ def ssim(
     return float(ssim_map.mean())
 
 
-# ── optional CLIP (perceptual) ───────────────────────────────────────────────
 
 
 class _Clip:
@@ -154,7 +152,6 @@ class _Clip:
         return float((self._image_embed(img) * self._image_embed(ref_img)).sum().item())
 
 
-# ── GPU measurement helpers (mirrors diffusion_bench) ─────────────────────────
 
 
 def _cuda(call: str) -> Optional[int]:
@@ -212,7 +209,6 @@ def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
     return None
 
 
-# ── one quant: load, render the grid, measure ────────────────────────────────
 
 
 def _render_grid(
@@ -283,7 +279,7 @@ def _compare(
             clip_sim.append(clip.image_similarity(img, ref))
 
     def _mean(xs: list[float]) -> Optional[float]:
-        # Report inf only when every sample is inf; otherwise cap the perfect ones so partial drift still shows.
+        # Report inf only when every sample is inf;
         if not xs:
             return None
         if all(x == math.inf for x in xs):
@@ -303,7 +299,6 @@ def _compare(
     }
 
 
-# ── sweep ─────────────────────────────────────────────────────────────────────
 
 
 def _sweep(args: argparse.Namespace) -> int:
@@ -429,7 +424,6 @@ def _recommend(args: argparse.Namespace, rows: list[dict]) -> None:
     )
 
 
-# ── self-test (CPU, no GPU/model) ─────────────────────────────────────────────
 
 
 def _selftest() -> int:
@@ -439,7 +433,7 @@ def _selftest() -> int:
     rng = np.random.default_rng(0)
     base = rng.integers(0, 256, (128, 128, 3), dtype = np.uint8)
     a = Image.fromarray(base)
-    b = Image.fromarray(base)  # identical
+    b = Image.fromarray(base)
     noisy = Image.fromarray(
         np.clip(base.astype(int) + rng.integers(-40, 40, base.shape), 0, 255).astype(np.uint8)
     )
@@ -466,7 +460,6 @@ def _selftest() -> int:
     return 0 if ok else 1
 
 
-# ── cli ───────────────────────────────────────────────────────────────────────
 
 
 def _build_parser() -> argparse.ArgumentParser:

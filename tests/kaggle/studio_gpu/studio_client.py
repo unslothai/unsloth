@@ -28,23 +28,20 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-# Terminal phases of GET /api/train/status. From
-# studio/backend/models/training.py: the field is `phase`, not `status`, and
-# `completed` is the only one of the three that means the adapter exists.
+# Terminal phases of GET /api/train/status.
+# From studio/backend/models/training.py: the field is `phase`, not `status`, and `completed` is the only one of the
+# three that means the adapter exists.
 TRAINING_TERMINAL = frozenset({"completed", "error", "stopped"})
 TRAINING_OK = "completed"
 
 # Terminal values of GET /api/export/status last_op_status.
 EXPORT_OK = "success"
 
-# What a saved PEFT adapter directory has to contain before this payload will
-# call a training run complete. The config alone is not enough: it is written
-# from the run's settings and would be there even if no weights were saved.
+# What a saved PEFT adapter directory has to contain before this payload will call a training run complete.
 ADAPTER_CONFIG = "adapter_config.json"
 ADAPTER_WEIGHTS = ("adapter_model.safetensors", "adapter_model.bin")
 
-# A LoRA adapter for the smallest model this payload will ever train is still
-# tens of MiB. A few hundred bytes is a stub.
+# A LoRA adapter for the smallest model this payload will ever train is still tens of MiB.
 MIN_ADAPTER_BYTES = 4096
 
 
@@ -64,7 +61,7 @@ class Studio:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.token: str | None = None
-        # The password this session is currently authenticated by. See login().
+        # The password this session is currently authenticated by.
         self.password: str | None = None
 
     def request(

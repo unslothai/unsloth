@@ -75,8 +75,7 @@ def test_registration_failures_are_never_silenced():
                 "registering the gallery must fail loudly, not silently leave it unregistered: "
                 f"{stripped}"
             )
-    # Without this, deleting both registrations would leave the loop with nothing
-    # to inspect and the test would pass on an unregistered-PSGallery runner.
+    # Without this, deleting both registrations would leave the loop with nothing to inspect and the test would pass on
     assert seen == {
         "Register-PSRepository",
         "Register-PSResourceRepository",
@@ -86,8 +85,7 @@ def test_registration_failures_are_never_silenced():
 
 def test_psresourceget_is_preferred_over_the_nuget_bootstrap():
     run = _bootstrap_step()["run"]
-    # Match the invocation, not the `Get-Command Install-PSResource` probe: the probe
-    # alone would satisfy a bare substring check even with the branch deleted.
+    # Match the invocation, not the `Get-Command Install-PSResource` probe:
     assert "Install-PSResource -Name" in run, "the PSResourceGet branch must actually install"
     assert (
         "$usePSResourceGet = $hasPSResourceGet" in run
@@ -125,8 +123,8 @@ def test_the_guard_runs_from_the_workflow_it_guards():
     """No pytest workflow filters on this file, so the job must run the guard itself."""
     workflow = yaml.safe_load(_WORKFLOW.read_text(encoding = "utf-8"))
     on = workflow.get("on") or workflow.get(True)
-    # as_posix(), not str(): this runs on windows-latest, where str() would give
     # backslashes and never match the forward-slash paths in the YAML.
+    # as_posix(), not str(): this runs on windows-latest, where str() would give backslashes and never match the
     assert _WORKFLOW.relative_to(REPO_ROOT).as_posix() in on["pull_request"]["paths"]
     assert any(
         Path(__file__).name in (s.get("run") or "") for s in _pester_steps()

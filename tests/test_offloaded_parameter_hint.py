@@ -45,7 +45,6 @@ def _p(device):
     return torch.nn.Parameter(torch.zeros(2, device = device), requires_grad = False)
 
 
-# ---- fires when it should --------------------------------------------------
 
 
 def test_a_meta_parameter_produces_a_hint():
@@ -83,7 +82,6 @@ def test_a_mix_of_real_and_meta_still_fires():
     assert _offloaded_parameter_hint(m)
 
 
-# ---- stays silent when it should ------------------------------------------
 
 
 def test_a_fully_resident_model_gets_no_hint():
@@ -126,7 +124,6 @@ def test_a_parameter_with_no_device_does_not_crash():
     assert _offloaded_parameter_hint(m) == ""
 
 
-# ---- wiring ---------------------------------------------------------------
 
 SRC = (ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
 
@@ -145,7 +142,7 @@ def test_the_original_error_is_still_reported():
     again, and either shape satisfies what this is actually checking.
     """
     for anchor in ("Failed to save/merge model: ", "Failed to save model: "):
-        # All occurrences, not the first: a docstring also quotes these messages.
+        # All occurrences, not the first:
         windows = []
         i = SRC.find(anchor)
         assert i != -1, anchor

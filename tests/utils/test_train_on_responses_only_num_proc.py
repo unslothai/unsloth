@@ -65,26 +65,22 @@ SMALL = dnp.ZOO_MIN_ROWS_FOR_MULTIPROC - 1
 def _reset(monkeypatch):
     dnp.reset_warning_state()
     monkeypatch.delenv(dnp.NUM_PROC_ENV_VAR, raising = False)
-    # Pin CPUs, memory and both start methods so the assertions are about the
-    # wrapper, not this machine. Auto is min(max(cpus // 2, AUTO_NUM_PROC_CAP)),
-    # so reaching the cap needs >= 2 * AUTO_NUM_PROC_CAP usable CPUs -- and
-    # "usable" is the smallest of the host, the affinity mask and any cgroup
-    # quota, so patching psutil alone would still read a 4-vCPU runner as 4.
+    # Pin CPUs, memory and both start methods so the assertions are about the wrapper, not this machine.
+    # Auto is min(max(cpus // 2, AUTO_NUM_PROC_CAP)), so reaching the cap needs >= 2 * AUTO_NUM_PROC_CAP usable CPUs
     pytest.importorskip("psutil")
     monkeypatch.setattr(dnp, "_usable_cpus", lambda: 64)
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 1000)
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "fork")
-    # The zoo's own auto path reads stdlib multiprocessing; agreeing here keeps
-    # these cases about the row thresholds. The disagreement is covered in
-    # test_dataset_num_proc.py.
+    # The zoo's own auto path reads stdlib multiprocessing;
+    # The disagreement is covered in test_dataset_num_proc.py.
     monkeypatch.setattr(dnp, "_zoo_auto_sizer_forks", lambda: True)
     yield
     dnp.reset_warning_state()
 
 
-# ── The zoo's threshold, duplicated in ZOO_MIN_ROWS_FOR_MULTIPROC ──
 
 
+# The zoo's threshold, duplicated in ZOO_MIN_ROWS_FOR_MULTIPROC ──
 def _zoo_source():
     """Read unsloth_zoo's dataset_utils source without importing it.
 
@@ -122,7 +118,6 @@ def test_zoo_still_treats_none_as_auto_not_serial():
     assert "_num_proc_was_auto = num_proc is None or type(num_proc) is not int" in _zoo_source()
 
 
-# ── Explicit counts ──
 
 
 def test_explicit_count_is_bounded(monkeypatch):
@@ -149,7 +144,6 @@ def test_explicit_count_ignores_split_size():
     assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(SMALL)), 6) == 6
 
 
-# ── Auto counts: the zoo's small-split guard must survive ──
 
 
 def test_auto_small_split_passes_none_through():
@@ -236,21 +230,18 @@ def test_env_override_wins_on_the_split_size_shortcut(monkeypatch, trainer):
     assert dnp.resolve_responses_only_num_proc(trainer, None) == 3
 
 
-# ── Serial is encoded for the zoo, which reads None as "auto" ──
 
 
 @pytest.fixture
 def _spawn(monkeypatch):
-    # Both modules on spawn, the ordinary Windows host. The interesting case is
-    # when they disagree, which is what _split below covers.
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "spawn")
     monkeypatch.setattr(dnp, "_zoo_auto_sizer_forks", lambda: False)
 
 
 @pytest.fixture
 def _split(monkeypatch):
-    # multiprocess on spawn, stdlib still on fork: a None here is "size it for
-    # me" to the zoo, and datasets then builds that pool on the spawn context.
+    # Both modules on spawn, the ordinary Windows host.
+    # multiprocess on spawn, stdlib still on fork:
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "spawn")
     monkeypatch.setattr(dnp, "_zoo_auto_sizer_forks", lambda: True)
 

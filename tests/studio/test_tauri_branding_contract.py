@@ -112,9 +112,7 @@ def test_dmg_install_window_matches_its_background_art() -> None:
     dmg = json.loads(read(TAURI / "tauri.macos.conf.json"))["bundle"]["macOS"]["dmg"]
     assert dmg["background"] == "./dmg/background.tiff"
 
-    # Finder lays the background out from the same origin it uses for icon
-    # coordinates, so the base page has to match the configured window size or
-    # the artwork drifts out from under the app and Applications icons.
+    # Finder lays the background out from the same origin it uses for icon coordinates, so the base page has to match
     window = (dmg["windowSize"]["width"], dmg["windowSize"]["height"])
     assert window == (660, 400)
     assert tiff_first_image_size(TAURI / "dmg/background.tiff") == window
@@ -148,7 +146,7 @@ def test_dmg_background_art_is_what_its_renderer_produces() -> None:
     pages = [page.convert("RGB") for page in ImageSequence.Iterator(tiff)]
     assert [page.size for page in pages] == [page.size for page in expected]
 
-    # a tolerance, not equality, so no one Pillow build is baked in. a stale asset is far worse
+    # a tolerance, not equality, so no one Pillow build is baked in.
     for page, reference in zip(pages, expected):
         drift = np.abs(np.asarray(page, dtype = np.int16) - np.asarray(reference, dtype = np.int16))
         assert drift.max() <= 2
@@ -201,14 +199,9 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
 
 LOCALES = FRONTEND / "src/i18n/locales"
 
-# The only locale entries allowed to say "Unsloth Studio": prose that names the *remote
-# server* a user points this app at, which genuinely is an Unsloth Studio. Every other
-# entry -- window chrome, About labels, shutdown text -- is this app's own display name
-# and stays swept, so a translation cannot quietly restore the prohibited branding.
-#
-# modelAutoSwitch.apiOnlyDescription does NOT belong here. It renders as a settings-row
-# description and describes a model you loaded from this UI, not from a remote server, so
-# exempting it would let the display name back in on a rendered surface.
+# The only locale entries allowed to say "Unsloth Studio": prose that names the *remote server* a user points this app
+# at, which genuinely is an Unsloth Studio.
+# modelAutoSwitch.apiOnlyDescription does NOT belong here.
 LOCALE_REMOTE_SERVER_KEYS = frozenset(
     {
         "settings.agents.remote.title",
@@ -254,9 +247,6 @@ def locale_entries(text: str) -> list[tuple[str, str]]:
 
 def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
     # The desktop app displays itself as "Unsloth", never "Unsloth Studio". The i18n
-    # catalogs are swept by key rather than by file: a handful of entries have to name the
-    # *remote server* a user points the app at, which genuinely is an Unsloth Studio and is
-    # not this app's display name, so those keys are spared and every other entry is not.
     display_sources = [
         TAURI / "Info.plist",
         TAURI / "capabilities/default.json",
@@ -278,8 +268,7 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
         str(path.relative_to(REPO)) for path in display_sources if "Unsloth Studio" in read(path)
     ]
 
-    # The locale catalogs are swept too, just at key granularity rather than file
-    # granularity, so only the remote-server prose is spared.
+    # The locale catalogs are swept too, just at key granularity rather than file granularity, so only the
     offenders += [
         f"{path.relative_to(REPO)}::{key}"
         for path in sorted(LOCALES.rglob("*.ts"))
@@ -312,8 +301,7 @@ def test_the_branding_sweep_still_covers_the_frontend() -> None:
     assert len(locales) >= 10, f"locales look wrong, found {len(locales)}"
     assert len(swept) > 20 * len(locales), f"sweep collapsed to {len(swept)} files"
 
-    # The catalogs are swept by key, so the parser has to actually resolve keys. These are
-    # the app's own display name in the surfaces the exemption would otherwise have hidden.
+    # The catalogs are swept by key, so the parser has to actually resolve keys.
     for path in locales:
         entries = dict(locale_entries(read(path)))
         assert len(entries) > 500, f"{path.name} parsed to {len(entries)} entries"
@@ -325,8 +313,8 @@ def test_the_branding_sweep_still_covers_the_frontend() -> None:
         ):
             assert key in entries, f"{path.name} lost {key}, so the sweep no longer sees it"
 
-    # The allowlist is prose-level, not a blanket: it spares three of the ~1,500 entries a
-    # catalog holds, and every exempt key has to be one the catalogs actually define.
+    # The allowlist is prose-level, not a blanket: it spares three of the ~1,500 entries a catalog holds, and every
+    # exempt key has to be one the catalogs actually define.
     english = dict(locale_entries(read(LOCALES / "en.ts")))
     assert LOCALE_REMOTE_SERVER_KEYS <= set(
         english

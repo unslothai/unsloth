@@ -109,8 +109,8 @@ def test_the_probe_keeps_all_three_answers() -> None:
     # Listing catches denied directories whose missing marker appears absent.
     assert "Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop" in probe
     assert "Test-AccessDeniedError" in probe
-    # A readable marker is not enough: replacement also needs directory listing.
     # Regex, not a literal: whitespace alone must not reintroduce the early return.
+    # A readable marker is not enough:
     assert not re.search(r'"Present"\s*\{\s*return\s+"Readable"', probe)
     assert probe.index("Get-ChildItem -LiteralPath") < probe.rindex('return "Readable"')
     # It runs before anything is installed, so it must not terminate.
@@ -226,7 +226,6 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
     """Preserve user-supplied wording when an override names the managed path."""
     body = _function_source(INSTALL_PS1, "Invoke-ManagedLlamaCppPreflight")
     assert "-UserSupplied:$userSupplied" in body
-    # Cover both the flag and its environment equivalent.
     assert (
         "$suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir }"
         " else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }" in body
@@ -257,16 +256,14 @@ def test_the_managed_path_rule_is_not_duplicated_in_the_installer() -> None:
     # The resolver uses the single default-versus-custom predicate.
     assert "if (-not (Test-StudioHomeIsCustom)) {" in resolver
     assert "$legacyStudio" not in resolver
-    # Canonicalize both sides before comparing.
     predicate = _function_source(INSTALL_PS1, "Test-StudioHomeIsCustom")
     assert predicate.count("Get-CanonicalDir -Path") == 2
-    # Keep canonicalization in one helper.
     canonicalizer = _function_source(INSTALL_PS1, "Get-CanonicalDir")
     assert "Resolve-Path -LiteralPath $trimmedPath" in canonicalizer
     # A denied path cannot resolve, so compare lexical full paths instead.
     assert "GetUnresolvedProviderPathFromPSPath" in canonicalizer
     assert "[System.IO.Path]::GetFullPath(" in canonicalizer
-    # One trim, after both branches: Resolve-Path keeps a trailing separator too.
+    # One trim, after both branches:
     assert canonicalizer.count("TrimEnd('\\', '/')") == 1
     assert canonicalizer.index("Resolve-Path") < canonicalizer.index("TrimEnd")
     assert INSTALL_PS1.count("Resolve-Path -LiteralPath $trimmedPath") == 1

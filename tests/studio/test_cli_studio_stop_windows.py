@@ -41,11 +41,10 @@ def _load_pid_alive(platform: str, fake_run = None):
     return ns["_pid_alive"]
 
 
+
+
 # ── AST: stop() must not use the broken bare liveness probe ──────────────────
-
-
-# `stop` delegates signalling to `_signal_stop`, so guarding only `stop` would
-# let os.kill(pid, 0) come back one function along and still pass.
+# `stop` delegates signalling to `_signal_stop`, so guarding only `stop` would let os.kill(pid, 0) come back one
 @pytest.mark.parametrize("func", ["stop", "_signal_stop"])
 def test_stop_does_not_use_bare_oskill_liveness_probe(func):
     """The signalling path must not call os.kill(pid, 0) -- WinError 87 on Windows."""
@@ -73,7 +72,7 @@ def test_stop_does_not_use_bare_oskill_liveness_probe(func):
 def test_pid_alive_helper_is_defined_and_used_by_stop():
     assert "def _pid_alive(" in _SOURCE, "_pid_alive helper missing"
     assert "_pid_alive(pid)" in _func_source("stop"), "stop() must use _pid_alive"
-    # The kill itself moved into _signal_stop; keep both ends of the path pinned.
+    # The kill itself moved into _signal_stop;
     assert "def _signal_stop(" in _SOURCE, "_signal_stop helper missing"
     assert "taskkill" in _func_source("_signal_stop")
     # The helper must special-case Windows via tasklist (os.kill(pid,0) is invalid there).
@@ -82,7 +81,6 @@ def test_pid_alive_helper_is_defined_and_used_by_stop():
     assert "tasklist" in helper
 
 
-# ── Behavioral: the win32 tasklist branch ────────────────────────────────────
 
 
 def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
@@ -93,7 +91,7 @@ def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
         timeout = None,
     ):
         assert cmd[0] == "tasklist"
-        assert "/FI" in cmd  # filtered by PID
+        assert "/FI" in cmd
         if raises:
             raise OSError("boom")
         if returns_pid is None:
@@ -121,7 +119,6 @@ def test_pid_alive_windows_assumes_alive_when_tasklist_errors():
     assert pid_alive(4242) is True
 
 
-# ── Behavioral: the POSIX signal-0 branch (skip on Windows runners) ───────────
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX os.kill(pid,0) branch")

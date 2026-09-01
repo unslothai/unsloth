@@ -77,14 +77,12 @@ def test_fast_sentence_transformer_matches_stock_st():
     from sentence_transformers import SentenceTransformer
 
     device = "cuda"
-    # Prefer bf16 when the GPU supports it: fp16 overflows to NaN on bf16-native
-    # embedders such as EmbeddingGemma (Gemma3), which would mask real parity.
+    # Prefer bf16 when the GPU supports it:
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     texts = _probe_texts()
     max_seq_length = 256
 
-    # Control FIRST, before importing unsloth, so its global import patches never
-    # touch the stock reference (mirrors the issue's "restart runtime" repro).
+    # Control FIRST, before importing unsloth, so its global import patches never touch the stock reference (mirrors
     ctrl = SentenceTransformer(model_id, device = device, model_kwargs = {"torch_dtype": dtype})
     ctrl.max_seq_length = max_seq_length
     ctrl_ids = ctrl.tokenize([texts[0]])["input_ids"][0].tolist()

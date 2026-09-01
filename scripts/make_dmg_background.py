@@ -38,43 +38,35 @@ APPS_X, APPS_Y = 480, 170
 SCALE = 2
 W, H = WIN_W * SCALE, WIN_H * SCALE
 
-# Finder's title bar and bottom path bar eat the rest of the window, so only
-# about this much of the image is ever on screen. measured, not derived.
+# Finder's title bar and bottom path bar eat the rest of the window, so only about this much of the image is ever on
 VISIBLE_H = 340
 
-# base surface: near-white with a barely-there cool gradient toward the bottom
 TOP_COLOR = "#FFFFFF"
 BOTTOM_COLOR = "#F5F8F7"
 
-# One brand green fading to a lighter green further out. Mixing several hues
-# around the icon made some directions read stronger than others even at matched
-# alpha, so the halo varies by radius only and is even by construction.
+# One brand green fading to a lighter green further out.
 GLOW_CORE = "#17B88B"
 GLOW_EDGE = "#7BE8A6"
 GLOW_EDGE_MIX = 0.45
 GLOW_MIX_RADIUS = 110.0
 
-# strength is the peak tint, sigma sets how far the halo reaches. they trade
-# off: raising strength alone also pushes the visible edge outward.
+# strength is the peak tint, sigma sets how far the halo reaches.
 GLOW_STRENGTH = 1.48
 GLOW_SIGMA = 50.0
 
 # the icon label sits just below the icon, so the halo is eased off down there.
-# the taper waits until START, which is inside the icon's own lower half, so the
-# disc still reads round and the transition is hidden behind the artwork rather
-# than eating the visible bottom edge. left, right and top keep the full falloff.
+# the taper waits until START, which is inside the icon's own lower half, so the disc still reads round and the
+# transition is hidden behind the artwork rather than eating the visible bottom edge.
 GLOW_BOTTOM_FLOOR = 0.25
 GLOW_BOTTOM_START = 50.0
 GLOW_BOTTOM_SPAN = 30.0
 
-# chevron between the two icons, sized to match the macOS installers this
-# mirrors: a light 16x27pt mark in neutral grey, not a heavy arrow
+# chevron between the two icons, sized to match the macOS installers this mirrors:
 CHEVRON_HALF_W, CHEVRON_HALF_H = 8.0, 13.5
 CHEVRON_STROKE = 6.0
 CHEVRON_COLOR = (87, 87, 87, 255)
 
-# ImageDraw has no anti-aliasing, so the chevron is drawn oversized and scaled
-# back down. its diagonals alias badly otherwise.
+# ImageDraw has no anti-aliasing, so the chevron is drawn oversized and scaled back down.
 CHEVRON_SUPERSAMPLE = 4
 
 
@@ -105,8 +97,7 @@ def render_glow(canvas: np.ndarray) -> np.ndarray:
     taper = smoothstep((ys - cy - GLOW_BOTTOM_START * SCALE) / (GLOW_BOTTOM_SPAN * SCALE))
     weight = weight * (1.0 - (1.0 - GLOW_BOTTOM_FLOOR) * taper)
 
-    # a peak strength above 1 saturates the core rather than extrapolating past
-    # the glow colour. that core sits under the app icon either way.
+    # a peak strength above 1 saturates the core rather than extrapolating past the glow colour.
     weight = np.clip(weight, 0.0, 1.0)[..., None]
 
     mix = (GLOW_EDGE_MIX * smoothstep(radius / (GLOW_MIX_RADIUS * SCALE)))[..., None]
@@ -148,8 +139,7 @@ def build() -> Image.Image:
 def report() -> None:
     """Print how the halo sits relative to the icon and its label."""
     base = base_canvas()
-    # the halo on its own, with the base gradient taken back out so the vertical
-    # ramp does not read as part of it
+    # the halo on its own, with the base gradient taken back out so the vertical ramp does not read as part of it
     halo = np.clip(base - render_glow(base), 0.0, None).max(axis = 2)
     cx, cy = APP_X * SCALE, APP_Y * SCALE
 

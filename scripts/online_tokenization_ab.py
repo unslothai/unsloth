@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-# Scratch root for the per-arm `datasets` cache; no machine-specific layout.
+# Scratch root for the per-arm `datasets` cache;
 WORKSPACE = Path(os.environ.get("UNSLOTH_WORKSPACE") or tempfile.gettempdir())
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
@@ -54,8 +54,8 @@ def main() -> int:
     parser.add_argument("--no-fresh-cache", dest = "fresh_cache", action = "store_false")
     args = parser.parse_args()
 
-    # Fresh cache per run, else the eager arm just reads the other arm's
     # tokenize map out of Arrow and measures a cache hit real users never get.
+    # Fresh cache per run, else the eager arm just reads the other arm's tokenize map out of Arrow and measures a cache
     if args.fresh_cache:
         cache = WORKSPACE / "unsloth_ab_cache" / f"{args.arm}_{int(time.time())}"
         cache.mkdir(parents = True, exist_ok = True)
@@ -107,8 +107,8 @@ def main() -> int:
         return 1
     mark("model_ready")
 
-    # `local_datasets` resolves its entries to files and rejects anything without a
-    # supported extension, so a Hub id has to go through `dataset_source` instead.
+    # `local_datasets` resolves its entries to files and rejects anything without a supported extension, so a Hub id has
+    # to go through `dataset_source` instead.
     local_split = os.path.exists(args.dataset) or Path(args.dataset).suffix.lower() in (
         ".json",
         ".jsonl",
@@ -169,7 +169,7 @@ def main() -> int:
     started = trainer.start_training(
         dataset = dataset,
         eval_dataset = eval_dataset,
-        output_dir = f"ab_{args.arm}",  # resolved under Unsloth's outputs root
+        output_dir = f"ab_{args.arm}",
         num_epochs = 1,
         max_steps = args.max_steps,
         batch_size = args.batch_size,

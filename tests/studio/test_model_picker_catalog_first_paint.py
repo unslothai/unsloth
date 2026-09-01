@@ -49,7 +49,6 @@ def test_listing_takes_over_each_id_once_it_reports_it():
     rows = source[rows_start:rows_end]
 
     # orderRecommendedRows hands a seed over only to a row that survived `keep`:
-    # keying on the raw result set dropped curated rows the filters rejected.
     assert "orderRecommendedRows({" in rows
     assert "seeds: catalogSeedRows," in rows
     assert "results: recommendedSearch.results," in rows

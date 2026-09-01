@@ -22,7 +22,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNSLOTH_INIT = REPO_ROOT / "unsloth" / "__init__.py"
 
 
-# 1. Source-level structure check on _IS_MLX (no platform dependencies).
 
 
 def test_is_mlx_gate_uses_three_required_predicates():
@@ -70,11 +69,9 @@ def test_is_mlx_gate_uses_three_required_predicates():
     ), "_IS_MLX helper must run the local MLX precheck before importing zoo"
 
 
-# 2. Runtime gate behavior with platform spoofed to Apple Silicon + fake mlx.
-#    Re-evaluates the expression rather than reloading unsloth (avoids a torch
-#    cascade-reload).
 
 
+# Runtime gate behavior with platform spoofed to Apple Silicon + fake mlx.
 def _evaluate_is_mlx_precheck(platform_module, importlib_util, os_module):
     """Re-evaluate the local _is_mlx_available precheck with injected deps."""
     return (
@@ -140,12 +137,9 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
     assert _evaluate_is_mlx_precheck(platform, importlib.util, os) is False
 
 
-# ---------------------------------------------------------------------------
-# 3. detect_hardware() picks MLX only when CUDA+XPU are both unavailable AND
-#    the host is Apple Silicon AND mlx is importable.
-# ---------------------------------------------------------------------------
 
 
+# detect_hardware() picks MLX only when CUDA+XPU are both unavailable AND the host is Apple Silicon AND mlx is
 def _import_studio_hardware():
     """Lazy import of the Unsloth hardware module (studio/backend on sys.path)."""
     studio_backend = REPO_ROOT / "studio" / "backend"
@@ -178,10 +172,8 @@ def test_detect_hardware_picks_mlx_when_only_apple_silicon_available(monkeypatch
     monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
 
-    # detect_hardware now gates MLX on the full stack via _has_usable_mlx_stack()
-    # (utils.mlx_repair.mlx_stack_available imports mlx_lm/mlx_vlm and checks
-    # versions); faking mlx.core alone no longer satisfies it. This test asserts the
-    # dispatch decision when the stack IS usable, so model that directly.
+    # detect_hardware now gates MLX on the full stack via _has_usable_mlx_stack() (utils.mlx_repair.mlx_stack_available
+    # imports mlx_lm/mlx_vlm and checks versions);
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
 
     detected = hw.detect_hardware()

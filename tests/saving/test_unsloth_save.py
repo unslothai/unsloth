@@ -8,49 +8,29 @@ import importlib
 from unsloth import FastLanguageModel, FastModel
 
 # Every param here downloads a checkpoint and merges it on the accelerator;
-# the file was 877s, 29% of the repo's total test time, before its matrix was
-# cut to three models. CI runs it under `-m gpu`.
+# the file was 877s, 29% of the repo's total test time, before its matrix was cut to three models.
 pytestmark = pytest.mark.gpu
 
 # One model per save path, and the smallest model that still exercises the path.
-# This file runs in the default `pytest tests/` walk (unlike the rest of
-# tests/saving/, which is gated behind UNSLOTH_RUN_SAVING_SCRIPTS), so every
-# entry here is paid by anyone who runs the suite. The ten-model matrix it grew
-# to cost 877s, 29% of the whole repo's test time; these three cover the same
-# paths. Distinct paths, not distinct checkpoints, are what earn a slot:
-#
-#   * text, 16-bit on disk        -> Qwen2.5-0.5B-Instruct
-#   * text, already 4-bit on disk -> tinyllama-bnb-4bit
-#   * vision                      -> Qwen2.5-VL-3B-Instruct
-#
-# Dropped: tinyllama and Qwen2.5-0.5B (same text path as Qwen2.5-0.5B-Instruct,
-# and the first is 2x its size); Qwen2.5-0.5B-Instruct-bnb-4bit and
-# Phi-4-mini-instruct-bnb-4bit (loading a pre-quantized checkpoint is one path,
-# so it gets one model, not four); Phi-4-mini-instruct (3.8B, adds no path a
-# 0.5B does not); gemma-3-4b-it (vision, but 4B against Qwen2.5-VL's 3B);
-# Llama-3.2-11B-Vision-Instruct-bnb-4bit (11B, and its merged 16-bit write was
-# 21.3GB to $TMPDIR per run).
+# This file runs in the default `pytest tests/` walk (unlike the rest of tests/saving/, which is gated behind
+# UNSLOTH_RUN_SAVING_SCRIPTS), so every entry here is paid by anyone who runs the suite.
+# The ten-model matrix it grew to cost 877s, 29% of the whole repo's test time;
+# Llama-3.2-11B-Vision-Instruct-bnb-4bit (11B, and its merged 16-bit write was 21.3GB to $TMPDIR per run).
 model_to_test = [
-    # Text, 16-bit on disk.
     "unsloth/Qwen2.5-0.5B-Instruct",
-    # Text, already 4-bit on disk: from_pretrained has to load a pre-quantized
-    # checkpoint and the merge has to dequantize back out of it.
+    # Text, already 4-bit on disk: from_pretrained has to load a pre-quantized checkpoint and the merge has to
+    # dequantize back out of it.
     "unsloth/tinyllama-bnb-4bit",
-    # Vision, and the only entry whose merged 16-bit output clears the 5GB
-    # safetensors shard limit -- so it is what keeps sharded output and its
-    # index file covered here. The dedicated sharded-index tests
-    # (vision_models/test_index_file_sharded_model.py,
-    # language_models/test_push_to_hub_merged_sharded_index_file.py) do NOT
-    # cover it in a default run: both are behind UNSLOTH_RUN_SAVING_SCRIPTS.
-    # Keep an entry above 5GB here, or that path stops being exercised.
+    # Vision, and the only entry whose merged 16-bit output clears the 5GB safetensors shard limit
+    # The dedicated sharded-index tests (vision_models/test_index_file_sharded_model.py,
+    # language_models/test_push_to_hub_merged_sharded_index_file.py) do NOT cover it in a default run: both are behind
+    # UNSLOTH_RUN_SAVING_SCRIPTS.
     "unsloth/Qwen2.5-VL-3B-Instruct-bnb-4bit",
 ]
 
 torchao_models = [
-    # One model: both entries drove the same save_pretrained_torchao path, and
-    # tinyllama is 1.1B against this one's 0.5B.
+    # One model: both entries drove the same save_pretrained_torchao path, and tinyllama is 1.1B against this one's
     "unsloth/Qwen2.5-0.5B-Instruct",
-    # Skip the -bnb-4bit variants since they're already quantized
 ]
 
 
@@ -71,7 +51,7 @@ def loaded_model_tokenizer(request):
     print("Loading model and tokenizer...")
 
     model, tokenizer = FastModel.from_pretrained(
-        model_name,  # use small model
+        model_name,
         max_seq_length = 128,
         dtype = None,
         load_in_4bit = True,
@@ -98,7 +78,7 @@ def fp16_model_tokenizer(request):
         model_name,
         max_seq_length = 128,
         dtype = None,
-        load_in_4bit = False,  # no BnB quantization
+        load_in_4bit = False,
     )
 
     model = FastModel.get_peft_model(
@@ -166,7 +146,6 @@ def test_save_merged_16bit(model, tokenizer, temp_save_dir: str):
             os.path.join(save_path, file)
         ), f"{file} not found in the save directory."
 
-    # 16bit means no quantization config.
     config_path = os.path.join(save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
@@ -216,7 +195,6 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
         total_size < save_file_sizes["merged_16bit"][model.config._name_or_path]
     ), "Merged 4bit files are larger than merged 16bit files."
 
-    # 4bit means there's a quantization config.
     config_path = os.path.join(save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
@@ -285,8 +263,6 @@ def test_save_torchao(fp16_model_tokenizer, temp_save_dir: str):
 
     assert "quantization_config" in config, "Quantization config not found in the model config."
 
-    # load_in_4bit must stay False: a torchao-quantized model can't be
-    # re-quantized with bitsandbytes.
     import torch.serialization
 
     with torch.serialization.safe_globals([getattr]):
@@ -327,6 +303,7 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
         torchao_save_path
     ), f"TorchAO directory {torchao_save_path} does not exist."
 
+    # load_in_4bit must stay False: a torchao-quantized model can't be
     import torch.serialization
 
     with torch.serialization.safe_globals([getattr]):
@@ -348,14 +325,14 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
     inputs = loaded_tokenizer.apply_chat_template(
         messages,
         tokenize = True,
-        add_generation_prompt = True,  # required for generation
+        add_generation_prompt = True,
         return_tensors = "pt",
     ).to("cuda")
 
     outputs = loaded_model.generate(
         input_ids = inputs,
         max_new_tokens = 64,
-        use_cache = False,  # avoid cache issues
+        use_cache = False,
         temperature = 1.5,
         min_p = 0.1,
         do_sample = True,

@@ -100,8 +100,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_raw(srv.config.tok_status, srv.config.tok_body)
                 return
             content = str(body.get("content", ""))
-            # tok_response_map injects a token count per input text (e.g. the
-            # one-token cases for csm / bicodec / dac detection branches).
+            # tok_response_map injects a token count per input text (e.g.
             if content in srv.config.tok_response_map:
                 tokens = list(srv.config.tok_response_map[content])
             else:
@@ -190,7 +189,7 @@ class FakeLlamaServer:
         detok_body: Optional[bytes] = None,
         detok_map: Optional[dict] = None,
         completion_delay: float = 0.0,
-        # Cosmetic: only appears in the stdout template; not parsed.
+        # Cosmetic: only appears in the stdout template;
         model_path: str = "<test-fixture>/gemma-4.gguf",
     ) -> None:
         self.host = host

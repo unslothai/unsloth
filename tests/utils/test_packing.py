@@ -174,16 +174,16 @@ def test_configure_padding_free():
     assert config.remove_unused_columns is False
 
 
+# Hybrid linear-attention guard + varlen shim (PR #7211 / #7249)
+
+
 # --- Hybrid linear-attention guard + varlen shim (PR #7211 / #7249) ---------------
-
-
 def _hybrid_config_model():
-    # Qwen3.5 / Qwen3-Next style: explicit linear_attention layer schedule.
+    # Qwen3.5 / Qwen3-Next style:
     return SimpleNamespace(config = _FakeConfig(layer_types = ["linear_attention", "full_attention"]))
 
 
 def _gemma3_model():
-    # Has layer_types but no linear_attention -> must NOT be flagged as hybrid.
     return SimpleNamespace(
         config = _FakeConfig(
             model_type = "gemma3", layer_types = ["sliding_attention", "full_attention"]
@@ -192,6 +192,7 @@ def _gemma3_model():
 
 
 def _dense_qwen3_model():
+    # Has layer_types but no linear_attention -> must NOT be flagged as hybrid.
     return SimpleNamespace(
         config = _FakeConfig(model_type = "qwen3", architectures = ["Qwen3ForCausalLM"])
     )
@@ -203,24 +204,24 @@ class _FakeGatedDeltaNet(torch.nn.Module):
         self.conv1d = torch.nn.Conv1d(4, 4, 3, groups = 4)
         self.A_log = torch.nn.Parameter(torch.zeros(4))
 
-    def forward(self, hidden_states, **kwargs):  # dispatch through self.<kernel>
+    def forward(self, hidden_states, **kwargs):
         return self.chunk_gated_delta_rule(self.causal_conv1d_fn(hidden_states))
 
 
 class _FakeHybridModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.config = SimpleNamespace()  # no markers -> forces module-level detection
+        self.config = SimpleNamespace()
         self.linear_attn = _FakeGatedDeltaNet()
 
 
 def test_is_hybrid_linear_attention_detects_and_excludes():
     is_hybrid = trainer_module._is_hybrid_linear_attention_model
     assert is_hybrid(_hybrid_config_model()) is True
-    assert is_hybrid(_FakeHybridModel()) is True  # module-structural evidence
-    assert is_hybrid(_text_model()) is False  # Llama
-    assert is_hybrid(_gemma3_model()) is False  # layer_types without linear_attention
-    assert is_hybrid(_dense_qwen3_model()) is False  # dense Qwen3
+    assert is_hybrid(_FakeHybridModel()) is True
+    assert is_hybrid(_text_model()) is False
+    assert is_hybrid(_gemma3_model()) is False
+    assert is_hybrid(_dense_qwen3_model()) is False
     assert is_hybrid(None) is False
 
 
@@ -230,30 +231,30 @@ def test_varlen_from_position_ids():
     assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
     assert (
         packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 2, 3]])) is None
-    )  # single sequence
-    assert packing_module._varlen_from_position_ids(torch.tensor([[1, 2, 3]])) is None  # first != 0
+    )
+    assert packing_module._varlen_from_position_ids(torch.tensor([[1, 2, 3]])) is None
     assert (
         packing_module._varlen_from_position_ids(torch.tensor([[0, 1], [0, 1]])) is None
-    )  # normal 2-row batch
+    )
     assert packing_module._varlen_from_position_ids(None) is None
 
 
 def test_seq_idx_from_cu_seqlens_handles_trailing_pad():
     cu = torch.tensor([0, 2, 5], dtype = torch.int32)
-    boundaries, seq_idx = packing_module._seq_idx_from_cu_seqlens(cu, total = 8)  # pad_to_multiple_of
+    boundaries, seq_idx = packing_module._seq_idx_from_cu_seqlens(cu, total = 8)
     assert boundaries.tolist() == [0, 2, 5, 8]
     assert seq_idx.tolist() == [[0, 0, 1, 1, 1, 2, 2, 2]]
-    boundaries2, _ = packing_module._seq_idx_from_cu_seqlens(cu, total = 5)  # exact fit
+    boundaries2, _ = packing_module._seq_idx_from_cu_seqlens(cu, total = 5)
     assert boundaries2.tolist() == [0, 2, 5]
     assert (
         packing_module._seq_idx_from_cu_seqlens(torch.tensor([1, 2], dtype = torch.int32), total = 2)
         is None
     )
-    assert packing_module._seq_idx_from_cu_seqlens(cu, total = 3) is None  # boundaries exceed total
+    assert packing_module._seq_idx_from_cu_seqlens(cu, total = 3) is None
 
 
 def test_hybrid_varlen_metadata_prefers_packed_seq_lengths():
-    # A competing position_ids would segment [0, 3, 6]; packed_seq_lengths must win.
+    # A competing position_ids would segment [0, 3, 6];
     kwargs = {
         "input_ids": torch.zeros(1, 6, dtype = torch.long),
         "packed_seq_lengths": torch.tensor([2, 1, 3], dtype = torch.int32),
@@ -353,7 +354,7 @@ def test_patch_hybrid_varlen_active_and_idempotent(monkeypatch):
     assert patch_hybrid_linear_attention_varlen(model) is True
     assert model._unsloth_varlen_forward_wrapped is True
     assert model.linear_attn._unsloth_varlen_wrapped is True
-    assert patch_hybrid_linear_attention_varlen(model) is True  # idempotent, no double-wrap
+    assert patch_hybrid_linear_attention_varlen(model) is True
 
     conv_orig.calls.clear()
     scan_orig.calls.clear()
@@ -364,16 +365,16 @@ def test_patch_hybrid_varlen_active_and_idempotent(monkeypatch):
         packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
         use_cache = False,
     )
-    assert conv_orig.calls[-1] is not None  # seq_idx injected
-    assert scan_orig.calls[-1].tolist() == [0, 2, 3, 6]  # cu_seqlens injected
-    assert not packing_module._HYBRID_WARNED  # handshake passed, no rejection
+    assert conv_orig.calls[-1] is not None
+    assert scan_orig.calls[-1].tolist() == [0, 2, 3, 6]
+    assert not packing_module._HYBRID_WARNED
 
     conv_orig.calls.clear()
     scan_orig.calls.clear()
     model(
         input_ids = ids, packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32), use_cache = True
     )
-    assert conv_orig.calls[-1] is None  # cached forward -> no injection
+    assert conv_orig.calls[-1] is None
     assert scan_orig.calls[-1] is None
 
 
@@ -397,7 +398,7 @@ def test_patch_hybrid_varlen_bad_signature_fail_closed(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _ShimHybridModel()
 
-    def scan_no_cu(q, **kw):  # missing cu_seqlens
+    def scan_no_cu(q, **kw):
         return q
 
     model.linear_attn.chunk_gated_delta_rule = scan_no_cu
@@ -433,12 +434,10 @@ def _hybrid_model_with_gdn(gdn_forward):
 
 
 def test_patch_hybrid_varlen_no_dispatch_aborts(monkeypatch):
-    # Dispatch is verified at runtime, not statically. A mixer that never calls
-    # self.<kernel> installs the shim, but the first packed forward aborts (both
-    # boundary kernels are load-bearing).
+    # Dispatch is verified at runtime, not statically.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _hybrid_model_with_gdn(lambda self, hidden_states, **kw: hidden_states)
-    assert patch_hybrid_linear_attention_varlen(model) is True  # kernels valid -> installs
+    assert patch_hybrid_linear_attention_varlen(model) is True
     with pytest.raises(RuntimeError, match = "both invoked"):
         model(
             input_ids = torch.zeros(1, 6),
@@ -476,7 +475,7 @@ def test_patch_hybrid_varlen_partial_dispatch_aborts(monkeypatch):
 def test_varlen_from_position_ids_mrope_3d():
     pos = (
         torch.tensor([[0, 1, 0, 0, 1, 2]]).unsqueeze(0).expand(3, 1, 6).clone()
-    )  # [3,1,T] text plane
+    )
     cu, seq_idx = packing_module._varlen_from_position_ids(pos)
     assert cu.tolist() == [0, 2, 3, 6]
     assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
@@ -580,8 +579,8 @@ def test_vlm_without_processing_class_still_disables_packing():
     ),
 )
 def test_encoder_decoder_disables_packing(model_type, architecture):
-    # Text-only encoder-decoder models are not VLMs, but their bidirectional encoder
-    # attends across concatenated samples once padding-free drops attention_mask.
+    # Text-only encoder-decoder models are not VLMs, but their bidirectional encoder attends across concatenated samples
+    # once padding-free drops attention_mask.
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
     model = SimpleNamespace(
@@ -653,8 +652,8 @@ def test_hybrid_chunked_loss_stays_on_padded_path(monkeypatch):
 
 
 def test_string_hybrid_model_disables_packing(monkeypatch):
-    # A string model= is materialized after init; a hybrid string is blocked because the
     # shim cannot patch a not-yet-built model.
+    # A string model= is materialized after init;
     monkeypatch.setattr(
         trainer_module,
         "_resolve_string_model_config",
@@ -929,7 +928,6 @@ def _build_trl_language_modeling_collator():
     collator = DataCollatorForLanguageModeling(
         **{key: value for key, value in wanted.items() if key in accepted}
     )
-    # Ensure attributes exist even when this TRL has no such field.
     if not hasattr(collator, "padding_free"):
         collator.padding_free = True
     if not hasattr(collator, "return_position_ids"):
@@ -963,7 +961,6 @@ def test_enable_sample_packing():
 
     enable_sample_packing(model, trainer)
 
-    # model hierarchy now allows packed overlength inputs
     assert getattr(model, "_unsloth_allow_packed_overlength") is True
     assert getattr(model.child, "_unsloth_allow_packed_overlength") is True
 
@@ -985,7 +982,6 @@ def test_enable_sample_packing():
     ]
     batch = collator.torch_call(examples)
 
-    # packed lengths aggregated into one tensor
     assert "packed_seq_lengths" in batch
     assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
 
@@ -1181,13 +1177,12 @@ def test_packing_sdpa(tmp_path):
         trainer.accelerator.free_memory()
 
 
-# --- wrapped-packing source-injection robustness (reviewer.py / fork findings) --------
 
 
 # fmt: off
-# Named to match the unsloth_zoo helper (sourced by name, "def sft_prepare_dataset" ->
-# "def _prepare_dataset"). Deliberately OMITS the "licensed under LGPLv3" header to
-# emulate a newer Zoo whose header moved (dependency is only lower-bounded). Source only.
+# Named to match the unsloth_zoo helper (sourced by name, "def sft_prepare_dataset" -> "def _prepare_dataset").
+# Deliberately OMITS the "licensed under LGPLv3" header to emulate a newer Zoo whose header moved (dependency is only
+# lower-bounded).
 def sft_prepare_dataset(
     self, dataset, processing_class, args, packing, formatting_func, dataset_text_field
 ):
@@ -1211,11 +1206,7 @@ def sft_prepare_dataset(
 
 
 def test_wrapped_packing_injection_is_drift_resistant(monkeypatch):
-    # Regression: the setup used to anchor on the Zoo license comment, so a header
-    # change silently no-op'd it while the truncation/pack edits still referenced its
-    # variables -> NameError on every SFT prep. It must now install via the signature
-    # before those references, and the pack edit must reuse the guarded
-    # _unsloth_pack_has_strategy instead of re-calling _inspect.signature(pack_dataset).
+    # Regression:
     import ast
     import textwrap
     import unsloth.models.rl_replacements as rlr
@@ -1317,9 +1308,9 @@ def _warn_text_model():
 
 
 def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
-    # Two things the message used to get wrong: it blamed a "custom data collator" for
-    # UNSLOTH_RETURN_LOGITS (which unsloth sets itself for compute_metrics), and it quoted a
-    # token limit read before max_seq_length / max_length / the model limit are reconciled.
+    # Two things the message used to get wrong: it blamed a "custom data collator" for UNSLOTH_RETURN_LOGITS (which
+    # unsloth sets itself for compute_metrics), and it quoted a token limit read before max_seq_length / max_length /
+    # the model limit are reconciled.
     monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(
@@ -1348,7 +1339,6 @@ def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
 
 def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
     # A passed collator must still be named as the cause; the env-var fallback is only for
-    # the case where nothing else blocks packing.
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
@@ -1367,18 +1357,18 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
     assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
 
 
-# --- packed-boundary guard on the fused-CE path ---------------------------------------
-# mask_packed_sequence_boundaries needs shifted labels, so fused-CE paths (which shift
-# internally) call mask_packed_boundary_labels, the pre-shift equivalent.
+# mask_packed_sequence_boundaries needs shifted labels, so fused-CE paths (which shift internally) call
 
 
+# --- packed-boundary guard on the fused-CE path --------------------------------------- mask_packed_sequence_boundaries
+# needs shifted labels, so fused-CE paths (which shift internally) call mask_packed_boundary_labels, the pre-shift
+# equivalent.
 def test_mask_packed_boundary_labels_masks_next_document_first_token():
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
     out = mask_packed_boundary_labels(labels, torch.tensor([2, 1, 3], dtype = torch.int32))
-    # Docs start at 0, 2, 3; masking their first token stops the previous doc predicting
-    # it. Slot 0 is the out-of-range redirect: harmless, the shift discards labels[0].
+    # Docs start at 0, 2, 3;
+    # Docs start at 0, 2, 3; masking their first token stops the previous doc predicting it.
     assert out.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
-    # out-of-place
     assert labels.reshape(-1).tolist() == [0, 1, 2, 3, 4, 5]
     assert out.shape == labels.shape
     assert out.dtype == labels.dtype
@@ -1439,10 +1429,9 @@ def test_mask_packed_boundary_labels_lengths_covering_whole_row():
     assert out.reshape(-1).tolist() == [-100, 1, -100, 3]
 
 
-# ==========================================================================
-# Each test below fails when its production hunk is reverted.
-# 1 + 2. the fused-CE call sites (llama.py / mistral.py)
-# ==========================================================================
+# ========================================================================== Each test below fails when its production
+# hunk is reverted.
+# the fused-CE call sites (llama.py / mistral.py)
 class _StubInner(torch.nn.Module):
     def __init__(self, hidden):
         super().__init__()
@@ -1469,8 +1458,7 @@ def _make_stub_causal_lm(
     stub = SimpleNamespace(
         model = model,
         lm_head = lm_head,
-        # Mistral's `elif self.training:` mask branch is only reached without xformers,
-        # so omitting this passes locally but AttributeErrors on CI.
+        # Mistral's `elif self.training:` mask branch is only reached without xformers, so omitting this passes locally
         training = True,
         config = SimpleNamespace(
             output_attentions = False,
@@ -1518,14 +1506,14 @@ def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
     )
 
     got = seen["labels"].reshape(-1).tolist()
-    # slot 3 (first token of doc 2) is dropped; slot 0 is the harmless redirect.
+    # slot 3 (first token of doc 2) is dropped;
     assert got == [-100, 1, 2, -100, 4, 5, 6, 7], got
-    # out-of-place
     assert labels.reshape(-1).tolist() == list(range(seq))
 
 
-# 3. the collator wrappers must leave boundary targets in place: unsloth_zoo counts
-#    num_items_in_batch off this batch and already deducts them
+# 3.
+# the collator wrappers must leave boundary targets in place: unsloth_zoo counts num_items_in_batch off this batch and
+# already deducts them
 class _UnmaskedPackingCollator:
     """Padding-free collator that does NOT pre-mask boundaries, like TRL < 0.24 - a test
     built on TRL 0.24+ output would pass either way."""
