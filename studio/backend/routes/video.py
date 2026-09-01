@@ -259,12 +259,22 @@ async def load_video_model_gated(
     )
     from utils.native_path_leases import redact_native_paths
 
-    from routes.inference import _reject_uncontained_local_path
+    from routes.inference import (
+        _reject_private_hub_repo_without_an_account_token,
+        _reject_uncontained_local_path,
+    )
 
     # Same containment the text load path applies. The video validator accepts
     # any existing local path, so without this an absolute path loaded another
     # account's private checkpoint.
     _reject_uncontained_local_path(request.model_path, "load")
+    # And the same credential rule: the video backend builds its HfApi and calls
+    # from_pretrained with whatever token the request carried, so a tokenless
+    # managed load of a Hub repo ran on the installation's own login.
+    _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
+    if request.base_repo:
+        # The base repo is fetched the same way and is a separate identifier.
+        _reject_private_hub_repo_without_an_account_token(request.base_repo, request.hf_token)
     backend = get_video_backend()
     try:
         # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load agree; a bad kind raises here, so a 400.

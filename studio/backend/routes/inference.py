@@ -6713,6 +6713,110 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
     )
 
 
+# Answered once per (repo, kind) per process: a managed load without a token pays
+# one anonymous metadata call, and the answer does not change often enough to pay
+# it on every load. Public repos are the overwhelming majority, so this is almost
+# always a hit after the first pick.
+_ANONYMOUS_HUB_ACCESS: dict[tuple[str, str], bool] = {}
+_ANONYMOUS_HUB_ACCESS_LOCK = threading.Lock()
+
+
+def _hub_repo_is_anonymously_readable(repo_id: str, repo_type: str) -> Optional[bool]:
+    """Whether the Hub serves this repo with no credential at all.
+
+    True for a public repo, False for one that is private or gated, None when the
+    question could not be answered (offline, network failure, rate limit).
+
+    token = False, not None: None asks huggingface_hub to find an implicit login,
+    which here is the very credential whose reach is being measured.
+    """
+    key = (repo_id, repo_type)
+    with _ANONYMOUS_HUB_ACCESS_LOCK:
+        cached = _ANONYMOUS_HUB_ACCESS.get(key)
+    if cached is not None:
+        return cached
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token = False)
+        if repo_type == "model":
+            api.model_info(repo_id, files_metadata = False)
+        else:
+            api.repo_info(repo_id, repo_type = repo_type)
+        answer = True
+    except Exception as exc:  # noqa: BLE001 - classified below
+        from hub.utils.hf_errors import hf_error_status
+        status = hf_error_status(exc)
+        if status in (401, 403, 404):
+            # 404 as well: the Hub reports a private repo an anonymous caller
+            # cannot see as missing rather than forbidden.
+            answer = False
+        else:
+            return None
+    with _ANONYMOUS_HUB_ACCESS_LOCK:
+        _ANONYMOUS_HUB_ACCESS[key] = answer
+    return answer
+
+
+def _reject_private_hub_repo_without_an_account_token(
+    model_path: Any, hf_token: Any, *, repo_type: str = "model"
+) -> None:
+    """A managed account may not reach a non-public repo on the server's credential.
+
+    The load path hands the identifier down to ModelConfig, the Hub download and
+    from_pretrained with whatever token the request carried. With none, those use
+    the implicit HF_TOKEN or the cached CLI login, which belong to the
+    installation owner, so naming an owner-private repo downloaded and ran it.
+
+    Asked as "would an anonymous caller get this?" rather than refusing every
+    tokenless managed load: public repos are the ordinary case and need no
+    credential, so they load exactly as before. Only a repo the caller could not
+    otherwise reach requires them to bring their own token.
+
+    Unanswerable (offline, or the Hub unreachable) falls back to whether the repo
+    is already in the shared cache. That cache is install-wide by design here,
+    alongside model weights and executables, so a resident model is not a new
+    disclosure; anything else is refused rather than guessed at.
+    """
+    from auth.storage import is_installation_owner
+
+    if is_installation_owner():
+        return
+    if isinstance(hf_token, str) and hf_token.strip():
+        return
+    if not isinstance(model_path, str) or not model_path.strip():
+        return
+    candidate = model_path.strip()
+    if _looks_like_a_local_model_path(candidate):
+        # Containment, not credentials, governs a path; _reject_uncontained_local_path owns it.
+        return
+    readable = _hub_repo_is_anonymously_readable(candidate, repo_type)
+    if readable:
+        return
+    if readable is None and _repo_is_in_the_shared_cache(candidate, repo_type):
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "This repository is not public, so loading it needs your own Hugging "
+            "Face token. Add one in Settings and try again."
+        ),
+    )
+
+
+def _repo_is_in_the_shared_cache(repo_id: str, repo_type: str) -> bool:
+    """Whether a snapshot of this repo is already in the install-wide Hub cache."""
+    try:
+        from huggingface_hub import scan_cache_dir
+        from utils.hf_cache_settings import active_hf_hub_cache
+        for repo in scan_cache_dir(active_hf_hub_cache()).repos:
+            if repo.repo_id == repo_id and repo.repo_type == repo_type:
+                return True
+    except Exception:  # noqa: BLE001 - an unreadable cache answers nothing
+        return False
+    return False
+
+
 def _looks_like_a_local_model_path(candidate: str) -> bool:
     """Whether this model identifier is a filesystem path rather than a Hub repo id.
 
@@ -6893,6 +6997,12 @@ def _resolve_model_identifier_for_request(
         return resolved_ollama_path, Path(resolved_ollama_path).name, False
     if not request.native_path_lease:
         _reject_uncontained_local_path(request.model_path, operation)
+        # And the credential half of the same question: a Hub id is not a path, so
+        # containment says nothing about it, but a tokenless managed load reaches
+        # the Hub on the installation's own login.
+        _reject_private_hub_repo_without_an_account_token(
+            request.model_path, getattr(request, "hf_token", None)
+        )
         return request.model_path, request.model_path, False
     try:
         grant = verify_native_path_lease(

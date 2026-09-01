@@ -3724,3 +3724,93 @@ def test_a_retired_workspace_does_not_keep_its_database_open(tmp_path, monkeypat
         studio_db.close_wal_keeper_for(managed)
     finally:
         studio_db.close_wal_keeper()
+
+
+def test_a_managed_load_cannot_reach_a_private_repo_on_the_servers_login(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_ANONYMOUS_HUB_ACCESS", {}, raising = False)
+
+    answers = {"org/public-model": True, "org/owner-private": False, "org/unknown": None}
+    asked = []
+
+    def _fake_probe(repo_id, repo_type):
+        asked.append((repo_id, repo_type))
+        return answers[repo_id]
+
+    monkeypatch.setattr(inference_routes, "_hub_repo_is_anonymously_readable", _fake_probe)
+    monkeypatch.setattr(
+        inference_routes, "_repo_is_in_the_shared_cache", lambda repo, kind: False
+    )
+    guard = inference_routes._reject_private_hub_repo_without_an_account_token
+
+    token = _bind("alice")
+    try:
+        # A public repo needs no credential, so it loads exactly as it did: this
+        # is not "managed accounts must paste a token to use the Hub".
+        guard("org/public-model", None)
+        # A repo the caller could not otherwise reach is the whole finding: the
+        # load path hands the id down with no token and the Hub client falls back
+        # to the owner's implicit login.
+        with pytest.raises(HTTPException) as exc:
+            guard("org/owner-private", None)
+        assert exc.value.status_code == 403
+        # Their own token answers it, whatever the repo is.
+        guard("org/owner-private", "hf_alices_own_token")
+        # A local path is containment's question, not this one.
+        guard("/some/absolute/path", None)
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        # The credential is the owner's own, so their loads are untouched and the
+        # probe is never even paid.
+        before = len(asked)
+        guard("org/owner-private", None)
+        assert len(asked) == before
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_an_unanswerable_hub_probe_falls_back_to_the_shared_cache(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(
+        inference_routes, "_hub_repo_is_anonymously_readable", lambda repo, kind: None
+    )
+    guard = inference_routes._reject_private_hub_repo_without_an_account_token
+
+    token = _bind("alice")
+    try:
+        # Offline, or the Hub unreachable. A repo already in the shared cache is
+        # not a new disclosure: that cache is install-wide by design here.
+        monkeypatch.setattr(
+            inference_routes, "_repo_is_in_the_shared_cache", lambda repo, kind: True
+        )
+        guard("org/already-here", None)
+        # Anything else is refused rather than guessed at.
+        monkeypatch.setattr(
+            inference_routes, "_repo_is_in_the_shared_cache", lambda repo, kind: False
+        )
+        with pytest.raises(HTTPException):
+            guard("org/not-here", None)
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_video_load_asks_the_same_credential_question():
+    import inspect
+
+    from routes import video as video_routes
+
+    source = inspect.getsource(video_routes)
+    # The video backend builds its own HfApi and calls from_pretrained with the
+    # request's token, so the guard has to run on the route, beside containment.
+    assert "_reject_private_hub_repo_without_an_account_token(request.model_path" in source
+    # And on the base repo, which is fetched the same way under a separate id.
+    assert "_reject_private_hub_repo_without_an_account_token(request.base_repo" in source
