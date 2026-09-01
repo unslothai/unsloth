@@ -142,3 +142,41 @@ test("deduplicating sources keeps the richer entry, not the first", () => {
   assert.doesNotMatch(adapter, /const seenSourceUrls = new Set<string>\(\);/);
   assert.match(adapter, /\.\.\.dedupedSourceParts,/);
 });
+
+test("a second tool_end reaches the card the first one ended", () => {
+  // The citation backfill sends one for the last web_search card. The live
+  // mapping is dropped at the first tool_end so a later tool_start opens a
+  // fresh card, and without a fallback the backfill minted a new part id,
+  // matched nothing, and its merged sources were silently discarded.
+  const adapter = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /const endedToolPartIdByBackendId = new Map<string, string>\(\);/,
+  );
+  assert.match(
+    adapter,
+    /endedToolPartIdByBackendId\.set\(backendToolCallId, id\);/,
+  );
+  assert.match(
+    adapter,
+    /alreadyEndedId &&\s*!toolPartIdByBackendId\.has\(backendToolCallId\)\s*\?\s*alreadyEndedId/,
+  );
+});
+
+test("copying a reply does not carry citation markers to the clipboard", () => {
+  const thread = readFileSync(
+    fileURLToPath(
+      new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(
+    thread,
+    /scrubOpenAICitationMarkers\(\s*stripSearchImageTokens\(aui\.message\(\)\.getCopyText\(\)\),\s*\)/,
+  );
+});

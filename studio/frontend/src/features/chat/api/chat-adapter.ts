@@ -5618,6 +5618,11 @@ export function createOpenAIStreamAdapter(
       // key is unique; every tool_start/output/args/end resolves the same id via
       // this map, dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
+      // The mapping above is dropped at tool_end so a LATER tool_start opens a
+      // fresh card. A second tool_end for the SAME call still has to reach the
+      // card the first one ended -- the citation backfill sends one for the last
+      // web_search card -- so keep what that call last resolved to.
+      const endedToolPartIdByBackendId = new Map<string, string>();
       const resolveToolPartId = (backendToolCallId: string): string =>
         resolveToolCallPartId(
           toolPartIdByBackendId,
@@ -6895,8 +6900,18 @@ export function createOpenAIStreamAdapter(
                 } else if (toolEvent.type === "tool_end") {
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
-                  const id = resolveToolPartId(backendToolCallId);
+                  // Without the live mapping, resolveToolPartId mints a new part
+                  // id, which matches no card and silently drops the result.
+                  const alreadyEndedId = backendToolCallId
+                    ? endedToolPartIdByBackendId.get(backendToolCallId)
+                    : undefined;
+                  const id =
+                    alreadyEndedId &&
+                    !toolPartIdByBackendId.has(backendToolCallId)
+                      ? alreadyEndedId
+                      : resolveToolPartId(backendToolCallId);
                   if (backendToolCallId) {
+                    endedToolPartIdByBackendId.set(backendToolCallId, id);
                     toolConfirmationIdsByBackendId.delete(backendToolCallId);
                     toolPartIdByBackendId.delete(backendToolCallId);
                   }

@@ -41,6 +41,7 @@ import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmatio
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
+import { scrubOpenAICitationMarkers } from "@/components/assistant-ui/openai-citation-scrub";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
@@ -7880,8 +7881,15 @@ const CopyButton: FC = () => {
     // getCopyText reads content only, and a long paste sits in an attachment.
     const pasted = attachmentsPastedText(aui.message().getState().attachments);
     // The image tokens are renderer markup, not prose: strip them or the clipboard
-    // gets `[[img:0123456789ab]]` where the picture was.
-    const text = [stripSearchImageTokens(aui.message().getCopyText()), pasted]
+    // gets `[[img:0123456789ab]]` where the picture was. Citation markers left by a
+    // dropped stream are the same: MarkdownText scrubs them for the screen, so a
+    // reply that reads clean would otherwise copy `citeturn0search0`.
+    const text = [
+      scrubOpenAICitationMarkers(
+        stripSearchImageTokens(aui.message().getCopyText()),
+      ),
+      pasted,
+    ]
       .filter((part) => part.length > 0)
       .join("\n\n");
     if (await copyToClipboard(text)) {
