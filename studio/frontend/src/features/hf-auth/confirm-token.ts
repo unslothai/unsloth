@@ -22,6 +22,53 @@ interface PrepareHfTokenOptions {
 // one-session choice so a follow-up /load does not prompt again after an anonymous /validate.
 const anonymousForSession = new Set<string>();
 
+// One model load prepares the same token three times over: once for the progress pollers,
+// then again inside validateModel and loadModel, which is three sequential round trips on
+// the load's critical path and hurts most on a remote backend. Collapse a burst into one
+// call rather than threading a prepared credential through every API signature. Short and
+// positive-only on purpose: an "invalid" verdict is never cached, so the warning dialog
+// still appears, and a token that expires later is re-checked once the window lapses.
+const VALIDATION_REUSE_MS = 15_000;
+const recentlyValid = new Map<string, number>();
+const inFlight = new Map<string, Promise<HfTokenValidationResult>>();
+
+function validateOncePerBurst(token: string): Promise<HfTokenValidationResult> {
+  const validAt = recentlyValid.get(token);
+  if (validAt != null && Date.now() - validAt < VALIDATION_REUSE_MS) {
+    return Promise.resolve({ status: "valid", retryAfterSeconds: null });
+  }
+  const pending = inFlight.get(token);
+  if (pending) {
+    return pending;
+  }
+  const request = validateHfToken(token)
+    .then((result) => {
+      // Only a definitive pass is reusable: "unavailable" says nothing, and reusing it
+      // would suppress the dialog for a token that is genuinely bad.
+      if (result.status === "valid") {
+        recentlyValid.set(token, Date.now());
+      }
+      return result;
+    })
+    .finally(() => {
+      inFlight.delete(token);
+    });
+  inFlight.set(token, request);
+  return request;
+}
+
+// The session's tokens are gone with it; exported for tests and for a settings change that
+// replaces the credential under an unexpired window.
+export function forgetHfTokenValidation(token?: string): void {
+  if (token == null) {
+    recentlyValid.clear();
+    inFlight.clear();
+    return;
+  }
+  recentlyValid.delete(token);
+  inFlight.delete(token);
+}
+
 export async function prepareHfTokenForUse(
   token: string | null | undefined,
   options: PrepareHfTokenOptions = {},
@@ -37,7 +84,7 @@ export async function prepareHfTokenForUse(
 
   let validation: HfTokenValidationResult;
   try {
-    validation = await validateHfToken(normalized);
+    validation = await validateOncePerBurst(normalized);
   } catch {
     // Validation is advisory. Let the real operation retain its own error.
     return { proceed: true, token: normalized };
@@ -56,6 +103,7 @@ export async function prepareHfTokenForUse(
     if (tokenStore.token === normalized) {
       tokenStore.clearToken();
     }
+    forgetHfTokenValidation(normalized);
     return { proceed: true, token: null };
   }
   if (decision === "replace") {

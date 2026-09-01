@@ -346,14 +346,19 @@ def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monk
     """The disk fast path returns real rows without asking the Hub anything."""
     from hub.services.datasets import formatting
 
-    called = {"cache": 0}
+    called = {"cache": 0, "processed": 0}
     monkeypatch.setattr(
         formatting,
         "_load_cached_hf_preview_slice",
         lambda *_a, **_k: called.__setitem__("cache", called["cache"] + 1) or "ROWS",
     )
+    # The processed path is the second disk read: it loads through
+    # DownloadConfig(local_files_only=True) and drops the sentinel, so it never authorizes.
     monkeypatch.setattr(
-        formatting, "_load_processed_hf_preview_slice", lambda *_a, **_k: None
+        formatting,
+        "_load_processed_hf_preview_slice",
+        lambda *_a, **_k: called.__setitem__("processed", called["processed"] + 1)
+        or "PROCESSED_ROWS",
     )
     request = SimpleNamespace(dataset_name = "org/private", local_path = None,
                               subset = None, train_split = "train")
@@ -363,6 +368,7 @@ def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monk
 
     assert formatting._load_any_cached_hf_preview_slice(request, 5, False) is None
     assert called["cache"] == 1, "the anonymous caller reached the unauthenticated cache"
+    assert called["processed"] == 0, "the anonymous caller reached the processed cache"
 
 
 def test_an_anonymous_caller_does_not_read_a_cached_chat_template(monkeypatch):
@@ -484,3 +490,76 @@ def test_an_anonymous_config_read_does_not_strip_the_process_credential(monkeypa
     assert seen["ambient"] == "ambient-operator-token", (
         "the anonymous probe removed a credential another thread was still using"
     )
+
+
+@pytest.mark.parametrize(
+    "hf_token, expected_local_only",
+    [(None, True), ("hf_tok", True), (False, False)],
+)
+def test_the_config_probes_do_not_go_local_only_for_an_anonymous_caller(
+    monkeypatch, hf_token, expected_local_only
+):
+    """local_files_only resolves config.json out of the cache without any authorization.
+
+    Sending the anonymous caller back to the bare repo id only helps if the probe then
+    goes over the wire, where `token=False` is refused for a private repo.
+    """
+    seen = {}
+
+    def _is_vision(target, hf_token = None, local_files_only = False, **kwargs):
+        seen["local_files_only"] = local_files_only
+        return False
+
+    monkeypatch.setattr(models_routes, "is_vision_model", _is_vision)
+    monkeypatch.setattr(models_routes, "is_embedding_model", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        models_routes, "load_model_defaults", lambda *_a, **_k: {}, raising = False
+    )
+    monkeypatch.setattr(
+        models_routes, "resolve_cached_repo_id_case", lambda name: name
+    )
+    monkeypatch.setattr(
+        models_routes,
+        "_model_config_inspection_target",
+        lambda *_a, **_k: "org/private",
+    )
+
+    import asyncio
+
+    try:
+        asyncio.run(
+            models_routes.get_model_config(
+                "org/private",
+                hf_token = None,
+                prefer_local_cache = True,
+                local_path = None,
+                header_hf_token = hf_token if isinstance(hf_token, str) else None,
+                allow_ambient_token = hf_token is not False,
+                current_subject = "tester",
+            )
+        )
+    except Exception:
+        # The handler continues past the probe into machinery this test does not stand up;
+        # the probe argument is what is being pinned.
+        pass
+
+    assert seen.get("local_files_only") is expected_local_only
+
+
+def test_offline_embedding_detection_does_not_read_the_cache_anonymously(monkeypatch):
+    """The marker read answers for a private repo without ever authorizing."""
+    import utils.models.model_config as model_config_module
+
+    monkeypatch.setattr(model_config_module, "is_local_path", lambda _n: False)
+    monkeypatch.setattr(
+        "utils.utils.hf_env_offline", lambda: True, raising = False
+    )
+
+    def _marker(_name):
+        raise AssertionError("the anonymous caller read the embedding cache marker")
+
+    monkeypatch.setattr(
+        model_config_module, "_embedding_marker_in_hf_cache", _marker
+    )
+
+    assert model_config_module.is_embedding_model("org/private", hf_token = False) is False

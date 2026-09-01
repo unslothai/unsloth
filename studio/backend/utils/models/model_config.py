@@ -3132,6 +3132,11 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     # online lookup can memoize True from tags with no weights cached, and a cached negative can
     # be invalidated by later materialization. The cache probe is local-only, so it's cheap.
     if not is_local_path(model_name) and hf_env_offline():
+        # The marker is read straight off the HF cache, so it answers for a private repo
+        # without ever authorizing. A caller denied the ambient credential has no way to
+        # establish access while offline, so it reports the default rather than the cache.
+        if is_anonymous(hf_token):
+            return False
         return _embedding_marker_in_hf_cache(model_name)
 
     cache_key = (model_name, hf_token)

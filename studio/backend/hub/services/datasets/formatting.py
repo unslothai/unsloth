@@ -309,14 +309,18 @@ def _load_any_cached_hf_preview_slice(
     preview_size: int,
     hf_token: Optional[str] = None,
 ):
-    # The disk fast path returns real rows without asking the Hub anything, so a caller
-    # denied the ambient credential must not reach it: it could name a private dataset the
-    # UI had already cached and read its contents back. A UI session resolves to None and
-    # keeps the fast path; only a forced-anonymous caller pays for the round trip.
-    if not is_anonymous(hf_token):
-        cached_preview = _load_cached_hf_preview_slice(request, preview_size)
-        if cached_preview is not None:
-            return cached_preview
+    # Both paths below return real rows off disk without asking the Hub anything: the raw
+    # slice reads the snapshot directly, and the processed one loads through
+    # DownloadConfig(local_files_only=True), which never authorizes and drops the sentinel
+    # anyway because `False` is falsy. So a caller denied the ambient credential could name
+    # a private dataset the UI had already cached and read its contents back. Refuse the
+    # whole disk route for that caller; the handler's prefer_local_cache path then answers
+    # 404 rather than serving the rows. A UI session resolves to None and keeps both.
+    if is_anonymous(hf_token):
+        return None
+    cached_preview = _load_cached_hf_preview_slice(request, preview_size)
+    if cached_preview is not None:
+        return cached_preview
     try:
         return _load_processed_hf_preview_slice(request, preview_size, hf_token)
     except Exception as exc:

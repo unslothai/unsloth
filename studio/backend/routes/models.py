@@ -2418,16 +2418,21 @@ async def get_model_config(
             )
             config_dict = load_model_defaults(model_name)
 
+            # Sending the anonymous caller back to the bare repo id above only helps if the
+            # probes then go over the wire. local_files_only resolves config.json straight
+            # out of the HF cache, where the credential is never consulted, so it would
+            # hand a denied caller a private repo's capabilities anyway.
+            probe_local_only = prefer_local_cache and not is_anonymous(hf_token)
             is_vision = is_vision_model(
                 inspection_target,
                 hf_token = hf_token,
-                local_files_only = prefer_local_cache,
+                local_files_only = probe_local_only,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
             audio_type, audio_type_definitive = detect_audio_type_checked(
                 _audio_probe_target(inspection_target),
                 hf_token = hf_token,
-                local_files_only = prefer_local_cache,
+                local_files_only = probe_local_only,
             )
 
             is_lora = False
