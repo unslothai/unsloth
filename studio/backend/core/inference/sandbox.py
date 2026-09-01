@@ -5,6 +5,7 @@
 OS-level sandbox wrapper for tool execution.
 """
 
+import errno
 import os
 import shutil
 import site
@@ -107,6 +108,13 @@ def _probe(argv: list[str], label: str) -> _ProbeResult:
         logger.warning("%s probe timed out (%s); will retry on next tool call", label, e)
         return _ProbeResult(ok = False, transient = True)
     except OSError as e:
+        if e.errno == errno.EAGAIN:
+            logger.warning(
+                "%s probe could not start temporarily (%s); will retry on next tool call",
+                label,
+                e,
+            )
+            return _ProbeResult(ok = False, transient = True)
         logger.warning("%s probe failed (%s); tool execution will run unsandboxed", label, e)
         return _ProbeResult(ok = False)
     if proc.returncode != 0:
@@ -342,6 +350,18 @@ def _python_read_paths() -> list[str]:
 
     expanded_home = os.path.expanduser("~")
     real_home = os.path.realpath(expanded_home) if expanded_home and expanded_home != "~" else None
+    if real_home:
+        shared_local = os.path.realpath(os.path.join(real_home, ".local"))
+        narrowed_candidates: list[str] = []
+        for rp in resolved_candidates:
+            if rp != shared_local:
+                narrowed_candidates.append(rp)
+                continue
+            # ~/.local is a shared application-data root, not a dedicated
+            # Python runtime. Keep executable/library trees without exposing
+            # unrelated ~/.local/share or ~/.local/state contents.
+            narrowed_candidates.extend(os.path.join(rp, name) for name in ("bin", "lib", "lib64"))
+        resolved_candidates = narrowed_candidates
     seen: set[str] = set()
     out: list[str] = []
     for rp in resolved_candidates:
@@ -602,7 +622,10 @@ def _linux_inner_rlimit_wrapper(inner_argv: list[str]) -> list[str]:
     """
     exe = os.path.abspath(os.path.normpath(sys.executable))
     script = _LINUX_NPROC_WRAPPER_TEMPLATE.format(nproc = _resolve_nproc_limit())
-    return [exe, "-c", script, *inner_argv]
+    # Isolated mode keeps the model-writable CWD and PYTHONPATH from shadowing
+    # stdlib modules imported by this trusted wrapper. execvp then launches the
+    # requested command with its normal environment and import behavior.
+    return [exe, "-I", "-c", script, *inner_argv]
 
 
 def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:

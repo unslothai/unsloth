@@ -49,6 +49,29 @@ def test_python_read_paths_rejects_home_and_ancestors_but_keeps_nested_runtime(
     assert os.path.realpath(nested_runtime) in paths
 
 
+def test_python_read_paths_narrows_shared_home_local_runtime(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    home = tmp_path / "home"
+    shared_local = home / ".local"
+    runtime_dirs = [shared_local / name for name in ("bin", "lib", "lib64")]
+    for path in runtime_dirs:
+        path.mkdir(parents = True, exist_ok = True)
+    (shared_local / "share" / "private-app").mkdir(parents = True)
+    (shared_local / "state" / "private-app").mkdir(parents = True)
+
+    monkeypatch.setattr(sandbox.os.path, "expanduser", lambda _path: str(home))
+    monkeypatch.setattr(sandbox.sys, "prefix", str(shared_local))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(shared_local))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [])
+
+    paths = sandbox._python_read_paths()
+    assert os.path.realpath(shared_local) not in paths
+    assert all(os.path.realpath(path) in paths for path in runtime_dirs)
+    assert os.path.realpath(shared_local / "share") not in paths
+    assert os.path.realpath(shared_local / "state") not in paths
+
+
 def test_python_read_paths_includes_source_tree_sandbox_site(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     prefix = tmp_path / "python"

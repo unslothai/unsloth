@@ -495,13 +495,13 @@ def test_linux_bwrap_argv_wraps_inner_argv_with_nproc_setter(monkeypatch):
     inner = argv[sep + 1 :]
     # Inner argv now starts with a python wrapper, not the user's argv.
     assert inner[0].endswith("python") or inner[0].endswith("python3")
-    assert inner[1] == "-c"
-    assert "RLIMIT_NPROC" in inner[2]
-    assert "execvp" in inner[2]
+    assert inner[1:3] == ["-I", "-c"]
+    assert "RLIMIT_NPROC" in inner[3]
+    assert "execvp" in inner[3]
     # The override must be baked into the script: _build_safe_env strips
     # env vars, so reading UNSLOTH_STUDIO_SANDBOX_NPROC at runtime inside
     # the namespace would always see the default.
-    assert "nproc = 77" in inner[2]
+    assert "nproc = 77" in inner[3]
     # Original argv is appended after the wrapper.
     assert inner[-3:] == ["/usr/bin/python3", "-c", "print(1)"]
 
@@ -514,7 +514,7 @@ def test_linux_bwrap_nproc_falls_back_to_default_when_env_invalid(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "not-a-number")
     argv = sandbox._linux_bwrap_argv(["/usr/bin/python3", "-c", "1"], "/tmp")
     inner = argv[argv.index("--") + 1 :]
-    assert "nproc = 10000" in inner[2]
+    assert "nproc = 10000" in inner[3]
 
 
 # ---------------------------------------------------------------------------
@@ -668,4 +668,29 @@ def test_sandbox_unavailable_does_not_cache_on_transient_timeout(monkeypatch):
     # Second call: probe succeeds, value is cached.
     second = sandbox.sandbox_available()
     assert second is True
+    assert sandbox._sandbox_available_cache is True
+
+
+def test_sandbox_unavailable_does_not_cache_on_transient_spawn_eagain(monkeypatch):
+    import errno
+    import subprocess
+
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_sandbox_available_cache", None)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", None)
+
+    call_count = {"n": 0}
+
+    def fake_run(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise BlockingIOError(errno.EAGAIN, "temporarily unavailable")
+        return subprocess.CompletedProcess(args = args[0], returncode = 0, stdout = b"", stderr = b"")
+
+    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
+
+    assert sandbox.sandbox_available() is False
+    assert sandbox._sandbox_available_cache is None
+    assert sandbox.sandbox_available() is True
     assert sandbox._sandbox_available_cache is True
