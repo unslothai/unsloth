@@ -21,13 +21,16 @@ def _have_crt_headers() -> bool:
     return False
 
 
-def _triton_finds_crt_headers() -> bool:
+def _triton_finds_crt_headers() -> bool | None:
+    """None means the search could not be run, which is not the same as running and finding nothing.
+    Only the latter may gate: `find_msvc_winsdk` is private, so a rename or a changed return arity
+    would otherwise read as "no headers" and disable torch.compile on a machine with Visual Studio."""
     try:
         from triton.windows_utils import find_msvc_winsdk  # noqa: PLC0415
         _, inc_dirs, _ = find_msvc_winsdk()
-    except Exception:  # noqa: BLE001 -- absent, older or broken Triton: fall back to INCLUDE
+    except Exception:  # noqa: BLE001
         logger.debug("Triton's MSVC/WinSDK discovery is unavailable", exc_info = True)
-        return False
+        return None
     return any(d and os.path.isfile(os.path.join(d, "stdlib.h")) for d in inc_dirs)
 
 
@@ -88,7 +91,12 @@ def crt_headers_reachable() -> bool:
         return True
     if not _needs_msvc_headers():
         return True
-    return _triton_finds_crt_headers() or _have_crt_headers()
+    if _have_crt_headers():
+        return True
+    # INCLUDE above is a positive signal only. A machine with Visual Studio but no INCLUDE is the
+    # normal case (Studio is not launched from a Developer Command Prompt), so the sole evidence
+    # that may gate is Triton's own search running and coming back empty.
+    return _triton_finds_crt_headers() is not False
 
 
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:

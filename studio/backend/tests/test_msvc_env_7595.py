@@ -72,9 +72,9 @@ def test_triton_discovery_false_when_search_returns_nothing(monkeypatch):
     assert _msvc_env._triton_finds_crt_headers() is False
 
 
-def test_triton_discovery_false_when_triton_absent(monkeypatch):
+def test_triton_discovery_is_unknown_when_triton_absent(monkeypatch):
     monkeypatch.setitem(sys.modules, "triton.windows_utils", None)
-    assert _msvc_env._triton_finds_crt_headers() is False
+    assert _msvc_env._triton_finds_crt_headers() is None
 
 
 def test_triton_discovery_survives_a_raising_search(monkeypatch):
@@ -88,7 +88,29 @@ def test_triton_discovery_survives_a_raising_search(monkeypatch):
     pkg.windows_utils = utils
     monkeypatch.setitem(sys.modules, "triton", pkg)
     monkeypatch.setitem(sys.modules, "triton.windows_utils", utils)
-    assert _msvc_env._triton_finds_crt_headers() is False
+    assert _msvc_env._triton_finds_crt_headers() is None
+
+
+def test_triton_discovery_is_unknown_when_the_search_changes_arity(monkeypatch):
+    """`find_msvc_winsdk` is private. A 2- or 4-tuple must read as unknown, never as "no headers"."""
+    for shape in ((["c:/inc"], []), ("", ["c:/inc"], [], [])):
+        pkg = types.ModuleType("triton")
+        utils = types.ModuleType("triton.windows_utils")
+        utils.find_msvc_winsdk = lambda s = shape: s
+        pkg.windows_utils = utils
+        monkeypatch.setitem(sys.modules, "triton", pkg)
+        monkeypatch.setitem(sys.modules, "triton.windows_utils", utils)
+        assert _msvc_env._triton_finds_crt_headers() is None
+
+
+def test_triton_discovery_is_unknown_when_the_search_returns_none(monkeypatch):
+    pkg = types.ModuleType("triton")
+    utils = types.ModuleType("triton.windows_utils")
+    utils.find_msvc_winsdk = lambda *a, **k: None
+    pkg.windows_utils = utils
+    monkeypatch.setitem(sys.modules, "triton", pkg)
+    monkeypatch.setitem(sys.modules, "triton.windows_utils", utils)
+    assert _msvc_env._triton_finds_crt_headers() is None
 
 
 def test_reachable_is_true_off_win32(monkeypatch):
@@ -123,6 +145,24 @@ def test_not_reachable_when_neither_source_has_headers(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     _fake_triton(monkeypatch, [])
+    assert _msvc_env.crt_headers_reachable() is False
+
+
+def test_unreachable_discovery_does_not_gate_a_visual_studio_box(tmp_path, monkeypatch):
+    """The dangerous direction. Discovery that cannot be asked is not evidence of a missing SDK, and
+    clang-cl locates MSVC itself, so gating here would disable torch.compile on a box that compiles."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
+    monkeypatch.setitem(sys.modules, "triton.windows_utils", None)
+    assert _msvc_env.crt_headers_reachable() is True
+
+
+def test_a_search_that_ran_and_found_nothing_still_gates(tmp_path, monkeypatch):
+    """The other half: without this, the #7595 crash is no longer prevented at all."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
     assert _msvc_env.crt_headers_reachable() is False
 
 
