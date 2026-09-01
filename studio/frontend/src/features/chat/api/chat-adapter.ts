@@ -108,7 +108,9 @@ import {
 
 import {
   createBoundaryScan,
+  mergedToolCallArgumentsText,
   splitTopLevelJsonObjects,
+  toolCallArgumentsText,
   toolCallReplayArguments,
 } from "../tool-call-arguments";
 import {
@@ -6779,6 +6781,10 @@ export function createOpenAIStreamAdapter(
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
+                  const toolArgsText = toolCallArgumentsText(
+                    toolEvent.arguments_text,
+                    toolArgs,
+                  );
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -6789,7 +6795,7 @@ export function createOpenAIStreamAdapter(
                     toolCallParts[idx] = {
                       ...existing,
                       toolName: toolEvent.tool_name as string,
-                      argsText: JSON.stringify(toolArgs),
+                      argsText: toolArgsText,
                       args: toolArgs,
                       provenance: mergeToolProvenance(
                         existing.provenance,
@@ -6801,7 +6807,7 @@ export function createOpenAIStreamAdapter(
                       type: "tool-call" as const,
                       toolCallId: id,
                       toolName: toolEvent.tool_name as string,
-                      argsText: JSON.stringify(toolArgs),
+                      argsText: toolArgsText,
                       args: toolArgs,
                       textCursor: cumulativeText.length,
                       ...(toolProvenance ? { provenance: toolProvenance } : {}),
@@ -6978,6 +6984,8 @@ export function createOpenAIStreamAdapter(
                       ...(toolCallParts[idx].args ?? {}),
                       ...(nextArgs ?? {}),
                     } as ToolCallMessagePart["args"];
+                    const overwrittenArgumentKeys =
+                      nextArgs !== undefined ? Object.keys(nextArgs) : [];
                     // Merge tool_end native_part into args.google so the
                     // outbound translator replays both start (executableCode)
                     // and end (result / inlineData) on the same turn.
@@ -7059,7 +7067,11 @@ export function createOpenAIStreamAdapter(
                     toolCallParts[idx] = {
                       ...existing,
                       args: mergedArgs,
-                      argsText: JSON.stringify(mergedArgs ?? {}),
+                      argsText: mergedToolCallArgumentsText(
+                        existing.argsText,
+                        mergedArgs,
+                        overwrittenArgumentKeys,
+                      ),
                       result: parsedResult,
                       provenance: mergeToolProvenance(
                         existing.provenance,
