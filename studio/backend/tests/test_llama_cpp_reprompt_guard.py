@@ -348,7 +348,7 @@ def test_root_tag_may_carry_many_attributes():
         'stroke-width="2" role="img" aria-label="A circle" data-testid="chart">'
     )
     assert len(tag) > 200
-    text = 'First, let me draw it.\n' + tag + '<circle cx="50" r="30"/></svg>'
+    text = "First, let me draw it.\n" + tag + '<circle cx="50" r="30"/></svg>'
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
 
