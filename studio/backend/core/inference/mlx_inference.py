@@ -5,7 +5,6 @@ Drop-in replacement for InferenceBackend — same interface, uses mlx-lm/mlx-vlm
 instead of torch/transformers for model loading and generation.
 """
 
-import json
 import os
 import re
 import sys
@@ -18,14 +17,19 @@ from core.inference.runtime_context import (
     runtime_context_length,
 )
 from core.inference.chat_template_helpers import (
+    # Aliased to this module's historic names; bodies moved to the shared helper (#10092).
+    count_structured_images as _count_vlm_images,
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
     markup_for_tokenizer,
+    messages_have_tool_history as _vlm_messages_have_tool_history,
+    messages_with_attached_image,
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
     prompt_opens_reasoning_channel,
     strip_open_reasoning_prefill,
     trailing_assistant_text,
+    vlm_prompt_issue as _vlm_prompt_issue,
 )
 from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
@@ -336,68 +340,6 @@ def _classify_mlx_audio_type(
             config_audio_type,
         )
     return config_audio_type
-
-
-def _count_vlm_images(content):
-    if isinstance(content, list):
-        return sum(_count_vlm_images(item) for item in content)
-    if not isinstance(content, dict):
-        return 0
-    if str(content.get("type", "")).lower() in ("image", "image_url", "input_image"):
-        return 1
-    return _count_vlm_images(content.get("content"))
-
-
-def _vlm_media_reprs(content):
-    if isinstance(content, list):
-        values = (
-            {str(content), json.dumps(content, ensure_ascii = False)}
-            if _count_vlm_images(content)
-            else set()
-        )
-        for item in content:
-            values.update(_vlm_media_reprs(item))
-        return values
-    if not isinstance(content, dict):
-        return set()
-    if str(content.get("type", "")).lower() in ("image", "image_url", "input_image"):
-        return {str(content), json.dumps(content, ensure_ascii = False)}
-    return _vlm_media_reprs(content.get("content"))
-
-
-def _prompt_serializes_vlm_media(prompt, messages):
-    """Detect templates that embed the exact structured media object repr."""
-    media_reprs = set()
-    for message in messages:
-        if isinstance(message, dict):
-            media_reprs.update(_vlm_media_reprs(message.get("content")))
-    text_content = [
-        content_to_text(message.get("content")) for message in messages if isinstance(message, dict)
-    ]
-    return any(
-        prompt.count(media_repr) > sum(content.count(media_repr) for content in text_content)
-        for media_repr in media_reprs
-    )
-
-
-def _vlm_prompt_issue(prompt, messages):
-    if not isinstance(prompt, str) or not prompt.strip():
-        return "an empty prompt"
-    if _prompt_serializes_vlm_media(prompt, messages):
-        return "serialized structured image content"
-    return None
-
-
-def _vlm_messages_have_tool_history(messages):
-    return any(
-        isinstance(message, dict)
-        and (
-            message.get("role") == "tool"
-            or message.get("tool_calls")
-            or message.get("tool_call_id")
-        )
-        for message in messages
-    )
 
 
 def _mlx_config_field(model, name):
@@ -1986,7 +1928,22 @@ class MLXInferenceBackend:
             "format_type": "generic",
             "special_tokens": {},
             "template_name": None,
+            # The body _generate_vlm renders an image turn with, not the tokenizer body.
+            "processor_template": None,
+            "renders_image": False,
         }
+        from core.inference.chat_template_helpers import (
+            chat_render_target as _chat_render_target,
+        )
+
+        _proc = entry.get("processor")
+        # A processor template alone does not mean the render selects it (#7066).
+        _proc_tpl = (
+            getattr(_proc, "chat_template", None) if _chat_render_target(_proc) is _proc else None
+        )
+        if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
+            info["processor_template"] = _proc_tpl
+        info["renders_image"] = _proc is not None and bool(getattr(self, "_is_vlm", False))
         try:
             tpl = (
                 getattr(tok, "chat_template", None)
@@ -2195,23 +2152,23 @@ class MLXInferenceBackend:
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
-        full_messages = self._with_system_prompt(messages, system_prompt)
-
-        # Inject image into the last user message for VLM
+        # Shared with the transformers vision path so both render the same turns (#10092).
         if self._is_vlm and image is not None:
-            for msg in reversed(full_messages):
-                if msg.get("role") == "user":
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        msg["content"] = [
-                            {"type": "image"},
-                            {"type": "text", "text": content},
-                        ]
-                    elif isinstance(content, list):
-                        has_image = _count_vlm_images(content) > 0
-                        if not has_image:
-                            content.insert(0, {"type": "image"})
-                    break
+            # Processor templates want part lists, the tokenizer fallback wants strings.
+            from core.inference.chat_template_helpers import (
+                chat_render_target as _chat_render_target,
+            )
+            _renders_via_processor = (
+                self._processor is not None
+                and _chat_render_target(self._processor) is self._processor
+            )
+            full_messages = messages_with_attached_image(
+                messages,
+                system_prompt = system_prompt,
+                structured_content = _renders_via_processor,
+            )
+        else:
+            full_messages = self._with_system_prompt(messages, system_prompt)
 
         if self._is_vlm:
             stream = self._generate_vlm(

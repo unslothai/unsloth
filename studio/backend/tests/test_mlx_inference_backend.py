@@ -720,19 +720,21 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
 
 
 def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
-    from core.inference.mlx_inference import MLXInferenceBackend, _prompt_serializes_vlm_media
+    # Moved to chat_template_helpers so the transformers vision path shares it (#10092).
+    from core.inference.chat_template_helpers import prompt_serializes_structured_media
+    from core.inference.mlx_inference import MLXInferenceBackend
 
     media = [{"type": "image"}]
     quoted = [{"role": "user", "content": media}, {"role": "user", "content": f"Explain {media}"}]
-    assert _prompt_serializes_vlm_media(f"<image>\n{media[0]}", quoted[:1])
-    assert not _prompt_serializes_vlm_media(f"<image>\nExplain {media}", quoted)
-    assert _prompt_serializes_vlm_media(f"User: {media}\nExplain {media}", quoted)
+    assert prompt_serializes_structured_media(f"<image>\n{media[0]}", quoted[:1])
+    assert not prompt_serializes_structured_media(f"<image>\nExplain {media}", quoted)
+    assert prompt_serializes_structured_media(f"User: {media}\nExplain {media}", quoted)
     quoted[1]["content"] = [{"type": "text", "text": f'Explain "this" {media}'}]
-    assert not _prompt_serializes_vlm_media(f'<image>\nExplain "this" {media}', quoted)
+    assert not prompt_serializes_structured_media(f'<image>\nExplain "this" {media}', quoted)
     json_media = [{"type": "image_url"}]
     json_repr = '{"type": "image_url"}'
-    assert _prompt_serializes_vlm_media(f"<image>\n{json_repr}", [{"content": json_media}])
-    assert not _prompt_serializes_vlm_media(
+    assert prompt_serializes_structured_media(f"<image>\n{json_repr}", [{"content": json_media}])
+    assert not prompt_serializes_structured_media(
         f"<image>\nExplain {json_repr}",
         [{"content": json_media}, {"content": f"Explain {json_repr}"}],
     )

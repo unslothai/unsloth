@@ -1287,8 +1287,13 @@ def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
     prepare = runtime.index("prepareHfTokenForUse(")
     metadata = runtime.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
-    # The raw store token must not be handed to the preflight.
-    assert "hf_token: preparedToken.token" in runtime
+    # The raw store token must not be handed to the preflight. The prepared value now
+    # reaches it through the hoisted `hfToken` binding rather than inline, so pin both
+    # halves: the assignment, and that the preflight reads that binding.
+    assert "hfToken = preparedToken.token" in runtime
+    preflight = runtime.index("fetchGgufStagedMetadata({", prepare)
+    assert "hf_token: hfToken" in runtime[preflight : preflight + 400]
+    assert runtime.index("hfToken = preparedToken.token") < preflight
     assert (
         "hf_token: useChatRuntimeStore.getState().hfToken" not in runtime
     ), "GGUF metadata preflight must not send the unprepared stored token"

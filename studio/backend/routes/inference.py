@@ -50,7 +50,8 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_hf_token, get_request_hf_token
+from hub.utils.hf_tokens import HfTokenArg
 from hub.services.models.ollama import (
     acquire_ollama_model_ref,
     is_ollama_manifest_ref,
@@ -3326,6 +3327,8 @@ def _detect_safetensors_features(
     backend,
     chat_template: Optional[str],
     tools = None,
+    prefer_tool_use: bool = True,
+    reasoning_fallback: bool = True,
 ) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
@@ -3334,7 +3337,9 @@ def _detect_safetensors_features(
     feature_template = chat_template
     try:
         from core.inference.chat_template_helpers import _selected_template_strings_from_value
-        selected_templates = _selected_template_strings_from_value(chat_template, tools)
+        selected_templates = _selected_template_strings_from_value(
+            chat_template, tools, prefer_tool_use = prefer_tool_use
+        )
         if selected_templates:
             feature_template = selected_templates[0]
     except Exception:
@@ -3344,7 +3349,8 @@ def _detect_safetensors_features(
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    if not flags.get("supports_reasoning"):
+    # The fallback widens to the tokenizer body, wrong when ONE body was asked about.
+    if not flags.get("supports_reasoning") and reasoning_fallback:
         try:
             from core.inference.chat_template_helpers import (
                 detect_reasoning_channel_markers_from_template,
@@ -17258,7 +17264,7 @@ async def stt_status(
 async def stt_download(
     payload: SttLoadRequest,
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Start a background download of a dictation model.
 
@@ -17375,7 +17381,7 @@ async def stt_load(
 async def stt_validate(
     payload: SttLoadRequest,
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Verify a Hub repository is a Whisper checkpoint before downloading it."""
     from core.inference.stt_sidecar import (
@@ -17935,6 +17941,30 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         chat_messages,
         latest_user_image_b64 or latest_image_b64,
     )
+
+
+def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
+    """Which user turn, counted among user turns, the selected image came from.
+
+    ``_extract_content_parts`` takes the newest user image from ANYWHERE in the thread
+    while the renderers attach it to the newest user turn (#10092). Ordinal rather than
+    index: the passthrough rebuild folds system/developer turns together.
+    """
+    ordinal = None
+    seen = 0
+    for msg in messages:
+        if msg.role != "user":
+            continue
+        if isinstance(msg.content, list):
+            for part in msg.content:
+                if part.type != "image_url":
+                    continue
+                url = getattr(getattr(part, "image_url", None), "url", "") or ""
+                if url.startswith("data:") and url.partition(",")[2]:
+                    ordinal = seen
+                    break
+        seen += 1
+    return ordinal
 
 
 def _images_in_last_user_message(messages: list) -> int:
@@ -22239,15 +22269,37 @@ async def produce_openai_chat_completions(
     except Exception:
         _sf_probe_messages = None
 
-    def _sf_response_protocol(tools = None):
-        features = _detect_safetensors_features(backend, _sf_tpl, tools = tools)
+    def _sf_response_protocol(
+        tools = None,
+        template = None,
+        prefer_tool_use = True,
+    ):
+        body = _sf_tpl if template is None else template
+        # Forward only the non-default: unconditional breaks stubs predating the parameter.
+        _pref = {} if prefer_tool_use else {"prefer_tool_use": False}
+        if template is not None:
+            # One specific body, so no reasoning rescue from an unselected branch.
+            _pref["reasoning_fallback"] = False
+        features = _detect_safetensors_features(backend, body, tools = tools, **_pref)
+        # The prefill probe needs the ONE body that renders, not the collection (#10092).
+        try:
+            from core.inference.chat_template_helpers import (
+                _selected_template_strings_from_value,
+            )
+            _selected = _selected_template_strings_from_value(
+                body, tools, prefer_tool_use = prefer_tool_use
+            )
+            if _selected:
+                body = _selected[0]
+        except Exception:
+            logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
         parse_think = bool(
             features.get("supports_reasoning") or features.get("reasoning_always_on")
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
             payload.enable_thinking,
-            _sf_tpl,
+            body,
             reasoning_effort = payload.reasoning_effort,
             messages = _sf_probe_messages,
         )
@@ -22819,17 +22871,38 @@ async def produce_openai_chat_completions(
     # tools into the template, generate one turn, heal text-form calls (#6801).
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
+    _sf_image_tpl = (
+        (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
+        if image is not None
+        else None
+    )
+    # Differs from processor_template: a template-less processor still places the image.
+    _sf_renders_image = image is not None and bool(
+        (_sf_model_info.get("chat_template_info") or {}).get("renders_image")
+    )
+    if _sf_image_tpl is not None:
+        # The WHOLE protocol, not just tool support: a processor body can carry a reasoning
+        # channel the tokenizer never declares, whose <think> markup then leaked as visible
+        # content. prefer_tool_use is off: a processor never selects "tool_use" (#10092).
+        _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+            _sf_template_tools,
+            template = _sf_image_tpl,
+            prefer_tool_use = False,
+        )
+    _sf_supports_tools = _sf_features.get("supports_tools", False)
     # Gate on _sf_use_tools (did the server-side path claim the request?), not
     # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
     _sf_client_tools = (
         # Read the resolved value, not a fresh _effective_enable_tools: the gate
         # above withdraws the launcher default for exactly these requests, and
         # recomputing here would hide that and drop the client catalog.
-        not _sf_tools_on
+        # Once an image rules out the server loop the passthrough takes the request, or
+        # image-plus-tools is answered with prose and no schemas at all (#10092).
+        (not _sf_tools_on or (image is not None and not _sf_use_tools))
         and not _sf_use_tools
-        and image is None
         and not _sf_is_gptoss
-        and _sf_features.get("supports_tools", False)
+        and _sf_supports_tools
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
     # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
@@ -22858,6 +22931,8 @@ async def produce_openai_chat_completions(
     _sf_chat_targets = (
         (_sf_mlx_target,) if _sf_hf_target is _sf_mlx_target else (_sf_mlx_target, _sf_hf_target)
     )
+    # Qwen2.5-VL's processor body never mentions tools while its tokenizer body does, so
+    # healing from the tokenizer body promotes a call the render never carried (#7066).
     _sf_healing_tools = (
         # Safe under EVERY template this turn could select: when the active one drops the
         # schema the render falls back to the native template, whose profile can drop a tool
@@ -22870,6 +22945,8 @@ async def produce_openai_chat_completions(
             _sf_chat_targets,
             _sf_model_info,
             active_model_name = backend.active_model_name,
+            template = _sf_image_tpl,
+            template_is_processor = _sf_image_tpl is not None,
         )
         if _sf_client_tools
         else None
@@ -22889,6 +22966,28 @@ async def produce_openai_chat_completions(
             ),
             system_prompt,
         )
+        # Mark the turn that owns the image so the newest-user-turn scan does not move an
+        # older picture onto a later question. Gated on _sf_renders_image, not on an image:
+        # a text-template render must not be handed part lists (#10092).
+        if _sf_renders_image:
+            _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
+            if _sf_image_ordinal is not None:
+                _sf_seen_users = 0
+                for _sf_idx, _sf_msg in enumerate(gen_kwargs["messages"]):
+                    if not isinstance(_sf_msg, dict) or _sf_msg.get("role") != "user":
+                        continue
+                    if _sf_seen_users == _sf_image_ordinal:
+                        _sf_body = _sf_msg.get("content")
+                        if isinstance(_sf_body, str):
+                            gen_kwargs["messages"][_sf_idx] = {
+                                **_sf_msg,
+                                "content": [
+                                    {"type": "image"},
+                                    {"type": "text", "text": _sf_body},
+                                ],
+                            }
+                        break
+                    _sf_seen_users += 1
         gen_kwargs["system_prompt"] = ""
         # tool_choice="none": keep history templating but advertise no tools
         # (heal_gate is off, markup would relay as prose). A forced function
@@ -22915,7 +23014,12 @@ async def produce_openai_chat_completions(
     # known. This standard path now has the exact schemas that will be rendered,
     # so resolve reasoning parsing again to keep empty registries, forced-tool
     # misses, and tool_choice="none" on the marker-free template branch.
-    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(gen_kwargs.get("tools"))
+    # Re-resolving from the tokenizer body here would undo the reclassification above.
+    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+        gen_kwargs.get("tools"),
+        template = _sf_image_tpl,
+        prefer_tool_use = _sf_image_tpl is None,
+    )
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
@@ -23271,8 +23375,16 @@ async def produce_openai_chat_completions(
                             # completion count.
                             _first_stats = stats_holder.pop("stats", None)
                             try:
+                                # Mark the owning turn before the correction is appended,
+                                # or the reverse scan attaches the picture to it (#10092).
+                                _nudge_base = gen_kwargs["messages"]
+                                if _sf_renders_image:
+                                    from core.inference.chat_template_helpers import (
+                                        messages_with_attached_image as _nudge_attach,
+                                    )
+                                    _nudge_base = _nudge_attach(_nudge_base)
                                 retry_messages = [
-                                    *gen_kwargs["messages"],
+                                    *_nudge_base,
                                     *nudge_messages(_data, _sf_heal),
                                 ]
                                 retry_text = await _run_blocking_generation(
