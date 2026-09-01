@@ -271,7 +271,12 @@ def test_a_rename_survives_a_default_unsloth_overrode_on_the_generated_config():
         warmup_steps: float = 0.0  # what TRL declares
 
     class UnslothSFTConfig(ModernSFTConfig):
-        def __init__(self, output_dir = "out", warmup_steps = 0.1, **kwargs):
+        def __init__(
+            self,
+            output_dir = "out",
+            warmup_steps = 0.1,
+            **kwargs,
+        ):
             pass  # what rl.py generates: same field, different default
 
     messages = []
@@ -293,7 +298,11 @@ def test_a_value_the_caller_really_set_still_beats_the_rename():
         warmup_steps: float = 0.0
 
     class UnslothSFTConfig(ModernSFTConfig):
-        def __init__(self, warmup_steps = 0.1, **kwargs):
+        def __init__(
+            self,
+            warmup_steps = 0.1,
+            **kwargs,
+        ):
             pass
 
     kept, messages = [], []
@@ -376,7 +385,8 @@ def _rl_py_overridden_defaults():
                 and isinstance(node.value, ast.Dict)
             ):
                 names.update(
-                    k.value for k in node.value.keys
+                    k.value
+                    for k in node.value.keys
                     if isinstance(k, ast.Constant) and isinstance(k.value, str)
                 )
             elif (

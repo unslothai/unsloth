@@ -98,9 +98,7 @@ TRANSFORMERS_REMOVED_FIELD_ADVICE = {
     # Not a rename: `include_num_input_tokens_seen` is `str | bool` and normalises
     # a bool to "no"/"all" in `__post_init__`, which the trainer's `setattr` path
     # does not run, so a migrated `False` would read as truthy.
-    "include_tokens_per_second": (
-        'set `include_num_input_tokens_seen = "all"` instead'
-    ),
+    "include_tokens_per_second": ('set `include_num_input_tokens_seen = "all"` instead'),
     "group_by_length": 'set `train_sampling_strategy = "group_by_length"` instead',
     "include_inputs_for_metrics": 'add "inputs" to the `include_for_metrics` list instead',
     "tpu_metrics_debug": "use `debug` instead",
@@ -215,7 +213,12 @@ def _init_default(config_class, name):
     return parameter.default
 
 
-def _is_untouched(config_class, name, value, mirrored_from = None):
+def _is_untouched(
+    config_class,
+    name,
+    value,
+    mirrored_from = None,
+):
     """True if `value` is indistinguishable from `name`'s declared default.
 
     `mirrored_from` is the class whose `__init__` supplied `value`, which is not
