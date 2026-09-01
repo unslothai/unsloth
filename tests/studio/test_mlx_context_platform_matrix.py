@@ -75,6 +75,10 @@ STUDIO_BACKEND = REPO_ROOT / "studio" / "backend"
 if str(STUDIO_BACKEND) not in sys.path:
     sys.path.insert(0, str(STUDIO_BACKEND))
 
+# The studio backend pulls in torch. A runner without it cannot answer any question this
+# file asks, so skip the module rather than fail collection on it.
+pytest.importorskip("torch", reason = "the studio backend imports torch at module scope")
+
 # Imported eagerly, before any fake torch can be in place: these modules are the subject
 # of the test, and importing them under a spoof would measure the spoof.
 from core.inference.inference import runtime_context_length  # noqa: E402
