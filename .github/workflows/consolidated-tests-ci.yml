@@ -471,11 +471,20 @@ jobs:
         # how unsloth_zoo's gather_qmm guard walking a chain forever under the mlx
         # shim presented. PYTEST_TIMEOUT is read by pytest-timeout on every pytest
         # invocation in this step, so one setting covers the xdist run and each
-        # serial file below. 10 minutes per test is far above the slowest honest
-        # CPU test here, so it only ever fires on a genuine hang, and when it does
-        # it names the test and dumps its stack.
+        # serial file below, instead of the same flag on six command lines.
+        #
+        # 5 minutes. The slowest honest test in the suite is about 48s locally
+        # (test_fla_hopper_tile.py), and CI runs roughly 1.65x slower than that
+        # box, measured on the one test long enough to compare, so call it 80s
+        # here. That leaves well over 3x headroom, while a genuine hang is now
+        # named and stack-dumped in 5 minutes rather than silently eating all 35.
+        #
+        # This only became a sane number once unsloth_zoo stopped rebuilding
+        # dir(transformers.models) on every call (unsloth-zoo#1139): before that,
+        # test_every_shipped_model_type_accepted alone ran past 600s, so any
+        # useful timeout would have failed a passing test.
         env:
-          PYTEST_TIMEOUT: 600
+          PYTEST_TIMEOUT: 300
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
           # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
