@@ -16,13 +16,26 @@ name: Cache janitor
 #
 # Four families are pruned.
 #
-#   1. Caches on refs/pull/N/* whose PR is closed or merged. Lookup is scoped
-#      by ref and nothing but that PR's own runs can restore its merge ref, so
-#      once the PR is not open the entry is unreachable for good, and GitHub
-#      does not collect it on merge. Almost everything here already saves on
-#      main only, so this is a backstop rather than the main event. The PR state
-#      decides, not age: an open PR's caches are live no matter how old, and a
-#      lookup that errors keeps the cache.
+#   1. Caches on refs/pull/N/*, on two grounds. Lookup is scoped by ref and
+#      nothing but that PR's own runs can restore its merge ref, so once the PR
+#      is not open the entry is unreachable for good, and GitHub does not
+#      collect it on merge. Almost everything here already saves on main only,
+#      so that half is a backstop rather than the main event.
+#
+#      The second ground is idleness, and it applies while the PR is still OPEN:
+#      an entry no run has READ in open_pr_idle_days (default 3) is holding
+#      budget for a reader that does not exist, since only that PR's own runs
+#      could ever restore it. PR state alone is not a liveness signal -- a
+#      dependabot PR sits open for weeks here and its caches were never read
+#      once. This only brings forward a reclaim GitHub already performs at 7
+#      days idle; the budget is what cannot wait, since a week of overlap times
+#      every ref that ran exceeds it. The rule is by age and not by author: a
+#      stale human PR costs the same, and a bot PR re-run this morning is live.
+#
+#      Both grounds fail safe. last_accessed_at is re-read immediately before
+#      acting, so a run that restored the entry after the inventory keeps it,
+#      and an errored PR lookup, an unparseable timestamp or a failed re-check
+#      all keep the cache.
 #
 #   2. Superseded generations of families whose keys embed a build identity:
 #        codeql-overlay-base-database-*  keys embed commit SHA + run id
@@ -54,7 +67,8 @@ name: Cache janitor
 # still hit an older generation exactly. The pip and uv caches are the same
 # shape. keep is the dial, and it is set for hit rate, not for headroom: the budget exists to be
 # spent, so a generation that can still answer something stays. What goes is what
-# can answer nothing -- unreachable refs, and generations past keep.
+# can answer nothing -- unreachable refs, generations past keep, and entries on an
+# open PR that nothing has read in open_pr_idle_days.
 #
 # Everything else is left alone. The hf-* / *-gguf-* model caches use exact keys,
 # so an entry that looks superseded is the only one its key will ever match and
