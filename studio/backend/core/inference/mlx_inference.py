@@ -1418,23 +1418,67 @@ def _make_mlx_logit_bias_processor(logit_bias: dict):
     return _processor
 
 
+def _vlm_generation_is_diffusion(model) -> bool:
+    """Whether mlx_vlm routes this model to its diffusion generator, which produces the
+    sequence as a whole and so takes no logits processors for a grammar to act on."""
+    try:
+        from mlx_vlm.generate.diffusion import is_diffusion_model
+    except Exception:
+        return False
+    try:
+        return bool(is_diffusion_model(model))
+    except Exception:
+        return False
+
+
+def _build_grammar_constraint(
+    response_format,
+    tokenizer,
+    prompt,
+    *,
+    reasoning_markers = None,
+    tools = None,
+    reasoning_is_extracted = False,
+    reply_keeps_special_tokens = False,
+):
+    # The default spelled out, exactly; checked first so it never loads the engine.
+    if response_format is None or response_format == {"type": "text"}:
+        return None
+    from core.inference.grammar_constraint import build_constraint
+
+    constraint = build_constraint(
+        response_format,
+        tokenizer,
+        prompt,
+        reasoning_markers = reasoning_markers,
+        tools = tools,
+        reasoning_is_extracted = reasoning_is_extracted,
+        reply_keeps_special_tokens = reply_keeps_special_tokens,
+    )
+    if constraint is not None:
+        logger.info("Guided decoding active: response_format=%s", response_format.get("type"))
+    return constraint
+
+
 def _mlx_sampling_processors(
     *,
     repetition_penalty = None,
     presence_penalty: float = 0.0,
     frequency_penalty: float = 0.0,
     logit_bias = None,
+    grammar_constraint = None,
 ):
     """Logits processors for the sampling knobs, or ``None`` when all are inert.
 
-    Bias runs before the penalties, matching llama-server's sampler order.
-    mlx_lm supplies only the repetition penalty here: its presence and
-    frequency processors window the last 20 tokens *including the prompt*,
-    while the penalties below score the whole completion and exclude it, so
-    using them would make the same request sample differently depending on the
-    backend.
+    A guided-decoding mask runs first so its ``-inf`` survives every shaping step below and the
+    sampler after, the knobs only ever adding finite amounts. Bias then runs before the
+    penalties, matching llama-server's order. mlx_lm supplies only the repetition penalty here:
+    its presence and frequency processors window the last 20 tokens *including the prompt*.
     """
     processors = []
+    if grammar_constraint is not None:
+        from core.inference.grammar_constraint import make_grammar_logits_processor
+        processors.append(make_grammar_logits_processor(grammar_constraint))
     if logit_bias:
         processors.append(_make_mlx_logit_bias_processor(logit_bias))
     if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
@@ -2144,6 +2188,8 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         stop = None,
+        response_format = None,
+        reasoning_is_extracted = False,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
@@ -2192,6 +2238,8 @@ class MLXInferenceBackend:
                 logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
                 stop = stop,
+                response_format = response_format,
+                reasoning_is_extracted = reasoning_is_extracted,
             )
         else:
             stream = self._generate_text(
@@ -2214,6 +2262,8 @@ class MLXInferenceBackend:
                 logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
                 stop = stop,
+                response_format = response_format,
+                reasoning_is_extracted = reasoning_is_extracted,
             )
         yield from stream
 
@@ -2244,6 +2294,8 @@ class MLXInferenceBackend:
         logit_bias = None,
         _adapter_state = None,
         stop = None,
+        response_format = None,
+        reasoning_is_extracted = False,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
@@ -2264,11 +2316,30 @@ class MLXInferenceBackend:
         # ordinary post-tool prompt.
         _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
+        # Which rendering the reply gets: the native branch keeps every token, the plain
+        # one drops the special ones.
+        preserve_native_channels = reasoning_channel_markers is not None
         # An open <think> prefilled by the template lives in the prompt, not
         # the generated tokens; re-emit it so the frontend renders the block.
         think_prefix = detect_think_prefill(
-            prompt, getattr(self._tokenizer, "all_special_tokens", None)
+            prompt,
+            getattr(self._tokenizer, "all_special_tokens", None),
+            reply_keeps_special_tokens = preserve_native_channels,
         )
+        constraint = _build_grammar_constraint(
+            response_format,
+            self._tokenizer,
+            prompt,
+            # No tools: the render already resolved them into these markers.
+            reasoning_markers = reasoning_channel_markers,
+            reasoning_is_extracted = reasoning_is_extracted,
+            reply_keeps_special_tokens = preserve_native_channels,
+        )
+        if constraint is not None and not constraint.allows_reasoning:
+            # Neither the prompt's opener nor the normalizer may put a block into a reply
+            # whose grammar forbids one.
+            think_prefix = ""
+            preserve_native_channels = False
         if seed is None:
             sampler = make_sampler(
                 temp = temperature,
@@ -2290,9 +2361,9 @@ class MLXInferenceBackend:
             presence_penalty = presence_penalty,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            grammar_constraint = constraint,
         )
 
-        preserve_native_channels = reasoning_channel_markers is not None
         token_ids = []
         normalizer = (
             make_reasoning_normalizer(
@@ -2301,7 +2372,7 @@ class MLXInferenceBackend:
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
             )
-            if reasoning_channel_markers is not None
+            if preserve_native_channels
             else None
         )
         # Sequences match the sampled text, ahead of the prefill this path restores
@@ -2578,6 +2649,8 @@ class MLXInferenceBackend:
         logit_bias = None,
         _adapter_state = None,
         stop = None,
+        response_format = None,
+        reasoning_is_extracted = False,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -2594,8 +2667,14 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import detect_think_prefill
 
-        # Re-emit an open <think> prefill from the prompt (see _generate_text).
-        prefill = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
+        # Re-emit an open <think> prefill from the prompt (see _generate_text), unless a
+        # grammar forbids the block it would open.
+        prefill = detect_think_prefill(
+            prompt,
+            getattr(chat_target, "all_special_tokens", None),
+            # Same answer the constraint below is given: this path keeps every token.
+            reply_keeps_special_tokens = True,
+        )
         vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
@@ -2632,7 +2711,30 @@ class MLXInferenceBackend:
             0.0,
             1.0,
         )
-        if presence_penalty or frequency_penalty or logit_bias:
+        constraint = _build_grammar_constraint(
+            response_format,
+            chat_target,
+            prompt,
+            tools = tools,
+            reasoning_is_extracted = reasoning_is_extracted,
+            # This path yields the detokenizer's text as it comes, special tokens included.
+            reply_keeps_special_tokens = True,
+        )
+        # As above: a grammar holding the reply to the document alone forbids a block.
+        document_only = constraint is not None and not constraint.allows_reasoning
+        if document_only:
+            prefill = ""
+        if constraint is not None and _vlm_generation_is_diffusion(self._model):
+            # mlx_vlm raises on logits_processors too, but a build that ignored them
+            # would answer text ignoring the schema.
+            from core.inference.grammar_constraint import ResponseFormatError
+            raise ResponseFormatError(
+                "response_format is not supported on this model: it generates by "
+                "diffusion rather than one token at a time, so no grammar can "
+                "constrain the next token. Load an autoregressive model to use "
+                "guided decoding."
+            )
+        if presence_penalty or frequency_penalty or logit_bias or constraint is not None:
             # These need custom processors: pass the full list (repetition +
             # the rest) instead of the repetition_penalty shortcut so all apply.
             vlm_kwargs["logits_processors"] = _mlx_sampling_processors(
@@ -2640,6 +2742,7 @@ class MLXInferenceBackend:
                 presence_penalty = presence_penalty,
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
+                grammar_constraint = constraint,
             )
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
@@ -2707,7 +2810,7 @@ class MLXInferenceBackend:
 
         yield from normalize_reasoning_snapshots(
             _stream_vlm_snapshots(),
-            chat_target,
+            None if document_only else chat_target,
             cancel_event,
             tools = tools,
             prompt = prompt,

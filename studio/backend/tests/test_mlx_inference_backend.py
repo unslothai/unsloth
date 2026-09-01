@@ -4269,6 +4269,56 @@ def test_a_close_marker_is_refused_only_where_the_reply_would_lose_it(reply_keep
         constraint.advance(int(token_id))
 
 
+class _Recorder:
+    """Stands in for a bound matcher, recording what the processor commits."""
+
+    def __init__(self):
+        self.advanced = []
+
+    def mask_logits(self, logits):
+        return logits
+
+    def advance(self, token_id):
+        self.advanced.append(int(token_id))
+
+
+def test_the_grammar_mask_runs_first_and_its_inf_survives_every_knob():
+    """The mask leads the chain, and nothing below it can restore a masked token."""
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mlx_inference import _mlx_sampling_processors
+
+    class _MaskOdd(_Recorder):
+        def mask_logits(self, logits):
+            keep = mx.array([[1.0, 0.0, 1.0, 0.0]])
+            return mx.where(keep > 0, logits, mx.array(float("-inf")))
+
+    grammar = _MaskOdd()
+    processors = _mlx_sampling_processors(
+        repetition_penalty = 1.3,
+        presence_penalty = 0.5,
+        frequency_penalty = 0.5,
+        logit_bias = {1: 100.0},
+        grammar_constraint = grammar,
+    )
+    zeros = mx.zeros((1, 4), dtype = mx.float32)
+    tokens = mx.array([0, 1])
+    leading = np.asarray(processors[0](tokens, zeros))[0]
+    assert np.isneginf(leading[1]) and np.isneginf(leading[3])
+
+    logits = zeros
+    for processor in processors:
+        logits = processor(tokens, logits)
+    out = np.asarray(logits)[0]
+    assert np.isneginf(out[1]) and np.isneginf(out[3])
+    assert np.isfinite(out[0]) and np.isfinite(out[2])
+
+    # The prompt is latched; each later call brings the steps taken since, cursor and all.
+    assert grammar.advanced == []
+    processors[0](mx.array([0, 1, 2, 3]), zeros)
+    processors[0](mx.array([0, 1, 2, 3, 4]), zeros)
+    assert grammar.advanced == [2, 3, 4]
+
+
 def _two_stop_tokenizer():
     """A tokenizer naming one end token while a runtime may stop on another."""
     tokenizer = _char_tokenizer("<end_of_text>", markers_are_special = True)
