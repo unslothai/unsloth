@@ -56,7 +56,6 @@ def _stub_api(*_args, **_kwargs):
     return _StubKaggleApi()
 
 
-
 def _fake_kaggle(bin_dir: Path, record: Path) -> None:
     """A `kaggle` on PATH that only records what it was asked to delete."""
     bin_dir.mkdir(parents = True, exist_ok = True)

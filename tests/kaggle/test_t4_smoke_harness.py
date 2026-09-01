@@ -545,7 +545,9 @@ def test_a_gate_error_is_a_skip_not_a_failure(monkeypatch, tmp_path):
     import gate
 
     monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
-    monkeypatch.setattr(gate, "kaggle_client", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        gate, "kaggle_client", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true")
     assert code == 0
     assert outputs["should_run"] == "false"
@@ -780,7 +782,9 @@ def test_soft_failure_is_asked_for_rather_than_assumed(monkeypatch, tmp_path):
     # And --no-soft-fail still means what it always did: an error in the gate
     # itself becomes a failure rather than a skip.
     monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
-    monkeypatch.setattr(gate, "kaggle_client", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        gate, "kaggle_client", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     hard, _ = _run_gate(monkeypatch, tmp_path / "hard", "--force", "true", "--no-soft-fail")
     assert hard == 1
     soft, outputs = _run_gate(monkeypatch, tmp_path / "soft", "--force", "true", "--soft-fail")

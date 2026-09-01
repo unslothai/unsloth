@@ -867,8 +867,7 @@ def main() -> int:
         share = max(0.0, weights.get(sampled_account, 0.0)) / sum(weights.values())
         print(
             f"[gate] account draw={account_draw:.6f} sampled={sampled_account} "
-            f"p={share:.3f} weights="
-            + json.dumps({i: weights[i] for i in sorted(weights)}),
+            f"p={share:.3f} weights=" + json.dumps({i: weights[i] for i in sorted(weights)}),
             flush = True,
         )
     else:

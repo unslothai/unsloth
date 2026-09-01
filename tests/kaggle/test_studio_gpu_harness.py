@@ -2229,9 +2229,7 @@ def test_the_gate_is_told_how_many_kernels_this_leg_actually_pushes():
     # that re-asks with the account slot in hand. Both push one kernel, so both
     # have to say so, and a recheck left at the default of two would stand the
     # job down for a slot it does not need.
-    invocations = re.findall(
-        r"kaggle_t4_ci/gate\.py \\\n.*?(?=\n\s*\n|\Z)", text, re.DOTALL
-    )
+    invocations = re.findall(r"kaggle_t4_ci/gate\.py \\\n.*?(?=\n\s*\n|\Z)", text, re.DOTALL)
     assert invocations, "the workflow never runs the gate"
     for invocation in invocations:
         assert re.search(r"^\s+--kernels 1 \\?\s*$", invocation, re.MULTILINE), invocation
