@@ -44,6 +44,7 @@ from hub.utils.paths import (
     resolve_dataset_path,
 )
 from hub.utils.hf_tokens import is_anonymous
+from utils.utils import anonymous_and_offline
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.paths.path_utils import drop_shadowed_appledouble_names
 
@@ -369,6 +370,14 @@ def check_format_response(
         if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
             raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
 
+        # Offline, `datasets` answers a streaming load from its own cache without ever
+        # authorizing, and Tier 2 below runs on the default prefer_local_cache=false, so
+        # it would return rows before the cached-preview guard is ever consulted.
+        if anonymous_and_offline(hf_token) and not dataset_exists:
+            raise HTTPException(
+                status_code = 404,
+                detail = "This request cannot be authorized without network access.",
+            )
         if dataset_exists:
             train_split = request.train_split or "train"
             preview_slice, total_rows = _load_local_preview_slice(

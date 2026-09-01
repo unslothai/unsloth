@@ -884,3 +884,43 @@ def test_the_prefer_local_scan_branch_carries_the_anonymous_guard():
     assert "not is_anonymous(hf_token)" in branch, (
         "the prefer-local scan branch still resolves a cached snapshot for any caller"
     )
+
+
+@pytest.mark.parametrize(
+    "hf_token, offline, denied",
+    [
+        (False, True, True),
+        (False, False, False),
+        (None, True, False),
+        ("hf_tok", True, False),
+    ],
+)
+def test_the_offline_anonymous_rule_is_stated_once(hf_token, offline, denied, monkeypatch):
+    """One precondition, not one guard per reader.
+
+    Six separate readers were fixed in turn -- the snapshot walk, the config probes, the
+    embedding marker, the GGUF listing, the preview slices, AutoConfig -- and each fix
+    only moved the boundary to the next one. This pins the shared rule itself.
+    """
+    import utils.utils as utils_module
+
+    monkeypatch.setattr(utils_module, "hf_env_offline", lambda: offline)
+
+    assert utils_module.anonymous_and_offline(hf_token) is denied
+
+
+def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
+    """The three routes that reach disk offline all consult the shared rule."""
+    import inspect
+
+    from hub.services.datasets import formatting
+
+    for owner, name in (
+        (models_routes.get_model_config, "/config"),
+        (models_routes.scan_model_remote_code, "scan-remote-code"),
+        (formatting.check_format_response, "check-format"),
+    ):
+        source = inspect.getsource(owner)
+        assert "anonymous_and_offline" in source, (
+            f"{name} can still be answered from disk for a denied caller"
+        )

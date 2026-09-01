@@ -195,6 +195,10 @@ if str(backend_path) not in sys.path:
 from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
+from utils.utils import anonymous_and_offline
+
+
+_UNAUTHORIZED_OFFLINE = "This request cannot be authorized without network access."
 
 
 def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> HfTokenArg:
@@ -2402,6 +2406,11 @@ async def get_model_config(
         # Each probe below can reach the hub, so the guard wraps the whole handler: offline they
         # must all resolve from the HF cache. Local paths stay on disk and skip the probe.
         with _hf_offline_if_unreachable_for(model_name):
+            # Inside the context, not before it: the guard forces offline itself when the
+            # hub is unreachable. Every probe below resolves from disk in that state, so
+            # the caller is refused once here rather than at each reader in turn.
+            if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+                raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
             if not is_local_path(model_name):
                 resolved = resolve_cached_repo_id_case(model_name)
                 if resolved != model_name:
@@ -2554,6 +2563,10 @@ async def scan_model_remote_code(
     # Without this the body's absent token reads as None, i.e. ambient-authorized, and the
     # scan below would read a cached private repo's Python and return source snippets.
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
+    # Offline, the scanner's own hf_hub_download calls resolve config.json and the repo's
+    # Python straight out of the cache, and the response carries source snippets.
+    if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+        raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
     try:
         from utils.security import (
             load_scan_target,
