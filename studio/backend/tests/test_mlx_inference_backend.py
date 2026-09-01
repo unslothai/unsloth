@@ -3770,9 +3770,9 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
 
     line = current_date_prompt_line(request = interactive)
     assert line, "the harness must actually produce a date line"
-    assert backend.system.startswith(line), (
-        f"the count dropped the date line the completion prepends: {backend.system!r}"
-    )
+    assert backend.system.startswith(
+        line
+    ), f"the count dropped the date line the completion prepends: {backend.system!r}"
 
 
 def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):
@@ -3793,12 +3793,12 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
         thread_id = "thread-with-an-archive",
     )
     names = [t["function"]["name"] for t in (backend.tools or [])]
-    assert "search_conversation" in names, (
-        f"the archive tool the completion renders was not priced: {names}"
-    )
+    assert (
+        "search_conversation" in names
+    ), f"the archive tool the completion renders was not priced: {names}"
     from routes.inference import _apply_compaction_nudge
 
-    assert _apply_compaction_nudge("", backend.tools) , "the nudge must be non-empty here"
-    assert _apply_compaction_nudge("", backend.tools) in backend.system, (
-        "the count omitted the compaction nudge the completion appends"
-    )
+    assert _apply_compaction_nudge("", backend.tools), "the nudge must be non-empty here"
+    assert (
+        _apply_compaction_nudge("", backend.tools) in backend.system
+    ), "the count omitted the compaction nudge the completion appends"

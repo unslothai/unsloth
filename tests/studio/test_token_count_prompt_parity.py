@@ -453,6 +453,6 @@ def test_the_count_sends_the_thread_id_at_top_level_even_with_rag_off(thread_id,
         )
     )
     assert out.get("ragScope") is None, "RAG is off, so there is no scope to hide the id in"
-    assert out.get("threadId") == expected, (
-        "the archive tool and its nudge are gated on the top-level thread id"
-    )
+    assert (
+        out.get("threadId") == expected
+    ), "the archive tool and its nudge are gated on the top-level thread id"
