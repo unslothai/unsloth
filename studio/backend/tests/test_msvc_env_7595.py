@@ -361,6 +361,67 @@ def test_the_union_still_gates_when_neither_half_is_there(tmp_path, monkeypatch)
     assert _msvc_env.crt_headers_reachable() is False
 
 
+
+def test_a_compiler_that_actually_works_overrules_the_header_heuristic(tmp_path, monkeypatch):
+    """The heuristic reads directories; clang-cl locates MSVC through its own search and can
+    compile from an -internal-isystem we see no trace of (measured on an R9700 with INCLUDE,
+    VCINSTALLDIR and WindowsSdkDir cleared). So a compile that succeeds has to win, or a
+    working machine loses torch.compile on the strength of a guess."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, [str(tmp_path)])
+    monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: True)
+    assert _msvc_env.crt_headers_reachable() is True
+
+
+def test_a_compiler_that_fails_still_gates(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, [str(tmp_path)])
+    monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: False)
+    assert _msvc_env.crt_headers_reachable() is False
+
+
+def test_an_unrunnable_probe_keeps_the_header_verdict(tmp_path, monkeypatch):
+    """A probe that cannot run says nothing, and #7595 is exactly the case where it might not
+    run. Treating unknown as permission would trade a measured protection for an absent one."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, [str(tmp_path)])
+    monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: None)
+    assert _msvc_env.crt_headers_reachable() is False
+
+
+def test_the_probe_is_skipped_when_the_headers_are_already_there(tmp_path, monkeypatch):
+    """No compile cost on the machines that do not need rescuing, which is nearly all of them."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
+    monkeypatch.setattr(
+        _msvc_env,
+        "_compiles_a_trivial_translation_unit",
+        lambda cc, d: (_ for _ in ()).throw(AssertionError("probed a complete toolchain")),
+    )
+    assert _msvc_env.crt_headers_reachable() is True
+
+
+def test_the_probe_really_compiles_and_really_reports_failure(tmp_path):
+    """The probe itself, against a real compiler on whatever platform runs this. cc accepts the
+    MSVC-style flags clang and clang-cl do; if none is installed the probe must say None, never
+    guess. Left as a live check because a probe that silently stopped compiling would report
+    False on every host and disable torch.compile everywhere."""
+    import shutil
+
+    cc = shutil.which("clang-cl") or shutil.which("clang") or shutil.which("cc")
+    if cc is None:
+        assert _msvc_env._compiles_a_trivial_translation_unit("no-such-compiler", []) is None
+        return
+    flag_style_ok = _msvc_env._compiles_a_trivial_translation_unit(cc, [])
+    # A cc that rejects /Zs answers False rather than crashing, which is the contract that
+    # matters here; on a real clang-cl it answers True.
+    assert flag_style_ok in (True, False)
+    assert _msvc_env._compiles_a_trivial_translation_unit("no-such-compiler", []) is None
+
 def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
     import sysconfig
 

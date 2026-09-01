@@ -129,6 +129,35 @@ def _toolchain_summary() -> str:
     )
 
 
+def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
+    """Ask the compiler instead of predicting it. None means the probe could not be run.
+
+    Header discovery is an inference and it is wrong in the expensive direction: clang-cl
+    locates MSVC through its own search, so on a measured R9700 it compiled with INCLUDE,
+    VCINSTALLDIR and WindowsSdkDir all cleared, injecting an -internal-isystem we can see
+    no trace of. Predicting from directories alone would disable torch.compile there."""
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "probe.c")
+            with open(src, "w", encoding = "utf-8") as fh:
+                fh.write("#include <stdlib.h>\nint main(void){return 0;}\n")
+            # Syntax-only: no link, so a missing lib path cannot masquerade as a missing
+            # header, and nothing is written outside the temporary directory.
+            argv = [cc, "/Zs", src] + [f"/I{d}" for d in inc_dirs if d]
+            done = subprocess.run(
+                argv, cwd = tmp, capture_output = True, timeout = 90,
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("The compiler probe could not be run", exc_info = True)
+        return None
+    if done.returncode != 0:
+        logger.debug("Compiler probe failed: %s", (done.stderr or b"")[-400:])
+    return done.returncode == 0
+
+
 def crt_headers_reachable() -> bool:
     if sys.platform != "win32":
         return True
@@ -145,7 +174,20 @@ def crt_headers_reachable() -> bool:
     # Judged over the UNION, because that is what the compile sees: clang-cl reads INCLUDE as
     # system include paths and Triton passes its own dirs as /I. Judging each alone rejects a
     # split toolchain (VC toolset on INCLUDE, SDK discovered by Triton) that compiles fine.
-    return _headers_complete(triton_dirs + env_dirs)
+    if _headers_complete(triton_dirs + env_dirs):
+        return True
+    # Everything above is inference, and inference alone must not disable a working machine.
+    # Before gating, run the real thing: a compiler that succeeds here overrules every header
+    # heuristic, because it is the same question Triton's JIT will ask minutes later.
+    #
+    # Deliberately `is True`, so the probe can only ever RESCUE. A probe that cannot be run
+    # says nothing, and falling back to "ungated" there would trade a measured protection for
+    # an absent one -- the #7595 crash is exactly the case where a probe might not run.
+    try:
+        cc = _triton_cc()
+    except Exception:  # noqa: BLE001
+        return False
+    return _compiles_a_trivial_translation_unit(cc, triton_dirs) is True
 
 
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
