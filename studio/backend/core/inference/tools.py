@@ -14989,6 +14989,7 @@ def _check_signal_escape_patterns(code: str):
 
     def _visit_local_binding_scope(visitor: ast.NodeVisitor, node: ast.AST) -> None:
         """Visit a nested lexical scope with only its own binding overlay."""
+        saved_cwd_literal = getattr(visitor, "cwd_literal", None)
         saved_bindings = dict(string_bindings)
         saved_all = {name: list(values) for name, values in string_bindings_all.items()}
         saved_eval_aliases = dict(eval_exec_aliases)
@@ -15073,6 +15074,8 @@ def _check_signal_escape_patterns(code: str):
                 current = getattr(visitor, name)
                 current.clear()
                 current.update(saved)
+            if hasattr(visitor, "cwd_literal"):
+                visitor.cwd_literal = saved_cwd_literal
             for container, values in zip(tracked_containers, nonlocal_values):
                 _replace_binding_subset(container, nonlocal_names, values)
             active_local_scopes.pop()
@@ -16194,6 +16197,14 @@ def _check_signal_escape_patterns(code: str):
             self.network_call_aliases: dict[str, str] = {}
             self.network_instance_aliases: dict[str, str] = {}
             self.request_url_bindings: dict[str, str] = {}
+            self.os_module_aliases = {"os"}
+            self.archive_module_aliases: dict[str, str] = {
+                "tarfile": "tarfile",
+                "zipfile": "zipfile",
+            }
+            self.archive_ctor_aliases: dict[str, str] = {}
+            self.archive_instance_aliases: set[str] = set()
+            self.cwd_literal: "str | None" = None
 
         def _canonical_network_callable(self, func: ast.AST) -> str:
             getattr_target = _literal_getattr_target(func)
@@ -16252,6 +16263,40 @@ def _check_signal_escape_patterns(code: str):
                 return "aiohttp.ClientSession"
             return None
 
+        def _archive_constructor_name(self, node: ast.AST) -> "str | None":
+            if not isinstance(node, ast.Call):
+                return None
+            func = node.func
+            if isinstance(func, ast.Name):
+                return self.archive_ctor_aliases.get(func.id)
+            if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+                return None
+            module = self.archive_module_aliases.get(func.value.id)
+            if module == "zipfile" and func.attr == "ZipFile":
+                return "zipfile.ZipFile"
+            if module == "tarfile" and func.attr in ("open", "TarFile"):
+                return f"tarfile.{func.attr}"
+            return None
+
+        @staticmethod
+        def _path_literal_is_sensitive(path: str, include_dirs = False) -> bool:
+            candidates = {path, _normalize_path_separators(path)}
+            if "\\" in path:
+                candidates.add(path.replace("\\", "/"))
+            for candidate in candidates:
+                if any(candidate.startswith(prefix) for prefix in _SENSITIVE_FILE_PREFIXES):
+                    return True
+                if _SENSITIVE_FILE_RE.match(candidate) or _find_sensitive_paths(candidate):
+                    return True
+                if include_dirs and _matches_sensitive_dir(candidate):
+                    return True
+            return False
+
+        def _effective_read_path(self, path: str) -> str:
+            if self.cwd_literal is None or not _is_safe_relative_path(path):
+                return path
+            return _join_path_parts([self.cwd_literal, path]) or path
+
         def visit_Import(self, node):
             for alias in node.names:
                 if alias.name == "pathlib":
@@ -16262,6 +16307,10 @@ def _check_signal_escape_patterns(code: str):
                     self.file_reader_module_aliases[alias.asname or alias.name] = alias.name
                 if alias.name in self.network_module_aliases:
                     self.network_module_aliases[alias.asname or alias.name] = alias.name
+                if alias.name == "os":
+                    self.os_module_aliases.add(alias.asname or "os")
+                if alias.name in self.archive_module_aliases:
+                    self.archive_module_aliases[alias.asname or alias.name] = alias.name
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -16288,6 +16337,16 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     if alias.name in _DATAFRAME_READER_NAMES:
                         self.file_reader_aliases.add(alias.asname or alias.name)
+            elif node.module == "zipfile":
+                for alias in node.names:
+                    if alias.name == "ZipFile":
+                        self.archive_ctor_aliases[alias.asname or alias.name] = "zipfile.ZipFile"
+            elif node.module == "tarfile":
+                for alias in node.names:
+                    if alias.name in ("TarFile", "open"):
+                        self.archive_ctor_aliases[alias.asname or alias.name] = (
+                            f"tarfile.{alias.name}"
+                        )
             if node.module in self.network_module_aliases:
                 for alias in node.names:
                     canonical = f"{node.module}.{alias.name}"
@@ -16324,6 +16383,72 @@ def _check_signal_escape_patterns(code: str):
                         if isinstance(tgt, ast.Name):
                             self.request_url_bindings[tgt.id] = request_url
 
+            archive_constructor = self._archive_constructor_name(value)
+            if archive_constructor is not None:
+                for tgt in targets:
+                    if isinstance(tgt, ast.Name):
+                        self.archive_instance_aliases.add(tgt.id)
+
+        def _propagate_alias_binding(self, targets, value):
+            named_targets = [target for target in targets if isinstance(target, ast.Name)]
+            if isinstance(value, ast.Name):
+                source = value.id
+                for target in named_targets:
+                    name = target.id
+                    for aliases in (
+                        self.pathlib_aliases,
+                        self.builtins_aliases,
+                        self.path_aliases,
+                        self.file_reader_aliases,
+                        self.os_module_aliases,
+                        self.archive_instance_aliases,
+                        shutil_module_aliases,
+                    ):
+                        if source in aliases:
+                            aliases.add(name)
+                    for bindings in (
+                        self.file_reader_module_aliases,
+                        self.file_copy_aliases,
+                        self.network_module_aliases,
+                        self.network_call_aliases,
+                        self.network_instance_aliases,
+                        self.request_url_bindings,
+                        self.archive_module_aliases,
+                        self.archive_ctor_aliases,
+                    ):
+                        if source in bindings:
+                            bindings[name] = bindings[source]
+                    if source in eval_exec_aliases:
+                        eval_exec_aliases[name] = eval_exec_aliases[source]
+                    elif source in ("eval", "exec"):
+                        eval_exec_aliases[name] = source
+                return
+
+            if not isinstance(value, ast.Attribute) or not isinstance(value.value, ast.Name):
+                return
+            receiver = value.value.id
+            attr = value.attr
+            canonical = self._canonical_network_callable(value)
+            for target in named_targets:
+                name = target.id
+                if receiver in self.pathlib_aliases and attr in _PATHLIB_PATH_CLASSES:
+                    self.path_aliases.add(name)
+                if any(canonical.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES):
+                    self.network_call_aliases[name] = canonical
+                if canonical in ("io.open", "io.FileIO", "codecs.open", "os.open"):
+                    self.file_reader_aliases.add(name)
+                if attr in _DATAFRAME_READER_NAMES:
+                    self.file_reader_aliases.add(name)
+                if receiver in shutil_module_aliases and attr in _SHUTIL_COPY_NAMES:
+                    self.file_copy_aliases[name] = f"shutil.{attr}"
+                if receiver in self.builtins_aliases and attr in ("eval", "exec"):
+                    eval_exec_aliases[name] = attr
+                archive_module = self.archive_module_aliases.get(receiver)
+                if archive_module == "zipfile" and attr == "ZipFile":
+                    self.archive_ctor_aliases[name] = "zipfile.ZipFile"
+                elif archive_module == "tarfile" and attr in ("open", "TarFile"):
+                    self.archive_ctor_aliases[name] = f"tarfile.{attr}"
+
         def visit_Assign(self, node):
             # Module rebinding: ``import pathlib; pl = pathlib``,
             # ``import shutil; sh = shutil`` (and the equivalent for
@@ -16344,6 +16469,8 @@ def _check_signal_escape_patterns(code: str):
                     self.builtins_aliases.discard(tgt.id)
                     self.path_aliases.discard(tgt.id)
                     self.file_reader_aliases.discard(tgt.id)
+                    self.os_module_aliases.discard(tgt.id)
+                    self.archive_instance_aliases.discard(tgt.id)
                     for bindings in (
                         self.file_reader_module_aliases,
                         self.file_copy_aliases,
@@ -16351,76 +16478,14 @@ def _check_signal_escape_patterns(code: str):
                         self.network_call_aliases,
                         self.network_instance_aliases,
                         self.request_url_bindings,
+                        self.archive_module_aliases,
+                        self.archive_ctor_aliases,
                         bare_shutil_copy_aliases,
                         eval_exec_aliases,
                     ):
                         bindings.pop(tgt.id, None)
                     shutil_module_aliases.discard(tgt.id)
-
-            if isinstance(node.value, ast.Name):
-                src = node.value.id
-                for tgt in node.targets:
-                    if not isinstance(tgt, ast.Name):
-                        continue
-                    if src in self.pathlib_aliases:
-                        self.pathlib_aliases.add(tgt.id)
-                    if src in shutil_module_aliases:
-                        shutil_module_aliases.add(tgt.id)
-                    if src in self.builtins_aliases:
-                        self.builtins_aliases.add(tgt.id)
-                    if src in self.path_aliases:
-                        self.path_aliases.add(tgt.id)
-                    if src in self.file_reader_module_aliases:
-                        self.file_reader_module_aliases[tgt.id] = self.file_reader_module_aliases[
-                            src
-                        ]
-                    if src in self.network_module_aliases:
-                        self.network_module_aliases[tgt.id] = self.network_module_aliases[src]
-                    if src in self.network_call_aliases:
-                        self.network_call_aliases[tgt.id] = self.network_call_aliases[src]
-                    if src in self.network_instance_aliases:
-                        self.network_instance_aliases[tgt.id] = self.network_instance_aliases[src]
-                    if src in self.file_copy_aliases:
-                        self.file_copy_aliases[tgt.id] = self.file_copy_aliases[src]
-                    if src in self.request_url_bindings:
-                        self.request_url_bindings[tgt.id] = self.request_url_bindings[src]
-                    if src in eval_exec_aliases:
-                        eval_exec_aliases[tgt.id] = eval_exec_aliases[src]
-                    elif src in ("eval", "exec"):
-                        eval_exec_aliases[tgt.id] = src
-            # Method rebinding inside the file-read surface:
-            # ``r = pl.Path`` so a later ``r('/etc/shadow').read_text()``
-            # flows through the pathlib resolver. The receiver alias
-            # for ``shutil.copy`` etc. is handled by the shutil-fq
-            # canonicalisation in the gate itself.
-            if isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name):
-                recv = node.value.value.id
-                attr = node.value.attr
-                if recv in self.pathlib_aliases and attr in _PATHLIB_PATH_CLASSES:
-                    for tgt in node.targets:
-                        if isinstance(tgt, ast.Name):
-                            self.path_aliases.add(tgt.id)
-                canonical = self._canonical_network_callable(node.value)
-                if any(canonical.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES):
-                    for tgt in node.targets:
-                        if isinstance(tgt, ast.Name):
-                            self.network_call_aliases[tgt.id] = canonical
-                if canonical in ("io.open", "io.FileIO", "codecs.open", "os.open"):
-                    for tgt in node.targets:
-                        if isinstance(tgt, ast.Name):
-                            self.file_reader_aliases.add(tgt.id)
-                if attr in _DATAFRAME_READER_NAMES:
-                    for tgt in node.targets:
-                        if isinstance(tgt, ast.Name):
-                            self.file_reader_aliases.add(tgt.id)
-                if recv in shutil_module_aliases and attr in _SHUTIL_COPY_NAMES:
-                    for tgt in node.targets:
-                        if isinstance(tgt, ast.Name):
-                            self.file_copy_aliases[tgt.id] = f"shutil.{attr}"
-                if recv in self.builtins_aliases and attr in ("eval", "exec"):
-                    for tgt in node.targets:
-                        if isinstance(tgt, ast.Name):
-                            eval_exec_aliases[tgt.id] = attr
+            self._propagate_alias_binding(node.targets, node.value)
             self._record_constructed_binding(node.targets, node.value)
             self.generic_visit(node)
 
@@ -16435,6 +16500,8 @@ def _check_signal_escape_patterns(code: str):
                     self.builtins_aliases.discard(target)
                     self.path_aliases.discard(target)
                     self.file_reader_aliases.discard(target)
+                    self.os_module_aliases.discard(target)
+                    self.archive_instance_aliases.discard(target)
                     for bindings in (
                         self.file_reader_module_aliases,
                         self.file_copy_aliases,
@@ -16442,17 +16509,37 @@ def _check_signal_escape_patterns(code: str):
                         self.network_call_aliases,
                         self.network_instance_aliases,
                         self.request_url_bindings,
+                        self.archive_module_aliases,
+                        self.archive_ctor_aliases,
                         bare_shutil_copy_aliases,
                         eval_exec_aliases,
                     ):
                         bindings.pop(target, None)
                     shutil_module_aliases.discard(target)
+                self._propagate_alias_binding([node.target], node.value)
                 self._record_constructed_binding([node.target], node.value)
             self.generic_visit(node)
 
         def visit_NamedExpr(self, node):
             self._record_constructed_binding([node.target], node.value)
             self.generic_visit(node)
+
+        def visit_With(self, node):
+            saved_archive_instances = set(self.archive_instance_aliases)
+            try:
+                for item in node.items:
+                    self.visit(item.context_expr)
+                    if self._archive_constructor_name(item.context_expr) is not None and isinstance(
+                        item.optional_vars, ast.Name
+                    ):
+                        self.archive_instance_aliases.add(item.optional_vars.id)
+                for statement in node.body:
+                    self.visit(statement)
+            finally:
+                self.archive_instance_aliases.clear()
+                self.archive_instance_aliases.update(saved_archive_instances)
+
+        visit_AsyncWith = visit_With
 
         def visit_FunctionDef(self, node):
             _visit_local_binding_scope(self, node)
@@ -16511,6 +16598,31 @@ def _check_signal_escape_patterns(code: str):
                                     self._eval_depth -= 1
 
             fq = self._canonical_network_callable(node.func)
+
+            # Track an ordinary, straight-line literal chdir so a later
+            # relative open is judged against the directory it will use.
+            parent_statement = _parent_by_node.get(node)
+            chdir_is_unconditional = isinstance(parent_statement, ast.Expr) and isinstance(
+                _parent_by_node.get(parent_statement),
+                (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            )
+            if (
+                chdir_is_unconditional
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in self.os_module_aliases
+                and node.func.attr == "chdir"
+                and node.args
+            ):
+                changed_to = _extract_pathlib_target(
+                    node.args[0], self.path_aliases, self.pathlib_aliases
+                )
+                if changed_to is None:
+                    changed_to = _extract_string_from_node(node.args[0])
+                if changed_to is not None:
+                    if self.cwd_literal is not None and _is_safe_relative_path(changed_to):
+                        changed_to = _join_path_parts([self.cwd_literal, changed_to])
+                    self.cwd_literal = changed_to
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -16814,6 +16926,7 @@ def _check_signal_escape_patterns(code: str):
                                 break
 
                 if path_lit:
+                    path_lit = self._effective_read_path(path_lit)
                     # Cross-product the projections: backslash-normalised
                     # and path-separator-collapsed (``/etc//shadow``,
                     # ``/etc/./shadow``) so equivalent spellings match.
@@ -16850,6 +16963,44 @@ def _check_signal_escape_patterns(code: str):
                                 ),
                             }
                         )
+
+            # TarFile.add() and ZipFile.write() read their source before
+            # storing it. Restrict this to receivers proven to be stdlib
+            # archive instances so unrelated user-defined add/write methods
+            # keep their ordinary semantics.
+            archive_source = None
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ("add", "write"):
+                receiver = node.func.value
+                receiver_is_archive = (
+                    isinstance(receiver, ast.Name) and receiver.id in self.archive_instance_aliases
+                ) or self._archive_constructor_name(receiver) is not None
+                if receiver_is_archive:
+                    if node.args:
+                        archive_source = node.args[0]
+                    else:
+                        for kw in node.keywords or []:
+                            if kw.arg in ("name", "filename"):
+                                archive_source = kw.value
+                                break
+            if archive_source is not None:
+                archive_path = _extract_pathlib_target(
+                    archive_source, self.path_aliases, self.pathlib_aliases
+                )
+                if archive_path is None:
+                    archive_path = _extract_string_from_node(archive_source)
+                if archive_path and self._path_literal_is_sensitive(
+                    self._effective_read_path(archive_path), include_dirs = True
+                ):
+                    sensitive_file_reads.append(
+                        {
+                            "type": "sensitive_file_read",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                f"archive source {archive_path!r} targets a host "
+                                "identity / credential path; sandboxed code may not archive it"
+                            ),
+                        }
+                    )
 
             # File-copy / file-move APIs read the source path just like
             # ``open()`` does, and the copy gives the attacker a second

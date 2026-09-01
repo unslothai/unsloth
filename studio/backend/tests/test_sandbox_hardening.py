@@ -176,9 +176,9 @@ class TestPatchB_FindSensitivePathsHomeAnchored:
         ],
     )
     def test_legitimate_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"expected to allow (would dumbify tool calling): {cmd!r}"
+        assert not _find_sensitive_paths(cmd), (
+            f"expected to allow (would dumbify tool calling): {cmd!r}"
+        )
 
 
 class TestPatchB_FindSensitivePathsAbsolute:
@@ -223,9 +223,9 @@ class TestPatchB_FindSensitivePathsAbsolute:
         ],
     )
     def test_legitimate_absolute_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"expected to allow (would dumbify tool calling): {cmd!r}"
+        assert not _find_sensitive_paths(cmd), (
+            f"expected to allow (would dumbify tool calling): {cmd!r}"
+        )
 
 
 class TestPatchB_PythonShellExec:
@@ -539,9 +539,9 @@ class TestFinding7_NetworkHostStaticResolver:
         ],
     )
     def test_dynamic_trusted_host_allowed(self, code):
-        assert not _is_blocked(
-            code
-        ), f"regression: trusted host with dynamic literal blocked: {code!r}"
+        assert not _is_blocked(code), (
+            f"regression: trusted host with dynamic literal blocked: {code!r}"
+        )
 
 
 class TestFinding8_PathlibPathOpen:
@@ -2817,9 +2817,9 @@ class TestCurrentHeadReviewRegressions:
         ],
     )
     def test_pathlib_name_rewrites_blocked(self, expression):
-        assert _is_blocked(
-            f"from pathlib import Path\n{expression}"
-        ), f"pathlib filename rewrite leaked: {expression}"
+        assert _is_blocked(f"from pathlib import Path\n{expression}"), (
+            f"pathlib filename rewrite leaked: {expression}"
+        )
 
     def test_pathlib_benign_name_rewrite_allowed(self):
         code = "from pathlib import Path\nPath('docs/x').with_name('guide.md').read_text()"
@@ -2915,11 +2915,7 @@ class TestCurrentHeadReviewRegressions:
     @pytest.mark.parametrize(
         "code",
         [
-            (
-                "import httpx\n"
-                "c = httpx.Client(base_url='http://169.254.169.254')\n"
-                "c.get('/latest')"
-            ),
+            ("import httpx\nc = httpx.Client(base_url='http://169.254.169.254')\nc.get('/latest')"),
             (
                 "import aiohttp\n"
                 "c = aiohttp.ClientSession(base_url='http://169.254.169.254')\n"
@@ -3127,9 +3123,7 @@ class TestCurrentHeadReviewRegressions:
         assert not _find_sensitive_paths(cmd)
 
     def test_make_archive_positional_base_dir_blocked(self):
-        code = (
-            "import shutil\nshutil.make_archive('/tmp/keys', 'zip', './project', '/root/.ssh')"
-        )
+        code = "import shutil\nshutil.make_archive('/tmp/keys', 'zip', './project', '/root/.ssh')"
         assert _is_blocked(code), "positional make_archive base_dir exposed credentials"
 
     def test_untracked_local_import_module_callable_allowed(self):
@@ -3162,3 +3156,90 @@ class TestCurrentHeadReviewRegressions:
     )
     def test_tracked_importlib_callables_still_blocked(self, code):
         assert _is_blocked(code), "tracked importlib callable bypassed shell policy"
+
+
+class TestR8_StaticIndirectionCoverage:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io\nreader: object = io.open\nreader('/etc/shadow').read()",
+            "import codecs\nreader: object = codecs.open\nreader('/etc/shadow').read()",
+            "import os\nreader: object = os.open\nreader('/etc/shadow', os.O_RDONLY)",
+        ],
+    )
+    def test_annotated_stdlib_reader_aliases_blocked(self, code):
+        assert _is_blocked(code), "annotated reader alias bypassed sensitive-file policy"
+
+    def test_annotated_benign_reader_alias_allowed(self):
+        code = "import io\nreader: object = io.open\nreader('./notes.txt').read()"
+        assert not _is_blocked(code), "annotated reader alias blocked a project file"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import requests\n"
+                "client: object = requests\n"
+                "client.get('http://169.254.169.254/latest')"
+            ),
+            ("import pathlib\nReader: object = pathlib.Path\nReader('/etc/shadow').read_text()"),
+        ],
+    )
+    def test_annotated_module_and_constructor_aliases_blocked(self, code):
+        assert _is_blocked(code), "annotated alias lost its tracked identity"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.chdir('/etc')\nopen('shadow').read()",
+            "import os\nos.chdir('/')\nopen('etc/shadow').read()",
+            "import os as operating\noperating.chdir('/root')\nopen('.ssh/id_rsa').read()",
+        ],
+    )
+    def test_literal_chdir_relative_sensitive_reads_blocked(self, code):
+        assert _is_blocked(code), "literal chdir hid a sensitive relative read"
+
+    def test_literal_chdir_project_read_allowed(self):
+        code = "import os\nos.chdir('./docs')\nopen('README.md').read()"
+        assert not _is_blocked(code), "project-local chdir read was blocked"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.chdir('/etc')\nopen('hosts').read()",
+            "import os\nos.chdir('/etc')\nos.chdir('/tmp')\nopen('shadow').read()",
+        ],
+    )
+    def test_literal_chdir_benign_reads_allowed(self, code):
+        assert not _is_blocked(code), "literal chdir blocked a benign relative read"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import tarfile\n"
+                "with tarfile.open('keys.tar', 'w') as archive:\n"
+                " archive.add('/root/.ssh')"
+            ),
+            (
+                "from zipfile import ZipFile\n"
+                "with ZipFile('keys.zip', 'w') as archive:\n"
+                " archive.write('/root/.ssh/id_rsa')"
+            ),
+            "import zipfile\nzipfile.ZipFile('keys.zip', 'w').write('/etc/shadow')",
+        ],
+    )
+    def test_stdlib_archive_sensitive_sources_blocked(self, code):
+        assert _is_blocked(code), "stdlib archive exposed a sensitive source"
+
+    def test_stdlib_archive_project_source_allowed(self):
+        code = (
+            "import tarfile\n"
+            "with tarfile.open('project.tar', 'w') as archive:\n"
+            " archive.add('./project')"
+        )
+        assert not _is_blocked(code), "project archive source was blocked"
+
+    def test_unrelated_add_method_with_sensitive_text_allowed(self):
+        code = "class Bag:\n def add(self, value): return value\nBag().add('/root/.ssh')"
+        assert not _is_blocked(code), "an unrelated add method was treated as tarfile"
