@@ -44,6 +44,8 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     has_vision: row.capabilities.supportsVision,
     // Listed but not loadable: the row renders a partial mark and its click opens the download.
     partial: row.partial,
+    // What that mark is allowed to promise: a restart-only partial must not be called a resume.
+    partial_resumable: row.partialResumable,
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
     has_variant_state: row.hasVariantState ?? false,
@@ -60,6 +62,8 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     last_modified: epochMillisecondsToSeconds(row.lastModified),
     // Listed but not loadable: the row renders a partial mark and its click opens the download.
     partial: row.partial,
+    // What that mark is allowed to promise: a restart-only partial must not be called a resume.
+    partial_resumable: row.partialResumable,
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
     tags: row.tags,

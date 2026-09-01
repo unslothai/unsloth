@@ -645,7 +645,7 @@ function DownloadedBadge() {
  *  these with the same warning dot, and the row it sits on selects with isDownloaded: false so
  *  the click opens the download instead of handing incomplete weights to the runtime. Same box
  *  as DownloadedBadge, since the two are alternatives -- a row is complete or it is not. */
-function PartialBadge() {
+function PartialBadge({ resumable }: { resumable?: boolean }) {
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild={true}>
@@ -660,7 +660,9 @@ function PartialBadge() {
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
-        Partial download. Select to resume, or delete it
+        {resumable
+          ? "Partial download. Select to resume it, or delete it."
+          : "Partial download. Select to continue it, or delete it. The interrupted file starts over."}
       </TooltipContent>
     </Tooltip>
   );
@@ -1002,6 +1004,7 @@ function ModelRow({
   hideOwner,
   downloaded,
   partial,
+  partialResumable,
   showVision,
   quantChip,
   tags,
@@ -1035,6 +1038,9 @@ function ModelRow({
   /** Mark a row whose snapshot is incomplete. Mutually exclusive with `downloaded`: the bytes
    *  are there or they are not, and the caller routes the click to the download either way. */
   partial?: boolean;
+  /** Whether that partial continues byte for byte. Undefined reads as "no", which is what keeps
+   *  the mark from promising a resume the transport cannot deliver. */
+  partialResumable?: boolean;
   /** Show a Vision badge on the name (On Device, read from GGUF metadata). */
   showVision?: boolean;
   /** Grey chip beside the name, for rows that load one specific quant. */
@@ -1223,7 +1229,7 @@ function ModelRow({
             >
               {showCaps && <CapabilityIcons caps={caps} />}
               {showVision && <VisionBadge />}
-              {partial ? <PartialBadge /> : null}
+              {partial ? <PartialBadge resumable={partialResumable} /> : null}
               {downloaded && !partial && !loaded ? <DownloadedBadge /> : null}
             </span>
           ) : (
@@ -1238,7 +1244,7 @@ function ModelRow({
                   dotClassName="size-[5px]"
                 />
               )}
-              {partial ? <PartialBadge /> : null}
+              {partial ? <PartialBadge resumable={partialResumable} /> : null}
               {downloaded && !partial && !loaded ? <DownloadedBadge /> : null}
             </>
           )}
@@ -3225,6 +3231,18 @@ export function HubModelPicker({
   const partialSet = useMemo(
     () =>
       partialSetFromRows([...cachedGguf, ...cachedModels], (c) => c.repo_id),
+    [cachedGguf, cachedModels],
+  );
+
+  // Which of those continue byte for byte, so a Hub row's mark promises what the On Device row's
+  // does. An id partialSet dropped never draws the mark, so a spare entry here costs nothing.
+  const partialResumableSet = useMemo(
+    () =>
+      new Set(
+        [...cachedGguf, ...cachedModels]
+          .filter((c) => c.partial === true && c.partial_resumable === true)
+          .map((c) => c.repo_id.toLowerCase()),
+      ),
     [cachedGguf, cachedModels],
   );
 
@@ -5385,6 +5403,10 @@ export function HubModelPicker({
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
             quantChip={ggufQuantChipLabel(variant.quant)}
             partial={isPartial}
+            // No verdict to pass, so the mark takes its cautious wording:
+            // /api/models/gguf-variants builds models.models.GgufVariantDetail, which carries no
+            // partial_resumable. A sole-quant row is never partial anyway -- readSoleQuant only
+            // picks a clean quant -- so this mark is defensive to begin with.
             // Only for models the llama.cpp path actually loads. The Images and
             // Video pickers deliberately keep diffusion GGUFs listed, and those
             // run on the diffusion planner with different runtime buffers, on a
@@ -5489,6 +5511,7 @@ export function HubModelPicker({
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               alignMeta="device"
               partial={isPartialRepo}
+              partialResumable={c.partial_resumable}
               selected={isSelected}
               loaded={isRuntimeLoadedModel(
                 loadedModelId,
@@ -5617,6 +5640,7 @@ export function HubModelPicker({
             selected={isSelected}
             alignMeta="device"
             partial={isPartial}
+            partialResumable={c.partial_resumable}
             loaded={isRuntimeLoadedModel(
               loadedModelId,
               activeGgufVariant,
@@ -6790,6 +6814,9 @@ export function HubModelPicker({
                               hideOwner={isUnslothOwned(id)}
                               downloaded={downloadedSet.has(id.toLowerCase())}
                               partial={partialSet.has(id.toLowerCase())}
+                              partialResumable={partialResumableSet.has(
+                                id.toLowerCase(),
+                              )}
                               capabilities={capsById.get(id)}
                               meta={
                                 info?.meta ??
@@ -6896,6 +6923,9 @@ export function HubModelPicker({
                             showSize={hubRowsShowSize}
                             downloaded={downloadedSet.has(id.toLowerCase())}
                             partial={partialSet.has(id.toLowerCase())}
+                            partialResumable={partialResumableSet.has(
+                              id.toLowerCase(),
+                            )}
                             capabilities={capsById.get(id)}
                             // Same meta the unfiltered Recommended row shows, so a
                             // model does not lose its size chip just because it was
@@ -7015,6 +7045,9 @@ export function HubModelPicker({
                               // half-downloaded is marked here too. Without it the row reads
                               // as never fetched while the click resumes a download.
                               partial={partialSet.has(id.toLowerCase())}
+                              partialResumable={partialResumableSet.has(
+                                id.toLowerCase(),
+                              )}
                               capabilities={capsById.get(id)}
                               meta={
                                 isSearchGguf

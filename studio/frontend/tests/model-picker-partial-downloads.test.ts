@@ -53,26 +53,86 @@ test("the flag survives the mapping, or no row downstream could tell", () => {
 });
 
 test("a partial is marked the way the Hub marks one", () => {
-  const start = PICKERS.indexOf("function PartialBadge()");
+  const start = PICKERS.indexOf("function PartialBadge(");
   assert.ok(start > 0, "the picker has a partial mark");
   const badge = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
   assert.match(badge, /size-\[5px\] rounded-full bg-status-warning/);
   assert.match(badge, /aria-label="Partial download"/);
   assert.ok(
-    !PICKERS.includes("&mdash;"),
-    "no em dash in the tooltip, or anywhere else here",
-  );
-  assert.ok(
     MODELS_TABLE.includes('aria-label="Partial download"') &&
       MODELS_TABLE.includes("bg-status-warning"),
     "and the Hub still uses that dot, so the two agree",
+  );
+  assert.ok(
+    !PICKERS.includes("&mdash;"),
+    "no em dash in the tooltip, or anywhere else here",
+  );
+});
+
+test("the mark promises a resume only when the transport can give one", () => {
+  // A restart-only partial refetches the interrupted file, which for a one-file quant is every
+  // byte. The Hub already splits these two ("Resume" against "Continue"), so the picker cannot
+  // say "resume" on a row whose bytes will not be reused.
+  const start = PICKERS.indexOf("function PartialBadge(");
+  const badge = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
+  assert.ok(badge.includes("{ resumable }: { resumable?: boolean }"));
+  assert.match(
+    badge,
+    /resumable\n?\s*\? "Partial download\. Select to resume it/,
+  );
+  assert.ok(
+    badge.includes("The interrupted file starts over."),
+    "and the other branch says what continuing costs",
+  );
+  // Undefined has to read as the cautious branch, since that is what an unplumbed row passes.
+  assert.ok(!badge.includes("resumable === false"));
+  // The Hub's split is where this wording comes from, so it is pinned too.
+  const hub = read("../src/features/hub/catalog/use-download-card-state.ts");
+  assert.ok(hub.includes('return partialResumable ? "Resume" : "Continue";'));
+
+  // The verdict reaches the row: through the picker adapter, onto every marked row.
+  const inventory = read(
+    "../src/features/model-picker/inventory/use-chat-picker-inventory.ts",
+  );
+  assert.equal(
+    inventory.split("partial_resumable: row.partialResumable,").length - 1,
+    2,
+    "both cached repo shapes carry it",
+  );
+  assert.equal(
+    PICKERS.split("<PartialBadge resumable={partialResumable} />").length - 1,
+    2,
+    "aligned and unaligned branches alike",
+  );
+  // On Device reads its own row; Hub rows read the same cached rows partialSet is built from.
+  assert.equal(
+    PICKERS.split("partialResumable={c.partial_resumable}").length - 1,
+    2,
+  );
+  // Not the sole-quant row: /api/models/gguf-variants builds a schema with no
+  // partial_resumable, so claiming one there would be inventing a verdict.
+  assert.ok(!PICKERS.includes("partialResumable={variant."));
+  const chatVariant = read("../src/features/chat/types/api.ts");
+  const detail = chatVariant.slice(
+    chatVariant.indexOf("export interface GgufVariantDetail"),
+  );
+  assert.ok(
+    !detail.slice(0, detail.indexOf("\n}")).includes("partial_resumable"),
+    "and the chat variant type does not claim the field either",
+  );
+  assert.equal(
+    PICKERS.split("partialResumable={partialResumableSet.has(").length - 1,
+    3,
+    "all three Hub row renderers",
   );
 });
 
 test("complete and partial are alternatives, never both dots on one row", () => {
   // The bytes are there or they are not; two dots would say both.
   assert.equal(
-    PICKERS.split("{partial ? <PartialBadge /> : null}").length - 1,
+    PICKERS.split(
+      "{partial ? <PartialBadge resumable={partialResumable} /> : null}",
+    ).length - 1,
     2,
     "drawn in the aligned and unaligned branches alike",
   );

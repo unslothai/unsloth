@@ -69,7 +69,7 @@ test("the unscoped badge column is sized per list, not to the union of both", ()
   // And they sit in that one slot rather than overlapping.
   assert.match(
     PICKERS,
-    /\{showVision && <VisionBadge \/>\}\n\s*\{partial \? <PartialBadge \/> : null\}/,
+    /\{showVision && <VisionBadge \/>\}\n\s*\{partial \? <PartialBadge resumable=\{partialResumable\} \/> : null\}/,
   );
   assert.match(
     PICKERS,
