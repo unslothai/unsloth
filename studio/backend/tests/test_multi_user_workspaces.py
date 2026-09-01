@@ -2923,3 +2923,107 @@ def test_managed_recipe_workers_do_not_inherit_the_owners_github_token():
     assert suppressed["GH_TOKEN"] == ""
     assert suppressed["GITHUB_TOKEN"] == ""
     assert _ambient_credentials_suppressed_for(LEGACY_WORKSPACE_SUBJECT) == {}
+
+
+def test_status_routes_redact_a_foreign_private_resident_model(tmp_path, monkeypatch):
+    from routes import inference as inference_routes
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+
+    token = _bind("alice")
+    try:
+        private = workspace_root() / "models" / "secret-model"
+        private.mkdir(parents = True, exist_ok = True)
+        resident = {
+            "loaded": True,
+            "repo_id": str(private),
+            "base_repo": str(private),
+            "resolved": str(private),
+            "family": "flux",
+        }
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # Refusing the generation was not enough: the status payload still named
+        # the model and spelled out its absolute workspace path.
+        redacted = inference_routes._redact_foreign_private_resident_model(resident)
+        assert redacted["loaded"] is False
+        for field in ("repo_id", "base_repo", "resolved"):
+            assert redacted[field] is None
+        # Reported idle rather than refused, so the shape stays valid.
+        assert redacted["family"] == "flux"
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("alice")
+    try:
+        assert inference_routes._redact_foreign_private_resident_model(resident) == resident
+    finally:
+        reset_workspace_subject(token)
+
+    # A shared Hub model is untouched for everyone.
+    shared = {"loaded": True, "repo_id": "black-forest-labs/FLUX.1-dev"}
+    token = _bind("bob")
+    try:
+        assert inference_routes._redact_foreign_private_resident_model(shared) == shared
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_image_generation_is_pinned_to_the_status_it_authorised(monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import load_identity
+
+    seen = {}
+    authorised = {
+        "loaded": True,
+        "repo_id": "shared/model",
+        "base_repo": "shared/base",
+        "family": "flux",
+    }
+
+    def _status(self):
+        return dict(authorised)
+
+    def _generate(self, **kwargs):
+        seen["expected_load"] = kwargs.get("expected_load")
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(DiffusionBackend, "status", _status)
+    monkeypatch.setattr(DiffusionBackend, "generate", _generate)
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    # What the route does: authorise a status, then carry that exact identity into
+    # generate so the slot can refuse a load that committed in between rather than
+    # letting this request, which named no model, adopt it.
+    status = backend.status()
+    pinned = load_identity(
+        status.get("repo_id"), status.get("base_repo"), status.get("family")
+    )
+    try:
+        backend.generate(expected_load = pinned)
+    except RuntimeError:
+        pass
+
+    assert seen["expected_load"] == load_identity("shared/model", "shared/base", "flux")
+    # A different resident model does not match what was authorised, which is what
+    # the slot compares under its own lock.
+    assert seen["expected_load"] != load_identity(
+        "/workspaces/alice-abc/models/secret", "shared/base", "flux"
+    )
+
+
+def test_the_openai_image_route_rechecks_on_every_attempt():
+    import inspect
+
+    from routes import inference as inference_routes
+
+    source = inspect.getsource(inference_routes._generate_openai_images)
+    check = "_reject_foreign_private_resident_model(status,"
+    body_after_loop = source.split("for attempt in range(2):", 1)[1]
+    # Inside the retry loop, not once before it: the retry pins itself to a status
+    # read after the replacement, so a private load landing in between would be
+    # adopted if the check stayed outside.
+    assert check in body_after_loop

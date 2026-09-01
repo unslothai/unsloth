@@ -5482,7 +5482,11 @@ async def get_cached_model_path(
 async def reveal_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
-    current_subject: str = Depends(get_current_subject),
+    # The owner's: this opens Explorer, Finder or xdg-open on the machine the
+    # backend runs on, which a browser-only account has no business reaching, and
+    # repeating the call keeps opening windows there. Same dependency the shared
+    # cache deletes use, for the same reason: the effect is install-wide.
+    current_subject: str = Depends(require_install_admin),
 ):
     """Reveal a cached repo (or one GGUF variant's file) in the OS file manager."""
     from utils.paths.path_utils import reveal_in_file_manager

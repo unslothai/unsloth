@@ -549,7 +549,14 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
 @router.get("/video/status", response_model = VideoStatusResponse)
 async def video_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    return VideoStatusResponse(**get_video_backend().status())
+
+    from routes.inference import _redact_foreign_private_resident_model
+
+    # Same as the image status route: the generation guard refuses the run, but
+    # this payload still named the model and its absolute workspace path.
+    return VideoStatusResponse(
+        **_redact_foreign_private_resident_model(get_video_backend().status())
+    )
 
 
 @router.post("/video/unload", response_model = VideoStatusResponse)

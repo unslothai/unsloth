@@ -6807,18 +6807,55 @@ def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
     path a Hub id and handed the departed account's private weights to whoever
     generated next.
     """
+    if not _resident_model_is_foreign_private(status):
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            f"The resident {media} model was loaded from another account's files. "
+            "Load your own model first."
+        ),
+    )
+
+
+# Everything in a status payload that can name, or spell out the path to, a model
+# somebody else loaded privately.
+_PRIVATE_STATUS_FIELDS = ("repo_id", "base_repo", "resolved", "local_path")
+
+
+def _redact_foreign_private_resident_model(status: Any) -> Any:
+    """Blank a status describing a model another account loaded privately.
+
+    The generation guard refuses the run, but the status routes handed the same
+    caller the model's identity and its absolute workspace path anyway, which is
+    the thing worth hiding even from someone who cannot use it. Reported idle
+    rather than refused, matching what load_progress does and what these routes
+    already return when nothing is loaded.
+    """
+    if not isinstance(status, dict) or not _resident_model_is_foreign_private(status):
+        return status
+    redacted = dict(status)
+    redacted["loaded"] = False
+    for key in _PRIVATE_STATUS_FIELDS:
+        if key in redacted:
+            redacted[key] = None
+    return redacted
+
+
+def _resident_model_is_foreign_private(status: Any) -> bool:
+    """Whether the resident model belongs to another account's private files."""
     from auth.storage import is_installation_owner
 
     if is_installation_owner():
         # The owner may load a model from anywhere on the host, which is what
         # _reject_uncontained_local_path already allows them at load time, so an
         # arbitrary path outside the Unsloth roots is theirs by construction.
-        # Refusing them their own resident model here would break the ordinary
-        # single-user case of loading weights from somewhere else on disk.
-        return
+        # Treating it as foreign here would break the ordinary single-user case
+        # of loading weights from somewhere else on disk.
+        return False
     repo_id = (status or {}).get("repo_id")
     if not isinstance(repo_id, str) or not repo_id.strip():
-        return
+        return False
     candidate = repo_id.strip()
     if not _looks_like_a_local_model_path(candidate):
         try:
@@ -6827,9 +6864,9 @@ def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
             # why the rename case above is handled by shape and not by this.
             if not Path(os.path.expanduser(candidate)).exists():
                 # A Hub repo id, not a path: shared by design.
-                return
+                return False
         except OSError:
-            return
+            return False
 
     from routes.models import _is_sizable_local_path
     from utils.paths.storage_roots import cache_root
@@ -6841,19 +6878,13 @@ def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
         resolved = _lexical(candidate)
         shared = _lexical(str(cache_root()))
     except (OSError, RuntimeError, ValueError):
-        return
+        return False
     if resolved == shared or resolved.startswith(shared + os.sep):
-        return
+        return False
     if _is_sizable_local_path(candidate):
         # Inside this caller's own roots, so it is this caller's model.
-        return
-    raise HTTPException(
-        status_code = 403,
-        detail = (
-            f"The resident {media} model was loaded from another account's files. "
-            "Load your own model first."
-        ),
-    )
+        return False
+    return True
 
 
 def _reject_remote_code_from_a_managed_account(trust_remote_code: Any) -> None:
@@ -23821,8 +23852,19 @@ async def reveal_sandbox_dir(
 
     The file manager is the backend host's, so this only means anything when the
     backend runs on the user's own machine, which is the desktop app.
+
+    Owner only. The window opens on the machine the backend runs on, not the
+    caller's, so for a browser-managed account it is somebody else's screen, and
+    repeating the call keeps opening windows there.
     """
-    await _authenticate_header_or_query(request, token)
+    subject = await _authenticate_header_or_query(request, token)
+    from auth.storage import is_installation_owner
+
+    if not is_installation_owner(subject):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the installation owner can open folders on the server.",
+        )
 
     from starlette.concurrency import run_in_threadpool
 
@@ -32908,10 +32950,26 @@ async def generate_diffusion_image(
     backend = get_active_diffusion_engine()
     # This route names no model: it runs whatever is resident, so the load-time
     # containment check is not enough on its own.
-    _reject_foreign_private_resident_model(backend.status(), "image")
+    authorised_status = backend.status()
+    _reject_foreign_private_resident_model(authorised_status, "image")
+    # Pinned to the model that check just authorised. A private load committing
+    # between the check and the generation slot would otherwise be adopted by this
+    # request, which never named a model at all; the slot compares this identity
+    # under its own lock and refuses a replacement instead.
+    from core.inference.diffusion_families import (
+        DiffusionModelReplacedError as _DiffusionModelReplacedError,
+    )
+    from core.inference.diffusion_families import load_identity as _load_identity
+
+    authorised_load = _load_identity(
+        authorised_status.get("repo_id"),
+        authorised_status.get("base_repo"),
+        authorised_status.get("family"),
+    )
     try:
         result = await asyncio.to_thread(
             backend.generate,
+            expected_load = authorised_load,
             prompt = request.prompt,
             negative_prompt = request.negative_prompt,
             width = request.width,
@@ -32940,6 +32998,13 @@ async def generate_diffusion_image(
                 if request.controlnet
                 else None
             ),
+        )
+    except _DiffusionModelReplacedError:
+        # The model changed under this request between the authorisation check and
+        # the slot. Answered as a conflict rather than silently running on it.
+        raise HTTPException(
+            status_code = 409,
+            detail = "The loaded image model changed while this request was starting. Try again.",
         )
     except ValueError as exc:
         # Bad client input (undecodable image/mask, or an unsupported workflow): a 400 with the reason, not a generic 500.
@@ -33333,7 +33398,13 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
 async def diffusion_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import active_status
-    return DiffusionStatusResponse(**active_status())
+
+    # Refusing the generation is not enough on its own: this payload names the
+    # model and spells out its absolute path, which is the part worth hiding from
+    # a caller who is not allowed to use it.
+    return DiffusionStatusResponse(
+        **_redact_foreign_private_resident_model(active_status())
+    )
 
 
 @studio_router.get("/images/info", response_model = DiffusionInferenceInfoResponse)
@@ -33571,6 +33642,10 @@ async def _generate_openai_images(
     result = None
     for attempt in range(2):
         status = backend.status()
+        # Re-run on every attempt, not once before the loop: the retry pins itself
+        # to a status read AFTER the replacement, so a private load that landed in
+        # between would otherwise be adopted by this request.
+        _reject_foreign_private_resident_model(status, "image")
         if not status.get("loaded"):
             # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
