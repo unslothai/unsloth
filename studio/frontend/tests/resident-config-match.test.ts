@@ -1846,3 +1846,25 @@ test("a forced ngram stand-down reloads onto an updated binary", () => {
     false,
   );
 });
+
+/**
+ * The MTP-free recovery clears `_spec_draft_n_max` while `_runtime_matches_intent`
+ * keeps comparing against the count retained in `_last_load_intent`, so the status
+ * reports null for a load the backend still measures against 8. Reading that null as
+ * "the platform default" would agree with a blank pick and skip the reload that
+ * clearing the override is supposed to cause.
+ */
+test("a runtime_error resident does not claim its draft depth is the default", () => {
+  const recovered = { ...DEFAULTS, spec_fallback_reason: "runtime_error" };
+  assert.equal(matches(recovered, BLANK), false);
+  assert.equal(matches(recovered, { ...BLANK, specDraftNMax: 8 }), false);
+  // Every other fallback still compares normally, so this costs one round trip in
+  // exactly the state whose depth the status cannot express.
+  for (const reason of [null, "binary_no_mtp", "drafter_not_found", "mtp_partial_offload"]) {
+    assert.equal(
+      matches({ ...DEFAULTS, spec_fallback_reason: reason }, BLANK),
+      true,
+      `${reason} must still adopt a default-against-default pick`,
+    );
+  }
+});

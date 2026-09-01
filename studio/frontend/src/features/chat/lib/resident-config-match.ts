@@ -44,6 +44,7 @@ type ResidentRuntime = Pick<
   | "gpu_placement_paravirtual"
   | "tensor_split"
   | "cpu_fallback_reason"
+  | "spec_fallback_reason"
 >;
 
 function sameList(
@@ -323,7 +324,14 @@ const SETTING_CHECKS: SettingCheck[] = [
     // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
     // as the status carries a count only when a depth-consuming load recorded an override.
     pinned: () => true,
-    agrees: (c, s) => (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
+    agrees: (c, s) =>
+      // The MTP-free recovery is the one state whose depth the status cannot express:
+      // it clears the runtime value while _runtime_matches_intent keeps comparing
+      // against the count retained in _last_load_intent, so a null here is "unknown",
+      // not "the default". Decline and let /load answer, which is what the comment on
+      // RETRYABLE_SPEC_FALLBACKS assumes this comparison already does.
+      s.spec_fallback_reason !== "runtime_error" &&
+      (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
   },
   {
     chatOnly: true,

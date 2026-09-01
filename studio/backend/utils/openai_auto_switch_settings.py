@@ -426,6 +426,13 @@ VALID_SPECULATIVE_TYPES = frozenset(
         "draft-dflash",
         "ngram-mod",
         "ngram-simple",
+        # llama.cpp's own spelling for disable, plus the two an external caller
+        # reaches for. /load canonicalizes all three to "off"; without them here
+        # _clean_str drops the field, so the same string that disables a load was
+        # silently discarded when saved and the model followed the global default.
+        "none",
+        "disable",
+        "disabled",
     }
 )
 # Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
