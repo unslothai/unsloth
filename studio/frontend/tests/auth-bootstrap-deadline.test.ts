@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The countdown shown while an exposed first-run Studio still has its default
- * password. The server shuts itself down on that deadline, and before this the
- * browser was never told, so the session died behind a generic "Failed to load
- * auth status."
- */
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -18,8 +11,7 @@ import {
 } from "../src/features/auth/bootstrap-deadline.ts";
 
 test("a server that does not send the field is not time-boxed", () => {
-  // A pre-deadline backend omits the key entirely. Rendering a countdown from
-  // undefined would print "NaN minutes".
+  // A pre-deadline backend omits the key; a countdown from undefined prints "NaN".
   assert.equal(deadlineFromStatus(undefined, 1_000_000), null);
   assert.equal(deadlineFromStatus(null, 1_000_000), null);
 });
@@ -34,7 +26,6 @@ test("seconds are turned into an absolute expiry", () => {
 });
 
 test("zero seconds is a real deadline, not an absent one", () => {
-  // 0 means "expired", which must still show the banner, unlike null.
   assert.equal(deadlineFromStatus(0, 500), 500);
 });
 
@@ -60,8 +51,7 @@ test("a minute or more reads in minutes", () => {
 });
 
 test("it never renders a negative", () => {
-  // The tab keeps ticking after the deadline passes; "-12 minutes" would be worse
-  // than saying nothing.
+  // The tab keeps ticking past the deadline; "-12 minutes" is worse than nothing.
   assert.equal(formatCountdown(-1), "0 seconds");
   assert.equal(formatCountdown(-10_000_000), "0 seconds");
 });
@@ -73,8 +63,6 @@ test("expiry is inclusive of zero", () => {
 });
 
 test("the boundary between the two messages is one tick wide", () => {
-  // At exactly 0 the wording must have already switched, so no render can show
-  // "shuts down in 0 seconds".
   assert.equal(hasExpired(0), true);
   assert.equal(formatCountdown(0), "0 seconds");
   assert.ok(

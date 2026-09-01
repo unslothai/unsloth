@@ -24,9 +24,8 @@ from typing import Optional
 BOOTSTRAP_TIMEOUT_ENV_VAR = "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT"
 DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 3600
 
-# Expiry of the armed deadline, monotonic, or None when nothing is armed. The
-# browser has no other way to learn this launch is time-boxed: the warning goes to
-# stderr, which the launches that arm it (--secure, external bind) usually detach.
+# Monotonic expiry, or None when nothing is armed. Read back over HTTP because the
+# stderr warning is lost on the launches that arm it (--secure, external bind).
 _deadline_at: Optional[float] = None
 
 
@@ -42,10 +41,7 @@ def clear_bootstrap_deadline() -> None:
 
 def bootstrap_deadline_remaining_seconds() -> Optional[int]:
     """Seconds until shutdown, or None when this launch is not time-boxed.
-
-    Floors at 0: the timer and this clock are read separately, so a caller can land
-    between expiry and the shutdown completing.
-    """
+    Floors at 0: a caller can land between expiry and the shutdown completing."""
     if _deadline_at is None:
         return None
     return max(0, int(round(_deadline_at - time.monotonic())))

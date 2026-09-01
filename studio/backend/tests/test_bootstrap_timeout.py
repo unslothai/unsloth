@@ -190,9 +190,6 @@ def test_shutdown_message_uses_formatted_duration():
     assert not any("minute(s)" in m for m in logged)
 
 
-# ── deadline readback (what the browser is told) ────────────────────
-
-
 def test_no_deadline_reported_when_nothing_armed():
     clear_bootstrap_deadline()
     assert bootstrap_deadline_remaining_seconds() is None
@@ -210,14 +207,13 @@ def test_recorded_deadline_counts_down():
 
 
 def test_a_disabled_timeout_records_no_deadline():
-    """0 means the launch is not time-boxed, so there is nothing to display."""
+    """None means not time-boxed, which is a different answer from an expired 0."""
     record_bootstrap_deadline(0)
     assert bootstrap_deadline_remaining_seconds() is None
 
 
 def test_an_expired_deadline_floors_at_zero_rather_than_going_negative():
-    """The timer and this clock are read separately, so a caller can land in the
-    gap between expiry and the shutdown completing."""
+    """The timer and this clock are read separately, so a caller can land in the gap."""
     record_bootstrap_deadline(1)
     try:
         import auth.bootstrap_timeout as bt
@@ -228,8 +224,7 @@ def test_an_expired_deadline_floors_at_zero_rather_than_going_negative():
 
 
 def test_arming_publishes_the_deadline():
-    """Arming is the only thing that starts the clock, so it is what must record
-    it. A timer nobody can read is how this was invisible to the UI."""
+    """Arming is the only thing that starts the clock, so it must be what records it."""
     clear_bootstrap_deadline()
     timer = arm_bootstrap_timeout(
         _fake_storage(requires_change = True),

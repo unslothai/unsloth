@@ -42,7 +42,6 @@ type AuthMode = "login" | "change-password";
 type AuthStatusResponse = {
   initialized: boolean;
   requires_password_change: boolean;
-  /** Null or absent when the launch is not time-boxed. */
   bootstrap_deadline_seconds?: number | null;
 };
 
@@ -95,8 +94,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [requiresPasswordChange, setRequiresPasswordChange] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Absolute expiry, not a stored countdown: a backgrounded tab stops firing
-  // timers and must still render the right figure when it wakes.
   const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const reloadReadySent = useRef(false);
@@ -352,8 +349,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
         <p className="text-muted-foreground">{subtitle}</p>
       </div>
-      {/* Not a live region: it re-renders every second, so announcing it would
-          read the countdown aloud on every tick. */}
+      {/* Not a live region: it re-renders every second, so it would be read aloud on every tick. */}
       {deadlineAt !== null && (
         <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-600">
           {hasExpired(deadlineAt - nowMs) ? (
