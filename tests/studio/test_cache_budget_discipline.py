@@ -185,6 +185,14 @@ def _restricted_to_main(expr: str) -> bool:
             return any(restricted(p) for p in ands)
         if re.search(r"!(?!=)", part):
             return False
+        # Exactly one comparison, and it must be the main equality. A second one
+        # is how a leaf inverts itself while still containing the equality:
+        # `(github.ref == 'refs/heads/main') == false` is true off main, and
+        # `... != true` is the same trick. Quoted literals are blanked first so a
+        # `==` inside a string is not counted.
+        bare = re.sub(r"'[^']*'|\"[^\"]*\"", "''", part)
+        if len(re.findall(r"[=!]=", bare)) != 1:
+            return False
         return bool(_MAIN_ONLY.search(part))
 
     return restricted(expr)
@@ -220,6 +228,9 @@ def _restricted_to_main(expr: str) -> bool:
         ("!(github.ref == 'refs/heads/main')", False),
         # Parenthesised but genuinely restricted, so the fix is not over-rejection.
         ("(github.ref == 'refs/heads/main') && always()", True),
+        # Comparing the equality to a boolean inverts it while still containing it.
+        ("(github.ref == 'refs/heads/main') == false", False),
+        ("github.ref == 'refs/heads/main' != true", False),
         ("always() && (github.ref == 'refs/heads/main' && !cancelled())", True),
     ],
 )
