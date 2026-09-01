@@ -2635,6 +2635,9 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import detect_think_prefill
 
+        # Detected once and reused below: the decoder has to keep the protocol's delimiters
+        # for the same normalizer that consumes them at the end of this method.
+        vlm_reasoning_markers = detect_reasoning_channel_markers(chat_target, tools = tools)
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
         prefill = detect_think_prefill(
             prompt,
@@ -2694,8 +2697,16 @@ class MLXInferenceBackend:
         # dropped the native tool controls, so without this a genuine wrapped call reaches the
         # parser markerless and the execution guard refuses it. Text-only requests on a model
         # classified as a VLM come through here too.
+        # A native reasoning protocol whose delimiters are special-token ids needs them
+        # preserved too, as on the text path: ``decode_stream_token`` drops any special id
+        # outside the preserved set, and the normalizer would then never see its markers.
         vlm_token_decoder = (
-            NativeToolTokenDecoder(self._tokenizer) if tools and self._tokenizer else None
+            NativeToolTokenDecoder(
+                self._tokenizer,
+                preserved_tokens = reasoning_control_tokens(vlm_reasoning_markers),
+            )
+            if tools and self._tokenizer
+            else None
         )
         # The runtime EOS can itself be an allowlisted control (TML Inkling's
         # <|end_message|>), and this path appends each decoded token straight into the
@@ -2784,6 +2795,7 @@ class MLXInferenceBackend:
             _stream_vlm_snapshots(),
             chat_target,
             cancel_event,
+            markers = vlm_reasoning_markers,
             tools = tools,
             prompt = prompt,
             continued = vlm_continued,

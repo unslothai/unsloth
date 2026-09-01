@@ -2893,7 +2893,10 @@ def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set
     end = _gemma_body_brace_end(probe, m.end() - 1)
     if end is None:
         return True  # body still arriving
-    tail = probe[end + 1 :]
+    # Separators are not an answer, so a tail of them counts as the empty tail, exactly as
+    # in the bare-JSON sibling. Otherwise ``call:terminal{command:id} `` releases the buffer
+    # and the peer that arrives next streams before end-of-turn promotion can retract it.
+    tail = probe[end + 1 :].lstrip(" \t\n\r;")
     for nxt in _GEMMA_BARE_TC_RE.finditer(tail):
         if _markerless_promotable(nxt.group(1), enabled_tool_names):
             return True

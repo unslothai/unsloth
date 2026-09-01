@@ -86,7 +86,10 @@ _NATIVE_CONTROL_OPENERS = {
     "<｜tool▁call▁end｜>": ("<｜tool▁call▁begin｜>",),
     "<|tool_calls_section_end|>": ("<|tool_calls_section_begin|>",),
     "<|tool_call_end|>": ("<|tool_call_begin|>", "<|tool_call_argument_begin|>"),
-    "<|end_message|>": ("<|content_invoke_tool_json|>", "<|message_model|>"),
+    # Only the call marker: ``_TC_JSON_START_RE`` recognizes a TML call at
+    # ``<|content_invoke_tool_json|>{``, so the role opener alone leaves the closer inert and
+    # ``<|message_model|>hello<|end_message|>`` would keep a token nothing can consume.
+    "<|end_message|>": ("<|content_invoke_tool_json|>",),
     "</think>": ("<think>",),
     "[/THINK]": ("[THINK]",),
 }

@@ -4601,3 +4601,85 @@ def test_mlx_vlm_drops_an_orphan_closer_that_opened_nothing(monkeypatch):
         )
     )
     assert snapshots[-1] == "The [ARGS] marker is neat"
+
+
+def test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn(monkeypatch):
+    """The VLM decoder drops every special id outside its preserved set.
+
+    A turn that combines tools with a native reasoning protocol therefore loses the
+    delimiters ``normalize_reasoning_snapshots`` is waiting for, and the thought is emitted
+    as ordinary answer text. The text path already passes the protocol's controls.
+    """
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+
+    class _Tok:
+        # The delimiters are special-token ids, as they are in the real vocabulary.
+        _IDS = {1: "<|channel>", 2: "<channel|>", 9: "<eos>"}
+        all_special_ids = (1, 2, 9)
+        eos_token_id = 9
+        chat_template = "...<|channel>thought\n...<channel|>"
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            return "".join(
+                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
+                for i in token_ids
+            )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        for token_id, text in (
+            (1, "<|channel>"),
+            (None, "thought\n"),
+            (None, "weighing it"),
+            (2, "<channel|>"),
+            (None, " the answer"),
+        ):
+            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = _Tok(), chat_template = _Tok.chat_template)
+    backend._tokenizer = _Tok()
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 8, 1, None)
+
+    snapshots = list(
+        backend._generate_vlm(
+            *args,
+            _adapter_state = False,
+            tools = [{"type": "function", "function": {"name": "get_weather"}}],
+        )
+    )
+    # The thought is a closed reasoning block, not answer text.
+    assert snapshots[-1] == "<think>weighing it</think> the answer"

@@ -673,6 +673,11 @@ def test_a_promotable_gemma_peer_behind_a_blocked_call_is_held():
     assert may_continue(f"{blocked} call:web", EXEC_ENABLED) is True  # name still typing
     assert may_continue(f"{blocked} call:", EXEC_ENABLED) is True
     assert may_continue(blocked, EXEC_ENABLED) is True  # a peer may still arrive
+    # A chunk that ends on a separator has not settled either: releasing here streams the
+    # peer that arrives next. The bare-JSON sibling already treats these as the empty tail.
+    assert may_continue(f"{blocked} ", EXEC_ENABLED) is True
+    assert may_continue(f"{blocked};", EXEC_ENABLED) is True
+    assert may_continue(f"{blocked} ;\n", EXEC_ENABLED) is True
     assert may_continue('call:terminal{command:"i', EXEC_ENABLED) is True  # body still arriving
     # A run of blocked calls keeps looking for the peer behind them.
     assert may_continue("call:terminal{a:1} call:python{b:2} call:web_search{q:3}", EXEC_ENABLED)
@@ -905,3 +910,57 @@ def test_the_transformers_cleanup_keeps_a_stop_token_that_closes_an_envelope():
     assert closes_an_open_envelope("hi<|im_end|>", "<|im_end|>") is False
     assert closes_an_open_envelope("hi<|python_tag|>", "<|python_tag|>") is False
     assert closes_an_open_envelope("[TOOL_CALLS]x{}[/TOOL_CALLS]", "[/TOOL_CALLS]") is True
+    # The role opener is not the call marker: ``_TC_JSON_START_RE`` only recognizes a TML
+    # call at ``<|content_invoke_tool_json|>{``, so an ordinary TML turn keeps no closer.
+    assert closes_an_open_envelope("<|message_model|>hello<|end_message|>", "<|end_message|>") is (
+        False
+    )
+    assert closes_an_open_envelope(f"<|message_model|>get_weather{envelope}", "<|end_message|>")
+
+
+class _ReasoningChannelTokenizer:
+    """A native reasoning protocol whose delimiters are special-token ids."""
+
+    _IDS = {1: "<|channel>", 2: "<channel|>", 3: "<tool_call>", 4: "<eos>"}
+    all_special_ids = tuple(_IDS)
+
+    def convert_ids_to_tokens(self, token_id):
+        return self._IDS[token_id]
+
+    def decode(
+        self,
+        token_ids,
+        skip_special_tokens = False,
+        **_kwargs,
+    ):
+        return "".join(
+            "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
+            for i in token_ids
+        )
+
+
+def test_the_mlx_vlm_decoder_keeps_the_reasoning_protocol_delimiters():
+    """``decode_stream_token`` drops any special id outside the preserved set.
+
+    A VLM turn that combines tools with a native reasoning protocol therefore loses the
+    delimiters ``normalize_reasoning_snapshots`` is waiting for, and the reasoning is emitted
+    as ordinary answer text. The whole VLM stream is exercised in
+    ``test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn``.
+    """
+    from core.inference.native_tool_tokens import (
+        NativeToolTokenDecoder,
+        reasoning_control_tokens,
+    )
+
+    markers = ("<|channel>", "<channel|>")
+    tokenizer = _ReasoningChannelTokenizer()
+    without = NativeToolTokenDecoder(tokenizer)
+    with_markers = NativeToolTokenDecoder(
+        tokenizer, preserved_tokens = reasoning_control_tokens(markers)
+    )
+    for token_id, token in ((1, "<|channel>"), (2, "<channel|>")):
+        assert without.decode_stream_token(token_id, token) == ""
+        assert with_markers.decode_stream_token(token_id, token) == token
+    # Neither the tool control nor the suppression of an ordinary special token moves.
+    assert with_markers.decode_stream_token(3, "<tool_call>") == "<tool_call>"
+    assert with_markers.decode_stream_token(4, "<eos>") == ""
