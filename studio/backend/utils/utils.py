@@ -40,7 +40,6 @@ def hf_env_offline() -> bool:
     return False
 
 
-
 def anonymous_and_offline(hf_token) -> bool:
     """The one condition under which a Hub-reaching request can only be answered by disk.
 
@@ -56,8 +55,8 @@ def anonymous_and_offline(hf_token) -> bool:
     them run, so a path nobody has enumerated is covered too.
     """
     from hub.utils.hf_tokens import is_anonymous
-
     return is_anonymous(hf_token) and hf_env_offline()
+
 
 def canonical_model_repo_id(model_name: str) -> str:
     """Normalize a Hugging Face model repository ID selected in Unsloth."""

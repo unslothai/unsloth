@@ -229,9 +229,9 @@ def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
             json = {"dataset_name": "org/private-seed"},
             headers = {"Authorization": "Bearer token"},
         )
-        assert seen["token"] is (False if via_api_key else None), (
-            "hardcoding allow_ambient_token=False takes the fallback away from the UI too"
-        )
+        assert seen["token"] is (
+            False if via_api_key else None
+        ), "hardcoding allow_ambient_token=False takes the fallback away from the UI too"
 
 
 def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):
@@ -343,9 +343,9 @@ def test_the_audio_tokenizer_fallback_does_not_reach_for_the_ambient_token(monke
     monkeypatch.setattr(requests, "get", _get)
     mc._detect_audio_from_tokenizer("org/private", hf_token = False, revision = None)
 
-    assert "Authorization" not in (seen.get("headers") or {}), (
-        "an anonymous caller's tokenizer probe carried the operator's bearer"
-    )
+    assert "Authorization" not in (
+        seen.get("headers") or {}
+    ), "an anonymous caller's tokenizer probe carried the operator's bearer"
 
 
 def test_the_stt_sidecars_pass_the_sentinel_through_unchanged():
@@ -355,9 +355,9 @@ def test_the_stt_sidecars_pass_the_sentinel_through_unchanged():
     root = _Path(__file__).resolve().parent.parent / "core" / "inference"
     for name in ("stt_sidecar.py", "stt_ggml_sidecar.py", "stt_mtmd_sidecar.py"):
         source = (root / name).read_text()
-        assert "hf_token or None" not in source, (
-            f"{name} launders the sentinel into ambient access before the worker"
-        )
+        assert (
+            "hf_token or None" not in source
+        ), f"{name} launders the sentinel into ambient access before the worker"
 
 
 def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monkeypatch):
@@ -500,9 +500,9 @@ def test_an_anonymous_config_read_does_not_strip_the_process_credential(monkeypa
     model_config_module.load_model_config("org/private", token = False)
 
     assert seen["token"] is False, "the sentinel was not passed through to the hub"
-    assert seen["ambient"] == "ambient-operator-token", (
-        "the anonymous probe removed a credential another thread was still using"
-    )
+    assert (
+        seen["ambient"] == "ambient-operator-token"
+    ), "the anonymous probe removed a credential another thread was still using"
 
 
 @pytest.mark.parametrize(
@@ -718,13 +718,13 @@ def test_the_scan_route_derives_its_caller_rather_than_trusting_an_absent_body_t
 
     signature = inspect.signature(models_routes.scan_model_remote_code)
 
-    assert "allow_ambient_token" in signature.parameters, (
-        "the scan route cannot tell an api key from a ui session"
-    )
+    assert (
+        "allow_ambient_token" in signature.parameters
+    ), "the scan route cannot tell an api key from a ui session"
     source = inspect.getsource(models_routes.scan_model_remote_code)
-    assert "hf_token_arg(hf_token" in source, (
-        "the body token reaches the cache-backed scan target unresolved"
-    )
+    assert (
+        "hf_token_arg(hf_token" in source
+    ), "the body token reaches the cache-backed scan target unresolved"
 
 
 def test_an_anonymous_seed_preview_is_refused_while_offline(monkeypatch):
@@ -842,9 +842,9 @@ def test_a_public_model_keeps_its_size_when_the_cache_is_bypassed():
 
     source = inspect.getsource(models_routes.get_model_config)
 
-    assert "inspection_target != model_name" in source, (
-        "snapshot sizing is still chosen from the flag rather than the target"
-    )
+    assert (
+        "inspection_target != model_name" in source
+    ), "snapshot sizing is still chosen from the flag rather than the target"
 
 
 @pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
@@ -881,9 +881,9 @@ def test_the_prefer_local_scan_branch_carries_the_anonymous_guard():
     marker = source.index("elif prefer_local_cache is True")
     branch = source[marker : marker + 200]
 
-    assert "not is_anonymous(hf_token)" in branch, (
-        "the prefer-local scan branch still resolves a cached snapshot for any caller"
-    )
+    assert (
+        "not is_anonymous(hf_token)" in branch
+    ), "the prefer-local scan branch still resolves a cached snapshot for any caller"
 
 
 @pytest.mark.parametrize(
@@ -921,6 +921,6 @@ def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
         (formatting.check_format_response, "check-format"),
     ):
         source = inspect.getsource(owner)
-        assert "anonymous_and_offline" in source, (
-            f"{name} can still be answered from disk for a denied caller"
-        )
+        assert (
+            "anonymous_and_offline" in source
+        ), f"{name} can still be answered from disk for a denied caller"
