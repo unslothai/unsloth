@@ -1260,7 +1260,7 @@ function VideoGenerator({
   const familyDefaultFrames = status?.defaults?.num_frames;
   const defaultFlowShift = status?.defaults?.flow_shift ?? null;
   const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
-  const presetRepoId = status?.family ?? status?.repo_id ?? "";
+  const presetRepoId = status?.repo_id ?? "";
   const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
     const resolution = resolutionPresets[0] ?? [768, 512];
     const recommended =

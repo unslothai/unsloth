@@ -29,8 +29,9 @@ test("image defaults use explicit and resolved family keys for opaque paths", ()
   const text = source("../src/features/images/images-page.tsx");
   assert.ok(text.includes("defaultsFor(defaultsKeyFor(repoId, familyOverride))"));
   assert.ok(
-    text.includes("defaultsFor(status?.family ?? status?.base_repo ?? repoId)"),
+    text.includes("const seedKey = `${repoId}\\0${residentDefaults}`"),
   );
+  assert.ok(text.includes("defaultsFor(residentDefaults)"));
 });
 
 test("video defaults use the explicit family for opaque paths", () => {

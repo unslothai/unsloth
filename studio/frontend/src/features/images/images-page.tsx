@@ -135,6 +135,7 @@ import {
   DEFAULT_GEN,
   defaultsFor,
   defaultsKeyFor,
+  residentDefaultsKey,
 } from "./image-generation-defaults";
 
 import {
@@ -1398,10 +1399,15 @@ export function ImagesPage({
     }),
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
+  const residentDefaults = residentDefaultsKey(
+    status?.repo_id ?? "",
+    status?.base_repo,
+    status?.resolved?.family_override,
+  );
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
     const recommended =
       pendingModelDefaults ??
-      defaultsFor(status?.family ?? status?.base_repo ?? status?.repo_id ?? "");
+      defaultsFor(residentDefaults);
     return {
       negativePrompt: "",
       width: 1024,
@@ -1411,7 +1417,7 @@ export function ImagesPage({
       batchSize: 1,
       runs: 1,
     };
-  }, [pendingModelDefaults, status?.base_repo, status?.family, status?.repo_id]);
+  }, [pendingModelDefaults, residentDefaults]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
     // Same rule restoreSettings follows: a negative prompt that is in effect has to be visible, or
@@ -2347,8 +2353,9 @@ export function ImagesPage({
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
     if (lastLoad.current) return;
-    if (seededResident.current === repoId) return;
-    seededResident.current = repoId;
+    const seedKey = `${repoId}\0${residentDefaults}`;
+    if (seededResident.current === seedKey) return;
+    seededResident.current = seedKey;
     // Wire Reapply to the resident model too, so an advanced-option reload works without
     // re-picking. Only a full pipeline is reloadable by repo id alone; a resident GGUF/single_file
     // carries no checkpoint filename, so leave the target null for those and the button hidden.
@@ -2363,16 +2370,15 @@ export function ImagesPage({
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
     }
-    // The family is authoritative for an opaque local pipeline, whose repo_id and base_repo are
-    // both filesystem paths. It also identifies a GGUF whose repo has no family substring.
-    const d = defaultsFor(status?.family ?? status?.base_repo ?? repoId);
+    // The explicit family identifies an opaque local pipeline; named variants retain their more
+    // specific base-repo recipe. The same semantic key guards reseeding above.
+    const d = defaultsFor(residentDefaults);
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
   }, [
     imagePresets.storedRecipe,
-    status?.base_repo,
-    status?.family,
+    residentDefaults,
     status?.loaded,
     status?.model_kind,
     status?.repo_id,

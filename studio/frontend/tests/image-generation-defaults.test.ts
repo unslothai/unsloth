@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   defaultsFor,
   defaultsKeyFor,
+  residentDefaultsKey,
 } from "../src/features/images/image-generation-defaults.ts";
 
 test("distinguishes Klein base checkpoints from distilled checkpoints", () => {
@@ -46,6 +47,29 @@ test("an explicit family supplies defaults for an opaque local path", () => {
     guidance: 4,
   });
   assert.equal(defaultsKeyFor(opaque, "auto"), opaque);
+});
+
+test("resident defaults use explicit family without flattening named variants", () => {
+  const opaque = "/models/my-private-finetune";
+  assert.equal(
+    residentDefaultsKey(opaque, opaque, {
+      value: "qwen-image",
+      source: "explicit",
+    }),
+    "qwen-image",
+  );
+  assert.equal(
+    residentDefaultsKey(
+      "black-forest-labs/FLUX.1-schnell",
+      "black-forest-labs/FLUX.1-schnell",
+      { value: "flux.1", source: "auto" },
+    ),
+    "black-forest-labs/FLUX.1-schnell",
+  );
+  assert.deepEqual(defaultsFor("black-forest-labs/FLUX.1-schnell"), {
+    steps: 4,
+    guidance: 0,
+  });
 });
 
 test("routed image picks apply and transactionally roll back model defaults", () => {

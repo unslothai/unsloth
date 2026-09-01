@@ -54,3 +54,23 @@ export function defaultsKeyFor(
   const family = familyOverride?.trim();
   return family && family.toLowerCase() !== "auto" ? family : repoId;
 }
+
+/** Use family semantics only when the resident load was explicitly pinned to them.
+ *
+ * Auto-detected named models keep their base-repo key, which distinguishes variants such as
+ * FLUX.1 Schnell and Dev. Opaque local pipelines have no useful repo/base token, but they can
+ * only enter through an explicit override, whose engaged family is authoritative.
+ */
+export function residentDefaultsKey(
+  repoId: string,
+  baseRepo: string | null | undefined,
+  resolvedFamily:
+    | { value?: string | boolean | null; source?: "auto" | "explicit" }
+    | null
+    | undefined,
+): string {
+  const family = resolvedFamily?.source === "explicit" ? resolvedFamily.value : null;
+  return typeof family === "string" && family.trim()
+    ? family.trim()
+    : (baseRepo ?? repoId);
+}
