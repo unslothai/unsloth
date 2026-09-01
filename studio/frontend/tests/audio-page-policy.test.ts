@@ -6,15 +6,16 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  MINIMAX_MUSIC_DEFAULT_SECONDS,
+  MINIMAX_MUSIC_FRAMES_PER_SECOND,
+  MINIMAX_MUSIC_MAX_FRAMES,
+  MINIMAX_MUSIC_MAX_SECONDS,
+  audioGenerationPresentation,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
   isTtsAudioType,
   macTtsPickAction,
-  MINIMAX_MUSIC_DEFAULT_SECONDS,
-  MINIMAX_MUSIC_FRAMES_PER_SECOND,
-  MINIMAX_MUSIC_MAX_FRAMES,
-  MINIMAX_MUSIC_MAX_SECONDS,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
   minimaxMusicFramesForSeconds,
@@ -39,10 +40,51 @@ const chatApiSource = readFileSync(
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
   assert.equal(canTransitionAudioMode(null), true);
-  assert.equal(canTransitionAudioMode("generating"), true);
+  assert.equal(canTransitionAudioMode("generating", "generating"), true);
+  assert.equal(canTransitionAudioMode("generating", "preparing"), false);
+  assert.equal(canTransitionAudioMode("generating", "stopping"), false);
+  assert.equal(canTransitionAudioMode("generating", "finishing"), false);
   assert.equal(canTransitionAudioMode("loading"), false);
   assert.equal(canTransitionAudioMode("unloading"), false);
   assert.equal(canTransitionAudioMode("transcribing"), false);
+});
+
+test("audio generation phases expose truthful indeterminate presentation", () => {
+  assert.equal(audioGenerationPresentation(null), null);
+  assert.deepEqual(audioGenerationPresentation("preparing"), {
+    status: "Preparing audio…",
+    actionLabel: "Preparing…",
+    canStop: false,
+  });
+  assert.deepEqual(audioGenerationPresentation("generating"), {
+    status: "Generating audio…",
+    actionLabel: "Stop",
+    canStop: true,
+  });
+  assert.deepEqual(audioGenerationPresentation("stopping"), {
+    status: "Stopping audio…",
+    actionLabel: "Stopping…",
+    canStop: false,
+  });
+  assert.deepEqual(audioGenerationPresentation("finishing"), {
+    status: "Finishing audio…",
+    actionLabel: "Finishing…",
+    canStop: false,
+  });
+
+  for (const phase of [
+    "preparing",
+    "generating",
+    "stopping",
+    "finishing",
+  ] as const) {
+    const presentation = audioGenerationPresentation(phase);
+    assert.ok(presentation);
+    assert.doesNotMatch(
+      `${presentation.status} ${presentation.actionLabel}`,
+      /%|percent|eta|remaining/i,
+    );
+  }
 });
 
 test("staged TTS completion requires the same Speak ownership generation", () => {
@@ -565,7 +607,7 @@ test("generating waits for the transcribe release the mode switch started", () =
   // dictation model, which OOMs a device that fits either one alone.
   assert.match(
     audioPageSource,
-    /const handleGenerate = useCallback\(async \(\) => \{[\s\S]{0,900}?const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]{0,200}?if \(releaseInFlight && !\(await releaseInFlight\)\) \{[\s\S]{0,80}?setMode\("transcribe"\);/,
+    /const handleGenerate = useCallback\(async \(\) => \{[\s\S]{0,1100}?const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]{0,240}?if \(releaseInFlight && !\(await releaseInFlight\)\) \{[\s\S]{0,160}?setMode\("transcribe"\);/,
   );
 });
 
@@ -610,12 +652,12 @@ test("generation is claimed before the transcribe release is awaited", () => {
   // each resumed into its own generateAudio while generateAbort tracked only the last.
   assert.match(
     audioPageSource,
-    /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
+    /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*updateGenerationPhase\("preparing"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
   );
   // And a release that failed hands the slot back rather than wedging the button.
   assert.match(
     audioPageSource,
-    /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
+    /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*updateGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
   );
 });
 
