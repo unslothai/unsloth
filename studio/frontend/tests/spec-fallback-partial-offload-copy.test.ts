@@ -43,3 +43,29 @@ test("the Hybrid Mamba partial-offload stand-down has its own notice", () => {
   );
   assert.match(copy, /with mtp|mtp('s)? (extra state|on)|would/i);
 });
+
+/**
+ * A forced ngram-mod on a build that does not advertise the mode stands down and
+ * records "binary_outdated". The panel gates its notice on the resolved mode, so
+ * without "ngram" in that set the user sees ngram still selected, no speculation
+ * running, and neither the reason nor the update button.
+ */
+test("the forced-ngram stand-down reaches the settings notice", () => {
+  const gate = settings.match(/const showSpecFallback =[\s\S]*?;\n/);
+  assert.ok(gate, "showSpecFallback moved");
+  assert.match(gate[0], /speculativeType === "ngram"/);
+
+  // And it must not be labelled MTP. ngram-mod opens no drafter, so
+  // spec_drafter_kind still holds whatever the MTP resolution left behind; the
+  // requested mode has to win, which means it is tested before that field.
+  const label = settings.match(
+    /const speculativeDrafterLabel:[\s\S]*?;\n/,
+  );
+  assert.ok(label, "speculativeDrafterLabel moved");
+  assert.match(label[0], /"ngram-mod"/);
+  assert.ok(
+    label[0].indexOf('speculativeType === "ngram"') <
+      label[0].indexOf("specDrafterKind"),
+    "the ngram check must precede the drafter-kind checks",
+  );
+});

@@ -426,7 +426,7 @@ function specFallbackMessage({
   updateAvailable,
 }: {
   reason: string;
-  drafter: "MTP" | "DSpark" | "DFlash";
+  drafter: "MTP" | "DSpark" | "DFlash" | "ngram-mod";
   isLocalGguf: boolean;
   updateAvailable: boolean;
 }): string {
@@ -568,12 +568,17 @@ export function ChatSettingsPanel({
   // The loaded model's own kind, not the pending control: the notice explains a
   // fallback that already happened, so a staged edit (or a preset applied without
   // a reload) must not re-label it and point at the wrong file.
-  const speculativeDrafterLabel: "MTP" | "DSpark" | "DFlash" =
-    (specDrafterKind ?? speculativeType) === "dspark"
-      ? "DSpark"
-      : (specDrafterKind ?? speculativeType) === "dflash"
-        ? "DFlash"
-        : "MTP";
+  const speculativeDrafterLabel: "MTP" | "DSpark" | "DFlash" | "ngram-mod" =
+    // Checked before the drafter kind, not after: ngram-mod opens no drafter, so
+    // spec_drafter_kind still carries whatever the MTP resolution left there and
+    // would label a forced ngram stand-down "MTP".
+    speculativeType === "ngram"
+      ? "ngram-mod"
+      : (specDrafterKind ?? speculativeType) === "dspark"
+        ? "DSpark"
+        : (specDrafterKind ?? speculativeType) === "dflash"
+          ? "DFlash"
+          : "MTP";
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
@@ -609,7 +614,10 @@ export function ChatSettingsPanel({
       speculativeType === "mtp" ||
       speculativeType === "mtp+ngram" ||
       speculativeType === "dspark" ||
-      speculativeType === "dflash");
+      speculativeType === "dflash" ||
+      // ngram-mod runs no drafter, so only the binary stand-down reaches it. Without
+      // this the panel shows ngram selected, no speculation running, and no reason.
+      speculativeType === "ngram");
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&
