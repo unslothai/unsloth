@@ -141,7 +141,7 @@ def _log_llama_update_progress(job: LlamaUpdateJob) -> None:
             return
         _last_llama_update_step = step
         if step < prev:
-            return  # new update; resync without logging
+            return
     logger.info("llama_update_progress", to_tag = job.to_tag or "", percent = step * 10)
 
 

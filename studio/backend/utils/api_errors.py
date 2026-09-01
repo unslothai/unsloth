@@ -190,19 +190,11 @@ def _summarize_validation_errors(errors) -> tuple:
     return summary, param
 
 
-# A validation error carries the offending value under "input". For a JSON-body route
-# handed a non-JSON body (a multipart upload posted to /api/inference/audio/transcribe
-# is the case that surfaced this) that value is the whole raw payload, and
-# jsonable_encoder renders bytes with ``o.decode()``, which raises UnicodeDecodeError on
-# any binary. The handler then failed, turning a 422 into a 500 whose traceback embedded
-# the escaped payload: one 531 KB upload produced a single 2.2 MB log line.
-#
-# Clients only need loc/msg/type, so the input is summarized rather than echoed. That
-# also stops a large but perfectly decodable body from being mirrored back and logged.
+# jsonable_encoder renders the offending "input" with o.decode(), which raises on binary and turned a 422 into a 500
+# whose traceback embedded the payload: one 531 KB upload logged 2.2 MB.
 _MAX_ECHOED_INPUT_CHARS = 200
-# A body that is a huge container of small values is just as unbounded as one huge
-# string: a JSON route handed an array of 200k integers would otherwise have every
-# element copied into the 422 body. Keep enough to identify the payload, drop the rest.
+# A huge container of small values is as unbounded as one huge string (an array of 200k ints
+    # would have every element copied into the 422 body), so keep only enough to identify it.
 _MAX_ECHOED_ITEMS = 20
 _MAX_ECHOED_DEPTH = 4
 
@@ -218,8 +210,8 @@ def _truncate_text(value: str) -> str:
     return value
 
 
-# Digits, not characters: str() on a very large int raises above sys.get_int_max_str_digits(),
-# and json.dumps would emit every digit otherwise.
+# Digits, not characters: str() on a very large int raises above sys.get_int_max_str_digits()
+# json.dumps would emit every digit otherwise.
 _MAX_ECHOED_INT_DIGITS = 100
 _LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
@@ -347,8 +339,8 @@ def install_api_error_handlers(app) -> None:
     async def _handle_http_exception(request, exc):
         path = request.url.path
         headers = getattr(exc, "headers", None)
-        # Statuses like 204/304/1xx must not carry a body — mirror FastAPI's
-        # default http_exception_handler, which returns a bodiless Response.
+        # Statuses like 204/304/1xx must not carry a body, mirroring FastAPI's default
+        # http_exception_handler, which returns a bodiless Response.
         if not is_body_allowed_for_status_code(exc.status_code):
             return Response(status_code = exc.status_code, headers = headers)
         if wants_api_error_envelope(path):
