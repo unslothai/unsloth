@@ -441,7 +441,7 @@ def get_or_create_identity_secret() -> bytes:
     return secret
 
 
-# Dedicated AES-256 key used to encrypt Studio credentials in studio.db.
+# Dedicated AES-256 key used to encrypt Unsloth credentials in studio.db.
 # It intentionally lives in auth.db so copying studio.db alone does not expose
 # provider or Hugging Face tokens, and survives password changes/resets.
 _CREDENTIAL_ENCRYPTION_KEY_DB_KEY = "credential_encryption_key_v1"
@@ -1037,7 +1037,7 @@ def clear_desktop_secret() -> None:
 
 API_KEY_PREFIX = "sk-unsloth-"
 
-# The ``name`` a workflow mints its internal key under. Studio mints internal
+# The ``name`` a workflow mints its internal key under. Unsloth mints internal
 # keys for more than one workflow and they do not carry the same authority, so
 # the name is the only thing that tells them apart after the fact. Deep Research
 # is durable: its hops outlive the session that started them, so they carry a key
@@ -1169,7 +1169,7 @@ def revoke_internal_api_key(key_id: int) -> bool:
 def is_internal_api_key(raw_key: str) -> bool:
     """Whether *raw_key* is a workflow-minted internal key rather than a user's own.
 
-    Lets request-scoped code (the API monitor) tell Studio's own background work from a
+    Lets request-scoped code (the API monitor) tell Unsloth's own background work from a
     third party using Unsloth as an API server. The answer is memoized because this runs on
     the event loop for every API-key request and a key's origin is fixed when it is minted.
     """
@@ -1203,7 +1203,7 @@ def is_internal_api_key(raw_key: str) -> bool:
 def internal_api_key_name(raw_key: str) -> Optional[str]:
     """The workflow name *raw_key* was minted under, or ``None`` if it is not internal.
 
-    ``is_internal_api_key`` answers "is this Studio's own key", which is the right
+    ``is_internal_api_key`` answers "is this Unsloth's own key", which is the right
     question for a monitor label but far too coarse for authorization: a
     data-recipe key runs inside a recipe the user authored, so treating it as
     equal to the Deep Research hop would let that recipe spend any saved cloud

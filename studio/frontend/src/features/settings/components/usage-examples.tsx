@@ -40,7 +40,10 @@ import {
   buildAgentCommand,
   isLoopbackHost,
   normalizeHost,
+  psSingle,
+  shSingle,
 } from "./agent-command";
+import { keylessBaseEligible } from "./keyless-example-eligibility";
 
 type ExampleType =
   | "curl"
@@ -138,9 +141,6 @@ const AGENT_LABELS: Record<string, string> = {
 };
 
 const j = (s: string): string => JSON.stringify(s);
-// Inner escaping for a single-quoted argument (POSIX '\'' , PowerShell '').
-export const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
-export const psSingle = (s: string): string => s.replace(/'/g, "''");
 const toolsJson = TOOLS.map(j).join(", ");
 
 function bodyExtraLines(variant: Variant, indent: string): string[] {
@@ -492,46 +492,6 @@ function canUseLocalAgentDetection(base: string): boolean {
   if (!isTauri) return false;
   try {
     return isLoopbackHost(normalizeHost(new URL(base).hostname));
-  } catch {
-    return false;
-  }
-}
-
-function isPrivateLanHost(hostname: string): boolean {
-  const host = normalizeHost(hostname).toLowerCase();
-  if (host.startsWith("::ffff:")) {
-    return isPrivateLanHost(host.slice("::ffff:".length));
-  }
-  const ipv4 = host.split(".").map(Number);
-  if (
-    ipv4.length === 4 &&
-    ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
-  ) {
-    return (
-      ipv4[0] === 10 ||
-      (ipv4[0] === 172 && ipv4[1] >= 16 && ipv4[1] <= 31) ||
-      (ipv4[0] === 192 && ipv4[1] === 168) ||
-      (ipv4[0] === 169 && ipv4[1] === 254)
-    );
-  }
-  return /^f[cd][0-9a-f]*:/i.test(host) || /^fe[89ab][0-9a-f]*:/i.test(host);
-}
-
-function keylessBaseEligible(
-  base: string,
-  scope: KeylessApiAccessScope,
-  exposure: KeylessApiAccessExposure | null,
-): boolean {
-  if (scope === "off" || exposure === "colab" || exposure === "public_url") {
-    return false;
-  }
-  try {
-    const host = normalizeHost(new URL(base).hostname);
-    if (isLoopbackHost(host)) return true;
-    return (
-      scope === "inference" &&
-      (isPrivateLanHost(host) || exposure === "private_lan")
-    );
   } catch {
     return false;
   }

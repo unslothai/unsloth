@@ -4,7 +4,7 @@
 """Tests for the diffusion dataset labeling + example-import routes.
 
 The routes are hit with the FastAPI TestClient; the datasets root is redirected to a
-tmp_path so nothing touches a real Studio home. The example importer is exercised with a
+tmp_path so nothing touches a real Unsloth home. The example importer is exercised with a
 mocked datasets.load_dataset so no network / GPU is needed.
 """
 

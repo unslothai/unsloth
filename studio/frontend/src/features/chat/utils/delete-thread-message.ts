@@ -112,7 +112,7 @@ async function withStoredResearchMessages(
 export async function syncExportedRepositoryToBackend(
   remoteId: string,
   exp: ExportedMessageRepository,
-  options: { pruneMissing?: boolean } = {},
+  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<void> {
   // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and
   // this used to make every save pay for the same GET /threads/{id} twice.
@@ -122,7 +122,10 @@ export async function syncExportedRepositoryToBackend(
   await syncStoredChatMessages(
     remoteId,
     await withStoredResearchMessages(remoteId, records),
-    { pruneMissing: options.pruneMissing },
+    {
+      pruneMissing: options.pruneMissing,
+      deletedMessageIds: options.deletedMessageIds,
+    },
   );
 }
 
@@ -167,6 +170,7 @@ export async function deleteThreadMessage(args: {
   if (remoteId) {
     await syncExportedRepositoryToBackend(remoteId, next, {
       pruneMissing: true,
+      deletedMessageIds: [messageId, ...assistantReplyIds],
     });
   }
   thread.import(next);

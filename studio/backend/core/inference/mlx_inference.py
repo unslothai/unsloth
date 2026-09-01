@@ -13,8 +13,8 @@ from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
 from core.inference.chat_template_helpers import (
-    ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
+    make_reasoning_normalizer,
     markup_for_tokenizer,
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
@@ -1944,8 +1944,8 @@ class MLXInferenceBackend:
         preserve_native_channels = reasoning_channel_markers is not None
         token_ids = []
         normalizer = (
-            ReasoningChannelNormalizer(
-                *reasoning_channel_markers,
+            make_reasoning_normalizer(
+                reasoning_channel_markers,
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
@@ -2391,7 +2391,7 @@ class MLXInferenceBackend:
 
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)
-        normalizer = ReasoningChannelNormalizer(*markers) if markers is not None else None
+        normalizer = make_reasoning_normalizer(markers) if markers is not None else None
         # Matched on the sampled deltas, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         sampled = ""

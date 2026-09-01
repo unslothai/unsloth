@@ -95,13 +95,26 @@ class _RefitSpy:
         return False
 
 
+# The shared fixture the platform cells run on: a load that does not fit at the
+# asked slot count but does fit at a reduced one, so the re-fit has something to do.
+# Named because whether it still sits in that band depends on _FIT_MIN_CTX, and
+# test_the_fixture_still_reaches_the_refit_at_this_fit_floor reports it by name when
+# a floor change moves it out. This weight was picked by sweeping the band at
+# _FIT_MIN_CTX 4096, 8192 and 16384 and taking a value reducible at all three, so
+# the next floor change is less likely to move it out again: at 10_200 only 4096
+# reduced, and the 4096 -> 8192 raise left the load fitting whole at the floor
+# with --fit on, which is the planner's other answer and not this file's subject.
+_FIXTURE_WEIGHTS_MIB = 8_800
+_FIXTURE_SLOTS = 4
+
+
 def _plan(
     tmp_path,
     *,
     os_key,
     vendor,
-    weights_mib = 10_200,
-    n_parallel = 4,
+    weights_mib = _FIXTURE_WEIGHTS_MIB,
+    n_parallel = _FIXTURE_SLOTS,
     vram_mib = CARD_MIB,
     n_ctx = 0,
     tensor_parallel = False,
@@ -169,14 +182,40 @@ def _plan(
 
 
 class TestWhoTheRefitIsAllowedToTouch:
+    def test_the_fixture_still_reaches_the_refit_at_this_fit_floor(self, tmp_path):
+        """Anti-vacuity, and the first thing to read when the cells below go red.
+
+        Every REACHABLE cell shares one fixture, and whether that fixture reaches
+        the re-fit at all depends on _FIT_MIN_CTX: the probe prices each candidate
+        at the floor, so raising the floor can leave no slot count that fits, and
+        `if not _uf_slots:` then skips the whole reduction. That turns all nine
+        cells red at once with `assert 0 > 0`, which reads like the re-fit was
+        deleted when the block is untouched and only the fixture went stale.
+        """
+        got, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia")
+        assert entries > 0, (
+            f"the shared fixture ({_FIXTURE_WEIGHTS_MIB} MiB of weights on a "
+            f"{CARD_MIB} MiB card, asking {_FIXTURE_SLOTS} slots) no longer produces "
+            f"a reducible plan at _FIT_MIN_CTX={llama_mod._FIT_MIN_CTX}. The planner "
+            f"returned {got}. Resize the fixture into the reducible band -- the nine "
+            f"cells below are about WHICH hosts may re-fit, and cannot answer that "
+            f"question from a fixture where nobody can."
+        )
+
     @pytest.mark.parametrize("os_key,vendor", ALL_CELLS, ids = [f"{o}-{v}" for o, v in ALL_CELLS])
     def test_only_a_gpu_host_enters_the_refit(self, tmp_path, os_key, vendor):
         """Metal and CPU-only hosts must not reach the new block at all."""
-        _, entries = _plan(tmp_path, os_key = os_key, vendor = vendor)
+        got, entries = _plan(tmp_path, os_key = os_key, vendor = vendor)
         if (os_key, vendor) in REACHABLE:
-            assert entries > 0, f"{os_key}/{vendor} should re-fit"
+            assert entries > 0, (
+                f"{os_key}/{vendor} should re-fit but made no reduced-slot probe. "
+                f"If every REACHABLE cell failed together the fixture is stale, not "
+                f"the platform gate -- see "
+                f"test_the_fixture_still_reaches_the_refit_at_this_fit_floor. "
+                f"Plan: {got}"
+            )
         else:
-            assert entries == 0, f"{os_key}/{vendor} must not re-fit"
+            assert entries == 0, f"{os_key}/{vendor} must not re-fit, but did. Plan: {got}"
 
     @pytest.mark.parametrize("os_key", ["macos_arm", "macos_intel"])
     def test_macos_plans_exactly_as_it_did(self, tmp_path, os_key):

@@ -8,8 +8,8 @@ local `ChatModelAdapter`. Two whole mechanisms therefore never executed: the cum
 `<think>` re-parse in `chat-adapter.ts`, which re-parses the ENTIRE growing buffer on every delta,
 and the autoscroll `MutationObserver` in `use-intent-aware-autoscroll.tsx`, which answers every
 streamed character with a synchronous `scrollHeight` read over the whole thread. Both are O(thread)
-per chunk and neither is reachable without real bytes arriving over a real transport. So Studio is
-pointed at THIS, as an external provider, and the bytes go out over the wire, through the Studio
+per chunk and neither is reachable without real bytes arriving over a real transport. So Unsloth is
+pointed at THIS, as an external provider, and the bytes go out over the wire, through the Unsloth
 backend's own relay, into the app's own `TextDecoder`, its own SSE framing and its own delta
 accumulation. Nothing is stubbed and there is no `page.route` anywhere near the primary transport.
 
@@ -326,7 +326,7 @@ class _Handler(BaseHTTPRequestHandler):
         # CHUNKED, explicitly. On HTTP/1.1 a response with neither Content-Length nor
         # Transfer-Encoding is a keep-alive response of unknown length, and the reader blocks
         # forever waiting for a body that already arrived -- measured here as a client that hung
-        # past a 60s timeout having received every byte. Uvicorn, which is what Studio's own
+        # past a 60s timeout having received every byte. Uvicorn, which is what Unsloth's own
         # backend streams through, sends chunked for a StreamingResponse, so this is also the
         # framing the relay and the browser see in production.
         self.send_header("Transfer-Encoding", "chunked")
@@ -489,7 +489,7 @@ class Pacer:
 
     @property
     def base_url(self) -> str:
-        """What Studio's provider config points at. The `/v1` is load-bearing: the backend appends
+        """What Unsloth's provider config points at. The `/v1` is load-bearing: the backend appends
         `/chat/completions` to it verbatim."""
         return f"http://{self.host}:{self.port}/v1"
 
@@ -653,7 +653,7 @@ def check_planned_streams(streams: list[dict], planned: list[dict]) -> dict:
 def _selftest() -> int:
     """Serve one scripted reply to a plain socket client and check the wire bytes.
 
-    Run with `python -m tests.studio.studiobench.pacer`. No browser, no Studio, no Playwright: the
+    Run with `python -m tests.studio.studiobench.pacer`. No browser, no Unsloth, no Playwright: the
     pacer's contract is with the wire, and the wire is checkable on its own.
     """
     import urllib.request
