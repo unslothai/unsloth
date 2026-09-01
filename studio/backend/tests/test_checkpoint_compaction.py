@@ -3541,7 +3541,9 @@ def test_every_epoch_the_writer_records_carries_a_count_the_reader_can_use():
     for node in ast.walk(tree):
         if not isinstance(node, ast.Dict):
             continue
-        keys = {k.value for k in node.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        keys = {
+            k.value for k in node.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)
+        }
         if "checkpoint" not in keys:
             continue
         seen += 1

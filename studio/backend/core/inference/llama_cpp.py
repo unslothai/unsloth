@@ -1136,6 +1136,7 @@ def _archive_branch_chain(
             tip = proof[-1].get("id")
             if not any(row.get("id") == tip for row in chain):
                 return None
+
             # Rows past that tip ride on the unstored turns alone, so they may only carry
             # THOSE turns' text: matching the whole request instead let an abandoned row
             # in on a text repeated earlier in it. Keyed by ROLE too, as the branch match
