@@ -1101,6 +1101,20 @@ _WANDB_TOKEN_ENV_KEYS = ("WANDB_API_KEY",)
 # with the owner's token reads the owner's private repositories into the caller's
 # dataset.
 _GITHUB_TOKEN_ENV_KEYS = ("GH_TOKEN", "GITHUB_TOKEN")
+# boto3 resolves a client built without explicit keys through its default chain,
+# which on a host with ambient AWS credentials or an EC2 / container role is the
+# installation's own identity.
+_AWS_TOKEN_ENV_KEYS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+)
 
 
 def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
@@ -1123,6 +1137,16 @@ def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
     when a recipe leaves its token blank, turning the owner's private
     repositories into the caller's dataset.
 
+    And to the AWS credential variables, plus the instance-metadata provider that
+    hands out an EC2 or container role: an S3 dataset config with use_iam_role
+    deliberately takes boto3's default chain, so a managed account naming a bucket
+    that identity can read had the worker download it. The route refuses such a
+    config outright; this is the same rule applied to the child, for any path that
+    does not come through the route. A shared credentials file on disk belongs to
+    the same OS user and cannot be removed through the environment without
+    breaking a client built from explicit keys, so the route refusal is the
+    boundary for that one.
+
     The owner gets an empty dict, so their runs are unchanged. An account that
     supplies its own token is unaffected: that one travels in the config, and the
     worker sets it after this.
@@ -1132,9 +1156,20 @@ def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
     if is_installation_owner(subject):
         return {}
     suppressed = {
-        key: "" for key in _HF_TOKEN_ENV_KEYS + _WANDB_TOKEN_ENV_KEYS + _GITHUB_TOKEN_ENV_KEYS
+        key: ""
+        for key in (
+            _HF_TOKEN_ENV_KEYS
+            + _WANDB_TOKEN_ENV_KEYS
+            + _GITHUB_TOKEN_ENV_KEYS
+            + _AWS_TOKEN_ENV_KEYS
+        )
     }
     suppressed["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+    # Blanking the variables does not stop the instance-metadata provider. boto3
+    # reads this as the shared "do not ask IMDS" setting, and a client built from
+    # explicit keys never consults IMDS, so an account using its own keys is
+    # unaffected.
+    suppressed["AWS_EC2_METADATA_DISABLED"] = "true"
     return suppressed
 
 

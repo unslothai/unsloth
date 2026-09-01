@@ -1109,6 +1109,18 @@ def _retire_workspace_directory(username: str) -> bool:
     """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     directories, retired_all = _resolve_subject_owned_roots(username)
+    # Before the rename, not after: the WAL keeper holds this account's studio.db
+    # open for the life of the process, and Windows refuses to rename a directory
+    # containing an open file, so the retirement would fail every time and leave
+    # the username tombstoned until the server restarted.
+    try:
+        from storage.studio_db import close_wal_keeper_for
+        from utils.paths.storage_roots import studio_db_path
+        from utils.workspace_context import run_in_workspace
+
+        close_wal_keeper_for(run_in_workspace(username, studio_db_path))
+    except Exception:  # noqa: BLE001 - a keeper we cannot name is one we cannot close
+        logger.warning("Could not release the studio.db keeper for %s", username, exc_info = True)
     for directory in directories:
         try:
             if not directory.is_dir():
@@ -1200,6 +1212,17 @@ def _quiesce_workspace_jobs(username: str) -> None:
         from core.inference.mcp_client import close_mcp_sessions
         close_mcp_sessions()
 
+    def _reset_diffusion_training() -> None:
+        # is_active() is false once a run reaches a terminal state, so the stop
+        # above skipped it and the singleton kept the subject alongside the whole
+        # finished run: job id, metrics, model identity and the private output and
+        # checkpoint paths. A recreated namesake matched the retained subject and
+        # read it back from /diffusion/status.
+        from core.training.diffusion_training_service import get_diffusion_training_service
+        service = get_diffusion_training_service()
+        if service.owns_workspace(username):
+            service.reset_retained_state(username)
+
     def _stop_recipe_job() -> None:
         # The spawned worker keeps the artifact root it was given, so it can
         # recreate the retired pathname and write its dataset into a namesake.
@@ -1222,6 +1245,7 @@ def _quiesce_workspace_jobs(username: str) -> None:
         ("media renders", _stop_media_renders),
         ("data recipe job", _stop_recipe_job),
         ("cached MCP sessions", _close_mcp_sessions),
+        ("retained diffusion training state", _reset_diffusion_training),
     ):
         try:
             run_in_workspace(username, stop)

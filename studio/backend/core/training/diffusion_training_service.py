@@ -485,6 +485,26 @@ class DiffusionTrainingService:
         with self._lock:
             return self._active_workspace_subject in (None, requested)
 
+    def reset_retained_state(self, subject: str) -> None:
+        """Drop a finished run's state and its ownership, for a deleted account.
+
+        A terminal run is not active, so the delete path's stop had nothing to
+        stop, and the singleton went on holding the subject beside the whole
+        finished run: job id, metric history, model identity and the private
+        output and checkpoint paths. A recreated namesake matched the retained
+        subject and read it straight back out of status().
+
+        Refuses while a run is live, so this can never be a way to drop another
+        account's in-flight state; the delete path stops the run first.
+        """
+        with self._lock:
+            if self._active_workspace_subject not in (None, subject):
+                return
+            if self._reserved or (self._proc is not None and self._proc.is_alive()):
+                return
+            self._state = _idle_state()
+            self._active_workspace_subject = None
+
     def reserve(self) -> None:
         """Mark a diffusion-training start as in flight so the image/video load guards (which
         read is_active) refuse a concurrent load BEFORE the route frees resident GPU models.

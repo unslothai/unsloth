@@ -3612,3 +3612,115 @@ def test_a_managed_training_run_cannot_use_the_hosts_iam_role():
         _reject_ambient_s3_for_a_managed_account(iam)
     finally:
         reset_workspace_subject(token)
+
+
+def test_a_managed_worker_cannot_use_the_hosts_aws_identity():
+    from core.training.training import _ambient_credentials_suppressed_for
+
+    suppressed = _ambient_credentials_suppressed_for("alice")
+    assert suppressed["AWS_ACCESS_KEY_ID"] == ""
+    assert suppressed["AWS_SESSION_TOKEN"] == ""
+    # The container-credential endpoints are a separate provider from the plain
+    # variables, and so is IMDS, which is what hands out an EC2 instance role.
+    assert suppressed["AWS_CONTAINER_CREDENTIALS_FULL_URI"] == ""
+    assert suppressed["AWS_EC2_METADATA_DISABLED"] == "true"
+    assert _ambient_credentials_suppressed_for(LEGACY_WORKSPACE_SUBJECT) == {}
+
+
+def test_a_deleted_accounts_finished_diffusion_run_does_not_outlive_it():
+    import threading as _threading
+
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    service = DiffusionTrainingService.__new__(DiffusionTrainingService)
+    service._lock = _threading.RLock()
+    service._reserved = False
+    service._proc = None
+    service._active_workspace_subject = "alice"
+    service._state = {"active": False, "status": "completed", "job_id": "alice-job"}
+
+    # A terminal run is not active, so the delete path's stop had nothing to stop
+    # and the singleton kept the subject beside the finished run.
+    service.reset_retained_state("alice")
+    assert service._active_workspace_subject is None
+    assert service._state["job_id"] is None
+    assert service._state["status"] == "idle"
+
+    # Another account's state is not this account's to drop.
+    service._active_workspace_subject = "bob"
+    service._state = {"active": False, "status": "completed", "job_id": "bob-job"}
+    service.reset_retained_state("alice")
+    assert service._state["job_id"] == "bob-job"
+
+    # Neither is a live run, whoever owns it: the delete path stops it first.
+    service._active_workspace_subject = "alice"
+    service._reserved = True
+    service._state = {"active": True, "status": "running", "job_id": "alice-live"}
+    service.reset_retained_state("alice")
+    assert service._state["job_id"] == "alice-live"
+
+
+def test_download_activity_is_not_an_install_wide_listing(monkeypatch):
+    from hub.services import download_lifecycle
+
+    monkeypatch.setattr(download_lifecycle, "_download_initiators", {}, raising = False)
+
+    token = _bind("alice")
+    try:
+        download_lifecycle.note_download_initiator("org/private-model")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # The registry is install-wide, so an unfiltered activity list handed Bob
+        # the repository id, variant and scoped filenames of Alice's pull.
+        assert download_lifecycle.download_is_visible_to_caller("org/private-model") is False
+        # A job with no recorded initiator is hidden from a managed account, the
+        # opposite of the cancel rule: publishing one cannot be undone.
+        assert download_lifecycle.download_is_visible_to_caller("unknown-job") is False
+        download_lifecycle.require_download_cancel_permission("unknown-job")
+
+        # A shared slot: Bob adopting the same repo joins the initiators rather
+        # than replacing Alice, so both keep their own view and their own cancel.
+        download_lifecycle.note_download_initiator("org/private-model")
+        assert download_lifecycle.download_is_visible_to_caller("org/private-model") is True
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("alice")
+    try:
+        assert download_lifecycle.download_is_visible_to_caller("org/private-model") is True
+        download_lifecycle.require_download_cancel_permission("org/private-model")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        assert download_lifecycle.download_is_visible_to_caller("unknown-job") is True
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_retired_workspace_does_not_keep_its_database_open(tmp_path, monkeypatch):
+    from storage import studio_db
+
+    managed = tmp_path / "workspaces" / "alice-0123456789ab" / "studio.db"
+    managed.parent.mkdir(parents = True)
+    monkeypatch.setattr(studio_db, "studio_db_path", lambda: managed)
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    try:
+        assert studio_db.open_wal_keeper() is True
+        key = str(managed.resolve())
+        assert key in studio_db._wal_keepers
+
+        # Windows refuses to rename a directory holding an open file, so a keeper
+        # left on a deleted account's database blocks the retirement for the life
+        # of the process and the username stays tombstoned.
+        studio_db.close_wal_keeper_for(managed)
+        assert key not in studio_db._wal_keepers
+        # Idempotent: the retire path runs before the rename, and may run again.
+        studio_db.close_wal_keeper_for(managed)
+    finally:
+        studio_db.close_wal_keeper()

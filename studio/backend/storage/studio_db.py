@@ -1360,6 +1360,24 @@ def _close_keeper_connection(conn: "sqlite3.Connection | None") -> None:
         logger.warning("Could not close the studio.db WAL keeper: %s", exc)
 
 
+def close_wal_keeper_for(db_path) -> None:
+    """Release the keeper for ONE database, by path.
+
+    Windows refuses to rename a directory holding an open file, so a keeper left
+    on a deleted account's studio.db blocks _retire_workspace_directory for the
+    life of the process and the username stays tombstoned. Also forgets the
+    declined marker, since the path is about to stop existing.
+    """
+    try:
+        db_key = str(Path(db_path).resolve(strict = False))
+    except (OSError, RuntimeError, ValueError):
+        return
+    with _wal_keeper_lock:
+        conn = _wal_keepers.pop(db_key, None)
+        _wal_keeper_declined.discard(db_key)
+    _close_keeper_connection(conn)
+
+
 def open_wal_keeper() -> bool:
     """Hold this database's WAL open for the process. Returns whether a keeper is engaged.
 

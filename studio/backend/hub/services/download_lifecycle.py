@@ -1310,15 +1310,19 @@ def launch_worker(
 # shared cache and serve everyone), but that made a cancel reachable by anybody
 # who could name the repository, so one account could repeatedly abort another's
 # large or gated download.
-_download_initiators: dict[str, str] = {}
+# A SET per key, not one subject: scoped jobs share one slot per repository, so a
+# second account asking for the same repo adopts the running job rather than
+# starting its own. Recording only the latest starter took the first one's right
+# to cancel their own download away, and would hide it from their own activity list.
+_download_initiators: dict[str, set[str]] = {}
 _download_initiators_lock = threading.Lock()
 
 
 def note_download_initiator(key: str) -> None:
-    """Record the workspace starting this download, for the cancel check."""
+    """Record a workspace as one of this download's initiators."""
     from utils.workspace_context import current_workspace_subject
     with _download_initiators_lock:
-        _download_initiators[key] = current_workspace_subject()
+        _download_initiators.setdefault(key, set()).add(current_workspace_subject())
 
 
 def forget_download_initiator(key: str) -> None:
@@ -1338,8 +1342,8 @@ def require_download_cancel_permission(key: str) -> None:
     if is_installation_owner():
         return
     with _download_initiators_lock:
-        initiator = _download_initiators.get(key)
-    if initiator is None or initiator == current_workspace_subject():
+        initiators = _download_initiators.get(key)
+    if not initiators or current_workspace_subject() in initiators:
         return
     from fastapi import HTTPException
 
@@ -1417,11 +1421,37 @@ def idle_status(
     return (state.state, state.error, generation)
 
 
+def download_is_visible_to_caller(key: str) -> bool:
+    """Whether this caller may be told a download exists at all.
+
+    The registry is install-wide, so an unfiltered activity list handed any
+    account the repository id, variant, scoped filenames, transport and
+    generation of whatever anyone else was pulling, including a private or gated
+    repo. The initiator set already exists for the cancel check; this is the same
+    question asked before the metadata is published rather than after.
+
+    A job with no recorded initiator is hidden from a managed account and shown to
+    the owner. That is the opposite of the cancel rule on purpose: leaving an
+    unattributable job cancellable avoids stranding it, while publishing one
+    cannot be undone.
+    """
+    from auth.storage import is_installation_owner
+    from utils.workspace_context import current_workspace_subject
+
+    if is_installation_owner():
+        return True
+    with _download_initiators_lock:
+        initiators = _download_initiators.get(key)
+    return bool(initiators) and current_workspace_subject() in initiators
+
+
 def active_download_refs(
     registry: download_registry.DownloadRegistry, repo_id: Optional[str], *, with_variant: bool
 ) -> list[ActiveDownload]:
     downloads: list[ActiveDownload] = []
     for ref in registry.active_job_refs(repo_id):
+        if not download_is_visible_to_caller(ref.key):
+            continue
         metadata = ref.metadata
         if with_variant:
             ref_repo_id = metadata.repo_id if metadata is not None else ref.key.split("::", 1)[0]
