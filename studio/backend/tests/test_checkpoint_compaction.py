@@ -3548,3 +3548,49 @@ def test_every_epoch_the_writer_records_carries_a_count_the_reader_can_use():
         assert keys & counts, f"epoch record without a count: {sorted(keys)}"
 
     assert seen, "no epoch record found; the invariant would pass vacuously"
+
+
+def test_a_cancelled_reply_that_reached_text_is_still_validated(monkeypatch):
+    """Stop is not omission: the client re-sends a partial reply, so it must match.
+
+    `isAbandonedAssistantTurn` (chat-adapter.ts) drops an assistant turn only when it
+    carries no text, image or attachment -- cancellation alone does not drop it. Exempting
+    every cancelled row from the post-tip check let this abandoned "Partial" ride in on
+    "Continue" and hand the request its boundary instead of the epoch that really ended.
+    """
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    rows = [
+        {"id": "u1", "parentId": None, "role": "user", "content": "Q"},
+        {
+            "id": "a1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": "A1",
+            "metadata": {"generationStatus": "completed"},
+        },
+        {
+            "id": "a2",
+            "parentId": "a1",
+            "role": "assistant",
+            "content": "Partial",
+            "metadata": {
+                "generationStatus": "cancelled",
+                "incomplete": {"reason": "cancelled"},
+                **_checkpoint_metadata(21),
+            },
+        },
+        {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue"},
+    ]
+    branch = [
+        {"role": "user", "content": "Q"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "Continue"},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert llama_cpp._archive_branch_chain(rows, branch) is None
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False

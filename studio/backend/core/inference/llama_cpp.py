@@ -1069,19 +1069,25 @@ def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool
         return True
 
 
-def _row_unfinished(message: dict) -> bool:
-    """Whether the client would leave this reply out of its re-send."""
-    metadata = message.get("metadata")
-    metadata = metadata if isinstance(metadata, dict) else {}
-    custom = metadata.get("custom")
-    custom = custom if isinstance(custom, dict) else {}
-    status = metadata.get("generationStatus") or custom.get("generationStatus")
-    incomplete = metadata.get("incomplete") or custom.get("incomplete")
-    reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
-    return status in {"queued", "running", "cancelling", "cancelled", "failed"} or reason in {
-        "cancelled",
-        "interrupted",
-    }
+def _row_replayed(message: dict) -> bool:
+    """Whether the client re-sends this reply, by `assistantTurnCarriesPayload`.
+
+    Status is not the test: a Stop that reached text is kept, and only a reply carrying
+    nothing is dropped -- along with the tool results its wire projection would expand to.
+    """
+    if message.get("role") != "assistant":
+        return True
+    content = message.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    for part in content or ():
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text" and str(part.get("text") or "").strip():
+            return True
+        if part.get("type") in ("image", "image-url", "file"):
+            return True
+    return bool(message.get("attachments"))
 
 
 def _archive_branch_chain(
@@ -1117,8 +1123,9 @@ def _archive_branch_chain(
                 return None
             # Rows past that tip ride on the unstored turns alone, so they may only carry
             # THOSE turns' text: matching the whole request instead let an abandoned row
-            # in on a text repeated earlier in it. An unfinished reply carries nothing to
-            # match, being left out of the re-send, which is the cancelled-epoch case.
+            # in on a text repeated earlier in it. A row that renders nothing has nothing
+            # to match and is the cancelled-epoch case, since only THAT is what the client
+            # drops -- `isAbandonedAssistantTurn` re-sends a Stop that reached text.
             carried = {
                 _archive_message_text(message.get("content"))
                 for message in conversation_archive._as_wire(
@@ -1127,7 +1134,7 @@ def _archive_branch_chain(
             }
             past_tip = False
             for row in chain:
-                if past_tip and not _row_unfinished(row):
+                if past_tip and _row_replayed(row):
                     for wire in conversation_archive._as_wire([row]):
                         text = _archive_message_text(wire.get("content"))
                         if text and text not in carried:
