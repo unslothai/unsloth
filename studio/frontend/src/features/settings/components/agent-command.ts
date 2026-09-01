@@ -133,7 +133,10 @@ export function buildAgentShellCommands(
 // /v1/chat/completions, which serves safetensors and MLX.
 export const GGUF_ONLY_AGENTS: readonly string[] = ["codex", "claude"];
 
-export function agentRunsOnActiveModel(agent: string, isGguf: boolean): boolean {
+export function agentRunsOnActiveModel(
+  agent: string,
+  isGguf: boolean,
+): boolean {
   return isGguf || !GGUF_ONLY_AGENTS.includes(agent);
 }
 
@@ -199,4 +202,25 @@ export function statusGgufVerdict(
 ): boolean | null {
   if (resident == null) return null;
   return isGguf ?? null;
+}
+
+// Same model, ignoring any ":quant" a caller pinned.
+export function sameBaseModelId(a: string, b: string): boolean {
+  const base = (id: string) => id.trim().toLowerCase().split(":")[0];
+  return (
+    a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b)
+  );
+}
+
+// Whether a status verdict still describes the model the snippets name. The status poll
+// and the catalog poll run on separate timers, so a swap made elsewhere reaches one before
+// the other; without this the panel pairs a newly named safetensors model with the
+// previous GGUF verdict for up to a poll. Neither side naming anything is not a
+// contradiction, so it does not invalidate the verdict.
+export function verdictDescribesModel(
+  resident: string | null | undefined,
+  named: string | null | undefined,
+): boolean {
+  if (resident == null || named == null) return true;
+  return sameBaseModelId(resident, named);
 }

@@ -49,7 +49,9 @@ import {
   pickCompatibleAgent,
   psSingle,
   resolveGgufCompatibility,
+  sameBaseModelId,
   shSingle,
+  verdictDescribesModel,
   statusGgufVerdict,
 } from "./agent-command";
 import { keylessBaseEligible } from "./keyless-example-eligibility";
@@ -390,14 +392,6 @@ function looksLikePath(id: string): boolean {
   );
 }
 
-// Same model, ignoring any ":quant" a caller pinned.
-function sameBaseModelId(a: string, b: string): boolean {
-  const base = (id: string) => id.trim().toLowerCase().split(":")[0];
-  return (
-    a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b)
-  );
-}
-
 // The model the examples name: always an id /v1 resolves against, null when there is none.
 function useExampleModelName(keylessOnly: boolean): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -644,8 +638,16 @@ export function UsageExamples({
     activeGgufVariant,
     activeNativePathToken,
   ]);
+  // Hoisted above the compatibility derivation below, which has to check the verdict
+  // against the very model these snippets name.
+  const keylessBase =
+    !(useTunnel && cloudflareUrl) &&
+    keylessBaseEligible(base, keylessScope, keylessExposure);
+  const model = useExampleModelName(keylessBase && !apiKey);
+
   const [statusAnswer, setStatusAnswer] = useState<{
     key: string;
+    resident: string | null;
     isGguf: boolean | null;
   } | null>(null);
   // Polled on the catalog's own cadence, because nothing else here would notice a swap:
@@ -666,11 +668,10 @@ export function UsageExamples({
           // model is InferenceStatusResponse's False default on an idle server, which
           // says nothing about a model that is not there; taking it as a verdict cleared
           // a saved Claude preference for a server that simply had nothing loaded.
-          const answer = statusGgufVerdict(
-            status.active_model ?? status.model_identifier,
-            status.is_gguf,
-          );
-          setStatusAnswer({ key: storeModelKey, isGguf: answer });
+          const resident =
+            status.active_model ?? status.model_identifier ?? null;
+          const answer = statusGgufVerdict(resident, status.is_gguf);
+          setStatusAnswer({ key: storeModelKey, resident, isGguf: answer });
           return answer !== null;
         })
         .catch(() => {
@@ -697,9 +698,19 @@ export function UsageExamples({
   // only the server sees a swap this tab did not make. A switch made here changes the key
   // first, which drops the stale answer back to unknown and leaves the freshly updated
   // store answering until the refetch lands.
+  // This poll and useExampleModelName's catalog poll run on separate timers, so between
+  // the two a swap made elsewhere can be visible to one and not the other. Requiring the
+  // status to name the model the snippet names closes that window: for up to a poll the
+  // panel would otherwise pair a new safetensors model with the previous GGUF verdict and
+  // go on offering a Claude command the CLI refuses. Nothing named means nothing to
+  // contradict, and the quant suffix is not part of the identity.
+  const statusDescribesTheNamedModel =
+    statusAnswer !== null &&
+    statusAnswer.key === storeModelKey &&
+    verdictDescribesModel(statusAnswer.resident, model);
   const isGguf: boolean | null = resolveGgufCompatibility(
     storeIsGguf,
-    statusAnswer?.key === storeModelKey ? statusAnswer.isGguf : null,
+    statusDescribesTheNamedModel ? statusAnswer.isGguf : null,
   );
 
   useEffect(() => {
@@ -794,10 +805,6 @@ export function UsageExamples({
     localAgentDetection,
   ]);
 
-  const keylessBase =
-    !(useTunnel && cloudflareUrl) &&
-    keylessBaseEligible(base, keylessScope, keylessExposure);
-  const model = useExampleModelName(keylessBase && !apiKey);
   // The approved SDK dummy is printed only for a transport the backend can admit.
   const key =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);

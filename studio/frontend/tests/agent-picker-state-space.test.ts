@@ -13,6 +13,7 @@ import {
   pickCompatibleAgent,
   resolveGgufCompatibility,
   statusGgufVerdict,
+  verdictDescribesModel,
 } from "../src/features/settings/components/agent-command.ts";
 
 // DEFAULT_AGENTS in usage-examples.tsx = CODING_AGENTS minus HIDDEN_AGENTS ("pi").
@@ -315,4 +316,46 @@ test("a server that names what it holds still decides", () => {
   assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B-GGUF", true), true);
   // Named, but the field is missing: an older server, so still unknown.
   assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", undefined), null);
+});
+
+test("a verdict about one model never gates a different one", () => {
+  // The status poll and useExampleModelName's catalog poll run on separate timers, so a
+  // swap made from the CLI or another tab reaches one of them first. For up to a poll the
+  // panel would otherwise pair a newly named safetensors model with the previous GGUF
+  // verdict and go on offering a Claude command the CLI refuses.
+  assert.equal(
+    verdictDescribesModel("unsloth/Qwen3-1.7B-GGUF", "unsloth/Qwen3-1.7B"),
+    false,
+  );
+  assert.equal(
+    verdictDescribesModel("unsloth/Qwen3-1.7B-GGUF", "unsloth/Qwen3-1.7B-GGUF"),
+    true,
+  );
+});
+
+test("the quant suffix is not part of the model's identity", () => {
+  // useExampleModelName appends ":quant" to pin the file on disk; the status route reports
+  // the repo. Treating that as a different model would discard every verdict.
+  assert.equal(
+    verdictDescribesModel(
+      "unsloth/Qwen3-1.7B-GGUF",
+      "unsloth/Qwen3-1.7B-GGUF:Q4_K_M",
+    ),
+    true,
+  );
+  assert.equal(
+    verdictDescribesModel(
+      "Unsloth/Qwen3-1.7B-GGUF ",
+      "unsloth/qwen3-1.7b-gguf",
+    ),
+    true,
+  );
+});
+
+test("nothing named on either side is not a contradiction", () => {
+  // An idle server names nothing, and the catalog names nothing until it answers. Neither
+  // is evidence that the verdict is about some other model.
+  assert.equal(verdictDescribesModel(null, "unsloth/Qwen3-1.7B"), true);
+  assert.equal(verdictDescribesModel("unsloth/Qwen3-1.7B", null), true);
+  assert.equal(verdictDescribesModel(null, null), true);
 });
