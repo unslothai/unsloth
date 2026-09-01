@@ -244,7 +244,7 @@ def settled_snapshot_device_memory(
             empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
             if callable(empty_cache):
                 empty_cache()
-        except Exception:  # noqa: BLE001 — settle is best-effort; the snapshot below still runs
+        except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
             pass
         return snapshot_device_memory(target)
     if device != "cuda":
@@ -253,7 +253,7 @@ def settled_snapshot_device_memory(
         import torch
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
-    except Exception:  # noqa: BLE001 — settle is best-effort; the snapshot below still runs
+    except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
         pass
     best = snapshot_device_memory(target)
     delay_s = _settle_delay(delay_s)
@@ -433,7 +433,7 @@ def plan_fits_total_capacity(plan: Any) -> bool:
         memory = plan.device_memory
         total = memory.total_mib
         kind = memory.memory_kind
-    except Exception:  # noqa: BLE001 — malformed plan: no retry
+    except Exception:  # noqa: BLE001 - malformed plan: no retry
         return False
     if required is None or total is None:
         return False
@@ -486,7 +486,7 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
         weights = estimates.get("model_dense_mib")
         overhead = estimates.get("base_overhead_mib")
         free = getattr(memory, "free_mib", None)
-    except Exception:  # noqa: BLE001 — malformed plan: never block the load
+    except Exception:  # noqa: BLE001 - malformed plan: never block the load
         return None
     if budget is None or weights is None:
         return None
@@ -853,7 +853,7 @@ def apply_memory_plan(
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
             pipe.enable_sequential_cpu_offload(device = placement)
-        except Exception as exc:  # noqa: BLE001 — keep the model loadable
+        except Exception as exc:  # noqa: BLE001 - keep the model loadable
             if logger is not None:
                 logger.warning(
                     "diffusion.memory: sequential offload failed (%s); "
@@ -877,7 +877,7 @@ def _enable_vae_saver(pipe: Any, pipe_method: str, vae_method: str, logger: Any)
         try:
             fn()
             return True
-        except Exception as exc:  # noqa: BLE001 — a VAE saver is an optimisation, never fatal
+        except Exception as exc:  # noqa: BLE001 - a VAE saver is an optimisation, never fatal
             if logger is not None:
                 logger.warning("diffusion.memory: %s() failed: %s", method, exc)
     return False
@@ -991,7 +991,7 @@ def _apply_group_offload(
                     )
                 module.to(onload)
         return True
-    except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
+    except Exception as exc:  # noqa: BLE001 - fall back to whole-module offload
         if installed:
             # An earlier streamed module already has hooks but a later one failed: the pipe is in a PARTIAL
             # group-offload state enable_model_cpu_offload rejects, so propagate the real failure instead of a

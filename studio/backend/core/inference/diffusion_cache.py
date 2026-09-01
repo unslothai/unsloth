@@ -239,12 +239,12 @@ def apply_step_cache(
         _compile_hooked_block_inners(transformer, logger)
         try:
             transformer._unsloth_step_cache = f"{mode}@{thr}"
-        except Exception:  # noqa: BLE001 — marker is best-effort
+        except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         if logger is not None:
             logger.info("diffusion.cache: %s engaged (threshold=%s)", mode, thr)
         return mode
-    except Exception as exc:  # noqa: BLE001 — incompatible model -> run uncached
+    except Exception as exc:  # noqa: BLE001 - incompatible model -> run uncached
         # enable_cache can fail part-hooked; restore armed compiled inners FIRST
         _restore_hooked_block_inners(transformer)
         try:
@@ -330,7 +330,7 @@ def maybe_toggle_step_cache(
                         FBCACHE_MIN_STEPS,
                     )
                 return None
-            except Exception as exc:  # noqa: BLE001 — keep the cache rather than crash
+            except Exception as exc:  # noqa: BLE001 - keep the cache rather than crash
                 _warn(logger, "fbcache disable", exc)
         return TC_FBCACHE
     return TC_FBCACHE if engaged else None

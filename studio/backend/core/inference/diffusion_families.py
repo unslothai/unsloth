@@ -1615,7 +1615,7 @@ def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
         if reader.data_offset > len(header) + min(int(reader.alignment), 4096):
             return None
         return _flux2_inner_dim_from_tensors(reader.tensors)
-    except Exception:  # noqa: BLE001 — an unreadable header is not a verdict
+    except Exception:  # noqa: BLE001 - an unreadable header is not a verdict
         return None
     finally:
         # Drop the mmap before unlinking: Windows refuses to delete a mapped file.

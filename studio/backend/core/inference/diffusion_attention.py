@@ -161,7 +161,7 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
             with sdpa_kernel([backend]):
                 torch.nn.functional.scaled_dot_product_attention(q, q, q)
             available.append(name)
-        except Exception:  # noqa: BLE001 — "No available kernel" is the answer, not an error
+        except Exception:  # noqa: BLE001 - "No available kernel" is the answer, not an error
             continue
     return tuple(available)
 
@@ -191,7 +191,7 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
             return cached
     try:
         available = _probe_sdpa_kernels(device, dtype)
-    except Exception:  # noqa: BLE001 — a probe is a diagnostic; it may never fail a load
+    except Exception:  # noqa: BLE001 - a probe is a diagnostic; it may never fail a load
         available = ()
     # memoize only an ANSWER: an empty result means the probe itself could not complete (a transient allocator failure
     # while the device was full, exactly when this warning matters most)
@@ -400,7 +400,7 @@ def _pip_requirement(backend: str, package: str) -> str:
         from diffusers.models.attention_dispatch import _REQUIRED_SAGE_VERSION as floor
         if isinstance(floor, str) and floor.strip():
             return f"sageattention>={floor.strip()}"
-    except Exception:  # noqa: BLE001 — older/newer diffusers may not expose it; keep the static pin
+    except Exception:  # noqa: BLE001 - older/newer diffusers may not expose it; keep the static pin
         pass
     return package
 
@@ -435,7 +435,7 @@ def _kernels_hub_compatible() -> bool:
         if m is None:
             return True
         return (int(m.group(1)), int(m.group(2) or 0)) >= _KERNELS_HUB_FLOOR
-    except Exception:  # noqa: BLE001 — unknown hub -> keep the previous permissive behaviour
+    except Exception:  # noqa: BLE001 - unknown hub -> keep the previous permissive behaviour
         return True
 
 
@@ -484,7 +484,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
             # passes --reinstall-package, outside any request. What this branch prevents is Unsloth CREATING the
             # mismatch, which is how it got made in the first place.
             return None
-    except Exception:  # noqa: BLE001 — a broken install probes as missing; try the install
+    except Exception:  # noqa: BLE001 - a broken install probes as missing; try the install
         pass
     # XFormers ships a compiled extension tied to one exact (torch, CUDA) pair, so the name `xformers` is not a safe
     # thing to hand pip: PyPI serves only the CUDA-12.8 build and --no-deps below stops pip from ever reading its
@@ -548,7 +548,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
         # The import system caches directory listings, so invalidate the finder caches or the next find_spec can miss
         # the new wheel.
         importlib.invalidate_caches()
-    except Exception as exc:  # noqa: BLE001 — no wheel / no network -> native fallback
+    except Exception as exc:  # noqa: BLE001 - no wheel / no network -> native fallback
         if logger is not None:
             # CalledProcessError.str() shows only the exit code; surface stderr so the fallback is diagnosable.
             stderr = getattr(exc, "stderr", None)
@@ -621,7 +621,7 @@ def apply_attention_backend(
             try:
                 fn(backend)
                 engaged = True
-            except Exception as exc:  # noqa: BLE001 — unavailable kernel -> restore native below
+            except Exception as exc:  # noqa: BLE001 - unavailable kernel -> restore native below
                 _warn(logger, backend, exc)
         if engaged:
             # set_attention_backend also pins the backend process-wide. Each DiT's processors keep it locally, so reset
@@ -667,7 +667,7 @@ def _reset_global_backend_to_native(logger: Any) -> None:
             _AttentionBackendRegistry,
         )
         _AttentionBackendRegistry.set_active_backend(AttentionBackendName.NATIVE)
-    except Exception:  # noqa: BLE001 — best-effort; leave the global as-is on any change
+    except Exception:  # noqa: BLE001 - best-effort; leave the global as-is on any change
         pass
 
 
@@ -677,7 +677,7 @@ def _restore_native_backend(set_backend_fn: Any, logger: Any) -> None:
         return  # already native -> avoid redundant work and an extra dispatcher warning
     try:
         set_backend_fn(ATTN_NATIVE)
-    except Exception as exc:  # noqa: BLE001 — best-effort restore
+    except Exception as exc:  # noqa: BLE001 - best-effort restore
         _warn(logger, ATTN_NATIVE, exc)
 
 
@@ -915,7 +915,7 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
 
         _set_hunyuan_null_mask(module, null_ok)
         return args, kwargs
-    except Exception:  # noqa: BLE001 — optimisation only; never break the forward
+    except Exception:  # noqa: BLE001 - optimisation only; never break the forward
         # We may have trimmed some kwargs before failing. Restore the caller's untrimmed inputs so the stock dense-mask
         # path (flag False) runs on exactly what it expects.
         kwargs.clear()
@@ -939,7 +939,7 @@ def _install_null_processors(dit: Any, logger: Any) -> bool:
     already-installed run is a no-op). Preserves any pinned attention backend."""
     try:
         cls = _null_mask_processor_cls()
-    except Exception as exc:  # noqa: BLE001 — diffusers moved / unavailable -> skip
+    except Exception as exc:  # noqa: BLE001 - diffusers moved / unavailable -> skip
         _warn(logger, "hunyuan_attn_trim", exc)
         return False
     installed = 0
@@ -959,7 +959,7 @@ def _install_null_processors(dit: Any, logger: Any) -> bool:
         new._parallel_config = getattr(proc, "_parallel_config", None)
         try:
             attn.set_processor(new)
-        except Exception:  # noqa: BLE001 — fall back to direct assignment
+        except Exception:  # noqa: BLE001 - fall back to direct assignment
             attn.processor = new
         installed += 1
     return installed > 0
@@ -999,7 +999,7 @@ def install_hunyuan_attention_trim(
                 # null-mask authorisation latched for a later direct forward.
                 post_handle = dit.register_forward_hook(_hunyuan_trim_post_hook, always_call = True)
                 dit._unsloth_trim_hook = (pre_handle, post_handle)
-            except Exception as exc:  # noqa: BLE001 — optimisation only
+            except Exception as exc:  # noqa: BLE001 - optimisation only
                 if pre_handle is not None:
                     pre_handle.remove()
                 _set_hunyuan_null_mask(dit, False)

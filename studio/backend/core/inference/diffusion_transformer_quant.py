@@ -314,7 +314,7 @@ def torchao_unavailable_reason() -> Optional[str]:
     else:
         try:
             from torchao.quantization import quantize_  # noqa: F401
-        except Exception as exc:  # noqa: BLE001 — any import failure means the same thing here
+        except Exception as exc:  # noqa: BLE001 - any import failure means the same thing here
             import logging
 
             # The full text, paths included, goes to the server log; the client gets it stripped. This string is
@@ -406,7 +406,7 @@ def _is_consumer_gpu(device: Any = None) -> bool:
 
         import torch
         name = torch.cuda.get_device_name(device).upper()
-    except Exception:  # noqa: BLE001 — no torch / no device -> assume consumer
+    except Exception:  # noqa: BLE001 - no torch / no device -> assume consumer
         return True
     if "GEFORCE" in name or "TITAN" in name:
         return True
@@ -663,7 +663,7 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
         # is what is left in that case.
         _adopt_probe_pid(proc.pid)
         _CHILD_PROBE_SPAWN_ERRORS = 0
-    except Exception as exc:  # noqa: BLE001 — no child here: probe in-process instead
+    except Exception as exc:  # noqa: BLE001 - no child here: probe in-process instead
         import logging
 
         # An OSError is momentary pressure on descriptors, process slots or /dev/shm, not a host that cannot spawn;
@@ -692,14 +692,14 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
             try:
                 table = queue.get(timeout = 0.5)
                 break
-            except Exception:  # noqa: BLE001 — Empty, or a queue torn down under us
+            except Exception:  # noqa: BLE001 - Empty, or a queue torn down under us
                 pass
             if not proc.is_alive():
                 # A put lands through a feeder thread, so it can still be in flight when the child has already exited;
                 # one blocking look before calling it a loss.
                 try:
                     table = queue.get(timeout = 1.0)
-                except Exception:  # noqa: BLE001 — the child really did die empty
+                except Exception:  # noqa: BLE001 - the child really did die empty
                     table = None
                 break
             if time.monotonic() >= deadline:
@@ -847,11 +847,11 @@ def _child_probe_entry(device: str, schemes: tuple[str, ...], out: Any) -> None:
     for scheme in schemes:
         try:
             table[scheme] = _run_smoke_probe(scheme, device)
-        except Exception:  # noqa: BLE001 — _run_smoke_probe already swallows; keep the table whole
+        except Exception:  # noqa: BLE001 - _run_smoke_probe already swallows; keep the table whole
             table[scheme] = False
     try:
         out.put(table)
-    except Exception:  # noqa: BLE001 — parent gave up; nothing left to say
+    except Exception:  # noqa: BLE001 - parent gave up; nothing left to say
         pass
 
 
@@ -937,7 +937,7 @@ def _is_out_of_memory(exc: BaseException) -> bool:
         )
         if named and isinstance(exc, named):
             return True
-    except Exception:  # noqa: BLE001 — no torch: the message test below still applies
+    except Exception:  # noqa: BLE001 - no torch: the message test below still applies
         pass
     return isinstance(exc, MemoryError) or "out of memory" in str(exc).lower()
 
@@ -998,7 +998,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
                     KernelPreference,
                 )
                 fp8_kwargs["kernel_preference"] = KernelPreference.TORCH
-            except Exception:  # noqa: BLE001 — enum moved: keep the library default
+            except Exception:  # noqa: BLE001 - enum moved: keep the library default
                 pass
         try:
             from torchao.float8 import Float8MMConfig
@@ -1006,7 +1006,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
                 mm_config = Float8MMConfig(use_fast_accum = _resolve_fast_accum(fast_accum)),
                 **fp8_kwargs,
             )
-        except Exception:  # noqa: BLE001 — older torchao without the explicit mm knob
+        except Exception:  # noqa: BLE001 - older torchao without the explicit mm knob
             return Float8DynamicActivationFloat8WeightConfig(**fp8_kwargs)
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
@@ -1133,10 +1133,10 @@ def quantize_transformer(
         apply_small_m_padding(transformer, scheme, family, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
-        except Exception:  # noqa: BLE001 — marker is best-effort
+        except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         return scheme
-    except Exception as exc:  # noqa: BLE001 — leave the transformer dense -> GGUF fallback
+    except Exception as exc:  # noqa: BLE001 - leave the transformer dense -> GGUF fallback
         _warn(logger, scheme, exc)
         return None
 

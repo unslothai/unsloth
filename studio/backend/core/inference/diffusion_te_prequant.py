@@ -179,7 +179,7 @@ def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[s
     for entry in getattr(fam, "te_prequant_repos", ()) or ():
         try:
             entry_scheme, entry_component, repo_id = entry
-        except Exception:  # noqa: BLE001 — a malformed entry must not break the load
+        except Exception:  # noqa: BLE001 - a malformed entry must not break the load
             continue
         if entry_scheme == scheme and entry_component == component:
             return repo_id
@@ -434,7 +434,7 @@ def load_prequant_text_encoder(
                 source.kind,
             )
         return encoder
-    except Exception as exc:  # noqa: BLE001 — fall back to the dense download + cast
+    except Exception as exc:  # noqa: BLE001 - fall back to the dense download + cast
         _warn(logger, f"{scheme}:{component}:{source.kind}", exc)
         return None
 
@@ -485,7 +485,7 @@ def te_prequant_pipe_kwargs(
             if encoder is not None:
                 injected[component] = encoder
         return injected
-    except Exception as exc:  # noqa: BLE001 — injection is an optimisation, never a blocker
+    except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
 

@@ -246,7 +246,7 @@ def quantize_text_encoders(
         try:
             caster(encoder, target)
             cast.append(attr)
-        except Exception as exc:  # noqa: BLE001 — leave this encoder dense
+        except Exception as exc:  # noqa: BLE001 - leave this encoder dense
             failed.append(attr)
             _warn(logger, f"{mode}:{attr}", exc)
     if not cast:
@@ -415,7 +415,7 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         # Marks the cast COMPLETE (hooks fully installed) for the idempotent early return above. Best-effort: a
         # non-Module double without settable attributes just re-casts.
         encoder._unsloth_te_cast_complete = True
-    except Exception:  # noqa: BLE001 — real HF encoders are heap-type nn.Modules; only doubles fail
+    except Exception:  # noqa: BLE001 - real HF encoders are heap-type nn.Modules; only doubles fail
         pass
 
 

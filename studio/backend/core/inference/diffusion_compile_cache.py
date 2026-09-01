@@ -86,7 +86,7 @@ def _triton_version() -> Optional[str]:
     try:
         import triton  # noqa: PLC0415
         return str(getattr(triton, "__version__", None))
-    except Exception:  # noqa: BLE001 — triton optional
+    except Exception:  # noqa: BLE001 - triton optional
         return None
 
 
@@ -127,7 +127,7 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
-    except Exception:  # noqa: BLE001 — best-effort
+    except Exception:  # noqa: BLE001 - best-effort
         pass
     return fp
 
@@ -275,7 +275,7 @@ def register_shape(ctx: Optional[CacheContext], shape: Any, *, static: bool) -> 
         if key not in ctx.shapes:
             ctx.shapes.add(key)
             ctx.saved = False
-    except Exception:  # noqa: BLE001 — bookkeeping only
+    except Exception:  # noqa: BLE001 - bookkeeping only
         pass
 
 
@@ -312,7 +312,7 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
             return False
         try:
             ctx.shapes = {tuple(s) for s in manifest.get("shapes", [])}
-        except Exception:  # noqa: BLE001 — coverage bookkeeping only
+        except Exception:  # noqa: BLE001 - coverage bookkeeping only
             ctx.shapes = set()
         _info(logger, f"compile-cache: loaded bundle for key {ctx.key}")
         return True

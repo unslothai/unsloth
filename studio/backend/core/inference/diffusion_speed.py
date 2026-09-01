@@ -53,7 +53,7 @@ def snapshot_backend_flags() -> Optional[dict]:
     cuda.matmul on CPU/MPS) still captures the rest, instead of leaking a real mutated flag."""
     try:
         import torch
-    except Exception:  # noqa: BLE001 — no torch -> nothing to snapshot/restore
+    except Exception:  # noqa: BLE001 - no torch -> nothing to snapshot/restore
         return None
     state: dict[str, bool] = {}
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
@@ -80,14 +80,14 @@ def restore_backend_flags(state: Optional[dict]) -> None:
         return
     try:
         import torch
-    except Exception:  # noqa: BLE001 — no torch -> nothing to restore
+    except Exception:  # noqa: BLE001 - no torch -> nothing to restore
         return
 
     def _set(obj: Any, attr: str, key: str) -> None:
         if obj is not None and key in state and hasattr(obj, attr):
             try:
                 setattr(obj, attr, state[key])
-            except Exception:  # noqa: BLE001 — best-effort per-flag restore
+            except Exception:  # noqa: BLE001 - best-effort per-flag restore
                 pass
 
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
@@ -105,7 +105,7 @@ def _inductor_config() -> Any:
     try:
         import torch
         return getattr(getattr(torch, "_inductor", None), "config", None)
-    except Exception:  # noqa: BLE001 — no inductor -> nothing to snapshot/set
+    except Exception:  # noqa: BLE001 - no inductor -> nothing to snapshot/set
         return None
 
 
@@ -289,7 +289,7 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         import torch
         vae.to(memory_format = torch.channels_last)
         return True
-    except Exception as exc:  # noqa: BLE001 — optimisation only
+    except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "channels_last", exc)
         return False
 
@@ -374,7 +374,7 @@ def _compile_repeated_blocks(
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
             inductor_cfg.emulate_precision_casts = True
-    except Exception as exc:  # noqa: BLE001 — optimisation only
+    except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
     if unet is not None:
@@ -388,7 +388,7 @@ def _compile_repeated_blocks(
         try:
             unet.compile(**unet_kwargs)
             return True
-        except Exception as exc:  # noqa: BLE001 — optimisation only
+        except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "unet whole-module compile", exc)
             return False
     # Compile every denoiser DiT (dual-DiT families run both); a per-DiT failure degrades only that one to eager.
@@ -397,7 +397,7 @@ def _compile_repeated_blocks(
         try:
             transformer.compile_repeated_blocks(**kwargs)
             engaged = True
-        except Exception as exc:  # noqa: BLE001 — optimisation only
+        except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
         # A step cache engaged BEFORE this compile already wrapped each block forward in a disabled hook, so the compute
@@ -406,7 +406,7 @@ def _compile_repeated_blocks(
         try:
             from .diffusion_cache import _compile_hooked_block_inners
             _compile_hooked_block_inners(transformer, logger)
-        except Exception as exc:  # noqa: BLE001 — optimisation only
+        except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
 
@@ -422,7 +422,7 @@ def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
         import torch
         vae.decode = torch.compile(decode, fullgraph = False, dynamic = True)
         return True
-    except Exception as exc:  # noqa: BLE001 — optimisation only
+    except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)
         return False
 
@@ -432,7 +432,7 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
         import torch
         torch.backends.cudnn.benchmark = True
         return True
-    except Exception as exc:  # noqa: BLE001 — optimisation only
+    except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "cudnn_benchmark", exc)
         return False
 
@@ -444,7 +444,7 @@ def _enable_tf32(logger: Any) -> bool:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         return True
-    except Exception as exc:  # noqa: BLE001 — optimisation only
+    except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "tf32", exc)
         return False
 
@@ -492,7 +492,7 @@ def _enable_fp16_accumulation(
             return False
         matmul.allow_fp16_accumulation = True
         return True
-    except Exception as exc:  # noqa: BLE001 — optimisation only
+    except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "fp16_accum", exc)
         return False
 
@@ -505,7 +505,7 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
         try:
             fn()
             return True
-        except Exception as exc:  # noqa: BLE001 — optimisation only
+        except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "fuse_qkv_projections", exc)
             return False
     engaged = False
@@ -515,7 +515,7 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
             try:
                 tfn()
                 engaged = True
-            except Exception as exc:  # noqa: BLE001 — optimisation only
+            except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "fuse_qkv_projections", exc)
     return engaged
 

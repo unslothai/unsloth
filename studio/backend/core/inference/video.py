@@ -997,7 +997,7 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
             and sdpa_math_only(_probe_target(request_shape))
         ):
             logger.error("video.generate_failed_request: %s", SDPA_MATH_ONLY_MESSAGE)
-    except Exception:  # noqa: BLE001 — diagnostics never mask the real failure
+    except Exception:  # noqa: BLE001 - diagnostics never mask the real failure
         pass
 
 
@@ -1025,7 +1025,7 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
             candidate = getattr(torch, str(recorded).replace("torch.", ""), None)
             if isinstance(candidate, torch.dtype):
                 dtype = candidate
-        except Exception:  # noqa: BLE001 — fall back to the probe's own default
+        except Exception:  # noqa: BLE001 - fall back to the probe's own default
             dtype = None
     return types.SimpleNamespace(device = request_shape.get("device"), dtype = dtype)
 

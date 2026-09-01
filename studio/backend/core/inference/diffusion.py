@@ -313,7 +313,7 @@ def _active_lora_pairs(pipe: Any) -> list:
             else:
                 continue
             weight = float(weight)
-        except Exception:  # noqa: BLE001 — an unrecognised marker records no adapter
+        except Exception:  # noqa: BLE001 - an unrecognised marker records no adapter
             continue
         if weight:
             pairs.append((name, weight))
@@ -339,7 +339,7 @@ def _baked_lora_names(pipe: Any) -> list:
     for entry in getattr(pipe, "_unsloth_loras", ()) or ():
         try:
             name = entry[0]
-        except Exception:  # noqa: BLE001 — an unrecognised marker records no adapter
+        except Exception:  # noqa: BLE001 - an unrecognised marker records no adapter
             continue
         if name:
             names.append(str(name))
@@ -417,7 +417,7 @@ def decode_b64_image(
         img.load()
     except ValueError:
         raise  # the size guard's own message; don't wrap it as a decode error
-    except Exception as exc:  # noqa: BLE001 — surfaced as a 400 to the client
+    except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
         raise ValueError(f"Could not decode image: {exc}") from exc
     return img.convert(mode)
 
@@ -719,7 +719,7 @@ def _assert_base_repo_accessible(
             HfHubHTTPError,
             RepositoryNotFoundError,
         )
-    except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
+    except Exception:  # noqa: BLE001 - an unexpected hub layout leaves today's behaviour
         return None
 
     # Set when only the import-time root holds the excusing copy, which the pinned from_pretrained would miss.
@@ -747,7 +747,7 @@ def _assert_base_repo_accessible(
                     if root is None and "/" not in probe_file:
                         other_root_snapshot = str(Path(hit).parent)
                     return True
-        except Exception:  # noqa: BLE001 — a cache we cannot read is not an access verdict
+        except Exception:  # noqa: BLE001 - a cache we cannot read is not an access verdict
             pass
         return False
 
@@ -786,7 +786,7 @@ def _assert_base_repo_accessible(
         if _already_downloaded():
             return other_root_snapshot
         raise ValueError(_repo_access_message(repo, gated = False)) from None
-    except Exception:  # noqa: BLE001 — offline / transient: the download surfaces any real error
+    except Exception:  # noqa: BLE001 - offline / transient: the download surfaces any real error
         return None
     # Nothing to carry: model_info answered, so the size estimate lists the base files and the prefetch resolves each
     # through whichever root holds it
@@ -802,7 +802,7 @@ def _assert_base_repo_accessible(
         if not _is_auth_error(exc):
             return None
         raise ValueError(_repo_access_message(repo, gated = True)) from None
-    except Exception:  # noqa: BLE001 — no manifest / offline / transient is not an access verdict
+    except Exception:  # noqa: BLE001 - no manifest / offline / transient is not an access verdict
         return None
     return None
 
@@ -952,7 +952,7 @@ def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
 
         _stripped_mapping_fn._unsloth_prefix_strip = True
         entry["checkpoint_mapping_fn"] = _stripped_mapping_fn
-    except Exception as exc:  # noqa: BLE001 — loader-compat shim only, never fail the load
+    except Exception as exc:  # noqa: BLE001 - loader-compat shim only, never fail the load
         logger.warning("diffusion.gguf: prefix-strip shim not installed: %s", exc)
 
 
@@ -1031,7 +1031,7 @@ def _uncached_prequant_repo(
         if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
             return None
         return source.location
-    except Exception:  # noqa: BLE001 — a probe that cannot answer keeps the prequant shortcut
+    except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the prequant shortcut
         return None
 
 
@@ -1140,7 +1140,7 @@ def _dense_candidate_is_prequant(
             usable_prequant_source(fam, scheme, path_override = prequant_path, base_repo = base_repo)
             is not None
         )
-    except Exception:  # noqa: BLE001 — a probe that cannot answer keeps the decline
+    except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the decline
         return False
 
 
@@ -1560,9 +1560,9 @@ class DiffusionBackend:
                             cache_dir = None,
                             local_files_only = local_files_only,
                         )
-                    except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
+                    except Exception:  # noqa: BLE001 - revalidation is a bonus, never a new failure
                         return elsewhere
-        except Exception:  # noqa: BLE001 — an unreadable cache is not a verdict, just download
+        except Exception:  # noqa: BLE001 - an unreadable cache is not a verdict, just download
             pass
         return hf_hub_download(
             repo_id,
@@ -2213,7 +2213,7 @@ class DiffusionBackend:
                 # Only clear the marker if this load is still current (a superseder has its own token).
                 if self._load_token == token:
                     self._loading = None
-        except Exception as exc:  # noqa: BLE001 — surfaced to the client via load_progress
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client via load_progress
             # A cancelled/superseded load raised below; don't log/stamp it onto the current load.
             if self._load_token != token:
                 return
@@ -2631,7 +2631,7 @@ class DiffusionBackend:
             if file_sizes_out is not None:
                 file_sizes_out.setdefault(base_repo, {}).update(base_sizes)
             _record_revision(revisions_out, base_repo, base_info)
-        except Exception as exc:  # noqa: BLE001 — estimate is best-effort
+        except Exception as exc:  # noqa: BLE001 - estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
             # Recorded so a caller that must not guess (media auto-switch refuses rather than download) can tell a
             # partial file list from a complete one; the estimate itself stays best-effort for the UI, whose fallback is
@@ -3126,7 +3126,7 @@ class DiffusionBackend:
         try:
             from huggingface_hub import constants
             other = str(constants.HF_HUB_CACHE or "").strip()
-        except Exception:  # noqa: BLE001 — no hub package: the live root still stands
+        except Exception:  # noqa: BLE001 - no hub package: the live root still stands
             return [live]
         if not other:
             return [live]
@@ -3344,7 +3344,7 @@ class DiffusionBackend:
                     numel *= dim
                 total += numel
             return total
-        except Exception:  # noqa: BLE001 — corrupt/crafted shard degrades to 0, never crashes the load
+        except Exception:  # noqa: BLE001 - corrupt/crafted shard degrades to 0, never crashes the load
             return 0
 
     @staticmethod
@@ -3449,7 +3449,7 @@ class DiffusionBackend:
             )
             if preinstall_backend is not None:
                 _ensure_attention_backend_installed(preinstall_backend, logger)
-        except Exception:  # noqa: BLE001 — the locked path re-resolves and validates
+        except Exception:  # noqa: BLE001 - the locked path re-resolves and validates
             pass
 
         with self._lock:
@@ -4080,7 +4080,7 @@ class DiffusionBackend:
                             fetch_base = fetch_base,
                             local_files_only = local_files_only,
                         )
-                    except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
+                    except Exception as exc:  # noqa: BLE001 - fall back to the GGUF build
                         logger.warning(
                             "diffusion.transformer_quant_fallback: %s (loading GGUF)", exc
                         )
@@ -5036,7 +5036,7 @@ class DiffusionBackend:
                 plan,
                 estimates = {**plan.estimates, "model_dense_mib": table_mib},
             )
-        except Exception:  # noqa: BLE001 — sizing aid only; refuse on the plan as built
+        except Exception:  # noqa: BLE001 - sizing aid only; refuse on the plan as built
             return plan
 
     def declared_footprint_shortfall(
@@ -5641,7 +5641,7 @@ class DiffusionBackend:
         if callable(reset):
             try:
                 reset()
-            except Exception:  # noqa: BLE001 — reset is best-effort, never fail a generation
+            except Exception:  # noqa: BLE001 - reset is best-effort, never fail a generation
                 pass
 
     def _engage_deferred_speed(self, state: _LoadState) -> None:
@@ -5812,7 +5812,7 @@ class DiffusionBackend:
                 ):
                     try:
                         self._engage_deferred_speed(state)
-                    except Exception as exc:  # noqa: BLE001 — speed is best-effort
+                    except Exception as exc:  # noqa: BLE001 - speed is best-effort
                         logger.warning(
                             "diffusion.speed: deferred engagement failed, staying eager: %s",
                             exc,
@@ -6064,7 +6064,7 @@ class DiffusionBackend:
                     )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
-                except Exception as exc:  # noqa: BLE001 — fail OPEN on a broken probe
+                except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe
                     logger.warning(
                         "diffusion.generate: activation headroom re-check skipped (%s)", exc
                     )
@@ -6158,7 +6158,7 @@ class DiffusionBackend:
                         # inference_mode is faster than no_grad and numerically identical here.
                         with torch.inference_mode():
                             out = pipe(**chunk_kwargs).images
-                    except Exception as exc:  # noqa: BLE001 — reraised unless a splittable OOM
+                    except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                         if len(chunk) < 2 or not is_oom_error(exc):
                             raise
                         # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry reproducible.
@@ -6198,7 +6198,7 @@ class DiffusionBackend:
                             static = static_shapes,
                         )
                     compile_cache.save(state.compile_cache_ctx, logger = logger)
-                except Exception:  # noqa: BLE001 — cache persistence is best-effort
+                except Exception:  # noqa: BLE001 - cache persistence is best-effort
                     pass
                 # Last word on cancellation, AFTER the post-denoise work: the event stays registered through the
                 # compile-cache save (a static compile writes a fresh artifact per shape, so that save is not instant)
@@ -6496,7 +6496,7 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
     try:
         from huggingface_hub import HfApi
         meta = HfApi().model_info(repo_id, token = hf_token).cardData or {}
-    except Exception:  # noqa: BLE001 — best-effort; fall back to the family default
+    except Exception:  # noqa: BLE001 - best-effort; fall back to the family default
         return None
     base = meta.get("base_model")
     if isinstance(base, list):
@@ -6526,7 +6526,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
             use_stream = onload.type == "cuda",
         )
         return True
-    except Exception as exc:  # noqa: BLE001 — offload is best-effort; resident is the fallback
+    except Exception as exc:  # noqa: BLE001 - offload is best-effort; resident is the fallback
         if logger is not None:
             logger.warning("diffusion.controlnet: group offload failed (%s); loading resident", exc)
         return False

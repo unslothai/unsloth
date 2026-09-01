@@ -139,7 +139,7 @@ def install(
         from core.training.diffusion_train_extras import PersistentConditioningCache
         signature = inspect.signature(encode)
         cache = PersistentConditioningCache(root, family, 0)
-    except Exception as exc:  # noqa: BLE001 — cache is best-effort
+    except Exception as exc:  # noqa: BLE001 - cache is best-effort
         if logger is not None:
             logger.warning("diffusion.cond_cache: install failed: %s", exc)
         return False
@@ -182,7 +182,7 @@ def install(
             if hit is not None:
                 stats["hits"] += 1
                 return _unflatten(hit, _target_device(pipe, bound))
-        except Exception as exc:  # noqa: BLE001 — never fail a generation over the cache
+        except Exception as exc:  # noqa: BLE001 - never fail a generation over the cache
             if logger is not None:
                 logger.warning("diffusion.cond_cache: lookup failed: %s", exc)
             return encode(*args, **kwargs)
@@ -192,7 +192,7 @@ def install(
             if flat is not None:
                 cache.put(key, flat)
                 stats["misses"] += 1
-        except Exception as exc:  # noqa: BLE001 — a failed write only skips reuse
+        except Exception as exc:  # noqa: BLE001 - a failed write only skips reuse
             if logger is not None:
                 logger.warning("diffusion.cond_cache: store failed: %s", exc)
         return result
@@ -236,5 +236,5 @@ def _source_revision(ref: Any) -> str:
     try:
         from core.training.diffusion_train_extras import source_revision  # noqa: PLC0415
         return source_revision(ref)
-    except Exception:  # noqa: BLE001 — best-effort, never block a load
+    except Exception:  # noqa: BLE001 - best-effort, never block a load
         return "unresolved"

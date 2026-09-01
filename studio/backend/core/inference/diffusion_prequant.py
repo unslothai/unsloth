@@ -296,7 +296,7 @@ def _allowed_prequant_roots() -> list:
             continue  # a bare on/off value is not a directory
         try:
             roots.append(os.path.realpath(os.path.expanduser(part)))
-        except Exception:  # noqa: BLE001 — a bad entry is simply not allowlisted
+        except Exception:  # noqa: BLE001 - a bad entry is simply not allowlisted
             continue
     return roots
 
@@ -394,7 +394,7 @@ def resolve_prequant_source(
         # What the same call would have resolved WITHOUT a task, which is what decides whether a fallback is safe below.
         # Skipped when no task was asked for, since then the two are the same lookup.
         agnostic = family_prequant_filename(fam, scheme) if task else preferred
-    except Exception:  # noqa: BLE001 — a bad family object must not break the load
+    except Exception:  # noqa: BLE001 - a bad family object must not break the load
         repo_id = None
     if repo_id:
         derived = prequant_repo_filename(repo_id, scheme)
@@ -527,11 +527,11 @@ def _cached_in_root(
         import os
 
         from huggingface_hub import try_to_load_from_cache
-    except Exception:  # noqa: BLE001 — no cache API to ask: treat as not cached
+    except Exception:  # noqa: BLE001 - no cache API to ask: treat as not cached
         return None
     try:
         hit = try_to_load_from_cache(source.location, name, cache_dir = root)
-    except Exception:  # noqa: BLE001 — a malformed cache entry is not a hit
+    except Exception:  # noqa: BLE001 - a malformed cache entry is not a hit
         return None
     # a str is the cached path; a miss is None and a known-absent file is a sentinel object
     return hit if isinstance(hit, str) and os.path.isfile(hit) else None
@@ -711,11 +711,11 @@ def load_prequantized_transformer(
         # train/eval-sensitive layers cannot make prequant inference diverge.
         try:
             transformer.eval()
-        except Exception:  # noqa: BLE001 — eval() is best-effort
+        except Exception:  # noqa: BLE001 - eval() is best-effort
             pass
         try:
             transformer._unsloth_runtime_quant = scheme
-        except Exception:  # noqa: BLE001 — marker is best-effort
+        except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         if logger is not None:
             logger.info(
@@ -725,7 +725,7 @@ def load_prequantized_transformer(
                 device,
             )
         return transformer
-    except Exception as exc:  # noqa: BLE001 — fall back to the dense-quantise path
+    except Exception as exc:  # noqa: BLE001 - fall back to the dense-quantise path
         _warn(logger, f"{scheme}:{source.kind}", exc)
         return None
 
@@ -738,7 +738,7 @@ def _entry_not_found_errors() -> tuple:
     Private markers on an unexpected layout are raised by nothing, keeping today's behaviour."""
     try:
         from huggingface_hub.errors import EntryNotFoundError
-    except Exception:  # noqa: BLE001 — older/newer hub layouts
+    except Exception:  # noqa: BLE001 - older/newer hub layouts
 
         class EntryNotFoundError(Exception):  # type: ignore[no-redef]
             pass
@@ -792,7 +792,7 @@ def _download_checkpoint_name(
                 if not propagate_missing:
                     return elsewhere
                 raise
-            except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
+            except Exception:  # noqa: BLE001 - revalidation is a bonus, never a new failure
                 return elsewhere
     return hf_hub_download(
         repo_id = source.location,
@@ -865,7 +865,7 @@ def _config_cache_roots(checkpoint_path: str, cache_dir: Optional[str]) -> tuple
         root = os.path.normcase(os.path.realpath(cache_dir))
         real = os.path.normcase(os.path.realpath(checkpoint_path))
         under_live = real == root or real.startswith(root + os.sep)
-    except Exception:  # noqa: BLE001 — an unresolvable path keeps today's order
+    except Exception:  # noqa: BLE001 - an unresolvable path keeps today's order
         under_live = True
     return (cache_dir, None) if under_live else (None, cache_dir)
 
@@ -894,7 +894,7 @@ def _load_transformer_config(
                 cache_dir = root,
                 local_files_only = local_files_only,
             )
-        except Exception as exc:  # noqa: BLE001 — try the other root before giving up
+        except Exception as exc:  # noqa: BLE001 - try the other root before giving up
             last = exc
     raise last  # type: ignore[misc]
 
