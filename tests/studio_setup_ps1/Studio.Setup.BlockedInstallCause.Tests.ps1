@@ -86,6 +86,14 @@ Describe 'the prebuilt exit-3 branch' {
         $script:LlamaBusy | Should -Match 'repair the ACLs'
     }
 
+    It 'only names ACL repair when the helper emitted recovery guidance' {
+        $script:LlamaBusy | Should -Match '\$prebuiltOutput -match [''"]takeown /F[''"]'
+    }
+
+    It 'keeps a close-users-only fallback without recovery guidance' {
+        $script:LlamaBusy | Should -Match '(?s)else\s*\{.+Close Unsloth or other llama\.cpp users and retry'
+    }
+
     It 'still terminates with exit code 3' {
         $script:LlamaBusy | Should -Match 'Exit-SetupFailure .+ 3'
     }
