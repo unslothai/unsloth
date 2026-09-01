@@ -14,7 +14,7 @@ from auth.authentication import (
     get_current_subject,
     require_install_admin,
 )
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
     CancelDownloadResponse,
@@ -25,6 +25,7 @@ from hub.schemas.downloads import (
     DownloadStartResponse,
     TransportStatusResponse,
 )
+from hub.utils.hf_tokens import HfTokenArg
 from hub.schemas.inventory import (
     AddScanFolderRequest,
     CachedGgufResponse,
@@ -96,7 +97,7 @@ async def get_gguf_variants(
     prefer_local_cache: bool = Query(False),
     offline: bool = Query(False),
     local_path: Optional[str] = Query(None),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     # Before any filesystem probe: local_path is caller-supplied and reaches
@@ -156,7 +157,7 @@ async def get_active_downloads(
 async def get_model_transport_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_model_transport_status_response(
@@ -175,7 +176,7 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_gguf_download_progress_response(
@@ -190,7 +191,7 @@ async def get_gguf_download_progress(
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_download_progress_response(
@@ -202,7 +203,7 @@ async def get_download_progress(
 
 @router.get("/cached-gguf", response_model = CachedGgufResponse)
 async def list_cached_gguf(
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await cache_inventory.list_cached_gguf_response(hf_token)
@@ -210,7 +211,7 @@ async def list_cached_gguf(
 
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await cache_inventory.list_cached_models_response(hf_token)
@@ -258,7 +259,7 @@ async def delete_cached_model(
     cache_path: Optional[str] = Body(None),
     # Free up space's precondition: refuse with 409 if the repo is no longer an unused asset.
     only_if_orphan: bool = Body(False),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     # Owner only: the model cache is installation-wide, so this discards whatever
     # any account downloaded. See routes/models.delete_cached_model.
     current_subject: str = Depends(require_install_admin),

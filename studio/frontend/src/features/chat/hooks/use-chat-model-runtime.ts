@@ -32,9 +32,19 @@ import {
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
+import {
+  isOllamaLinkPath,
+  modelDisplayName,
+} from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
+import {
+  beginServerModelWait,
+  serverModelWaitOutstanding,
+  statusPollSignal,
+} from "../lib/server-model-wait";
+// eslint-disable-next-line no-restricted-imports -- The hub barrel imports chat; this lifecycle leaf does not.
+import { dismissStartToastsForModelSelection } from "@/features/hub/download-manager";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
@@ -58,6 +68,7 @@ import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
   loadedGpuMemoryFields,
+  noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
@@ -75,6 +86,7 @@ import {
   clampLocalReasoningEffort,
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
+  tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
 import {
   isIdleUnloadedStatus,
@@ -98,7 +110,7 @@ import {
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
-import { resolveQwenThinkingParams } from "../utils/qwen-params";
+import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
@@ -218,6 +230,53 @@ const MODEL_LOAD_TOAST_CLASSNAMES = {
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
+
+const CLI_LOAD_POLL_IDLE_MS = 60_000;
+const CLI_LOAD_POLL_MAX_MS = 600_000;
+
+async function waitForServerModel(signal?: AbortSignal): Promise<void> {
+  const started = Date.now();
+  let sawLoad = false;
+
+  while (
+    !signal?.aborted &&
+    !useChatRuntimeStore.getState().params.checkpoint &&
+    !useChatRuntimeStore.getState().modelLoading
+  ) {
+    let status: InferenceStatusResponse | null = null;
+    // Capped, or a half-open read parks the loop past both caps below and past the
+    // unmount that aborted it, with the settlement gate still up behind it.
+    const poll = statusPollSignal(signal);
+    try {
+      status = await getInferenceStatus(poll.signal);
+    } catch {
+      // A later poll can recover from a transient status failure.
+    } finally {
+      poll.dispose();
+    }
+    if (
+      signal?.aborted ||
+      useChatRuntimeStore.getState().params.checkpoint ||
+      useChatRuntimeStore.getState().modelLoading
+    ) {
+      return;
+    }
+
+    if (status) {
+      const loading = (status.loading?.length ?? 0) > 0;
+      sawLoad ||= loading;
+      if (!loading && status.active_model) {
+        await tryAdoptServerActiveModel({ status });
+        return;
+      }
+      if (!loading && sawLoad) return;
+    }
+    const elapsed = Date.now() - started;
+    if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
+    if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
 
 function parseTrailingEpoch(input: string): number | undefined {
   const match = input.match(LORA_SUFFIX_RE);
@@ -387,12 +446,7 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
  * is a thin wrapper over it. External selections are left untouched since they
  * have no backend mirror.
  */
-// Bumped by every call. Two refreshes can be in flight at once -- a media load
-// announces itself before its POST and again once the backend has committed the
-// eviction -- and they read the status at different moments. Completion order is
-// not the order they were issued in, so without this the older one could land
-// last and re-pin the model the newer one had just seen released, leaving chat
-// claiming a model that 400s on send until the load finally settled.
+// Prevent older concurrent status reads from overwriting newer results.
 let syncGeneration = 0;
 let loraSyncGeneration = 0;
 let lastIdleUnloadArmed = false;
@@ -411,10 +465,11 @@ async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
   preserveIdleUnloaded?: boolean;
+  /** A TTS load owns the chat slot even though Chat did not start the load. */
+  externalChatSlotLoad?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
-  // Last issued wins: it read the freshest status, whichever answers first.
   const generation = ++syncGeneration;
   const loraGeneration = includeLoras ? ++loraSyncGeneration : null;
   const superseded = () => generation !== syncGeneration;
@@ -424,9 +479,10 @@ async function syncInferenceStatusToStore(options?: {
     useChatRuntimeStore.getState();
   setModelsError(null);
   try {
+    const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
     const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
-      getInferenceStatus(),
+      getInferenceStatus(signal),
       // Settled from this request alone. Read out of the aggregate below, a sibling
       // rejection discarded a good list yet still marked the inventory settled, so a
       // resident LoRA classified as a base model and pinned a new pair generalized.
@@ -451,23 +507,31 @@ async function syncInferenceStatusToStore(options?: {
         : Promise.resolve(false),
     ]);
 
-    // Cancellation can land while the requests above are in flight. Bail
-    // before writing backend state back -- cancelLoading already cleared it.
-    // Same for a refresh that a later one has already superseded: its answer
-    // describes a moment that has passed.
     if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelRow));
 
+    const statusLoading = (statusRes.loading?.length ?? 0) > 0;
+    // A replacement names the outgoing model active and the incoming one loading. Adopting
+    // the outgoing one sets the checkpoint the observer needs empty, so it writes this alone.
+    if (statusLoading && serverModelWaitOutstanding()) return;
+
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
+    const selectionChanged = selectedCheckpoint !== selectedAtStart;
     // The local selection is re-derived from this status on every mount, so adopting a
     // TTS model made it the chat model without the user picking it. Read the slot as
     // empty and the eviction branch below clears the stale pick, as it does for an
     // image or video load.
     const chatActiveModel =
-      statusRes.active_model && !isSpeechOnlyStatus(statusRes);
-    if (chatActiveModel && !isExternalSelectionActive) {
+      statusRes.active_model &&
+      !isSpeechOnlyStatus(statusRes) &&
+      !(statusLoading && options?.externalChatSlotLoad);
+    if (
+      chatActiveModel &&
+      !isExternalSelectionActive &&
+      !selectionChanged
+    ) {
       const checkpointId = resolveInferenceCheckpointId(statusRes);
       if (checkpointId) {
         const previousGgufVariant =
@@ -484,6 +548,10 @@ async function syncInferenceStatusToStore(options?: {
         applyActiveModelStatusToStore(statusRes, {
           previousCheckpoint: selectedCheckpoint,
           previousGgufVariant,
+          // With no prior selection this is Studio discovering the server's
+          // resident model, so its global-only snapshot belongs to this
+          // checkpoint and is safe to migrate.
+          adoptingExistingServerModel: selectedCheckpoint === "",
         });
         // setModels(listRes...) above used catalog data, which omits audio
         // capability. Re-apply live status so attach gates survive a refresh.
@@ -503,7 +571,11 @@ async function syncInferenceStatusToStore(options?: {
           void refreshContextUsage({ threadId: hydrated.activeThreadId });
         }
       }
-    } else if (!chatActiveModel && !isExternalSelectionActive) {
+    } else if (
+      !chatActiveModel &&
+      !isExternalSelectionActive &&
+      !selectionChanged
+    ) {
       if (isIdleUnloadedStatus(statusRes, idleUnloadArmed)) return;
       // Loading an image, video or audio model evicts the chat one (the GPU arbiter
       // allows a single owner), and nothing else here would say so: the picker
@@ -522,12 +594,12 @@ async function syncInferenceStatusToStore(options?: {
         loadedIsDiffusion: false,
       });
       // A known prior resident or a definitive speech-only owner both prove the
-      // persisted Chat pick is stale. A load in flight has no active model yet
-      // either, so never clear while one is starting.
+      // persisted Chat pick is stale. Do not clear for a Chat load that this tab
+      // started. TTS is different because it owns this same slot.
       if (
         (wasResident || isSpeechOnlyStatus(statusRes)) &&
         selectedCheckpoint &&
-        !modelLoading
+        (!modelLoading || options?.externalChatSlotLoad)
       ) {
         // Already the clean id the header shows: resolveInferenceCheckpointId
         // put it there, not a load path.
@@ -554,6 +626,28 @@ async function syncInferenceStatusToStore(options?: {
     toast.error("Failed to refresh models", {
       description: message,
     });
+  }
+}
+
+/**
+ * The mount handoff: hydrate from status, then observe until the server settles.
+ *
+ * The gate is up before the sync is issued, since a refresh issued later can answer first
+ * and adopt the outgoing model.
+ */
+async function refreshAndWaitForServerModel(options?: {
+  signal?: AbortSignal;
+  includeLoras?: boolean;
+  preserveIdleUnloaded?: boolean;
+  externalChatSlotLoad?: boolean;
+}): Promise<void> {
+  const signal = options?.signal;
+  const release = beginServerModelWait(signal);
+  try {
+    await syncInferenceStatusToStore(options);
+    await waitForServerModel(signal);
+  } finally {
+    release();
   }
 }
 
@@ -665,12 +759,19 @@ export function useChatModelRuntime() {
   );
 
   const refresh = useCallback(
-    (options?: {
+    async (options?: {
+      waitForServerModel?: boolean;
       signal?: AbortSignal;
       includeLoras?: boolean;
       preserveIdleUnloaded?: boolean;
-    }) =>
-      syncInferenceStatusToStore(options),
+      externalChatSlotLoad?: boolean;
+    }) => {
+      if (options?.waitForServerModel) {
+        await refreshAndWaitForServerModel(options);
+        return;
+      }
+      await syncInferenceStatusToStore(options);
+    },
     [],
   );
 
@@ -690,7 +791,10 @@ export function useChatModelRuntime() {
         // image or video load POST, before the download starts, so waiting for
         // the load to finish left the picker and the header naming a model that
         // had already gone and that 400s on send, for the whole download.
-        void refresh({ includeLoras: false });
+        void refresh({
+          includeLoras: false,
+          externalChatSlotLoad: runtime === "tts",
+        });
       }),
     [refresh],
   );
@@ -783,6 +887,8 @@ export function useChatModelRuntime() {
         restorePreviousConfig();
         return;
       }
+      dismissStartToastsForModelSelection();
+
       // A load is already in flight. If it's this exact pick (id + variant + token),
       // ignore the duplicate click. If it's a DIFFERENT model (including a different
       // GGUF variant of the same repo, which the old id+token guard wrongly treated
@@ -863,6 +969,7 @@ export function useChatModelRuntime() {
         // another tab can swap the resident model, which this one is never told about
         // (the lifecycle events are dispatched on its own window).
         const adoptable = (status: InferenceStatusResponse) =>
+          (status.loading?.length ?? 0) === 0 &&
           residentModelMatchesPick(status, {
             id: modelId,
             loadPath,
@@ -1151,10 +1258,29 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      let hfToken = useChatRuntimeStore.getState().hfToken || null;
       const postLoadRefresh = { needed: false };
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
+        // Hoisted out of performLoad's GGUF branch for the progress pollers, but kept off
+        // loads that never reach the Hub: it validates over the network and can block on a
+        // dialog, and a stale Settings token must not gate a local or cached-LoRA load.
+        // An Ollama row's id is an opaque `ollama-manifest:` reference rather than a
+        // path, so isLocalModelPath does not recognise it even though the backend
+        // materialises the load entirely from the local Ollama store.
+        const mayReachHub =
+          !isLocal && !isOllamaLinkPath(modelId) && nativePathToken == null;
+        if (mayReachHub) {
+          const preparedToken = await prepareHfTokenForUse(hfToken);
+          if (!preparedToken.proceed) {
+            // Lands in the outer catch (banner only); no load toast exists yet.
+            toast.error("Model load cancelled.");
+            throw new Error("Model load cancelled.");
+          }
+          hfToken = preparedToken.token;
+        }
+
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
@@ -1195,17 +1321,11 @@ export function useChatModelRuntime() {
             // header with 401 even for a public repo, so sending the raw stored
             // token here would abort the load before the existing "continue
             // anonymously / replace token" recovery flow could run.
-            const preparedToken = await prepareHfTokenForUse(
-              useChatRuntimeStore.getState().hfToken || null,
-            );
-            if (!preparedToken.proceed) {
-              throw new Error("Model load cancelled.");
-            }
             isDiffusion = (
               await fetchGgufStagedMetadata({
                 model_path: loadPath,
                 gguf_variant: ggufVariant ?? null,
-                hf_token: preparedToken.token,
+                hf_token: hfToken,
                 nativePathToken: nativePathToken ?? null,
               })
             ).isDiffusion;
@@ -1272,7 +1392,10 @@ export function useChatModelRuntime() {
               )
             : (previousPin ??
               unpinnedLoadContext(false, previousIsMlx, previousMaxSeqLength));
-          const hfToken = stateBeforeUnload.hfToken || null;
+          // main's `const hfToken = stateBeforeUnload.hfToken` is deliberately not
+          // carried over: this branch prepares the credential once in the enclosing
+          // scope, and re-reading the raw stored token here would shadow it and undo
+          // the preparation for every load below.
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathExpiresAtMs =
@@ -1992,6 +2115,9 @@ export function useChatModelRuntime() {
                 ? nativePathExpiresAtMs
                 : null,
             });
+            // fromLoad: this browser performed the load, so the mode it chose
+            // outranks a persisted toggle describing the previous model.
+            noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             // Unlock attach menus for capabilities the catalog entry lacked.
             syncModelCapabilities(modelId, loadResponse);
             // Qwen3-family: apply thinking-mode-specific params after load.
@@ -2295,8 +2421,13 @@ export function useChatModelRuntime() {
           try {
             const prog =
               ggufVariant && expectedBytes > 0
-                ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
-                : await getDownloadProgress(modelId);
+                ? await getGgufDownloadProgress(
+                    modelId,
+                    ggufVariant,
+                    expectedBytes,
+                    hfToken,
+                  )
+                : await getDownloadProgress(modelId, hfToken);
             if (!loadingModelRef.current) return;
 
             if (prog.progress > 0 && prog.progress < 1) {

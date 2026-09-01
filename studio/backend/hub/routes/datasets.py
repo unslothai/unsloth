@@ -14,7 +14,7 @@ from auth.authentication import (
     get_current_subject,
     require_install_admin,
 )
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.schemas.datasets import (
     AiAssistMappingRequest,
     AiAssistMappingResponse,
@@ -27,6 +27,7 @@ from hub.schemas.datasets import (
     LocalDatasetsResponse,
     UploadDatasetResponse,
 )
+from hub.utils.hf_tokens import HfTokenArg
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
     CancelDatasetDownloadRequest,
@@ -90,7 +91,7 @@ async def delete_cached_dataset(
 async def get_dataset_download_progress(
     repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_dataset_download_progress_response(
@@ -148,7 +149,7 @@ async def get_dataset_transport_status(
 @router.post("/check-format", response_model = CheckFormatResponse)
 def check_format(
     request: CheckFormatRequest,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return formatting.check_format_response(request, hf_token)
@@ -157,7 +158,7 @@ def check_format(
 @router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse)
 def ai_assist_mapping(
     request: AiAssistMappingRequest,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return formatting.ai_assist_mapping_response(request, hf_token)
