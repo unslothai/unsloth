@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Behaviour of the pure helpers the MLX context work introduced.
-//
-// The rest of the coverage for these reads their source with a regex, which passes
-// unchanged if the body is deleted. These import them and call them, so a helper that
-// stops answering fails here.
+// Behaviour of the pure helpers the MLX context work introduced. The rest of their
+// coverage regexes the source, which passes with the body deleted; these call them.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -52,9 +49,8 @@ const MLX = {
 };
 
 test("an MLX response carries a window without a native one", () => {
-  // The whole point of the field split: before this, a non-GGUF response with no
-  // native_context_length was discarded, which is every MLX model whose config
-  // declares no trained window.
+  // The point of the field split: a non-GGUF response with no native_context_length used
+  // to be discarded, which is every MLX model declaring no trained window.
   assert.deepEqual(loadedContextFields({ is_gguf: false, is_mlx: true, context_length: 8192 }), {
     loadedContextLength: 8192,
     maxContextLength: 8192,
@@ -144,8 +140,8 @@ test("the reported window outranks the request it answered", () => {
 test("Max Tokens is bounded by the window, and never below its own minimum", () => {
   assert.equal(localMaxTokensCeiling(32768, 4096), 32768);
   assert.equal(localMaxTokensCeiling(null, 4096), 4096);
-  // Reachable on MLX, which honours a tiny positive request verbatim. The control's
-  // own minimum wins, since a slider whose maximum is below it cannot be operated.
+  // Reachable on MLX, which honours a tiny request verbatim; the control's minimum wins,
+  // since a slider whose maximum is below it cannot be operated.
   assert.equal(localMaxTokensCeiling(16, 4096), 64);
   assert.equal(unreportedWindowMaxTokens(true, 9000), 9000);
   assert.equal(unreportedWindowMaxTokens(false, 9000), DEFAULT_MAX_SEQ_LENGTH);
@@ -185,8 +181,8 @@ test("an outgoing self-sizing window does not become the next model's request", 
   // An unpinned MLX load writes its RESOLVED window into params.maxSeqLength.
   const afterMlx = loadedContextForParams(131072, 0, 4096);
   assert.equal(afterMlx, 131072);
-  // Switching to an unconfigured transformers model must still ask for the app default:
-  // 131072 there is an allocation nobody requested.
+  // An unconfigured transformers model still asks for the app default: 131072 there is
+  // an allocation nobody requested.
   assert.equal(unpinnedDefaultRequest(true, afterMlx, DEFAULT_MAX_SEQ_LENGTH), 4096);
   // A backend that does not size its own window leaves the session request intact.
   assert.equal(unpinnedDefaultRequest(false, 8192, DEFAULT_MAX_SEQ_LENGTH), 8192);

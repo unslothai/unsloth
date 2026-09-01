@@ -3,57 +3,32 @@
 
 """[Windows, Linux, WSL, macOS] x [NVIDIA, AMD/ROCm, CPU-only] for the MLX context report.
 
-Three questions per cell, asked of the real code:
+Per cell: the ``DeviceType`` ``detect_hardware()`` returns, whether ``worker.py`` would
+construct ``MLXInferenceBackend`` (the selection is ``_hw.DEVICE == _hw.DeviceType.MLX``
+and nothing else, asserted against the source too), and whether the context triple reaches
+the API. Only an MLX load resolves ``native_context_length`` / ``max_context_length``, so
+the other eleven cells withhold them through ``_mirrored_model_entry`` and ``/v1/models``.
 
-  1. which ``DeviceType`` ``detect_hardware()`` returns;
-  2. whether ``worker.py`` would construct ``MLXInferenceBackend`` -- the selection is
-     ``_hw.DEVICE == _hw.DeviceType.MLX`` and nothing else, which is asserted against the
-     source as well as evaluated per cell;
-  3. whether the context triple (``context_length`` / ``native_context_length`` /
-     ``max_context_length``) reaches the API, since only the MLX load resolves the last
-     two. The transformers backend writes ``context_length`` alone
-     (``core/inference/inference.py`` line ~594 / ~678), so on every non-MLX cell the
-     other two are withheld all the way through ``_mirrored_model_entry`` and
-     ``/v1/models``.
+Every cell is presented with a HEALTHY MLX stack, including the absurd ones: the gate, not
+the missing package, is what must keep MLX off the other eleven. If the ordering in
+``_detect_hardware_locked`` changed, only a matrix that installs mlx everywhere would see it.
 
-Every cell is presented with a HEALTHY MLX stack, including the ones where that is
-absurd. The point is that the gate, not the absence of the package, is what keeps MLX off
-eleven of the twelve cells: if the ordering in ``_detect_hardware_locked`` ever changed,
-a Windows box with ``mlx`` on its path would start selecting an MLX backend, and only a
-matrix that installs mlx everywhere can see that.
+What this CANNOT prove, recorded rather than skipped (tests at the bottom):
 
-What this file CANNOT prove, recorded rather than skipped (see the tests at the bottom):
+  * WSL is indistinguishable from Linux in ``utils/hardware/**``, so its row is asserted
+    byte-identical to linux and the absence of any WSL discriminator is asserted structurally.
+  * macOS x NVIDIA and macOS x AMD are not bootable cells; the rows describe the detector's
+    ordering, not a machine.
+  * Windows x MLX is impossible by construction: ``is_apple_silicon()`` ANDs Darwin with
+    arm64, so Windows-on-ARM with a full MLX stack still lands on CPU.
+  * No Apple Silicon, ROCm or AMD GPU exists on this host, so every non-CPU answer comes
+    from the mocked torch shapes ``test_gpu_arch_gate_os_matrix_7624`` documents.
 
-  * WSL is indistinguishable from Linux inside ``studio/backend/utils/hardware/**``.
-    Nothing there reads ``/proc/version``, ``WSL_DISTRO_NAME`` or ``WSLENV``, and
-    ``sys.platform`` is "linux" on both. The wsl row is therefore not an independent
-    measurement; it is asserted to be byte-identical to the linux row, and the absence of
-    any WSL discriminator in the detector is asserted structurally.
-  * macOS x NVIDIA and macOS x AMD/ROCm are not real cells. Apple shipped no CUDA driver
-    after 10.13 and ROCm has never had a macOS build, so no host can present them. They
-    are kept because the expectation is still meaningful -- a torch that reports a CUDA
-    device outranks MLX on Darwin too -- but the row describes the detector's arithmetic,
-    not a machine anyone can boot.
-  * Windows x MLX is impossible by construction, not by policy: ``is_apple_silicon()``
-    ANDs ``platform.system() == "Darwin"`` with ``platform.machine() == "arm64"``, so
-    Windows-on-ARM with a complete MLX stack still lands on CPU. Asserted both ways.
-  * No Apple Silicon, no ROCm runtime and no AMD GPU exist on the host that runs this, so
-    every non-CPU answer here is produced from the mocked torch shapes that
-    ``test_gpu_arch_gate_os_matrix_7624`` already documents. Nothing below measures
-    hardware.
-
-Machinery is reused, not reinvented: ``_OS_CELLS`` / ``_apply_os`` / ``_fake_torch`` /
-``_device`` come from ``studio/backend/tests/test_gpu_arch_gate_os_matrix_7624.py`` and
-the mlx injection / meta-path blocker and ``_import_studio_hardware_module`` come from
-``tests/studio/test_hardware_dispatch_matrix.py``.
-
-This file mutates ``hardware.py`` module globals (``DEVICE``, ``IS_ROCM``,
-``CHAT_ONLY*``), so it is registered in
-``tests/studio/test_backend_ci_parallel_isolation.py::ISOLATED`` and in both halves of
-the Backend CI pairing in ``studio-backend-ci.yml`` (the parallel run's ignore list and
-the serial "Hardware-spoof tests" step). Written without the workflow directory's path:
-``test_workflow_guards_run_unfiltered`` scans for that literal to find guards that READ a
-workflow, and this file only names one.
+Machinery is reused from ``test_gpu_arch_gate_os_matrix_7624.py`` and
+``test_hardware_dispatch_matrix.py``. It mutates ``hardware.py`` globals, so it is
+registered in ``test_backend_ci_parallel_isolation.py::ISOLATED`` and in both halves of the
+Backend CI pairing. Written without the workflow directory's literal path, which
+``test_workflow_guards_run_unfiltered`` scans for.
 """
 
 from __future__ import annotations

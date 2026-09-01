@@ -108,9 +108,8 @@ def _mlx_vlm_model_config(model):
     return (configs[0] if configs else None), None
 
 
-# Matched on the context-bearing term rather than a list of field names, since mlx-lm
-# alone spells it four ways and nested configs add more. A bare max_length is a
-# generation default and n_sequences a batch count, so neither term qualifies.
+# Matched on the context-bearing term, not a field list: mlx-lm alone spells it four ways.
+# max_length is a generation default and n_sequences a batch count, so neither qualifies.
 _MLX_CONTEXT_KEY = re.compile(
     r"(?:position(?:s|_embeddings)|(?:^|_)ctx|context_len(?:gth)?"
     r"|seq(?:uence)?_len(?:gth)?|model_max_length)$"
@@ -151,8 +150,7 @@ def _positive_int(value):
     try:
         value_int = int(value)
     except (TypeError, ValueError, OverflowError):
-        # json.loads accepts Infinity, which must read as an unusable dimension
-        # rather than abort the load.
+        # json.loads accepts Infinity: unusable, but must not abort the load.
         return None
     return value_int if value_int > 0 else None
 
@@ -560,9 +558,8 @@ MLX_KV_QUANT_NO_REUSE = (
 MLX_KV_QUANT_VLM_CACHE_NOTE = (
     "On vision models, quantization starts once the cache reaches {start} tokens."
 )
-# A bounded window rotates through a RotatingKVCache, whose to_quantized raises, and
-# mlx-lm attempts the conversion from the first token. Resolved here so the pinned
-# window is what applies, rather than letting generation fail on its first step.
+# RotatingKVCache.to_quantized raises and mlx-lm converts from the first token, so the
+# two are resolved here rather than failing generation on its first step.
 MLX_KV_QUANT_PINNED_CONTEXT = (
     "Context Length is set for this model, which limits the KV cache, and the installed "
     "mlx-lm cannot quantize a limited cache. Reset it to quantize instead."
@@ -1046,8 +1043,8 @@ def _kv_entry_is_bounded(entry, window):
     cap = getattr(entry, "max_size", None) or getattr(entry, "chunk_size", None)
     if not cap or cap > window:
         return False
-    # A rotating cache that retains at least as much as it holds never rotates: the write
-    # index resets past the end of the buffer and the updates stop landing.
+    # Retaining as much as it holds means it never rotates: the write index resets past
+    # the buffer end and updates stop landing.
     return cap > getattr(entry, "keep", 0)
 
 
@@ -1065,9 +1062,8 @@ def _kv_window_enforced(model, is_vlm, window):
         else:
             from mlx_lm.models import cache as lm_cache
             entries = lm_cache.make_prompt_cache(language_model, max_kv_size = window)
-        # Inside the guard with the build: a make_cache returning None or a bare cache,
-        # or a cap that will not compare, is a shape this cannot judge -- and load_model
-        # calls this unguarded, so raising here would fail the load instead.
+        # Inside the guard with the build: an unjudgeable shape must read as unknown,
+        # since load_model calls this unguarded and a raise would fail the load.
         flattened = list(_flatten_kv_entries(entries))
         return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
     except Exception as exc:
@@ -1458,12 +1454,10 @@ def _mlx_sampling_processors(
     return processors or None
 
 
-# The families the mlx_vlm releases from before should_add_special_tokens existed inlined into
-# their generation path: their chat template emits the special markers, so tokenization must not
-# add them again. Deliberately not the current helper's list, which also carries laguna -- laguna
-# models run on 0.6.0 onward but only 0.6.9 stopped tokenizing them with the markers, and 0.6.0
-# through 0.6.8 are what this stands in for. A family that arrived with its list entry is safe to
-# keep here, since a release without the entry cannot load the model either.
+# Families that mlx_vlm inlined before should_add_special_tokens existed: their template
+# already emits the markers, so tokenization must not add them again. Deliberately not the
+# current helper's list, which carries laguna -- only 0.6.9 stopped tokenizing laguna with
+# the markers, and 0.6.0-0.6.8 are what this stands in for.
 _VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_unified")
 
 
@@ -1663,9 +1657,8 @@ class MLXInferenceBackend:
         enforced, which would otherwise spend the quantization and bound nothing.
         """
         pinned = _positive_int(max_seq_length) is not None
-        # Tri-state: True confirmed, False confirmed unbounded, None nothing could be
-        # built to judge. Only True installs a bound; the other two are reported apart
-        # so a client can tell "does not apply" from "could not be checked".
+        # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True
+        # installs a bound; the other two stay apart so a client can tell them apart.
         confirmed = self._kv_cache_window_enforceable(served)
         enforceable = confirmed is True
         quant = _kv_quant_status(
@@ -1675,9 +1668,8 @@ class MLXInferenceBackend:
             pinned and enforceable,
         )
         if not enforceable or (quant["kv_bits"] is not None and not pinned):
-            # No bound installed. False where the probe answered either way, since the
-            # window is not a limit here whatever the architecture could have done;
-            # None only where nothing could be built to judge.
+            # No bound installed, so False wherever the probe answered at all; None only
+            # where nothing could be built to judge.
             return quant, None, None if confirmed is None else False
         logger.info("MLX KV cache limited to %d tokens", int(served))
         return quant, int(served), True
@@ -1871,13 +1863,10 @@ class MLXInferenceBackend:
             "audio_type": _audio_type,
             "has_audio_input": is_audio_input_type(_audio_type),
             "context_length": _served_ctx,
-            # Parity with llama.cpp's requested_n_ctx. The served window cannot answer
-            # it: a request of nothing and a request of exactly that length produce the
-            # same number, and the difference decides reuse and whether the UI calls it
-            # pinned.
+            # Parity with llama.cpp's requested_n_ctx: the served window cannot say
+            # whether anything was asked for, and that decides reuse and "pinned".
             "requested_context_length": _positive_int(max_seq_length) or 0,
-            # Nothing here measures the machine, so the window and its ceiling are the
-            # same number, and a request may exceed both.
+            # Nothing measures the machine, so window and ceiling coincide.
             "native_context_length": _native_ctx,
             "max_context_length": _max_ctx,
             # Whether the served window actually bounds the cache: True confirmed on a

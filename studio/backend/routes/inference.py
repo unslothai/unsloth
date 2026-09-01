@@ -6228,8 +6228,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_reason = None,
         mlx_kv_quant_note = None,
         chat_template_override_reason = None,
-        # llama.cpp allocates the window it reports, so a GGUF load is bounded by
-        # construction rather than by inspection.
+        # llama.cpp allocates the window it reports: bounded by construction.
         context_length_enforced = True,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
@@ -16050,8 +16049,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             native_context_length = _positive_int_or_none(model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(model_info.get("max_context_length")),
             context_length_enforced = model_info.get("context_length_enforced"),
-            # 0 is an answer -- the load asked the backend to size its own window --
-            # while None means this backend records no request at all.
+            # 0 is an answer (size it yourself); None means no request is recorded.
             requested_context_length = _nonnegative_int_or_none(
                 model_info.get("requested_context_length")
             ),
@@ -27020,39 +27018,35 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     it is called rather than restated; the admission conditions themselves are restated,
     so they have to be kept in step with the completion above.
     """
-    # Off the loop: building the singleton runs the torch import, and a token count is
-    # not worth stalling login and the health probe behind it.
+    # Off the loop: building the singleton runs the torch import, and a count is not
+    # worth stalling login and the health probe behind it.
     backend = await asyncio.to_thread(get_inference_backend)
     active = getattr(backend, "active_model_name", None)
-    # The name alone cannot see a same-ID reload, which is how a chat-template override
-    # lands, so the generation is captured with it and both are re-read at the end.
+    # The name cannot see a same-ID reload, which is how a template override lands, so
+    # the generation is captured with it and both are re-read at the end.
     _load_generation = getattr(backend, "load_generation", 0)
     if not active:
         return None
     entry = getattr(backend, "models", {}).get(active) or {}
-    # An audio completion is routed away from the chat path entirely, so a text render
-    # prices nothing that is ever sent. A vision model is not: it serves text turns
-    # through the same processor render counting now shares, and an image anywhere in the
-    # request was already declined above.
+    # Audio is routed off the chat path, so a text render prices nothing that is sent.
+    # Vision is not: it serves text turns through the same render, and an image anywhere
+    # in the request was declined above.
     if not entry.get("is_mlx") or entry.get("is_audio"):
         return None
 
-    # The same helper the completion path derives these with; rebuilding either here is
-    # how a count comes to price a prompt nobody sends.
+    # The completion's own helper: rebuilding it here is how a count prices a prompt
+    # nobody sends.
     system_prompt, messages, _image = _extract_content_parts(payload.messages)
-    # The completion applies this once for both non-GGUF backends before it branches, so a
-    # count that skipped it would price a prompt shorter than the one that gets sent.
-    # Only with a request: without one there is no setting to read, and the helper's
-    # requestless mode injects the date unconditionally.
+    # The completion applies this once for both non-GGUF backends before it branches.
+    # Only with a request: the helper's requestless mode injects the date unconditionally.
     if request is not None:
         system_prompt = _apply_current_date_prompt(system_prompt, request)
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
 
     _tools_on = bool(_effective_enable_tools(payload))
-    # The launcher's tools-on default answers a request that said nothing about tools; a
-    # request that stated its own intent withdrew the question, and the completion hands
-    # such a request to the passthrough rather than the tool loop.
+    # The launcher's default answers a request that said nothing about tools; one that
+    # stated its intent goes to the passthrough, not the tool loop.
     if (
         _tools_on
         and _tools_on_by_launcher_default_only(payload)
@@ -27061,12 +27055,10 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         _tools_on = False
     _mcp_on = bool(getattr(payload, "mcp_enabled", False)) and _get_tool_policy_mlx() is not False
 
-    # Whether this model renders tools at all, classified from its own template the way
-    # the completion classifies it. A named template exposes tool markup only in its
-    # tool_use branch, and which branch the classifier reads depends on the tools handed
-    # to it -- so hand it what the completion hands it, a placeholder standing in for the
-    # server-side schemas selected below. Classifying without them reads the plain branch
-    # and reports a tool-capable model as tool-less, which prices away the whole catalog.
+    # Classified from the template the way the completion classifies it. A named template
+    # exposes tool markup only in its tool_use branch, and which branch is read depends on
+    # the tools handed in -- so hand it a placeholder for the schemas selected below.
+    # Without them it reads the plain branch and prices away the whole catalog.
     _tpl = (entry.get("chat_template_info") or {}).get("template")
     _template_tools = payload.tools if getattr(payload, "tool_choice", None) != "none" else None
     if not _template_tools and (_tools_on or _explicit_studio_tool_loop_requested(payload)):
@@ -27080,18 +27072,16 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     _budget = getattr(payload, "max_tool_calls_per_message", None)
     _tools_to_use = None
     if _takes_tools and (_tools_on or _mcp_on) and (_budget is None or _budget > 0):
-        # Never discovery on a count: get_enabled_mcp_tools spawns stdio servers and blocks
-        # on a probe timeout, so schemas come from the cache the completion path fills and
-        # an incomplete view is declined rather than undercounted. mcp_allowed stays False
-        # for the same reason -- it is the flag that reaches the network.
+        # Never discovery on a count: get_enabled_mcp_tools spawns stdio servers and
+        # blocks on a probe timeout. Schemas come from the completion's cache and an
+        # incomplete view is declined; mcp_allowed stays False as the network flag.
         _mcp_tools: list[dict] = []
         if _mcp_on:
             from core.inference.mcp_client import mcp_server_snapshot_guard
             from core.inference.tools import cached_mcp_tools
 
-            # Off the loop with the store check below: reading which servers are enabled
-            # is a database read. Guarded as the GGUF count guards it, or an interleaving
-            # edit pairs a new server row with the schema cached before it.
+            # A database read, so off the loop. Guarded as the GGUF count guards it, or
+            # an interleaving edit pairs a new row with the schema cached before it.
             async with mcp_server_snapshot_guard():
                 _mcp_tools, _mcp_complete = await asyncio.to_thread(cached_mcp_tools)
             if not _mcp_complete:
@@ -27102,8 +27092,8 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         _tools_to_use = (
             await _select_request_tools(payload, tools_on = _tools_on, mcp_allowed = False)
         ) + _mcp_tools
-        # Nothing surviving the selection means the completion skips the tool loop, so the
-        # count follows it back to the plain render rather than passing an empty catalog.
+        # Nothing surviving means the completion skips the tool loop, so follow it back
+        # to the plain render rather than passing an empty catalog.
         if not _tools_to_use:
             _tools_to_use = None
 

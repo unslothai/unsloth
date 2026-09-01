@@ -486,9 +486,9 @@ async function syncInferenceStatusToStore(options?: {
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // Studio starting against a model that was already resident: history can load before
-        // this first status refresh has a checkpoint or window, so its own recount never runs.
-        // A null thread would publish an empty count, hence the mounted-thread guard.
+        // Against an already-resident model, history can load before this first status
+        // has a checkpoint, so its own recount never runs. The thread guard stops a null
+        // thread publishing an empty count.
         const hydrated = useChatRuntimeStore.getState();
         if (
           !selectedCheckpoint &&
@@ -898,9 +898,8 @@ export function useChatModelRuntime() {
             gpuMemoryMode: readPersistedGpuMemoryMode(),
             gpuLayers: GPU_LAYERS_AUTO,
             nCpuMoe: 0,
-            // The n_ctx /load would send. Built from the same inputs performLoad
-            // builds it from -- the staged or saved pin over the live store -- so an
-            // unset length resolves the same way on both sides.
+            // The n_ctx /load would send, from performLoad's own inputs, so an unset
+            // length resolves the same way on both sides.
             resolveContextLength: (customContextLength) => {
               const live = useChatRuntimeStore.getState();
               const platform = usePlatformStore.getState();
@@ -1220,9 +1219,8 @@ export function useChatModelRuntime() {
           const platform = usePlatformStore.getState();
           let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
           let approvedRemoteCodeFingerprint: string | null = null;
-          // A staged config carries its own pin. An entry point that applied the saved
-          // record and then selected the model carries none, and the record's pre-move
-          // field is the only place its pin survives.
+          // A staged config carries its pin; one that applied the saved record and then
+          // selected carries none, so the pre-move field is where it survives.
           const pinnedMaxSeqLength = normalizeMaxSeqLength(
             pendingLoadConfig
               ? pendingLoadConfig.maxSeqLength
@@ -1253,13 +1251,11 @@ export function useChatModelRuntime() {
             platform.deviceType,
             platform.chatOnlyReason,
           );
-          // What the outgoing model loaded with, not the control's current value: a pin
-          // typed and never applied would change a window the failed switch never
-          // touched. The runtime snapshot carries no intent either.
+          // What the outgoing model loaded with, not the control's value: a pin typed
+          // and never applied would change a window the failed switch never touched.
           const previousPin = stateBeforeUnload.loadedCustomContextLength;
-          // A pin the outgoing model loaded with is what it reloads at, whichever
-          // backend served it; only llama.cpp's placement rules override that, and only
-          // where they own the sizing.
+          // It reloads at the pin it loaded with, whichever backend served it; only
+          // llama.cpp's placement rules override that, where they own sizing.
           const rollbackMaxSeqLength = previousIsGguf
             ? resolveFitMaxSeqLength(
                 previousIsGguf,
@@ -1762,10 +1758,9 @@ export function useChatModelRuntime() {
 
             const currentParams = useChatRuntimeStore.getState().params;
             const loadedFields = loadedContextFields(loadResponse);
-            // The context this load actually has: the window the response reported, and
-            // where nothing sized one the length the load asked for. The request only
-            // answers for a backend that sizes nothing -- a self-sizing one is sent the
-            // auto-size sentinel, which as a budget is zero.
+            // The reported window, or where nothing sized one the requested length.
+            // The request answers only for a backend that sizes nothing: a self-sizing
+            // one was sent the sentinel, which as a budget is zero.
             const loadedContextCap =
               loadedFields.loadedContextLength ??
               (!loadResponse.is_gguf && effectiveMaxSeqLength > 0
@@ -1780,9 +1775,8 @@ export function useChatModelRuntime() {
                   presetSource: useChatRuntimeStore.getState().activePresetSource,
                   loadedContextLength: loadedFields.loadedContextLength,
                 }),
-                // The window the model serves, as the background and compare loads
-                // already record. The active model would otherwise report a context it
-                // is not running at.
+                // The served window, as background and compare loads already record,
+                // or the active model reports a context it is not running at.
                 ...(isGguf
                   ? {}
                   : {

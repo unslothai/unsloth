@@ -382,8 +382,8 @@ def test_the_rag_scope_a_count_sends_is_never_empty(thread_id, expected_thread_i
 
 
 def test_the_count_sends_every_setting_that_changes_the_rendered_prompt():
-    """The backend prices the tool loop the settings describe: which gate holds it, how many
-    calls it may make, and whether it retrieves. Omitting one priced the server's defaults."""
+    """The backend prices the tool loop the settings describe: its gate, its call budget,
+    and whether it retrieves. Omitting one priced the server's defaults."""
     settings = RAG_ON.rstrip(" }") + ', permissionMode: "ask", maxToolCallsPerMessage: 0 }'
     out = _run(
         textwrap.dedent(
@@ -406,7 +406,7 @@ def test_the_count_sends_every_setting_that_changes_the_rendered_prompt():
     assert on.get("permission_mode") == "ask", "the gate that holds the loop's retrieval"
     assert on.get("max_tool_calls_per_message") == 0, "Off suppresses the loop entirely"
     assert (on.get("rag_scope") or {}).get("autoinject") is True
-    # The values, not the keys: unknown size on, Auto off above the threshold, Off saying so.
+    # The values, not the keys: unknown size on, Auto off above the threshold.
     assert (out["large"].get("rag_scope") or {}).get("autoinject") is False
     off_scope = out["injectOff"].get("rag_scope") or {}
     assert (off_scope.get("autoinject"), off_scope.get("whole_doc")) == (False, False)

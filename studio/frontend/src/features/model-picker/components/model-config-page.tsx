@@ -399,9 +399,8 @@ function MaxSeqLengthSetting({
   pinned?: boolean;
   windowUnknown?: boolean;
 }) {
-  // MLX sizes its own window when nothing is pinned, so the control is the same Context
-  // Length the GGUF path offers, showing the length that will actually be served rather
-  // than the word "Auto". A dash only while that length is genuinely unknown.
+  // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
+  // shows the length that will be served, not "Auto". A dash only while it is unknown.
   const label = isMlx ? "Context Length" : "Max Seq Length";
   return (
     <div className="space-y-3">
@@ -433,8 +432,8 @@ function MaxSeqLengthSetting({
         min={MAX_SEQ_LENGTH_MIN}
         max={max}
         step={MAX_SEQ_LENGTH_STEP}
-        // A served window outside the control's own range sits at the nearer edge: left
-        // outside it, the first nudge steps from the shown number onto the bound.
+        // Outside the control's range it sits at the nearer edge, or the first nudge
+        // would step from the shown number onto the bound.
         value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}
         onValueChange={([next]) => onChange(next)}
         className="panel-slider"
@@ -2734,13 +2733,10 @@ export function ModelConfigPage({
   const nativeMaxSeqLength =
     floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
-  // The pin if there is one; else, for a self-sizing backend, the length a load would
-  // actually serve, so the control states the context rather than declining to. Only a
-  // target whose window has not been read falls back to the app default. Reset clears the
-  // pin to null, so no fallback may reconstruct one from a runtime value.
-  //
-  // Reported as it stands, not snapped to the request step: a window nobody requested is
-  // not subject to it, and 2,056 would read 2,048, naming a limit the model does not have.
+  // The pin, else the length a self-sizing backend would serve, so the control states a
+  // context rather than declining to. Only an unread window falls back to the app default,
+  // and Reset clears the pin to null so no fallback may rebuild one from a runtime value.
+  // Reported as it stands, not snapped to the request step: 2,056 would read 2,048.
   const servedWindow = (value: unknown) =>
     typeof value === "number" && Number.isFinite(value) && value > 0
       ? Math.floor(value)
@@ -2748,10 +2744,9 @@ export function ModelConfigPage({
   const mlxNativeWindow = targetIsMlx
     ? servedWindow(modelMaxPosition.maxPositionEmbeddings)
     : null;
-  // What a load would actually serve. The backend clamps an auto-sized window to the
-  // request ceiling, so a wider native one (Llama 4 Scout declares 10,485,760) would name
-  // a length no load can serve and would change the instant the model loaded. Native
-  // above stays raw, since it is metadata rather than a promise.
+  // What a load would serve. The backend clamps an auto-sized window to the request
+  // ceiling, so a wider native one (Scout declares 10,485,760) would name a length no
+  // load can serve. Native above stays raw: metadata, not a promise.
   const mlxProspectiveWindow =
     mlxNativeWindow == null
       ? null
@@ -2763,8 +2758,7 @@ export function ModelConfigPage({
     servedWindow(savedContextPin(config)) ??
     mlxServedWindow ??
     clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
-  // The slider picks a request, so it stops at the widest one a load may make; a wider
-  // window shows in the field but cannot be dragged to.
+  // The slider picks a request, so it stops at the widest a load may make.
   const maxSeqLengthMax = Math.min(
     MAX_SEQ_LENGTH_MAX,
     Math.max(nativeMaxSeqLength, maxSeqLengthValue),
@@ -2793,9 +2787,8 @@ export function ModelConfigPage({
     loadableConfig.gpuLayers >= 0 &&
     loadableConfig.customContextLength == null &&
     activeLoadedContext != null;
-  // Persisted record: keep config as-is, so isDefaultConfig recognises it and clears a
-  // remembered override instead of pinning the app default. Whichever field this
-  // target's pin lives in is already settled by the write rule.
+  // Kept as-is so isDefaultConfig clears a remembered override rather than pinning the
+  // app default; the write rule already settled which field holds the pin.
   const runtimeConfig = target.isGguf
     ? pinFixedLayerContext
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
@@ -3178,8 +3171,7 @@ export function ModelConfigPage({
     if (saveFailed) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
-    // An MLX target carries its pin in customContextLength, as a GGUF one does, so an
-    // unpinned target sends nothing and the backend sizes the window.
+    // MLX pins in customContextLength as GGUF does, so unpinned sends nothing.
     const effectiveLoadConfig = target.isGguf
       ? effectiveRuntimeConfig
       : targetIsMlx

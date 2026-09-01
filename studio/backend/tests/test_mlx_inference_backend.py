@@ -3221,21 +3221,19 @@ def test_rng_capture_stays_quiet_when_the_state_cannot_be_read(monkeypatch):
     assert warnings == []
 
 
-# Spellings nobody enumerated: Llama 3.1 carries the second beside its scaled window, and
-# mlx-lm's Kimi Linear the third.
+# Llama 3.1 carries the second beside its scaled window, mlx-lm's Kimi Linear the third.
 @pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
 def test_mlx_native_context_length_reads_every_spelling_and_every_config(name):
     from core.inference.mlx_inference import mlx_native_context_length
 
-    # One term per family, matched by shape rather than by an enumerated name.
+    # One term per family, matched by shape rather than by name.
     args = SimpleNamespace(**{name: 40960})
     assert mlx_native_context_length(SimpleNamespace(args = args)) == 40960
-    # The metadata read before a load answers by this rule too, so no dash-then-number.
+    # Pre-load metadata answers by the same rule.
     from routes.models import _get_max_position_embeddings
 
     assert _get_max_position_embeddings(SimpleNamespace(**{name: 40960})) == 40960
-    # The wrapper counts too, not just the most specific config: mlx-vlm's Phi-3-V keeps a
-    # 4096 text config beside the 131072 its blocks are built with.
+    # The wrapper counts too: mlx-vlm's Phi-3-V keeps a 4096 text config beside its real 131072.
     stub = SimpleNamespace(args = SimpleNamespace(**{name: 4096}))
     text = SimpleNamespace(**{name: 4096})
     cfg = SimpleNamespace(model_type = "x", text_config = text, **{name: 131072})
@@ -3243,8 +3241,7 @@ def test_mlx_native_context_length_reads_every_spelling_and_every_config(name):
     assert mlx_native_context_length(vlm) == 131072
 
 
-# Templates real enough for the capability classifier to read, so a count test says what a
-# real model's template would make the route do. A named template is the shape that made
+# Real enough for the capability classifier to read. The named one is the shape that made
 # classifying without tools wrong: its tool markup lives only in the tool_use branch.
 _PLAIN_TEMPLATE = "{% for m in messages %}{{ m['content'] }}{% endfor %}"
 _TOOL_TEMPLATE = (
@@ -3257,7 +3254,7 @@ _NAMED_TOOL_TEMPLATE = {"default": _PLAIN_TEMPLATE, "tool_use": _TOOL_TEMPLATE}
 
 
 def _mirror(template = None):
-    """The parent's view of a worker-held MLX model, including the template it forwards."""
+    """The parent's view of a worker-held MLX model, template included."""
     return {
         "mlx/model": {
             "is_mlx": True,
@@ -3294,7 +3291,7 @@ def _count_route(
     generations = None,
     **fields,
 ):
-    """Drive the endpoint against `backend`, classifying capabilities from a real template."""
+    """Drive the endpoint against `backend`, classifying from a real template."""
     backend_dir = str(Path(__file__).resolve().parent.parent)
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
@@ -3338,7 +3335,7 @@ def test_an_mlx_count_is_served_where_llama_cpp_would_have_refused(monkeypatch):
     [
         (_PLAIN_TEMPLATE, None),
         (_TOOL_TEMPLATE, ["web_search"]),
-        # Tool markup only in the tool_use branch: classifying with no tools reads `default`.
+        # Tool markup only in tool_use: classifying with no tools reads `default`.
         (_NAMED_TOOL_TEMPLATE, ["web_search"]),
     ],
     ids = ["renders-none", "renders-tools", "renders-tools-in-a-named-branch"],
@@ -3346,8 +3343,8 @@ def test_an_mlx_count_is_served_where_llama_cpp_would_have_refused(monkeypatch):
 def test_an_mlx_count_prices_the_tools_the_completion_would_render(
     monkeypatch, template, expected_tools
 ):
-    """`unsloth studio run` defaults tools on, so a count naming none inherits that. That cost
-    is mostly the nudge's length; stale markup the completion strips is not."""
+    """`unsloth studio run` defaults tools on, so a count naming none inherits that: mostly
+    the nudge's length, but not stale markup the completion strips."""
     from state import tool_policy
 
     monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
@@ -3377,8 +3374,8 @@ def test_an_mlx_count_prices_the_tools_the_completion_would_render(
 
 
 def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
-    """A request the tool loop declines but carrying tool history goes to the relay, which
-    keeps the structured tool_calls the extraction flattens away."""
+    """A declined request carrying tool history goes to the relay, which keeps the
+    structured tool_calls the extraction flattens away."""
     fn = {"name": "web_search", "arguments": '{"q": "x"}'}
     call = {"id": "c1", "type": "function", "function": fn}
     history = [
@@ -3412,8 +3409,8 @@ def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
     )
     assert backend.tools[0]["type"] == "function"
 
-    # Not inside the MLX branch: with no MLX model to count it returns before it could have
-    # normalized anything, and the request still arrives normalized.
+    # Outside the MLX branch it returns before normalizing anything, yet the request
+    # still arrives normalized.
     route = sys.modules["routes.inference"]
     monkeypatch.setattr(route, "get_inference_backend", lambda: SimpleNamespace(models = {}))
     payload = route.ChatCountTokensRequest(
@@ -3427,8 +3424,8 @@ def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
 
 
 def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
-    """A request wins verbatim; asking for nothing takes the trained window, and a model
-    whose dims are unreadable resolves to nothing rather than to a number of its own."""
+    """A request wins verbatim; asking for nothing takes the trained window; unreadable
+    dims resolve to nothing rather than to a number of their own."""
     from core.inference.mlx_inference import MLXInferenceBackend
 
     resolve = MLXInferenceBackend._resolve_context_lengths
@@ -3444,20 +3441,19 @@ def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
 
 
 def test_the_resident_context_gate_compares_requests_not_served_windows():
-    """Reuse on model identity alone leaves a context change with no reload to carry it, on
-    the path that skips the preliminary unload while a chat generates. Served windows cannot
-    answer it: auto-sized to 32768 and pinned at 32768 are the same number."""
+    """Reuse on model identity alone leaves a context change with no reload to carry it.
+    Served windows cannot answer it: auto-sized to 32768 and pinned at 32768 are equal."""
     backend_dir = str(Path(__file__).resolve().parent.parent)
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
     from routes.inference import _resident_context_satisfies as gate
 
-    # Records nothing, absent or null: the parent's mirror always writes the key, so
-    # reading its presence would reload every transformers model on its own reuse path.
+    # Absent or null: the mirror always writes the key, so reading presence alone would
+    # reload every transformers model on its own reuse path.
     assert gate({}, 8192) is True
     assert gate({"requested_context_length": None}, 8192) is True
 
-    # Same request, whichever spelling of "size it yourself" either side used.
+    # Same request, either spelling of "size it yourself".
     assert gate({"requested_context_length": 8192}, 8192) is True
     assert gate({"requested_context_length": 0}, 0) is True
     assert gate({"requested_context_length": 0}, None) is True
@@ -3471,23 +3467,20 @@ def test_the_resident_context_gate_compares_requests_not_served_windows():
 
 
 def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monkeypatch):
-    """mlx-lm cannot quantize a rotating cache -- to_quantized raises, and conversion is
-    attempted from the first token -- so exactly one of the two applies. A pin is an
-    explicit instruction about memory; a window the backend chose for itself is not.
-
-    A pin that cannot be enforced buys nothing, so it does not spend the quantization
-    either: mlx-lm ignores max_kv_size for a model that builds its own cache."""
+    """mlx-lm cannot quantize a rotating cache (to_quantized raises, from the first token),
+    so exactly one applies. A pin is an explicit memory instruction; a self-chosen window
+    is not. An unenforceable pin buys nothing, so it does not spend the quantization."""
     pytest.importorskip("mlx_lm.models.cache")
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
     from mlx_lm.models.cache import KVCache
 
-    # This is about the pin/enforceability combination, not the eligibility probe.
+    # About the pin/enforceability combination, not the eligibility probe.
     monkeypatch.setattr(
         mlx_inference, "_kv_quant_eligibility", lambda *_a, **_k: ("full", "", True)
     )
     honours = SimpleNamespace(layers = [object(), object()])
-    # llama's shape once the sliding layers are gone: quantizable, but never bounded.
+    # llama without sliding layers: quantizable, never bounded.
     owns = SimpleNamespace(layers = [object(), object()], make_cache = lambda: [KVCache(), KVCache()])
 
     unset = object()
@@ -3512,8 +3505,7 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
     assert policy(honours, None, 8192) == (None, 8192, True)
     assert policy(honours, None, 0, 262144) == (None, 262144, True)  # nothing to yield to
 
-    # An unenforceable pin spends nothing: neither bounded nor stripped of quantization.
-    # The verdict still travels, so the API can say the window is not a limit.
+    # An unenforceable pin spends nothing, and the verdict still travels to the API.
     assert policy(owns, 4, 8192) == (4, None, False)
     assert policy(owns, None, 8192) == (None, None, False)
 
@@ -3538,9 +3530,9 @@ def test_quantization_is_refused_for_a_pinned_context_rather_than_raising_mid_st
 
 
 def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
-    """A model with its own make_cache ignores max_kv_size, and those caches range from
-    constant-state to fully unbounded, so the argument does not say whether it applied.
-    A cap the architecture chose does not serve a narrower request either."""
+    """make_cache ignores max_kv_size, and those caches range from constant-state to
+    unbounded, so the argument does not say whether it applied. Nor does an
+    architecture-chosen cap serve a narrower request."""
     pytest.importorskip("mlx_lm.models.cache")
     from core.inference.mlx_inference import _kv_window_enforced
     from mlx_lm.models.cache import ArraysCache, ChunkedKVCache, KVCache, RotatingKVCache
@@ -3553,7 +3545,7 @@ def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
     undeclared = SimpleNamespace(layers = [object()], make_cache = lambda: [ArraysCache(2)])
     chunked = SimpleNamespace(layers = [object()], make_cache = lambda: [ChunkedKVCache(512)])
     native = SimpleNamespace(layers = [object()], make_cache = lambda: [RotatingKVCache(2048)])
-    # mlx-vlm's Florence2 shape: tuples of a class that concatenates forever.
+    # mlx-vlm's Florence2: tuples of a class that concatenates forever.
     nested = SimpleNamespace(
         layers = [object()],
         make_cache = lambda: [(SimpleNamespace(keys = None), SimpleNamespace(keys = None))],
@@ -3565,7 +3557,7 @@ def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
     # Nothing that declares no cap is taken on trust, however it is packaged.
     assert _kv_window_enforced(undeclared, False, 4096) is False
     assert _kv_window_enforced(nested, False, 4096) is False
-    # Recurrent Gemma's shape: its own window outlives a narrower pin.
+    # Recurrent Gemma: its own window outlives a narrower pin.
     assert _kv_window_enforced(native, False, 128) is False
     assert _kv_window_enforced(native, False, 4096) is True
     # A window a rotating cache cannot rotate within retains everything instead.
@@ -3576,15 +3568,12 @@ def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
 
 
 def test_the_probe_reads_a_cache_shape_without_needing_the_mlx_wheels(monkeypatch):
-    """Same branches as the real-cache test, driven through an injected factory.
-
-    The real one importorskips, so on a host without mlx it proves nothing; this runs
-    everywhere and is what keeps the rule honest between Apple Silicon runs.
-    """
+    """Same branches as the real-cache test, through an injected factory. That one
+    importorskips, so it proves nothing without mlx; this runs everywhere."""
     from core.inference.mlx_inference import _kv_window_enforced
 
     def factory(make):
-        """Stand in for mlx_lm.models.cache, present or not, and hand back a model."""
+        """Stand in for mlx_lm.models.cache, present or not; return a model."""
         cache_mod = types.ModuleType("mlx_lm.models.cache")
         cache_mod.make_prompt_cache = make
         models_mod = types.ModuleType("mlx_lm.models")
@@ -3622,8 +3611,7 @@ def test_the_probe_reads_a_cache_shape_without_needing_the_mlx_wheels(monkeypatc
 
 def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
     """The runtimes read max_kv_size only when no prompt_cache is passed, so each route
-    that builds its own cache is what carries the bound there. Asserted on the real calls:
-    the audio route reached mlx-vlm without it while text and vision did not."""
+    building its own cache carries the bound. The audio route once did not."""
     import types as _types
 
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -3724,11 +3712,8 @@ def _without_mlx(*names):
 
 
 def test_the_mlx_module_imports_on_a_machine_with_no_mlx_wheels():
-    """Linux and Windows installs import this package tree without mlx present.
-
-    The backend is only constructed behind the Darwin gate, but the module is still
-    imported. An mlx import at module scope would fail every non-Mac boot.
-    """
+    """Linux and Windows import this tree without mlx. The backend is constructed behind
+    the Darwin gate, but an mlx import at module scope would fail every non-Mac boot."""
     import importlib
 
     with _without_mlx("mlx", "mlx_lm", "mlx_vlm"):
@@ -3750,14 +3735,11 @@ def test_the_probe_answers_unknown_rather_than_raising_without_mlx():
 
 
 def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatch):
-    """The completion applies this once for both non-GGUF backends before it branches.
-
-    A count that skipped it under-reports every interactive MLX prompt, so the usage bar
-    claims room the next completion does not have.
-    """
+    """The completion applies this once for both non-GGUF backends before it branches, so
+    skipping it under-reports every interactive MLX prompt and the usage bar claims room."""
     from starlette.datastructures import Headers
 
-    # Interactive session: no API key, which is what makes the prompt Studio's to compose.
+    # No API key, which is what makes the prompt Studio's to compose.
     interactive = SimpleNamespace(headers = Headers({}), query_params = {}, cookies = {})
     backend = _RenderRecordingBackend()
     _count_route(
@@ -3777,8 +3759,8 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
 
 
 def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):
-    """A thread with an archive puts search_conversation and a compaction nudge in the
-    prompt. Both are gated on the thread id, so a count that drops it under-reports."""
+    """An archive adds search_conversation and a compaction nudge, both gated on the
+    thread id, so a count that drops it under-reports."""
     from routes import inference as route
     from state import tool_policy
 
@@ -3806,9 +3788,8 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
 
 
 def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):
-    """`_wants_current_date` is false for an API-key request, so the plain call withholds
-    the date. The tool-loop completion reapplies it with include_api_key, so a count that
-    did not would be short exactly that line for those completions."""
+    """`_wants_current_date` is false for an API-key request, but the tool-loop completion
+    reapplies it with include_api_key, so a count that did not would be short that line."""
     from starlette.datastructures import Headers
     from state import tool_policy
 
@@ -3837,8 +3818,8 @@ def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatc
 
 
 def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
-    """The caller drops a count whose model differs from the checkpoint it captured, so an
-    auto-switched model that loaded from a resolved path must still answer as the repo id."""
+    """The caller drops a count naming a different model, so one loaded from a resolved
+    path must still answer as the repo id."""
     from routes import inference as route
 
     backend = _RenderRecordingBackend()
@@ -3848,8 +3829,8 @@ def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
 
 
 def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeypatch):
-    """The active name cannot see a same-ID reload, which is how a chat-template override
-    lands. A count whose routing came from the old entry must not be published."""
+    """The active name cannot see a same-ID reload, which is how a template override lands.
+    A count routed from the old entry must not be published."""
     from fastapi import HTTPException
     from routes import inference as route
 
@@ -3859,7 +3840,7 @@ def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeyp
     real_count = backend.count_chat_tokens
 
     def _reload_midway(*args, **kwargs):
-        # The reload lands while the tokenizer runs: same name, new generation.
+        # Lands while the tokenizer runs: same name, new generation.
         backend.load_generation = 8
         return real_count(*args, **kwargs)
 
@@ -3871,9 +3852,8 @@ def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeyp
 
 
 def test_an_mlx_count_yields_to_a_generation_that_started_while_it_prepared(monkeypatch):
-    """Everything between the endpoint's admission check and the tokenizer awaits, so a
-    chat can start in the gap and would then wait behind this count for the orchestrator
-    lock. The GGUF count re-checks at its last checkpoint; this one must too."""
+    """Everything between admission and the tokenizer awaits, so a chat starting in the gap
+    would wait behind this count for the orchestrator lock. GGUF re-checks; this must too."""
     from fastapi import HTTPException
     from routes import inference as route
 
@@ -3891,9 +3871,8 @@ def test_an_mlx_count_yields_to_a_generation_that_started_while_it_prepared(monk
 
 
 def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses():
-    """The MCP update and delete handlers hold this guard across the row change and the
-    schema-cache invalidation, so a snapshot taken outside it can pair a new row with the
-    schema cached before it and report the view complete."""
+    """The MCP handlers hold this guard across the row change and the schema-cache
+    invalidation, so a snapshot outside it can pair a new row with a stale schema."""
     import inspect
 
     from routes import inference as route

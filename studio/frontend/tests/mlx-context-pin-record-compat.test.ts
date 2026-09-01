@@ -1,37 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Backwards and forwards compatibility of the stored MLX context pin.
+// Compatibility of the stored MLX context pin, which moved from `maxSeqLength` into
+// `customContextLength` without a schema bump: `toStoredConfig` stamps both shapes
+// version 1, so neither direction can tell them apart.
 //
-// The pin moved from the per-model field `maxSeqLength` into `customContextLength`, read
-// back through `savedContextPin`, and the storage schema version did NOT move with it. It
-// is 5 both before and after this change (per-model-config.ts, `STORAGE_SCHEMA_VERSION`),
-// and `toStoredConfig` stamps a record whose only non-default field is a context pin as
-// version 1 -- the OLDEST version that understands every field present. So the two shapes
-// are indistinguishable by version, in both directions.
+// Backwards works: `savedContextPin` reads either field.
 //
-// BACKWARDS compatibility is real and is what most of this file measures: `savedContextPin`
-// reads either field, so an old record keeps working under the new code, on either backend.
-//
-// FORWARDS compatibility is not, and the last section demonstrates it rather than asserting
-// it away. A record written by the new code (pin in `customContextLength`, `maxSeqLength`
-// null) is read by an older client's model-config page through
-//
-//     const maxSeqLengthValue =
-//       normalizeMaxSeqLength(config.maxSeqLength) ??
-//       clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
-//
-// (model-config-page.tsx on main, ~line 2711), which never looks at `customContextLength`
-// for a non-GGUF target. The pin silently becomes 4096, the page reports the model as being
-// at default settings, and nothing in the record says a newer client wrote it.
-//
-// Scope, stated because the gap is narrower than "the old client loses the pin": main's
-// `resolveLoadMaxSeqLength` and main's compare-pane rule BOTH read `customContextLength`
-// first, on every backend, so the auto-load and compare paths still honour a new record.
-// The loss is specific to the model-config page, which is the only place an old client
-// resolves a context for a non-GGUF model from its own controls. Both are asserted below.
-//
-// Run: cd studio/frontend && node --experimental-strip-types --test tests/mlx-context-pin-record-compat.test.ts
+// Forwards does not, and the last section demonstrates it rather than asserting it away.
+// An old client's model-config page resolves a non-GGUF context from `config.maxSeqLength`
+// alone (model-config-page.tsx on main, ~2711), so a new record reads as 4096 and as "at
+// default settings". Only that page: main's `resolveLoadMaxSeqLength` and its compare-pane
+// rule both read `customContextLength` first, so auto-load and compare still honour it.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -70,14 +50,10 @@ const MODEL = "mlx-community/Qwen3-8B-4bit";
 /** The window an MLX model of this size reports; only used as the "native" input. */
 const NATIVE = 262144;
 
-// ---------------------------------------------------------------------------------------
-// Staging a raw record under whatever key this build derives for MODEL.
-// ---------------------------------------------------------------------------------------
 
 /** The storage key `savePerModelConfig` uses for MODEL, discovered rather than guessed. */
 function storageKeyForModel(): string {
   store.clear();
-  // Any non-default config; the key is what is wanted, not the value.
   assert.ok(
     savePerModelConfig(MODEL, null, {
       ...DEFAULT_PER_MODEL_CONFIG,
@@ -121,9 +97,6 @@ function stampedVersion(patch: Record<string, unknown>): number {
   return map[MODEL_KEY].version;
 }
 
-// ---------------------------------------------------------------------------------------
-// The record matrix.
-// ---------------------------------------------------------------------------------------
 
 type Row = {
   name: string;
@@ -184,8 +157,7 @@ const ROWS: Row[] = [
     rawPin: null,
     isDefault: true,
     readable: true,
-    // MLX sizes its own window, so an unpinned load asks for nothing (0) and takes the
-    // model's trained length; transformers sizes nothing and gets the app default.
+    // MLX sizes its own window (0 asks for nothing); transformers gets the app default.
     mlxRequest: 0,
     transformersRequest: DEFAULT_MAX_SEQ_LENGTH,
   },
@@ -193,10 +165,8 @@ const ROWS: Row[] = [
     name: "zero in both fields",
     raw: { version: 1, customContextLength: 0, maxSeqLength: 0 },
     normalizedPin: null,
-    // NOT null: `??` only falls through on null/undefined, and 0 is neither. A raw record
-    // read straight through savedContextPin therefore yields a falsy 0 "pin". normalize()
-    // turns it into null first, which is why every stored read is safe -- but preset code
-    // calls savedContextPin on shapes normalize has not seen.
+    // 0 is neither null nor undefined, so `??` keeps it: an unnormalized record yields a
+    // falsy 0 "pin". Reachable because preset code calls savedContextPin on raw shapes.
     rawPin: 0,
     isDefault: true,
     readable: true,
@@ -216,8 +186,7 @@ const ROWS: Row[] = [
   {
     name: "non-integer in both fields",
     raw: { version: 1, customContextLength: 8192.7, maxSeqLength: 8192.7 },
-    // customContextLength floors; maxSeqLength snaps to the 128 step. Both land on 8192,
-    // by different arithmetic.
+    // Floors vs snaps to 128: both land on 8192 by different arithmetic.
     normalizedPin: 8192,
     rawPin: 8192.7,
     isDefault: false,
@@ -244,9 +213,8 @@ const ROWS: Row[] = [
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
-    // loadPerModelConfig refuses a record above STORAGE_SCHEMA_VERSION, so the app sees
-    // no saved config at all -- the pin is not read, and the record is also protected
-    // from being overwritten or evicted.
+    // Above STORAGE_SCHEMA_VERSION: loadPerModelConfig refuses it, so the pin is unread
+    // and the record is safe from being overwritten.
     readable: false,
     mlxRequest: 0,
     transformersRequest: DEFAULT_MAX_SEQ_LENGTH,
@@ -299,9 +267,6 @@ for (const row of ROWS) {
   });
 }
 
-// ---------------------------------------------------------------------------------------
-// contextPinPatch: what an edit writes.
-// ---------------------------------------------------------------------------------------
 
 test("contextPinPatch writes the pin in exactly one field and clears the other", () => {
   assert.deepEqual(contextPinPatch(32768, true), {
@@ -315,16 +280,14 @@ test("contextPinPatch writes the pin in exactly one field and clears the other",
 });
 
 test("contextPinPatch bounds without snapping, and never writes a blank", () => {
-  // Bounded to what /load accepts, but NOT rounded to the control's 128 step: a pin taken
-  // from a resolved window need not sit on that grid.
+  // Bounded to what /load accepts, not snapped to the control's 128 step.
   assert.equal(contextPinPatch(8193, true).customContextLength, 8193);
   assert.equal(contextPinPatch(8192.7, true).customContextLength, 8192);
   assert.equal(
     contextPinPatch(1, true).customContextLength,
     MAX_SEQ_LENGTH_MIN,
   );
-  // 0 and negatives are not "clear the pin": boundContextPin rejects them and the floor
-  // is substituted, so a caller that means "unpin" must not route through here.
+  // 0 and negatives become the floor, not a cleared pin: "unpin" must not route here.
   assert.equal(
     contextPinPatch(0, true).customContextLength,
     MAX_SEQ_LENGTH_MIN,
@@ -363,16 +326,12 @@ test("a patched pin round-trips through storage on both backends", () => {
   }
 });
 
-// ---------------------------------------------------------------------------------------
-// No version signal.
-// ---------------------------------------------------------------------------------------
 
 test("both pin shapes are stamped version 1, so neither is distinguishable by version", () => {
   assert.equal(stampedVersion({ customContextLength: 32768 }), 1);
   assert.equal(stampedVersion({ maxSeqLength: 32768 }), 1);
-  // And the guard an older client uses is `version > STORAGE_SCHEMA_VERSION`, which is 5
-  // in this tree and 5 in main. A v1 record is not merely allowed through: it is the
-  // stamp that says "any client back to v1 may rewrite this record".
+  // The old client's only forwards guard is `version > 5`, and v1 invites any client
+  // back to v1 to rewrite the record.
   assert.equal(
     stage({ version: 1, customContextLength: 32768 }).remembered,
     true,
@@ -387,9 +346,6 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
   );
 });
 
-// ---------------------------------------------------------------------------------------
-// The forwards-compatibility gap, demonstrated.
-// ---------------------------------------------------------------------------------------
 
 /**
  * The old model-config page's read rule for a NON-GGUF target, transcribed from
@@ -416,8 +372,7 @@ function oldClientConfigPage(
   const shown =
     normalizeMaxSeqLength(config.maxSeqLength) ??
     clamp(DEFAULT_MAX_SEQ_LENGTH, native);
-  // contextAtDefault is unconditionally true for a non-GGUF target, and the comparison
-  // then nulls customContextLength out, so nothing about the pin can reach this.
+  // contextAtDefault is unconditional for non-GGUF and nulls customContextLength out.
   const showsAsDefault = isDefaultConfig({
     ...config,
     customContextLength: null,
@@ -426,7 +381,6 @@ function oldClientConfigPage(
 }
 
 test("FORWARDS-COMPAT GAP: an old client's config page silently drops a new record's pin", () => {
-  // A record the NEW code writes for an MLX model pinned to 32768.
   store.clear();
   const patched = {
     ...DEFAULT_PER_MODEL_CONFIG,
@@ -439,26 +393,21 @@ test("FORWARDS-COMPAT GAP: an old client's config page silently drops a new reco
   >;
   const record = stored[MODEL_KEY];
 
-  // What is on disk: the pin in customContextLength, maxSeqLength null, version 1.
   assert.equal(record.customContextLength, 32768);
   assert.equal(record.maxSeqLength, null);
   assert.equal(record.version, 1);
 
   const { config } = resolveInitialConfig(MODEL, null);
 
-  // New code: the pin is honoured.
   assert.equal(savedContextPin(config), 32768);
   assert.equal(loadRequest(config, true), 32768);
 
-  // Old code, same record, same model: 4096.
   const old = oldClientConfigPage(config, NATIVE);
   assert.equal(old.shownContext, DEFAULT_MAX_SEQ_LENGTH);
   assert.equal(old.loadRequests, DEFAULT_MAX_SEQ_LENGTH);
-  // ...and the page tells the user nothing is set.
   assert.equal(old.showsAsDefault, true);
 
-  // Nothing in the record could have warned it. The version stamp is 1, the old client's
-  // own schema version is 5, and its only forwards guard is `version > 5`.
+  // Nothing in the record could warn it: the stamp is 1 and its guard is `version > 5`.
   assert.ok((record.version as number) <= 5);
 
   const table = [
@@ -468,7 +417,6 @@ test("FORWARDS-COMPAT GAP: an old client's config page silently drops a new reco
     `| old client, model-config page (non-GGUF) | ${old.loadRequests}              | default  |`,
   ].join("\n");
   assert.ok(table.includes("32768") && table.includes("4096"));
-  // Printed so the demonstration can be copied into a PR comment verbatim.
   console.log(
     [
       "",

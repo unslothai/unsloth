@@ -1681,8 +1681,8 @@ def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
 
 
 def test_an_unpinned_mlx_candidate_is_loaded_at_the_window_the_backend_resolved():
-    """The auto-load runs unwatched, so what it asks for is what an MLX model is left
-    serving; the app default there loaded every model at 4096."""
+    """The auto-load runs unwatched, so its request is what an MLX model is left serving;
+    the app default there loaded every model at 4096."""
     out = _run("scenario({ modelRepos: [QWEN], platform: MAC, load: SERVED(262144) })")
     [load] = [e for e in out["events"] if e["kind"] == "loadModel"]
     assert load["model_path"] == "unsloth/Qwen3.5-4B"
@@ -1697,9 +1697,9 @@ def test_an_unpinned_mlx_candidate_is_loaded_at_the_window_the_backend_resolved(
 
 
 def test_a_pinned_mlx_candidate_is_loaded_at_its_pin_and_keeps_it():
-    """The rules are proved apart; this is the only proof the auto-load threads them --
-    reads the record's pin into the request, and writes the retained pin back. Dropping
-    either write leaves a pinned model asking for 0, or forgetting its pin on reload."""
+    """The rules are proved apart; this is the only proof the auto-load threads them: the
+    record's pin into the request, and the retained pin back. Dropping either leaves a
+    pinned model asking for 0, or forgetting its pin on reload."""
     out = _run(
         "scenario({ modelRepos: [QWEN], platform: MAC,"
         " config: { customContextLength: 8192 }, load: SERVED(8192) })"
@@ -1709,7 +1709,7 @@ def test_a_pinned_mlx_candidate_is_loaded_at_its_pin_and_keeps_it():
     assert out["store"]["customContextLength"] == 8192
     assert out["store"]["loadedCustomContextLength"] == 8192
     assert out["store"]["maxSeqLength"] == 8192
-    # A pre-move record carries the pin in the other field; the write-back is what moves it.
+    # A pre-move record holds the pin in the other field; the write-back moves it.
     legacy = _run(
         "scenario({ modelRepos: [QWEN], platform: MAC,"
         " config: { maxSeqLength: 8192 }, load: SERVED(8192) })"

@@ -294,8 +294,8 @@ export function mergeBackendRecommendedInference({
     return next;
   }
 
-  // A window the response did not report leaves Max Tokens on the ceiling the settings
-  // sheet gives it, rather than on whatever the previous model left behind.
+  // An unreported window leaves Max Tokens on the settings sheet's ceiling, not on
+  // whatever the previous model left behind.
   const defaultMaxTokens = localMaxTokensCeiling(
     loadedContextLength,
     unreportedWindowMaxTokens(response.is_gguf ?? false, current.maxTokens),
@@ -367,10 +367,9 @@ export function resolveLoadMaxSeqLength({
 
 /** The context pin to keep for a model that has just loaded, or null if it has none.
  *
- *  The two backends pin for different reasons: llama.cpp's means something only under
- *  manual GPU memory with automatic layers, where `--fit` owns the sizing, while MLX
- *  sizes its own window whenever the load asks for nothing, so any positive request was
- *  the user's choice.
+ *  They pin for different reasons: llama.cpp's matters only under manual memory with
+ *  auto layers, where `--fit` owns sizing; MLX sizes itself when asked for nothing, so
+ *  any positive request was the user's choice.
  */
 export function retainedContextPin({
   isMlx,
@@ -385,9 +384,8 @@ export function retainedContextPin({
 /** The context a preset records, in the one field that replays as a pin.
  *
  *  A window nobody pinned is not recorded: replaying asks for nothing and the backend
- *  arrives at it again on its own, while storing it would turn it into a request.
- *  llama.cpp is the exception -- its window depends on the machine, so the one it ran at
- *  is the only way to reproduce the setup.
+ *  arrives there again, while storing it would turn it into a request. llama.cpp is the
+ *  exception, since its window depends on the machine.
  */
 export function capturedContextLength({
   isGguf,
@@ -403,9 +401,8 @@ export function capturedContextLength({
 
 /** The context length to record for a model that has just loaded.
  *
- *  The window the backend reports, not what the load asked for: a backend sizing its own
- *  window was asked for the non-positive sentinel, which is below the control's minimum.
- *  Only where no window was reported does the request stand.
+ *  The reported window, not the request: a self-sizing backend was asked with the
+ *  non-positive sentinel. Only where nothing was reported does the request stand.
  */
 export function loadedContextForParams(
   reportedContextLength: number | null | undefined,
@@ -420,10 +417,9 @@ export function loadedContextForParams(
 
 /** What bounds Max Tokens when the model reported no window at all.
  *
- *  llama.cpp reports a window whenever it can read one, so a missing one is a failed read
- *  and the value already held stands. A backend that never reports one keeps the app
- *  default, since the length the session holds is a request and on a model change is
- *  still the outgoing model's.
+ *  llama.cpp reports one whenever it can read it, so a missing one is a failed read and
+ *  the held value stands. A backend that never reports keeps the app default, since the
+ *  session's length is a request and on a model change is the outgoing model's.
  */
 export function unreportedWindowMaxTokens(
   isGguf: boolean,
@@ -434,9 +430,8 @@ export function unreportedWindowMaxTokens(
 
 /** The most tokens a local model may be asked to generate.
  *
- *  The control's own minimum outranks the window, because a slider whose maximum sits
- *  below its minimum cannot be operated at all. That is reachable: an API load may ask
- *  for a handful of tokens and MLX honours a positive request verbatim.
+ *  The control's minimum outranks the window: a slider whose maximum is below its
+ *  minimum cannot be operated. Reachable, since MLX honours a tiny positive request.
  */
 export function localMaxTokensCeiling(
   loadedContextLength: number | null,

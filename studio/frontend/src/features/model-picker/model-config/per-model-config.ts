@@ -116,9 +116,8 @@ export const N_BATCH_LLAMA_DEFAULT = 2048;
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
-// App-default max sequence length for a model no local backend sizes itself. Every path
-// falls back here rather than an active model's runtime value, so an unconfigured pane
-// never inherits another model's larger context and OOMs.
+// App default for a model no local backend sizes itself. Every path falls back here, not
+// to an active model's runtime value, so an unconfigured pane never inherits and OOMs.
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
@@ -162,11 +161,9 @@ export function presetLoadSettingNames(
 /** Whether llama.cpp serves the active model.
  *
  *  `loadedIsGguf` is the backend's own answer; the rest identify a GGUF that has not
- *  reported one yet. A context length is deliberately not among them -- MLX reports one
- *  too, so its presence says a model is loaded, not which backend loaded it.
- *
- *  An external provider serves its own model, so nothing local describes it: its id keeps
- *  the model's `.gguf` suffix and the flag still holds whichever backend last loaded here.
+ *  reported one yet. A context length is not among them -- MLX reports one too, so it
+ *  says a model is loaded, not which backend loaded it. An external provider is excluded
+ *  because its id keeps a `.gguf` suffix while the flag describes a local load.
  */
 export function isServedByLlamaCpp(x: {
   loadedIsGguf?: boolean | null;
@@ -175,8 +172,8 @@ export function isServedByLlamaCpp(x: {
   checkpoint?: string | null;
 }): boolean {
   if (isExternalModelId(x.checkpoint)) return false;
-  // A load that reported a non-GGUF backend settles it: the variant and path token
-  // outlive the pick that set them, so neither survives as evidence past a reload.
+  // A reported non-GGUF backend settles it: the variant and path token outlive the pick
+  // that set them, so neither is evidence past a reload.
   if (x.loadedIsGguf === false) return false;
   return (
     x.loadedIsGguf === true ||
@@ -189,10 +186,9 @@ export function isServedByLlamaCpp(x: {
 /** The store's record of the context window a load left behind.
  *
  *  A window counts when the backend that reported it sized one. MLX always does, so its
- *  `context_length` stands on its own -- a model whose config declares no trained window
- *  still serves, and bounds its cache at, whatever length the load resolved. The
- *  transformers path sizes nothing and reports the requested max_seq_length there, so
- *  without a native length it contributes no window at all.
+ *  `context_length` stands alone even with no trained window in the config. Transformers
+ *  sizes nothing and echoes the requested max_seq_length, so without a native length it
+ *  contributes no window.
  *
  *  One constructor because the four move together: a window without the backend that
  *  produced it is what made a context length read as proof of a GGUF.
@@ -237,8 +233,8 @@ export function loadedContextFields(resp: {
     maxContextLength: resp.max_context_length ?? loaded,
     nativeContextLength: resp.native_context_length ?? null,
     loadedIsGguf: isGguf,
-    // llama.cpp allocates the window it reports, so a GGUF load is enforced by
-    // construction. Everything else answers for itself, or says nothing.
+    // llama.cpp allocates what it reports, so GGUF is enforced by construction.
+    // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
   };
 }

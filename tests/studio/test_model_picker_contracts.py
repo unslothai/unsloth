@@ -992,8 +992,8 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     # Load-only substitution of the resolved value (recomputed from any committed
     # same-click Max Seq Length draft, so it is never dropped).
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
-    # An MLX target sends its staged config unchanged: its pin is customContextLength,
-    # so substituting the shown default would turn "Auto" into a request for that number.
+    # MLX pins via customContextLength, so substituting the shown default would turn
+    # "Auto" into a request for that number.
     assert "      : targetIsMlx\n        ? effectiveRuntimeConfig" in src
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
@@ -1015,8 +1015,7 @@ def test_initial_load_uses_staged_config_payload():
     numeric = _read("features/model-picker/components/numeric-value-input.tsx")
     assert "export type NumericValueInputHandle" in numeric
     assert "commit:" in numeric
-    # P1: commit returns null unless the user actually edited the field, so Load/Save with
-    # an untouched control does not pin the length it was showing.
+    # Commit returns null unless the field was edited, so an untouched control pins nothing.
     assert "dirtyRef.current" in numeric
     assert "return null;" in numeric
     # P2: blur clears dirtyRef after commit so Reset/slider cannot be
@@ -1062,7 +1061,7 @@ def test_same_click_commit_covers_all_numeric_inputs():
     # The non-GGUF load path substitutes the committed Max Seq Length draft.
     assert "const effectiveMaxSeqLengthValue =" in page
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
-    # The committed draft lands in this target's pin field, by the change handler's rule.
+    # The committed draft lands in this target's pin field.
     assert (
         "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));" in page
     )
@@ -1081,8 +1080,7 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
     """An explicit customContextLength that equals the native ceiling is still a user
     override, so contextAtDefault must require customContextLength == null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    # An MLX pin is an override like any other, so Reset stays enabled for it, read from
-    # whichever field it was saved in.
+    # An MLX pin is an override too, so Reset stays enabled, whichever field held it.
     assert (
         "const contextAtDefault = !target.isGguf "
         "? savedContextPin(config) == null "
@@ -1108,8 +1106,7 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
     assert "DEFAULT_MAX_SEQ_LENGTH," in barrel
     src = " ".join(_read("features/chat/shared-composer.tsx").split())
     assert "DEFAULT_MAX_SEQ_LENGTH," in src
-    # The unpinned fallback is decided by the same helper the single-view load uses, so
-    # a pane and the same model in single view cannot load at different sizes.
+    # Same helper as the single-view load, so a pane cannot load at a different size.
     assert (
         "const effectiveMaxSeqLength = savedContextPin(ownConfig) ?? "
         "unpinnedLoadContext( targetIsGguf, "
@@ -1122,10 +1119,10 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
 
 
 def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
-    """Two answers decide what a load requests and what Max Tokens may reach: which backend
-    serves it, and what window the response reported. A literal for the first makes an
-    interactive MLX load ask for the app default again; a raw context field for the second
-    raises Max Tokens to meet a length nobody measured."""
+    """Which backend serves and what window it reported decide the request and the Max
+    Tokens ceiling. A literal for the first makes an interactive MLX load ask for the app
+    default again; a raw context field for the second raises Max Tokens to meet a length
+    nobody measured."""
     load_paths = ("chat/hooks/use-chat-model-runtime.ts", "chat/api/chat-adapter.ts")
     derived_backend = r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\)"
     for name in load_paths:
@@ -1135,33 +1132,32 @@ def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
         assert derived >= calls, (name, derived, calls)
     for name in (*load_paths, "chat/lib/apply-inference-status-to-store.ts"):
         src = _read(f"features/{name}")
-        # maxTokensCap is exempt: it can only lower a budget, never raise one to meet
-        # a length nobody measured, and a transformers load reports there the very
-        # max_seq_length it was configured with.
+        # maxTokensCap is exempt: it only lowers a budget, and a transformers load
+        # reports there the max_seq_length it was configured with.
         windows = re.sub(r"maxTokensCap:[^,]*,", "", src)
         assert not re.search(r"\w+\.context_length\b", windows), name
-    # Including the fallback: on a model change the session's length is the outgoing one's.
+    # Including the fallback: on a model change the session length is the outgoing one's.
     policy = _read("features/chat/presets/preset-policy.ts")
     assert (
         "localMaxTokensCeiling(\n    loadedContextLength,\n"
         "    unreportedWindowMaxTokens(response.is_gguf ?? false, current.maxTokens)," in policy
     )
     # No window reported falls back to what this load asked for, not the app default,
-    # which halved Max Tokens for a transformers model carrying a longer one.
+    # which halved Max Tokens for a transformers model carrying more.
     adapter = _read("features/chat/api/chat-adapter.ts")
     assert re.search(r"MaxTokensCeiling\(\s+loadedContextFields[^;]+loadedWindow,", adapter)
     assert re.search(r"ContextForParams\(\s+loadedContext[^,]+,\s+effectiveMaxSeqLength,", adapter)
 
 
 def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
-    """MLX sizes its own window, so the control is the GGUF path's Context Length and states
-    the length a load would serve. Max Seq Length at 4096 would describe a pin never sent."""
+    """MLX sizes its own window, so the control is GGUF's Context Length and states what a
+    load would serve. Max Seq Length at 4096 would describe a pin never sent."""
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
     assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
-    # The resident model's own window, else this model's: request bounds would shorten it.
+    # The resident model's window, else this model's; request bounds would shorten it.
     assert "(targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??" in page
     assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page
     assert re.search(r"const servedWindow = [^;]*Math\.floor\(value\)\n\s*: null;", page), page
@@ -1169,8 +1165,8 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     # Typing the shown number is a choice even where it equals the value beneath it.
     assert "derived={isMlx && !pinned}" in page
     assert "pinned={savedContextPin(config) != null}" in page
-    # Committing it pins that number, not the nearest one on the grid; a number outside the
-    # control's range is no commit at all, which is why the slider stays inside it too.
+    # Committing pins that exact number; one outside the control's range is no commit,
+    # which is why the slider stays inside it too.
     assert "const shown = parsed === value;" in numeric
     assert re.search(r"shown && \(\(max[^{]+parsed < min\)+ \{\n\s+return null;", numeric)
     assert "const final = commitDraft(draftRef.current);\n          dirtyRef" in numeric
@@ -1187,12 +1183,12 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
     assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
     assert "update(contextPinPatch(value, targetIsMlx))" in page
-    # Which backend serves it is the platform's answer: "anything not GGUF" relabels CUDA.
+    # The platform answers which backend serves: "anything not GGUF" relabels CUDA.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
         in page
     )
-    # Both props are optional, so dropping either still typechecks and mislabels the control.
+    # Both props are optional, so dropping either typechecks and mislabels the control.
     assert "isMlx={targetIsMlx}" in page
     assert "windowUnknown={" in page
 
@@ -2231,9 +2227,9 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     assert "loadedNParallel: status.requested_parallel_slots," in status
     # The batch pair is told the same thing, from the same local, so the two cannot drift.
     assert "modelChanged: slotsModelChanged," in status
-    # And the reseed re-reads this model's remembered config rather than blanking. The
-    # slot conditions are GGUF's alone; a backend with no slot fields goes by whether
-    # the poll is hydrating a model already on screen.
+    # The reseed re-reads this model's remembered config rather than blanking. Slot
+    # conditions are GGUF's alone; without slot fields it goes by whether the poll is
+    # hydrating a model already on screen.
     assert (
         "const remembered = (status.is_gguf "
         "? slotsUnseeded || batchesUnseeded || slotsModelChanged "
