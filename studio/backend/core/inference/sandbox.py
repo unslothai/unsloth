@@ -340,6 +340,8 @@ def _python_read_paths() -> list[str]:
         # in sibling store derivations, not necessarily below sys.prefix.
         resolved_candidates.append(os.path.realpath(_NIX_STORE))
 
+    expanded_home = os.path.expanduser("~")
+    real_home = os.path.realpath(expanded_home) if expanded_home and expanded_home != "~" else None
     seen: set[str] = set()
     out: list[str] = []
     for rp in resolved_candidates:
@@ -350,6 +352,12 @@ def _python_read_paths() -> list[str]:
         # root-prefix containers can legitimately report this value.
         if os.path.dirname(rp) == rp:
             logger.warning("Ignoring unsafe filesystem-root Python read path: %s", rp)
+            continue
+        # A prefix equal to $HOME (or an ancestor such as /home) exposes
+        # credentials and unrelated user files. Narrow runtime dirs below HOME,
+        # including ~/.local and project .venv directories, remain safe to bind.
+        if real_home and _path_is_within(real_home, rp):
+            logger.warning("Ignoring Python read path containing user home: %s", rp)
             continue
         seen.add(rp)
         out.append(rp)

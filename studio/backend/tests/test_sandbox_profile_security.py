@@ -29,6 +29,26 @@ def test_python_read_paths_rejects_filesystem_roots(monkeypatch):
     assert root not in sandbox._python_read_paths()
 
 
+def test_python_read_paths_rejects_home_and_ancestors_but_keeps_nested_runtime(
+    tmp_path, monkeypatch
+):
+    sandbox = _load_sandbox_module()
+    home = tmp_path / "home" / "user"
+    nested_runtime = home / "project" / ".venv"
+    nested_runtime.mkdir(parents = True)
+
+    monkeypatch.setattr(sandbox.os.path, "expanduser", lambda _path: str(home))
+    monkeypatch.setattr(sandbox.sys, "prefix", str(home))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(tmp_path))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(nested_runtime)])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [])
+
+    paths = sandbox._python_read_paths()
+    assert os.path.realpath(home) not in paths
+    assert os.path.realpath(tmp_path) not in paths
+    assert os.path.realpath(nested_runtime) in paths
+
+
 def test_python_read_paths_includes_source_tree_sandbox_site(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     prefix = tmp_path / "python"
