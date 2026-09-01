@@ -14,6 +14,7 @@ resolved cap, and the reservation it produces.
 """
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -275,6 +276,38 @@ class TestTheTokenizerPricesThePrompt:
                 continue
             payload.max_tokens = resolved.max_tokens
             assert _cost(payload, resolved.extra_prompt_tokens) <= SHARE
+
+    def test_the_count_never_parks_more_than_its_share_of_the_executor(self):
+        """It runs BEFORE admission, so a burst of it must not take the threads the
+        generations that already passed admission need."""
+        import asyncio as _asyncio
+
+        live = {"now": 0, "peak": 0}
+
+        def counting(*a, **k):
+            live["now"] += 1
+            live["peak"] = max(live["peak"], live["now"])
+            time.sleep(0.02)
+            live["now"] -= 1
+            return 700
+
+        backend = self._counting_backend(700)
+        backend.count_chat_tokens = counting
+
+        async def burst():
+            return await _asyncio.gather(
+                *[
+                    routes_inference._openai_llama_uncapped_max_tokens(
+                        _uncapped(), request = None, llama_backend = backend
+                    )
+                    for _ in range(12)
+                ]
+            )
+
+        routes_inference._openai_llama_count_gate = None
+        results = _run(burst())
+        assert all(r is not None for r in results)
+        assert live["peak"] <= routes_inference._OPENAI_LLAMA_COUNT_CONCURRENCY
 
     def test_a_tokenizer_that_cannot_answer_falls_back_to_the_bound(self):
         def boom(*a, **k):

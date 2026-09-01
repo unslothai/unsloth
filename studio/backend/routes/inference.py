@@ -2082,6 +2082,23 @@ class _UncappedMaxTokens(NamedTuple):
     extra_prompt_tokens: int
 
 
+# Counts in flight on the default executor at once. `llama_admission._executor_reserve`
+# keeps threads clear of that executor for generation steps and stream teardown, and this
+# work runs BEFORE admission, so an unbounded burst of it could park every worker on a
+# 10-second HTTP timeout while an already admitted generation waits for one. Two is ample:
+# a count is 3-36ms, so two workers sustain far more of them than a slot count can consume,
+# and two can never starve even the five-worker executor of a single-CPU container.
+_OPENAI_LLAMA_COUNT_CONCURRENCY = 2
+_openai_llama_count_gate: Optional[asyncio.Semaphore] = None
+
+
+def _openai_llama_count_slot() -> asyncio.Semaphore:
+    global _openai_llama_count_gate
+    if _openai_llama_count_gate is None:
+        _openai_llama_count_gate = asyncio.Semaphore(_OPENAI_LLAMA_COUNT_CONCURRENCY)
+    return _openai_llama_count_gate
+
+
 async def _openai_llama_counted_prompt_tokens(
     payload, *, llama_backend, image_tokens: int
 ) -> Optional[int]:
@@ -2101,6 +2118,10 @@ async def _openai_llama_counted_prompt_tokens(
     are compacted out of the text first and charged separately, as everywhere else here.
     None when the count is unavailable, which is the caller's signal to fall back to the
     bound rather than to guess.
+
+    Bounded by `_openai_llama_count_slot`: this runs before admission, so it must not be
+    able to park the default executor's workers away from the generations that already
+    passed it.
     """
     messages = getattr(payload, "messages", None)
     if not (isinstance(messages, list) and messages):
@@ -2109,19 +2130,22 @@ async def _openai_llama_counted_prompt_tokens(
         estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
             messages
         )
-        counted = await asyncio.to_thread(
-            llama_backend.count_chat_tokens,
-            estimate_messages,
-            None,
-            None,
-            True,
-            llama_backend._request_reasoning_kwargs(
-                getattr(payload, "enable_thinking", None),
-                getattr(payload, "reasoning_effort", None),
-                getattr(payload, "preserve_thinking", None),
-            ),
-            _continue_final_message(payload),
+        reasoning_kwargs = llama_backend._request_reasoning_kwargs(
+            getattr(payload, "enable_thinking", None),
+            getattr(payload, "reasoning_effort", None),
+            getattr(payload, "preserve_thinking", None),
         )
+        continue_final = _continue_final_message(payload)
+        async with _openai_llama_count_slot():
+            counted = await asyncio.to_thread(
+                llama_backend.count_chat_tokens,
+                estimate_messages,
+                None,
+                None,
+                True,
+                reasoning_kwargs,
+                continue_final,
+            )
         if not isinstance(counted, int) or counted <= 0:
             return None
         counted += _openai_llama_admission_extra_prompt_tokens(payload, strict = True)
