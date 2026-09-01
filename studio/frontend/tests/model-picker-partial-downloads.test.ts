@@ -59,6 +59,10 @@ test("a partial is marked the way the Hub marks one", () => {
   assert.match(badge, /size-\[5px\] rounded-full bg-status-warning/);
   assert.match(badge, /aria-label="Partial download"/);
   assert.ok(
+    !PICKERS.includes("&mdash;"),
+    "no em dash in the tooltip, or anywhere else here",
+  );
+  assert.ok(
     MODELS_TABLE.includes('aria-label="Partial download"') &&
       MODELS_TABLE.includes("bg-status-warning"),
     "and the Hub still uses that dot, so the two agree",
@@ -128,7 +132,54 @@ test("a partial GGUF repo carries its own menu, not an empty gutter", () => {
   );
   // Reveal and delete are the two the row owes; resume stays per-quant in the expander.
   assert.ok(row.includes("cachePath={{ repoId: c.repo_id }}"), "reveal");
-  assert.ok(row.includes('title: "Delete partial download?"'), "delete");
+  assert.ok(row.includes('title: "Delete cached model?"'), "delete");
+});
+
+test("the partial repo delete says it removes the repo, because it does", () => {
+  // No variant is passed, and the backend treats an absent variant as a whole-repo delete. One
+  // repo id can also hold a complete copy in another format, which that delete takes with it, so
+  // wording it as "the partial download" named a smaller scope than the one that runs.
+  const start = PICKERS.indexOf("const renderDownloadedGgufRow");
+  const row = PICKERS.slice(start, PICKERS.indexOf("\n  };", start));
+  assert.ok(
+    row.includes("and everything downloaded under it from disk"),
+    "the copy states the real scope",
+  );
+  assert.ok(
+    !row.includes("This will remove the partly downloaded"),
+    "and no longer implies only the torn bytes go",
+  );
+  // The scope claim is only true while the call stays repo-wide, so pin the call too.
+  assert.match(
+    row,
+    /await deleteCachedModel\(\n\s*c\.repo_id,\n\s*undefined,/,
+    "still a repo-wide delete, matching the Hub row",
+  );
+});
+
+test("a partial pick carries no load identity", () => {
+  // The Chat-to-Audio route has no isDownloaded field: audio-page.tsx infers it from the
+  // forwarded loadId. A loadId names a revision already on disk, so sending one for a torn
+  // snapshot told that page the weights were there and skipped the download.
+  assert.equal(
+    PICKERS.split("loadId: isPartial ? undefined : c.load_id,").length - 1,
+    2,
+    "both cached row selects drop it when the snapshot is torn",
+  );
+  // The GGUF variant select set this rule first; the two must not diverge.
+  assert.ok(
+    PICKERS.includes("loadId: downloaded === true ? loadId : undefined,"),
+    "the variant select still drops it the same way",
+  );
+  // What made the omission load bearing, in the page that reads it.
+  const audio = read("../src/features/audio/audio-page.tsx");
+  assert.match(
+    audio,
+    /isDownloaded: routeSearch\.loadId\n?\s*\? true/,
+    "a routed loadId is still read as downloaded",
+  );
+  // And the route still forwards whatever the pick gives it.
+  assert.ok(PICKERS.includes("loadId: meta.loadId ?? undefined,"));
 });
 
 test("a partial row keeps its buttons on screen instead of hiding them behind hover", () => {
@@ -188,8 +239,17 @@ test("Hub rows can still tell a partial apart from an absent model", () => {
   assert.ok(PICKERS.includes("const partialSet = useMemo("));
   assert.equal(
     PICKERS.split("partial={partialSet.has(id.toLowerCase())}").length - 1,
-    2,
-    "both Hub row renderers mark a partial",
+    3,
+    "Recommended, its filtered twin, and the typed search list alike",
+  );
+  // The typed list is the one that was missed: it renders from searchRowIds, not from the
+  // curated ids, so a partial reached by typing its name showed nothing at all.
+  const search = PICKERS.slice(PICKERS.indexOf("searchRowIds.map((id) => {"));
+  assert.ok(
+    search
+      .slice(0, search.indexOf("</ModelRow>") + 1 || 4000)
+      .includes("partial={partialSet.has(id.toLowerCase())}"),
+    "the live search row marks one too",
   );
   // A partial must never take the green on-disk dot; ModelRow already yields one to the other.
   assert.ok(

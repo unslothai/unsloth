@@ -660,7 +660,7 @@ function PartialBadge() {
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
-        Partial download &mdash; select to resume, or delete it
+        Partial download. Select to resume, or delete it
       </TooltipContent>
     </Tooltip>
   );
@@ -5357,7 +5357,10 @@ export function HubModelPicker({
     const selectMeta: ModelSelectorChangeMeta = {
       source: "hub",
       isLora: false,
-      loadId: c.load_id,
+      // Only for a complete snapshot, as the variant select already does. A loadId names a
+      // revision on disk, and the Audio route carries no isDownloaded field, so a forwarded
+      // one is read there as proof the weights are present.
+      loadId: isPartial ? undefined : c.load_id,
       ggufVariant: variant.quant,
       ggufFilename: variant.filename,
       isDownloaded: !isPartial,
@@ -5514,15 +5517,18 @@ export function HubModelPicker({
                 ariaLabel={`More options for ${c.repo_id}`}
                 cachePath={{ repoId: c.repo_id }}
                 del={{
-                  title: "Delete partial download?",
+                  title: "Delete cached model?",
                   impact: { repoId: c.repo_id },
+                  // Repo-wide, like every other repo-level delete: no variant is passed, and
+                  // one repo id can also hold a complete copy in another format. Saying
+                  // "the partial download" would name a smaller scope than the one that runs.
                   description: (
                     <>
-                      This will remove the partly downloaded{" "}
+                      This will remove{" "}
                       <span className="font-medium text-foreground">
                         {c.repo_id}
                       </span>{" "}
-                      from disk. It is incomplete and cannot be loaded; you can
+                      and everything downloaded under it from disk. You can
                       download it again later.
                     </>
                   ),
@@ -5621,7 +5627,10 @@ export function HubModelPicker({
               onSelect(c.repo_id, {
                 source: "hub",
                 isLora: false,
-                loadId: c.load_id,
+                // Dropped on a torn snapshot: the Audio route has no isDownloaded field and
+                // reads a forwarded loadId as proof the weights are there, so a TTS pick
+                // routed with one skips the download it needs.
+                loadId: isPartial ? undefined : c.load_id,
                 isDownloaded: !isPartial,
                 pipelineTag: c.task ?? null,
                 audioType: c.audio_type ?? null,
@@ -6998,6 +7007,10 @@ export function HubModelPicker({
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
                               showSize={hubRowsShowSize}
+                              // Typed results are Hub rows like any other, so a repo left
+                              // half-downloaded is marked here too. Without it the row reads
+                              // as never fetched while the click resumes a download.
+                              partial={partialSet.has(id.toLowerCase())}
                               capabilities={capsById.get(id)}
                               meta={
                                 isSearchGguf
