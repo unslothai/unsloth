@@ -2002,7 +2002,11 @@ def renderable_tool_catalog(
     # (mlx_inference.py). When that default body never reads ``tools`` the schema cannot
     # reach the prompt at all, so every tool in the catalog is unadvertised and healing a
     # text-form call would promote one the model was never shown (#7066).
-    if _is_processor(tokenizer) and not active_renders_tools:
+    # ``template_is_processor`` counts here too: under the orchestrator the caller has only
+    # the mirrored processor BODY and passes tokenizer=None, so reading the flag during
+    # schema detection and dropping it here sent a processor body down the tokenizer's
+    # native-template rescue, which an image render never reaches (#10092).
+    if (template_is_processor or _is_processor(tokenizer)) and not active_renders_tools:
         return _unadvertised()
     # Resolved rather than read: render_native_template fetches it during the render, so on
     # the FIRST request needing the fallback the cache is still empty and this would hand

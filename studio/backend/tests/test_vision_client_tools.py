@@ -480,3 +480,41 @@ def test_a_replay_only_processor_body_is_not_authorized_for_healing():
         {"chat_template_info": {"template": _CHATML_WITH_TOOLS}},
         template = _TOOL_ROUNDTRIP_ONLY,
     )
+
+
+def test_the_mlx_backend_mirrors_the_processor_template_too():
+    """MLX builds chat_template_info itself, so the field has to be captured on both
+    backends or an MLX image turn is authorized from the tokenizer body (#10092)."""
+    mlx = pytest.importorskip("core.inference.mlx_inference")
+
+    class _Proc:
+        chat_template = _PROCESSOR_TEMPLATE_NO_TOOLS
+        tokenizer = None
+
+    backend = mlx.MLXInferenceBackend.__new__(mlx.MLXInferenceBackend)
+    backend.models = {"m": {"processor": _Proc(), "tokenizer": None}}
+    backend._populate_chat_template_info("m", _CHATML_WITH_TOOLS)
+
+    info = backend.models["m"]["chat_template_info"]
+    assert info["processor_template"] == _PROCESSOR_TEMPLATE_NO_TOOLS
+    # The tokenizer body is still recorded separately; a text turn keeps using it.
+    assert info["template"] == _CHATML_WITH_TOOLS
+
+
+def test_a_processor_body_is_not_rescued_by_the_native_tokenizer_template(monkeypatch):
+    """The native-template fallback rescues a TOKENIZER body whose active template drops
+    the schema. A processor body has no such fallback: the image render goes straight
+    through it, so a native template that reads tools must not re-authorize the catalog."""
+    from core.inference import chat_template_helpers as helpers
+
+    monkeypatch.setattr(
+        helpers, "resolve_native_chat_template", lambda *a, **k: _CHATML_WITH_TOOLS
+    )
+    catalog = helpers.renderable_tool_catalog_for_targets(
+        [_LOOKUP],
+        (None,),
+        {"chat_template_info": {"template": _CHATML_WITH_TOOLS}},
+        template = _PROCESSOR_TEMPLATE_NO_TOOLS,
+        template_is_processor = True,
+    )
+    assert catalog == []

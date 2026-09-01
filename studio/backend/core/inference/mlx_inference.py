@@ -1626,7 +1626,18 @@ class MLXInferenceBackend:
             "format_type": "generic",
             "special_tokens": {},
             "template_name": None,
+            # The body _generate_vlm renders an image turn with when the processor has its
+            # own template (chat_render_target). The route authorizes image-turn tool
+            # healing from this, and only the parent-side mirror can carry it, so leaving
+            # it out here profiles MLX image turns from the tokenizer body instead
+            # (#10092). Absent when the processor has none, which is exactly when
+            # chat_render_target falls back to the tokenizer anyway.
+            "processor_template": None,
         }
+        _proc = entry.get("processor")
+        _proc_tpl = getattr(_proc, "chat_template", None)
+        if isinstance(_proc_tpl, (str, dict)) and _proc_tpl:
+            info["processor_template"] = _proc_tpl
         try:
             tpl = (
                 getattr(tok, "chat_template", None)
