@@ -31,6 +31,11 @@ from core.inference.chat_template_helpers import (
     trailing_assistant_text,
     vlm_prompt_issue as _vlm_prompt_issue,
 )
+from core.inference.mcp_images import (
+    image_marker_parts,
+    pixels_in_marker_order,
+    top_up_image_markers,
+)
 from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
 
@@ -2126,6 +2131,8 @@ class MLXInferenceBackend:
         messages,
         system_prompt = "",
         image = None,
+        images = None,
+        image_ordinal = None,
         temperature = 0.7,
         top_p = 0.9,
         top_k = 40,
@@ -2152,12 +2159,21 @@ class MLXInferenceBackend:
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
+        full_messages = self._with_system_prompt(messages, system_prompt)
+
+        # History first, the attachment last: MLX binds pixels to markers in order,
+        # and the attachment's marker goes on the newest user turn.
+        attached = list(images or []) + ([image] if image is not None else [])
         # Shared with the transformers vision path so both render the same turns (#10092).
-        if self._is_vlm and image is not None:
+        # Entered for a replayed picture as well as an attached one: a processor
+        # template needs EVERY turn in part shape, and a replay-only conversation is
+        # a mix of strings and marker lists that fails to render without this.
+        if self._is_vlm and attached:
             # Processor templates want part lists, the tokenizer fallback wants strings.
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
             )
+
             _renders_via_processor = (
                 self._processor is not None
                 and _chat_render_target(self._processor) is self._processor
@@ -2167,13 +2183,25 @@ class MLXInferenceBackend:
                 system_prompt = system_prompt,
                 structured_content = _renders_via_processor,
             )
-        else:
-            full_messages = self._with_system_prompt(messages, system_prompt)
+            # That helper leaves a conversation that already carries markers alone,
+            # which is right for a retry but not for replayed MCP pictures: those
+            # markers are not the attachment's, and the render would be one short
+            # for two pixels.
+            _prior_markers = image_marker_parts(full_messages)
+            full_messages = top_up_image_markers(
+                full_messages, len(attached), ordinal = image_ordinal
+            )
+            if image is not None:
+                # Read off the conversation: the attachment's turn can precede a
+                # replayed picture, and pixels bind to markers in document order.
+                attached = pixels_in_marker_order(
+                    full_messages, _prior_markers, list(images or []), image
+                )
 
         if self._is_vlm:
             stream = self._generate_vlm(
                 full_messages,
-                image,
+                attached,
                 temperature,
                 top_p,
                 top_k,
@@ -2558,7 +2586,7 @@ class MLXInferenceBackend:
     def _generate_vlm(
         self,
         messages,
-        image,
+        attached_list,
         temperature,
         top_p,
         top_k,
@@ -2581,7 +2609,7 @@ class MLXInferenceBackend:
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
-        images = [image] if image is not None else None
+        images = list(attached_list) or None
         prompt, chat_target = self._render_vlm_prompt(
             messages,
             images,
@@ -2601,9 +2629,9 @@ class MLXInferenceBackend:
         sequences = _mlx_stop_sequences(stop)
         stopped = False
         logger.info(
-            "VLM generating: prompt_len=%d, has_image=%s",
+            "VLM generating: prompt_len=%d, images=%d",
             len(prompt),
-            image is not None,
+            len(images or []),
         )
         # stream_generate forwards **kwargs into generate_step (builds the
         # sampler + logits_processors internally). GOTCHA: generate_step expects

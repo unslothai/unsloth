@@ -2646,3 +2646,32 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
         with inf._scoped_load_attempts_lock:
             inf._scoped_load_attempts.clear()
             inf._scoped_load_cancel_tombstones.clear()
+
+
+def test_the_adapter_path_accepts_the_same_images_kwarg_as_the_locked_one():
+    """The tool loop hands both paths one common_kwargs. Without `images` on the
+    dispatched path an adapter-controlled vision chat raises TypeError before it
+    generates, and the markers left in the conversation have no pixels behind."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    dispatched = inspect.signature(InferenceOrchestrator._generate_dispatched).parameters
+    locked = inspect.signature(InferenceOrchestrator._generate_inner).parameters
+
+    assert "images" in locked
+    assert "images" in dispatched, (
+        "generate_with_adapter_control forwards **common_kwargs straight into "
+        "_generate_dispatched, so a missing `images` is an immediate TypeError"
+    )
+
+
+def test_the_adapter_path_forwards_images_to_the_worker_command():
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    body = inspect.getsource(InferenceOrchestrator._generate_dispatched)
+    assert (
+        "images_b64 = images" in body
+    ), "_build_generate_cmd carries the list to the worker as images_b64"

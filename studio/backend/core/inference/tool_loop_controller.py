@@ -20,6 +20,11 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.mcp_images import split_images as split_mcp_images
+
+# Stamped by mcp_client on every tool it registers; the provenance the envelope
+# is trusted on.
+MCP_TOOL_PREFIX = "mcp__"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 
@@ -330,6 +335,17 @@ class ToolCallCompletion:
         if self.decision.tool_call_id:
             message["tool_call_id"] = self.decision.tool_call_id
         return message
+
+    def mcp_images(self) -> list[dict]:
+        """Images this call returned, and only for a call an MCP server served.
+
+        The envelope is a plain suffix, so any tool whose output happens to end in
+        one -- terminal output, a fetched page -- would otherwise have its bytes
+        decoded and attached as model image input.
+        """
+        if not self.executed or not self.decision.tool_name.startswith(MCP_TOOL_PREFIX):
+            return []
+        return split_mcp_images(self.result)[1]
 
 
 @dataclass(frozen = True)
@@ -812,29 +828,6 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
-def _strip_mcp_image_suffix(result: str) -> str:
-    """Drop a trailing __MCP_IMAGES__ envelope only when it is the valid JSON
-    image array appended by _flatten_result, so legit tool text that merely
-    mentions the marker is not truncated."""
-    head, sep, payload = result.rpartition("\n__MCP_IMAGES__:")
-    if not sep:
-        return result
-    try:
-        images = json.loads(payload)
-    except (ValueError, RecursionError):
-        return result
-    if not isinstance(images, list) or not images:
-        return result
-    if not all(
-        isinstance(img, dict)
-        and isinstance(img.get("data"), str)
-        and isinstance(img.get("mimeType"), str)
-        for img in images
-    ):
-        return result
-    return head.rstrip()
-
-
 def _strip_files_sentinel(result: str) -> str:
     """Drop a trailing ``__FILES__`` envelope, and only that.
 
@@ -880,7 +873,10 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
         result = strip_images_suffix(result)
-    result = _strip_mcp_image_suffix(result)
+    # Always, whoever produced it: these bytes run to megabytes and the model must
+    # never be shown them as text. Provenance decides whether they become IMAGE
+    # input, which is a separate question answered in mcp_images._promote.
+    result = split_mcp_images(result)[0]
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
     for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):

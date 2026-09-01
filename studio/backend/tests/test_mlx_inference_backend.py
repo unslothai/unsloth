@@ -617,7 +617,7 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     gen = backend._generate_vlm(*args, _adapter_state = False)
     # First snapshot is the prefill alone, emitted after entering the adapter context.
@@ -683,7 +683,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
     tools = [{"function": {"name": "search"}}]
     generator = backend._generate_vlm(*args, _adapter_state = False)
     assert next(generator) == "ok"
@@ -703,7 +703,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     assert calls["stream"][-1][0][2] == "<image> healthy generic"
     state["generic"] = "generic prompt"
     text_messages = [{"role": "user", "content": "hello"}]
-    assert list(backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools)) == ["ok"]
+    assert list(backend._generate_vlm(*((text_messages, []) + args[2:]), tools = tools)) == ["ok"]
     assert calls["generic"][-1]["tools"] == tools
     assert calls["stream"][-1][0][2] == "generic prompt"
     two_images = [{"role": "user", "content": [{"type": "image"}, {"type": "image"}]}]
@@ -3046,7 +3046,7 @@ def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
     backend._processor = SimpleNamespace(chat_template = "template")
     args = (
         [{"role": "user", "content": [{"type": "image"}]}],
-        object(),
+        [object()],
         0.7,
         0.9,
         40,
@@ -3873,7 +3873,7 @@ def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
     next(
         vlm._generate_vlm(
             [{"role": "user", "content": [{"type": "image"}]}],
-            object(),
+            [object()],
             0,
             1,
             0,
@@ -4094,3 +4094,126 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     guard = body.index("async with mcp_server_snapshot_guard():")
     snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+def test_mlx_vlm_pixels_follow_the_order_the_markers_appear_in():
+    """MLX binds pixels to markers positionally. The replayed MCP pictures carry
+    their markers on earlier turns, and the attachment's marker goes on the last
+    user turn, so the attachment's pixels have to come last."""
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_args, **_kwargs: (
+        captured.append((messages, attached)) or iter(())
+    )
+    replayed_first, replayed_second, attachment = object(), object(), object()
+    messages = [
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "a"}]},
+        {"role": "assistant", "content": "seen"},
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "b"}]},
+        {"role": "assistant", "content": "seen"},
+        {"role": "user", "content": "and this one?"},
+    ]
+
+    list(
+        backend.generate_chat_response(
+            messages,
+            image = attachment,
+            images = [replayed_first, replayed_second],
+        )
+    )
+
+    sent_messages, attached = captured[0]
+    assert attached == [replayed_first, replayed_second, attachment]
+    # The attachment's own marker is the last one in the conversation.
+    marker_turns = [
+        index
+        for index, message in enumerate(sent_messages)
+        if isinstance(message.get("content"), list)
+        and any(part.get("type") == "image" for part in message["content"])
+    ]
+    assert marker_turns[-1] == len(sent_messages) - 1
+
+
+def test_mlx_marks_the_attachment_even_beside_a_replayed_marker():
+    """Replay promotion can merge an MCP picture into the very turn the new
+    attachment lands on. Testing that turn for "any marker" then skips the one
+    the attachment needs, and _render_vlm_prompt raises on 1 marker / 2 pixels."""
+    from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_a, **_k: (
+        captured.append((messages, attached)) or iter(())
+    )
+    replayed, attachment = object(), object()
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "image"}, {"type": "text", "text": "and this one?"}],
+        }
+    ]
+
+    list(backend.generate_chat_response(messages, image = attachment, images = [replayed]))
+
+    sent, attached = captured[0]
+    markers = sum(_count_vlm_images(m.get("content")) for m in sent)
+    assert attached == [replayed, attachment]
+    assert markers == len(attached), f"{markers} marker(s) for {len(attached)} images"
+    # The attachment's pixels are last, so its marker has to be too.
+    assert sent[-1]["content"][-1] == {"type": "image"}
+
+
+def test_mlx_does_not_double_mark_an_attachment_the_client_already_marked():
+    from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_a, **_k: (
+        captured.append((messages, attached)) or iter(())
+    )
+    messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "x"}]}]
+
+    list(backend.generate_chat_response(messages, image = object()))
+
+    sent, attached = captured[0]
+    assert sum(_count_vlm_images(m.get("content")) for m in sent) == len(attached) == 1
+
+
+def test_mlx_normalizes_a_replay_only_conversation_for_a_processor_template():
+    """A processor template needs every turn in part shape. A replay-only request
+    (images without an attachment) is a mix of strings and marker lists, and gating
+    the normalization on the singular image left it failing at render."""
+    from types import SimpleNamespace
+
+    from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    # A processor carrying its own template is what chat_render_target selects.
+    backend._processor = SimpleNamespace(
+        apply_chat_template = lambda *a, **k: "prompt", chat_template = "t"
+    )
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *a, **k: (
+        captured.append((messages, attached)) or iter(())
+    )
+    messages = [
+        {"role": "tool", "content": "[1 image returned]"},
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "what was it"}]},
+    ]
+
+    list(backend.generate_chat_response(messages, images = [object()]))
+
+    sent, attached = captured[0]
+    assert all(isinstance(message.get("content"), list) for message in sent), sent
+    markers = sum(_count_vlm_images(message.get("content")) for message in sent)
+    assert markers == len(attached) == 1

@@ -111,6 +111,7 @@ def _run(
     tools = None,
     tool_choice = None,
     messages = None,
+    supports_vision = False,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -134,6 +135,7 @@ def _run(
                 session_id = "s1",
                 thread_id = "t1",
                 tool_choice = tool_choice,
+                supports_vision = supports_vision,
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
@@ -1169,3 +1171,80 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     _run(transport)
 
     assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+
+
+# ── MCP images ────────────────────────────────────────────────────
+
+
+def _mcp_image_transport() -> FakeTransport:
+    return FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_img",
+                                "function": {
+                                    "name": "mcp__fs__read_media_file",
+                                    "arguments": '{"path":"cat.png"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "A tabby cat."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+
+
+@pytest.fixture
+def mcp_image_result(monkeypatch):
+    import base64
+    import io
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda name, arguments, **kwargs: "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+    )
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+
+
+def test_mcp_images_reach_a_vision_provider_as_their_own_user_turn(mcp_image_result):
+    transport = _mcp_image_transport()
+
+    _run(
+        transport,
+        tools = [_tool("mcp__fs__read_media_file")],
+        supports_vision = True,
+    )
+
+    follow_up = transport.requests[1]["messages"]
+    assert [message["role"] for message in follow_up[-3:]] == ["assistant", "tool", "user"]
+    assert "__MCP_IMAGES__" not in follow_up[-2]["content"]
+    assert follow_up[-1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_mcp_images_are_not_sent_to_a_text_only_provider(mcp_image_result):
+    transport = _mcp_image_transport()
+
+    _run(transport, tools = [_tool("mcp__fs__read_media_file")])
+
+    follow_up = transport.requests[1]["messages"]
+    assert follow_up[-1]["role"] == "tool"
+    assert "__MCP_IMAGES__" not in follow_up[-1]["content"]

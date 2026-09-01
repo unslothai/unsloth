@@ -3853,6 +3853,180 @@ class TestGgufVisionMessages:
             {"role": "system", "content": "Use tools."}
         ]
 
+    def _mcp_tool_history(self, text = "[1 image returned]"):
+        from core.inference import mcp_images
+        envelope = json.dumps([{"data": self._PNG_B64, "mimeType": "image/png"}])
+        return [
+            {"role": "user", "content": "what does the file look like"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": "mcp__fs__read_media_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_0",
+                "content": text + "\n" + mcp_images.SENTINEL + envelope,
+            },
+            {"role": "assistant", "content": "a blue square"},
+            {"role": "user", "content": "what colour was it again"},
+        ]
+
+    def test_replayed_mcp_images_become_an_image_turn_for_a_vision_model(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        messages, _ = _openai_messages_for_gguf_chat(req, is_vision = True)
+
+        tool_message = next(m for m in messages if m["role"] == "tool")
+        assert tool_message["content"] == "[1 image returned]"
+        promoted = messages[messages.index(tool_message) + 1]
+        assert promoted["role"] == "user"
+        assert promoted["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_replayed_mcp_images_are_stripped_for_a_text_only_model(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        messages, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+
+        assert [m["role"] for m in messages] == ["user", "assistant", "tool", "assistant", "user"]
+        assert messages[2]["content"] == "[1 image returned]"
+
+    def test_passthrough_never_relays_the_image_envelope_as_tool_text(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        messages = _openai_messages_for_passthrough(req)
+
+        assert all("__MCP_IMAGES__" not in str(m.get("content")) for m in messages)
+
+    def test_passthrough_promotes_the_images_for_a_vision_model(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        messages = _openai_messages_for_passthrough(req, vision = True)
+
+        promoted = messages[3]
+        assert promoted["role"] == "user"
+        assert promoted["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_the_native_path_never_templates_the_image_envelope(self):
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        _, chat_messages, _ = _extract_content_parts(req.messages)
+
+        assert chat_messages[2] == {"role": "tool", "content": "[1 image returned]"}
+
+    def test_a_replayed_envelope_alone_does_not_demand_a_vision_model(self):
+        """The capability preflight runs before promote_history strips the envelope
+        for a text-only target, so counting history there strands the conversation:
+        the switch is refused for a picture that model would never be shown."""
+        from routes.inference import _request_has_attached_image, _request_has_image
+
+        req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
+
+        assert not _request_has_attached_image(req)
+        # Still an image for the paths that decode one: the work stays off the loop.
+        assert _request_has_image(req)
+
+    def test_an_attached_image_still_demands_a_vision_model(self):
+        from routes.inference import _request_has_attached_image
+
+        history = self._mcp_tool_history()
+        history[-1] = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "and this one"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{self._PNG_B64}"},
+                },
+            ],
+        }
+        req = ChatCompletionRequest(model = "default", messages = history)
+
+        assert _request_has_attached_image(req)
+
+    def test_admission_charges_a_replayed_envelope_as_images_not_text(self):
+        """Admission prices the payload before the chat path promotes the envelope.
+        Left as text it reserves megabytes of prompt for bytes never sent; ignored
+        it charges zero KV for projector images that really are."""
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        estimate, image_parts = _openai_llama_admission_messages_for_estimate(
+            [
+                m.model_dump(exclude_none = True)
+                for m in ChatCompletionRequest(
+                    model = "default", messages = self._mcp_tool_history()
+                ).messages
+            ]
+        )
+
+        assert image_parts == 1
+        assert self._PNG_B64 not in json.dumps(estimate)
+        assert estimate[2]["content"] == "[1 image returned]"
+
+    def test_admission_never_charges_past_the_conversation_cap(self):
+        from core.inference import mcp_images
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        envelope = json.dumps([{"data": self._PNG_B64, "mimeType": "image/png"}] * 4)
+        turns = []
+        for _ in range(6):
+            turns.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": "c",
+                    "content": "[4 images returned]\n" + mcp_images.SENTINEL + envelope,
+                }
+            )
+        _, image_parts = _openai_llama_admission_messages_for_estimate(turns)
+
+        assert image_parts == mcp_images.MAX_TOTAL_MODEL_IMAGES
+
+    def test_the_envelope_cap_never_discounts_really_attached_images(self):
+        """#9842 charges per-image KV so parallel vision chats are admitted
+        honestly. The envelope cap bounds what promotion adds, not what the
+        caller actually sent."""
+        from core.inference import mcp_images
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        attached = {
+            "role": "user",
+            "content": [{"type": "text", "text": "compare these"}]
+            + [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{self._PNG_B64}"},
+                }
+                for _ in range(mcp_images.MAX_TOTAL_MODEL_IMAGES + 4)
+            ],
+        }
+
+        _, image_parts = _openai_llama_admission_messages_for_estimate([attached])
+
+        assert image_parts == mcp_images.MAX_TOTAL_MODEL_IMAGES + 4
+
+    def test_a_replayed_envelope_is_priced_without_its_base64(self):
+        """The count endpoint renders the messages verbatim, so an envelope left in
+        would be priced as thousands of tokens of base64 the completion never sends."""
+        from routes.inference import promote_mcp_history_images
+
+        raw = [
+            m.model_dump(exclude_none = True)
+            for m in ChatCompletionRequest(
+                model = "default", messages = self._mcp_tool_history()
+            ).messages
+        ]
+
+        priced = promote_mcp_history_images(raw, vision = False)
+
+        assert all("__MCP_IMAGES__" not in str(m.get("content")) for m in priced)
+        assert all(self._PNG_B64 not in str(m.get("content")) for m in priced)
+
     def test_tool_nudge_system_update_dedupes_non_leading_system(self):
         messages = [
             {"role": "user", "content": "earlier"},
@@ -10545,3 +10719,276 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+
+
+class TestMcpImagesOnTheClientToolPassthrough:
+    """The client-tool passthrough rebuilds its prompt from payload.messages and
+    flattens every content part to text. The MCP payloads survive in gen_kwargs,
+    so the markers have to be put back or the two disagree."""
+
+    def test_one_marker_is_restored_per_retained_payload(self):
+        from core.inference.mcp_images import append_placeholder_turn
+
+        # What the rebuild leaves: plain string content, no parts at all.
+        messages = [
+            {"role": "user", "content": "what does the file look like"},
+            {"role": "tool", "tool_call_id": "call_0", "content": "[2 images returned]"},
+        ]
+        payloads = ["AAAA", "BBBB"]
+
+        append_placeholder_turn(messages, len(payloads), len(payloads))
+
+        markers = [
+            part
+            for message in messages
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if part.get("type") == "image"
+        ]
+        assert len(markers) == len(payloads)
+        assert messages[-1]["role"] == "user"
+
+    def test_the_route_restores_them_on_that_branch(self):
+        """Scoped to the client-tool branch, not a character window: the code
+        around it moves with every upstream change, the branch does not."""
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route.produce_openai_chat_completions)
+        branch = body[body.index("if _sf_client_tools:") :]
+        assert "_flatten_content_parts_for_local_template" in branch
+        rebuild = branch.index("_flatten_content_parts_for_local_template")
+        restore = branch.index("mark_mcp_image_turn_local(")
+        assert restore > rebuild, (
+            "the flattening rebuild must put one marker back per retained payload, "
+            "and it has to run after the flatten that removed them"
+        )
+
+
+class TestCodexVisionCapability:
+    def test_an_mcp_run_resolves_the_catalog_before_pinning_the_vision_flag(self):
+        """The flag is fixed once for the whole run. A text-only opening turn on a
+        cold worker would pin it False and discard a picture an MCP tool returns
+        later, on a model the picker offered as vision-capable."""
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route._proxy_to_external_provider)
+        assert "_may_receive_image = (" in body
+        assert "if _may_receive_image and model not in capabilities" in body
+
+    def test_a_replay_only_turn_also_resolves_the_catalog(self):
+        """MCP can be switched off while prior image turns remain. The capability
+        still has to be resolved, or the replay is stripped from a model that
+        could have read it."""
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route._proxy_to_external_provider)
+        start = body.index("_may_receive_image = (")
+        predicate = body[start : body.index("if _may_receive_image", start)]
+        assert "image_requested" in predicate
+        assert "mcp_enabled" in predicate
+        # The promotable form, so a named non-MCP result ending in a valid envelope
+        # does not buy a catalog fetch nothing needs.
+        assert "_request_has_promotable_mcp_images(payload)" in predicate
+
+
+_MCP_ADMISSION_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+class TestMcpImageAdmissionAndCaps:
+    _PNG = _MCP_ADMISSION_PNG
+
+    def _envelope_turn(
+        self,
+        count = 1,
+        name = "mcp__fs__read_media_file",
+    ):
+        from core.inference import mcp_images
+        images = json.dumps([{"data": self._PNG, "mimeType": "image/png"}] * count)
+        return {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": name,
+            "content": f"[{count} images returned]\n" + mcp_images.SENTINEL + images,
+        }
+
+    def test_a_text_only_backend_is_charged_no_kv_for_replayed_images(self):
+        """Generation calls promote_history(vision=False) and sends no projector
+        images, so charging them here reserves the cache for pixels llama-server
+        never sees and serialises small text-only chats."""
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        turns = [self._envelope_turn(4), self._envelope_turn(4)]
+
+        _, vision_parts = _openai_llama_admission_messages_for_estimate(turns, vision = True)
+        _, text_only_parts = _openai_llama_admission_messages_for_estimate(turns, vision = False)
+
+        assert vision_parts == 8
+        assert text_only_parts == 0
+
+    def test_the_base64_is_stripped_from_the_estimate_either_way(self):
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+        for vision in (True, False):
+            estimate, _ = _openai_llama_admission_messages_for_estimate(
+                [self._envelope_turn()], vision = vision
+            )
+            assert self._PNG not in json.dumps(estimate), vision
+
+    def test_an_attachment_counts_against_the_replay_cap(self):
+        """promote_history_local caps the replay alone. The attachment is appended
+        after it, so without a second trim the backend receives nine pixels and
+        nine markers against a declared cap of eight."""
+        from core.inference import mcp_images
+
+        conversation = []
+        payloads = []
+        for _ in range(mcp_images.MAX_TOTAL_MODEL_IMAGES):
+            conversation.append(mcp_images.placeholder_turn(1, 1))
+            payloads.append("AAAA")
+        # what the route does when an image is attached on top
+        conversation = mcp_images.mark_last_user_turn(conversation, 1)
+        payloads.append("BBBB")
+        mcp_images.trim_image_turns(conversation, payloads)
+
+        markers = mcp_images.count_image_parts(conversation, "image")
+        assert len(payloads) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+        assert markers == len(payloads)
+        # The newest picture is the attachment, so it is the one that survives.
+        assert payloads[-1] == "BBBB"
+
+    def test_the_route_trims_both_local_paths(self):
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route.produce_openai_chat_completions)
+        assert (
+            body.count("trim_mcp_image_turns(") == 2
+        ), "both the tool-loop path and the plain path have to reserve the attachment's slot"
+
+    def test_the_local_replay_promotion_is_off_the_event_loop(self):
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route.produce_openai_chat_completions)
+        assert "await _promote_local_mcp_images_async(" in body
+        helper = inspect.getsource(inference_route._promote_local_mcp_images_async)
+        assert "asyncio.to_thread" in helper
+
+
+class TestMcpImageProvenanceAndCounting:
+    _PNG = _MCP_ADMISSION_PNG
+
+    def _turn(self, name):
+        from core.inference import mcp_images
+
+        images = json.dumps([{"data": self._PNG, "mimeType": "image/png"}])
+        msg = {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "output\n" + mcp_images.SENTINEL + images,
+        }
+        if name is not None:
+            msg["name"] = name
+        return msg
+
+    def test_admission_strips_a_non_mcp_envelope_but_charges_it_nothing(self):
+        """Generation strips the suffix for everyone, so pricing it as text would
+        over-reserve; and it is never promoted, so charging image KV would reserve
+        the cache for pixels llama-server never sees."""
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        estimate, parts = _openai_llama_admission_messages_for_estimate(
+            [self._turn("bash")], vision = True
+        )
+
+        assert parts == 0
+        assert self._PNG not in json.dumps(estimate)
+
+    def test_admission_still_charges_an_mcp_envelope_as_images(self):
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        estimate, parts = _openai_llama_admission_messages_for_estimate(
+            [self._turn("mcp__fs__read_media_file")], vision = True
+        )
+
+        assert parts == 1
+        assert self._PNG not in json.dumps(estimate)
+
+    def test_the_estimator_and_generation_agree_on_provenance(self):
+        """The two must read the same rule, or the reservation and the prompt
+        disagree in whichever direction the mismatch runs."""
+        from core.inference.mcp_images import promote_history
+        from routes.inference import _openai_llama_admission_messages_for_estimate
+
+        for name, promoted in (("bash", False), ("mcp__fs__read_media_file", True)):
+            turn = self._turn(name)
+            out = promote_history([dict(turn)], vision = True)
+            estimate, parts = _openai_llama_admission_messages_for_estimate(
+                [dict(turn)], vision = True
+            )
+            # Stripped on both sides regardless of provenance...
+            assert out[0]["content"] != turn["content"], name
+            assert self._PNG not in json.dumps(estimate), name
+            # ...and charged exactly where it is promoted.
+            assert (len(out) > 1) is promoted, name
+            assert (parts > 0) is promoted, name
+
+
+class TestMcpReplayDetectorProvenance:
+    _PNG = _MCP_ADMISSION_PNG
+
+    def _req(self, name):
+        from core.inference import mcp_images
+
+        images = json.dumps([{"data": self._PNG, "mimeType": "image/png"}])
+        msg = {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "output\n" + mcp_images.SENTINEL + images,
+        }
+        if name is not None:
+            msg["name"] = name
+        return ChatCompletionRequest(model = "default", messages = [msg])
+
+    def test_only_a_promotable_envelope_counts_as_a_replayed_image(self):
+        """Promotion preserves a named non-MCP result as plain text, so reading its
+        suffix as images refuses a countable prompt and buys a catalog fetch that
+        nothing needs."""
+        from routes.inference import _request_has_promotable_mcp_images
+
+        assert _request_has_promotable_mcp_images(self._req("mcp__fs__read_media_file"))
+        assert not _request_has_promotable_mcp_images(self._req("bash"))
+        # No name is not evidence against it: older stored turns carry none.
+        assert _request_has_promotable_mcp_images(self._req(None))
+
+    def test_the_count_guard_runs_before_the_mlx_dispatch(self):
+        """_mlx_count_chat_tokens returns its own count, so a guard placed after it
+        never sees a resident MLX vision model."""
+        import inspect
+
+        import routes.inference as inference_route
+
+        body = inspect.getsource(inference_route.chat_count_tokens)
+        guard = body.index("_resident_model_reads_images()")
+        dispatch = body.index("_mlx_count_chat_tokens(")
+        assert guard < dispatch, "the replay guard has to run before MLX answers"
+
+    def test_the_capability_probe_asks_both_backends(self):
+        import inspect
+
+        import routes.inference as inference_route
+
+        probe = inspect.getsource(inference_route._resident_model_reads_images)
+        assert "get_llama_cpp_backend()" in probe
+        assert "get_inference_backend" in probe
+        assert 'entry.get("is_vision")' in probe

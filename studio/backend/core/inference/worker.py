@@ -667,6 +667,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         if image_b64:
             image = _decode_image(image_b64)
             image = _resize_image(image)
+        images = [_resize_image(_decode_image(b)) for b in cmd.get("images_base64") or []]
 
         gen_kwargs = {
             "messages": cmd["messages"],
@@ -692,6 +693,11 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         ):
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
+
+        if images and _backend_declares(backend, "images"):
+            gen_kwargs["images"] = images
+        if cmd.get("image_ordinal") is not None and _backend_declares(backend, "image_ordinal"):
+            gen_kwargs["image_ordinal"] = cmd["image_ordinal"]
 
         # These options are MLX-only. The transformers backend declares none of
         # them and takes no **kwargs, so forwarding unconditionally would turn
