@@ -10,7 +10,6 @@ import {
   ADMISSION_COMMENT_RESUMED,
   ADMISSION_COMMENT_WAIT,
   admissionStatusLabel,
-  isHoldingSlot,
   readAdmissionComment,
 } from "../src/features/chat/utils/admission-status.ts";
 
@@ -45,13 +44,6 @@ test("a data line is never an admission signal", () => {
 
 test("an unknown comment is ignored rather than guessed at", () => {
   assert.equal(readAdmissionComment(": admission-something-new"), null);
-});
-
-test("only the granted states count as holding a slot", () => {
-  assert.equal(isHoldingSlot("admitted"), true);
-  assert.equal(isHoldingSlot("resumed"), true);
-  assert.equal(isHoldingSlot("waiting"), false);
-  assert.equal(isHoldingSlot("paused"), false);
 });
 
 test("a run that is not generating gets a line, one that is gets none", () => {

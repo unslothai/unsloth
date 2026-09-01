@@ -66,16 +66,6 @@ export function readAdmissionComment(line: string): AdmissionStatus | null {
 }
 
 /**
- * Whether this status means the run currently holds a slot.
- *
- * The indicator is driven off this rather than off each status by name, so a status added
- * later has to declare which side it is on instead of silently defaulting to "running".
- */
-export function isHoldingSlot(status: AdmissionStatus): boolean {
-  return status === "admitted" || status === "resumed";
-}
-
-/**
  * The line shown while a run is not generating, or null once it is.
  *
  * Plain and specific. "Waiting" alone reads as a stall; naming the cause is what tells the
