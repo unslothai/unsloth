@@ -44,6 +44,9 @@ Run with no arguments to uninstall. Unrecognized arguments never trigger
 removal.
 
 Environment:
+  UNSLOTH_HOME              Also remove this portable install root, the one
+                            passed to install.sh --root. Covers the caches and
+                            native runtimes beside the Studio install.
   UNSLOTH_STUDIO_HOME       Also remove this custom install root. Pass the value
                             used at install time.
   STUDIO_HOME               Alias for the above, ignored when both are set.
@@ -427,10 +430,22 @@ _custom_studio_roots() {
         _exe=$(printf '%s' "$_exe" | sed "s/'\\\\''/'/g")
         [ -n "$_exe" ] || return 0
         _emit "$(dirname "$(dirname "$(dirname "$_exe")")")"
+        # A portable install (install.sh --portable / --root) puts the venv in
+        # <root>/studio, so the three-dirname walk above lands on the Studio
+        # root and would leave <root>/{bin,cache,llama.cpp,node,share} -- most
+        # of the bytes -- behind. The conf names the master root directly.
+        _master=$(sed -n "s/^export UNSLOTH_HOME='\(.*\)'\$/\1/p" "$1" | head -n1)
+        _master=$(printf '%s' "$_master" | sed "s/'\\\\''/'/g")
+        [ -n "$_master" ] && _emit "$_master"
     }
-    # Mirror install.sh's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME is
-    # ignored when both are set. Otherwise uninstalling install A could also
-    # delete install B if the user has STUDIO_HOME left over from B.
+    # Mirror install.sh's precedence: the master root first when a portable
+    # install exported it, then UNSLOTH_STUDIO_HOME, then STUDIO_HOME (ignored
+    # when both are set). Otherwise uninstalling install A could also delete
+    # install B if the user has STUDIO_HOME left over from B.
+    if [ -n "${UNSLOTH_HOME:-}" ]; then
+        _emit "$UNSLOTH_HOME"
+        _from_conf "$UNSLOTH_HOME/share/studio.conf"
+    fi
     if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
         _emit "$UNSLOTH_STUDIO_HOME"
         _from_conf "$UNSLOTH_STUDIO_HOME/share/studio.conf"

@@ -1166,6 +1166,8 @@ decide_node_source() {
 # Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
 if [ -n "$STAGE_ROOT" ]; then
     _NODE_PARENT="$RUNTIME_ROOT"
+elif [ -n "${UNSLOTH_HOME:-}" ]; then
+    _NODE_PARENT="$UNSLOTH_HOME"
 elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     _NODE_PARENT="$STUDIO_HOME"
 else
@@ -2484,8 +2486,14 @@ fi
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
+# A portable install (install.sh --portable / --root) exports the master root,
+# where the native runtimes are siblings of studio/ rather than children of it --
+# the same shape as the ~/.unsloth default, just relocated.
+_PORTABLE_ROOT="${UNSLOTH_HOME:-}"
 if [ -n "$STAGE_ROOT" ]; then
     UNSLOTH_HOME="$RUNTIME_ROOT"
+elif [ -n "$_PORTABLE_ROOT" ]; then
+    UNSLOTH_HOME="$_PORTABLE_ROOT"
 elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     UNSLOTH_HOME="$STUDIO_HOME"
 else
