@@ -1,5 +1,6 @@
 import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/react";
 import { saveChatMessage } from "../api/chat-api";
+import { exportedItemToRecord } from "./delete-thread-message";
 
 type ThreadImportExport = {
   export: () => ExportedMessageRepository;
@@ -92,7 +93,6 @@ export async function updateThreadMessage(args: {
   }
 
   const { parentId: originalParentId } = targetMessageEntry;
-  const { createdAt: originalCreatedAt } = targetMessageEntry.message;
 
   const updatedMessages = currentExport.messages.map((m) => {
     if (m.message.id !== messageId) return m;
@@ -133,18 +133,13 @@ export async function updateThreadMessage(args: {
   const originalExport = currentExport;
   thread.import({ ...currentExport, messages: updatedMessages });
 
+  const editedMessage = updatedMessages.find(m => m.message.id === messageId)?.message;
+
   // If it's NOT incognito, we attempt to save to the DB regardless of the ID.
-  if (remoteId && !isIncognito) {
+  if (remoteId && !isIncognito && editedMessage) {
     try {
       await saveChatMessage(
-        {
-          id: messageId,
-          threadId: remoteId,
-          parentId: originalParentId,
-          role: "assistant",
-          content: (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [],
-          createdAt: originalCreatedAt ? Number(originalCreatedAt) : Date.now(),
-        },
+        exportedItemToRecord(remoteId, originalParentId, editedMessage),
         { allowGenerationEdit: true },
       );
     } catch (e) {

@@ -44,6 +44,13 @@ function snapshotContent(
     : [];
 }
 
+// A Date from assistant-ui's export, or the epoch millis a rehydrated record carries.
+// `getTime?.()` alone re-dated such a turn to now, which reorders the thread.
+function toEpochMillis(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  return typeof value === "number" && Number.isFinite(value) ? value : Date.now();
+}
+
 function snapshotAttachments(
   attachments: readonly CompleteAttachment[] | undefined,
 ): readonly CompleteAttachment[] {
@@ -67,7 +74,7 @@ export function exportedItemToRecord(
       content: content as Extract<ThreadMessage, { role: "user" }>["content"],
       ...(attachments.length > 0 && { attachments }),
       ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
-      createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+      createdAt: toEpochMillis(message.createdAt),
     };
   }
   const custom = (message.metadata?.custom ?? {}) as Record<string, unknown>;
@@ -81,7 +88,7 @@ export function exportedItemToRecord(
       { role: "assistant" }
     >["content"],
     ...(Object.keys(custom).length > 0 && { metadata: custom }),
-    createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+    createdAt: toEpochMillis(message.createdAt),
   };
 }
 
