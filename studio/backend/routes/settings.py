@@ -1074,7 +1074,8 @@ def get_hugging_face_cache(
 def update_hugging_face_cache(
     # Owner only: the cache is install-wide and the path is unconstrained, so a
     # managed account could point downloads at another workspace.
-    payload: HuggingFaceCachePayload, current_subject: str = Depends(require_install_admin)
+    payload: HuggingFaceCachePayload,
+    current_subject: str = Depends(require_install_admin),
 ) -> HuggingFaceCacheResponse:
     try:
         set_hf_cache_home(payload.cache_home)

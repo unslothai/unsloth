@@ -18763,9 +18763,11 @@ async def _proxy_to_external_provider(
                 _prune_pending(now)
                 for key in cancel_keys:
                     _CANCEL_REGISTRY.setdefault(key, set()).add(cancel_event)
-                if payload.cancel_id and _PENDING_CANCELS.pop(
-                    _scoped_cancel_key(payload.cancel_id), None
-                ) is not None:
+                if (
+                    payload.cancel_id
+                    and _PENDING_CANCELS.pop(_scoped_cancel_key(payload.cancel_id), None)
+                    is not None
+                ):
                     should_cancel = True
             if should_cancel:
                 cancel_event.set()

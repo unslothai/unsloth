@@ -116,9 +116,7 @@ def snapshot(subject: Optional[str] = None) -> list[dict[str, Any]]:
     view the VRAM and lifecycle counters need.
     """
     with _LOCK:
-        entries = [
-            e for e in _ACTIVE.values() if subject is None or e.get("subject") == subject
-        ]
+        entries = [e for e in _ACTIVE.values() if subject is None or e.get("subject") == subject]
     entries.sort(key = lambda e: e["started_at"])
     return [
         {
