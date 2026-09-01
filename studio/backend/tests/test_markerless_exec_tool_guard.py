@@ -916,6 +916,20 @@ def test_the_transformers_cleanup_keeps_a_stop_token_that_closes_an_envelope():
         False
     )
     assert closes_an_open_envelope(f"<|message_model|>get_weather{envelope}", "<|end_message|>")
+    # The marker has to be followed by the body the parser reads, or an answer that merely
+    # writes it in prose keeps the closer. A later marker that IS call-shaped still counts.
+    prose = "The marker <|content_invoke_tool_json|> starts a call.<|end_message|>"
+    assert closes_an_open_envelope(prose, "<|end_message|>") is False
+    assert closes_an_open_envelope(f"{prose[:-15]}{envelope}", "<|end_message|>") is True
+    assert closes_an_open_envelope(
+        '<|content_invoke_tool_json|>\n {"a": 1}<|end_message|>', "<|end_message|>"
+    )
+    # Not applied to <tool_call>: it legitimately wraps <function=..> markup, and requiring a
+    # brace there would drop the closer a real call needs.
+    xml = (
+        "<tool_call><function=get_weather><parameter=city>Paris</parameter></function></tool_call>"
+    )
+    assert closes_an_open_envelope(xml, "</tool_call>") is True
     # And the role opener is not preserved on its own either, or the reply would begin with
     # raw markup: nothing strips a standalone one. The call still parses and strips clean
     # without it, because the span swallows the bare name echo ahead of the marker.

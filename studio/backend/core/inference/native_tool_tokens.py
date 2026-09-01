@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 # These are provenance-bearing control tokens emitted by supported native tool
 # templates. They must survive decoding so the parser can distinguish a native
@@ -98,6 +100,14 @@ _NATIVE_CONTROL_OPENERS = {
 }
 
 
+# Openers the parser only honors with a body behind them, so a bare mention opens nothing.
+# ``_TC_JSON_START_RE`` reads a TML call at ``<|content_invoke_tool_json|>\s*{``, which makes
+# ``The marker <|content_invoke_tool_json|> starts a call.`` inert. Deliberately NOT applied
+# to ``<tool_call>``: that wrapper legitimately holds ``<function=..>`` markup instead of an
+# object, and demanding a brace there would drop a closer a real call needs.
+_OPENER_REQUIRES_BODY = {"<|content_invoke_tool_json|>": re.compile(r"\s*\{")}
+
+
 def closes_an_open_envelope(text: str, token: str) -> bool:
     """True when ``token`` is a native CLOSER whose own opener appears in ``text``.
 
@@ -108,7 +118,18 @@ def closes_an_open_envelope(text: str, token: str) -> bool:
     if not openers:
         return False
     body = text[: text.rfind(token)] if token in text else text
-    return any(opener in body for opener in openers)
+    for opener in openers:
+        body_re = _OPENER_REQUIRES_BODY.get(opener)
+        if body_re is None:
+            if opener in body:
+                return True
+            continue
+        pos = body.find(opener)
+        while pos != -1:
+            if body_re.match(body, pos + len(opener)):
+                return True
+            pos = body.find(opener, pos + 1)
+    return False
 
 
 _ATEM_REASONING_MARKERS = ("self", "user")
