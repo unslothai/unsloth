@@ -1511,9 +1511,9 @@ def _call_session_tool(
                     retry = True
                 else:
                     raise RuntimeError("MCP server connection is not available")
-            elif (session.dirty or _needs_idle_recheck(session, idle_for)) and not _session_responsive(
-                session, _remaining(), cancel_event
-            ):
+            elif (
+                session.dirty or _needs_idle_recheck(session, idle_for)
+            ) and not _session_responsive(session, _remaining(), cancel_event):
                 # Dirty: still stuck on the abandoned call. Idle HTTP: the server
                 # may have expired the session while nothing was using it, and no
                 # HTTP transport lets us ask. Either way it failed to answer, so

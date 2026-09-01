@@ -537,7 +537,11 @@ def test_a_concurrent_checkout_cannot_cancel_another_borrowers_recheck(monkeypat
     really had gone stale."""
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
 
-    def _client(url, headers, use_oauth = False):
+    def _client(
+        url,
+        headers,
+        use_oauth = False,
+    ):
         c = RecordingClient(url, headers, use_oauth)
         c.call_delay = 0.3
         return c
@@ -562,7 +566,8 @@ def test_closing_many_sessions_does_not_run_serially(monkeypatch, clients):
             return await super().__aexit__(*exc)
 
     monkeypatch.setattr(
-        mcp_client, "_client",
+        mcp_client,
+        "_client",
         lambda url, headers, use_oauth = False: SlowExit(url, headers, use_oauth),
     )
     for i in range(6):
