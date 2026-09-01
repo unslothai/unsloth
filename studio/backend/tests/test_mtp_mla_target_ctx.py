@@ -189,8 +189,7 @@ class TestMlaTargetCtxReserve:
         assert mtp > separate
 
     def test_one_layer_mtp_arch_drops_target_copy(self):
-        # A NextN-only MTP context allocates no copy, and charging one trips
-        # drafter_no_vram, dropping the very MTP the reserve is priced for.
+        # Charging the absent copy trips drafter_no_vram, dropping the MTP itself.
         b = _make_mla_backend()
         b._architecture = "glm5next"
         other = _make_mla_backend()
@@ -249,10 +248,8 @@ class TestKdaRollbackReserve:
         assert four > one
 
     def test_cpu_pinned_drafter_keeps_target_rollback(self):
-        # Pinning a separate drafter to the CPU moves the drafter, not the target's
-        # rollback snapshots. The loader replaces the reserve with a rollback-only
-        # callback and drops it entirely when that reads 0, so a KDA target must
-        # not report 0 here or the whole reserve disappears.
+        # Pinning the drafter to CPU does not move the target's snapshots, and the
+        # loader drops its whole rollback-only callback when this reads 0.
         b = self._kda()
         assert b._rollback_state_bytes(1) / self.MIB == pytest.approx(self.PER_SEQ)
         assert b._rollback_state_bytes(4) == 4 * b._rollback_state_bytes(1)
@@ -267,8 +264,7 @@ class TestKdaRollbackReserve:
         assert b._rollback_state_bytes(1) == b._mamba_recurrent_state_bytes(1)
 
     def test_mamba_path_unchanged(self):
-        # A Mamba hybrid still prices rollback with its own helper; the KDA
-        # fallback must not double-count or shadow it.
+        # The KDA fallback must not shadow or double-count the Mamba helper.
         b = _make_mla_backend()
         b._ssm_inner_size = 6144
         b._ssm_state_size = 128

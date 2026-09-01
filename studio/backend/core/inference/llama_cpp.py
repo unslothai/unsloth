@@ -11868,8 +11868,8 @@ class LlamaCppBackend:
         # separate-drafter spec modes (draft-simple/draft-eagle3) load a small
         # distinct drafter with its own KV -- already counted in draft_kv/weights --
         # rather than duplicating the target, so they must not be charged for it.
-        # Third gate: a NextN-only MTP context never allocates the copy, and
-        # charging it trips drafter_no_vram, losing the MTP being reserved for.
+        # Third gate: a NextN-only MTP context allocates no copy, and charging one
+        # trips drafter_no_vram, losing the MTP being reserved for.
         target_ctx_copy = 0
         if (
             mtp_keeps_target_ctx
