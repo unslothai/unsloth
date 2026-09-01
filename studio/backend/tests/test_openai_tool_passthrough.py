@@ -10408,6 +10408,28 @@ class TestPassthroughImageNormalization:
         messages = _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
         assert messages[0]["content"][1]["image_url"]["url"] == "https://x.example/a.webp"
 
+    def test_local_template_caller_leaves_a_payloadless_data_url_alone(self):
+        # The safetensors/MLX client-tools path only gets here when the turn has no
+        # decodable image, and flattens image parts away straight after. A payloadless
+        # data URL was ignored with a warning before; it must not become a 400.
+        req = self._req("data:image/png;base64,")
+
+        messages = _openai_messages_for_passthrough(req, normalize_images = False)
+
+        assert messages[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,"
+
+    def test_the_local_template_call_site_opts_out_of_normalization(self):
+        # The guard that keeps the re-encode on llama-server bodies only. Reverting it
+        # brings the 400 above back to the safetensors/MLX client-tools path.
+        import inspect
+
+        import routes.inference as inference_mod
+
+        src = inspect.getsource(inference_mod)
+        _, _, after = src.partition("_flatten_content_parts_for_local_template(")
+        assert after, "the local-template call site moved"
+        assert "normalize_images = False" in after[:300]
+
     def test_undecodable_data_url_raises_400(self):
         with pytest.raises(HTTPException) as exc:
             _openai_messages_for_passthrough(self._req("data:image/webp;base64,!!!nope!!!"))
