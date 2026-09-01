@@ -3718,8 +3718,9 @@ _rocm_sdk_install_hint() {
 }
 
 _rocm_tag_from_hipconfig() {
-    # Fedora ships hipconfig under /opt/rocm but not on PATH, so a PATH-only lookup
-    # misses a ROCm install that is right there (unslothai#8731).
+    # AMD's own installer puts hipconfig in ROCM_PATH/bin and leaves it off PATH unless
+    # its profile.d snippet ran, so a PATH-only lookup misses a tree that is right there.
+    # Not the Fedora shape: Fedora's hipconfig is /usr/bin/hipconfig, owned by hipcc.
     _rt_hipconfig=""
     if command -v hipconfig >/dev/null 2>&1; then
         _rt_hipconfig=hipconfig
@@ -3761,8 +3762,9 @@ _rocm_tag_from_rpm() {
     # against a running dnf (rhbz#2463435). A version probe must not hang the
     # installer, and a timed-out probe is just a source that declined to answer.
     # _run_bounded no-ops where `timeout` is absent, so this adds no dependency.
-    # Fedora builds ROCm itself and ships no rocm-core, so an rpm host with a working
-    # /opt/rocm answered nothing (unslothai#8731). All names in ONE query, since looping
+    # Fedora ships rocm-core but nothing except the `rocm` metapackage requires it, so a
+    # host running rocm-hip/rocm-runtime answered nothing (unslothai#8731). All names in
+    # ONE query, since looping
     # would pay the timeout above once per name; rpm reports misses on stdout, so take
     # the first line starting with a digit and let argument order rank the names.
     _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core rocm-runtime rocm-hip 2>/dev/null \
@@ -3986,8 +3988,9 @@ get_torch_index_url() {
         fi
         echo "[WARN] AMD GPU detected, but no ROCm version could be read to select the matching GPU PyTorch build -- falling back to CPU-only PyTorch." >&2
         if [ -d "${ROCM_PATH:-/opt/rocm}" ]; then
-            # "No ROCm install was found" sent the unslothai#8731 reporter off to
-            # install a package he already had.
+            # Telling someone with a populated ROCm tree that "no ROCm install was found"
+            # sends them off to install a package they already have. Fedora is the OTHER
+            # branch: it owns no path under /opt/rocm, so it lands on the SDK hint.
             echo "[WARN] ${ROCM_PATH:-/opt/rocm} exists, so ROCm is likely installed but not reporting a version this installer can read." >&2
             echo "[WARN] Pin the wheels and re-run: UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4   (a PyTorch wheel leaf: rocm6.0-6.4, rocm7.0-7.2)" >&2
         else
