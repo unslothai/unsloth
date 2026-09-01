@@ -175,6 +175,9 @@ def anthropic_messages_to_openai(
                         }
                     )
 
+            for tr in tool_results:
+                result.append(tr)
+
             if has_image:
                 result.append({"role": "user", "content": user_parts})
             else:
@@ -182,10 +185,48 @@ def anthropic_messages_to_openai(
                 text = "\n".join(p["text"] for p in user_parts)
                 if text:
                     result.append({"role": "user", "content": text})
-            for tr in tool_results:
-                result.append(tr)
 
     return result
+
+
+def fold_tool_results_into_user(messages: list[dict]) -> list[dict]:
+    """Rewrite ``role="tool"`` as user turns: Gemma 2 / 3 have no tool role and
+    check alternation by index parity, so one makes llama-server 400 the whole
+    request. Shape mirrors minja's ``polyfill_tool_responses``.
+    """
+    out: list[dict] = []
+    call_names: dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                tc_id = tc.get("id")
+                fn = tc.get("function")
+                if isinstance(tc_id, str) and tc_id and isinstance(fn, dict):
+                    name = fn.get("name")
+                    if isinstance(name, str) and name:
+                        call_names[tc_id] = name
+
+        if msg.get("role") != "tool":
+            out.append(msg)
+            continue
+
+        response: dict[str, Any] = {}
+        tool_call_id = msg.get("tool_call_id")
+        name = msg.get("name") or call_names.get(tool_call_id or "")
+        if name:
+            response["tool"] = name
+        response["content"] = msg.get("content", "")
+        if tool_call_id:
+            response["tool_call_id"] = tool_call_id
+        out.append(
+            {
+                "role": "user",
+                "content": json.dumps({"tool_response": response}, indent = 2),
+            }
+        )
+    return out
 
 
 _ANTHROPIC_SCHEMA_CLIENT_TOOL_PARAMETERS = {
