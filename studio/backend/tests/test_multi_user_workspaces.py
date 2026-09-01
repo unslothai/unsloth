@@ -3741,9 +3741,7 @@ def test_a_managed_load_cannot_reach_a_private_repo_on_the_servers_login(monkeyp
         return answers[repo_id]
 
     monkeypatch.setattr(inference_routes, "_hub_repo_is_anonymously_readable", _fake_probe)
-    monkeypatch.setattr(
-        inference_routes, "_repo_is_in_the_shared_cache", lambda repo, kind: False
-    )
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_shared_cache", lambda repo, kind: False)
     guard = inference_routes._reject_private_hub_repo_without_an_account_token
 
     token = _bind("alice")

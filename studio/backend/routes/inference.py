@@ -6759,7 +6759,10 @@ def _hub_repo_is_anonymously_readable(repo_id: str, repo_type: str) -> Optional[
 
 
 def _reject_private_hub_repo_without_an_account_token(
-    model_path: Any, hf_token: Any, *, repo_type: str = "model"
+    model_path: Any,
+    hf_token: Any,
+    *,
+    repo_type: str = "model",
 ) -> None:
     """A managed account may not reach a non-public repo on the server's credential.
 
