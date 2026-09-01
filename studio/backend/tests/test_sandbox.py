@@ -480,6 +480,20 @@ def test_normalized_sys_executable_collapses_dotdot(monkeypatch):
     assert tools._normalized_sys_executable() == "/mnt/disks/.venv/bin/python"
 
 
+def test_sandbox_path_uses_normalized_interpreter_dir(monkeypatch, tmp_path):
+    """Bare Python tools must resolve through the same mounted interpreter path."""
+    from core.inference import tools
+
+    monkeypatch.setattr(
+        tools.sys,
+        "executable",
+        "/mnt/disks/unsloth/../.venv/bin/python",
+    )
+    path_entries = tools._build_safe_env(str(tmp_path))["PATH"].split(os.pathsep)
+
+    assert path_entries[0] == "/mnt/disks/.venv/bin"
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
 def test_linux_bwrap_argv_wraps_inner_argv_with_nproc_setter(monkeypatch):
     """The bwrap argv must wrap inner_argv with a small Python that

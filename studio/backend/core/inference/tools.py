@@ -6839,7 +6839,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the
     # same environment the Unsloth server runs in.
-    exe_dir = os.path.dirname(sys.executable)
+    exe_dir = os.path.dirname(_normalized_sys_executable())
     path_entries = [exe_dir] if exe_dir else []
 
     # If a virtualenv is active, include its bin/Scripts directory.
