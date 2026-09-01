@@ -3561,8 +3561,7 @@ def test_the_startup_precache_setting_lives_in_the_owners_database(monkeypatch):
     monkeypatch.setattr("storage.studio_db.upsert_app_settings", _fake_upsert)
     monkeypatch.setattr(
         "storage.studio_db.get_app_setting",
-        lambda key, default: seen.setdefault("read_subject", current_workspace_subject())
-        and None,
+        lambda key, default: seen.setdefault("read_subject", current_workspace_subject()) and None,
     )
 
     token = _bind("alice")
