@@ -107,9 +107,9 @@ def test_only_stdio_answers_the_liveness_probe():
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     for cls in (StreamableHttpTransport, SSETransport):
         transport = cls(url = "https://x.test/mcp")
-        assert not hasattr(transport, "_is_session_dead"), (
-            f"{cls.__name__} grew a liveness probe; _transport_dead can use it now"
-        )
+        assert not hasattr(
+            transport, "_is_session_dead"
+        ), f"{cls.__name__} grew a liveness probe; _transport_dead can use it now"
 
 
 def test_the_installed_fastmcp_meets_the_declared_floor():
