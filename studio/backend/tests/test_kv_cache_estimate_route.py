@@ -288,6 +288,46 @@ class TestDrafterDiscoveryMatchesTheLoader:
         got, _ = models_routes._resolve_mtp_drafter(str(main))
         assert got == str(full)
 
+    def test_nested_fallback_is_skipped_when_the_target_carries_its_own_head(self, tmp_path):
+        """Qwen3.8-27B ships an MTP/ copy for the four quants whose head was
+        dropped and bakes the head into the other 20. llama.cpp prefers a -md
+        drafter over an embedded head, so pricing the sidecar for a quant that
+        has its own would reserve for a file the load will not open."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(
+            snap / "model-Q4_K_M.gguf", {**_MLA_NO_HEAD, "nextn_predict_layers": 1}
+        )
+        _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, size = models_routes._resolve_mtp_drafter(str(main))
+        assert got is None, f"billed a sidecar the load will not fetch: {got} ({size} bytes)"
+
+    def test_a_zero_head_count_still_takes_the_nested_fallback(self, tmp_path):
+        """unsloth/Qwen3.8-27B-GGUF writes nextn_predict_layers on every quant and
+        sets it to 0 on the four with no head, so presence of the key is not the
+        test -- its value is."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(
+            snap / "model-UD-IQ1_S.gguf", {**_MLA_NO_HEAD, "nextn_predict_layers": 0}
+        )
+        nested = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(nested)
+
+    def test_a_root_mirror_is_taken_even_with_an_embedded_head(self, tmp_path):
+        """Only the nested fallback is gated. Publishing a root mtp- companion
+        beside a model that has its own head is a deliberate statement that the
+        companion is the one to use."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(
+            snap / "model-Q4_K_M.gguf", {**_MLA_NO_HEAD, "nextn_predict_layers": 1}
+        )
+        companion = _write_gguf(snap / "mtp-model.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(companion)
+
     def test_root_companion_wins_over_a_nested_copy(self, tmp_path):
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD)

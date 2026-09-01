@@ -2758,10 +2758,13 @@ def _pick_dspark(candidates: list[str]) -> Optional[str]:
     return files[0] if files else None
 
 
-def _pick_mtp(candidates: list[str]) -> Optional[str]:
+def _pick_mtp(candidates: list[str], *, allow_nested: bool = True) -> Optional[str]:
     """The MTP drafter a listing offers, or None. Module level for the same reason
     ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
-    and ``/kv-cache-estimate`` has to price the drafter the launch will open."""
+    and ``/kv-cache-estimate`` has to price the drafter the launch will open.
+
+    ``allow_nested=False`` restricts the answer to a root mirror, for a target that
+    already carries the head in its own file -- see ``_pick_mtp_root_only``."""
     from hub.utils.gguf import drop_shadowed_appledouble_names
     from utils.models.drafters.preference import mtp_preference_key
 
@@ -2782,6 +2785,8 @@ def _pick_mtp(candidates: list[str]) -> Optional[str]:
     # user holding a cached copy gets speculation and a fresh install does not.
     # Matched by drafter kind rather than by prefix, since the copies are not named
     # alike across repos, which means AppleDouble shadows have to be dropped here.
+    if not allow_nested:
+        return None
     nested = sorted(
         (
             name
@@ -2791,6 +2796,18 @@ def _pick_mtp(candidates: list[str]) -> Optional[str]:
         key = mtp_preference_key,
     )
     return nested[0] if nested else None
+
+
+def _pick_mtp_root_only(candidates: list[str]) -> Optional[str]:
+    """``_pick_mtp`` for a target whose own file already carries the MTP head.
+
+    llama.cpp loads the draft model whenever one is passed, so a sidecar displaces
+    the embedded head rather than supplementing it. On Qwen3.8-27B UD-Q4_K_XL the
+    two draft identically -- 143 of 223 accepted and byte-identical output on both
+    -- so fetching the 1.37 GB ``MTP/`` copy buys nothing the file already has.
+    A root mirror is still taken: publishing one next to a model with its own head
+    is a deliberate statement that the mirror is the one to use."""
+    return _pick_mtp(candidates, allow_nested = False)
 
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -12453,6 +12470,27 @@ class LlamaCppBackend:
         probe._read_gguf_metadata(gguf_path)
         return probe._is_diffusion
 
+    @classmethod
+    def _gguf_path_has_embedded_mtp(cls, gguf_path: str) -> bool:
+        """Does this GGUF carry its own MTP head? Same probe-instance trick as
+        ``_gguf_path_is_diffusion``: this runs before the load reads the model's
+        metadata into ``self``, and must not overwrite the live model's.
+
+        The key alone is not the answer -- unsloth/Qwen3.8-27B-GGUF writes
+        ``qwen35.nextn_predict_layers`` on every quant and sets it to 0 on the four
+        whose head was dropped -- which is why this reads the value, as every other
+        embedded-head test in this file does. Fails open as absent: an unreadable
+        header must not suppress the sidecar a repo publishes precisely because its
+        smaller quants have no head."""
+        try:
+            probe = object.__new__(cls)
+            probe._model_identifier = "mtp-head-probe"
+            probe._read_gguf_metadata(gguf_path)
+            return bool(probe._nextn_predict_layers)
+        except Exception as e:
+            logger.debug("Embedded MTP head probe failed for %s: %s", gguf_path, e)
+            return False
+
     def _reject_vulkan_diffusion_gpu_ids_before_teardown(
         self, gguf_path: str, model_identifier: str
     ) -> None:
@@ -13909,11 +13947,15 @@ class LlamaCppBackend:
         hf_repo: str,
         *,
         cache_dir: Optional[str] = None,
+        allow_nested: bool = True,
     ) -> Optional[str]:
         """A drafter already in this repo's local HF cache, reused offline when a
         fresh copy can't be fetched. Prefers a repo-root ``mtp-*.gguf`` across all
         cached snapshots; else an existing ``MTP/`` copy (any precision -- the
-        target verifies every drafted token). None if none is cached."""
+        target verifies every drafted token). None if none is cached.
+
+        ``allow_nested=False`` drops the ``MTP/`` half, so a target carrying its own
+        head resolves the same way offline as online (``_pick_mtp_root_only``)."""
         try:
             from utils.models.model_config import _iter_hf_cache_snapshots
 
@@ -13932,7 +13974,7 @@ class LlamaCppBackend:
                         (roots if "/" not in f else subdirs).append(snap / f)
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.
-            for cand in roots + subdirs:
+            for cand in (roots + subdirs if allow_nested else roots):
                 if cand.is_file():
                     return str(cand)
         except Exception as e:
@@ -13946,6 +13988,7 @@ class LlamaCppBackend:
         hf_token: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
+        allow_nested: bool = True,
     ) -> Optional[str]:
         """Download the separate MTP drafter (speculative head) from a GGUF repo.
 
@@ -13955,14 +13998,20 @@ class LlamaCppBackend:
         a repo that publishes no root mirror, as Qwen3.8-Flash-Next and
         Qwen3.8-27B do. Repos that bake the MTP head into the main GGUF ship
         neither and this returns None. Returns the local path, or None.
+
+        ``allow_nested=False`` skips the ``MTP/`` fallback, for a target whose own
+        file carries the head: a repo can hold both, as Qwen3.8-27B does for 20 of
+        its 24 quants, and there the sidecar only displaces what is already loaded.
         """
 
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         if cancel_event.is_set():
             return None
 
+        pick = _pick_mtp if allow_nested else _pick_mtp_root_only
+
         if near_path:
-            cached = _companion_snapshot_sibling(near_path, _pick_mtp)
+            cached = _companion_snapshot_sibling(near_path, pick)
             if cached:
                 logger.info("Reusing cached MTP drafter: %s", cached)
                 return cached
@@ -13975,6 +14024,7 @@ class LlamaCppBackend:
             cached = self._cached_repo_mtp_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
+                allow_nested = allow_nested,
             )
             if cached:
                 logger.info(f"Reusing cached MTP drafter (offline): {cached}")
@@ -13983,7 +14033,7 @@ class LlamaCppBackend:
         return self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_mtp,
+            pick = pick,
             label = "MTP drafter",
             cancel_event = cancel_event,
             near_path = near_path,
@@ -17797,12 +17847,21 @@ class LlamaCppBackend:
                             near_path = model_path,
                         )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
-                    # the requested spec mode can use it. Repos with the head
-                    # baked into the main GGUF (Qwen) have no mtp- sibling and
-                    # this no-ops, so the size gate stays out of it: a separate
-                    # drafter speeds up even sub-3B (Gemma E2B), and the resolver
-                    # below decides the final emission. Skipped only when the
-                    # user disabled MTP or drives --spec-type manually.
+                    # the requested spec mode can use it. The size gate stays out
+                    # of it: a separate drafter speeds up even sub-3B (Gemma E2B),
+                    # and the resolver below decides the final emission. Skipped
+                    # only when the user disabled MTP or drives --spec-type
+                    # manually.
+                    #
+                    # A repo can hold both forms. Qwen3.8-27B bakes the head into
+                    # 20 of its 24 quants and publishes an MTP/ copy for the four
+                    # aggressive ones that dropped it, so the nested fallback is
+                    # gated on this file's own header: llama.cpp prefers a -md
+                    # drafter over an embedded head, and on UD-Q4_K_XL the two
+                    # accept identically (143 of 223) for byte-identical output,
+                    # so fetching 1.37 GB would only displace what is already
+                    # loaded. Read here rather than from self, whose metadata is
+                    # this load's only below.
                     if (
                         not mtp_draft_path
                         and _spec_canon in ("auto", "mtp", "mtp+ngram")
@@ -17813,6 +17872,7 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                             cancel_event = download_cancel_event,
                             near_path = model_path,
+                            allow_nested = not self._gguf_path_has_embedded_mtp(model_path),
                         )
                     # "auto" is included: DSpark is the default whenever the repo
                     # ships a sidecar. Repos without one no-op, exactly like the
