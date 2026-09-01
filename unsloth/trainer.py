@@ -715,6 +715,7 @@ def _route_unknown_trainer_kwargs(
     config_class,
     unknown,
     notify = None,
+    already_supplied = None,
 ):
     """Sort keyword names that neither the trainer nor the config declares.
 
@@ -732,6 +733,16 @@ def _route_unknown_trainer_kwargs(
       * a retired field is reported by name with TRL's advice and dropped,
       * a name TRL never had is returned for the trainer call, where normal
         unexpected-keyword handling reports it.
+
+    `already_supplied` names the config keywords the caller passed under their
+    current spelling. A rename must not overwrite one of those: the caller who
+    wrote the new name chose that value deliberately. Same rule as
+    `filter_config_init_kwargs`, decided on better evidence -- that function is
+    handed every mirrored parameter of the generated config, so it cannot see
+    which the caller typed and falls back to comparing against the declared
+    default; here `kwargs` holds only what was actually written, so presence is
+    proof. The two therefore differ on a new name set to its own default value,
+    where only this path can tell that apart from not set at all.
 
     Returns `(to_config, to_trainer)`.
     """
@@ -770,6 +781,13 @@ def _route_unknown_trainer_kwargs(
         if verdict == "accepted":
             to_config[key] = value
         elif verdict == "rename":
+            if already_supplied and detail in already_supplied:
+                notify(
+                    f"Unsloth: `{key}` was renamed to `{detail}` by {rename_source(key)} and "
+                    f"this {config_name} accepts only the new name. You set both, so `{key}` "
+                    f"is ignored and your `{detail}` is kept."
+                )
+                continue
             to_config[detail] = value
             notify(
                 f"Unsloth: {rename_source(key)} renamed `{key}` to `{detail}`. "
@@ -846,6 +864,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             migrated, unroutable = _route_unknown_trainer_kwargs(
                 config_class,
                 unknown_kwargs,
+                already_supplied = set(additional_config_kwargs),
             )
             additional_config_kwargs.update(migrated)
             trainer_kwargs.update(unroutable)

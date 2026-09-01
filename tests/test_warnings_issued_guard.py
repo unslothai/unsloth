@@ -517,6 +517,42 @@ def test_a_field_trl_renamed_is_carried_across_to_the_new_name(tmp_path, capsys)
     assert "use_liger_kernel" in capsys.readouterr().out
 
 
+def test_the_explicitly_supplied_new_name_beats_the_renamed_old_one(tmp_path, capsys):
+    """Setting both names must not let the migrated legacy value win.
+
+    `filter_config_init_kwargs` already arbitrates this for a config constructor
+    (tests/test_rl_config_compat.py::test_an_explicitly_set_new_name_beats_the_old_one):
+    the name the caller wrote under its current spelling is the one they chose.
+    Migrating on top of it here would quietly train with the opposite setting,
+    and would make the two paths disagree.
+
+    Both branches of the wrapper are checked: the caller's own config object,
+    and the one rebuilt from `config_dict` when `args` is not a TrainingArguments.
+    """
+    Trainer, config_class = _wrapped_recording()
+    fields = {f.name for f in dataclasses.fields(config_class)}
+    if "use_liger_kernel" not in fields or "use_liger_loss" in fields:
+        pytest.skip("installed trl does not show this rename on SFTConfig")
+
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+    trainer = Trainer(
+        model = _Bare(), args = config, use_liger_loss = False, use_liger_kernel = True
+    )
+    assert trainer.args.use_liger_kernel is True
+    assert "is ignored" in capsys.readouterr().out
+
+    Rebuilt, _ = _wrapped_recording()
+    rebuilt = Rebuilt(
+        model = _Bare(),
+        args = None,
+        output_dir = str(tmp_path),
+        report_to = [],
+        use_liger_loss = False,
+        use_liger_kernel = True,
+    )
+    assert rebuilt.args.use_liger_kernel is True
+
+
 def test_a_name_trl_never_had_still_raises(tmp_path):
     """The retirement table must not become a way to swallow typos."""
     Trainer, config_class = _wrapped_recording()
