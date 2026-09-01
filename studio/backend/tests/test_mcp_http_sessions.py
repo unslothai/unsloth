@@ -909,6 +909,42 @@ def test_the_queue_of_pending_closes_is_bounded(monkeypatch, clients):
                 t.join(5)
 
 
+def test_closing_many_sessions_does_not_spawn_a_thread_each(monkeypatch, clients):
+    """The cache is allowed to overshoot _MAX_SESSIONS while every session in it
+    is busy, so the list close_mcp_sessions is handed has no fixed length, and a
+    shutdown is the worst moment to ask for an unbounded number of threads."""
+    monkeypatch.setattr(mcp_client, "_MAX_CLOSE_THREADS", 3)
+    release = threading.Event()
+    live = []
+    lock = threading.Lock()
+
+    class HangingExit(RecordingClient):
+        async def __aexit__(self, *exc):
+            with lock:
+                live.append(len([t for t in threading.enumerate() if t.name == "mcp-close"]))
+            await asyncio.get_running_loop().run_in_executor(None, release.wait, 30)
+            return await super().__aexit__(*exc)
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: HangingExit(url, headers, use_oauth),
+    )
+    for i in range(9):
+        _call(HTTP_URL, scope = f"chat-{i}")
+    closer = threading.Thread(target = close_mcp_sessions)
+    closer.start()
+    deadline = time.monotonic() + 10.0
+    while len(live) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        assert max(live) <= 3, f"one close thread per session: {live}"
+        assert len(live) == 3, f"only {len(live)} closes started; the fan-out stalled"
+    finally:
+        release.set()
+        closer.join(60)
+
+
 def test_a_slow_probe_still_condemns_a_dirty_session(monkeypatch, clients):
     """The counterpart that must not change: a session whose last call was
     abandoned is under suspicion, so silence within the window condemns it."""

@@ -854,6 +854,8 @@ _mcp_cleanup_queue: list = []
 # Depth past which an evicting caller closes the overflow itself. See
 # _close_detached.
 _MAX_PENDING_CLOSES = 8
+# How wide close_mcp_sessions fans out. See _close_all.
+_MAX_CLOSE_THREADS = 16
 _mcp_cleanup_worker: Optional[threading.Thread] = None
 # close_mcp_sessions() can only close sessions already published in _mcp_sessions;
 # one still inside connect() would be missed and then cached already
@@ -1149,31 +1151,45 @@ def _close_all(sessions: list) -> None:
     the thread join before the next one starts. This runs on the request thread
     when a server is edited or deleted, and a popular HTTP server now holds a
     session per chat rather than one overall, so a serial close could stall that
-    route for minutes."""
+    route for minutes.
+
+    Fanned out _MAX_CLOSE_THREADS wide rather than one thread per session. The
+    cache is allowed to overshoot _MAX_SESSIONS while every session in it is
+    busy, so the list handed here has no fixed length, and a shutdown is the
+    worst moment to ask the process for an unbounded number of threads."""
     if not sessions:
         return
     if len(sessions) == 1:
         sessions[0].close()
         return
 
-    def _close(session) -> None:
-        try:
-            session.close()
-        except Exception:  # noqa: BLE001
-            logger.exception("Closing an MCP session failed")
+    pending = list(sessions)
+    pending_lock = threading.Lock()
+
+    def _drain() -> None:
+        while True:
+            with pending_lock:
+                if not pending:
+                    return
+                session = pending.pop()
+            _close_quietly(session)
 
     # Bare threads, not a ThreadPoolExecutor: this also runs as the atexit
     # handler, and Python shuts the executor machinery down before normal atexit
     # callbacks, so submitting there raises ("can't register atexit after
     # shutdown") and the whole cleanup aborts with stdio subprocesses still up.
+    width = min(len(pending), _MAX_CLOSE_THREADS)
     threads = [
-        threading.Thread(target = _close, args = (s,), name = "mcp-close", daemon = True)
-        for s in sessions
+        threading.Thread(target = _drain, name = "mcp-close", daemon = True)
+        for _ in range(width)
     ]
     for thread in threads:
         thread.start()
+    # Each worker may take several sessions in turn, so the wait scales with the
+    # rounds it has to make rather than with a single close.
+    rounds = -(-len(sessions) // width)
     for thread in threads:
-        thread.join(_SESSION_CLOSE_TIMEOUT + 5.0)
+        thread.join(rounds * (_SESSION_CLOSE_TIMEOUT + 5.0))
 
 
 def _close_detached(sessions: list) -> None:
