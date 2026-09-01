@@ -1342,8 +1342,7 @@ class InferenceBackend:
             # path always fills system_prompt and leaves no system turn here, so this cannot
             # fire on it.
             folded_system = not system_prompt and any(
-                isinstance(m, dict) and m.get("role") in ("system", "developer")
-                for m in messages
+                isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages
             )
             if bool(tools) or has_tool_history or folded_system:
                 # Keep the whole conversation and attach the image to the turn it belongs to,
