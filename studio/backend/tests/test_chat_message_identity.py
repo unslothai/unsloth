@@ -135,13 +135,18 @@ def test_sync_keeps_every_message_and_its_links(db):
 
 
 def _regenerate_sequence(regenerations = 3):
-    """A regenerate adds an assistant sibling and nothing else (MessageRuntime.reload)."""
+    """The rows a regenerate writes: one assistant sibling per attempt, no new user turn.
+
+    MessageRuntime.reload calls startRun({ parentId }), so history.append never runs for the
+    user turn. That runtime path is guarded in studio/frontend/tests/chat-user-turn-identity
+    .test.ts; these tests only cover what studio_db does with the rows it is handed.
+    """
     yield _msg("u-doc", "user", None, "summarise the attached spec", 1000, _doc())
     for attempt in range(regenerations + 1):
         yield _msg(f"a-{attempt}", "assistant", "u-doc", f"attempt {attempt}", 1100 + attempt)
 
 
-def test_stop_then_regenerate_does_not_multiply_the_user_turn(db):
+def test_storing_a_regenerate_sequence_keeps_one_user_turn(db):
     for record in _regenerate_sequence():
         db.upsert_chat_message(record)
 
@@ -151,14 +156,14 @@ def test_stop_then_regenerate_does_not_multiply_the_user_turn(db):
     assert len(user_rows[0]["attachments"]) == 1
 
 
-def test_stop_then_regenerate_stores_the_document_once(db):
+def test_storing_a_regenerate_sequence_keeps_one_copy_of_the_document(db):
     for record in _regenerate_sequence(regenerations = 5):
         db.upsert_chat_message(record)
 
     assert len(studio_db.list_chat_attachments()) == 1
 
 
-def test_regenerating_through_sync_does_not_multiply_the_user_turn(db):
+def test_syncing_a_regenerate_sequence_keeps_one_user_turn(db):
     """The same sequence via the whole-thread write."""
     records = list(_regenerate_sequence())
     for end in range(1, len(records) + 1):

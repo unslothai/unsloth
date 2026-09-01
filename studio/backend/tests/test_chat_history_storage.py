@@ -1201,6 +1201,16 @@ def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch)
         "createdAt": 1000,
     }
     studio_db.upsert_chat_message(msg1)
+    studio_db.upsert_chat_message(
+        {
+            "id": "a1",
+            "threadId": "thread-1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hi"}],
+            "createdAt": 1500,
+        }
+    )
 
     # Second turn with identical text & attachments, but distinct message ID
     msg2 = {
@@ -1217,8 +1227,7 @@ def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch)
 
     # Both messages must persist separately
     messages = studio_db.list_chat_messages("thread-1")
-    assert len(messages) == 2
-    assert {m["id"] for m in messages} == {"u1", "u2"}
+    assert {m["id"] for m in messages} == {"u1", "a1", "u2"}
 
 
 def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, monkeypatch):

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A user turn is identified by its id, never by its text (#9984).
+// A user turn is identified by its id, never by its text (#9984). Neither function here is
+// exported and both files pull in React, so these assert on structure rather than behaviour:
+// they must fail for ANY reinserted dedupe, not just one that reuses the old names.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -28,30 +30,35 @@ const outboundPrune = slice(
   "const surviving: RunMessage[] = [];",
   "return surviving;",
 );
+const historyLoad = slice(
+  runtimeProvider,
+  "let msgs: MessageRecord[];",
+  "const hasParentIds",
+);
 const historyAppend = slice(
   runtimeProvider,
   "append({ parentId, message }: ExportedMessageRepositoryItem) {",
   "return trackHistoryAppend(",
 );
 
-test("the outbound prune drops turns by what they are, not by what they say", () => {
-  // collectTextParts reads text only: matching on it drops a turn's attachments off the wire.
-  assert.doesNotMatch(outboundPrune, /collectTextParts/);
+test("the outbound prune keeps every turn the abandoned-turn guard did not drop", () => {
+  // The guard's `continue` runs straight into the push, so there is nowhere for a content
+  // comparison to live. Renaming a helper or inlining JSON.stringify cannot get past this.
+  assert.match(
+    outboundPrune,
+    /if \(refused \|\| abandoned\[index\]\) \{[\s\S]*?\n {6}continue;\n {4}\}\n {4}surviving\.push\(message\);\n {2}\}/,
+  );
 });
 
 test("the outbound prune pops a prompt only for the abandoned turn it belongs to", () => {
   // A second, unguarded pop would delete a real prompt from the request.
   assert.equal(outboundPrune.match(/surviving\.pop\(\)/g)?.length, 1);
-  assert.match(
-    outboundPrune,
-    /if \(refused \|\| abandoned\[index\]\) \{[\s\S]*?surviving\.pop\(\);[\s\S]*?continue;/,
-  );
 });
 
 test("a message is persisted under the id the runtime gave it", () => {
   // A different id leaves the next assistant parented to a row nothing wrote.
   assert.match(historyAppend, /id: message\.id,/);
-  assert.doesNotMatch(historyAppend, /finalMessageId/);
+  assert.doesNotMatch(historyAppend, /\bid:\s*(?!message\.id\b)\w+,/);
 });
 
 test("appending a message does not read the whole thread", () => {
@@ -59,8 +66,12 @@ test("appending a message does not read the whole thread", () => {
   assert.doesNotMatch(historyAppend, /listStoredChatMessages/);
 });
 
-test("loading a thread returns every stored message", () => {
-  // A dangling parent makes the whole thread unimportable, not just that turn.
-  assert.doesNotMatch(runtimeProvider, /seenUserTurns/);
-  assert.doesNotMatch(runtimeProvider, /dedupedMsgs/);
+test("loading a thread passes on every stored message", () => {
+  // msgs is assigned once per branch and never rewritten, so nothing can filter the tree
+  // before it is rebuilt. A dangling parent makes the whole thread unimportable.
+  assert.deepEqual(
+    historyLoad.match(/\bmsgs\s*=\s*[^=][^;\n]*/g),
+    ["msgs = snapshot.messages", "msgs = []"],
+  );
+  assert.doesNotMatch(historyLoad, /\bmsgs\.filter\(/);
 });
