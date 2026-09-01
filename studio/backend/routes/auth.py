@@ -474,10 +474,16 @@ def auth_status() -> AuthStatusResponse:
 
 
 @router.get("/me", response_model = CurrentUserResponse)
-def current_user(current_subject: str = Depends(get_current_subject)) -> CurrentUserResponse:
+def current_user(
+    # Reachable DURING a forced change, unlike the rest of the API. It answers only
+    # "who am I", which the holder of the token already knows, and it is where a
+    # signed-in client learns that its own change is still outstanding.
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+) -> CurrentUserResponse:
     return CurrentUserResponse(
         username = current_subject,
         is_admin = storage.is_admin(current_subject),
+        must_change_password = storage.requires_password_change(current_subject),
     )
 
 

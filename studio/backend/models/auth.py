@@ -55,6 +55,10 @@ class CurrentUserResponse(BaseModel):
 
     username: str
     is_admin: bool
+    # THIS account's requirement, which /auth/status cannot answer: that route is
+    # unauthenticated and describes the installation owner, so a client with a live
+    # session has nowhere else to read its own forced-change state from.
+    must_change_password: bool = False
 
 
 class ManagedUserResponse(BaseModel):

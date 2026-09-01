@@ -91,26 +91,44 @@ async function isPasswordChangeRequiredResponse(
   }
 }
 
-async function redirectToAuth(): Promise<void> {
+/**
+ * ``ownRequirement`` means the server just told THIS account to change its
+ * password, so no lookup is needed and none is made. Without it the caller has
+ * no session left and /status, which describes the installation owner, is the
+ * only thing there is to go on.
+ */
+async function redirectToAuth(ownRequirement = false): Promise<void> {
   if (isRedirecting) return;
   isRedirecting = true;
 
   let target = "/login";
-  try {
-    const res = await fetch(apiUrl("/api/auth/status"));
-    if (res.ok) {
-      const data = (await res.json()) as { requires_password_change: boolean };
-      // /status is installation-owner bootstrap state, not the current
-      // account's state. Preserve a managed account's token-derived flag.
-      if (data.requires_password_change && !mustChangePassword()) {
-        setMustChangePassword(true);
+  if (ownRequirement) {
+    setMustChangePassword(true);
+    target = "/change-password";
+  } else {
+    try {
+      const res = await fetch(apiUrl("/api/auth/status"));
+      if (res.ok) {
+        const data = (await res.json()) as { requires_password_change: boolean };
+        // /status is installation-owner bootstrap state, not the current
+        // account's state, so it is only adopted once this session is gone.
+        // Adopted while a managed account still held a token, the owner's
+        // recovery pinned that account to /change-password even after it had
+        // changed its own password, until the owner finished.
+        if (
+          data.requires_password_change &&
+          !mustChangePassword() &&
+          !getAuthToken()
+        ) {
+          setMustChangePassword(true);
+        }
+        if (data.requires_password_change || mustChangePassword()) {
+          target = "/change-password";
+        }
       }
-      if (data.requires_password_change || mustChangePassword()) {
-        target = "/change-password";
-      }
+    } catch {
+      // Fall through to /login on error
     }
-  } catch {
-    // Fall through to /login on error
   }
 
   if (window.location.pathname === target) {
@@ -263,7 +281,7 @@ export async function authFetch(
         )) ?? response
       );
     }
-    void redirectToAuth();
+    void redirectToAuth(true);
     return response;
   }
   if (response.status !== 401) return response;
@@ -297,7 +315,7 @@ export async function authFetch(
         )) ?? response
       );
     }
-    void redirectToAuth();
+    void redirectToAuth(true);
     return response;
   }
 

@@ -2234,3 +2234,122 @@ def test_a_run_id_registered_to_one_account_is_not_owned_by_another():
     # cancellable by the owner, which is what the previous default did.
     assert supervisor.owns_run("unknown-run", "unsloth") is True
     assert supervisor.owns_run("unknown-run", "bob") is False
+
+
+def test_the_diffusion_load_worker_runs_in_the_requesting_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    backend._lock = threading.RLock()
+    backend._loading = None
+    backend._load_token = 0
+    backend._cancel_event = threading.Event()
+
+    class _Fam:
+        name = "flux"
+        base_repo = "base/repo"
+
+    monkeypatch.setattr(
+        DiffusionBackend, "validate_load_request", lambda self, *a, **k: _Fam()
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "assert_precision_available", lambda self, *a, **k: None
+    )
+    monkeypatch.setattr(DiffusionBackend, "status", lambda self: {})
+
+    seen: dict[str, object] = {}
+    done = threading.Event()
+
+    def _record(self, **kwargs):
+        # loras_dir() is workspace-dependent, so the subject the worker sees decides
+        # which account's adapters the load-time bake resolves against.
+        seen["subject"] = current_workspace_subject()
+        seen["loras"] = kwargs.get("loras")
+        done.set()
+
+    monkeypatch.setattr(DiffusionBackend, "_run_load", _record)
+
+    token = _bind("alice")
+    try:
+        backend.begin_load("some/repo", loras = [("alice-only", 1.0)])
+    finally:
+        reset_workspace_subject(token)
+
+    assert done.wait(timeout = 5)
+    assert seen["subject"] == "alice"
+    assert seen["loras"] == [("alice-only", 1.0)]
+
+
+def test_me_reports_this_accounts_own_password_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth" / "auth.db")
+    monkeypatch.setattr(
+        auth_storage,
+        "_BOOTSTRAP_PW_PATH",
+        tmp_path / "auth" / ".bootstrap_password",
+    )
+    auth_storage.create_initial_user(
+        "unsloth",
+        "owner-password",
+        secrets.token_urlsafe(64),
+        is_admin = True,
+    )
+    app = FastAPI()
+    app.include_router(auth_routes.router, prefix = "/api/auth")
+
+    with TestClient(app) as client:
+        owner_headers = {
+            "Authorization": "Bearer "
+            + client.post(
+                "/api/auth/login",
+                json = {"username": "unsloth", "password": "owner-password"},
+            ).json()["access_token"]
+        }
+        setup_code = client.post(
+            "/api/auth/users", headers = owner_headers, json = {"username": "alice"}
+        ).json()["setup_code"]
+        alice_headers = {
+            "Authorization": "Bearer "
+            + client.post(
+                "/api/auth/login",
+                json = {"username": "alice", "password": setup_code},
+            ).json()["access_token"]
+        }
+
+        # Reachable DURING the forced change, and describing the CALLER: /auth/status
+        # is unauthenticated and answers for the owner, so a signed-in managed account
+        # has nowhere else to read its own requirement from, and a client that used
+        # /status instead followed the owner's recovery into a redirect loop.
+        me = client.get("/api/auth/me", headers = alice_headers)
+        assert me.status_code == 200
+        assert me.json() == {
+            "username": "alice",
+            "is_admin": False,
+            "must_change_password": True,
+        }
+
+        owner_me = client.get("/api/auth/me", headers = owner_headers)
+        assert owner_me.json()["must_change_password"] is False
+
+        changed = client.post(
+            "/api/auth/change-password",
+            headers = alice_headers,
+            json = {
+                "current_password": setup_code,
+                "new_password": "alice-permanent-password",
+            },
+        )
+        assert changed.status_code == 200
+        settled_headers = {
+            "Authorization": f"Bearer {changed.json()['access_token']}"
+        }
+        assert (
+            client.get("/api/auth/me", headers = settled_headers).json()[
+                "must_change_password"
+            ]
+            is False
+        )
