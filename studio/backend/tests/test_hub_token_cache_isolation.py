@@ -22,9 +22,7 @@ from hub.utils.inventory_scan import token_fingerprint
 
 
 def _sibling(name: str, size: int, sha: str):
-    return SimpleNamespace(
-        rfilename = name, size = size, lfs = SimpleNamespace(sha256 = sha)
-    )
+    return SimpleNamespace(rfilename = name, size = size, lfs = SimpleNamespace(sha256 = sha))
 
 
 def _clear_dataset_caches():
@@ -108,9 +106,7 @@ def test_an_ambient_ui_entry_is_not_served_to_an_anonymous_caller(monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _api)
 
-    size, hashes = dataset_downloads.get_dataset_snapshot_metadata_cached(
-        "org/private-set", None
-    )
+    size, hashes = dataset_downloads.get_dataset_snapshot_metadata_cached("org/private-set", None)
     assert size == 4096 and "sha-private" in hashes
 
     anon = dataset_downloads.get_dataset_snapshot_metadata_cached("org/private-set", False)
@@ -127,18 +123,16 @@ def test_an_anonymous_denial_does_not_blank_a_later_ui_lookup(monkeypatch):
     calls: list = []
     _stub_dataset_info(monkeypatch, private = True, calls = calls)
 
-    refused = dataset_downloads.get_dataset_snapshot_metadata_cached(
-        "org/private-set", False
-    )
+    refused = dataset_downloads.get_dataset_snapshot_metadata_cached("org/private-set", False)
     assert refused == (0, frozenset())
 
     size, hashes = dataset_downloads.get_dataset_snapshot_metadata_cached(
         "org/private-set", "hf_operator_token"
     )
 
-    assert size == 4096 and "sha-private" in hashes, (
-        "an API key's anonymous denial poisoned the UI session's cache slot"
-    )
+    assert (
+        size == 4096 and "sha-private" in hashes
+    ), "an API key's anonymous denial poisoned the UI session's cache slot"
 
 
 def test_the_same_caller_still_gets_a_cache_hit(monkeypatch):
@@ -172,21 +166,20 @@ def test_concurrent_callers_of_different_credentials_do_not_share_one_scan():
             return f"result-for-{token}"
 
         async def _run(token):
-            return await gguf_variants._shared_variants_scan(
-                _key(token), lambda: _compute(token)
-            )
+            return await gguf_variants._shared_variants_scan(_key(token), lambda: _compute(token))
 
         return await asyncio.gather(_run(None), _run(False))
 
     ambient_result, anon_result = asyncio.run(_drive())
 
     assert ambient_result == "result-for-None"
-    assert anon_result == "result-for-False", (
-        "the anonymous caller received the scan computed under the ambient credential"
-    )
-    assert sorted(map(str, computed)) == ["False", "None"], (
-        "both credentials must run their own scan"
-    )
+    assert (
+        anon_result == "result-for-False"
+    ), "the anonymous caller received the scan computed under the ambient credential"
+    assert sorted(map(str, computed)) == [
+        "False",
+        "None",
+    ], "both credentials must run their own scan"
 
 
 def test_concurrent_callers_of_the_same_credential_still_dedupe():

@@ -102,7 +102,11 @@ def test_the_anonymous_identity_cannot_collide_with_a_token_digest():
 
 def test_a_fingerprint_never_carries_the_token():
     secret = "hf_supersecretvalue123"
-    for fingerprint in (token_fingerprint, capability_fingerprint, diffusion_compat._token_fingerprint):
+    for fingerprint in (
+        token_fingerprint,
+        capability_fingerprint,
+        diffusion_compat._token_fingerprint,
+    ):
         assert secret not in str(fingerprint(secret))
 
 
@@ -160,7 +164,11 @@ def test_capability_routes_answer_both_callers_without_a_server_error(monkeypatc
     """The blocker this file was written for: /check-vision 500ed for an API-key caller."""
     seen = {}
 
-    def _fake_is_vision_model(model_name, hf_token = None, **_kwargs):
+    def _fake_is_vision_model(
+        model_name,
+        hf_token = None,
+        **_kwargs,
+    ):
         seen["hf_token"] = hf_token
         return False
 
@@ -221,9 +229,9 @@ def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
             json = {"dataset_name": "org/private-seed"},
             headers = {"Authorization": "Bearer token"},
         )
-        assert seen["token"] is (False if via_api_key else None), (
-            "hardcoding allow_ambient_token=False takes the fallback away from the UI too"
-        )
+        assert seen["token"] is (
+            False if via_api_key else None
+        ), "hardcoding allow_ambient_token=False takes the fallback away from the UI too"
 
 
 def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):
@@ -315,19 +323,27 @@ def test_the_audio_tokenizer_fallback_does_not_reach_for_the_ambient_token(monke
     class _Resp:
         status_code = 404
         text = ""
-        def json(self): return {}
 
-    def _get(url, headers = None, timeout = None, **_kw):
+        def json(self):
+            return {}
+
+    def _get(
+        url,
+        headers = None,
+        timeout = None,
+        **_kw,
+    ):
         seen.setdefault("headers", headers)
         return _Resp()
 
     import requests
+
     monkeypatch.setattr(requests, "get", _get)
     mc._detect_audio_from_tokenizer("org/private", hf_token = False, revision = None)
 
-    assert "Authorization" not in (seen.get("headers") or {}), (
-        "an anonymous caller's tokenizer probe carried the operator's bearer"
-    )
+    assert "Authorization" not in (
+        seen.get("headers") or {}
+    ), "an anonymous caller's tokenizer probe carried the operator's bearer"
 
 
 def test_the_stt_sidecars_pass_the_sentinel_through_unchanged():
@@ -337,9 +353,9 @@ def test_the_stt_sidecars_pass_the_sentinel_through_unchanged():
     root = _Path(__file__).resolve().parent.parent / "core" / "inference"
     for name in ("stt_sidecar.py", "stt_ggml_sidecar.py", "stt_mtmd_sidecar.py"):
         source = (root / name).read_text()
-        assert "hf_token or None" not in source, (
-            f"{name} launders the sentinel into ambient access before the worker"
-        )
+        assert (
+            "hf_token or None" not in source
+        ), f"{name} launders the sentinel into ambient access before the worker"
 
 
 def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monkeypatch):
@@ -360,8 +376,9 @@ def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monk
         lambda *_a, **_k: called.__setitem__("processed", called["processed"] + 1)
         or "PROCESSED_ROWS",
     )
-    request = SimpleNamespace(dataset_name = "org/private", local_path = None,
-                              subset = None, train_split = "train")
+    request = SimpleNamespace(
+        dataset_name = "org/private", local_path = None, subset = None, train_split = "train"
+    )
 
     assert formatting._load_any_cached_hf_preview_slice(request, 5, None) == "ROWS"
     assert called["cache"] == 1
@@ -399,7 +416,6 @@ def test_the_config_inspection_target_still_uses_the_cache_for_the_ambient_calle
     cache branch ran rather than short-circuiting back to the bare repo id.
     """
     import fastapi
-
     with pytest.raises(fastapi.HTTPException):
         models_routes._model_config_inspection_target("org/private", True, None, hf_token)
 
@@ -444,9 +460,7 @@ def test_an_anonymous_caller_gets_no_template_from_the_offline_fallback(monkeypa
     from picker import service as picker_service
 
     monkeypatch.setattr(picker_service, "hf_env_offline", lambda: True)
-    monkeypatch.setattr(
-        picker_service, "resolve_cached_repo_id_case", lambda name: name
-    )
+    monkeypatch.setattr(picker_service, "resolve_cached_repo_id_case", lambda name: name)
 
     def _exploded(*args, **kwargs):
         raise AssertionError("the anonymous caller reached the hub fallback")
@@ -477,19 +491,15 @@ def test_an_anonymous_config_read_does_not_strip_the_process_credential(monkeypa
 
     import transformers
 
-    monkeypatch.setattr(
-        transformers.AutoConfig, "from_pretrained", staticmethod(_from_pretrained)
-    )
-    monkeypatch.setattr(
-        model_config_module, "active_hf_hub_cache", lambda: None, raising = False
-    )
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", staticmethod(_from_pretrained))
+    monkeypatch.setattr(model_config_module, "active_hf_hub_cache", lambda: None, raising = False)
 
     model_config_module.load_model_config("org/private", token = False)
 
     assert seen["token"] is False, "the sentinel was not passed through to the hub"
-    assert seen["ambient"] == "ambient-operator-token", (
-        "the anonymous probe removed a credential another thread was still using"
-    )
+    assert (
+        seen["ambient"] == "ambient-operator-token"
+    ), "the anonymous probe removed a credential another thread was still using"
 
 
 @pytest.mark.parametrize(
@@ -506,18 +516,19 @@ def test_the_config_probes_do_not_go_local_only_for_an_anonymous_caller(
     """
     seen = {}
 
-    def _is_vision(target, hf_token = None, local_files_only = False, **kwargs):
+    def _is_vision(
+        target,
+        hf_token = None,
+        local_files_only = False,
+        **kwargs,
+    ):
         seen["local_files_only"] = local_files_only
         return False
 
     monkeypatch.setattr(models_routes, "is_vision_model", _is_vision)
     monkeypatch.setattr(models_routes, "is_embedding_model", lambda *_a, **_k: False)
-    monkeypatch.setattr(
-        models_routes, "load_model_defaults", lambda *_a, **_k: {}, raising = False
-    )
-    monkeypatch.setattr(
-        models_routes, "resolve_cached_repo_id_case", lambda name: name
-    )
+    monkeypatch.setattr(models_routes, "load_model_defaults", lambda *_a, **_k: {}, raising = False)
+    monkeypatch.setattr(models_routes, "resolve_cached_repo_id_case", lambda name: name)
     monkeypatch.setattr(
         models_routes,
         "_model_config_inspection_target",
@@ -551,15 +562,11 @@ def test_offline_embedding_detection_does_not_read_the_cache_anonymously(monkeyp
     import utils.models.model_config as model_config_module
 
     monkeypatch.setattr(model_config_module, "is_local_path", lambda _n: False)
-    monkeypatch.setattr(
-        "utils.utils.hf_env_offline", lambda: True, raising = False
-    )
+    monkeypatch.setattr("utils.utils.hf_env_offline", lambda: True, raising = False)
 
     def _marker(_name):
         raise AssertionError("the anonymous caller read the embedding cache marker")
 
-    monkeypatch.setattr(
-        model_config_module, "_embedding_marker_in_hf_cache", _marker
-    )
+    monkeypatch.setattr(model_config_module, "_embedding_marker_in_hf_cache", _marker)
 
     assert model_config_module.is_embedding_model("org/private", hf_token = False) is False

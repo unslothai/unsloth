@@ -213,6 +213,7 @@ def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> 
         return explicit
     return False if is_anonymous(header_token) else None
 
+
 try:
     from utils.models import (
         scan_trained_models,

@@ -319,8 +319,7 @@ def _read_preview_rows_from_multi_files(
 
 @router.post("/seed/inspect", response_model = SeedInspectResponse)
 def inspect_seed_dataset(
-    payload: SeedInspectRequest,
-    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
+    payload: SeedInspectRequest, allow_ambient_token: bool = Depends(allow_ambient_hf_token)
 ) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
     if not dataset_name or dataset_name.count("/") < 1:
