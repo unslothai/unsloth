@@ -6395,8 +6395,15 @@ if [ -n "$_path_unsloth" ] && [ -x "$VENV_DIR/bin/python" ]; then
     }
     _installed_real=$(_canon "$_installed_bin")
     _path_real=$(_canon "$_path_unsloth")
+    # The portable shim is a wrapper script, not a symlink, so it resolves to
+    # itself rather than to the venv entry point. Without this it always looks
+    # like a foreign `unsloth` and the warning tells the user to avoid the shim
+    # this installer just told them to use.
+    _shim_real=""
+    [ "$_PORTABLE_MODE" = true ] && _shim_real=$(_canon "$_shim_path")
     if [ -n "$_installed_real" ] && [ -n "$_path_real" ] \
-        && [ "$_installed_real" != "$_path_real" ]; then
+        && [ "$_installed_real" != "$_path_real" ] \
+        && { [ -z "$_shim_real" ] || [ "$_shim_real" != "$_path_real" ]; }; then
         echo ""
         step "warning" "another 'unsloth' wins on PATH:" "$C_WARN"
         substep "$_path_unsloth"
