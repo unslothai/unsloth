@@ -624,3 +624,168 @@ test("an edit racing the conditional write does not strand local on legacy", asy
   assert.equal(after.params.presencePenalty, 1.5);
   assert.equal(after.params.minP, 0);
 });
+
+test("a decision field that sanitizes away blocks the write", async () => {
+  // An explicit null cannot be asserted as a value or as an absence, so the
+  // migration declines rather than writing unfenced.
+  resetHttp({ ...LEGACY_SETTINGS, activePresetSource: null });
+  seedActiveQwen();
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // The row itself, not the queue: an earlier case's debounced PUT can land in
+  // this window and says nothing about whether the migration wrote.
+  assert.equal(serverRow().presencePenalty, 0);
+  assert.equal(serverRow().minP, 0.01);
+});
+
+test("an empty model map still migrates despite sanitizing away", async () => {
+  // The companion to the case above: this one means what the migration already
+  // assumes, so it must not be treated as unfenceable.
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParams: {
+      temperature: 0.6,
+      topP: 0.95,
+      minP: 0.01,
+      presencePenalty: 0.0,
+    },
+    inferenceParamsByModel: {},
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: false,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: true,
+    settingsHydrated: false,
+  }));
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  const global = settingsHttp.settings.inferenceParams as Record<string, number>;
+  assert.equal(global.presencePenalty, 1.5);
+});
+
+test("a case-distinct external switch during the write is not migrated", async () => {
+  // Provider-qualified ids are opaque, so these are two different models even
+  // though normalizeModelIdentity would fold them together.
+  const upper = `external::vendor::${encodeURIComponent("Vendor/Qwen3.8-27B")}`;
+  const lower = `external::vendor::${encodeURIComponent("vendor/qwen3.8-27b")}`;
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: {
+      [upper]: LEGACY_SNAPSHOT,
+      [lower]: LEGACY_SNAPSHOT,
+    },
+  });
+  settingsHttp.beforeConditionalApply = () => {
+    useChatRuntimeStore.setState((state) => ({
+      params: { ...state.params, checkpoint: lower },
+    }));
+  };
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: upper },
+    paramsByModel: {
+      [upper]: { ...LEGACY_SNAPSHOT },
+      [lower]: { ...LEGACY_SNAPSHOT },
+    },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: true,
+    settingsHydrated: true,
+  }));
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // Only the row the write was for; the other model keeps its own values.
+  const lowerRow = useChatRuntimeStore.getState().paramsByModel[lower] as Record<
+    string,
+    number
+  >;
+  assert.equal(lowerRow.presencePenalty, 0);
+  assert.equal(lowerRow.minP, 0.01);
+});
+
+test("an earlier retry settling does not clear a later retry's barrier", async () => {
+  const QWEN36 = "unsloth/Qwen3.6-14B-GGUF";
+  const base = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: {
+      [QWEN38]: { ...LEGACY_SNAPSHOT },
+      [QWEN36]: { ...LEGACY_SNAPSHOT },
+    },
+  };
+  resetHttp({ ...base });
+  // Both confirming GETs are held, so the first retry finishes while the second
+  // is still deciding.
+  const holdGet = (): [Promise<Record<string, unknown>>, () => void] => {
+    let release: () => void = () => undefined;
+    const held = new Promise<Record<string, unknown>>((resolve) => {
+      release = () => resolve(settingsHttp.settings);
+    });
+    return [held, release];
+  };
+  const [firstGet, releaseFirst] = holdGet();
+  const [secondGet, releaseSecond] = holdGet();
+  settingsHttp.getResponses.push(firstGet, secondGet);
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: {
+      [QWEN38]: { ...LEGACY_SNAPSHOT },
+      [QWEN36]: { ...LEGACY_SNAPSHOT },
+    },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+
+  const first = useChatRuntimeStore.getState();
+  first.setParams(
+    { ...first.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN36 },
+  }));
+  const second = useChatRuntimeStore.getState();
+  second.setParams(
+    { ...second.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  releaseFirst();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  setTimeout(releaseSecond, 40);
+
+  // A barrier cleared by the wrong retry resolves here with the second row
+  // still legacy; the deadline keeps that a failure rather than a hang.
+  await Promise.race([
+    awaitPendingQwenDefaultsMigration(),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+  assert.equal(serverRow(QWEN36).presencePenalty, 1.5);
+});

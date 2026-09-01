@@ -356,6 +356,12 @@ function sameCheckpointIdentity(
   if (!(left && right)) {
     return false;
   }
+  // External ids are provider-qualified and opaque, so their case is the
+  // provider's business. normalizeModelIdentity would fold it, since it
+  // lowercases anything that is not a local path.
+  if (isExternalModelId(left) || isExternalModelId(right)) {
+    return left === right;
+  }
   return normalizeModelIdentity(left) === normalizeModelIdentity(right);
 }
 
@@ -3922,6 +3928,30 @@ const QWEN_MIGRATION_DECISION_FIELDS = [
 // and sanitizing drops keys that are still present, such as an empty
 // inferenceParamsByModel. Asserting absence from the sanitized copy would fence
 // a key the row really has and reject every migration on that install.
+/**
+ * True when a decision field is stored but sanitizes away, such as an explicit
+ * null. The compare-and-set asserts a value or an absence and neither fits: the
+ * sanitized copy has nothing to send, while the row still holds the key, so an
+ * absence assertion rejects every time. Decline rather than migrate unfenced.
+ * inferenceParamsByModel is exempt: an empty map sanitizes away and means what
+ * the migration already assumes, no per-model memory.
+ */
+function qwenMigrationHasUnfenceableField(
+  rawSettings: unknown,
+  sanitized: PersistedChatSettings,
+): boolean {
+  const raw =
+    typeof rawSettings === "object" && rawSettings !== null
+      ? (rawSettings as Record<string, unknown>)
+      : {};
+  return QWEN_MIGRATION_DECISION_FIELDS.some(
+    (field) =>
+      field !== "inferenceParamsByModel" &&
+      Object.hasOwn(raw, field) &&
+      sanitized[field] === undefined,
+  );
+}
+
 function qwenMigrationExpectedAbsent(
   rawSettings: unknown,
 ): Array<keyof PersistedChatSettings> {
@@ -4124,6 +4154,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       migrateOwnedGlobalAlongsideModelMemory,
     );
     if (!migration.patch) return;
+    if (qwenMigrationHasUnfenceableField(confirmedRaw, confirmed)) return;
     // Captured before the write: an edit landing while it is in flight is the
     // one case where the server takes the migration and local refuses it.
     const presetSourceBeforeWrite = activePresetSourceMutationVersion;
@@ -4213,12 +4244,18 @@ function scheduleLegacyQwenDefaultsRetry(
   // time, not from when the microtask runs, or a send landing in between would
   // find nothing to wait for and generate from the row just replayed.
   let settleMigration: () => void = () => undefined;
-  qwenMigrationInFlight = new Promise<void>((resolve) => {
+  // Only clears the pointer while it still refers to this retry: the scheduler
+  // frees its slot before the async work finishes, so a later retry can replace
+  // it, and clearing that would tell the send path nothing is pending.
+  const migration: Promise<void> = new Promise<void>((resolve) => {
     settleMigration = () => {
-      qwenMigrationInFlight = null;
+      if (qwenMigrationInFlight === migration) {
+        qwenMigrationInFlight = null;
+      }
       resolve();
     };
   });
+  qwenMigrationInFlight = migration;
   queueMicrotask(() => {
     const scheduledOwnedGlobalCheckpoint =
       qwenDefaultsRetryOwnedGlobalCheckpointConflicted
@@ -4546,6 +4583,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
                       ),
                   )
                 : unmigrated(confirmed);
+            // migrateLegacyQwenDefaults returns its own input when there is
+            // nothing to migrate, so a confirming read that finds no candidate
+            // would otherwise replace an unsaved legacy merge with server-only
+            // settings and drop every imported preference for the session. An
+            // unfenceable field declines the same way.
+            if (
+              migration.patch === null ||
+              qwenMigrationHasUnfenceableField(confirmedRaw, confirmed)
+            ) {
+              migration = unmigrated(confirmed);
+            }
             if (migration.patch) {
               const persisted = await savePersistedChatSettingsPatchIfCurrent(
                 confirmed,

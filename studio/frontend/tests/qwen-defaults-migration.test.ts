@@ -412,3 +412,18 @@ test("external model keys are matched exactly, not normalized", () => {
   assert.deepEqual(migrated.migratedModelIds, []);
   assert.equal(migrated.patch, null);
 });
+
+test("two aliases normalizing to the active checkpoint are left alone", () => {
+  // One holds the legacy snapshot, the other the user's own sampling. Picking
+  // by insertion order would serve generated defaults over the customization.
+  const settings = settingsFor(QWEN38.toLowerCase());
+  settings.inferenceParamsByModel = {
+    [QWEN38.toLowerCase()]: LEGACY_SNAPSHOT,
+    [QWEN38.toUpperCase()]: { ...LEGACY_SNAPSHOT, temperature: 0.31 },
+  };
+
+  const migrated = migrateLegacyQwenDefaults(settings, QWEN38, true);
+
+  assert.deepEqual(migrated.migratedModelIds, []);
+  assert.equal(migrated.patch, null);
+});

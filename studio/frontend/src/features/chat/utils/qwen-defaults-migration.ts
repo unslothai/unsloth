@@ -143,15 +143,20 @@ function migrateStoredModelDefaults(
   // buildExternalModelId, so it has no legacy spellings to reconcile.
   const activeIdentity = normalizeModelIdentity(activeCheckpoint);
   const activeIsExternal = isExternalModelId(activeCheckpoint);
+  // Only the sole alias is normalized, and that is checked rather than assumed:
+  // with two historical spellings one may hold the legacy snapshot and the
+  // other the user's own sampling, and picking by insertion order would serve
+  // generated defaults over a customization for the same model.
+  const aliases = activeIsExternal
+    ? []
+    : storedEntries.filter(
+        ([modelId]) =>
+          !isExternalModelId(modelId) &&
+          normalizeModelIdentity(modelId) === activeIdentity,
+      );
   const activeStoredId =
     storedEntries.find(([modelId]) => modelId === activeCheckpoint)?.[0] ??
-    (activeIsExternal
-      ? undefined
-      : storedEntries.find(
-          ([modelId]) =>
-            !isExternalModelId(modelId) &&
-            normalizeModelIdentity(modelId) === activeIdentity,
-        )?.[0]);
+    (aliases.length === 1 ? aliases[0][0] : undefined);
   for (const [modelId, entry] of storedEntries) {
     const isActiveCheckpoint = modelId === activeStoredId;
     if (
