@@ -1179,10 +1179,7 @@ def _close_all(sessions: list) -> None:
     # callbacks, so submitting there raises ("can't register atexit after
     # shutdown") and the whole cleanup aborts with stdio subprocesses still up.
     width = min(len(pending), _MAX_CLOSE_THREADS)
-    threads = [
-        threading.Thread(target = _drain, name = "mcp-close", daemon = True)
-        for _ in range(width)
-    ]
+    threads = [threading.Thread(target = _drain, name = "mcp-close", daemon = True) for _ in range(width)]
     for thread in threads:
         thread.start()
     # Each worker may take several sessions in turn, so the wait scales with the

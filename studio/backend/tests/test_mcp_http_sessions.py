@@ -52,7 +52,11 @@ def _protocol_error(code: int, message: str) -> Exception:
         return cls(ErrorData(code = code, message = message))
 
 
-def _settled(client, expected: int = 1, timeout: float = 10.0) -> int:
+def _settled(
+    client,
+    expected: int = 1,
+    timeout: float = 10.0,
+) -> int:
     """Wait out an asynchronous close.
 
     A discarded session is closed by the cleanup worker rather than on the
@@ -699,6 +703,7 @@ def test_a_json_rpc_error_keeps_the_chats_session(monkeypatch, clients):
     servers do. Receiving that reply proves the connection works, so discarding
     the session would throw away the chat's server-side state over a tool name
     the model got wrong."""
+
     class ProtocolError(RecordingClient):
         async def call_tool(
             self,
@@ -971,7 +976,11 @@ def test_a_failed_session_is_uncached_before_the_borrow_is_released(clients):
         seen["defunct"] = session.defunct
         return real_release(session, **kw)
 
-    async def _boom(name, args, raise_on_error = True):
+    async def _boom(
+        name,
+        args,
+        raise_on_error = True,
+    ):
         raise RuntimeError("stream closed")
 
     clients[0].call_tool = _boom

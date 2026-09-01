@@ -23,7 +23,11 @@ STDIO_URL = "npx fake-stateful-server"
 HTTP_URL = "https://mcp.example.test/mcp"
 
 
-def _settled(client, expected: int = 1, timeout: float = 10.0) -> int:
+def _settled(
+    client,
+    expected: int = 1,
+    timeout: float = 10.0,
+) -> int:
     """Wait out an asynchronous close.
 
     A discarded session is closed by the cleanup worker rather than on the

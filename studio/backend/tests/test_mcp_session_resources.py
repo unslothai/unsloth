@@ -34,7 +34,11 @@ HTTP_URL = "https://mcp.example.test/mcp"
 STDIO_URL = "npx fake-stateful-server"
 
 
-def _settled(client, expected: int = 1, timeout: float = 10.0) -> int:
+def _settled(
+    client,
+    expected: int = 1,
+    timeout: float = 10.0,
+) -> int:
     """Wait out an asynchronous close.
 
     A discarded session is closed by the cleanup worker rather than on the
@@ -129,9 +133,9 @@ def test_repeated_open_close_does_not_accumulate_threads(tiny):
     for i in range(12):
         call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")
         close_mcp_sessions()
-    assert _settle(
-        lambda: _session_threads() <= before
-    ), f"leaked threads after 12 cycles: {_session_threads()} vs {before}"
+    assert _settle(lambda: _session_threads() <= before), (
+        f"leaked threads after 12 cycles: {_session_threads()} vs {before}"
+    )
 
 
 def test_repeated_open_close_does_not_accumulate_descriptors(tiny):
