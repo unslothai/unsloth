@@ -192,7 +192,7 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, require_install_admin
 from hub.dependencies import get_hf_token
 
 try:
@@ -5357,9 +5357,15 @@ async def delete_cached_model(
     variant: Optional[str] = Body(None),
     cache_path: Optional[str] = Body(None),
     hf_token: Optional[str] = Depends(get_hf_token),
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(require_install_admin),
 ):
-    """Compatibility route backed by the shared multi-cache deletion service."""
+    """Compatibility route backed by the shared multi-cache deletion service.
+
+    Owner only. The model cache stayed installation-wide by design, so a delete
+    here discards whatever any account downloaded: gigabytes belonging to someone
+    else, possibly from a gated repo only they can fetch again. Reading the shared
+    cache is fine and stays open; destroying it is not per account.
+    """
     from hub.services.models import deletion
     return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
 

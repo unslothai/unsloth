@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth import storage as auth_storage
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, require_install_admin
 from routes import auth as auth_routes
 from routes import chat_history as chat_history_routes
 from storage import studio_db
@@ -1775,3 +1775,115 @@ def test_the_upload_cap_is_installation_wide(tmp_path: Path, monkeypatch: pytest
         assert upload_limits.get_upload_limit_mb() == 2048
     finally:
         reset_workspace_subject(token)
+
+
+def test_deleting_an_account_stops_the_jobs_it_owns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _auth_db(tmp_path, monkeypatch)
+    auth_storage.create_managed_user("casey")
+    stopped = []
+
+    class _Backend:
+        def is_training_active(self):
+            return True
+
+        def owns_workspace(self, subject):
+            return subject == "casey"
+
+        def stop_training(self, save = True):
+            stopped.append(("training", current_workspace_subject(), save))
+
+    class _Service:
+        def is_active(self):
+            return True
+
+        def owns_workspace(self, subject = None):
+            return subject == "casey"
+
+        def stop(self, save = True):
+            stopped.append(("diffusion", current_workspace_subject(), save))
+
+    class _Export:
+        def is_export_active(self):
+            return True
+
+        def owns_workspace(self, subject = None):
+            return subject == "casey"
+
+        def cancel_export(self):
+            stopped.append(("export", current_workspace_subject(), False))
+
+    import core.training.training as training_module
+    import core.training.diffusion_training_service as diffusion_module
+    import core.export as export_module
+
+    monkeypatch.setattr(training_module, "get_training_backend", lambda: _Backend())
+    monkeypatch.setattr(diffusion_module, "get_diffusion_training_service", lambda: _Service())
+    monkeypatch.setattr(export_module, "get_export_backend", lambda: _Export())
+
+    auth_storage.delete_managed_user("casey")
+    # Otherwise the worker outlives the row that authorised it: the owner's
+    # ownership guards hide it, and the deleted account cannot sign in to stop it.
+    assert [entry[0] for entry in stopped] == ["training", "diffusion", "export"]
+    # Stopped in the deleted account's own workspace, so each subsystem's
+    # per-workspace state is the one being torn down.
+    assert {entry[1] for entry in stopped} == {"casey"}
+
+
+def test_a_managed_account_cannot_migrate_the_owners_legacy_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from core.inference import tools
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sandboxes"))
+    legacy = tmp_path / "home" / "studio_sandbox"
+    session = legacy / "chat-1"
+    session.mkdir(parents = True)
+    (session / "owner-notes.txt").write_text("owner", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_legacy_sandbox_root", lambda: str(legacy))
+    monkeypatch.setattr(tools, "_legacy_sandbox_migrated", False)
+
+    token = _bind("alice")
+    try:
+        mine = Path(tools.sandbox_root())
+        # Session ids reach this path from the caller, so naming an owner session
+        # is not a secret; the move would both expose and destroy the original.
+        tools._migrate_one_legacy_session(str(mine), "chat-1")
+    finally:
+        reset_workspace_subject(token)
+
+    assert (session / "owner-notes.txt").exists()
+
+
+def test_destroying_the_shared_cache_is_owner_only():
+    import inspect
+
+    from hub.routes import datasets as hub_datasets
+    from hub.routes import inventory as hub_inventory
+    from routes import models as model_routes
+
+    for func in (
+        model_routes.delete_cached_model,
+        hub_inventory.delete_cached_model,
+        hub_datasets.delete_cached_dataset,
+    ):
+        # The model and dataset caches stayed installation-wide by design, so a
+        # delete here discards whatever any account downloaded, possibly from a
+        # gated repo only they can fetch again. Reading them stays open.
+        default = inspect.signature(func).parameters["current_subject"].default
+        assert getattr(default, "dependency", None) is require_install_admin
+
+
+def test_a_managed_accounts_preview_prompts_are_filed_under_their_own_name():
+    import inspect
+
+    from routes import preview as preview_routes
+
+    src = inspect.getsource(preview_routes._serve_chat)
+    # The context manager binds the filesystem, but these two take the subject as
+    # an explicit argument, and the chat one records the prompt in the
+    # process-global API monitor.
+    assert "subject = current_workspace_subject()" in src
+    assert "DEFAULT_ADMIN_USERNAME" not in src

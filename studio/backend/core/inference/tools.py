@@ -81,6 +81,7 @@ from storage import mcp_servers_db
 
 from loggers import get_logger
 from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
     current_workspace_subject,
     run_in_workspace,
     workspace_thread,
@@ -8292,8 +8293,17 @@ def _legacy_session_dir(session_id: str) -> "str | None":
 
 
 def _migrate_one_legacy_session(root: str, name: str) -> None:
-    """Bring one session up from the legacy root, without waiting for the rest."""
+    """Bring one session up from the legacy root, without waiting for the rest.
+
+    Owner only. The legacy root is the single pre-upgrade sandbox, so it holds
+    the owner's sessions and nobody else's; moving a name out of it into a
+    managed account's root would hand that account the owner's files and take
+    them from the owner at the same time. Session ids reach here from the
+    caller, so the name to ask for is not a secret either.
+    """
     if _legacy_sandbox_migrated:
+        return
+    if current_workspace_subject() != LEGACY_WORKSPACE_SUBJECT:
         return
     source = os.path.join(_legacy_sandbox_root(), name)
     if os.path.islink(source) or not os.path.isdir(source):
@@ -8667,7 +8677,13 @@ def migrate_legacy_sandbox_in_background() -> "threading.Thread":
 
     def _run() -> None:
         try:
-            _migrate_legacy_sandbox(sandbox_root())
+            # Explicitly the owner's root, not this thread's. A bare thread does
+            # not inherit the workspace so it already resolved that way, but the
+            # destination of a whole-tree move should not rest on that.
+            run_in_workspace(
+                LEGACY_WORKSPACE_SUBJECT,
+                lambda: _migrate_legacy_sandbox(sandbox_root()),
+            )
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             logger.debug("legacy sandbox migration failed", exc_info = True)
 

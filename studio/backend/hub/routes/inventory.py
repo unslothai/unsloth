@@ -9,7 +9,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import (
+    allow_ambient_hf_token,
+    get_current_subject,
+    require_install_admin,
+)
 from hub.dependencies import get_hf_token
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
@@ -249,7 +253,9 @@ async def delete_cached_model(
     # Free up space's precondition: refuse with 409 if the repo is no longer an unused asset.
     only_if_orphan: bool = Body(False),
     hf_token: Optional[str] = Depends(get_hf_token),
-    current_subject: str = Depends(get_current_subject),
+    # Owner only: the model cache is installation-wide, so this discards whatever
+    # any account downloaded. See routes/models.delete_cached_model.
+    current_subject: str = Depends(require_install_admin),
 ):
     return await deletion.delete_cached_model_response(
         repo_id, variant, hf_token, cache_path, only_if_orphan

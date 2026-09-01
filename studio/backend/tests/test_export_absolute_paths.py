@@ -98,6 +98,8 @@ def _install_lightweight_backend_stubs(monkeypatch):
     auth_pkg = types.ModuleType("auth")
     auth_mod = types.ModuleType("auth.authentication")
     auth_mod.get_current_subject = lambda: None
+    # The cached-model delete is owner only, so routes/models.py imports this too.
+    auth_mod.require_install_admin = lambda: None
     monkeypatch.setitem(sys.modules, "auth", auth_pkg)
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
 

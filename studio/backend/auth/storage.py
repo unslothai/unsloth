@@ -1052,6 +1052,60 @@ def _retire_workspace_directory(username: str) -> bool:
     return retired_all
 
 
+def _quiesce_workspace_jobs(username: str) -> None:
+    """Stop the jobs this account owns, before its files are moved aside.
+
+    A training run, an export or a chat generation outlives the row that
+    authorised it: the worker is already spawned, and the ownership guards this
+    feature adds then hide it from the owner while the deleted account can no
+    longer sign in to stop it. A multi-hour GPU job would sit there burning the
+    card until the server restarts, writing into a directory retirement is about
+    to rename underneath it.
+
+    Best effort throughout, and never fatal. Revoking an account must not be
+    blocked by a subsystem that will not import or a worker that will not stop;
+    the alternative is an account the owner cannot remove at all. Each stop is
+    guarded by the subsystem's own ownership predicate AND by its "is something
+    running" check, so an unclaimed singleton is never mistaken for this
+    account's.
+    """
+    def _stop_training() -> None:
+        from core.training.training import get_training_backend
+        backend = get_training_backend()
+        if backend.is_training_active() and backend.owns_workspace(username):
+            backend.stop_training(save = False)
+
+    def _stop_diffusion_training() -> None:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+        service = get_diffusion_training_service()
+        if service.is_active() and service.owns_workspace(username):
+            service.stop(save = False)
+
+    def _stop_export() -> None:
+        from core.export import get_export_backend
+        orchestrator = get_export_backend()
+        if orchestrator.is_export_active() and orchestrator.owns_workspace(username):
+            orchestrator.cancel_export()
+
+    def _stop_generations() -> None:
+        from state import active_generations
+        for thread_id in active_generations.active_thread_ids(username):
+            active_generations.cancel_thread(thread_id, subject = username)
+
+    from utils.workspace_context import run_in_workspace
+
+    for what, stop in (
+        ("training", _stop_training),
+        ("diffusion training", _stop_diffusion_training),
+        ("export", _stop_export),
+        ("chat generations", _stop_generations),
+    ):
+        try:
+            run_in_workspace(username, stop)
+        except Exception:  # noqa: BLE001 - see the docstring; never fatal
+            logger.warning("Could not stop %s for %s", what, username, exc_info = True)
+
+
 def delete_managed_user(username: str) -> bool:
     """Revoke and delete a non-admin account, retiring its workspace files."""
     conn = get_connection()
@@ -1083,6 +1137,10 @@ def delete_managed_user(username: str) -> bool:
         raise
     finally:
         conn.close()
+    # After the credentials are gone, so nothing this account starts can outlive
+    # the stop, and before the rename below, so no worker is still writing into a
+    # directory as it moves.
+    _quiesce_workspace_jobs(username)
     # Cleared only once every root is out of the way; a failure leaves the name
     # reserved and the next create retries the retirement.
     if _retire_workspace_directory(username):
