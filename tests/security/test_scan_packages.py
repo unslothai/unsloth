@@ -1696,6 +1696,7 @@ def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
     assert any(p.name.endswith(".tar.gz") for p in tmp_path.iterdir())
 
 
+# ---------------------------------------------------------------------------
 def test_find_safe_version_handles_download_tuple(monkeypatch):
     monkeypatch.setattr(sp, "fetch_pypi_versions", lambda name: ["0.9.0", "1.0.0"])
     monkeypatch.setattr(
@@ -2305,6 +2306,7 @@ def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
 # dup2 needs a socket to mean "reverse shell"
 
 
+# ──────────────────────────────────────────────────────────────────────
 def _reverse_shell_findings(source: str):
     return [
         f

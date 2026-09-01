@@ -134,6 +134,7 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
 
 
 # detect_hardware() picks MLX only when CUDA+XPU are both unavailable AND the host is Apple Silicon AND mlx is
+# ---------------------------------------------------------------------------
 def _import_studio_hardware():
     """Lazy import of the Unsloth hardware module (studio/backend on sys.path)."""
     studio_backend = REPO_ROOT / "studio" / "backend"

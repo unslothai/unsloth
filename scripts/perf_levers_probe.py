@@ -149,7 +149,7 @@ def run(
         # set_attention_backend is process-wide and fresh processors inherit it, so force native for no-attn variants.
         try:
             pipe.transformer.set_attention_backend("native")
-        except Exception as exc:  # noqa: BLE001 — best-effort isolation
+        except Exception as exc:  # noqa: BLE001 - best-effort isolation
             print(
                 f"    [{tag}] attn(native-reset)={type(exc).__name__}:{str(exc)[:60]}", flush = True
             )

@@ -259,6 +259,7 @@ def test_a_mixed_host_whose_runtime_target_is_supported_keeps_the_generic_index(
 
 
 # Measured on an AMD DevLab strix-halo host (amd-smi 26.2.2):
+# ── the probe the routing decision indexes into ──────────────────────────────
 _AMD_SMI_LIST = "GPU: 0\n    BDF: 0000:03:00.0\n    KFD_ID: 40251\n    NODE_ID: 1\n"
 
 
@@ -361,6 +362,7 @@ def test_a_repeated_arch_on_an_amd_smi_host_does_not_shift_the_mask():
     assert _AMD not in calls, calls
 
 
+# ── the sources the runtime target falls back to ─────────────────────────────
 def test_kfd_topology_answers_when_neither_userland_probe_is_installed():
     """A runtime-only ROCm install ships no rocminfo and no amd-smi; the kernel's own
     topology still names the GPU, and _has_rocm_gpu() already reads that same sysfs."""
@@ -459,6 +461,7 @@ def test_the_inferred_arch_install_is_not_repeated_by_the_reroute():
     assert f"{_AMD}/gfx1151/" in calls, calls
 
 
+# ── not re-downloading what is already installed ─────────────────────────────
 def test_torch_already_on_the_right_per_arch_wheels_is_not_reinstalled():
     """_ensure_rocm_torch runs twice per install and again on every update, and the
     reroute is a --force-reinstall --no-cache-dir of a multi-GB stack."""
@@ -539,6 +542,7 @@ def test_a_mixed_kernel_reading_never_clears_the_override():
     assert _run_install.hsa_override_after == "11.0.0"
 
 
+# ── what the banners are allowed to print ────────────────────────────────────
 _SECRET_MIRROR = "https://user:s3cr3t-token@mirror.example/whl"
 
 
@@ -559,6 +563,7 @@ def test_the_strix_banner_redacts_mirror_credentials():
     assert "s3cr3t-token" not in _run_install.printed, _run_install.printed
 
 
+# ── which card decides the family on a mixed host ────────────────────────────
 @pytest.mark.parametrize("apu", ["gfx1103", "gfx1036", "gfx1035", "gfx1033"])
 def test_a_leading_integrated_gpu_does_not_pick_the_family(apu):
     """Enumeration order alone puts the APU first on a Ryzen box with a Radeon card. The
@@ -594,6 +599,7 @@ def test_an_all_integrated_host_is_never_deposed():
     assert f"{_AMD}/gfx110X-all/" in calls, calls
 
 
+# ── building the index URL ───────────────────────────────────────────────────
 def test_the_leaf_lands_on_the_path_not_inside_a_mirror_token():
     """A mirror can carry its token in the query. rstrip + concat buried the arch inside
     it and left the request pointing at the bare mirror path."""
@@ -707,6 +713,7 @@ def test_an_all_unroutable_host_keeps_enumeration_order():
     assert _AMD not in calls, calls
 
 
+# ── a per-arch install outliving the GPU it was made for ─────────────────────
 def test_a_stale_per_arch_family_is_replaced_when_the_target_goes_generic():
     """An earlier gfx1103-only run installs gfx110X-all. Add a dGPU, or point
     HIP_VISIBLE_DEVICES at one, and those wheels carry no kernels for the new target,
@@ -753,6 +760,7 @@ def test_an_unreadable_family_never_forces_a_reinstall(family, owns):
     assert _AMD not in calls, calls
 
 
+# ── the three host shapes the reroutes reach only once a second signal is missing ──
 _ROCM_ARCH_TORCH_210 = stack_mod._TORCH_PROBE_MARKER + "2.10.0+rocm7.13.0|7.13|\n"
 
 
@@ -858,6 +866,7 @@ def test_keeping_the_matching_wheels_also_clears_a_confirmed_spoof():
     assert _run_install.hsa_override_after is None, _run_install.hsa_override_after
 
 
+# ── the two mask layers, and the install they outlive ────────────────────────
 def test_the_rocr_layer_is_applied_before_the_hip_index_on_an_unfiltered_list():
     """ROCr is processed first and HIP indexes the SURVIVORS, so HIP's index is relative to
     what ROCr left. Neither amd-smi (driver) nor KFD sysfs (kernel) is ROCr-filtered:

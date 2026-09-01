@@ -47,6 +47,7 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 
+# ── small helpers ──────────────────────────────────────────────────────────
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -149,6 +150,7 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     return 20.0 * math.log10(255.0) - 10.0 * math.log10(mse)
 
 
+# ── load + generate ────────────────────────────────────────────────────────
 def _wait_for_load(backend: Any, timeout_s: int = 2400) -> None:
     deadline = time.time() + timeout_s
     last = None
@@ -224,6 +226,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         status = backend.status()
         print(f"  loaded: {status}", flush = True)
 
+        # ── warmup (discarded) ──
         for _ in range(max(0, args.warmup)):
             _generate_once(backend, args)
 
@@ -260,7 +263,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         try:
             backend.unload()
-        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+        except Exception as exc:  # noqa: BLE001 - best-effort cleanup
             print(f"  warn: unload failed: {exc}", flush = True)
 
     return {
@@ -297,6 +300,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+# ── modes ──────────────────────────────────────────────────────────────────
 def _write_baseline(args: argparse.Namespace) -> int:
     baseline_path = Path(args.write_baseline).resolve()
     ref_png = baseline_path.parent / "reference.png"
@@ -404,6 +408,7 @@ def _compare(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── cli ────────────────────────────────────────────────────────────────────
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description = "Benchmark + regression guard for the Unsloth diffusion backend.",

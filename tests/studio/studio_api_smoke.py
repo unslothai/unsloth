@@ -114,6 +114,7 @@ def login(password: str) -> tuple[int, str | None]:
     return code, None
 
 
+# ─────────────────────────────────────────────────────────────────────────
 section("CORS hardening")
 
 # Cross-origin OPTIONS preflight.
@@ -162,6 +163,7 @@ else:
     ok("(bootstrap pw file already cleared, skipping leak check)")
 
 
+# ─────────────────────────────────────────────────────────────────────────
 section("/api/system endpoints require auth")
 for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibility"):
     code, _ = http("GET", endpoint)
@@ -221,6 +223,7 @@ if code != 200:
 ok(f"loaded {GGUF_REPO}")
 
 
+# ─────────────────────────────────────────────────────────────────────────
 section("Auth state machine")
 
 code, _ = login(OLD)
@@ -279,6 +282,7 @@ else:
     ok(f"login burst -> 401x{codes.count(401)} then 429 with Retry-After={retry_after}")
 
 
+# ─────────────────────────────────────────────────────────────────────────
 section("JWT expiry")
 # Forge a JWT with exp=now-1 using the install's signing secret.
 # get_user_and_secret('unsloth') returns (salt, hash, jwt_secret, must_change_pw).
@@ -323,6 +327,7 @@ except Exception as exc:
     ok(f"(skipped JWT-forge: {exc.__class__.__name__})")
 
 
+# ─────────────────────────────────────────────────────────────────────────
 section("API key lifecycle")
 
 code, body = http(
@@ -396,6 +401,7 @@ else:
             fail(f"deleted API key still works: {code}")
 
 
+# ─────────────────────────────────────────────────────────────────────────
 section("Auth file-mode hardening")
 import platform as _platform
 
@@ -421,6 +427,7 @@ else:
             audit(f"{path} mode={oct(actual_mode)} (expected {oct(expected_mode)})")
 
 
+# ─────────────────────────────────────────────────────────────────────────
 section("Inference lifecycle")
 
 code, body = http("GET", "/v1/models", headers = AUTH_HEADER)
@@ -518,6 +525,7 @@ else:
         ok(f"force-reload -> 200 (PID change check skipped: {before_pid}/{after_pid})")
 
 
+# ─────────────────────────────────────────────────────────────────────────
 section("Endpoint auth audit")
 # Pin the EXPECTED auth posture per route;
 PUBLIC = {

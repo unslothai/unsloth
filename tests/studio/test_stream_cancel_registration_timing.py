@@ -22,6 +22,7 @@ SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(SRC)
 
 
+# ── Structural (AST) helpers ─────────────────────────────────
 def _collect_async_functions(tree: ast.AST):
     return [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)]
 
@@ -73,6 +74,7 @@ def _calls_name(node: ast.AST, name: str) -> bool:
     return False
 
 
+# ── Structural tests ─────────────────────────────────────────
 def test_no_tracker_enter_inside_async_generators():
     offenders = []
     for fn in _collect_async_functions(_TREE):
@@ -237,6 +239,7 @@ def test_audio_input_stream_installs_disconnect_watcher():
     assert has_cleanup, "audio_input_stream must stop its disconnect watcher in finally"
 
 
+# ── Behavioral helpers ───────────────────────────────────────
 _WANTED = {
     "_CANCEL_REGISTRY",
     "_CANCEL_LOCK",
@@ -354,6 +357,7 @@ async def _post_fix_gguf_loop(cancel_event):
     yield "[DONE]"
 
 
+# ── Behavioral tests ─────────────────────────────────────────
 def test_finally_cleanup_on_normal_completion():
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
@@ -477,6 +481,7 @@ def test_cancel_during_streaming_stops_iteration_promptly():
     assert "[DONE]" in seen
 
 
+# ── Cancel-event responsiveness in the streaming loops ───────
 def _loop_has_cancel_event_check(fn) -> bool:
     # a cancel POST can't interrupt, since Colab-style proxies drop request.is_disconnected().
     # An `if cancel_event.is_set():` inside a loop body is sufficient -- without it a cancel POST can't interrupt
@@ -739,6 +744,7 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
     )
 
 
+# ── Behavioral simulations for the iter-1 fixes ──────────────
 def test_unsloth_stream_loop_breaks_on_external_cancel_event():
     cancel_event = threading.Event()
     reset_calls = [0]

@@ -255,7 +255,7 @@ def test_trl_sft_trainer_module_internals(tag: str):
 
 
 # Coverage extension (added 2026-05):
-# trl.is_conversational — soft import in unsloth-zoo dataset_utils.
+# trl.is_conversational - soft import in unsloth-zoo dataset_utils.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_dpo_trainer_module_exists(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/trainer/dpo_trainer.py")
@@ -311,7 +311,7 @@ def test_trl_models_utils_disable_gradient_checkpointing(tag: str):
 
 # 8.
 # rl.py:1976-1994 gates via hasattr();
-# trl.models.utils.disable_gradient_checkpointing — added in TRL 1.0.0+.
+# trl.models.utils.disable_gradient_checkpointing - added in TRL 1.0.0+.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_import_utils_available_pattern(tag: str):
     candidates = [
@@ -344,7 +344,7 @@ def test_trl_openenv_utils_generators(tag: str):
     )
 
 
-# trl.import_utils `_*_available` cache pattern — import_fixes.py:508-516 clears these cached booleans so vllm-ascend
+# trl.import_utils `_*_available` cache pattern - import_fixes.py:508-516 clears these cached booleans so vllm-ascend
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_grpo_trainer_required_methods(tag: str):
     """GRPOTrainer methods unsloth rewrites against; drift silently skips
@@ -375,7 +375,7 @@ def test_trl_grpo_trainer_required_methods(tag: str):
 # Each substring is one half of a `function.replace(old, new)` rewrite;
 
 
-# trl.experimental.openenv.utils generators — one of the two function names must exist (rl_replacements.py:1775-1781
+# trl.experimental.openenv.utils generators - one of the two function names must exist (rl_replacements.py:1775-1781
 # trl.experimental.openenv: gated import (rl_replacements.py:1765-1770).
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_grpo_source_inference_mode_unwrap(tag: str):

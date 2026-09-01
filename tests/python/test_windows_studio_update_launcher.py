@@ -641,6 +641,7 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
 
 # ── Application Control (issue #8490) ───────────────────────────────── Windows can deny the generated, unsigned
 # unsloth.exe while the signed python.exe beside it still runs.
+# ── Application Control (issue #8490) ─────────────────────────────────
 def _blocked_exe_run(interpreter_result, calls = None):
     """subprocess.run where only the launcher is denied by policy."""
 

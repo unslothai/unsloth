@@ -235,6 +235,7 @@ def test_the_message_says_what_the_user_should_do_next():
     assert "FileNotFoundError" in message
 
 
+# --- the readiness probe --------------------------------------------------
 def test_check_vllm_status_is_false_when_nothing_is_listening(monkeypatch):
     import requests
 
@@ -299,6 +300,7 @@ def test_the_failure_path_is_not_a_bare_return_any_more():
 
 
 # the timeout is a deadline, not a number of laps ---------------------- Both waits bound work by ELAPSED time.
+# --- the timeout is a deadline, not a number of laps ----------------------
 class _RecordingCapture(_FakeCapture):
     """Remembers every timeout it was asked to wait for."""
 

@@ -116,6 +116,7 @@ def _raiser(exc):
     return is_torchao_available
 
 
+# ---- the bug --------------------------------------------------------------
 def test_stale_torchao_becomes_false(peft_env):
     iu, _ = peft_env(_raiser(STALE))
     assert FIX() is True
@@ -234,6 +235,7 @@ def test_metadata_survives(peft_env):
     assert iu.is_torchao_available.__name__ == "is_torchao_available"
 
 
+# ---- wiring ---------------------------------------------------------------
 def test_called_from_gpu_init():
     src = (REPO_ROOT / "unsloth" / "_gpu_init.py").read_text(encoding = "utf-8")
     assert "fix_peft_stale_torchao_import_error,\n" in src, "not imported"

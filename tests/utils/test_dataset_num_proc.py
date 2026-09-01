@@ -129,6 +129,7 @@ def test_fork_start_method_honours_explicit_value(monkeypatch, dnp):
     assert dnp.get_dataset_num_proc(6) == 6
 
 
+# ---------- the 1 -> None normalisation ----------
 @pytest.mark.parametrize("value", [1, 0, -4])
 def test_non_positive_and_one_normalise_to_none(monkeypatch, dnp, value):
     _force_start_method(monkeypatch, dnp, "fork")
@@ -222,6 +223,7 @@ def test_low_memory_auto_path_returns_none_not_one(monkeypatch, dnp):
     assert dnp.get_dataset_num_proc(None) is None
 
 
+# ---------- auto sizing ----------
 def test_auto_value_is_capped(monkeypatch, dnp):
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
@@ -299,6 +301,7 @@ def test_bool_is_not_treated_as_an_int(monkeypatch, dnp):
     assert dnp.get_dataset_num_proc(True) == 4
 
 
+# ---------- environment escape hatch ----------
 def test_env_override_beats_start_method_veto(monkeypatch, dnp):
     # A user who knows their workload is fork-safe is never downgraded.
     _force_start_method(monkeypatch, dnp, "spawn")
@@ -457,6 +460,7 @@ def test_start_method_probe_matches_the_pool_multiprocess_would_build(dnp):
     )
 
 
+# ---------- the generated trainer's import must match the real module ----------
 def _rl_serial_as_none(tree, source, trainer_file):
     """Evaluate rl.py's own serial_as_none rule rather than restating it.
 
@@ -522,6 +526,7 @@ def test_rl_codegen_only_sft_gets_the_config_sentinel():
 
 
 # The tag rl_replacements.py gives the num_proc edit;
+# ---------- the map-site rewrite and the anchors it hangs on ----------
 NUM_PROC_WHERE = "sft_prepare_dataset dataset_num_proc selection"
 
 # The helpers that decide whether a source edit lands.
@@ -646,6 +651,7 @@ def test_the_narrow_num_proc_anchor_still_matches_the_installed_zoo():
     ast.parse(rewritten)
 
 
+# ---------- what the layered anchor actually does to a drifted Zoo ----------
 def _load_anchor_helpers():
     """Exec just the anchor helpers out of rl_replacements.py.
 
@@ -910,6 +916,7 @@ def test_rl_codegen_snippet_survives_an_unimportable_helper():
     assert namespace["dataset_num_proc"] == 7
 
 
+# ---------- worker-death diagnostics ----------
 _DATASETS_MESSAGE = (
     "One of the subprocesses has abruptly died during map operation."
     "To debug the error, disable multiprocessing."
@@ -1115,6 +1122,7 @@ class _Split:
         return self.n
 
 
+# ---------- containers: the host is not what this process may use ----------
 def test_memory_budget_follows_the_cgroup_not_the_host(monkeypatch, dnp):
     """psutil reports the HOST inside a container.
 
@@ -1183,6 +1191,7 @@ def test_the_cgroup_readers_never_raise(dnp):
     assert quota is None or isinstance(quota, float)
 
 
+# ---------- the zoo reads the other module ----------
 def _force_stdlib_start_method(monkeypatch, dnp, method):
     real = dnp._module_start_method
     monkeypatch.setattr(

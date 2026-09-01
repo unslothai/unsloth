@@ -79,6 +79,7 @@ def test_pid_alive_helper_is_defined_and_used_by_stop():
     assert "tasklist" in helper
 
 
+# ── Behavioral: the win32 tasklist branch ────────────────────────────────────
 def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
     def _run(
         cmd,
@@ -115,6 +116,7 @@ def test_pid_alive_windows_assumes_alive_when_tasklist_errors():
     assert pid_alive(4242) is True
 
 
+# ── Behavioral: the POSIX signal-0 branch (skip on Windows runners) ───────────
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX os.kill(pid,0) branch")
 def test_pid_alive_posix_true_for_self_false_for_dead():
     pid_alive = _load_pid_alive("linux")

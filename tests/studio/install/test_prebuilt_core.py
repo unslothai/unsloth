@@ -152,6 +152,7 @@ def manifest_for(component, artifacts, **extra):
     return payload
 
 
+# ── Manifest parsing ──
 def test_parse_manifest_normalizes(component):
     manifest = component.ops.parse_manifest(
         manifest_for(component, [artifact(), "not-a-dict", {"os": "linux"}]), label = "m"
@@ -186,6 +187,7 @@ def test_parse_manifest_rejects_non_object(component):
         )
 
 
+# ── Selection matrix ──
 def test_select_cpu_first_match(component):
     manifest = component.ops.parse_manifest(
         manifest_for(
@@ -330,6 +332,7 @@ def test_macos_min_os_ok_helper_handles_prefix_and_bare(component):
     assert component.ops.macos_min_os_ok(host_unknown, "macos-15.0") is True
 
 
+# ── Backend resolution ──
 def test_resolve_backend_auto_and_validation(component):
     gpu_host = make_host(component, has_usable_nvidia = True)
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = False) == "cuda"
@@ -353,6 +356,7 @@ def test_resolve_backend_auto_and_validation(component):
         component.ops.resolve_backend(gpu_host, "tpu", cpu_fallback = False)
 
 
+# ── Checksum index: fail closed ──
 def _index_for(
     component,
     tag = "v1",
@@ -417,6 +421,7 @@ def test_expected_sha256_manifest_disagreement_fails_closed(component):
     )
 
 
+# ── Extraction guards ──
 def test_extract_archive_rejects_traversal(tmp_path):
     archive = tmp_path / "evil.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
@@ -553,6 +558,7 @@ def test_restore_tar_exec_bits(tmp_path):
     assert extracted.stat().st_mode & 0o111
 
 
+# ── Resolver payload ──
 def _fake_release(component, artifacts):
     ns = component.namespace
     manifest = component.ops.parse_manifest(manifest_for(component, artifacts), label = "m")
@@ -620,6 +626,7 @@ def test_emit_resolver_output_formats(capsys):
     assert json.loads(capsys.readouterr().out) == {"prebuilt_available": False}
 
 
+# ── Marker / fingerprint ──
 def test_install_fingerprint_is_stable_and_sensitive(component):
     kwargs = dict(
         published_repo = component.descriptor.published_repo,
@@ -890,6 +897,7 @@ def test_blackwell_min_toolkit_is_sm_aware():
 
 
 # The ops seam ──
+# ── The ops seam ──
 def test_module_ops_prefers_module_globals_over_core_defaults(component):
     ns = dict(component.namespace)
     calls = []

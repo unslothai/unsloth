@@ -73,6 +73,7 @@ def _healthy(site_packages: Path):
     ]
 
 
+# ----------------------------------------------------------------- true positives
 def test_a_healthy_install_reports_nothing(site_packages):
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
@@ -112,6 +113,7 @@ def test_the_findings_respect_the_limit(site_packages):
     assert len(install_manifest.damaged_payload_files(PKG, limit = 3)) == 3
 
 
+# ---------------------------------------------------------------- false positives
 def test_a_regenerated_frontend_dist_is_not_damage(site_packages):
     """The wheel ships the bundle, so its files are in RECORD, and setup's own
     `npm run build` rehashes every one of them."""
@@ -226,6 +228,7 @@ def test_an_unreadable_environment_reports_undamaged(monkeypatch):
     assert install_manifest.damaged_payload_files(PKG) == []
 
 
+# ------------------------------------------------------------- verify_install wiring
 def _complete_install(tmp_path, monkeypatch, site_packages):
     """A manifest and requirements that make every metadata check pass."""
     req_root = tmp_path / "requirements"
@@ -289,6 +292,7 @@ def test_the_scan_runs_last_and_diverts_no_existing_reason(tmp_path, monkeypatch
     assert state["reason"] == "studio_install_incomplete"
 
 
+# ------------------------------------------------------- who asks for the scan
 def test_the_installers_ask_for_the_scan():
     """They import this module from their own directory, so unlike an external
     CLI they can never be skewed against it."""
@@ -312,6 +316,7 @@ def test_the_desktop_boot_path_does_not_ask_for_the_scan():
     assert "_install_state(deep = True)" in cli
 
 
+# ------------------------------------------------- damage the first pass missed
 def test_a_package_directory_replaced_by_a_file_is_damage(site_packages):
     """NotADirectoryError is an OSError but not a FileNotFoundError, so the
     generic arm read a payload replaced by a quarantine stub as healthy."""

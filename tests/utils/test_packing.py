@@ -1175,6 +1175,7 @@ def test_packing_sdpa(tmp_path):
 # Named to match the unsloth_zoo helper (sourced by name, "def sft_prepare_dataset" -> "def _prepare_dataset").
 # Deliberately OMITS the "licensed under LGPLv3" header to emulate a newer Zoo whose header moved (dependency is only
 # lower-bounded).
+# --- wrapped-packing source-injection robustness (reviewer.py / fork findings) --------
 def sft_prepare_dataset(
     self, dataset, processing_class, args, packing, formatting_func, dataset_text_field
 ):
@@ -1355,6 +1356,7 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
 # --- packed-boundary guard on the fused-CE path --------------------------------------- mask_packed_sequence_boundaries
 # needs shifted labels, so fused-CE paths (which shift internally) call mask_packed_boundary_labels, the pre-shift
 # equivalent.
+# --- packed-boundary guard on the fused-CE path ---------------------------------------
 def test_mask_packed_boundary_labels_masks_next_document_first_token():
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
     out = mask_packed_boundary_labels(labels, torch.tensor([2, 1, 3], dtype = torch.int32))
@@ -1424,6 +1426,7 @@ def test_mask_packed_boundary_labels_lengths_covering_whole_row():
 # ========================================================================== Each test below fails when its production
 # hunk is reverted.
 # the fused-CE call sites (llama.py / mistral.py)
+# ==========================================================================
 class _StubInner(torch.nn.Module):
     def __init__(self, hidden):
         super().__init__()

@@ -165,6 +165,7 @@ def _looks_binary(name: str, header: bytes) -> bool:
 
 ALLOWED_DOWNLOAD_HOST = "registry.npmjs.org"
 
+# ─────────────────────────────────────────────────────────────────────
 CRITICAL = "CRITICAL"
 HIGH = "HIGH"
 MEDIUM = "MEDIUM"
@@ -210,6 +211,7 @@ class PackageEntry:
 # ───────────────────────────────────────────────────────────────────── IOC patterns.
 # Two flavours: - HOSTS / TOKEN_PATHS: high-confidence substrings;
 # near-zero FP rate - JS_PATTERNS / SCRIPT_PATTERNS: regex;
+# ─────────────────────────────────────────────────────────────────────
 KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
     # Shai-Hulud TanStack wave (2026-05-11, GHSA-g7cv-rxg3-hmpx).
     "router_init.js": (HIGH, "filename associated with TanStack worm"),
@@ -556,6 +558,7 @@ _OBFUSC_BLOB = re.compile(
 )
 
 
+# ─────────────────────────────────────────────────────────────────────
 def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     """Return (entries, structural_findings).
 
@@ -649,6 +652,7 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     return entries, findings
 
 
+# ─────────────────────────────────────────────────────────────────────
 def _decode_integrity(integrity: str) -> tuple[str, bytes] | None:
     """Parse SRI integrity 'sha512-<base64>' -> (algo, digest_bytes)."""
     if "-" not in integrity:
@@ -730,6 +734,7 @@ def download_tarball(
     return dest, None
 
 
+# ─────────────────────────────────────────────────────────────────────
 def _is_within(root: Path, candidate: Path) -> bool:
     try:
         return candidate.resolve().is_relative_to(root.resolve())
@@ -830,6 +835,7 @@ def safe_extract(
 
 # a too-far start only over-binds (more context, still fail-closed), never less.
 # How far back to look for an enclosing bracket opener.
+# ─────────────────────────────────────────────────────────────────────
 _MAX_CONT_LINES = 200
 # Hard cap on how far forward a bracket group is followed to its close, measured from the matched line so the tail
 _MAX_GROUP_LINES = 200
@@ -1161,6 +1167,7 @@ LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
 
 # ───────────────────────────────────────────────────────────────────── Code-only scanning for JS/TS sources.
 # JS sibling of scan_packages.py::_strip_noncode.
+# ─────────────────────────────────────────────────────────────────────
 _JS_FAMILY_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
 
 # Keywords after which a `/` begins a regex literal (not division).
@@ -1691,6 +1698,7 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
     return findings
 
 
+# ─────────────────────────────────────────────────────────────────────
 def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | None]:
     """Download + extract + scan a single package; cleans up its dir.
 
@@ -1720,6 +1728,7 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
 
 # Baseline allowlist, matched on ``(normalized package, package-relative path, pattern)`` rather than evidence text:
 
+# ─────────────────────────────────────────────────────────────────────
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
 
 # v3 adds an evidence hash so a new payload under an already-listed package/path/pattern is not auto-suppressed;

@@ -191,6 +191,7 @@ def test_r_api_003_silent_on_adamw_8bit():
     assert findings == []
 
 
+# ---------- Environment classifier --------------------------------------- #
 @pytest.mark.parametrize(
     "path,expected",
     [
@@ -209,6 +210,7 @@ def test_environment_classifier(path, expected):
     assert nv.target_environment(path) == expected
 
 
+# ---------- Integration: walk the live notebooks repo (skipped if absent) -- #
 def _live_notebooks_dir(candidates: list[Path] | None = None) -> Path | None:
     if candidates is None:
         candidates = [

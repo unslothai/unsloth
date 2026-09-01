@@ -27,6 +27,7 @@ PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly 
 OUT = Path(__file__).resolve().parent.parent / "outputs" / "quant_research" / "nvfp4_t211_images"
 
 
+# ----------------------------------------------------------------------------- diag
 def diagnostics() -> None:
     import torch
     import torchao
@@ -54,6 +55,7 @@ def diagnostics() -> None:
     )
 
 
+# ----------------------------------------------------------------------------- micro
 def _configs():
     from torchao.quantization import Float8DynamicActivationFloat8WeightConfig as FP8
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig as NV
@@ -121,6 +123,7 @@ def micro(M, iters, compile_):
                 print(f"    {name:16s} FAILED: {type(exc).__name__}: {str(exc)[:120]}", flush = True)
 
 
+# ----------------------------------------------------------------------------- e2e
 def _psnr(a, b):
     mse = float(np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2))
     return float("inf") if mse == 0 else float(10 * np.log10(255.0**2 / mse))

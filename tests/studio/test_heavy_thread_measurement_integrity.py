@@ -111,6 +111,7 @@ HARNESS = _load_harness()
 
 
 # performance.now() is the fake clock, requestAnimationFrame is a queue this file pumps, and setTimeout is a queue too
+# ── the node side: the harness's own JS on a virtual clock ────────────
 FAKE_ENV = """
 let now = 0;
 let rafs = [];
@@ -268,6 +269,7 @@ def test_reopen_closes_its_recorder_window_at_the_last_activity() -> None:
 # That holds because the count of scans is FIXED while their unit cost grows with the thread (messageCount 0.01ms at
 # 25000 chars, 0.105ms at 300000).
 # The menu content is portaled to the END of document.body, so a querySelector for it walks the whole message list
+# ── no-regression guards: what the timed windows may scan ─────────────
 SCAN_BUDGET_BODY = """
 eval(RECORDER_INIT);
 let mounted = true;
@@ -375,6 +377,7 @@ def test_the_menu_window_takes_one_census_and_not_one_per_frame() -> None:
     assert got["querySelectorAllCalls"] <= 1, got
 
 
+# ── the menu total carries two paint floors, not one ──────────────────
 MENU_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "MENU_JS": HARNESS.MENU_JS}
 
 # A menu that opens and closes with NO work at all:
@@ -443,6 +446,7 @@ def test_the_menu_growth_value_has_both_floors_removed() -> None:
     assert (small, large) == (40.0, 940.0), (small, large)
 
 
+# ── a null repetition is a failure, not a sample to drop ──────────────
 def menu_repetition(open_ms: float | None) -> dict:
     close_ms = 40.0
     total = None if open_ms is None else open_ms + close_ms
@@ -625,6 +629,7 @@ def test_a_jump_that_never_settled_is_a_harness_failure() -> None:
     assert any("jump action but it never reached a settled state" in f for f in failures), failures
 
 
+# ── the per-repetition fixture ────────────────────────────────────────
 class StubLocator:
     def __init__(self, log: list, selector: str) -> None:
         self.log = log
@@ -758,6 +763,7 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
 
 # high subtracts time the action never spent. REOPEN_JS now counts the waits it actually pays, so
 # the declared paint floor ────────────────────────────────────────── `growth()` subtracts `floored` double-rAF vsync
+# ── the declared paint floor ──────────────────────────────────────────
 def floor_row(
     observed,
     engine = "chromium",
@@ -884,6 +890,7 @@ def test_an_action_that_ran_without_a_count_is_still_reported() -> None:
 
 
 # the wall axes carry the floor they actually paid ──────────────────
+# ── the wall axes carry the floor they actually paid ──────────────────
 def wall_cells(
     paint_waits: int,
     floor_ms: float = 33.0,
@@ -937,6 +944,7 @@ def test_a_missing_wait_count_subtracts_nothing_rather_than_crashing() -> None:
     assert floored({}) == 0
 
 
+# ── an application exception is not engine chatter ────────────────────
 def error_cell(seed_errors = 0, action_errors = 0) -> dict:
     cell = copy.deepcopy(clean_cell())
     cell["seed_console_errors"] = seed_errors
@@ -1003,6 +1011,7 @@ def test_the_recorder_zeroes_its_wait_counter_at_the_start_of_each_window() -> N
 # The CI workflow runs one repetition on Chromium, so there is no median to smooth a stray dropped frame, and
 # `harness_failures` accepts any ONE discriminating axis: 0 at 25K and 1 at 100K could carry the entire verdict while
 # every latency axis was flat.
+# ── a counter rising from zero has to say something ───────────────────
 def counter_cells(
     small,
     large,
@@ -1077,6 +1086,7 @@ def test_the_threshold_is_absolute_because_no_ratio_exists() -> None:
 # An UNFLOORED timing reads zero at the smallest size whenever the action resolves before the recorder produces a
 # sample, and was then treated as a dropped-frame counter, so a noisy 5ms at the largest size read as a rise of 5 and
 # discriminated.
+# ── zero-based is not the same as counted ─────────────────────────────
 def timing_cells(
     small,
     large,
@@ -1146,6 +1156,7 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
 # itself into the growth report.
 # main() attaches that report to `results` and json.dumps it, so every complete run raised "Object of type function is
 # not JSON serializable" AFTER taking all its measurements.
+# ── the report has to survive being written out ───────────────────────
 def test_the_growth_report_is_json_serializable() -> None:
     report = HARNESS.report_growth(counter_cells(0, 9))
     json.dumps(report)
@@ -1251,6 +1262,7 @@ def test_a_timing_with_a_small_nonzero_baseline_is_untouched() -> None:
 
 # ── whole-window axes carry the whole window's floors ───────────────── `quiet()` and `quietUntilIdle()` return `...
 # - this.startedAt`, not the time they themselves took, and `gestureMs` is computed from `startedAt` too.
+# ── whole-window axes carry the whole window's floors ─────────────────
 def axis_floor(name):
     for axis, _pick, floored in HARNESS.GROWTH_AXES:
         if axis == name:

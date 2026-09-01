@@ -62,6 +62,7 @@ def plenty_of_free_space(monkeypatch):
     return ample
 
 
+# ---- failures that ARE about disk -----------------------------------------
 @pytest.mark.parametrize(
     "msg",
     [
@@ -117,6 +118,7 @@ def test_an_exception_with_no_message_does_not_raise():
     assert _looks_like_disk(RuntimeError()) in (True, False)
 
 
+# ---- the call site --------------------------------------------------------
 def test_the_kaggle_branch_is_gated_on_the_check():
     """Source-level, because reaching the branch needs a real conversion."""
     import ast
@@ -152,6 +154,7 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
+# ---- a converter killed by the OOM-killer ---------------------------------
 def test_sigkill_is_recognised_from_the_message():
     """subprocess renders it as text, which is all Unsloth re-raises."""
     from unsloth.save import _gguf_child_was_oom_killed
@@ -269,6 +272,7 @@ def test_it_chains_the_original():
     assert "from e" in src[i : i + 900]
 
 
+# ---- the inner conversion/quantize branches are gated too ------------------
 def test_no_kaggle_disk_message_is_left_ungated():
     """The outer gate cannot undo a disk explanation already baked into the
     inner RuntimeError's message, so save_to_gguf's own missing-output and

@@ -46,6 +46,7 @@ RL_REPLACEMENTS = REPO_ROOT / "unsloth" / "models" / "rl_replacements.py"
 SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
+# ---- the premise ---------------------------------------------------------
 class _pretend_cuda:
     """torch.cuda answering as a card without bfloat16, or with it."""
 
@@ -78,6 +79,7 @@ def test_disabling_autocast_skips_that_check():
             pass
 
 
+# ---- _prepare_inputs, which is injected as source ------------------------
 def _prepare_inputs_snippet() -> str:
     """The `with` header grpo_trainer__prepare_inputs splices into TRL."""
     start = SRC.index('"with torch.inference_mode(), "')
@@ -147,6 +149,7 @@ def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, exp
 
 
 # _get_per_token_logps and friends, which run as ordinary code --------
+# ---- _get_per_token_logps and friends, which run as ordinary code --------
 def test_every_autocast_call_passes_enabled():
     """Five call sites share one `self._autocast_dtype`; one left behind would
     still raise, and only on the hardware nobody develops on."""

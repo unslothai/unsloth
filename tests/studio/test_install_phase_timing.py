@@ -55,6 +55,7 @@ POSIX_FILTER = "printf '[%4ds] %s\\n' \"$SECONDS\""
 PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
 
 
+# --------------------------------------------------------------------------------------
 @pytest.mark.parametrize("script", INSTALLERS, ids = lambda p: p.name)
 def test_the_installers_carry_no_timing_machinery(script):
     """The first cut of this feature put the clock inside the installers. It should not.
@@ -76,6 +77,7 @@ def test_the_installers_carry_no_timing_machinery(script):
     )
 
 
+# --------------------------------------------------------------------------------------
 def _run_bodies():
     """Every `run:` body in the workflows and in the composite action, with its origin."""
     paths = sorted(WORKFLOWS.glob("*.yml")) + [ACTION]
@@ -240,6 +242,7 @@ def test_the_posix_filter_does_not_swallow_the_last_line():
         )
 
 
+# --------------------------------------------------------------------------------------
 def _posix_filter_body() -> str:
     """The POSIX pipeline as the composite action actually declares it.
 

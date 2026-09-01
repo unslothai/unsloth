@@ -609,6 +609,7 @@ LOADED_MODEL = """
 """
 
 
+# ---------------------------------------------------------------------------
 def test_the_provider_wires_the_pause_and_the_shared_ref():
     """Structural. ``renderProvider`` restates the provider's JSX, so the JSX has to say what
     it restates: one ref handed to both children, ``paused`` driven by ``backgrounded``, and
@@ -658,6 +659,7 @@ def test_the_harness_stubs_every_name_the_queue_boundary_imports():
     assert not missing, f"prompt-queue-boundary.ts imports {missing}, which this harness omits"
 
 
+# ---------------------------------------------------------------------------
 def test_a_first_new_chat_switches_once_and_clears_nothing():
     """The provider is shared now, so the first nonce it ever sees still has to open a fresh
     thread -- and must not clear a composer the user may already have staged a file into,
@@ -868,6 +870,7 @@ def test_a_paused_new_chat_does_not_price_the_shared_context_bar():
     assert out["switched"] == 1
 
 
+# ---------------------------------------------------------------------------
 def test_an_implicit_new_chat_defers_the_clear_until_the_new_thread_arrives():
     """``/chat`` with no thread and no nonce is a new chat too, so the provider marks the
     composer used. When a nonce then appears there is no ``activeNonce`` to switch away
@@ -988,6 +991,7 @@ def test_an_attachment_remove_that_fails_is_not_an_unhandled_rejection(setup, pa
     assert out["activeThreadId"] is None, "and the switch below it still ran"
 
 
+# ---------------------------------------------------------------------------
 def test_opening_a_saved_thread_releases_the_nonce_so_the_same_one_switches_again():
     """The sidebar hands the same landing nonce back after a saved chat. Without the reset
     the returning view would recognise its own nonce, decline to switch, and leave the user
@@ -1093,6 +1097,7 @@ def test_a_saved_thread_that_is_already_the_main_one_still_releases_the_nonce():
     assert out["cleared"] == 1
 
 
+# ---------------------------------------------------------------------------
 def test_a_deferred_clear_for_a_nonce_that_moved_on_is_dropped():
     """The deferred clear lands after an await, by which time the user may be two views
     further on. Clearing then would empty a composer they have since staged a file into,
@@ -1191,6 +1196,7 @@ def test_three_nonces_faster_than_the_switch_resolves_clear_once_each_at_most():
     assert out["pending"] == 0
 
 
+# ---------------------------------------------------------------------------
 def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
     """The state is mutated before the switch is attempted, so a rejection would otherwise
     leave the guard believing a nonce that never opened a thread is the live one -- and the
@@ -1620,6 +1626,7 @@ def test_a_rejected_saved_thread_switch_blanks_the_bar_only_while_visible():
     assert out["unhandled"] == 0, "ThreadAutoSwitch catches its own rejection"
 
 
+# ---------------------------------------------------------------------------
 def test_a_full_compare_round_trip_stops_the_temporary_queue_once():
     """The stop discards an incognito queue that is about to become unreachable. Pausing and
     resuming abandons nothing, so the only stop in the whole cycle is the one the New Chat
@@ -1743,6 +1750,7 @@ def test_a_failed_saved_thread_switch_retries_only_while_the_view_is_on_screen()
     assert out["unhandled"] == 0
 
 
+# ---------------------------------------------------------------------------
 def test_a_hundred_and_twenty_view_switches_stay_bounded():
     """The provider now outlives every view switch, so anything it accumulates accumulates
     for the session: a per-switch listener, a callback left waiting on a switch that already

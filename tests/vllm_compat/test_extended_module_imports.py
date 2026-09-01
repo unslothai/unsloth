@@ -135,7 +135,7 @@ def test_unsloth_is_mlx_false_under_spoof():
     )
 
 
-# unsloth.models.* — core surfaces loaded transitively by `from unsloth import FastLanguageModel`.
+# unsloth.models.* - core surfaces loaded transitively by `from unsloth import FastLanguageModel`.
 _UNSLOTH_CORE_MODULES = [
     "unsloth.models.rl",
     "unsloth.models.rl_replacements",

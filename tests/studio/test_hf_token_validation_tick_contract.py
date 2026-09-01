@@ -486,6 +486,7 @@ def test_training_stop_failure_preserves_the_runtime_latch():
     stop = actions.split("const stopTrainingRun = useCallback", 1)[1]
     stop = stop.split("const resumeTrainingRunFromHistory", 1)[0]
     # Scoped cancellation moved the request behind a try/catch, so slice on that rather than on the first sync call
+    # than on the first sync call, which is now the scope === null early return.
     attempt = stop.split("try {", 1)[1].split("} catch (error) {", 1)[0]
     failure = stop.split("} catch (error) {", 1)[1]
 

@@ -69,6 +69,7 @@ def test_detect_host_unsupported(monkeypatch, system, machine):
         M.detect_host()
 
 
+# ── URL / asset construction (pure) ──
 def test_asset_and_url_linux():
     host = _host("linux", "x64")
     assert M.node_asset_name("24.17.0", host) == "node-v24.17.0-linux-x64.tar.gz"
@@ -97,6 +98,7 @@ def test_binary_layout_is_host_aware():
     assert M.npm_cli_path(Path("/n"), nix) == Path("/n/lib/node_modules/npm/bin/npm-cli.js")
 
 
+# ── SHASUMS256.txt parsing ──
 def test_expected_sha256_for():
     asset = "node-v24.17.0-linux-x64.tar.gz"
     good = "a" * 64
@@ -114,6 +116,7 @@ def test_expected_sha256_rejects_malformed():
     assert M.expected_sha256_for(f"notahex  {asset}\n", asset) is None
 
 
+# ── Version selection from index.json ──
 INDEX = [
     {"version": "v26.3.1", "lts": False},
     {"version": "v24.18.0", "lts": "Krypton"},
@@ -141,6 +144,7 @@ def test_select_no_candidate_raises():
         M.select_node_version(INDEX, channel = "lts", min_major = 99)
 
 
+# ── Archive extraction (zip + tar.gz with the npm-style symlink), traversal guard ──
 def _add_file(
     tar: tarfile.TarFile,
     name: str,
@@ -198,6 +202,7 @@ def test_extract_rejects_path_traversal(tmp_path: Path):
         M.extract_archive(archive, tmp_path / "out")
 
 
+# ── Checksum-verified download (accept + reject) ──
 def test_download_file_verified_accepts_match(tmp_path: Path, monkeypatch):
     payload = b"real-node-archive"
     sha = M.hashlib.sha256(payload).hexdigest()
@@ -274,6 +279,7 @@ def test_pid_is_alive_posix_signal_zero(monkeypatch):
     assert calls == [(1234, 0), (9999, 0)]
 
 
+# ── existing_install_matches + install_prebuilt short-circuit ──
 def test_existing_install_matches_false_without_metadata(tmp_path: Path):
     host = _host("linux", "x64")
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
@@ -471,6 +477,7 @@ def test_ensure_npm_floor_noop_when_npm_meets_bar(tmp_path: Path, monkeypatch):
 
 
 # Pinned digest manifest (trust anchor) ── Archives must be verified against committed pins, never a same-origin
+# ── Pinned digest manifest (trust anchor) ──
 ALL_SUPPORTED_HOSTS = [
     ("linux", "x64"),
     ("linux", "arm64"),
@@ -751,6 +758,7 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
 
 # ── _replace_with_retry: transient Windows sharing violations ────────────────── Seen in CI: WinError 5 renaming
 # extracted Node into place on a FRESH install, a scanner still holding handles inside the new files.
+# ── _replace_with_retry: transient Windows sharing violations ──────────────────
 def _oserror(winerror: int) -> OSError:
     exc = OSError(winerror, "mock")
     exc.winerror = winerror

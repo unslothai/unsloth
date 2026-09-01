@@ -61,6 +61,7 @@ PWSH_CRASH_BANNER = "The PowerShell process will exit"
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
 
 
+# --------------------------------------------------------------------------------------
 _CACHE_ROOT = None
 
 

@@ -99,6 +99,7 @@ def main(argv: list[str]) -> int:
     # (managed.rs:471, :521).
     # Longer would call a slow torn venv HEALTHY and skip the re-run assertion;
     # run() reports a timeout as a non-zero rc, the same REPAIRABLE arm.
+    # ── the two probes Tauri preflight actually runs ─────────────────────────
     PREFLIGHT_TIMEOUT = 10
 
     t0 = time.time()
@@ -152,6 +153,7 @@ def main(argv: list[str]) -> int:
     # ── the deeper probes the fix PRs add ──────────────────────────────────── RECORDED, not repair evidence: preflight
     # runs only `-h` and `studio desktop-capabilities --json` (managed.rs:357, :445), so counting these would pass a leg
     # while the real app still reports ManagedReady over a torn install.
+    # ── the deeper probes the fix PRs add ────────────────────────────────────
     for label, args in (
         ("verify_install", ["studio", "verify-install"]),
         ("desktop_runtime_check", ["studio", "desktop-runtime-check"]),
@@ -170,6 +172,7 @@ def main(argv: list[str]) -> int:
     say("install_in_progress_marker", (home / ".desktop-install-in-progress").exists())
 
     # ground truth: does the backend actually boot? ──────────────────────── Own the whole process tree:
+    # ── ground truth: does the backend actually boot? ────────────────────────
     popen_kw: dict = {}
     if os.name == "posix":
         popen_kw["start_new_session"] = True
@@ -272,6 +275,7 @@ def main(argv: list[str]) -> int:
     # `-h` gates it for the same reason: probe_managed_bin runs it FIRST and returns Stale "cli_unusable" without
     # reaching the capability probe (managed.rs:465-478), so consulting cli_h_ok only in the repairable arm called a
     # help-less CLI HEALTHY.
+    # ── verdict ──────────────────────────────────────────────────────────────
     if backend_ok and caps_ready and facts.get("cli_h_ok"):
         verdict = "HEALTHY"
     elif not caps_ready or not facts.get("cli_h_ok"):

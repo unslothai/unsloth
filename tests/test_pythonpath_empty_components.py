@@ -102,6 +102,7 @@ def test_it_is_still_idempotent(monkeypatch, tmp_path):
     assert os.environ["PYTHONPATH"] == after
 
 
+# ---- the premise and the consequence, with real child processes -----------
 def _probe_tree(tmp_path):
     """cwddir holds a module reachable ONLY through the cwd.
 

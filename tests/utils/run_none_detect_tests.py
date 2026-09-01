@@ -398,21 +398,21 @@ def test_synthetic():
 
     results = {}
 
-    # ChatML — 10 clean rows (0-9), 8 bad rows (10-17)
+    # ChatML - 10 clean rows (0-9), 8 bad rows (10-17)
     ds_chatml = make_chatml_dataset()
     stats = run_scan(ds_chatml, "Synthetic ChatML (messages/role/content)")
     assert_bad_rows(stats, 8, "ChatML bad rows")
     assert_exact_recall(stats, set(range(10, 18)), "ChatML exact recall")
     results["chatml"] = stats
 
-    # ShareGPT — 5 clean rows (0-4), 5 bad rows (5-9)
+    # ShareGPT - 5 clean rows (0-4), 5 bad rows (5-9)
     ds_sgpt = make_sharegpt_dataset()
     stats = run_scan(ds_sgpt, "Synthetic ShareGPT (conversations/from/value)")
     assert_bad_rows(stats, 3, "ShareGPT bad rows")
     assert_exact_recall(stats, set(range(5, 10)), "ShareGPT exact recall")
     results["sharegpt"] = stats
 
-    # Alpaca — 5 clean rows (0-4), 5 bad rows (5-9)
+    # Alpaca - 5 clean rows (0-4), 5 bad rows (5-9)
     ds_alpaca = make_alpaca_dataset()
     stats = run_scan(ds_alpaca, "Synthetic Alpaca (instruction/output)")
     assert_bad_rows(stats, 4, "Alpaca bad rows")

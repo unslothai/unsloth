@@ -28,6 +28,7 @@ FUNC_NAME = "_fast_prepare_inputs_for_generation"
 
 # Model files that call fix_prepare_inputs_for_generation(...) and share the guarded function.
 # glm4_moe (MLA attention, different path) and falcon_h1 (its own variant) are intentionally absent.
+# --------------------------------------------------------------------------
 WIRED_MODEL_FILES = [
     "mistral.py",
     "gemma.py",
@@ -210,6 +211,7 @@ def test_model_families_stay_wired_to_shared_prepare_inputs():
     )
 
 
+# --------------------------------------------------------------------------
 PAST_LEN = 4
 
 # Three rows with different amounts of left padding (0 = pad).

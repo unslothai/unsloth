@@ -150,6 +150,7 @@ def _run(
     return args, env
 
 
+# ---- the bug -------------------------------------------------------------
 def test_float32_model_on_t4_stays_float32():
     args, env = _run(torch.float32, bf16_supported = False)
     assert args.fp16 is False, "float32 model must not get float16 autocast"

@@ -54,6 +54,7 @@ def _calls(node):
 
 
 # the property that broke -------------------------------------------
+# ---- the property that broke -------------------------------------------
 def test_save_pretrained_gguf_calls_the_converter(tree):
     """The whole purpose of the function. Without this call it is an
     expensive no-op that reports success."""
@@ -84,6 +85,7 @@ def test_the_gguf_conversion_is_not_dead_code(tree):
         )
 
 
+# ---- the general shape --------------------------------------------------
 def _unreachable(body):
     """Statements following an unconditional terminator in one block."""
     for i, stmt in enumerate(body):

@@ -98,6 +98,7 @@ def test_local_path_passthrough(local_path):
     assert variant is None
 
 
+# ── Edge cases -------------------------------------------------------
 def test_empty_string():
     assert _split("") == ("", None)
 

@@ -91,6 +91,7 @@ def _manifest(
     }
 
 
+# ── Host detection (probes come from install_llama_prebuilt.detect_host) ──
 def _llama_host(
     system: str,
     machine: str,
@@ -165,6 +166,7 @@ def test_detect_host_unsupported(monkeypatch, system, machine):
         M.detect_host()
 
 
+# ── Asset naming (pure) ──
 def test_whisper_asset_name():
     assert (
         M.whisper_asset_name(RELEASE_TAG, _host("linux", "x64"), "cpu")
@@ -180,6 +182,7 @@ def test_whisper_asset_name():
     )
 
 
+# ── Install layout ──
 def test_whisper_server_path_layout():
     nix = _host("linux", "x64")
     win = _host("windows", "x64")
@@ -187,6 +190,8 @@ def test_whisper_server_path_layout():
     assert M.whisper_server_path(Path("/w"), win) == Path("/w/build/bin/Release/whisper-server.exe")
 
 
+# ── Manifest parse + basic selection (wiring pin; the rejection matrix,
+# tests/studio/install/test_prebuilt_core.py) ──
 def test_parse_manifest_ok_and_basic_selection():
     cpu_asset = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
     manifest = M.parse_manifest(_manifest([_artifact("linux", "x64", "cpu", cpu_asset, "a" * 64)]))
@@ -219,6 +224,7 @@ def test_select_artifact_never_picks_fat_gpu_bundles():
     assert backend == "cpu" and used_fallback is True
 
 
+# ── Traversal-safe extraction ──
 def _add_file(
     tar: tarfile.TarFile,
     name: str,
@@ -231,6 +237,7 @@ def _add_file(
     tar.addfile(info, io.BytesIO(data))
 
 
+# ── Fixture archive + full staging/activate install ──
 def _build_cpu_bundle(tmp_path: Path, host: HostInfo) -> tuple[Path, str, str]:
     """Build a fake CPU bundle archive with a dummy server + lib; return (path, name, sha256)."""
     asset = M.whisper_asset_name(RELEASE_TAG, host, "cpu")
@@ -347,6 +354,7 @@ def test_install_sha_mismatch_then_retry_fails_closed(tmp_path, monkeypatch):
     assert not (install_dir / "build" / "bin" / "whisper-server").exists()
 
 
+# ── Busy lock -> exit 3 ──
 def test_busy_lock_maps_to_exit_busy(tmp_path, monkeypatch):
     host = _host("linux", "x64")
     archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
@@ -366,6 +374,7 @@ def test_busy_lock_maps_to_exit_busy(tmp_path, monkeypatch):
     assert rc == M.EXIT_BUSY
 
 
+# ── Resolver JSON shape ──
 def test_resolve_mode_keeps_stdout_json_only(tmp_path, monkeypatch, capsys):
     # Even when the slim pairing emits diagnostics, --resolve-prebuilt must keep stdout to exactly the JSON line
     # (setup.sh / whisper_cpp_update.py parse it);
@@ -499,6 +508,7 @@ def test_resolve_mode_reports_an_ordinary_fallback_as_unresolved(monkeypatch, ca
     assert payload["unavailable_reason"] == "unresolved"
 
 
+# ── --rocm-gfx / --has-rocm overrides (llama parity) ──
 def test_rocm_gfx_override_implies_has_rocm():
     # host stays on its CUDA/CPU path and never picks the ROCm bundle.
     # rocm-gfx alone (no --has-rocm) must enable ROCm and clear NVIDIA, else the host stays on its CUDA/CPU path and
@@ -510,6 +520,7 @@ def test_rocm_gfx_override_implies_has_rocm():
     assert M.auto_detect_backend(out) == "rocm"
 
 
+# ── Slim bundles paired with the installed llama.cpp ggml runtime ──
 SLIM_LLAMA_TAG = "b10069-mix-fb3d4ca"
 SLIM_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-slim.tar.gz"
 CPU_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"

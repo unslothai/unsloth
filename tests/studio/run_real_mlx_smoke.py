@@ -33,6 +33,7 @@ EXPECT_IN_OUTPUT = "Unsloth"
 MODEL_NAME = "unsloth/gemma-3-270m-it"
 
 
+# ---------------------------------------------------------------------------
 def _seed_everything() -> None:
     _random.seed(SEED)
     np.random.seed(SEED)
@@ -160,6 +161,7 @@ def _write_metrics(path: Path, metrics: dict) -> None:
     print(json.dumps(metrics, indent = 2, default = str), flush = True)
 
 
+# ---------------------------------------------------------------------------
 def cmd_train(args) -> int:
     _seed_everything()
     metrics: dict = {
@@ -421,6 +423,7 @@ def cmd_train(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
 def cmd_reload(args) -> int:
     _seed_everything()
     save_dir = Path(args.dir).resolve()
@@ -616,6 +619,7 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest = "cmd", required = True)

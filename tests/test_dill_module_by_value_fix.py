@@ -48,6 +48,7 @@ pytest.importorskip("dill")
 
 
 # The real thing, in a subprocess, on a real off-prefix tree
+# --------------------------------------------------------------------------
 _HOSTILE_TREE = {
     # The pyarrow stand-in.
     # The fix's gate asks whether `datasets` or `pyarrow` resolve to somewhere dill pickles by value, and answers from
@@ -300,6 +301,7 @@ def test_the_env_switch_turns_it_off(tmp_path):
 
 
 # The gate: an ordinary install must be untouched
+# --------------------------------------------------------------------------
 def test_an_ordinary_site_packages_install_is_a_no_op():
     """dill's behaviour, fingerprints included, has to be identical where it
     already works. The gate is what guarantees that, so it is asserted against

@@ -390,6 +390,7 @@ def info(message: str) -> None:
 
 # ── in-page actions ─────────────────────────────────────────────────── Each one brackets itself with
 # __hv.begin()/__hv.end(), so the recorder window is exactly the action rather than the action plus a CDP round trip.
+# ── in-page actions ───────────────────────────────────────────────────
 KEYSTROKE_JS = """
 async (count) => {
   const api = window.__heavyThread;

@@ -186,6 +186,7 @@ def run(base_url: str, pw) -> dict:
     if s["2_fresh_mount"]["answer_top"] >= s["1_baseline"]["answer_top"]:
         p.append("2: the answer did not move up when activity collapsed")
 
+    # --- 3 manual expansion ----------------------------------------------
     page.click('[data-probe="controlled-trigger"]')
     page.click('[data-probe="uncontrolled-trigger"]')
     settle(page)
@@ -215,6 +216,7 @@ def run(base_url: str, pw) -> dict:
         elif after[name]["aria_expanded"] == "true":
             p.append(f"4: {name} ignored the preference turning on while mounted")
 
+    # --- 5 persistence ----------------------------------------------------
     stored = page.evaluate("(k) => window.localStorage.getItem(k)", PREFERENCES_KEY)
     open_page(page, base_url)
     scene = probe(page)
@@ -227,6 +229,7 @@ def run(base_url: str, pw) -> dict:
         if scene[card]["aria_expanded"] == "true":
             p.append(f"5: {card} is open after a reload with the preference stored")
 
+    # --- 6 scroll ---------------------------------------------------------
     def close_one_card(via: str) -> tuple[int, int]:
         """Close ONE card, two ways, from an identical start.
 
@@ -295,6 +298,7 @@ def run(base_url: str, pw) -> dict:
         if granted[card]["aria_expanded"] == "true":
             p.append(f"7: the {card} card stayed pinned open after approval was granted")
 
+    # --- 8 strict mode ----------------------------------------------------
     fresh(page, base_url, True, query = "&strict=1")
     scene = probe(page)
     s["8_strict_mode"] = scene
@@ -305,6 +309,7 @@ def run(base_url: str, pw) -> dict:
     if loop_errors:
         p.append(f"8: React reported a render loop: {loop_errors[0]}")
 
+    # --- 9 rtl ------------------------------------------------------------
     fresh(page, base_url, True, query = "&rtl=1")
     scene = probe(page)
     s["9_rtl"] = scene
@@ -312,6 +317,7 @@ def run(base_url: str, pw) -> dict:
         if scene[card]["aria_expanded"] == "true":
             p.append(f"9: {card} is open under dir=rtl with the preference ON")
 
+    # --- 10 reduced motion ------------------------------------------------
     reduced = browser.new_context(viewport = {"width": 1200, "height": 900}, reduced_motion = "reduce")
     reduced_page = reduced.new_page()
     fresh(reduced_page, base_url, True)
@@ -337,6 +343,7 @@ def run(base_url: str, pw) -> dict:
         p.append("11: the uncontrolled card did not converge after 40 preference flips")
 
     # 12 storage denied ------------------------------------------------- Safari private browsing and a cookies-blocked
+    # --- 12 storage denied -------------------------------------------------
     denied = browser.new_context(viewport = {"width": 1200, "height": 900})
     denied.add_init_script(
         """() => {
@@ -375,6 +382,7 @@ def run(base_url: str, pw) -> dict:
         p.append(f"12: the page does not survive a denied localStorage: {exc}")
     denied.close()
 
+    # --- 13 malformed record -----------------------------------------------
     malformed: dict = {}
     for label, raw in [
         ('string "false"', '"false"'),

@@ -35,6 +35,7 @@ _AMD_PY = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
 _PYSTACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
 
+# ── _hf_resolve_url_parts ────────────────────────────────────────────────────
 def test_hf_resolve_url_parts_valid():
     assert prebuilt._hf_resolve_url_parts(
         "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
@@ -54,6 +55,7 @@ def test_hf_resolve_url_parts_non_hf_returns_none(url):
     assert prebuilt._hf_resolve_url_parts(url) is None
 
 
+# ── _fetch_validation_model_bytes ────────────────────────────────────────────
 def test_fetch_validation_model_prefers_huggingface_hub(tmp_path):
     model = tmp_path / "stories260K.gguf"
     model.write_bytes(b"GGUF-via-hf")
@@ -77,6 +79,7 @@ def test_fetch_validation_model_falls_back_to_urllib_on_hf_failure():
     assert dl.called
 
 
+# ── run_capture amd-smi RunAsInvoker injection ───────────────────────────────
 def _capture_env(command, system):
     captured = {"env": "sentinel"}
 
@@ -111,6 +114,7 @@ def test_run_capture_no_injection_on_linux():
     assert _capture_env(["amd-smi", "list"], "Linux") is None
 
 
+# ── name->arch table parity (install.ps1 vs setup.ps1) ───────────────────────
 def _ps_name_arch_rows(text):
     return re.findall(r'@\{\s*P\s*=\s*"([^"]*)"\s*;\s*A\s*=\s*"(gfx[0-9a-z]+)"', text)
 
@@ -207,6 +211,7 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
 
 
 # amd-smi gating (DiskPart UAC-prompt avoidance) ─────────────────────────── On Windows w/o a HIP SDK, amd-smi pops a
+# ── amd-smi gating (DiskPart UAC-prompt avoidance) ───────────────────────────
 def _amd_smi_allowed_under(system, hipinfo_present, env):
     # Build a real (temp) PATH so _external_hipinfo_on_path scans it like prod;
     # an external hipinfo.exe outside the pinned venv models a real HIP SDK.

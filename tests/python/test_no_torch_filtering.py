@@ -25,6 +25,7 @@ OVERRIDES_TXT = REQ_ROOT / "overrides.txt"
 TRITON_KERNELS_TXT = REQ_ROOT / "triton-kernels.txt"
 
 
+# ── _filter_requirements unit tests (synthetic) ───────────────────────
 class TestFilterRequirements:
     """Verify _filter_requirements correctly removes packages by prefix."""
 
@@ -206,6 +207,7 @@ class TestFilterRequirements:
         assert len(non_blank) == 2, f"git+ URL should be preserved, got: {non_blank}"
 
 
+# ── Real requirements file filtering ──────────────────────────────────
 class TestRealRequirementsFiltering:
     """Filter the ACTUAL extras.txt and extras-no-deps.txt with NO_TORCH_SKIP_PACKAGES."""
 
@@ -291,6 +293,7 @@ class TestRealRequirementsFiltering:
         assert "trl" in filtered_text, "trl should survive NO_TORCH filtering"
 
 
+# ── NO_TORCH constant tests ──────────────────────────────────────────
 class TestNoTorchConstant:
     """Verify NO_TORCH is derived correctly from UNSLOTH_NO_TORCH env var."""
 
@@ -408,6 +411,7 @@ class TestNoTorchConstant:
             assert ips._infer_no_torch() is True
 
 
+# ── IS_MACOS constant tests ──────────────────────────────────────────
 class TestIsMacosConstant:
     """Verify IS_MACOS detection logic."""
 
@@ -417,6 +421,7 @@ class TestIsMacosConstant:
         assert ips.IS_MACOS is expected
 
 
+# ── Subprocess mock of install_python_stack() ─────────────────────────
 class TestInstallPythonStackSubprocessMock:
     """Mock subprocess.run to verify which req files are used/skipped per config."""
 
@@ -613,6 +618,7 @@ class TestInstallPythonStackSubprocessMock:
         )
 
 
+# ── Overrides skip structural checks ─────────────────────────────────
 class TestOverridesSkip:
     """Verify overrides.txt is skipped when NO_TORCH is True (source-level check)."""
 
@@ -628,6 +634,7 @@ class TestOverridesSkip:
         assert overrides_match is not None, "Expected NO_TORCH conditional before overrides install"
 
 
+# ── install.sh --no-torch flag tests ──────────────────────────────────
 class TestInstallShNoTorchFlag:
     """Verify install.sh has the --no-torch flag and SKIP_TORCH variable."""
 
@@ -762,6 +769,7 @@ class TestInstallShNoTorchFlag:
         ), "CPU hint should NOT print when SKIP_TORCH=true"
 
 
+# ── Triton macOS skip structural checks ──────────────────────────────
 class TestTritonMacosSkip:
     """Verify triton is skipped on macOS (source-level check)."""
 

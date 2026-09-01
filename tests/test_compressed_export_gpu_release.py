@@ -272,6 +272,7 @@ def test_lora_merge_budgets_per_device():
     assert "get_device_properties(0).total_memory * maximum_memory_usage" not in body
 
 
+# ── the torchao ("portable" FP8/INT8) export shares the same release ──
 def _fake_torch_xpu():
     t = types.ModuleType("torch")
     t.cuda = types.SimpleNamespace(is_available = lambda: False)

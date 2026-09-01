@@ -56,6 +56,7 @@ _adamw_mod = _load_module(
 make_q_galore_param_groups = _adamw_mod.make_q_galore_param_groups
 
 
+# ======================================================================
 class TestGaLoreProjector:
     """Tests for the GaLore low-rank gradient projector."""
 
@@ -144,6 +145,7 @@ class TestGaLoreProjector:
         assert abs(ratio - 0.5) < 1e-5, f"Expected ratio ~0.5, got {ratio:.8f}"
 
 
+# ======================================================================
 class TestQuantizationUtils:
     """Tests for _quantize, _dequantize, _quantize_stochastic."""
 
@@ -192,6 +194,7 @@ class TestQuantizationUtils:
         assert abs(mean_error) < 0.01, f"Mean error {mean_error} suggests biased rounding"
 
 
+# ======================================================================
 class TestParamGroupHelper:
     """Tests for make_q_galore_param_groups."""
 
@@ -268,6 +271,7 @@ class TestParamGroupHelper:
         assert len(galore_groups) == 0, "Expected no GaLore groups when target_modules=[]"
 
 
+# ======================================================================
 class TestQGaLoreIntegration:
     """Integration tests that work without bitsandbytes on CPU."""
 

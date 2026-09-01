@@ -147,7 +147,7 @@ def test_peft_variant_kwarg_keys_const(tag: str):
 # 2.
 
 
-# peft.tuners.lora.layer.VARIANT_KWARG_KEYS — added in peft 0.18.
+# peft.tuners.lora.layer.VARIANT_KWARG_KEYS - added in peft 0.18.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_param_wrapper_class(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
@@ -163,7 +163,7 @@ def test_peft_param_wrapper_class(tag: str):
         _present = name in src
 
 
-# peft.tuners.lora.layer.ParamWrapper — peft 0.18 added the class for MoE 3D-parameter LoRA.
+# peft.tuners.lora.layer.ParamWrapper - peft 0.18 added the class for MoE 3D-parameter LoRA.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_config_target_parameters(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/config.py")
@@ -182,7 +182,7 @@ def test_peft_lora_config_target_parameters(tag: str):
 # 4. LoraModel._create_and_replace: unsloth#4807 monkey-patches this for Gemma4ClippableLinear.
 
 
-# peft.tuners.lora.LoraConfig.target_parameters — peft 0.19+.
+# peft.tuners.lora.LoraConfig.target_parameters - peft 0.19+.
 # LoraConfig at the canonical sub-module path: peft.tuners.lora.LoraConfig (or peft.tuners.lora.config.LoraConfig).
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_lora_model_create_and_replace(tag: str):
@@ -199,7 +199,7 @@ def test_peft_lora_model_create_and_replace(tag: str):
 # 5. build_peft_weight_mapping: unsloth#5167 wraps it to handle WeightConversion.__init__ kwargs.
 
 
-# 4. peft.tuners.lora.model.LoraModel._create_and_replace — unsloth#4807
+# 4. peft.tuners.lora.model.LoraModel._create_and_replace - unsloth#4807
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_transformers_weight_conversion_module(tag: str):
     candidates = [
@@ -218,7 +218,7 @@ def test_peft_transformers_weight_conversion_module(tag: str):
     )
 
 
-# peft.utils.transformers_weight_conversion.build_peft_weight_mapping — unsloth#5167 wraps it to handle
+# peft.utils.transformers_weight_conversion.build_peft_weight_mapping - unsloth#5167 wraps it to handle
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_integrations_dequantize_module_weight(tag: str):
     candidates = [
@@ -235,7 +235,7 @@ def test_peft_integrations_dequantize_module_weight(tag: str):
     )
 
 
-# peft.utils.integrations.dequantize_module_weight — used by 3 unsloth/ unsloth-zoo callsites.
+# peft.utils.integrations.dequantize_module_weight - used by 3 unsloth/ unsloth-zoo callsites.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_type_lora_enum(tag: str):
     candidates = [
@@ -256,7 +256,7 @@ def test_peft_type_lora_enum(tag: str):
     )
 
 
-# peft.PeftType.LORA — used by unsloth-zoo vllm_utils.py:2520-2559.
+# peft.PeftType.LORA - used by unsloth-zoo vllm_utils.py:2520-2559.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_modules_to_save_wrapper(tag: str):
     candidates = [
@@ -279,7 +279,7 @@ def test_peft_modules_to_save_wrapper(tag: str):
 # 9. peft.PeftModel.from_pretrained signature pin (unsloth#4807).
 
 
-# peft.utils.ModulesToSaveWrapper — both peft.utils.* and peft.utils.other.* import paths used.
+# peft.utils.ModulesToSaveWrapper - both peft.utils.* and peft.utils.other.* import paths used.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_peft_model_from_pretrained_signature(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/peft_model.py")
@@ -290,7 +290,7 @@ def test_peft_peft_model_from_pretrained_signature(tag: str):
     ), f"{tag}: PeftModel.from_pretrained missing in peft_model.py"
 
 
-# 9. peft.PeftModel.from_pretrained signature pin — unsloth#4807.
+# 9. peft.PeftModel.from_pretrained signature pin - unsloth#4807.
 # peft.__version__ exported via known mechanism.
 @pytest.mark.parametrize("tag", PEFT_TAGS)
 def test_peft_version_parseable(tag: str):

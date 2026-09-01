@@ -193,6 +193,7 @@ def _login_token_via_api(base: str, user: str, pw: str) -> str:
 
 
 # The stubbed endpoint. `_mode` decides what the NEXT call answers;
+# ─────────────────────────────────────────────────────
 _mode = ["available"]
 exchanges: list[dict] = []
 
@@ -395,6 +396,7 @@ with sync_playwright() as p:
             },
         )
 
+    # ─────────────────────────────────────────────────────
     if LOGIN_PW:
         step("setup: API login + token seed (attach to running Unsloth)")
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
@@ -481,6 +483,7 @@ with sync_playwright() as p:
         raise last_err
     shoot("01-chat-loaded")
 
+    # ─────────────────────────────────────────────────────
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
     SOLE_QUANT_SETTLE_MS = 30_000
@@ -596,6 +599,7 @@ with sync_playwright() as p:
         loc = popover.locator('input[aria-label="Context Length"]').first
         return loc if _count(loc) else None
 
+    # ─────────────────────────────────────────────────────
     ESTIMATE_LABEL = re.compile(r"Estimated Memory Usage", re.I)
     # The run-settings panel exists more than once in this document -- the picker keeps its own copy mounted behind the
     _match_note: list[str] = []
@@ -778,6 +782,7 @@ with sync_playwright() as p:
         )
         return None, None
 
+    # ─────────────────────────────────────────────────────
     step("open run-settings for the GGUF target")
     popover = open_picker()
     shoot("02-picker-open")
@@ -813,6 +818,7 @@ with sync_playwright() as p:
             "screen can be attributed to the estimate at all"
         )
 
+    # ─────────────────────────────────────────────────────
     step("the Context Length on screen reaches the estimate request")
     priced_ctx, priced = reprice(popover, "context reaches the request")
     if priced is not None:
@@ -845,6 +851,7 @@ with sync_playwright() as p:
                 f"may have collapsed onto a different variant"
             )
 
+    # ─────────────────────────────────────────────────────
     step("the row displays the numbers the endpoint returned")
     if not wait_for_row(True):
         fail("the row is gone after the re-price, so its figures cannot be read")
@@ -928,6 +935,7 @@ with sync_playwright() as p:
                 info(f"OK breakdown: placement note {layers_note!r}")
         shoot("05-row-expanded")
 
+    # ─────────────────────────────────────────────────────
     step("available:false hides the row")
     _mode[0] = "unavailable"
     _unavailable_ctx, unavailable_record = reprice(popover, "available:false hides the row")
@@ -945,6 +953,7 @@ with sync_playwright() as p:
         )
     shoot("06-unavailable")
 
+    # ─────────────────────────────────────────────────────
     step("restoring an available estimate brings the row back")
     _mode[0] = "available"
     restored_ctx, restored = reprice(popover, "restoring brings the row back")
@@ -978,6 +987,7 @@ with sync_playwright() as p:
     # A 404 from a backend predating the route also HIDES it (HARD). LAST, and it has to be. 3072, 2048, 1536 and no
     # further POST is ever made.
     # An unavailable estimate HIDES the row (HARD).
+    # ─────────────────────────────────────────────────────
     step("HTTP 404 hides the row")
     _mode[0] = "http404"
     _not_found_ctx, not_found_record = reprice(popover, "404 hides the row")

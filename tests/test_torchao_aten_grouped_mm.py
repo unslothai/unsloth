@@ -43,6 +43,7 @@ import torch  # noqa: E402
 from unsloth import import_fixes as IF  # noqa: E402
 
 
+# ---- the guard ----------------------------------------------------------
 def test_a_present_op_is_reported_as_present():
     assert IF._torch_op_is_missing("aten", "mm") is False
 
@@ -102,6 +103,7 @@ def test_it_never_registers_twice(monkeypatch):
     assert IF._ensure_aten_grouped_mm("detail") is False
 
 
+# ---- the schema ---------------------------------------------------------
 def test_the_placeholder_schema_matches_upstream():
     """Read off `torch.ops.aten._grouped_mm.default._schema` on torch 2.9.
 
@@ -151,6 +153,7 @@ def test_the_placeholder_refuses_to_compute_rather_than_guessing():
         del lib
 
 
+# ---- wiring -------------------------------------------------------------
 def test_the_subprocess_fix_covers_the_op_too():
     """vLLM's inspector child never sees an in-process patch, so the generated
     sitecustomize must carry this fix as well as the functional-symbol one."""

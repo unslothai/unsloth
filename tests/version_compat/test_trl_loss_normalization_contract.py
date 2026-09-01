@@ -52,6 +52,7 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
+# --------------------------------------------------------------------------
 def test_sft_loss_type_default_is_nll_after_unsloth_patch():
     """chunked_nll bypasses the forward (fused CE never runs) and double-divides."""
     import unsloth  # noqa: F401  must precede trl
@@ -171,6 +172,7 @@ def test_dataclass_field_default_is_nll_for_hfargumentparser():
 
 
 # The normalisation predicates themselves --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 def _divides_by_num_items(fn) -> bool:
     """True when the source contains a division by num_items_in_batch/n_items."""
     try:
@@ -267,6 +269,7 @@ def test_unsloth_get_batch_samples_is_installed_and_shaped_as_expected():
     )
 
 
+# --------------------------------------------------------------------------
 def test_rl_py_scopes_loss_type_to_sft_trainer():
     """AST guard: no loss_type replacement outside an `if trainer_file ==` branch."""
     from unsloth.models import rl

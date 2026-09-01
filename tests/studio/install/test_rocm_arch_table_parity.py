@@ -70,6 +70,7 @@ def _load_stack_module():
 stack_mod = _load_stack_module()
 
 
+# ── Source extraction helpers ────────────────────────────────────────────────
 def _sh_function_body(source: str, name: str) -> str:
     """Return a POSIX-shell function body by brace matching (same idea as
     _extract_sh_function_body in test_rocm_support.py, kept local so this file
@@ -123,6 +124,7 @@ def _strip_sh_comment(line: str) -> str:
     return line.split("#", 1)[0]
 
 
+# ── Table 1: gfx -> AMD index family ─────────────────────────────────────────
 def _gfx_family_map_sh() -> dict[str, str]:
     body = _sh_function_body(
         _INSTALL_SH.read_text(encoding = "utf-8"), "_amd_arch_index_family_for_gfx"
@@ -219,6 +221,7 @@ class TestSupportedWheelArchList:
 
 
 # Table 2: GPU marketing name -> gfx ─────────────────────────────────────── Each copy is an ordered, first-match-wins
+# ── Table 2: GPU marketing name -> gfx ───────────────────────────────────────
 def _name_table_sh_function(source: str, name: str) -> list[tuple[list[str], str]]:
     body = _sh_function_body(source, name)
     rows: list[tuple[list[str], str]] = []
@@ -545,6 +548,7 @@ class TestSpoofFixtureParity:
 
 
 # A table line names a card and gives its arch.
+# ── The meta-guard: find copies nobody registered ────────────────────────────
 _MKT_NAME = re.compile(r"(RX\s*\d{4}|PRO\s*[WV]\d{3,4}|\b90[5-8]0\b)", re.IGNORECASE)
 _GFX_ID = re.compile(r"gfx1[0-2][0-9a-z]{1,2}")
 
@@ -653,6 +657,7 @@ class TestNoUnregisteredArchTable:
         ), f"cargo build output is still scanned: {found}"
 
 
+# ── Table 3: the torch>=2.11 pin allowlist ───────────────────────────────────
 class TestTorch211PinAllowlistParity:
     """gfx120X-all / gfx1151 / gfx1150 / gfx1152 (and rocm7.2) ship the null
     _grouped_mm kernel below torch 2.11, so all three installers must raise the

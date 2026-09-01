@@ -131,6 +131,7 @@ def test_required_symbols_match_peft_import_list():
 
 # Inert donors are right wherever the symbol never existed, but not for a
 # saying so when the stand-in is not equivalent ----------------------- Inert donors are right wherever the symbol
+# ---- saying so when the stand-in is not equivalent -----------------------
 def test_a_missing_mapping_function_is_announced():
     _fake_real_module(
         CONV,

@@ -726,6 +726,7 @@ with sync_playwright() as p:
         except Exception as _shoot_err:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
+    # ─────────────────────────────────────────────────────
     step("change-password through UI (Setup your account)")
     # Settle the network before touching the form:
     form_err: Exception | None = None
@@ -802,6 +803,7 @@ with sync_playwright() as p:
     if form_err is not None:
         raise form_err
 
+    # ─────────────────────────────────────────────────────
     step("wait for composer to mount")
     try:
         page.wait_for_load_state("networkidle", timeout = 30_000)
@@ -945,6 +947,7 @@ with sync_playwright() as p:
         info(f"model selector button text: {sel_text!r}")
         shoot("03b-default-model-button")
 
+    # ─────────────────────────────────────────────────────
     step("load GGUF via /api/inference/load (uses session cookie)")
     # AbortSignal-bounded: macos-14 has been seen wedging on this fetch.
     load_resp = evaluate_fetch(
@@ -975,6 +978,7 @@ with sync_playwright() as p:
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # this just catches picker-mount / debounced HF-search regressions.
+    # ─────────────────────────────────────────────────────
     step("model picker: open + drive search bar")
     # Prefer the guided-tour anchor [data-tour="chat-model-selector"] (app-sidebar.tsx) -- as stable as anything in the
     picker_btn = page.locator('[data-tour="chat-model-selector"]').first
@@ -1030,6 +1034,7 @@ with sync_playwright() as p:
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)
 
+    # ─────────────────────────────────────────────────────
     prompts = [
         "Reply with exactly: hello",
         "What is 1+1? Reply with the digit only.",
@@ -1322,6 +1327,7 @@ with sync_playwright() as p:
             f"statuses={statuses}; 4xx/5xx={len(bad)}"
         )
 
+    # ─────────────────────────────────────────────────────
     step("regenerate last assistant turn")
     last_assistant = page.locator('[data-role="assistant"]').last
     last_assistant.hover()
@@ -1355,6 +1361,7 @@ with sync_playwright() as p:
         # Soft-skip until we add a data-testid (TODO).
         info("WARN regenerate button not visible (known-fragile locator, skipped)")
 
+    # ─────────────────────────────────────────────────────
     extra = ["Reply with: yes", "Reply with: no"]
     for j, p_ in enumerate(extra, start = 1):
         step(f"extra turn {j}: {p_!r}")
@@ -1362,6 +1369,7 @@ with sync_playwright() as p:
         send_and_wait(p_, before_count + 1)
     shoot("06-after-extra-turns")
 
+    # ─────────────────────────────────────────────────────
     step("composer toggle buttons (Thinking / Web search / Code execution)")
     for feature in ("thinking", "web search", "code execution"):
         # Match whichever of "Disable X" / "Enable X" is rendered.
@@ -1397,6 +1405,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(200)
     shoot("07-toggles-cycled")
 
+    # ─────────────────────────────────────────────────────
     cfg_open = page.locator('button[aria-label="Open configuration"]').first
     if cfg_open.count() > 0:
         step("Configuration sheet: drive Temperature + Top P + extras")
@@ -1527,6 +1536,7 @@ with sync_playwright() as p:
                     f"{font_size}px = {expected_spacing:g}px, got {actual['letterSpacing']!r}"
                 )
 
+    # ─────────────────────────────────────────────────────
     acct = page.locator('button[aria-label$=" account menu"]').first
     if acct.count() > 0:
         step("theme toggle x3 with computed-color assertion")
@@ -1646,6 +1656,7 @@ with sync_playwright() as p:
     else:
         soft_fail("chat typography requires the account-menu theme control")
 
+    # ─────────────────────────────────────────────────────
     def click_nav(label, expected_url_pat = None):
         # Resolve the sidebar nav button.
         # get_by_role(name=...) works on Linux but the tooltip-derived name can be empty on macOS when the sidebar
@@ -1762,6 +1773,7 @@ with sync_playwright() as p:
         else:
             page.keyboard.press("Escape")
 
+    # ─────────────────────────────────────────────────────
     step("Recipes tab: cards render + click first card")
     page.goto(f"{BASE}/data-recipes")
     page.wait_for_timeout(1500)
@@ -1782,6 +1794,7 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
+    # ─────────────────────────────────────────────────────
     step("Recents: click previous chat in sidebar")
     # The persisted thread title is usually a snippet of the first user message, so accept any of our prompt keywords.
     PROMPT_KEYWORDS = ("hello", "world", "tree", "yes", "1+1", "2+2")
@@ -1836,6 +1849,7 @@ with sync_playwright() as p:
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # Image attachment UI reachable.
+    # ─────────────────────────────────────────────────────
     step("attachment widget reachable")
     attach = page.locator('button[aria-label="Add Attachment"]').first
     if attach.count() > 0:
@@ -1844,6 +1858,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(200)
         shoot("16-attachment-hover")
 
+    # ─────────────────────────────────────────────────────
     step("reload + session survives")
     page.reload()
     composer.wait_for(state = "visible", timeout = 60_000)
@@ -1851,6 +1866,7 @@ with sync_playwright() as p:
         fail(f"unexpected redirect to /login after reload: {page.url}")
     shoot("17-after-reload")
 
+    # ─────────────────────────────────────────────────────
     health = evaluate_fetch(
         page,
         f"{BASE}/api/health",
@@ -1861,6 +1877,7 @@ with sync_playwright() as p:
     if health["status"] != 200:
         fail(f"/api/health returned {health['status']}")
 
+    # ─────────────────────────────────────────────────────
     step("post-rotation auth check (after UI change-password)")
     if (s_old := login_via_api(OLD)) != 401:
         fail(f"old bootstrap pw should be 401, got {s_old}")
@@ -1869,6 +1886,7 @@ with sync_playwright() as p:
     info("OK old=401, new=200")
 
     # 16.
+    # ─────────────────────────────────────────────────────
     step("rotate password via subprocess(curl) -- the 'terminal' path")
     login_proc = subprocess.run(
         [
@@ -1970,6 +1988,7 @@ with sync_playwright() as p:
     )
 
     # Persisted monitor auth boundary, then shutdown.
+    # ─────────────────────────────────────────────────────
     step("persisted monitor stays dormant on /login and resumes after auth")
     try:
         ctx.clear_cookies()

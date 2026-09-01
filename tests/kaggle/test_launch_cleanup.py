@@ -284,6 +284,7 @@ def _run_main(
     return json.loads((outdir / "launch_result.json").read_text(encoding = "utf-8"))
 
 
+# --------------------------------------------------------------------------
 def test_a_pushed_kernel_is_recorded_before_anything_else_can_fail(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     launch._inflight_add("me/k-1")
@@ -461,6 +462,7 @@ def test_a_corrupt_registry_does_not_take_the_run_down(tmp_path, monkeypatch):
     assert launch.sweep_orphans() == []
 
 
+# --------------------------------------------------------------------------
 def _waiting_launcher(outdir: Path) -> str:
     return "\n".join(
         [

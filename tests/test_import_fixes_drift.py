@@ -662,6 +662,7 @@ def test_accelerate_patch_wired_into_gpu_init():
     )
 
 
+# ===========================================================================
 def test_bitsandbytes_rocm_detection_helpers_recognizable():
     """``fix_bitsandbytes_rocm_arch_detection``: the source sniff only patches
     bnb's ROCm helpers in recognized shapes; fail (don't import) when it drifts."""
@@ -706,6 +707,7 @@ def test_bitsandbytes_rocm_detection_helpers_recognizable():
             )
 
 
+# ===========================================================================
 def test_psutil_cpu_freq_shape_and_wiring():
     """``patch_psutil_cpu_freq``: the wrapper rebuilds psutil's scpufreq
     namedtuple, so fail if that surface moves or the patch is never called."""

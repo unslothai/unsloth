@@ -44,6 +44,7 @@ sys.path.insert(0, str(ROOT))
 from unsloth import import_fixes as IF  # noqa: E402
 
 
+# ---- the generated sitecustomize -----------------------------------------
 def test_it_is_valid_python():
     """A syntax error breaks every subprocess on the machine, which is far
     worse than the bug being fixed."""
@@ -108,6 +109,7 @@ def test_it_only_imports_the_stdlib_and_torch():
             assert node.module in allowed, f"unexpected import: {node.module}"
 
 
+# ---- staging ---------------------------------------------------------------
 @pytest.fixture(autouse = True)
 def _restore_pythonpath():
     before = os.environ.get("PYTHONPATH")
@@ -178,6 +180,7 @@ def test_it_is_idempotent_on_pythonpath():
     assert "if directory not in parts:" in src
 
 
+# ---- the directory it writes into -----------------------------------------
 def test_the_directory_is_private_to_this_user():
     """The temp dir is shared and everything on PYTHONPATH runs in every
     subprocess, so a fixed name there is code execution for whoever creates it
@@ -257,6 +260,7 @@ def test_the_refusal_does_not_propagate_as_a_crash(monkeypatch):
     assert "except Exception as exception:" in src[i:]
 
 
+# ---- behaviour, with real interpreters ------------------------------------
 @pytest.fixture
 def staged(tmp_path):
     """The generated sitecustomize on a PYTHONPATH dir, plus a fake torch and
@@ -535,6 +539,7 @@ def test_a_placeholder_does_not_count_as_a_real_torch_symbol():
 
 
 # a hook file planted before the directory was tightened ---------------
+# ---- a hook file planted before the directory was tightened ---------------
 def _plant(directory, kind, source):
     """A `sitecustomize.py` as it could survive a once-writable directory."""
     target = directory / "sitecustomize.py"
@@ -688,6 +693,7 @@ def test_the_staging_file_is_private_and_leaves_nothing_behind(tmp_path):
 
 
 # the chained sitecustomize keeps its own name -------------------------
+# ---- the chained sitecustomize keeps its own name -------------------------
 def test_a_chained_package_stays_importable(staged, tmp_path):
     """Restoring our module under `sitecustomize` would hide the real one from
     `import sitecustomize` and break the relative imports its own callbacks
@@ -745,6 +751,7 @@ def test_a_broken_chained_module_does_not_keep_our_name(staged, tmp_path):
     assert "MARK <<none>>" in p.stdout, p.stdout + p.stderr
 
 
+# ---- a second spelling of our own directory on sys.path -------------------
 _COUNT_HOOKS = (
     "import sys;"
     "print('HOOKS', sum(1 for h in sys.meta_path"

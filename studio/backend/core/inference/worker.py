@@ -713,7 +713,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         try:
             for cumulative_text in generator:
-                # cancel_event is an mp.Event — checked instantly, no queue polling.
+                # cancel_event is an mp.Event - checked instantly, no queue polling.
                 if cancel_event.is_set():
                     logger.info("Generation cancelled for request %s", request_id)
                     break
@@ -1114,7 +1114,7 @@ def run_inference_process(
 
     _native_audio_worker = is_native_audio_model(model_name)
 
-    # ── 0. MLX fast-path — skip torch/transformers ──
+    # ── 0. MLX fast-path - skip torch/transformers ──
     _ensure_backend_on_path()
 
     if is_apple_silicon():
@@ -1447,9 +1447,10 @@ def run_inference_process(
         )
         return
 
-    # ── 4. Command loop — process commands until shutdown ──
+    # ── 4. Command loop - process commands until shutdown ──
     # cancel_event is an mp.Event the parent can set anytime to cancel
     # generation instantly (no queue polling needed).
+    # ── 4. Command loop — process commands until shutdown ──
     logger.info("Inference subprocess ready, entering command loop")
 
     while True:

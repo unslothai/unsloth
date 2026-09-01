@@ -304,6 +304,7 @@ with sync_playwright() as p:
         # Scoping is meaningful, so an empty result is a real answer:
         return matched
 
+    # ─────────────────────────────────────────────────────
     if LOGIN_PW:
         # Attach mode: log in via the API and seed the token before navigation, skipping the first-boot change-password
         step("setup: API login + token seed (attach to running Unsloth)")
@@ -434,6 +435,7 @@ with sync_playwright() as p:
     composer.wait_for(state = "visible", timeout = 60_000)
     load_posts.clear()  # drop the setup load; keep only UI-driven loads below.
 
+    # ─────────────────────────────────────────────────────
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
     # Unfiltered, for diagnostics: which gears exist at all when the one being looked for did not.
@@ -598,6 +600,7 @@ with sync_playwright() as p:
                 return b
         return None
 
+    # ─────────────────────────────────────────────────────
     step("hidden infra models absent from picker")
     popover = open_picker()
     shoot("02-picker-open")
@@ -653,6 +656,7 @@ with sync_playwright() as p:
     shoot("03-hidden-check")
     close_picker()
 
+    # ─────────────────────────────────────────────────────
     step(f"context length {DISTINCT_CTX} persists")
     popover = open_picker()
     if open_config(popover, MODEL_HINT) is None:
@@ -732,6 +736,7 @@ with sync_playwright() as p:
         shoot("07-after-reload")
 
     # 3. Reset clears the override (never pins context) (HARD).
+    # ─────────────────────────────────────────────────────
     step("reset clears the per-model override")
     reset_btn = popover.get_by_role("button", name = "Reset").first
     if _count(reset_btn) == 0:
@@ -761,6 +766,7 @@ with sync_playwright() as p:
 
     # 3b. Re-typing the value already shown must not pin an override (HARD).
     # unchanged), so the cached blur value must not be replayed into a stored
+    # ─────────────────────────────────────────────────────
     step("re-typing the shown context does not pin an override")
     # that let this regression go unchecked.
     # Own its state instead of inheriting the step above:
@@ -811,6 +817,7 @@ with sync_playwright() as p:
         # != null;
         # It went unnoticed because it inherited a closed popover from the Reset step and silently skipped until #7760
         # made it own its state;
+        #     target.isGguf && loadableConfig.gpuMemoryMode === "manual" &&
         expected_pin = [
             e
             for e in pinned
@@ -835,6 +842,7 @@ with sync_playwright() as p:
     close_picker()
 
     # 4. Advanced settings persist (best-effort, never gates).
+    # ─────────────────────────────────────────────────────
     step("advanced (KV cache dtype / tensor parallel) persists")
     try:
         popover = open_picker()
@@ -888,6 +896,7 @@ with sync_playwright() as p:
     # ───────────────────────────────────────────────────── 5.
     # Legacy migration is idempotent (gates in CI via soft_fail).
     # Seed a pre-feature unsloth_load_settings store, confirm it migrates once with the value preserved, then reload
+    # ─────────────────────────────────────────────────────
     step("legacy unsloth_load_settings migrates once and stays idempotent")
 
     _seed_marks = [0]
@@ -1169,6 +1178,7 @@ with sync_playwright() as p:
     except Exception as e:
         soft_fail(f"migration idempotency check errored: {e}")
 
+    # ─────────────────────────────────────────────────────
     if page_errors:
         fail(f"page errors during run: {page_errors[:3]!r}")
 

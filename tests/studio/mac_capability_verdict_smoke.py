@@ -118,6 +118,7 @@ def ok(msg: str) -> None:
     print(f"[verdict]   OK {msg}", flush = True)
 
 
+# --------------------------------------------------------------------------- HTTP
 def _get(
     url: str,
     token: str | None = None,
@@ -156,6 +157,7 @@ def _post(
         return None, None
 
 
+# --------------------------------------------------------------- the reply timeline
 @dataclass(frozen = True)
 class Sample:
     t: float
@@ -359,6 +361,7 @@ class TokenGetter(threading.Thread):
         self._stop.set()
 
 
+# ------------------------------------------------------------------- the simulations
 def _write_mlx_block_shim(directory: Path) -> Path:
     """A sitecustomize that hides mlx from the import system, for the server we boot.
 
@@ -453,6 +456,7 @@ def _read_marker(marker: Path) -> dict | None:
         return None
 
 
+# ------------------------------------------------------------------- boot / teardown
 def boot(port: int, log: Path, env: dict) -> int | None:
     """Run the repo's boot script and return the server pid.
 
@@ -545,6 +549,7 @@ def tail_log(log: Path, lines: int = 80) -> None:
         print(f"  | {line}", flush = True)
 
 
+# ------------------------------------------------------------------ shared assertions
 def assert_watched_the_window(poller: HealthPoller) -> None:
     """The poll has to have produced replies, or nothing below was actually tested."""
     samples = poller.snapshot()
@@ -657,6 +662,7 @@ def booted(port: int, log: Path, env: dict):
         stop(pid)
 
 
+# ---------------------------------------------------------------------- the scenarios
 def scenario_real_mlx(port: int, log: Path) -> None:
     """A healthy Apple Silicon host must never look chat-only, not even briefly."""
     step("scenario real-mlx: the verdict on a Mac whose MLX stack works")

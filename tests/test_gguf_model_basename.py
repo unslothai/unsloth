@@ -63,6 +63,7 @@ _TABLE_A = [
     ("posix_rel", "./models/MyModel", "MyModel"),
     ("wsl_mount", "/mnt/d/Models/MyModel", "MyModel"),
     ("win_forward_slashes", "D:/Models/MyModel", "MyModel"),
+    # -- BUG rows: broken today ---------------------------------------------
     ("posix_trailing_sep", "/home/u/models/MyModel/", "MyModel"),
     ("win_drive_abs", r"D:\Models\Merged Models\MyModel", "MyModel"),
     ("win_drive_trailing", "D:\\Models\\MyModel\\", "MyModel"),

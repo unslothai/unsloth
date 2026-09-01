@@ -35,6 +35,7 @@ INF = float("inf")
 
 
 
+# ------------------------------------------------------- determinism.py
 def test_a_field_logged_by_only_one_run_is_a_difference():
     """grad_norm in cycle 0 and not in cycle 1 is nondeterminism, not a skip.
 
@@ -110,6 +111,7 @@ def test_an_infinity_only_one_run_logged_is_still_a_difference(norm_a, norm_b):
 
 
 
+# -------------------------------------------------- run_t4_smoke.py: canary
 def test_the_canary_must_be_the_whole_answer():
     from run_t4_smoke import CANARY, canary_failures
 
@@ -137,6 +139,7 @@ def test_the_canary_can_be_downgraded_to_a_warning():
 
 
 
+# -------------------------------------- run_t4_smoke.py: optimisation checks
 def test_an_infinite_gradient_norm_is_not_an_applied_update():
     """fp16 overflow reports the norm as inf as readily as NaN.
 
@@ -162,6 +165,7 @@ def test_one_finite_gradient_norm_is_enough():
 
 
 
+# ------------------------------------------- run_t4_smoke.py: saved adapter
 def _adapter_state(**over) -> dict:
     state = {
         "dir": "/kaggle/working/smoke0/lora_run0",
@@ -509,6 +513,7 @@ def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tm
 
 
 
+# ------------------------------------------ run_t4_smoke.py: the reference
 def _write_reference(
     path: Path,
     *,
@@ -915,6 +920,7 @@ def _batch_record(**over):
     return base
 
 
+# -------------------------------------------- run_t4_smoke.py: main() paths
 def _cycle(index: int, losses: list[float]) -> dict:
     return {
         "run_index": index,
@@ -1018,6 +1024,7 @@ def test_a_failed_cycle_still_reports_its_environment(monkeypatch, tmp_path):
 
 
 
+# ------------------------------------------------------- run_gptoss_t4.py
 def _gptoss_args(**over):
     base = {"max_steps": 3, "require_compile": True}
     base.update(over)
@@ -1339,6 +1346,7 @@ def test_grpo_reads_the_adapter_when_the_trainer_logged_no_norms():
 
 
 
+# ------------------------------------------------- training_evidence.py
 class _Tensor:
     """The two calls adapter_fingerprint makes on a parameter, and no more."""
 
@@ -1537,6 +1545,7 @@ def test_two_fingerprints_over_different_tensor_counts_are_not_compared():
 
 
 
+# --------------------------------------------------------- run_grpo_t4.py
 def _grpo_args(**over):
     base = {"max_steps": 3}
     base.update(over)
@@ -1638,6 +1647,7 @@ def test_grpo_still_reports_an_engine_that_never_built(monkeypatch, tmp_path):
 
 
 
+# ------------------------------------------------------- references/README
 def test_the_recapture_recipe_selects_the_control_report_by_label():
     """`reports[0]` is whichever kernel slug sorted first, not the control."""
     readme = (SMOKE_DIR / "references" / "README.md").read_text(encoding = "utf-8")

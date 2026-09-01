@@ -289,6 +289,7 @@ def check(engine: str, candidate: str) -> Tally:
             tally.record(engine, name, verdict, native)
 
         # ENDPOINTS EXPRESSED AS ELEMENT/CHILD OFFSETS ---- The alt holders are inserted BEFORE their images, so a
+        # ---- ENDPOINTS EXPRESSED AS ELEMENT/CHILD OFFSETS ----
         for label, selection_js in (
             ("element offsets forward", "s.setBaseAndExtent(p, 0, p, 3)"),
             ("element offsets backward", "s.setBaseAndExtent(p, 3, p, 0)"),
@@ -339,6 +340,7 @@ def check(engine: str, candidate: str) -> Tally:
                 "swapped, so the user's next Shift+Arrow would move the opposite edge"
             )
 
+        # ---- selections whose SCOPE is the diverging element itself ----
         for name, (body, target) in INSIDE_SCOPE.items():
             page.set_content(PAGE.replace("__BODY__", body))
             page.add_script_tag(content = candidate)
@@ -352,6 +354,7 @@ def check(engine: str, candidate: str) -> Tally:
                 continue
             tally.record(engine, name, verdict, native)
 
+        # ---- partial selections over the whole hostile document at once ----
         safe = "".join(
             body
             for name, body in CONSTRUCTS.items()

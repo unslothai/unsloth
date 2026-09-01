@@ -107,6 +107,7 @@ def api(
         return json.loads(response.read().decode())
 
 
+# ── Stub payloads, straight from the backend's own response models ───────
 NOTHING_CHAT = {
     "active_model": None,
     "loaded": [],
@@ -340,6 +341,7 @@ def run(page, state: Runtime) -> None:
     boot(page, state)
     check("no card when nothing is loaded", page.locator(CARD).count() == 0)
 
+    # ── The common two-runtime host ─────────────────────────────────────
     state.chat = chat(
         active_model = "unsloth/Qwen3-4B-GGUF",
         loaded = ["unsloth/Qwen3-4B-GGUF"],
@@ -472,6 +474,7 @@ def run(page, state: Runtime) -> None:
     )
     install_routes(page.context, state)
 
+    # ── And a readable empty answer still clears it ─────────────────────
     state.chat = chat()
     page.wait_for_timeout(8000)
     check(

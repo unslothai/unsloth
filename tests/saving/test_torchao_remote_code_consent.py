@@ -116,6 +116,7 @@ def test_cyclic_wrappers_terminate():
     assert _loaded_via_remote_code(a) is False
 
 
+# -- call-site assertions: the auto_map-derived trust is gone from every export path -----------
 def test_torchao_export_derives_trust_from_load_decision():
     assert "model_trust = _loaded_via_remote_code(model)" in _SRC
     assert "tok_trust = _loaded_via_remote_code(tokenizer)" in _SRC

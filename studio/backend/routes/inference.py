@@ -20313,7 +20313,7 @@ async def produce_openai_chat_completions(
     # verbatim so structured `tool_calls` flow back to the client. This
     # branch runs BEFORE `_extract_content_parts` because that helper is
     # unaware of `role="tool"` messages and assistant messages that only
-    # carry `tool_calls` (content=None) — both of which are valid in
+    # carry `tool_calls` (content=None) - both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
 
@@ -24715,7 +24715,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         async def _stream():
             # Manual httpx client/response lifecycle AND explicit iterator
-            # close — see _anthropic_passthrough_stream for the full rationale.
+            # close - see _anthropic_passthrough_stream for the full rationale.
             # Saving the iterator and closing it in the finally block avoids the
             # Python 3.13 + httpcore 1.0.x "Exception ignored in:
             # <async_generator>" / anyio cancel-scope trace.
@@ -33519,7 +33519,7 @@ async def _generate_openai_images(
             )
             if want_b64:
                 encoded = image_gallery.image_b64(record["id"])
-                if encoded is None:  # vanished between write and read — fail the call
+                if encoded is None:  # vanished between write and read - fail the call
                     raise RuntimeError("generated image could not be read back for encoding")
                 items.append(ImageGenerationData(b64_json = encoded))
             else:

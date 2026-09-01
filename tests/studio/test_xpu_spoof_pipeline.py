@@ -146,6 +146,7 @@ def spoof_xpu(monkeypatch):
     return _apply
 
 
+# ---------- detection ----------
 def test_detect_hardware_routes_to_xpu(spoof_xpu):
     hw, _ = spoof_xpu()
     assert hw.detect_hardware() == hw.DeviceType.XPU
@@ -354,6 +355,7 @@ def test_apply_gpu_ids_predetect_hidden_cuda_without_mask_prefers_xpu(spoof_xpu,
     assert os.environ["CUDA_VISIBLE_DEVICES"] == ""
 
 
+# ---------- visibility / selection ----------
 def test_apply_gpu_ids_writes_ze_affinity_mask(spoof_xpu, monkeypatch):
     hw, _ = spoof_xpu()
     hw.detect_hardware()
@@ -422,6 +424,7 @@ def test_get_device_map_explicit_single_is_sequential(spoof_xpu):
     assert hw.get_device_map([0]) == "sequential"
 
 
+# ---------- cache / telemetry / versions ----------
 def test_clear_gpu_cache_calls_xpu(spoof_xpu):
     hw, calls = spoof_xpu()
     hw.detect_hardware()
@@ -497,6 +500,7 @@ def test_per_device_info_no_mem_get_info_uses_none(spoof_xpu):
     assert info[0]["used_gb"] is None
 
 
+# ---------- training-device wiring ----------
 def test_get_torch_device_str_is_xpu(spoof_xpu):
     hw, _ = spoof_xpu()
     hw.detect_hardware()

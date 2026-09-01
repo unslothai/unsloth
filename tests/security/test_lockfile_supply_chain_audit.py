@@ -41,6 +41,7 @@ def _run_auditor(
     )
 
 
+# ---------------------------------------------------------------------------
 def test_malicious_lockfile_exits_1(tmp_path):
     """Non-registry URL + IOC substring + missing integrity hash -> auditor exits 1."""
     fixture = FIXTURES / "malicious_lockfile.json"
@@ -78,6 +79,7 @@ def test_audit_npm_lockfile_direct_call_findings():
     assert "known-ioc-string" in kinds
 
 
+# ---------------------------------------------------------------------------
 _MAY12_IOCS = (
     "git-tanstack.com",
     "transformers.pyz",
@@ -120,6 +122,7 @@ def test_lockfile_auditor_blocked_versions_match_scanner():
     ), "auditor and scanner BLOCKED_NPM_VERSIONS tables drifted"
 
 
+# ---------------------------------------------------------------------------
 _MALICIOUS_CARGO_LOCK = """\
 version = 3
 
@@ -221,6 +224,7 @@ def test_audit_cargo_lockfile_direct_call(tmp_path):
 # ::warning::
 
 
+# ---------------------------------------------------------------------------
 def test_gha_escape_collapses_finding_to_one_line():
     """_gha_escape() encodes \\n/\\r/% so GHA annotations aren't truncated; % must escape first."""
     assert lsa._gha_escape("a\nb\nc") == "a%0Ab%0Ac"
@@ -294,6 +298,7 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
         assert "missing-resolved-url" in line
 
 
+# ---------------------------------------------------------------------------
 def test_skip_env_var_with_short_value_rejected(tmp_path):
     """SF4: a short/boolean UNSLOTH_LOCKFILE_AUDIT_SKIP is rejected; a real justification is honored."""
     fixture = FIXTURES / "clean_lockfile.json"
@@ -386,6 +391,7 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
 # ``\n::error::...`` - the audit script must be invoked BEFORE ``npm install`` in any workflow that consumes the audited
 # --------------------------------------------------------------------------- Cargo.lock audit.
 # gated on Fork 1's NPM_IOC_STRINGS additions.
+# ---------------------------------------------------------------------------
 def test_unsupported_lockfile_version_blocks_default(tmp_path):
     """A v1 lockfile (or any non-v2/v3 version) means the structural
     dependency walk never runs, so ``blocked-known-malicious`` /

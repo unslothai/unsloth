@@ -24,6 +24,7 @@ import pytest
 import unsloth.save as save_mod
 
 
+# -- _choose_first_conversion (pure planning logic) ----------------------------------------
 @pytest.mark.parametrize(
     "methods, model_dtype, expected",
     [
@@ -45,6 +46,7 @@ def test_choose_first_conversion_imatrix_forces_two_pass():
     assert save_mod._choose_first_conversion(["q8_0"], "f16", has_imatrix = True) == "f16"
 
 
+# -- save_to_gguf pass planning (mocked convert/quantize) -----------------------------------
 class _Harness:
     """Monkeypatched convert/quantize recording calls and creating real files."""
 
@@ -245,6 +247,7 @@ def test_quantize_failure_raises_actionable_error(monkeypatch, tmp_path):
         _run(tmp_path, ["q4_k_m", "q5_k_m"])
 
 
+# -- reclaiming the 16-bit merge on a tight disk (see tests/test_gguf_disk_headroom.py) -----
 def _tight_disk(monkeypatch, free_gb = 1):
     import types
     usage = types.SimpleNamespace(total = 0, used = 0, free = free_gb * 1024**3)

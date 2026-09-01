@@ -74,6 +74,7 @@ def test_shipped_dtype_fields_match_the_old_eval(value):
         assert resolve_dtype(field) is reference, field
 
 
+# --- a dtype field is no longer an expression --------------------------------
 @pytest.mark.parametrize(
     "payload",
     [
@@ -96,6 +97,7 @@ def test_table_covers_only_dtypes():
         assert value is None or isinstance(value, torch.dtype), key
 
 
+# --- the code fields are only ours -------------------------------------------
 def test_a_value_we_set_is_trusted(monkeypatch):
     monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising = False)
     value = _shipped_values()[0]
@@ -127,6 +129,7 @@ def test_unset_is_empty(monkeypatch):
     assert trusted_custom_dtype() == ("", False)
 
 
+# --- vision.py no longer evaluates the fields --------------------------------
 def test_vision_does_not_eval_the_dtype_fields():
     source = pathlib.Path(__import__("unsloth.models.vision", fromlist = ["x"]).__file__).read_text(
         encoding = "utf-8"

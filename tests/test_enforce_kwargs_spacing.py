@@ -190,6 +190,7 @@ def test_enforce_spacing_noop_when_already_spaced():
 
 # Rule D: def one-per-line iff >= 3 params AND a default ────────────────── add comma -> force one-per-line;
 # Comma must be ADDED: >= 3 params, has a default, no trailing comma yet.
+# ── Rule D: def one-per-line iff >= 3 params AND a default ──────────────────
 _DEF_ADD = {
     "three_with_default": "def f(a, b, c=1):\n    return a\n",
     "four_with_default": "def f(a, b, c, d=1):\n    return a\n",

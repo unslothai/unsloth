@@ -691,6 +691,7 @@ def test_the_cap_check_reads_the_whole_split():
     ), "that early return inspected only the first row"
 
 
+# --- what the fourth review round found -------------------------------------
 def test_a_raw_train_split_does_not_excuse_a_tokenized_eval_split(tmp_path, trl_has_guard):
     """`_unsloth_prep_truncates` is decided from the train split. A raw train set
     beside a pre-tokenized eval set skipped the whole truncation block, cleared
@@ -756,6 +757,7 @@ def test_an_unrewritable_stream_is_refused_not_assumed(tmp_path, trl_has_guard):
         _build(tmp_path, dataset = _opaque_stream)
 
 
+# --- what the fifth review round found ---------------------------------------
 def test_keep_end_truncation_keeps_the_end(tmp_path, trl_has_guard):
     """TRL slices `[-max_length:]` for `truncation_mode = 'keep_end'`, which is
     what callers use when the completion sits at the tail of a long prompt.
@@ -858,6 +860,7 @@ def test_a_column_that_is_not_per_token_is_left_alone(tmp_path, trl_has_guard):
         assert trainer.train_dataset[0]["doc_spans"] == [1, 2, 3]
 
 
+# --- what the third review round found ---------------------------------------
 def _scalar_torch_formatted_dataset(tok):
     """A tokenized split with a scalar id column, read as torch tensors.
 
@@ -1242,6 +1245,7 @@ def test_a_trainer_without_predict_is_not_broken():
     assert not hasattr(OnlyEvaluate, "predict")
 
 
+# ── the late cap has to agree with the construction-time cap ─────────────────
 def test_evaluate_caps_an_iterable_split():
     """A stream reached the collator uncapped, and did so silently.
 
@@ -1366,6 +1370,7 @@ def test_the_codegen_leaves_a_packed_eval_split_to_the_packer():
     )
 
 
+# ── round five: what the eval packer owns, and what supervision means ────────
 def test_the_codegen_does_not_raise_on_a_split_it_left_to_the_packer():
     """Sparing the split and then scanning it is a hard error, not a fallback.
 
@@ -2079,6 +2084,7 @@ def test_a_split_is_only_scanned_once():
     assert seen["ds"] is first, "the same split gave a different answer"
 
 
+# --- round 7: pickling, mutation, predict's contract, single-pass probes -----
 def _late_cap_helpers():
     """`evaluate`/`predict` wrapped onto a stub, so the late cap can be driven
     without standing up a real trainer."""
@@ -2233,6 +2239,7 @@ def test_the_memo_still_reuses_an_unchanged_datasets_split():
     assert seen["ds"] is first
 
 
+# ── round nine: the refusal, the required rewrite, and the one-shot stream ────
 def test_capping_the_train_split_cannot_undo_the_unknown_mode_refusal():
     """`_unsloth_capped` is seeded from the mode and then had to survive.
 
@@ -2325,6 +2332,7 @@ def test_an_optional_rewrite_still_only_warns():
     )
 
 
+# ── round ten: the same one-shot signal, everywhere it is probed ─────────────
 def _shared_iterator_split(rows):
     """An `IterableDataset` whose `__iter__` hands back one stored generator.
 
@@ -2835,6 +2843,7 @@ def test_a_transformed_eval_split_keeps_its_cap(tmp_path, trl_has_guard):
     assert trainer.args.max_length is not None, "nothing else truncates the yielded rows"
 
 
+# ── round fifteen: alignment, laziness, the cache key, and unknown modes ─────
 def test_a_one_shot_stream_slices_every_aligned_column():
     """`_column_names` already read a row off the stream, and discarding it left
     `_sliceable_per_token` with nothing to measure, so it cut `input_ids` alone
@@ -3268,6 +3277,7 @@ def test_the_late_evaluation_memo_is_bounded():
     assert 0 < len(memo) <= rl._EVAL_CAP_MEMO_MAX, len(memo)
 
 
+# ── round nineteen ───────────────────────────────────────────────────────────
 def test_a_nullable_value_does_not_break_the_construction_time_truncation():
     """`_unsloth_is_sequence_column` judges the COLUMN from its first row. An
     optional field that is a list there and None further in raised TypeError out
@@ -3376,6 +3386,7 @@ def test_a_zoo_that_already_normalizes_the_seed_is_left_alone():
     )
 
 
+# ── round twenty ─────────────────────────────────────────────────────────────
 def test_a_single_quoted_normalized_seed_is_recognised():
     """The narrow regex accepts either quote style, so the idempotence check has
     to as well. A Zoo carrying the replacement single-quoted matched neither the

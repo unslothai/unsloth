@@ -41,6 +41,7 @@ if importlib.util.find_spec("torch") is None:
 
 
 # TRL-shaped method sources ------------------------------------------------ `_init_vllm` and `sync_weights` are still
+# --- TRL-shaped method sources ------------------------------------------------
 _INIT_VLLM = """
 def _init_vllm(self, model):
     if self.mode == "colocate":
@@ -447,6 +448,7 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
 # reach it positionally there.
 # On `chat` it is an ordinary positional parameter, and its index has already moved once (`tokenization_kwargs` was
 # inserted in 0.18.0).
+# --- vLLM signature fidelity --------------------------------------------------
 class VLLMSignatureEngine(FakeEngine):
     """`FakeEngine` with vLLM 0.27.1's real parameter lists on both entry points."""
 

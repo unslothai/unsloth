@@ -38,6 +38,7 @@ def _load_guard_module():
 _system_dir_guard = _load_guard_module()
 
 
+# ── install.ps1: relocate before doing any work ──
 def _install_ps1() -> str:
     return INSTALL_PS1.read_text(encoding = "utf-8")
 
@@ -319,6 +320,7 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
     assert "FAILED:" in res.stdout, "must route through Exit-InstallFailure for rollback"
 
 
+# ── unsloth_cli: the message the user actually reads ──
 def _expand_windows_user(value: str, environ: dict[str, str]) -> str:
     """The real ntpath.expanduser, against the fake environment."""
     with mock.patch.dict(os.environ, environ, clear = True):
@@ -566,6 +568,7 @@ def test_cli_guard_message_repeats_the_actual_command():
 # ── "Run Unsloth at login" (issue #8510): the desktop cannot choose its own cwd ── Windows registers login startup as
 # an HKCU Run value, which carries no working directory, so Unsloth Desktop and every CLI child it spawns start in
 # System32.
+# ── "Run Unsloth at login" (issue #8510): the desktop cannot choose its own cwd ──
 _RELOCATED = r"C:\Users\me\.unsloth"
 
 

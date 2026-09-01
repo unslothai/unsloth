@@ -13,6 +13,7 @@ Mirrors the conftest harness in unslothai/unsloth-zoo PR #624.
 
 from __future__ import annotations
 
+# --- torch.compile cache isolation -------------------------------------------------
 import importlib.util as _ilu  # noqa: E402
 import pathlib as _pathlib  # noqa: E402
 
@@ -29,12 +30,15 @@ for _up in _iso.parents:
 # marker and pytest only puts a *test file's* own directory on sys.path, so tests/python/, tests/studio/install/ and
 # tests/security/ cannot reach it by import.
 # see tests/_shared/unsloth_pwsh_runner.py for the case that forced it.
+# -----------------------------------------------------------------------------------
+# --- shared test helpers on sys.path -----------------------------------------------
 import sys as _sys  # noqa: E402
 
 _shared_dir = _iso.parent / "_shared"
 if _shared_dir.is_dir() and str(_shared_dir) not in _sys.path:
     _sys.path.insert(0, str(_shared_dir))
 
+# -----------------------------------------------------------------------------------
 import importlib.util
 import os
 import sys
@@ -198,6 +202,7 @@ if not _has_real_accelerator():
     _patch_torch_cuda_for_import()
 
 
+# ---------------------------------------------------------------------------
 def _apply_upstream_import_fixes_for_tests() -> None:
     try:
         import unsloth  # noqa: F401  # runs unsloth/import_fixes.py

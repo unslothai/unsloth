@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts import scan_npm_packages as snp  # noqa: E402
 
 
+# ---------------------------------------------------------------------------
 def _run_scanner(lockfile: Path, *, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--lockfile", str(lockfile)],
@@ -28,6 +29,7 @@ def _run_scanner(lockfile: Path, *, timeout: int = 30) -> subprocess.CompletedPr
     )
 
 
+# ---------------------------------------------------------------------------
 def test_malicious_lockfile_exits_1():
     """Structural IOCs alone (non-registry resolved URL + missing integrity) fail the scanner offline."""
     fixture = FIXTURES / "structural_only_lockfile.json"
@@ -61,6 +63,7 @@ def test_clean_lockfile_exits_0():
     assert "0 hard error(s)" in proc.stdout
 
 
+# ---------------------------------------------------------------------------
 _BLOCKED_AVAILABLE = hasattr(snp, "BLOCKED_NPM_VERSIONS")
 
 
@@ -139,6 +142,7 @@ def test_blocked_npm_versions_short_circuits_download():
     assert "blocked-known-malicious" in combined or "BLOCKED_NPM_VERSIONS" in combined
 
 
+# ---------------------------------------------------------------------------
 def _extract_pkg_with_ioc(ioc: str, tmp_path: Path) -> Path:
     """Build a one-file npm package extract tree embedding `ioc` in package.json; return its root."""
     pkg_json = {
@@ -178,6 +182,7 @@ def test_every_known_ioc_string_caught(tmp_path):
         )
 
 
+# ---------------------------------------------------------------------------
 def test_parse_lockfile_structural_findings():
     """Structural-only fixture yields 2 structural findings and 0 entries."""
     entries, struct = snp.parse_lockfile(FIXTURES / "structural_only_lockfile.json")
@@ -187,6 +192,7 @@ def test_parse_lockfile_structural_findings():
     assert "missing-integrity-hash" in patterns
 
 
+# ---------------------------------------------------------------------------
 def _strip(src):
     out = snp._strip_js_noncode(src)
     assert len(out) == len(src), "geometry (length) must be preserved"
@@ -245,6 +251,7 @@ def test_strip_only_applies_to_js_family():
     assert ".js" in snp._JS_FAMILY_SUFFIXES and ".json" not in snp._JS_FAMILY_SUFFIXES
 
 
+# ---------------------------------------------------------------------------
 _PKG = snp.PackageEntry(
     name = "x",
     version = "1.0.0",
@@ -281,6 +288,7 @@ def test_ioc_in_assigned_string_survives_stripping():
     assert "known-ioc-string" in pats
 
 
+# ---------------------------------------------------------------------------
 def _finding(
     pkg,
     fn,

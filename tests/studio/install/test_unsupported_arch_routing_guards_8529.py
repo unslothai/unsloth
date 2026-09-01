@@ -84,6 +84,7 @@ _UNSUPPORTED_ARCH_INPUTS = (
 _ROUTABLE_ARCHES = [("gfx1030", "gfx103X-all"), ("gfx1100", "gfx110X-all")]
 
 
+# ── The Python resolvers, called rather than inspected ───────────────────────
 @pytest.fixture(autouse = True)
 def _no_index_mirror():
     """Both resolvers honour a mirror override, and a host that has one set would
@@ -142,6 +143,7 @@ class TestPythonIndexResolversAreAskedDirectly:
         assert arch not in stack_mod._GFX_TO_AMD_INDEX_ARCH
 
 
+# ── install.sh's case table, executed under sh ───────────────────────────────
 def _sh_function_body(source: str, name: str) -> str:
     """Same extraction as test_rdna1_unsupported_message_8529.py: take the function
     verbatim from the installer so the shell evaluates the shipped text, not a
@@ -212,6 +214,7 @@ class TestInstallShIndexFamilyRuns:
 # What get_torch_index_url calls that is not in the two functions extracted below.
 # Each stub is the shape of a host with an AMD GPU, no NVIDIA GPU and no readable ROCm userspace, the arrangement that
 # carries a user-pinned arch all the way to the routing decision.
+# ── install.sh's whole index selector, executed under sh ─────────────────────
 _INDEX_URL_STUBS = """
 uname() { case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac; }
 _has_usable_nvidia_gpu() { return 1; }
@@ -309,6 +312,7 @@ class TestInstallShIndexSelectorRuns:
 
 # print a line, so its result must not flow into either: assigning it to _setup_gfx passes
 # setup.sh forwards `--rocm-gfx "$_setup_gfx"` to install_llama_prebuilt.py and the whisper installer, and keys the
+# ── studio/setup.sh: the unsupported lookup is report-only ───────────────────
 _SETUP_SH_UNSUPPORTED_HELPERS = ("_setup_unsupported_gfx_any", "_setup_unsupported_gfx_from_name")
 
 
@@ -363,6 +367,7 @@ def test_setup_sh_never_assigns_an_unsupported_arch_to_the_routed_variable(arch)
     assert not hits, f"studio/setup.sh routes {arch} into --rocm-gfx: {hits}"
 
 
+# ── The PowerShell copies of the same map ────────────────────────────────────
 def _ps_block(source: str, header: str, opener: str, closer: str) -> str:
     """The literal `@{...}` or `@(...)` that `header` opens, balanced."""
     start = source.find(header)
@@ -535,6 +540,7 @@ class TestPowerShellMapEvaluated:
 
 # a routing site the assertions above cannot see. Reachability is narrow, but "narrow" is
 # The Strix reroute picks a per-arch index without consulting either family map, so it is a routing site the assertions
+# ── The second, independent arch to repo.amd.com gate ────────────────────────
 _STRIX_SITES = [
     (_INSTALL_SH, r"^\s*(gfx[0-9a-z|]+)\)\s+_strix_gfx="),
     (_STACK_PY, r"^\s*_strix_gfx\s*=\s*\{([^}]*)\}"),
@@ -557,6 +563,7 @@ def test_the_strix_reroute_names_no_unsupported_arch(source_path, pattern):
     assert "gfx1151" in named, f"{source_path.name}: extraction matched nothing useful"
 
 
+# ── The CPU summary must blame the card the fallback is actually about ───────
 _SUMMARY_GUARD_ANCHOR = "_covered_disp_gfx=$(_infer_linux_amd_gfx_arch"
 
 
@@ -657,6 +664,7 @@ class TestInstallShCpuSummaryBlamesTheRightCard:
         assert _run_summary_guard(tmp_path, [_RX_7900]) == "GENERIC"
 
 
+# ── setup.sh's KFD report must blame the right card too ──────────────────────
 _SETUP_SH_FUNCS = (
     "_setup_supported_gfx_from_name",
     "_setup_unsupported_gfx_from_name",
@@ -840,6 +848,7 @@ def test_setup_sh_treats_a_blank_index_pin_as_unset(url, family, pinned):
     )
 
 
+# ── The five unsupported tables must agree, not merely exist ─────────────────
 _PARITY_NAMES = [
     # RDNA 1 (Navi 10 / 12 / 14), the #8529 cluster
     "AMD Radeon RX 5700 XT",

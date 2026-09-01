@@ -395,6 +395,7 @@ def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
         return
+    # --- 1. a deep-open walked away from mid-load is not replayed later --------------
     run_abandoned_deep_open(page)
 
     open_dialog(page)
@@ -419,6 +420,7 @@ def run(page) -> None:
             )
     report["steps"].append("all-tabs-render")
 
+    # --- 3. every lan address has actions bound to that address ----------------------
     run_lan_address_actions(page)
 
     page.evaluate("() => window.__settingsSmoke.close()")
@@ -445,6 +447,7 @@ def run(page) -> None:
 
     # A real setting well down a long panel, so a jump that never happens shows in scrollTop.
     # search, then jump to a result and confirm the scroll target flashed ------ A real setting well down a long panel
+    # --- 5. search, then jump to a result and confirm the scroll target flashed ------
     target_tab = "general"
     target_label = report["tabs"][target_tab]["settled"]["labels"][-1]
     query = target_label.split()[0]

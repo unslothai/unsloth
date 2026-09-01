@@ -30,7 +30,7 @@ def test_get_total_transformer_layers_reads_text_config():
     class FakeModel:
         config = FakeConfig()
 
-    # No num_hidden_layers at top level — should fall through to text_config.
+    # No num_hidden_layers at top level - should fall through to text_config.
     assert _get_total_transformer_layers(FakeModel()) == 24
 
 
