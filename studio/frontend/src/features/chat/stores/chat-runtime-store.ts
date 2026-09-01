@@ -490,14 +490,6 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
 // settings write still outstanding" on their own.
 let unsettledFlushes = 0;
 
-function settingsWritesAreDrained(): boolean {
-  return (
-    pendingTimer === null &&
-    Object.keys(pendingPatch).length === 0 &&
-    unsettledFlushes === 0
-  );
-}
-
 function enqueueSettingsFlush(): Promise<void> {
   unsettledFlushes += 1;
   inflightFlush = inflightFlush
@@ -505,9 +497,6 @@ function enqueueSettingsFlush(): Promise<void> {
     .then(() => flushSettingsPatch())
     .finally(() => {
       unsettledFlushes -= 1;
-      if (settingsWritesAreDrained()) {
-        resumeDeferredLegacyQwenDefaultsRetry();
-      }
     });
   return inflightFlush;
 }
@@ -537,15 +526,14 @@ const SETTINGS_FLUSH_TIMEOUT_MS = 2000;
  * way -- and the mirror above is a trailing-edge debounce, so a message sent
  * inside that window would run on the value before the toggle. Returns
  * immediately when nothing is queued, which is every send but one right after a
- * settings change. The boolean says whether every older write actually drained;
- * callers that need strict ordering must stop when it is false.
+ * settings change.
  */
-export async function flushPendingChatSettings(): Promise<boolean> {
+export async function flushPendingChatSettings(): Promise<void> {
   const queued = pendingTimer !== null || Object.keys(pendingPatch).length > 0;
   // Not just what is queued: the debounce may have fired already and handed its
   // patch to a request the server has not answered, which leaves both of those
   // empty while the value the backend reads is still the old one.
-  if (!queued && unsettledFlushes === 0) return true;
+  if (!queued && unsettledFlushes === 0) return;
   if (pendingTimer !== null) {
     clearTimeout(pendingTimer);
     pendingTimer = null;
@@ -562,10 +550,6 @@ export async function flushPendingChatSettings(): Promise<boolean> {
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-  // A transient failure puts the older patch back in pendingPatch, and a timeout
-  // leaves its request unsettled. Callers that must run after settings writes
-  // (not merely after this wait) use this result as an ordering barrier.
-  return settingsWritesAreDrained();
 }
 
 // Best-effort flush of any pending patch when the page is going away. keepalive
@@ -3968,20 +3952,20 @@ function applyLegacyQwenDefaultsAfterPresetChange(
 async function retryLegacyQwenDefaultsAfterPresetChange(
   ownedGlobalCheckpoint: string | null,
   migrateOwnedGlobalAlongsideModelMemory: boolean,
-): Promise<boolean> {
+): Promise<void> {
   try {
     // First land the preset selection and its generic Default values. The
     // confirming GET can then recognize that exact legacy snapshot, while a
-    // newer edit in another tab makes the fingerprint fail safely.
-    if (!(await flushPendingChatSettings())) {
-      return false;
-    }
+    // newer edit in another tab makes the fingerprint fail safely. A write that
+    // has not drained by then simply hides the legacy fingerprint, so the
+    // migration declines this pass and the next trigger picks it up.
+    await flushPendingChatSettings();
     const state = useChatRuntimeStore.getState();
     if (
       !state.settingsHydrated ||
       state.activePresetSource !== "builtin-default"
     ) {
-      return true;
+      return;
     }
     const checkpoint = state.params.checkpoint;
     const confirmed = sanitizeChatSettings(await getChatSettings());
@@ -3994,7 +3978,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       confirmedState.activePresetSource !== "builtin-default" ||
       confirmedState.params.checkpoint !== checkpoint
     ) {
-      return true;
+      return;
     }
     const includeOwnedGlobal =
       ownedGlobalCheckpoint?.toLowerCase() ===
@@ -4006,7 +3990,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       includeOwnedGlobal,
       migrateOwnedGlobalAlongsideModelMemory,
     );
-    if (!migration.patch) return true;
+    if (!migration.patch) return;
     const persisted = await savePersistedChatSettingsPatchIfCurrent(
       confirmed,
       migration.patch,
@@ -4022,84 +4006,9 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
         migrateOwnedGlobalAlongsideModelMemory,
       );
     }
-    return true;
   } catch {
     warnSettingsPersistenceFailure();
-    return true;
   }
-}
-
-type QwenDefaultsRetryIntent = {
-  ownedGlobalCheckpoint: string | null;
-  ownedGlobalCheckpointConflicted: boolean;
-  migrateOwnedGlobalAlongsideModelMemory: boolean;
-};
-
-function mergeQwenDefaultsRetryIntent(
-  current: QwenDefaultsRetryIntent | null,
-  ownedGlobalCheckpoint: string | null,
-  migrateOwnedGlobalAlongsideModelMemory: boolean,
-  ownedGlobalCheckpointConflicted = false,
-): QwenDefaultsRetryIntent {
-  if (current === null) {
-    return {
-      ownedGlobalCheckpoint,
-      ownedGlobalCheckpointConflicted,
-      migrateOwnedGlobalAlongsideModelMemory,
-    };
-  }
-  const conflicts =
-    ownedGlobalCheckpointConflicted ||
-    (current.ownedGlobalCheckpoint !== null &&
-      ownedGlobalCheckpoint !== null &&
-      current.ownedGlobalCheckpoint.toLowerCase() !==
-        ownedGlobalCheckpoint.toLowerCase());
-  return {
-    ownedGlobalCheckpoint: conflicts
-      ? null
-      : (current.ownedGlobalCheckpoint ?? ownedGlobalCheckpoint),
-    ownedGlobalCheckpointConflicted:
-      current.ownedGlobalCheckpointConflicted || conflicts,
-    migrateOwnedGlobalAlongsideModelMemory:
-      current.migrateOwnedGlobalAlongsideModelMemory ||
-      migrateOwnedGlobalAlongsideModelMemory,
-  };
-}
-
-function runQwenDefaultsRetry(intent: QwenDefaultsRetryIntent): void {
-  void retryLegacyQwenDefaultsAfterPresetChange(
-    intent.ownedGlobalCheckpointConflicted
-      ? null
-      : intent.ownedGlobalCheckpoint,
-    intent.migrateOwnedGlobalAlongsideModelMemory,
-  ).then((settingsWritesDrained) => {
-    if (settingsWritesDrained) return;
-    deferredQwenDefaultsRetryIntent = mergeQwenDefaultsRetryIntent(
-      deferredQwenDefaultsRetryIntent,
-      intent.ownedGlobalCheckpointConflicted
-        ? null
-        : intent.ownedGlobalCheckpoint,
-      intent.migrateOwnedGlobalAlongsideModelMemory,
-      intent.ownedGlobalCheckpointConflicted,
-    );
-    if (settingsWritesAreDrained()) {
-      resumeDeferredLegacyQwenDefaultsRetry();
-    }
-  });
-}
-
-let deferredQwenDefaultsRetryIntent: QwenDefaultsRetryIntent | null = null;
-
-function resumeDeferredLegacyQwenDefaultsRetry(): void {
-  if (
-    deferredQwenDefaultsRetryIntent === null ||
-    !settingsWritesAreDrained()
-  ) {
-    return;
-  }
-  const intent = deferredQwenDefaultsRetryIntent;
-  deferredQwenDefaultsRetryIntent = null;
-  queueMicrotask(() => runQwenDefaultsRetry(intent));
 }
 
 let qwenDefaultsRetryScheduled = false;
@@ -4167,12 +4076,10 @@ function scheduleLegacyQwenDefaultsRetry(
     if (!hasLocalCandidate && !hasOwnedGlobalCandidate) {
       return;
     }
-    runQwenDefaultsRetry({
-      ownedGlobalCheckpoint: scheduledOwnedGlobalCheckpoint,
-      ownedGlobalCheckpointConflicted: false,
-      migrateOwnedGlobalAlongsideModelMemory:
-        migrateScheduledOwnedGlobalAlongsideModelMemory,
-    });
+    void retryLegacyQwenDefaultsAfterPresetChange(
+      scheduledOwnedGlobalCheckpoint,
+      migrateScheduledOwnedGlobalAlongsideModelMemory,
+    );
   });
 }
 

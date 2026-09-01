@@ -1153,7 +1153,12 @@ test("routine model-default refreshes skip migration reads without a candidate",
   assert.equal(settingsHttp.gets, 0);
 });
 
-test("a retained settings write stays ahead of the conditional migration", async () => {
+// A transient PUT failure must not wedge the migration permanently. Ordering
+// against an undrained write is deliberately not a guarantee: the confirming
+// GET reads whatever the server actually holds, and the compare-and-set is what
+// keeps a decision made from a stale read from landing. See "a preset modified
+// during hydration is not migrated on a stale read".
+test("a failed settings write does not strand the migration", async () => {
   await flushPendingChatSettings();
   settingsHttp.getResponses.length = 0;
   settingsHttp.gets = 0;
@@ -1177,24 +1182,6 @@ test("a retained settings write stays ahead of the conditional migration", async
   useChatRuntimeStore.getState().setActivePresetSource("builtin-default");
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  // The failed PUT was requeued, so the confirming GET/CAS must not overtake it.
-  assert.equal(settingsHttp.gets, 0);
-  assert.equal(
-    settingsHttp.puts.some(
-      (put) =>
-        (put.inferenceParamsByModel as Record<string, unknown> | undefined)?.[
-          QWEN38
-        ] !== undefined,
-    ),
-    false,
-  );
-
-  // A later successful settings flush drains the predecessor and resumes the
-  // deferred, still-guarded migration in order.
-  useChatRuntimeStore.getState().setActivePreset("Default");
-  assert.equal(await flushPendingChatSettings(), true);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(settingsHttp.gets, 1);
   assert.equal(
     settingsHttp.puts.some(
       (put) =>
@@ -1203,5 +1190,6 @@ test("a retained settings write stays ahead of the conditional migration", async
         ] !== undefined,
     ),
     true,
+    "the migration still reached the server after the 503",
   );
 });
