@@ -1705,9 +1705,7 @@ def test_notebook_validator_honours_escaped_case_patterns():
     nv = _load_notebook_validator_module()
 
     escaped = "!case 'x)y' in x\\)y) pip install git+https://example.com/pkg.git ;; esac"
-    assert nv._split_chained(escaped) == [
-        ("!pip install git+https://example.com/pkg.git", True)
-    ]
+    assert nv._split_chained(escaped) == [("!pip install git+https://example.com/pkg.git", True)]
     assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(escaped, "nb.ipynb", 0))
 
 
