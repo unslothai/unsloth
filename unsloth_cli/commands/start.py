@@ -1725,6 +1725,14 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
     /v1/models shows only the sanitized basename while _same_loaded_identifier compares
     resident paths exactly, so the load must carry the identifier status reports.
     """
+    if status.get("is_diffusion"):
+        # An image runtime answers with an active_model like any other, but it cannot
+        # serve chat: targeting it would tear down the diffusion server and then point
+        # the agent at a model that can never answer it.
+        _fail(
+            "Unsloth is serving an image model, which cannot serve chat, so there are no "
+            "settings to apply. Re-run with --model naming the chat model to load."
+        )
     active_id = status.get("active_model")
     entry = None
     if active_id:
@@ -1831,6 +1839,19 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
     """Whether applying these settings can restart the resident. Unproven equality
     counts as a difference: a silent restart is worse than a spurious warning."""
     if not status:
+        return True
+    # _runtime_matches_intent rejects an identical intent while a spec probe, a DFlash
+    # drafter or a changed speculative binary is waiting to be retried, so the server
+    # reloads regardless of what the CLI asked for. Equality of the overrides is then no
+    # proof of a no-op, and claiming one would skip the gate and the warning.
+    if any(
+        status.get(field)
+        for field in (
+            "spec_probe_retry_pending",
+            "spec_dflash_retry_pending",
+            "spec_fallback_binary_changed",
+        )
+    ):
         return True
     for name in overrides:
         if name == "gguf_variant":

@@ -1069,3 +1069,46 @@ def test_a_differing_quant_on_a_direct_file_is_still_refused(monkeypatch):
         )
 
     assert server.loads == []
+
+
+def test_a_diffusion_resident_is_never_an_attach_target(monkeypatch):
+    """An image runtime answers with an active_model but can never serve chat."""
+    server = FakeServer(
+        [{"id": "unsloth/FLUX.1-dev-GGUF", "loaded": True}],
+        {
+            "is_gguf": True,
+            "is_diffusion": True,
+            "active_model": "unsloth/FLUX.1-dev-GGUF",
+            "model_identifier": "unsloth/FLUX.1-dev-GGUF",
+            "requested_context_length": 4096,
+        },
+    ).install(monkeypatch)
+
+    with pytest.raises(typer.Exit):
+        start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["spec_probe_retry_pending", "spec_dflash_retry_pending", "spec_fallback_binary_changed"],
+)
+def test_a_pending_retry_is_not_a_no_op(monkeypatch, capsys, field):
+    """_runtime_matches_intent reloads on an identical intent while a retry is pending."""
+    server = FakeServer(
+        [dict(RESIDENT)], _gguf_status(**{field: True})
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 8192))
+
+    assert server.loads[0]["force_reload"] is True
+    assert "unloads the current model" in capsys.readouterr().out
+
+
+def test_no_pending_retry_is_still_a_no_op(monkeypatch):
+    server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 8192))
+
+    assert "force_reload" not in server.loads[0]
