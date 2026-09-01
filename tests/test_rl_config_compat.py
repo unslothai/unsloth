@@ -236,7 +236,8 @@ def test_a_transformers_5_removal_is_carried_across_on_a_real_config():
 
     messages = []
     kept = filter_config_init_kwargs(
-        ModernSFTConfig, {"output_dir": "out", "warmup_ratio": 0.1},
+        ModernSFTConfig,
+        {"output_dir": "out", "warmup_ratio": 0.1},
         notify = messages.append,
     )
     assert kept == {"output_dir": "out", "warmup_steps": 0.1}

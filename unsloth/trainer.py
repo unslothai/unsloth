@@ -740,7 +740,9 @@ def _route_unknown_trainer_kwargs(
 
     try:
         from .models.rl_config_compat import (
-            classify_config_kwarg, removal_source, rename_source,
+            classify_config_kwarg,
+            removal_source,
+            rename_source,
         )
     except Exception:
         # tests/ loads this function by AST into a bare namespace, where there is
