@@ -334,6 +334,14 @@ class TestTheOrdinalToIdMapMustBeTotal:
         gpu_ids, _ = auto_select_gpu_ids("m", required_override_gb = 8.0)
         assert gpu_ids == [2]
 
+    def test_amd_smi_undercounting_still_gates(self, monkeypatch, no_mask):
+        # No mask, so ordinal is physical id and the short list is only amd-smi
+        # missing the iGPU. Bailing out here would disable the fix on the very
+        # host #8792 reports.
+        monkeypatch.setattr(_hw_module, "get_physical_gpu_count", lambda: 1)
+        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
+        assert rocm_gpu_ids_without_torch_kernels() == {1}
+
     def test_an_id_named_twice_still_trips_the_all_uncovered_guard(
         self, monkeypatch, no_mask
     ):

@@ -4336,22 +4336,31 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
             return set()
 
         # None means UUID/MIG entries: no ordinal to name a device back to.
-        physical_ids = _get_parent_visible_gpu_spec()["numeric_ids"]
+        visible_spec = _get_parent_visible_gpu_spec()
+        physical_ids = visible_spec["numeric_ids"]
         if physical_ids is None:
             return set()
 
-        # device_count() is frozen at the first torch.cuda call, while the spec
-        # above re-reads the env every time, so a mask applied after torch woke
-        # up leaves more ordinals than ids. Naming the overflow ordinals into the
-        # physical namespace collides with real ids and drops covered cards.
         device_count = torch.cuda.device_count()
         if device_count > len(physical_ids):
-            logger.debug(
-                "Skipping torch arch gate: %s torch devices but %s visible ids",
-                device_count,
-                len(physical_ids),
-            )
-            return set()
+            # Unmasked, ordinal IS physical id, and the short list only means
+            # amd-smi undercounted (it routinely misses the iGPU that #8792 is
+            # about), so extending it keeps the gate working on that host.
+            if visible_spec["raw"] is None:
+                physical_ids = list(range(device_count))
+            else:
+                # A real mask, and device_count disagrees with it: torch counts
+                # devices through amdsmi before init, which ignores the HIP layer
+                # and can report more than the mask leaves. Naming the overflow
+                # into the physical namespace collides with ids that belong to
+                # other ordinals and drops a card the wheel does cover.
+                logger.debug(
+                    "Skipping torch arch gate: %s torch devices but mask %r names %s ids",
+                    device_count,
+                    visible_spec["raw"],
+                    len(physical_ids),
+                )
+                return set()
 
         unsupported: set[int] = set()
         unsupported_ordinals = 0
