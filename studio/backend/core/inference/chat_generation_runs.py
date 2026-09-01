@@ -480,9 +480,7 @@ class ChatGenerationSupervisor:
         # and a later cancel signalled the first account's producer instead.
         self._tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._cancel_events: dict[tuple[str, str], threading.Event] = {}
-        self._active_registrations: dict[
-            tuple[str, str], active_generations.ActiveGeneration
-        ] = {}
+        self._active_registrations: dict[tuple[str, str], active_generations.ActiveGeneration] = {}
         self._subjects: dict[tuple[str, str], str] = {}
         self._activities: dict[tuple[str, str], InferenceActivityReservation] = {}
         self._shutdown_runs: set[tuple[str, str]] = set()
