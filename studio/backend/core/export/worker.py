@@ -557,6 +557,17 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     checkpoint_path = config["checkpoint_path"]
 
+    if not config.get("allow_ambient", True) and not config.get("hf_token"):
+        for env_var in (
+            "HF_TOKEN",
+            "HF_HUB_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "HUGGINGFACE_HUB_TOKEN",
+            "HUGGINGFACEHUB_API_TOKEN",
+        ):
+            os.environ.pop(env_var, None)
+        os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
