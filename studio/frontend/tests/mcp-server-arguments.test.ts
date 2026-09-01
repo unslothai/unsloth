@@ -375,7 +375,22 @@ test("composer applies mutation responses before releasing each preset", () => {
   );
   assert.match(
     composer,
-    /disabled=\{\s*!serversLoaded \|\| pendingUrls\.has\(normalizeMcpUrl\(opts\.url\)\)/,
+    /disabled=\{!serversLoaded \|\| pendingUrls\.has\(normalizeMcpUrl\(opts\.url\)\)\}/,
+  );
+});
+
+test("MCP configuration remains reachable when the loaded model lacks tools", () => {
+  const composer = readFileSync(
+    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.doesNotMatch(composer, /aria-disabled=\{true\}/);
+  assert.match(composer, /The loaded model cannot use MCP tools/);
+  assert.doesNotMatch(composer, /disabled=\{[^}]*!usable/);
+  assert.match(
+    composer,
+    /<DropdownMenuItem\s+onSelect=\{\(\) => \{\s*setMenuOpen\(false\);\s*setDialogOpen\(true\);/,
   );
 });
 

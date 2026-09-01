@@ -17,7 +17,7 @@ import logging
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
-    UNSLOTH_DEVICE_MAP,
+    _PLANNED_DEVICE_MAPS,
     requested_device_map,
     unmarked_device_map,
 )
@@ -1514,7 +1514,12 @@ class FastSentenceTransformer(FastModel):
         # would pull any split model back onto one card. The env-var opt-in is resolved too,
         # or `UNSLOTH_AUTO_DEVICE_MAP=1` asks for a plan without ever naming the sentinel.
         device_map = requested_device_map(device_map)
-        if device_map == UNSLOTH_DEVICE_MAP:
+        # Always "sequential", never the asked-for name's own declined value: the `st_device`
+        # blocks below normalise only dicts, "auto" and "sequential", so "balanced" would
+        # reach `SentenceTransformer(device = "balanced")` and then `.to("balanced")`, which
+        # is not a torch device. There is nothing to shard here in any case.
+        # `isinstance` first: a caller's explicit dict is unhashable, so `in` alone raises.
+        if isinstance(device_map, str) and device_map in _PLANNED_DEVICE_MAPS:
             print(
                 "Unsloth: Not planning a device map; SentenceTransformer moves the assembled "
                 "model onto a single device. Using `sequential`."

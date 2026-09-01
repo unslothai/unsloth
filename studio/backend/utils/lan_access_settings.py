@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+
+import threading
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -20,6 +22,13 @@ logger = get_logger(__name__)
 
 LAN_ACCESS_AUTO_START_KEY = "lan_access_auto_start"
 DEFAULT_LAN_ACCESS_AUTO_START = False
+
+LAN_ACCESS_PORT_KEY = "lan_access_port"
+DEFAULT_LAN_ACCESS_PORT = 8888
+LAST_LAN_ACCESS_PORT = 8908
+
+
+_management_lock = threading.RLock()
 
 _PRIVATE_LAN_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
@@ -193,6 +202,60 @@ def set_lan_access_auto_start(enabled: bool) -> bool:
     return enabled
 
 
+def _valid_port(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
+
+
+def _read_lan_access_port(*, strict: bool) -> Optional[int]:
+    try:
+        from storage.studio_db import get_app_setting
+        stored = get_app_setting(LAN_ACCESS_PORT_KEY, None)
+    except Exception as exc:
+        if strict:
+            raise RuntimeError("lan_access_port_unavailable") from exc
+        return None
+    if stored is None or _valid_port(stored):
+        return stored
+    if strict:
+        raise RuntimeError("lan_access_port_invalid")
+    return None
+
+
+def get_lan_access_port() -> Optional[int]:
+    """The valid saved port, or ``None`` for Automatic/status fallback."""
+    return _read_lan_access_port(strict = False)
+
+
+def set_lan_access_port(port: Optional[int]) -> Optional[int]:
+    if port is not None and not _valid_port(port):
+        raise ValueError("LAN access port must be between 1 and 65535.")
+    from storage.studio_db import upsert_app_settings
+
+    upsert_app_settings({LAN_ACCESS_PORT_KEY: port})
+    return port
+
+
+def lan_access_port_candidates() -> tuple[int, ...]:
+    custom = _read_lan_access_port(strict = True)
+    if custom is not None:
+        return (custom,)
+    return tuple(range(DEFAULT_LAN_ACCESS_PORT, LAST_LAN_ACCESS_PORT + 1))
+
+
+def save_lan_access_port(app, port: Optional[int]) -> dict:
+    with _management_lock:
+        status = lan_access_status(app)
+        if bool(getattr(app.state, "lan_access_is_colab", False)):
+            raise RuntimeError("colab")
+        if status["state"] == "online":
+            raise RuntimeError("lan_access_running")
+        set_lan_access_port(port)
+        from lan_access import clear_lan_listener_error
+
+        clear_lan_listener_error()
+        return lan_access_status(app)
+
+
 def _admin_password_ready() -> bool:
     try:
         from auth.storage import DEFAULT_ADMIN_USERNAME, requires_password_change
@@ -345,17 +408,20 @@ def lan_access_status(app) -> dict:
         block_reason = "admin_password_change_required"
 
     running = bool(listener["running"])
+    configured_port = get_lan_access_port()
     if launch_managed:
         state, urls, managed_by = "online", _launch_urls(app_state), "launch"
+        active_port = getattr(app_state, "lan_access_port", None)
     elif running:
         state, urls, managed_by = (
             "online",
             _listener_urls(listener["addresses"], listener["port"]),
             "settings",
         )
+        active_port = listener["port"]
     else:
         state = "error" if listener["error"] else "off"
-        urls, managed_by = [], None
+        urls, managed_by, active_port = [], None, None
 
     controllable = block_reason is None
     try:
@@ -372,6 +438,8 @@ def lan_access_status(app) -> dict:
         ),
         "error": listener["error"],
         "auto_start": get_lan_access_auto_start(),
+        "configured_port": configured_port,
+        "active_port": active_port,
         "managed_by": managed_by,
         "can_start": controllable and not running,
         "can_stop": controllable and running,
@@ -396,20 +464,22 @@ def _server_loop(app_state):
 def start_lan_access(app) -> dict:
     """Bring the LAN listener up for this launch. Repeated requests are idempotent."""
     from lan_access import start_lan_listener
+    with _management_lock:
+        status = lan_access_status(app)
+        if status["state"] == "online":
+            return status
+        if not status["can_start"]:
+            raise RuntimeError(status["block_reason"] or "operation_in_progress")
 
-    status = lan_access_status(app)
-    if status["state"] == "online":
-        return status
-    if not status["can_start"]:
-        raise RuntimeError(status["block_reason"] or "operation_in_progress")
-
-    port = getattr(app.state, "lan_access_port", None)
-    if not isinstance(port, int) or port <= 0:
-        raise RuntimeError("server_port_unavailable")
-
-    addresses = start_lan_listener(app, _server_loop(app.state), port)
-    logger.info("LAN access started on %s", ", ".join(addresses))
-    return lan_access_status(app)
+        ports = lan_access_port_candidates()
+        addresses = start_lan_listener(
+            app,
+            _server_loop(app.state),
+            ports[0],
+            ports[1:],
+        )
+        logger.info("LAN access started on %s", ", ".join(addresses))
+        return lan_access_status(app)
 
 
 def stop_lan_access(app) -> dict:

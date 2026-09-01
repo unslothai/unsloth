@@ -675,6 +675,13 @@ async def lifespan(app: FastAPI):
     # Hardware detection and MLX autorepair moved out of this lifespan: both import heavy
     # runtimes and uvicorn binds only once this returns, so they held the login screen.
 
+    # Before the first writer, so startup's own connections stop checkpointing too.
+    try:
+        from storage.studio_db import open_wal_keeper
+        open_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
+
     # Reap workers/runs orphaned by a previous crash before new work starts.
     try:
         from storage.studio_db import cleanup_orphaned_runs
@@ -850,6 +857,11 @@ async def lifespan(app: FastAPI):
     )
     # Shutdown cleared the state this warm produced, so release the one-per-process latch.
     reset_background_warm()
+
+    # Last, so every other shutdown step has had its final write first.
+    from storage.studio_db import close_wal_keeper
+
+    close_wal_keeper()
 
 
 app = FastAPI(
