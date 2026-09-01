@@ -637,8 +637,13 @@ def _session_responsive(
         raise
     except (asyncio.TimeoutError, _SessionWedged):
         return not timeout_is_fatal
-    except Exception:  # noqa: BLE001
-        return False
+    except Exception as exc:  # noqa: BLE001
+        # A JSON-RPC error (a rate limit, a permission rule on tools/list) is the
+        # server answering on this very session, exactly as it is for call_tool.
+        # Reconnecting would throw away the chat's state over a reply that proves
+        # the transport works.
+        if not _is_protocol_error(exc):
+            return False
     session.dirty = False
     session.proved_at = time.monotonic()
     return True
@@ -846,6 +851,9 @@ _mcp_reaper_started = False
 # the request path. See _close_detached.
 _mcp_cleanup_lock = threading.Lock()
 _mcp_cleanup_queue: list = []
+# Depth past which an evicting caller closes the overflow itself. See
+# _close_detached.
+_MAX_PENDING_CLOSES = 8
 _mcp_cleanup_worker: Optional[threading.Thread] = None
 # close_mcp_sessions() can only close sessions already published in _mcp_sessions;
 # one still inside connect() would be missed and then cached already
@@ -1180,17 +1188,28 @@ def _close_detached(sessions: list) -> None:
     closing them one at a time is fine, and a run of new chat scopes against a
     server that hangs on shutdown then cannot spawn threads without bound.
     close_mcp_sessions stays synchronous and drains this queue, because its caller
-    (a server edit, or atexit) does need the teardown to have happened."""
+    (a server edit, or atexit) does need the teardown to have happened.
+
+    Past _MAX_PENDING_CLOSES the overflow is closed on the caller instead. A queue
+    that keeps growing means the server is shutting down slower than chats are
+    opening, and every waiting session still holds its own loop thread and
+    connection, so the queue has to be bounded as well as the cache. Making the
+    caller wait is the backpressure that stops it: unpleasant, but the same thing
+    that happened before any of this was deferred, and only once the deferral has
+    already failed to keep up."""
     global _mcp_cleanup_worker
     if not sessions:
         return
     with _mcp_cleanup_lock:
-        _mcp_cleanup_queue.extend(sessions)
-        if _mcp_cleanup_worker is None:
+        room = max(0, _MAX_PENDING_CLOSES - len(_mcp_cleanup_queue))
+        _mcp_cleanup_queue.extend(sessions[:room])
+        overflow = sessions[room:]
+        if _mcp_cleanup_queue and _mcp_cleanup_worker is None:
             _mcp_cleanup_worker = threading.Thread(
                 target = _cleanup_worker, name = "mcp-cleanup", daemon = True
             )
             _mcp_cleanup_worker.start()
+    _close_all(overflow)
 
 
 def _cleanup_worker() -> None:

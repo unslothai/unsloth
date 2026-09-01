@@ -852,6 +852,63 @@ def test_evictions_do_not_spawn_a_thread_each(monkeypatch, clients):
         release.set()
 
 
+def test_a_json_rpc_error_from_the_probe_keeps_the_session(monkeypatch, clients):
+    """The probe asks whether the server is still there. A rate limit or a
+    permission rule on tools/list answers that question with a yes, so treating
+    it as a dead transport would lose the chat's state over a reply that proves
+    the connection works."""
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
+
+    class ProbeRefused(RecordingClient):
+        async def list_tools_mcp(self):
+            self.probes += 1
+            raise _protocol_error(-32000, "Rate limit exceeded")
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: ProbeRefused(url, headers, use_oauth),
+    )
+    _call(HTTP_URL, scope = SCOPE)
+    assert _call(HTTP_URL, scope = SCOPE) == "call-2"
+    assert len(clients) == 1, "a protocol error on the probe replaced the session"
+    assert clients[0].probes == 1
+
+
+def test_the_queue_of_pending_closes_is_bounded(monkeypatch, clients):
+    """One worker bounds the cleanup threads but not the queue: a server that
+    hangs on shutdown is closed slower than new chats evict, and every session
+    waiting in the queue still holds its own loop thread and connection."""
+    monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
+    monkeypatch.setattr(mcp_client, "_MAX_PENDING_CLOSES", 2)
+    release = threading.Event()
+    depths: list[int] = []
+
+    class HangingExit(RecordingClient):
+        async def __aexit__(self, *exc):
+            await asyncio.get_running_loop().run_in_executor(None, release.wait, 30)
+            return await super().__aexit__(*exc)
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: HangingExit(url, headers, use_oauth),
+    )
+    try:
+        for i in range(6):  # 5 evictions, none of which can finish closing
+            threading.Thread(target = _call, args = (HTTP_URL,), kwargs = {"scope": f"c{i}"}).start()
+            deadline = time.monotonic() + 5.0
+            while len(mcp_client._mcp_cleanup_queue) < min(i, 2) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            depths.append(len(mcp_client._mcp_cleanup_queue))
+        assert max(depths) <= 2, f"the queue grew past the bound: {depths}"
+    finally:
+        release.set()
+        for t in threading.enumerate():
+            if t.name.startswith("mcp-") and t is not threading.current_thread():
+                t.join(5)
+
+
 def test_a_slow_probe_still_condemns_a_dirty_session(monkeypatch, clients):
     """The counterpart that must not change: a session whose last call was
     abandoned is under suspicion, so silence within the window condemns it."""
