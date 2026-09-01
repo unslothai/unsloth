@@ -252,3 +252,21 @@ def test_a_fence_whose_info_string_holds_backticks_is_not_treated_as_open(
     assert "Incomplete report." in report
     assert report.count("```") == 1
     assert "> **Incomplete report.**" in report.rpartition("`example`")[2]
+
+
+def test_a_fence_inside_a_list_gets_no_bare_closer(research_home, monkeypatch):
+    """A fence opened inside a container is already closed by that container ending, so a
+    bare top-level closer would OPEN a fence and swallow the notice."""
+    fence_in_a_list = "## Findings\n\n- The setting:\n\n  ```python\n  ctx = 32768,"
+
+    finished = _run_synthesis(
+        monkeypatch,
+        synthesis = (fence_in_a_list, "", "length", {"completion_tokens": 16384}),
+        recovery = ("", "", "stop", None),
+    )
+
+    report = finished["report"]
+    assert "Incomplete report." in report
+    # Untouched: the list already ended the fence, so nothing needed appending.
+    assert report.count("```") == 1
+    assert "> **Incomplete report.**" in report.rpartition("ctx = 32768,")[2]

@@ -278,17 +278,24 @@ def _recover_report_from_reasoning(reasoning: str) -> str:
     return report if len(report) >= 500 else ""
 
 
-def unclosed_code_fence(text: str) -> str | None:
-    """The fence token a truncated report left open, or None if every fence is closed.
+# Column zero, and no blockquote or list marker: the caller closes an open fence by
+# appending a bare fence at top level, which only ends a fence opened at top level. A fence
+# inside a container is already closed by that container ending, and a bare closer after it
+# would OPEN a new one. Indented fences are skipped for the same reason -- an indented fence
+# is usually inside a list item, and telling the two apart needs a real block parser.
+_TOP_LEVEL_FENCE = re.compile(r"^(`{3,}|~{3,})")
 
-    Same rules as ``_report_after_boundary`` below, because a line either opens a fence for
-    both of them or for neither: a backtick fence's info string may not itself contain
-    backticks, and a closer must repeat the same character at least as many times with
-    nothing but whitespace after it."""
+
+def unclosed_code_fence(text: str) -> str | None:
+    """The top-level fence token a truncated report left open, or None if none is open.
+
+    Shares ``_report_after_boundary``'s rule that a backtick fence's info string may not
+    itself contain backticks, and that a closer must repeat the same character at least as
+    many times with nothing but whitespace after it."""
     fence_char: str | None = None
     fence_length = 0
     for line in text.splitlines():
-        fence = _MARKDOWN_FENCE.match(line)
+        fence = _TOP_LEVEL_FENCE.match(line)
         if fence is None:
             continue
         token = fence.group(1)
