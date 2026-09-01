@@ -2751,9 +2751,7 @@ class TestCurrentHeadReviewRegressions:
         assert _is_blocked(code), "method-first client metadata URL leaked"
 
     def test_method_first_client_trusted_url_allowed(self):
-        code = (
-            "import urllib3\np = urllib3.PoolManager()\np.request('GET', 'https://google.com/')"
-        )
+        code = "import urllib3\np = urllib3.PoolManager()\np.request('GET', 'https://google.com/')"
         assert not _is_blocked(code), "trusted method-first client URL blocked"
 
     @pytest.mark.parametrize(
