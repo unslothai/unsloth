@@ -61,7 +61,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 # Put studio/ on sys.path so install_llama_prebuilt / prebuilt_core resolve
 # whether run as a script (from any cwd) or imported by the tests.
@@ -114,6 +114,11 @@ class ReleaseCompatibilityError(PrebuiltFallback):
 
 def log(message: str) -> None:
     print(f"[whisper-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
+
+
+def log_lines(lines: Iterable[str]) -> None:
+    for line in lines:
+        log(line)
 
 
 EXIT_SUCCESS = 0
@@ -1591,7 +1596,9 @@ def main(argv: list[str] | None = None) -> int:
         log(f"incompatible release: {exc}")
         return EXIT_INCOMPATIBLE
     except PrebuiltFallback as exc:
-        log(f"prebuilt install failed: {exc}")
+        # One prefixed line each: a multi-line reason is otherwise indistinguishable
+        # from unprefixed diagnostics for whoever reads this output back.
+        log_lines(f"prebuilt install failed: {exc}".splitlines())
         return EXIT_ERROR
     except Exception as exc:  # noqa: BLE001
         log(f"unexpected error: {exc}")

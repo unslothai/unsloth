@@ -5598,6 +5598,70 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
+def test_multiline_fallback_reason_logs_one_prefixed_line_each(tmp_path, monkeypatch, capsys):
+    """Every line of the reason has to carry the component prefix.
+
+    The preflight failure lists one binary per line, and the unprefixed system
+    report follows immediately, so a reader (the Studio updater) can only tell
+    the reason's continuation lines from the report by that prefix.
+    """
+
+    def boom(*args, **kwargs):
+        raise INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+            "linux extracted binary preflight failed:\n"
+            "llama-server: missing=libcuda.so.1 ld_library_path=none\n"
+            "llama-quantize: missing=libgomp.so.1 ld_library_path=none"
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_LOG_TO_STDOUT", True)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    with pytest.raises(SystemExit):
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    reason = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if "preflight failed" in line or "missing=" in line
+    ]
+    assert len(reason) == 3
+    assert all(line.startswith("[llama-prebuilt] ") for line in reason)
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_github_api_rate_limit_status_carries_the_token_hint(monkeypatch, status):
+    """GitHub answers an exceeded rate limit with 403 or 429, and the raw
+    "HTTP Error 429: Too Many Requests" says nothing a user can act on."""
+    url = "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b10679-mix-67dfc8b"
+
+    def raise_status(_url, **_kw):
+        raise urllib.error.HTTPError(_url, status, "rate limited", {}, io.BytesIO(b""))
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", raise_status)
+    with pytest.raises(RuntimeError) as caught:
+        INSTALL_LLAMA_PREBUILT.fetch_json(url)
+    assert f"GitHub API returned {status}" in str(caught.value)
+    assert "GH_TOKEN" in str(caught.value)
+
+
+def test_non_github_rate_limit_status_is_not_rewritten(monkeypatch):
+    """huggingface.co has its own 429; it must not collect GitHub token advice."""
+    url = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+
+    def raise_429(_url, **_kw):
+        raise urllib.error.HTTPError(_url, 429, "Too Many Requests", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", raise_429)
+    with pytest.raises(urllib.error.HTTPError):
+        INSTALL_LLAMA_PREBUILT.fetch_json(url)
+
+
 _SHARED_PAYLOAD = {
     "linux": [
         "libllama-common.so",
