@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import hashlib
 import hmac
 import ipaddress
+import logging
 import os
 import secrets
 import sqlite3
@@ -17,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterator, Optional, Tuple
 
 from utils.paths import auth_db_path, ensure_dir
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
@@ -826,8 +829,35 @@ def setup_code_login_allowed(username: str, password_hash: str) -> bool:
         conn.close()
 
 
+def _retire_workspace_directory(username: str) -> None:
+    """Move a deleted account's workspace aside so a recreated name cannot inherit it.
+
+    The key is a pure function of the username, so without this a recycled name
+    reopens the previous holder's chats and credentials. Renaming keeps the files
+    recoverable by hand, which is the point of retaining them, without handing
+    them to whoever registers the name next.
+    """
+    from utils.paths.storage_roots import studio_root
+    from utils.workspace_context import workspace_key
+
+    try:
+        workspace = studio_root() / "workspaces" / workspace_key(username)
+        if not workspace.is_dir():
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        retired = workspace.with_name(f"{workspace.name}-deleted-{stamp}")
+        suffix = 1
+        while retired.exists():
+            retired = workspace.with_name(f"{workspace.name}-deleted-{stamp}-{suffix}")
+            suffix += 1
+        workspace.rename(retired)
+    except OSError:
+        # Never let a locked file block the account revocation itself.
+        logger.warning("Could not retire the workspace directory for %s", username)
+
+
 def delete_managed_user(username: str) -> bool:
-    """Revoke and delete a non-admin account while retaining its workspace files."""
+    """Revoke and delete a non-admin account, retiring its workspace files."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -845,12 +875,13 @@ def delete_managed_user(username: str) -> bool:
         conn.execute("DELETE FROM api_keys WHERE username = ?", (username,))
         conn.execute("DELETE FROM auth_user WHERE username = ?", (username,))
         conn.commit()
-        return True
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+    _retire_workspace_directory(username)
+    return True
 
 
 def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str, bool]]:

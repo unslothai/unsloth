@@ -18,6 +18,7 @@ from .storage import (
     credential_generation,
     get_jwt_secret,
     get_user_and_secret,
+    is_admin,
     load_jwt_secret,
     save_refresh_token,
     validate_api_key_with_credential,
@@ -327,6 +328,20 @@ async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depend
     # verified token subject, never an untrusted request field.
     set_workspace_subject(subject)
     return subject
+
+
+async def require_install_admin(current_subject: str = Depends(get_current_subject)) -> str:
+    """Require the installation owner for effects the whole install shares.
+
+    Process control, runtime installs and shared caches are not per account, so
+    an ordinary managed account must not reach them.
+    """
+    if not is_admin(current_subject):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Only the installation owner can do this.",
+        )
+    return current_subject
 
 
 async def get_current_credential(

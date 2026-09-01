@@ -336,7 +336,7 @@ from routes.settings import router as settings_router
 from routes.prompts import router as prompts_router
 from routes.profile_stats import router as profile_stats_router
 from auth import storage
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, require_install_admin
 from utils.hardware import (
     start_background_detection,
     get_device,
@@ -1985,7 +1985,7 @@ def studio_download_transport_capabilities(
 
 
 @app.post("/api/shutdown")
-async def shutdown_server(request: Request, current_subject: str = Depends(get_current_subject)):
+async def shutdown_server(request: Request, current_subject: str = Depends(require_install_admin)):
     """Gracefully shut down the Unsloth Studio server.
 
     Called by the frontend quit dialog so users can stop the server from the UI

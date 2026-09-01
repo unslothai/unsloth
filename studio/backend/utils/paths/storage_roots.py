@@ -562,12 +562,16 @@ def resolve_export_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_export_write_dir(path_value: str | None = None) -> Path:
-    """Resolve an export save directory — accepts absolute paths.
+    """Resolve an export save directory. Absolute paths are owner-only.
 
-    Unlike :func:`resolve_export_dir`, this function passes absolute
-    paths through as-is so users can target a different drive when
-    their Unsloth install lives on a constrained system volume
-    (see :gh-issue:`6082`). Used only by the export write path.
+    Unlike :func:`resolve_export_dir`, this passes absolute paths through as-is
+    so the owner can target a different drive when their install lives on a
+    constrained system volume (see :gh-issue:`6082`). Used only by the export
+    write path.
+
+    A managed account is held to its own exports root instead. Left open, that
+    escape hatch is a write primitive into any directory the backend can reach,
+    including another account's workspace and the owner's outputs.
     """
     if not path_value or not str(path_value).strip():
         return exports_root()
@@ -578,7 +582,12 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
     if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
     if _is_absolute_user_path(path):
-        return path
+        if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT:
+            return path
+        raise ValueError(
+            "Managed accounts can only export inside their own workspace, "
+            f"not to an absolute path: {raw!r}"
+        )
     return resolve_under_root(
         path_value,
         root = exports_root(),
