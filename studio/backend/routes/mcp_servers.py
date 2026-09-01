@@ -21,7 +21,7 @@ from core.inference.mcp_client import (
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     clear_oauth_tokens_async,
-    close_stdio_sessions,
+    close_mcp_sessions,
     invalidate_tool_cache,
     is_stdio,
     join_stdio_command,
@@ -326,7 +326,7 @@ async def update_mcp_server(
     if invalidates_tools:
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
-        await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
+        await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
     return _row_to_response(mcp_servers_db.get_server(server_id), include_headers = not no_credential)
 
 
@@ -340,7 +340,7 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
     invalidate_tool_cache(server_id)
-    await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
+    await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)

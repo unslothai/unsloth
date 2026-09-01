@@ -20,7 +20,6 @@ ISOLATED = [
         "tests/test_moe_bnb4bit_per_expert_conversions.py",
         "6 failures under xdist that serial does not produce",
     ),
-    # This test has sub-second wall-clock assertions that fail under CPU contention.
     ("tests/test_hf_xet_fallback.py", "sub-second wall-clock margins under CPU contention"),
     # MLX shims alter sys.modules, so these files each need a fresh process.
     ("tests/test_mlx_neftune_quant_map.py", "the mlx shim un-skips it and the stub then raises"),
@@ -31,7 +30,6 @@ ISOLATED = [
     ),
 ]
 
-# Identify the cloned zoo's parallel pytest command independently of step ordering.
 ZOO_MARKER = "--dist loadfile tests/"
 
 # Deselected because it needs a GPU. It rides whichever command owns its file.
@@ -88,7 +86,6 @@ def test_the_zoo_suite_actually_runs_in_parallel() -> None:
 @pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
 def test_an_isolated_file_is_ignored_by_the_parallel_run(path: str, reason: str) -> None:
     cmd = _zoo_parallel()
-    # The family glob automatically covers newly added MLX tests.
     covered = f"--ignore={path}" in cmd or (
         path.rsplit("/", 1)[-1].startswith("test_mlx_")
         and "--ignore-glob='tests/test_mlx_*.py'" in cmd
@@ -180,12 +177,9 @@ def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
 
 
 def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() -> None:
-    """The group is passed unquoted, so an empty list is not an empty run.
-
-    With nothing in ``mlx_group`` the command collects the whole rootdir instead:
-    green, far slower, and not this group. The glob only has to stop matching
-    once, upstream renaming the family for instance.
-    """
+    """The group is passed unquoted, so an empty list is not an empty run: with nothing
+    in ``mlx_group`` the command collects the whole rootdir instead, green and far
+    slower. The glob only has to stop matching once, upstream renaming the family say."""
     text = WORKFLOW.read_text(encoding = "utf-8")
     assert 'if [ -z "$mlx_group" ]' in text, (
         "nothing checks that the mlx group glob matched anything, so an empty glob "
@@ -194,11 +188,9 @@ def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() ->
 
 
 def test_a_skipped_isolated_file_is_named_in_the_log() -> None:
-    """Exit 5 is tolerated, so the file that produced it has to be identifiable.
-
-    An expected module-level skip and a file that stopped collecting for a new
-    reason both exit 5 and both stay green.
-    """
+    """Exit 5 is tolerated, so the file that produced it has to be identifiable: an
+    expected module-level skip and a file that stopped collecting for a new reason both
+    exit 5 and both stay green."""
     text = WORKFLOW.read_text(encoding = "utf-8")
     for path, _ in ISOLATED:
         assert f'_keep "$?" {path}' in text, (
