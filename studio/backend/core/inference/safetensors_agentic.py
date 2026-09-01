@@ -28,6 +28,7 @@ from core.inference.tool_call_parser import (
     _balanced_brace_end,
     blocked_bare_json_chain_may_continue,
     blocked_gemma_chain_may_continue,
+    held_bare_gemma_tail_len,
     leading_bare_gemma_call_is_promotable,
     promotable_gemma_call_pos,
     _strip_mistral_reasoning,
@@ -151,15 +152,22 @@ def _held_rehearsal_tail_len(
 ) -> int:
     """Length of a trailing bare tool-name token that may be a split rehearsal call
     (``...web_search`` with ``[ARGS]{...}`` still to arrive), so STREAMING can hold it
-    instead of leaking the name. Returns 0 for ordinary prose."""
+    instead of leaking the name. Returns 0 for ordinary prose.
+
+    A trailing bare-Gemma ``call:NAME{..`` is held on the same footing: the signal scan only
+    sees it once its ``{`` arrives, so the prefix would otherwise stream ahead of the call."""
     i = len(text)
     while i > 0 and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
-    return (
+    held = (
         len(tail)
         if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
         else 0
+    )
+    return max(
+        held,
+        held_bare_gemma_tail_len(text, None if unrestricted else _active_tool_names(active_tools)),
     )
 
 

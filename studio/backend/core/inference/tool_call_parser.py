@@ -2841,7 +2841,9 @@ def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional
         if not suffix:
             return True  # more may still arrive
         if not suffix.startswith("{"):
-            return False  # settled prose: nothing here can become a call
+            # Not another object, but the parser scans the whole turn: a bare Gemma peer
+            # behind the blocked object is promoted all the same, so it must not stream.
+            return gemma_tail_may_hide_a_call(suffix, enabled_tool_names)
         peer_end = _balanced_brace_end(suffix, 0)
         if peer_end is None:
             return True  # still arriving; it may yet close as a call
@@ -2877,6 +2879,57 @@ def promotable_gemma_call_pos(
     return -1
 
 
+def _last_bare_call_word(text: str) -> int:
+    """Offset of the last ``call`` that starts a word, or -1 (so ``recall`` is skipped)."""
+    idx = text.rfind("call")
+    while idx > 0 and (text[idx - 1].isalnum() or text[idx - 1] == "_"):
+        idx = text.rfind("call", 0, idx)
+    return idx
+
+
+def gemma_tail_may_hide_a_call(tail: str, enabled_tool_names: Optional[set]) -> bool:
+    """Whether a chain tail can still turn into a bare Gemma call the parser promotes.
+
+    Shared by both chain predicates because the end-of-turn parser searches the whole turn:
+    a blocked leading call in EITHER markerless format can be followed by a Gemma peer, so
+    the same question has to be asked of a bare-JSON tail. The reverse pairing does not
+    arise -- ``_parse_llama3_bare_json`` only reads an object that leads the turn.
+    """
+    for nxt in _GEMMA_BARE_TC_RE.finditer(tail):
+        if _markerless_promotable(nxt.group(1), enabled_tool_names):
+            return True
+    # Nothing yet, but a name still being typed at the very end could become one.
+    trailing = tail.rstrip()
+    idx = _last_bare_call_word(trailing)
+    if idx >= 0:
+        rest = trailing[idx:]
+        if "call:".startswith(rest) or _GEMMA_BARE_TC_PREFIX_RE.match(rest) is not None:
+            return True
+    return not tail  # an empty tail may still grow a peer
+
+
+def held_bare_gemma_tail_len(text: str, enabled_tool_names: Optional[set]) -> int:
+    """Length of a trailing partial ``call:NAME{..`` the parser will promote once it closes.
+
+    ``promotable_gemma_call_pos`` only sees a call once its ``{`` has arrived, so a mid-prose
+    one leaks ``call:web`` first. STREAMING holds this tail exactly as it holds a split
+    ``NAME[ARGS]`` rehearsal; ordinary prose and a closed call both release it, the latter
+    because the signal scan has already made it a boundary.
+    """
+    partial = _GEMMA_BARE_TC_PREFIX_RE.search(text)
+    if partial is not None:
+        return len(text) - partial.start()
+    idx = _last_bare_call_word(text)
+    if idx < 0:
+        return 0
+    m = _GEMMA_BARE_TC_RE.match(text, idx)
+    if m is None or not _markerless_promotable(m.group(1), enabled_tool_names):
+        return 0
+    if _gemma_body_brace_end(text, m.end() - 1) is not None:
+        return 0
+    return len(text) - idx
+
+
 def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
     """Whether a leading guarded ``call:NAME{..}`` still hides a call the parser will promote.
 
@@ -2896,18 +2949,7 @@ def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set
     # Separators are not an answer, so a tail of them counts as the empty tail, exactly as
     # in the bare-JSON sibling. Otherwise ``call:terminal{command:id} `` releases the buffer
     # and the peer that arrives next streams before end-of-turn promotion can retract it.
-    tail = probe[end + 1 :].lstrip(" \t\n\r;")
-    for nxt in _GEMMA_BARE_TC_RE.finditer(tail):
-        if _markerless_promotable(nxt.group(1), enabled_tool_names):
-            return True
-    # Nothing yet, but a name still being typed at the very end could become one.
-    trailing = tail.rstrip()
-    idx = trailing.rfind("call")
-    if idx >= 0 and (idx == 0 or not (trailing[idx - 1].isalnum() or trailing[idx - 1] == "_")):
-        rest = trailing[idx:]
-        if "call:".startswith(rest) or _GEMMA_BARE_TC_PREFIX_RE.match(rest) is not None:
-            return True
-    return not tail  # an empty tail may still grow a peer
+    return gemma_tail_may_hide_a_call(probe[end + 1 :].lstrip(" \t\n\r;"), enabled_tool_names)
 
 
 def leading_blocked_bare_json_end(text: str, enabled_tool_names: Optional[set]) -> int:

@@ -990,3 +990,73 @@ def test_the_mlx_vlm_decoder_keeps_the_reasoning_protocol_delimiters():
     # Neither the tool control nor the suppression of an ordinary special token moves.
     assert with_markers.decode_stream_token(3, "<tool_call>") == "<tool_call>"
     assert with_markers.decode_stream_token(4, "<eos>") == ""
+
+
+def test_a_gemma_peer_behind_a_blocked_json_object_is_held():
+    """The end-of-turn parser searches the whole turn, so a chain can change format.
+
+    ``blocked_bare_json_chain_may_continue`` stopped at the first non-object suffix, but
+    ``{"name":"terminal",..} call:web_search{..}`` still promotes ``web_search``, so the peer
+    streamed and was only promoted at end of turn.
+    """
+    from core.inference.tool_call_parser import blocked_bare_json_chain_may_continue as may_continue
+
+    blocked = json.dumps({"name": "terminal", "parameters": {"command": "id"}})
+    assert may_continue(f'{blocked} call:web_search{{q:"x"}}', EXEC_ENABLED) is True
+    assert may_continue(f'{blocked}; call:web_search{{q:"x"}}', EXEC_ENABLED) is True
+    assert may_continue(f"{blocked}; call:web", EXEC_ENABLED) is True  # name still typing
+    assert may_continue(f"{blocked} call:", EXEC_ENABLED) is True
+    # Settled prose and a peer the parser will not promote both end the hold.
+    assert may_continue(f"{blocked} and prose", EXEC_ENABLED) is False
+    assert may_continue(f"{blocked} call:nope{{a:1}}", EXEC_ENABLED) is False
+    assert may_continue(f"{blocked} I recall: nothing", EXEC_ENABLED) is False
+    # The reverse pairing cannot arise: _parse_llama3_bare_json only reads a LEADING object,
+    # so a JSON peer behind a blocked Gemma call is never promoted and needs no hold.
+    peer = json.dumps({"name": "web_search", "parameters": {"q": "x"}})
+    assert (
+        parse_tool_calls_from_text(
+            f'call:terminal{{command:"id"}} {peer}', enabled_tool_names = EXEC_ENABLED
+        )
+        == []
+    )
+
+
+def test_a_mid_prose_gemma_prefix_is_held_until_it_settles():
+    """``promotable_gemma_call_pos`` only sees a call once its ``{`` has arrived.
+
+    A promotable call written after ordinary prose therefore streamed ``call:web`` to the
+    client, and the completed call was promoted a snapshot later. STREAMING holds the tail
+    the same way it holds a split ``NAME[ARGS]`` rehearsal.
+    """
+    from core.inference.llama_cpp import _held_rehearsal_tail_len as gguf_hold
+    from core.inference.safetensors_agentic import _held_rehearsal_tail_len as st_hold
+    from core.inference.tool_call_parser import held_bare_gemma_tail_len
+
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in ("web_search", "terminal", "python", "edit_file")
+    ]
+    held = {
+        "Here is prose call": 4,
+        "Here is prose call:": 5,
+        "Here is prose call:web": 8,
+        'prose call:web_search{query:"x': 24,  # body still arriving
+    }
+    released = (
+        "Here is prose ",
+        'prose call:web_search{query:"x"}',  # closed: the signal scan owns the boundary
+        'prose call:terminal{command:"i',  # blocked name: prose, and it streams as prose
+        "I recall: nothing",
+        "ordinary prose",
+    )
+    for text, want in held.items():
+        assert held_bare_gemma_tail_len(text, EXEC_ENABLED) == want, text
+        # Both streaming loops route their hold through this one helper.
+        assert st_hold(text, tools) == want, text
+        assert gguf_hold(text, tools) == want, text
+    for text in released:
+        assert held_bare_gemma_tail_len(text, EXEC_ENABLED) == 0, text
+        assert st_hold(text, tools) == 0, text
+        assert gguf_hold(text, tools) == 0, text
+    # Name-agnostic mode holds it too; the parser promotes there as well.
+    assert held_bare_gemma_tail_len("Here is prose call:web", None) == 8
