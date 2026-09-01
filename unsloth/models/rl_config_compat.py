@@ -346,9 +346,21 @@ def filter_config_init_kwargs(
                 config_class, renamed, existing, mirrored_from = mirrored_from
             ):
                 forwarded[renamed] = value
+                # A mirrored parameter carries no record of whether it was passed,
+                # so a caller who set it to exactly this default cannot be told
+                # apart from one who left it alone. Say which value won instead of
+                # letting the other disappear. The trainer path knows for certain
+                # which names arrived, so it never reaches this.
+                ambiguous = existing is not _MISSING and mirrored_from is not None
                 notify(
                     f"Unsloth: {who} renamed `{key}` to `{renamed}`. Forwarding your "
                     f"value to `{renamed}` - update your code when convenient."
+                    + (
+                        f" If you also passed `{renamed}` as {existing!r}, that is its "
+                        f"default here and cannot be distinguished from leaving it "
+                        f"unset, so `{key}` was used; drop `{key}` to keep it."
+                        if ambiguous else ""
+                    )
                 )
             else:
                 notify(

@@ -341,6 +341,44 @@ def test_the_renames_rl_py_overrides_the_default_of_are_the_known_ones():
     }, sorted(needing_mirror)
 
 
+def test_setting_the_new_name_to_its_own_default_is_reported_as_ambiguous():
+    """The one case a value comparison cannot decide, so it is stated not hidden.
+
+    `UnslothSFTConfig(warmup_steps = 0.1, warmup_ratio = 0.03)` passes the new
+    name at exactly the default `rl.py` injects. Nothing in a mirrored parameter
+    records whether it was supplied, so the legacy value wins and the message has
+    to say so. Sentinel defaults would resolve it, at the cost of the signature
+    that `HfArgumentParser` and users read. The trainer path is unaffected: it
+    knows which names actually arrived.
+    """
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        warmup_steps: float = 0.0
+
+    class UnslothSFTConfig(ModernSFTConfig):
+        def __init__(self, warmup_steps = 0.1, **kwargs):
+            pass
+
+    messages = []
+    kept = filter_config_init_kwargs(
+        ModernSFTConfig,
+        {"warmup_steps": 0.1, "warmup_ratio": 0.03},
+        notify = messages.append,
+        mirrored_from = UnslothSFTConfig,
+    )
+    assert kept["warmup_steps"] == 0.03
+    assert "cannot be distinguished" in messages[0]
+    assert "drop `warmup_ratio`" in messages[0]
+
+    # No `mirrored_from` means no mirrored parameter, so no ambiguity to report.
+    messages = []
+    filter_config_init_kwargs(
+        ModernSFTConfig, {"warmup_ratio": 0.03}, notify = messages.append,
+    )
+    assert "cannot be distinguished" not in messages[0]
+
+
 def test_a_legacy_optional_forwarded_at_none_does_not_erase_the_target():
     """`per_gpu_train_batch_size` really did default to `None` in transformers 4.x
     (checked against 4.57.6), so a wrapper mirroring that signature forwards a
