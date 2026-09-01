@@ -2690,6 +2690,14 @@ class MLXInferenceBackend:
         vlm_token_decoder = (
             NativeToolTokenDecoder(self._tokenizer) if tools and self._tokenizer else None
         )
+        # The runtime EOS can itself be an allowlisted control (TML Inkling's
+        # <|end_message|>), and this path appends each decoded token straight into the
+        # snapshot, so it would trail every ordinary answer. Same treatment as _generate_text.
+        vlm_stop_ids = (
+            _mlx_stop_token_ids(self._tokenizer, self._model)
+            if vlm_token_decoder is not None
+            else ()
+        )
 
         def _stream_vlm_snapshots():
             nonlocal stopped
@@ -2718,9 +2726,14 @@ class MLXInferenceBackend:
                         token_text = response.text if hasattr(response, "text") else str(response)
                         token_id = getattr(response, "token", None)
                         if vlm_token_decoder is not None and token_id is not None:
-                            # Ordinary ids keep mlx-vlm's own text; only a special id is
-                            # re-decoded, so nothing else about the stream changes.
-                            token_text = vlm_token_decoder.decode_stream_token(token_id, token_text)
+                            if int(token_id) in vlm_stop_ids:
+                                token_text = ""
+                            else:
+                                # Ordinary ids keep mlx-vlm's own text; only a special id is
+                                # re-decoded, so nothing else about the stream changes.
+                                token_text = vlm_token_decoder.decode_stream_token(
+                                    token_id, token_text
+                                )
                         sampled += token_text
                         if not sequences:
                             yield prefill + sampled

@@ -4382,3 +4382,74 @@ def test_mlx_drops_a_trailing_stop_token_from_the_preserved_decode(monkeypatch):
     assert decoder.decode(trimmed) == "hi"
     # The marker still survives when it is not the turn's final token.
     assert decoder.decode([ord("h"), 5, ord("i")]) == "h<|end_message|>i"
+
+
+def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
+    """The VLM path appends each decoded token straight into the snapshot.
+
+    So an allowlisted control used as the runtime EOS would trail every ordinary answer;
+    ``_generate_text`` drops it at its final re-decode and this route needs the same.
+    """
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+
+    class _Tok:
+        _IDS = {5: "<|end_message|>"}
+        all_special_ids = (5,)
+        eos_token_id = 5
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(self, token_ids, skip_special_tokens = False, **_kwargs):
+            return "".join(
+                ""
+                if (skip_special_tokens and i in self.all_special_ids)
+                else self._IDS.get(i, "")
+                for i in token_ids
+            )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        for token_id, text in ((None, "hi"), (5, "")):
+            yield SimpleNamespace(
+                text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1
+            )
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = _Tok())
+    backend._tokenizer = _Tok()
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+
+    snapshots = list(
+        backend._generate_vlm(
+            *args,
+            _adapter_state = False,
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+        )
+    )
+    assert snapshots[-1] == "hi"
