@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { publicModelId } from "@/features/hub";
 import {
   getInferenceStatus,
   isExternalModelId,
@@ -43,15 +44,14 @@ import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store
 import {
   agentRunsOnActiveModel,
   buildAgentCommand,
+  compatibilityFromSources,
   fallbackAgent,
   isLoopbackHost,
   normalizeHost,
   pickCompatibleAgent,
   psSingle,
-  resolveGgufCompatibility,
   sameBaseModelId,
   shSingle,
-  verdictDescribesModel,
   statusGgufVerdict,
 } from "./agent-command";
 import { keylessBaseEligible } from "./keyless-example-eligibility";
@@ -704,13 +704,22 @@ export function UsageExamples({
   // panel would otherwise pair a new safetensors model with the previous GGUF verdict and
   // go on offering a Claude command the CLI refuses. Nothing named means nothing to
   // contradict, and the quant suffix is not part of the identity.
-  const statusDescribesTheNamedModel =
-    statusAnswer !== null &&
-    statusAnswer.key === storeModelKey &&
-    verdictDescribesModel(statusAnswer.resident, model);
-  const isGguf: boolean | null = resolveGgufCompatibility(
+  // /api/inference/status reports backend.active_model_name raw, while /v1/models passes
+  // it through public_model_id, so a locally loaded path arrives as "/models/foo" on one
+  // side and "foo" on the other. Collapse it the same way the backend does, or the two
+  // never match for a path-loaded model and the verdict is discarded for good.
+  const isGguf: boolean | null = compatibilityFromSources(
     storeIsGguf,
-    statusDescribesTheNamedModel ? statusAnswer.isGguf : null,
+    statusAnswer !== null && statusAnswer.key === storeModelKey
+      ? {
+          isGguf: statusAnswer.isGguf,
+          resident:
+            statusAnswer.resident === null
+              ? null
+              : publicModelId(statusAnswer.resident),
+        }
+      : null,
+    model,
   );
 
   useEffect(() => {

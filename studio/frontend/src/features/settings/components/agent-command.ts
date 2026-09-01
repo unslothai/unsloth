@@ -224,3 +224,29 @@ export function verdictDescribesModel(
   if (resident == null || named == null) return true;
   return sameBaseModelId(resident, named);
 }
+
+/** A status answer already collapsed onto the identity /v1/models publishes. */
+export interface StatusAnswer {
+  resident: string | null;
+  isGguf: boolean | null;
+}
+
+// The panel's single compatibility rule. `status` is null when the last answer is not
+// about the store state now on screen. A status that names a different model than the
+// snippets name leaves the question unknown rather than falling back to the store: the
+// store cannot break that tie, since a swap made from the CLI or another tab is exactly
+// what it does not see, and deciding from it kept a Claude command on screen for a model
+// that had already been replaced.
+export function compatibilityFromSources(
+  fromStore: boolean | null,
+  status: StatusAnswer | null,
+  namedModel: string | null,
+): boolean | null {
+  if (status === null) {
+    return fromStore;
+  }
+  if (!verdictDescribesModel(status.resident, namedModel)) {
+    return null;
+  }
+  return resolveGgufCompatibility(fromStore, status.isGguf);
+}

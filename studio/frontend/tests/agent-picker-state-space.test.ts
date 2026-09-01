@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   GGUF_ONLY_AGENTS,
+  compatibilityFromSources,
   UNIVERSAL_AGENT,
   agentRunsOnActiveModel,
   fallbackAgent,
@@ -15,6 +16,7 @@ import {
   statusGgufVerdict,
   verdictDescribesModel,
 } from "../src/features/settings/components/agent-command.ts";
+import { publicModelId } from "../src/features/hub/lib/model-identity.ts";
 
 // DEFAULT_AGENTS in usage-examples.tsx = CODING_AGENTS minus HIDDEN_AGENTS ("pi").
 const VISIBLE_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes"];
@@ -358,4 +360,82 @@ test("nothing named on either side is not a contradiction", () => {
   assert.equal(verdictDescribesModel(null, "unsloth/Qwen3-1.7B"), true);
   assert.equal(verdictDescribesModel("unsloth/Qwen3-1.7B", null), true);
   assert.equal(verdictDescribesModel(null, null), true);
+});
+
+// How the component composes the two: the status side is collapsed the way the backend
+// collapses it for /v1/models before the identities are compared.
+const statusMatchesCatalog = (resident: string | null, named: string | null) =>
+  verdictDescribesModel(
+    resident === null ? null : publicModelId(resident),
+    named,
+  );
+
+test("a path-loaded model is compared on the identity the catalog publishes", () => {
+  // /api/inference/status reports backend.active_model_name raw; /v1/models passes it
+  // through public_model_id. Comparing them literally never matched for a local path, so
+  // the verdict was discarded for good and the gate went dead on routes with no store.
+  assert.equal(statusMatchesCatalog("/models/foo", "foo"), true);
+  assert.equal(
+    statusMatchesCatalog(
+      "/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf",
+      "Qwen3-30B-A3B-Q4_K_M",
+    ),
+    true,
+  );
+  assert.equal(
+    statusMatchesCatalog(
+      "~/.cache/huggingface/hub/models--unsloth--Qwen3-1.7B-GGUF/snapshots/abc123",
+      "unsloth/Qwen3-1.7B-GGUF",
+    ),
+    true,
+  );
+  // Still a real mismatch once collapsed.
+  assert.equal(statusMatchesCatalog("/models/foo", "bar"), false);
+});
+
+test("polls that name different models leave the question unknown", () => {
+  // The store is not a tiebreaker here: an external swap is precisely what it does not
+  // see, so reading it kept a Claude command on screen for a model that had been replaced.
+  assert.equal(
+    compatibilityFromSources(
+      true,
+      { resident: "unsloth/Qwen3-1.7B", isGguf: false },
+      "unsloth/Qwen3-1.7B-GGUF",
+    ),
+    null,
+  );
+  assert.equal(
+    compatibilityFromSources(
+      false,
+      { resident: "unsloth/Qwen3-1.7B-GGUF", isGguf: true },
+      "unsloth/Qwen3-1.7B",
+    ),
+    null,
+  );
+});
+
+test("an answer about the model on screen still decides, and the server wins", () => {
+  assert.equal(
+    compatibilityFromSources(
+      true,
+      { resident: "unsloth/Qwen3-1.7B", isGguf: false },
+      "unsloth/Qwen3-1.7B",
+    ),
+    false,
+  );
+  // No answer for this store state: the store carries it.
+  assert.equal(
+    compatibilityFromSources(true, null, "unsloth/Qwen3-1.7B-GGUF"),
+    true,
+  );
+  assert.equal(compatibilityFromSources(null, null, null), null);
+  // An idle server names nothing, so the store is left to answer.
+  assert.equal(
+    compatibilityFromSources(
+      true,
+      { resident: null, isGguf: null },
+      "unsloth/X-GGUF",
+    ),
+    true,
+  );
 });
