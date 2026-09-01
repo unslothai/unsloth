@@ -376,7 +376,7 @@ export function AccountsTab() {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {actionIsDelete
-                ? "Their login and active sessions will be removed. Workspace files are retained if the same username is added again."
+                ? "Their login and active sessions will be removed. Workspace files are kept on disk under a dated folder, but adding the same username again starts an empty workspace."
                 : `The previous code and any first-login session for ${pendingAction?.username ?? "this account"} will stop working.`}
             </AlertDialogDescription>
           </AlertDialogHeader>

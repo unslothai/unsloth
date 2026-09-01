@@ -28,6 +28,7 @@ import time
 from typing import Any, Callable, Generator
 
 from loggers import get_logger
+from utils.workspace_context import current_workspace_subject, run_in_workspace
 
 logger = get_logger(__name__)
 
@@ -182,8 +183,15 @@ def stream_tool_execution(
             # immediately so fast tools pay no poll-interval latency.
             output_queue.put(done_sentinel)
 
+    # Captured here, in the request's context: the tool resolves sandbox_root()
+    # and per-account database state, and a bare thread would use the owner's.
+    bound_subject = current_workspace_subject()
+
+    def _run_bound() -> None:
+        run_in_workspace(bound_subject, _run)
+
     worker = threading.Thread(
-        target = _run,
+        target = _run_bound,
         daemon = True,
         name = f"tool-exec-{tool_name or 'unknown'}",
     )
