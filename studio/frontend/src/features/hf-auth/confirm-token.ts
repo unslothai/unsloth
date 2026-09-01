@@ -24,21 +24,17 @@ interface PrepareHfTokenOptions {
 // one-session choice so a follow-up /load does not prompt again after an anonymous /validate.
 const anonymousForSession = new Set<string>();
 
-// One model load prepares the same token three times over: once for the progress pollers,
-// then again inside validateModel and loadModel, which is three sequential round trips on
-// the load's critical path and hurts most on a remote backend. Collapse a burst into one
-// call rather than threading a prepared credential through every API signature. Short and
-// positive-only on purpose: an "invalid" verdict is never cached, so the warning dialog
-// still appears, and a token that expires later is re-checked once the window lapses.
+// One load prepares the same token three times (pollers, validateModel, loadModel), so a
+// burst collapses to one call rather than threading a prepared credential through every
+// signature. Short and positive-only: "invalid" is never cached, so the dialog still
+// appears and an expiring token is re-checked once the window lapses.
 const VALIDATION_REUSE_MS = 15_000;
-// Bumped whenever the cache is cleared, so a request that was already in flight cannot
-// repopulate it after the credential it belongs to is gone.
+// Bumped on every clear, so an in-flight request cannot repopulate the cache afterwards.
 let cacheGeneration = 0;
 const recentlyValid = new Map<string, number>();
 const inFlight = new Map<string, Promise<HfTokenValidationResult>>();
 
-// Entries hold the raw bearer token, so they are dropped as soon as they stop being
-// useful rather than left to accumulate across credential changes.
+// Entries hold the raw bearer token, so they go as soon as they stop being useful.
 function dropExpiredValidations(now: number): void {
   for (const [cached, validAt] of recentlyValid) {
     if (now - validAt >= VALIDATION_REUSE_MS) {
@@ -58,10 +54,9 @@ function validateOncePerBurst(token: string): Promise<HfTokenValidationResult> {
   if (pending) {
     return pending;
   }
-  // Clearing the maps cannot cancel a request already in flight, so a logout landing
-  // mid-validation would have the later resolution write the raw token straight back into
-  // recentlyValid -- and expiry only runs during another preparation, so it would sit
-  // there indefinitely. The generation makes a stale resolution non-cacheable.
+  // Clearing cannot cancel an in-flight request, so a logout mid-validation would have
+  // the late resolution write the raw token back, and expiry only runs on the next
+  // preparation. The generation makes a stale resolution non-cacheable.
   const generation = cacheGeneration;
   const request = validateHfToken(token)
     .then((result) => {
@@ -73,9 +68,8 @@ function validateOncePerBurst(token: string): Promise<HfTokenValidationResult> {
       return result;
     })
     .finally(() => {
-      // Only if it is still ours: forgetHfTokenValidation can drop this entry and a new
-      // preparation can take the slot before this one settles, and an unconditional
-      // delete would evict that live replacement and send the next caller to the network.
+      // Only if still ours: a forget-then-prepare can put a live replacement in this
+      // slot, and an unconditional delete would evict it.
       if (inFlight.get(token) === request) {
         inFlight.delete(token);
       }
@@ -96,9 +90,8 @@ export function forgetHfTokenValidation(token?: string): void {
   inFlight.delete(token);
 }
 
-// A logout must not leave a previous session's bearer token sitting in module memory, the
-// same reason hf-token-store.ts resets itself on this event. Replacing or clearing the
-// credential in Settings drops the superseded key too, rather than waiting out its window.
+// A logout must not leave a bearer token in module memory, the same reason
+// hf-token-store.ts resets on this event. Replacing it drops the superseded key too.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     forgetHfTokenValidation();
@@ -110,17 +103,15 @@ if (typeof window !== "undefined") {
 let lastKnownStoredToken: string | null = null;
 let tokenChangeSubscribed = false;
 
-// Subscribed on first use rather than at module scope: reading a value imported from a
-// feature barrel while this module is still loading throws if the import cycle re-enters
-// before the binding initializes, which module-scope-cycle-safety.test.ts enforces.
+// Subscribed on first use, not at module scope: reading a barrel-imported value while
+// this module loads throws if the import cycle re-enters (module-scope-cycle-safety).
 function ensureTokenChangeSubscription(): void {
   if (tokenChangeSubscribed || typeof useHfTokenStore.subscribe !== "function") {
     return;
   }
   tokenChangeSubscribed = true;
-  // Seeded here, not left null for the first callback to fill: zustand's subscribe does
-  // not fire on install, so a Settings replacement of the token that was already stored
-  // would be read as initialization and the superseded credential would keep its window.
+  // Seeded, not left null: zustand does not fire subscribe on install, so replacing an
+  // already-stored token would read as initialization and keep its window.
   lastKnownStoredToken = useHfTokenStore.getState().token?.trim() ?? "";
   useHfTokenStore.subscribe((state) => {
     const next = state.token?.trim() ?? "";

@@ -365,9 +365,8 @@ def read_default_chat_template(
 
     resolved = resolve_cached_repo_id_case(name)
 
-    # The snapshot walk returns a private repo's raw template without asking the Hub
-    # anything, so a caller denied the ambient credential goes to the Hub instead and
-    # is refused there. A UI session resolves to None and keeps the cache.
+    # The walk returns a private repo's raw template without asking the Hub, so a denied
+    # caller goes to the Hub and is refused there. A UI session keeps the cache.
     if not is_anonymous(hf_token):
         try:
             # Resolve within each cached revision, newest first. A revision's sidecar
@@ -381,10 +380,9 @@ def read_default_chat_template(
             logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
 
     if is_anonymous(hf_token) and hf_env_offline():
-        # Offline, hf_hub_download serves the cached copy straight off disk and never
-        # checks the credential, so the fallback below would hand back the very template
-        # the walk above just refused. The route forces offline whenever the Hub looks
-        # unreachable, so this is the ordinary path on a disconnected install.
+        # Offline, hf_hub_download serves the cached copy without checking the credential,
+        # so the fallback would hand back the template the walk just refused. The route
+        # forces offline whenever the Hub looks unreachable.
         return None
 
     try:

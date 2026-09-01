@@ -1288,10 +1288,9 @@ async def get_gguf_variants_answer(
         if not _is_valid_repo_id(repo_id):
             raise HTTPException(status_code = 400, detail = f"Invalid repo_id: {repo_id!r}")
 
-        # The HF cache answers from disk without ever authorizing, so a caller denied the
-        # ambient credential must not be served out of it: it could name a private repo the
-        # UI had already cached and read back its variant filenames, sizes and vision flag.
-        # A local_path the caller named itself is not the Hub cache and stays available.
+        # The HF cache answers from disk without authorizing, so a denied caller could name
+        # a cached private repo and read back its filenames, sizes and vision flag. A
+        # local_path the caller named itself is not the Hub cache and stays available.
         cache_reads_authorized = not is_anonymous(hf_token)
 
         def _scoped_local_response():
@@ -1361,8 +1360,8 @@ async def get_gguf_variants_answer(
             through ``answered_from``, its context metadata to the named copy.
             """
             if not cache_reads_authorized:
-                # Same reason as the local_only branch: an unauthorized caller whose hub
-                # call failed must get that failure, not the cache's answer to it.
+                # An unauthorized caller whose hub call failed gets that failure, not the
+                # cache's answer to it.
                 return None
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
@@ -1387,8 +1386,7 @@ async def get_gguf_variants_answer(
         try:
             variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
         except Exception:
-            # Not gated on the caller: _cache_fallback_response already refuses an
-            # unauthorized one, and the original hub error is the right answer for it.
+            # Ungated: _cache_fallback_response already refuses an unauthorized caller.
             fallback = _cache_fallback_response()
             if fallback is not None:
                 return fallback
@@ -1398,9 +1396,8 @@ async def get_gguf_variants_answer(
         # through is deliberate: readiness below still counts against this request's own cache.
         if siblings is None:
             if not cache_reads_authorized:
-                # `variants` is already the cache's answer here, so declining to build a
-                # second cached response is not enough -- falling through would serialize
-                # the first one. For this caller a cache-only answer is a refusal.
+                # `variants` is already the cache's answer, so declining a second one is
+                # not enough; falling through would serialize the first.
                 raise HTTPException(
                     status_code = 404,
                     detail = "No GGUF variants available without Hub authorization.",

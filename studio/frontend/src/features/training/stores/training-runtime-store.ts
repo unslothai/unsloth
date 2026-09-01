@@ -3,8 +3,8 @@
 
 import { create } from "zustand";
 // Module state outlives a logout, so this store clears with the session. Relative and
-// extensioned like the sibling import below: the store's own test runs under
-// `node --experimental-strip-types`, which does not resolve the `@/` alias.
+// extensioned like the sibling below: the store's test runs under
+// `node --experimental-strip-types`, which cannot resolve the `@/` alias.
 import { AUTH_SESSION_CLEARED_EVENT } from "../../auth/session-events.ts";
 import { isTrainingProgressForJob } from "../lib/training-stream-scope.ts";
 import type {
@@ -610,10 +610,9 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
   }),
 );
 
-// startHfToken holds a raw Hub credential, and this store is module state that outlives a
-// logout: reconcile() in __root remounts the app rather than reloading the document, so the
-// next account in the same tab would resume progress polling with the previous one's token.
-// useHfTokenStore already clears on this event; the runtime store has to as well.
+// startHfToken holds a raw Hub credential in module state that outlives a logout:
+// reconcile() in __root remounts rather than reloading, so the next account in the tab
+// would poll with the previous one's token. useHfTokenStore already clears on this event.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     useTrainingRuntimeStore.getState().resetRuntime();

@@ -310,13 +310,9 @@ def _load_any_cached_hf_preview_slice(
     preview_size: int,
     hf_token: Optional[str] = None,
 ):
-    # Both paths below return real rows off disk without asking the Hub anything: the raw
-    # slice reads the snapshot directly, and the processed one loads through
-    # DownloadConfig(local_files_only=True), which never authorizes and drops the sentinel
-    # anyway because `False` is falsy. So a caller denied the ambient credential could name
-    # a private dataset the UI had already cached and read its contents back. Refuse the
-    # whole disk route for that caller; the handler's prefer_local_cache path then answers
-    # 404 rather than serving the rows. A UI session resolves to None and keeps both.
+    # Both paths return real rows off disk without asking the Hub: the raw slice reads the
+    # snapshot, the processed one loads with local_files_only=True and drops the falsy
+    # sentinel. Refuse the whole disk route here; the handler then answers 404.
     if is_anonymous(hf_token):
         return None
     cached_preview = _load_cached_hf_preview_slice(request, preview_size)
@@ -370,9 +366,8 @@ def check_format_response(
         if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
             raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
 
-        # Offline, `datasets` answers a streaming load from its own cache without ever
-        # authorizing, and Tier 2 below runs on the default prefer_local_cache=false, so
-        # it would return rows before the cached-preview guard is ever consulted.
+        # Offline `datasets` answers a streaming load from its cache without authorizing,
+        # and Tier 2 runs on the default prefer_local_cache=false, ahead of that guard.
         if anonymous_and_offline(hf_token) and not dataset_exists:
             raise HTTPException(
                 status_code = 404,
@@ -410,9 +405,8 @@ def check_format_response(
                 try:
                     from huggingface_hub import HfApi
 
-                    # No token on the constructor: list_repo_files below is given the
-                    # credential explicitly and that argument wins, so passing it twice
-                    # only adds a second way for the call to be built wrong.
+                    # No token on the constructor: list_repo_files is given it explicitly
+                    # and that argument wins.
                     api = HfApi()
                     repo_files = api.list_repo_files(
                         request.dataset_name,

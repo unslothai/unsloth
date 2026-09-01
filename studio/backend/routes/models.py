@@ -2406,9 +2406,8 @@ async def get_model_config(
         # Each probe below can reach the hub, so the guard wraps the whole handler: offline they
         # must all resolve from the HF cache. Local paths stay on disk and skip the probe.
         with _hf_offline_if_unreachable_for(model_name):
-            # Inside the context, not before it: the guard forces offline itself when the
-            # hub is unreachable. Every probe below resolves from disk in that state, so
-            # the caller is refused once here rather than at each reader in turn.
+            # Inside the context, not before: the guard forces offline itself when the hub
+            # is unreachable, and every probe below then resolves from disk.
             if anonymous_and_offline(hf_token) and not is_local_path(model_name):
                 raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
             if not is_local_path(model_name):
@@ -2432,10 +2431,8 @@ async def get_model_config(
             )
             config_dict = load_model_defaults(model_name)
 
-            # Sending the anonymous caller back to the bare repo id above only helps if the
-            # probes then go over the wire. local_files_only resolves config.json straight
-            # out of the HF cache, where the credential is never consulted, so it would
-            # hand a denied caller a private repo's capabilities anyway.
+            # The bare repo id above only helps if the probes then go over the wire:
+            # local_files_only resolves config.json out of the cache, unauthorized.
             probe_local_only = prefer_local_cache and not is_anonymous(hf_token)
             is_vision = is_vision_model(
                 inspection_target,
@@ -2498,9 +2495,8 @@ async def get_model_config(
                 model_type = derive_model_type(is_vision, audio_type, is_embedding),
                 base_model = base_model,
                 max_position_embeddings = max_position_embeddings,
-                # Keyed on what the target actually is, not on the flag: an anonymous
-                # caller is sent back to the bare repo id above, and sizing that as a
-                # relative path returns None, losing the size for public models too.
+                # Keyed on the target, not the flag: the bare repo id an anonymous caller
+                # gets sizes as a relative path and returns None, public repos included.
                 model_size_bytes = (
                     _get_snapshot_model_size_bytes(inspection_target)
                     if prefer_local_cache and inspection_target != model_name
@@ -2560,11 +2556,11 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
-    # Without this the body's absent token reads as None, i.e. ambient-authorized, and the
-    # scan below would read a cached private repo's Python and return source snippets.
+    # Without this an absent body token reads as None, i.e. ambient-authorized, and the
+    # scan returns source snippets from a cached private repo.
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
-    # Offline, the scanner's own hf_hub_download calls resolve config.json and the repo's
-    # Python straight out of the cache, and the response carries source snippets.
+    # Offline the scanner's hf_hub_download calls resolve config.json and the repo's
+    # Python out of the cache, and the response carries source snippets.
     if anonymous_and_offline(hf_token) and not is_local_path(model_name):
         raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
     try:
@@ -2611,9 +2607,8 @@ async def scan_model_remote_code(
                 hf_token,
             )
         elif prefer_local_cache is True and not local_model and not is_anonymous(hf_token):
-            # Same guard as the exact_snapshot branch above: resolving the repo to its
-            # cached snapshot hands the scanner a private repo's Python, and the route
-            # returns source snippets from it, with no credential consulted anywhere.
+            # Same guard as the exact_snapshot branch: resolving to a cached snapshot
+            # hands the scanner a private repo's Python, unauthorized.
             from core.training.training import _resolve_model_snapshot
             local_path = normalize_path(model_local_path) if model_local_path else None
             scan_target = _resolve_model_snapshot(model_name, local_path) or model_name
