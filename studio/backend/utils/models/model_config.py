@@ -1065,6 +1065,11 @@ def is_vision_model(
         resolved_name = model_name
     # Key on effective offline (kwarg OR env) so an offline probe can't poison a later lookup.
     effective_offline = bool(local_files_only or _env_offline())
+    # Offline, the probe reads the cached config off disk and never authorizes, so
+    # `local_files_only = False` does not put an anonymous caller back on the wire. There is
+    # no way for that caller to establish access while offline, so it gets the default.
+    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+        return False
     cache_key: _CapabilityCacheKey = (
         resolved_name,
         _token_fingerprint(hf_token),
@@ -1254,6 +1259,11 @@ def detect_audio_type_checked(
 
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
     effective_offline = bool(local_files_only or _env_offline())
+    # Offline, the probe reads the cached config off disk and never authorizes, so
+    # `local_files_only = False` does not put an anonymous caller back on the wire. There is
+    # no way for that caller to establish access while offline, so it gets an inconclusive answer.
+    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+        return None, False
     # Checked on the RAW name, before the casing resolution below, because resolving a
     # repo id that is not in the cache walks every cache directory, and that walk is the
     # cost this cache exists to avoid. A casing variant just takes its own entry, which

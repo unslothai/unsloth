@@ -617,3 +617,45 @@ def test_gguf_variants_serve_the_hf_cache_only_to_an_authorized_caller(monkeypat
         }, "the anonymous caller was served from the hub cache"
     else:
         assert reads["snapshot"] > 0, "the authorized caller lost its cache fast path"
+
+
+@pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
+def test_offline_capability_probes_do_not_read_the_cache_anonymously(
+    monkeypatch, hf_token
+):
+    """Offline, is_vision_model derives local_files_only from the environment.
+
+    So passing local_files_only=False does not put the anonymous caller back on the wire:
+    the probe reads the cached config.json off disk and never authorizes.
+    """
+    import utils.models.model_config as model_config_module
+
+    monkeypatch.setattr(model_config_module, "_env_offline", lambda: True)
+    reached = {"vision": 0, "audio": 0}
+
+    def _vision(*_a, **_k):
+        reached["vision"] += 1
+        return True
+
+    def _audio(*_a, **_k):
+        reached["audio"] += 1
+        return "stt", True
+
+    monkeypatch.setattr(model_config_module, "_is_vision_model_uncached", _vision)
+    monkeypatch.setattr(
+        model_config_module, "_detect_audio_type_uncached", _audio, raising = False
+    )
+    # A fresh probe every time, so a warm entry cannot stand in for the guard.
+    monkeypatch.setattr(model_config_module, "_vision_detection_cache", {})
+    monkeypatch.setattr(model_config_module, "_audio_detection_cache", {})
+    monkeypatch.setattr(model_config_module, "_audio_offline_miss_cache", {})
+
+    is_vision = model_config_module.is_vision_model(
+        "org/private", hf_token = hf_token, local_files_only = False
+    )
+
+    if is_anonymous(hf_token):
+        assert is_vision is False
+        assert reached["vision"] == 0, "the anonymous caller probed the offline cache"
+    else:
+        assert reached["vision"] == 1, "the authorized caller lost its offline probe"
