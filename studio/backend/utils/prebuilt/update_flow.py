@@ -123,7 +123,12 @@ def _installer_verdict(lines: Sequence[str]) -> str | None:
     verdict: list[str] | None = None
     open_block: list[str] | None = None
     for line in lines:
-        log_line = _PREBUILT_LOG_RE.match(line.strip())
+        stripped = line.strip()
+        if CHILD_PID_LINE_RE.match(stripped) is not None:
+            # A grandchild announcement is protocol, not output: it can land
+            # between a reason and its continuation lines without ending either.
+            continue
+        log_line = _PREBUILT_LOG_RE.match(stripped)
         if log_line is None:
             open_block = None
             continue
@@ -510,7 +515,9 @@ def stream_installer(
             tail_lines.append(line)
             if len(tail_lines) > 80:
                 del tail_lines[0]
-            log_line = _PREBUILT_LOG_RE.match(line.strip())
+            stripped = line.strip()
+            child_line = CHILD_PID_LINE_RE.match(stripped)
+            log_line = None if child_line is not None else _PREBUILT_LOG_RE.match(stripped)
             body = log_line.group("body").strip() if log_line is not None else None
             if body is not None and _PREBUILT_VERDICT_RE.match(body) is not None:
                 # Restart the block: this verdict supersedes any earlier one.
@@ -519,12 +526,13 @@ def stream_installer(
             elif open_verdict and body is not None:
                 if len(verdict_lines) <= _VERDICT_CONTINUATION_LIMIT:
                     verdict_lines.append(line)
-            elif body is None:
+            elif body is None and child_line is None:
                 # Where the unprefixed system report starts, the verdict ends.
+                # A grandchild announcement is protocol, not output, and never ends one.
                 open_verdict = False
             if not open_verdict and len(hint_lines) < 4 and is_github_rate_limit_text(line):
                 hint_lines.append(line)
-            child = CHILD_PID_LINE_RE.match(line.strip())
+            child = child_line
             if child is not None:
                 # Recorded while it runs and dropped when the installer says it
                 # stopped; one it never got to report stays for the sweep.

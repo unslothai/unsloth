@@ -211,3 +211,20 @@ def test_stream_installer_reads_the_token_from_the_installer_environment(tmp_pat
         )
     assert "GH_TOKEN" not in str(excinfo.value)
     assert "Wait for the limit to reset" in str(excinfo.value)
+
+
+def test_stream_installer_keeps_a_verdict_a_child_announcement_interrupts(tmp_path):
+    # The installer announces the servers it starts on the same stream; that
+    # protocol line must not be mistaken for the start of the system report.
+    exc = _run_fake_installer(
+        tmp_path,
+        "print('[llama-prebuilt] prebuilt fallback reason: linux extracted binary "
+        "preflight failed:')\n"
+        "print('UNSLOTH_INSTALLER_CHILD started 4242')\n"
+        "print('[llama-prebuilt] llama-server: missing=libcuda.so.1 ld_library_path=none')\n"
+        "print('UNSLOTH_INSTALLER_CHILD stopped 4242')\n"
+        "sys.exit(2)\n",
+    )
+    assert exc.returncode == 2
+    assert "missing=libcuda.so.1" in str(exc)
+    assert "UNSLOTH_INSTALLER_CHILD" not in str(exc)
