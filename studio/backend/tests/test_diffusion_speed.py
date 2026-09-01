@@ -60,6 +60,23 @@ def _family(*, compile_ok = True):
     return types.SimpleNamespace(supports_torch_compile = compile_ok)
 
 
+@pytest.fixture(autouse = True)
+def _compile_runtime_independent_of_the_host(monkeypatch):
+    """Keep these tests off the HOST's toolchain, which is what "hermetic" above claims.
+
+    ``torch_compile_runtime_available`` asks whether THIS machine can run inductor, and on
+    Windows that means asking whether a Triton wheel is installed. Without this, every
+    compile-tier assertion in the file fails on a Windows checkout with no ``triton-windows``
+    for a reason that has nothing to do with tiering (measured: 15 failures on a
+    ``windows-latest`` runner, all green on Linux and macOS). Pin the non-Windows branch; the
+    tests that are *about* Windows set ``sys.platform`` themselves and a later setattr wins.
+    The lru_cache is dropped either side so one test's answer is never another test's."""
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    monkeypatch.setattr(ds_mod.sys, "platform", "linux")
+    yield
+    ds_mod.torch_compile_runtime_available.cache_clear()
+
+
 def _stub_torch(monkeypatch):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"  # _is_bfloat16 compares by identity then str fallback
@@ -724,12 +741,20 @@ def _set_crt_headers(monkeypatch, reachable: bool):
     monkeypatch.setattr(_msvc_env, "crt_headers_reachable", lambda: reachable)
 
 
-def test_torchdynamo_disable_is_honored_on_every_platform(monkeypatch):
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_torchdynamo_disable_is_honored_on_every_platform(monkeypatch, platform):
     from core.inference import diffusion_speed as ds_mod
 
     # compile_eligible reads torch to test the dtype, and without the stub it returns False for
     # every input -- which would make the assertions below pass whatever the gate did.
     _stub_torch(monkeypatch)
+    # Both platforms, or the name is a claim the test never checks. The env var is read before
+    # any platform branch, but the positive control still has to clear the Windows toolchain
+    # question first, or the negatives below would hold for the wrong reason.
+    monkeypatch.setattr(ds_mod.sys, "platform", platform)
+    if platform == "win32":
+        monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+        _set_crt_headers(monkeypatch, True)
     _clear_runtime_cache()
     monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
     # The positive control. Without it the two `is False` lines below prove nothing.
