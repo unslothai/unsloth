@@ -600,7 +600,10 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
         open={open}
         onOpenChange={(nextOpen) => setOpen(runId, nextOpen)}
       >
-        <DialogContent className="max-h-[min(680px,calc(100dvh-6rem))] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl [&>[data-slot=dialog-close]]:right-6 [&>[data-slot=dialog-close]]:top-6">
+        <DialogContent
+          className="max-h-[min(680px,calc(100dvh-6rem))] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl [&>[data-slot=dialog-close]]:right-6 [&>[data-slot=dialog-close]]:top-6"
+          overlayClassName="supports-backdrop-filter:backdrop-blur-none"
+        >
           <DialogHeader className="border-b border-border/70 px-7 pb-4 pt-6 pr-16">
             <DialogTitle>Review the research plan</DialogTitle>
             <DialogDescription className="max-w-2xl leading-relaxed">
