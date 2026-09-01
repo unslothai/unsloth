@@ -32,7 +32,6 @@ from typing import Any
 
 from .diffusion_patch_backend import apply_patch, revert_patch
 
-# --- kill-switch -------------------------------------------------------------------
 
 _ENV_COMPILE_DEQUANT = "UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT"
 _DISABLED = {"0", "off", "false", "no"}
@@ -52,9 +51,7 @@ def _gguf_utils():
         return None
 
 
-# --- compiled dequant --------------------------------------------------------------
 
-# True while the compiled wrapper is installed (the patch backend stashes the original).
 _compiled_dequant_installed = False
 _DEQUANT_ATTR = "dequantize_gguf_tensor"
 
@@ -78,7 +75,8 @@ def install_compiled_dequant(logger: Any = None) -> bool:
         import torch  # noqa: PLC0415
 
         compiled = torch.compile(gguf_utils.dequantize_gguf_tensor, dynamic = True)
-        # force=True: the compiled callable's fingerprint differs from the original, which can_safely_patch would correctly reject.
+        # force=True: the compiled callable's fingerprint differs from the original, which can_safely_patch would
+        # correctly reject.
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
             return True
@@ -100,7 +98,6 @@ def uninstall_compiled_dequant() -> None:
     _compiled_dequant_installed = False
 
 
-# --- convenience -------------------------------------------------------------------
 
 
 def uninstall_all() -> None:
