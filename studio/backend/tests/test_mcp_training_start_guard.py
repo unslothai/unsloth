@@ -361,8 +361,10 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
 
     from fastmcp.exceptions import ToolError
 
+    # call_tool, not the private _call_tool_mcp fastmcp 4 dropped: requirements
+    # floor it at 3.0.2 and never cap it, so a test may only use the public API.
     with pytest.raises(ToolError) as tool_error:
-        asyncio.run(server._call_tool_mcp("start_training", {"config": _config()}))
+        asyncio.run(server.call_tool("start_training", {"config": _config()}))
 
     # mask_error_details defaults False, so the 409 detail survives to the client
     # (as the text of an isError CallToolResult, not a JSON-RPC protocol error).
