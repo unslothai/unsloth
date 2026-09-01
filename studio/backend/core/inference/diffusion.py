@@ -5867,9 +5867,7 @@ class DiffusionBackend:
                 if expected_load is not None and expected_load != loaded_id:
                     raise DiffusionModelReplacedError(expected_load, loaded_id)
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
-                self._gen = _GenState(
-                    total_steps = steps, subject = current_workspace_subject()
-                )
+                self._gen = _GenState(total_steps = steps, subject = current_workspace_subject())
             try:
                 # FIRST, before any device object exists. This worker is not the thread that loaded
                 # the pipeline, so until it is pinned the un-indexed state.device below -- and the

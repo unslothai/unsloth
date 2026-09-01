@@ -2268,9 +2268,7 @@ class SdCppDiffusionBackend:
                     raise DiffusionModelReplacedError(expected_load, loaded_id)
                 self._active_generate_cancel = cancel
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read idle while this holds _generate_lock.
-                self._gen = _SdGen(
-                    total_steps = int(steps), subject = current_workspace_subject()
-                )
+                self._gen = _SdGen(total_steps = int(steps), subject = current_workspace_subject())
             try:
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)

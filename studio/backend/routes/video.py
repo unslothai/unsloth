@@ -515,6 +515,7 @@ async def generate_video(
 @router.get("/video/generate-progress", response_model = VideoGenerateProgressResponse)
 async def video_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
+
     # Scoped: one backend serves every account, so an unscoped poll reports the
     # clip another account is generating.
     return VideoGenerateProgressResponse(

@@ -33229,9 +33229,11 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     # passed rather than left for the worker to resolve to the default.
     subject = current_workspace_subject()
     cancelled = await asyncio.get_running_loop().run_in_executor(
-        _CANCEL_EXECUTOR, functools.partial(
-            get_active_diffusion_engine().cancel_generate, subject,
-        )
+        _CANCEL_EXECUTOR,
+        functools.partial(
+            get_active_diffusion_engine().cancel_generate,
+            subject,
+        ),
     )
     return {"cancelled": cancelled}
 
