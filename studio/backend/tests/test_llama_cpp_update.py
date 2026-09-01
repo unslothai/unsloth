@@ -1259,9 +1259,8 @@ def test_update_changelog_uses_full_installed_release_identity(monkeypatch, tmp_
 
 
 def test_update_changelog_retry_keeps_the_banner_target(monkeypatch, tmp_path):
-    # Retry must compare the pair the banner is showing. Refreshing the latest
-    # pointer moves it, and the frontend rejects any response whose tags differ
-    # from the ones it asked about, so the panel would stay stuck on the error.
+    # Retry must compare the pair the banner shows: the frontend rejects a response
+    # whose tags differ from the ones it asked about, leaving the panel in error.
     binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     published = {"tag": "b10715-mix-new"}

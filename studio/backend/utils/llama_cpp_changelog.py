@@ -3,10 +3,8 @@
 
 """New carried changes between two published llama.cpp prebuilts.
 
-Unsloth's llama.cpp release body is cumulative: every build repeats the PRs
-that are still carried on top of upstream. The update banner must therefore
-compare the installed and target release bodies instead of displaying the
-target body verbatim, or an old carried PR looks new after every update.
+The release body is cumulative, so the banner must diff the installed and target
+bodies; showing the target body alone relabels old carried PRs as new.
 """
 
 from __future__ import annotations
@@ -46,7 +44,7 @@ def _fetch_release(
     tag: str,
     timeout: float = 5.0,
 ) -> Optional[dict]:
-    """Fetch one exact GitHub release. None on invalid input or any failure."""
+    """One exact GitHub release. None on invalid input or any failure."""
     if not _REPO.fullmatch(repo) or not tag:
         return None
     from utils.utils import call_with_deadline
@@ -122,15 +120,13 @@ def _release_for_tag(
 
 def _plain_text(markdown: str) -> str:
     text = _LINK.sub(lambda match: match.group(1), markdown)
-    # Release titles regularly contain C/C++ identifiers. Underscores in
-    # ROCm_Host or GGML_CUDA_ENABLE_UNIFIED_MEMORY are text, not emphasis.
+    # Underscores in ROCm_Host / GGML_CUDA_ENABLE_UNIFIED_MEMORY are text, not emphasis.
     text = text.replace("`", "").replace("**", "")
     return re.sub(r"\s+", " ", text).strip()
 
 
 def _entry(markdown: str) -> dict:
-    # Generated release bullets put link metadata after `` ([...``. Preserve
-    # parentheses in the title itself, such as ``GLM-5-Next (GLM-5.3-Flash)``.
+    # Metadata starts at " ([", so a title keeps its parens: GLM-5-Next (GLM-5.3-Flash).
     metadata_at = markdown.find(" ([")
     summary_markdown = markdown[:metadata_at] if metadata_at >= 0 else markdown
     links = []
@@ -143,12 +139,8 @@ def _entry(markdown: str) -> dict:
 
 
 def _identities(markdown: str) -> set[str]:
-    """Stable aliases for one carried change.
-
-    A patch can move from its original upstream PR to an Unsloth carry PR. The
-    newer bullet then links the carry PR but still says ``ggml-org#24423``.
-    Keeping both aliases stops that already-installed patch from becoming new.
-    """
+    """Stable aliases for one carried change: a patch migrated to an Unsloth carry
+    PR links that PR but still says ``ggml-org#24423``, and both must match."""
     identities = set()
     for _label, url in _LINK.findall(markdown):
         match = _PR_URL.match(url)
@@ -159,8 +151,7 @@ def _identities(markdown: str) -> set[str]:
         if match:
             identities.add(f"issue:{match.group(1).lower()}#{match.group(2)}")
     for repo, number in _TEXT_REFERENCE.findall(_plain_text(markdown)):
-        # Release shorthand omits the repository because every item is about
-        # llama.cpp: ``ggml-org#24423`` means ``ggml-org/llama.cpp#24423``.
+        # Shorthand omits the repo: ``ggml-org#24423`` is ``ggml-org/llama.cpp#24423``.
         if "/" not in repo:
             repo = f"{repo}/llama.cpp"
         identities.add(f"pr:{repo.lower()}#{number}")
@@ -184,9 +175,7 @@ def changelog_for_update(
 ) -> Optional[dict]:
     """Return only target bullets absent from the installed release.
 
-    None means the comparison could not be made. Callers must not display the
-    target body alone in that case, because it is cumulative and includes old
-    entries.
+    None means no comparison was possible; do not fall back to the cumulative body.
     """
     if not repo or not installed_tag or not latest_tag or installed_tag == latest_tag:
         return None
@@ -195,9 +184,8 @@ def changelog_for_update(
     if installed is None or latest is None:
         return None
 
-    # Releases before b9625-mix-2d6bd50 (2026-06-14) name their carried PRs in
-    # prose, so the bullet list is empty even for a build that carries them.
-    # Comparing against nothing would relabel every one of them as new.
+    # Releases before b9625-mix-2d6bd50 (2026-06-14) name carries in prose, so no
+    # bullets means unknown, not "carries nothing".
     installed_bullets = _bullets(installed.get("body"))
     if not installed_bullets:
         return None

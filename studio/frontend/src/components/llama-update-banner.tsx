@@ -145,8 +145,7 @@ export function LlamaUpdateBanner({
       className={cn(
         positioned
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[448px]"
-          : // Match the desktop updater's floor. In a capped stack, only the
-            // notes region gives up height while the header and actions remain.
+          : // The desktop updater's floor: in a capped stack only the notes give up height.
             "pointer-events-auto flex min-h-[calc(117px+93px*var(--ui-font-scale,1))] w-[calc(100vw-2rem)] max-w-[448px] flex-col max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
       )}
       data-testid="llama-update-banner"

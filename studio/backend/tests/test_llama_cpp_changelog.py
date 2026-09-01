@@ -94,9 +94,8 @@ def test_text_identity_filters_old_unlinked_bullets(monkeypatch):
 
 
 def test_delta_fails_closed_when_installed_notes_have_no_bullets(monkeypatch):
-    # Every release published before b9625-mix-2d6bd50 (2026-06-14) describes its
-    # carried PRs in prose, so the bullet list is empty even though the build does
-    # carry them. Comparing against nothing would relabel #24423 as new.
+    # Pre-b9625-mix-2d6bd50 (2026-06-14) releases name carried PRs in prose, so the
+    # bullet list is empty for a build that does carry #24423.
     releases = {
         "b9596-mix-e6f2453": {
             "body": (
@@ -120,8 +119,7 @@ def test_delta_fails_closed_when_installed_notes_have_no_bullets(monkeypatch):
 
 
 def test_delta_reports_no_changes_when_target_drops_every_carried_pr(monkeypatch):
-    # The mirror case is NOT a failure: the target is always the newest release, so
-    # a bullet-less body there means the build carries nothing.
+    # Not a failure: the target is always newest, so no bullets means no carries.
     releases = {
         "old": {"body": OLD_BODY},
         "new": {"body": "Automated Unsloth llama.cpp prebuild for upstream b10800."},

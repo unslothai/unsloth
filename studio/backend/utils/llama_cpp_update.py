@@ -376,9 +376,8 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
 def get_update_changelog(*, force_refresh: bool = False) -> dict:
     """Only carried changes added after the installed llama.cpp release.
 
-    This is separate from the polled status endpoint so opening the banner is
-    what pays for the two exact release lookups. Failure stays explicit and
-    empty: returning the latest cumulative body would relabel old PRs as new.
+    Separate from the polled status endpoint so opening the banner, not every
+    3s poll, pays for the two exact release lookups.
     """
     empty = {
         "matched": False,
@@ -398,10 +397,8 @@ def get_update_changelog(*, force_refresh: bool = False) -> dict:
         return empty
     repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
     installed_full = marker.get("release_tag") or marker.get("tag")
-    # force_refresh reaches only the two exact release lookups below. Refreshing
-    # the latest-release pointer would retarget the comparison at a release the
-    # banner has not adopted yet (its status check is hourly), and the frontend
-    # rejects any response whose tags differ from the ones it asked about.
+    # force_refresh reaches only the exact release lookups. Refreshing the latest
+    # pointer would retarget a release the banner has not adopted, which it rejects.
     freshness = check_prebuilt_freshness(binary)
     latest = freshness.get("latest_tag")
     empty["installed_tag"] = freshness.get("installed_tag")
