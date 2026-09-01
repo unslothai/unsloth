@@ -11,6 +11,8 @@ the apply flow (job lifecycle, installer invocation, post-swap re-read).
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -59,13 +61,9 @@ class _FakeInstallerPopen:
     def kill(self):
         pass
 
-    # subprocess.run() uses `with Popen(...)`, and without these it raises into
-    # _pid_identity's bare except, silently disabling the identity check.
-    def __enter__(self):
-        return self
 
-    def __exit__(self, *exc):
-        return False
+# Bound before any patch, so a delegated spawn reaches the real one.
+_REAL_POPEN = subprocess.Popen
 
 
 def _installer_command(cmd) -> bool:
@@ -81,24 +79,27 @@ def _patch_installer_popen(
     captured_kwargs = None,
     spawned = None,
 ):
-    """Replace Popen for the installer only.
+    """Replace Popen for the installer only; everything else gets the real one.
 
     subprocess is shared, so this patch catches every spawn in the process, and
     _run_llama_phase adopts the installer pid right after starting it: on macOS
     that identity lookup shells out to `ps`, which would otherwise reach on_start
-    and overwrite the installer argv a caller captured (#8170).
+    and overwrite the installer argv a caller captured (#8170). Delegating rather
+    than faking keeps that lookup working, since a stand-in owes subprocess.run
+    the whole protocol and _pid_identity swallows whatever it does not get.
     """
 
     def _popen(cmd, **kw):
         if spawned is not None:
             spawned.append(list(cmd))
-        is_installer = _installer_command(cmd)
+        if not _installer_command(cmd):
+            return _REAL_POPEN(cmd, **kw)
         return _FakeInstallerPopen(
             cmd,
-            returncode = returncode if is_installer else 0,
-            lines = lines if is_installer else None,
-            on_start = on_start if is_installer else None,
-            captured_kwargs = captured_kwargs if is_installer else None,
+            returncode = returncode,
+            lines = lines,
+            on_start = on_start,
+            captured_kwargs = captured_kwargs,
             **kw,
         )
 
@@ -524,8 +525,11 @@ def test_a_second_spawn_during_the_update_does_not_overwrite_the_installer_argv(
     job = _run_start_update_to_completion()
     assert job["state"] == "success", job
     # Without the ps spawn the ordering this guards cannot happen, so a green
-    # run that never reached it would prove nothing.
+    # run that never reached it would prove nothing. It has to complete, not
+    # just start: a stand-in missing part of the Popen protocol raises into
+    # _pid_identity's bare except and disables the very lookup being exercised.
     assert any(cmd and cmd[0] == "ps" for cmd in spawned), spawned
+    assert process_lifetime._pid_identity(os.getpid()), "the ps lookup did not complete"
     assert "--install-dir" in captured["cmd"], captured["cmd"]
     assert str(install_dir) in captured["cmd"], captured["cmd"]
 
