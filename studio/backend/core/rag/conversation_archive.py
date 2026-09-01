@@ -714,19 +714,28 @@ def _branch_seed(
     """
     if not branch:
         return None
+
     # A LIST, in order, not a set: sets lose repetition and ordering, so an abandoned
     # sibling with the same distinct texts tied with the request's own branch and, being
     # newer, won. A multiset fixes the repeat case but not the reordered one, so this
     # scores an in-order run. System and developer messages are excluded: Unsloth's
     # prepended chat and project instructions are not part of the stored chain.
+    def _key(message):
+        """What a message matches ON. Role-blind let a rewound, unstored "Continue." match
+        an ABANDONED assistant reply of the same text and adopt its boundary."""
+        text = _normalise_cased(_probe_text(message))
+        if not text:
+            return None
+        return (str(message.get("role") or ""), text) if require_unique else text
+
     wanted = [
-        text
-        for text in (
-            _normalise_cased(_probe_text(message))
+        key
+        for key in (
+            _key(message)
             for message in _as_wire(branch)
             if str(message.get("role") or "") not in ("system", "developer")
         )
-        if text
+        if key
     ]
     if not wanted:
         return None
@@ -757,9 +766,9 @@ def _branch_seed(
     def _texts_of(record: dict) -> list:
         identifier = record.get("id")
         if identifier is None:
-            return [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
+            return [_key(m) for m in _as_wire([record])]
         if identifier not in rendered:
-            rendered[identifier] = [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
+            rendered[identifier] = [_key(m) for m in _as_wire([record])]
         return rendered[identifier]
 
     for leaf in leaves[:_BRANCH_SEED_MAX_LEAVES]:
@@ -770,8 +779,8 @@ def _branch_seed(
         score = 0
         last_matched = None
         for record in _walk_from(by_id, parent_of, leaf):
-            for text in _texts_of(record):
-                spots = where.get(text) if text else None
+            for key in _texts_of(record):
+                spots = where.get(key) if key else None
                 if not spots:
                     continue
                 index = bisect.bisect_left(spots, cursor)

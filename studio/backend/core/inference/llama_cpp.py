@@ -1069,6 +1069,21 @@ def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool
         return True
 
 
+def _row_unfinished(message: dict) -> bool:
+    """Whether the client would leave this reply out of its re-send."""
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    status = metadata.get("generationStatus") or custom.get("generationStatus")
+    incomplete = metadata.get("incomplete") or custom.get("incomplete")
+    reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
+    return status in {"queued", "running", "cancelling", "cancelled", "failed"} or reason in {
+        "cancelled",
+        "interrupted",
+    }
+
+
 def _archive_branch_chain(
     messages: list[dict], branch_messages: Optional[list[dict]]
 ) -> Optional[list[dict]]:
@@ -1095,8 +1110,26 @@ def _archive_branch_chain(
             settled.pop()
         if settled:
             proof = _chain(settled)
-            if not proof or not any(row.get("id") == proof[-1].get("id") for row in chain):
+            if not proof:
                 return None
+            tip = proof[-1].get("id")
+            if not any(row.get("id") == tip for row in chain):
+                return None
+            # Rows past that tip ride on the unstored turn alone. A COMPLETED one whose
+            # text the request does not carry belongs to a sibling; an unfinished reply is
+            # simply left out of the re-send, which is the cancelled-epoch case.
+            carried = {
+                _archive_message_text(message.get("content"))
+                for message in conversation_archive._as_wire(list(branch_messages))
+            }
+            past_tip = False
+            for row in chain:
+                if past_tip and not _row_unfinished(row):
+                    for wire in conversation_archive._as_wire([row]):
+                        text = _archive_message_text(wire.get("content"))
+                        if text and text not in carried:
+                            return None
+                past_tip = past_tip or row.get("id") == tip
         return chain
     except Exception:
         return None

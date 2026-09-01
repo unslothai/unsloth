@@ -1909,6 +1909,88 @@ def test_an_indistinguishable_placeholder_twin_is_not_dropped_from_the_vote(monk
         assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
+def test_a_rewound_turn_does_not_match_an_assistant_reply_of_the_same_text(monkeypatch):
+    """Ancestry is proved by text, so the match has to agree about the role too.
+
+    Rewinding and typing "Continue." matched the ABANDONED continuation's assistant reply
+    of that text, and the request adopted a boundary its own branch never had.
+    """
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    rows = [
+        {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
+        {
+            "id": "a1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": "The shared reply.",
+            "metadata": {"generationStatus": "completed"},
+        },
+        {"id": "u2", "parentId": "a1", "role": "user", "content": "Take the next step."},
+        {
+            "id": "a2",
+            "parentId": "u2",
+            "role": "assistant",
+            "content": "Continue.",
+            "metadata": _checkpoint_metadata(18),
+        },
+    ]
+    branch = [
+        {"role": "user", "content": "Do the work."},
+        {"role": "assistant", "content": "The shared reply."},
+        {"role": "user", "content": "Continue."},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
+
+
+def test_a_chain_that_skips_past_the_settled_proof_is_refused(monkeypatch):
+    """A role-compatible match on the unstored turn can still land on a sibling.
+
+    The abandoned continuation ends in a user row reading "Continue." too, so the chain ran
+    to it and dragged the abandoned reply's deeper boundary along. Rows past the settled
+    tip must carry text the request actually sent; a row that renders nothing (an
+    unfinished tool card, the cancelled-epoch case) is not evidence either way.
+    """
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    rows = [
+        {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
+        {
+            "id": "a1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": "The shared reply.",
+            "metadata": {"generationStatus": "completed"},
+        },
+        {"id": "u2", "parentId": "a1", "role": "user", "content": "Take the next step."},
+        {
+            "id": "a2",
+            "parentId": "u2",
+            "role": "assistant",
+            "content": "Abandoned reply.",
+            "metadata": _checkpoint_metadata(18),
+        },
+        {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue."},
+    ]
+    branch = [
+        {"role": "user", "content": "Do the work."},
+        {"role": "assistant", "content": "The shared reply."},
+        {"role": "user", "content": "Continue."},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert llama_cpp._archive_branch_chain(rows, branch) is None
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
+
+
 def test_a_research_row_is_recognised_under_custom_metadata(monkeypatch):
     """The archive accepts the research keys in either place, so this must too."""
     from core.inference import checkpoint, llama_cpp
