@@ -1017,20 +1017,32 @@ def _flatten_kv_entries(cache):
             yield from _flatten_kv_entries(nested)
 
 
+def _kv_entry_not_trimmable():
+    """Default for an entry that does not implement ``is_trimmable``."""
+    return False
+
+
 def _kv_prefix_coverage(cache):
     """Tokens the whole cache holds, or None when no entry can attest to it.
 
     Hybrid models interleave recurrent layers with attention layers, and a
     recurrent entry carries no offset because it holds a fixed-size state
-    rather than a token sequence. Every layer still consumes every token, so an
-    attention sibling's offset counts for the recurrent entries beside it. When
-    nothing carries an offset the cache stays unverifiable, which is what keeps
-    purely recurrent models out: their state cannot say how far it advanced.
+    rather than a token sequence. An attention sibling's offset counts for the
+    entries beside it, because a state that cannot be rewound is only ever
+    served at the exact prefix it was built from. When nothing carries an
+    offset the cache stays unverifiable, which is what keeps purely recurrent
+    models out: their state cannot say how far it advanced.
     """
     covered = None
     for entry in _flatten_kv_entries(cache):
         offset = getattr(entry, "offset", None)
         if offset is None:
+            # Upstream shortens a stored cache to a prefix as soon as every
+            # entry reports it can be trimmed. An opaque state cannot honour
+            # that, so one claiming it can is not something a sibling's offset
+            # is in any position to vouch for.
+            if getattr(entry, "is_trimmable", _kv_entry_not_trimmable)():
+                return None
             continue
         if getattr(entry, "start_position", 0):
             return None

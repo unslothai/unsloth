@@ -1599,7 +1599,13 @@ def test_mlx_prompt_cache_only_stores_verifiable_prefix_coverage(monkeypatch):
 
 def test_mlx_prompt_cache_covers_hybrid_recurrent_layouts(monkeypatch):
     mx = pytest.importorskip("mlx.core")
-    from mlx_lm.models.cache import ArraysCache, CacheList, KVCache, RotatingKVCache
+    from mlx_lm.models.cache import (
+        ArraysCache,
+        CacheList,
+        KVCache,
+        RotatingKVCache,
+        can_trim_prompt_cache,
+    )
 
     _install_fake_prompt_cache_api(monkeypatch)
     from core.inference.mlx_inference import _kv_prefix_coverage, _MLXPromptCacheHistory
@@ -1626,7 +1632,25 @@ def test_mlx_prompt_cache_covers_hybrid_recurrent_layouts(monkeypatch):
     hybrid = [recurrent(), recurrent(), recurrent(), attention(KVCache(), 30)]
     assert _kv_prefix_coverage(hybrid) == 30
     # falcon_h1: both halves inside one CacheList.
-    assert _kv_prefix_coverage([CacheList(recurrent(), attention(KVCache(), 30))]) == 30
+    nested = [CacheList(recurrent(), attention(KVCache(), 30))]
+    assert _kv_prefix_coverage(nested) == 30
+
+    # Storing these is only safe because upstream can never shorten them: it
+    # trims a stored entry to a prefix once every entry is trimmable, and a
+    # recurrent state cannot be rewound. Pin that, so a future mlx-lm which
+    # made these trimmable fails here rather than reusing state at a position
+    # it never occupied.
+    assert can_trim_prompt_cache(hybrid) is False
+    assert can_trim_prompt_cache(nested) is False
+    assert not any(entry.is_trimmable() for entry in hybrid if not hasattr(entry, "offset"))
+
+    # An offsetless entry claiming it can be trimmed is refused outright: no
+    # sibling's offset can vouch for a state that says it can be rewound.
+    class _TrimmableOpaqueState:
+        def is_trimmable(self):
+            return True
+
+    assert _kv_prefix_coverage([_TrimmableOpaqueState(), attention(KVCache(), 30)]) is None
 
     # mamba/rwkv: nothing attests to a token count.
     assert _kv_prefix_coverage([recurrent(), recurrent()]) is None
