@@ -1254,3 +1254,28 @@ def test_intent_inside_a_think_block_is_not_an_announcement():
     assert _gate_would_reprompt("<think>First, I will search the web.</think>", "", True)
     # No think block: the plan is on screen and still earns the nudge.
     assert _gate_would_reprompt("First, I will search the web.", "", True)
+
+
+def test_info_string_may_be_a_long_title():
+    """An info string carries attributes and paths (``python title="..."``), so its
+    length is not what tells an opener from prose."""
+    info = 'python ' + 'title="a-very-long-descriptive-file-name-for-the-snippet.py" ' * 4
+    text = f"First, let me show it.\n```{info}\nx = 1\n```"
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
+def test_a_deeper_delimiter_line_is_the_quoted_block_s_content():
+    """A ``> > ``` `` line inside a singly quoted block is text the block quotes,
+    not the block's closer, so the fence around it holds content."""
+    text = "First, I will run it.\n> ```text\n> \n> > ```\n> ```"
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+    # The same shape with nothing but whitespace between the markers is still blank,
+    # at either depth: the container is the opener's, not whatever the match ended on.
+    for quoted in (
+        "First, I will run it.\n> ```bash\n>   \n> ```",
+        "First, I will run it.\n> > ```bash\n> >   \n> > ```",
+    ):
+        assert not _has_answer_artifact(quoted)
+        assert _would_reprompt(quoted)

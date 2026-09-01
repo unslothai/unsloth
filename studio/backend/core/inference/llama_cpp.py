@@ -853,8 +853,8 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 # `\s*` in the closing tags is spec-legal HTML. Every `[\s\S]{...}?` run stays
 # length-bounded or the search backtracks on CRLF and `<html>` spam.
 _CLOSED_CODE_FENCE = re.compile(
-    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
-    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)",
+    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,600}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
+    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,600}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)",
     re.IGNORECASE,
 )
 _CLOSED_MARKUP_ARTIFACT = re.compile(
@@ -866,8 +866,8 @@ _HAS_ANSWER_ARTIFACT = re.compile(
     # Backtick then tilde fence (models emit ~~~ when the body holds backticks).
     # CommonMark takes 3+ to open and as many to close, on a cleanly ended line, so
     # ``` ```not actually closed ``` does not count.
-    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
-    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
+    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,600}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
+    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,600}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
     r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
     r"|<svg\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
@@ -1006,7 +1006,7 @@ def _is_empty_markup_skeleton(matched: str) -> bool:
     return _EMPTY_MARKUP_SKELETON.fullmatch(candidate) is not None
 
 
-def _is_blank_fence(matched: str) -> bool:
+def _is_blank_fence(matched: str, depth: int = 0) -> bool:
     """True if ``matched`` is a fence whose body is only whitespace.
 
     The delimiters are on the first and last lines, so what sits between them is
@@ -1015,10 +1015,13 @@ def _is_blank_fence(matched: str) -> bool:
     if matched[:1] not in ("`", "~"):
         return False
     lines = matched.splitlines()
-    # The closing line sits at the container's depth, so that is how many markers
-    # belong to the quote; any deeper one on a body line is content.
+    # ``depth`` is the OPENER's quote depth, which the caller reads from the line the
+    # match starts on. A closer sits at that same depth, so a deeper last line means
+    # the pattern stopped on a nested delimiter that is really body text, and the
+    # block runs past it: content, not a blank fence.
     closing = _BLOCKQUOTE_PREFIX.match(lines[-1]) if lines else None
-    depth = closing.group(0).count(">") if closing else 0
+    if (closing.group(0).count(">") if closing else 0) != depth:
+        return False
     for line in lines[1:-1]:
         for _ in range(depth):
             marker = _ONE_QUOTE_MARKER.match(line)
@@ -1035,8 +1038,15 @@ def _first_real_artifact(text: str):
 
     Every match is inspected, so a skeleton followed by a real page counts."""
     for m in _HAS_ANSWER_ARTIFACT.finditer(text):
-        if not _is_empty_markup_skeleton(m.group(0)) and not _is_blank_fence(m.group(0)):
-            return m
+        if _is_empty_markup_skeleton(m.group(0)):
+            continue
+        # The container the fence sits in is whatever quotes the line it opens on.
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        quote = _BLOCKQUOTE_PREFIX.match(text[line_start : m.start()])
+        depth = quote.group(0).count(">") if quote else 0
+        if _is_blank_fence(m.group(0), depth):
+            continue
+        return m
     return None
 
 
