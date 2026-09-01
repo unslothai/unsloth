@@ -248,6 +248,24 @@ class TestKdaRollbackReserve:
         four = b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 3, n_parallel = 4)
         assert four > one
 
+    def test_cpu_pinned_drafter_keeps_target_rollback(self):
+        # Pinning a separate drafter to the CPU moves the drafter, not the target's
+        # rollback snapshots. The loader replaces the reserve with a rollback-only
+        # callback and drops it entirely when that reads 0, so a KDA target must
+        # not report 0 here or the whole reserve disappears.
+        b = self._kda()
+        assert b._rollback_state_bytes(1) / self.MIB == pytest.approx(self.PER_SEQ)
+        assert b._rollback_state_bytes(4) == 4 * b._rollback_state_bytes(1)
+
+    def test_rollback_helper_prefers_mamba(self):
+        b = _make_mla_backend()
+        b._ssm_inner_size = 6144
+        b._ssm_state_size = 128
+        b._ssm_group_count = 1
+        b._ssm_conv_kernel = 4
+        b._full_attention_interval = 4
+        assert b._rollback_state_bytes(1) == b._mamba_recurrent_state_bytes(1)
+
     def test_mamba_path_unchanged(self):
         # A Mamba hybrid still prices rollback with its own helper; the KDA
         # fallback must not double-count or shadow it.
