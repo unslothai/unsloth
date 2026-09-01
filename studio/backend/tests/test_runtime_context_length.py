@@ -81,11 +81,7 @@ def test_a_placeholder_outer_window_does_not_shadow_the_real_one():
 
 
 def test_a_config_that_refuses_to_be_read_leaves_the_window_unknown():
-    """A resolver that cannot answer must not be able to fail the load.
-
-    Wrapper objects nobody controls (PEFT, accelerate, a config behind a property
-    that wants a file) can raise on attribute access, and this runs on every load.
-    """
+    """PEFT and accelerate wrappers can raise on attribute access, and this runs on every load."""
 
     class _RefusesToLoad:
         @property
@@ -96,11 +92,7 @@ def test_a_config_that_refuses_to_be_read_leaves_the_window_unknown():
 
 
 def test_an_attached_window_wins_without_touching_the_config():
-    """The declared window is consulted last and lazily.
-
-    A transformers load always has a requested length, so it must never reach the
-    model's config -- which is what makes a raising config harmless there.
-    """
+    """A transformers load always has a requested length, so a raising config is harmless."""
     touched = []
 
     class _RecordsConfigReads:
