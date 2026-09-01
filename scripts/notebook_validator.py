@@ -478,8 +478,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     and `(A || B) && C` runs C when A succeeded. Each group keeps its own tail, and a command
     is conditional when any level above it is in one: the `&&` in `A || (B && C)` ends the
     group's tail and leaves the outer one, the one in `(A || B && C)` ends the only tail there
-    is. An unquoted `#` that starts a word comments out the rest of the line, so scanning
-    stops.
+    is. A single `&` or `|` separates as well, and both sides run either way, so neither opens
+    a tail; `>&` and `&>` are redirections and are left alone. An unquoted `#` that starts a
+    word comments out the rest of the line, so scanning stops.
     """
     out: list[tuple[str, bool]] = []
     buf: list[str] = []
@@ -524,7 +525,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             tails[-1] = False
             buf_conditional = any(tails)
             i += 2
-        elif ch == ";":
+        elif ch == ";" or (
+            # `A & B` backgrounds A and runs B, `A | B` runs both: unconditional either way.
+            # `>&` and `&>` are redirections, not separators.
+            ch in "&|"
+            and not (ch == "&" and (line[i - 1 : i] == ">" or line[i + 1 : i + 2] == ">"))
+        ):
             flush()
             tails[-1] = False
             buf_conditional = any(tails)
@@ -831,7 +837,9 @@ def rule_inst_002_no_deps_transitive(
     return findings
 
 
-def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
+def _install_cell_lower_bound(
+    install_cell: str, target: str, environment: dict[str, str] | None = None
+) -> str | None:
     """Return the highest lower bound any install line places on `target`
     (treating `==V` as both bounds), or None. Used by R-INST-003 so a
     `torchao>=0.16.0` line satisfies the floor without a `==` pin."""
@@ -841,6 +849,8 @@ def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
             sp = parse_spec(raw)
             if sp is None or sp.name != target:
                 continue
+            if not _requirement_applies(raw, environment):
+                continue  # pip skips it, so it satisfies no floor
             for op, ver in sp.pins:
                 if op in ("==", ">="):
                     if best is None or cmp_versions(ver, best) > 0:
@@ -1134,7 +1144,9 @@ def rule_inst_003_peft_torchao(
     peft_v = res.get("peft")
     if not peft_v:
         return findings
-    torchao_explicit = _install_cell_lower_bound(install_cell, "torchao")
+    torchao_explicit = _install_cell_lower_bound(
+        install_cell, "torchao", _marker_environment(colab)
+    )
     torchao_resolved = torchao_explicit or res.get("torchao")
     for floor in PEFT_TORCHAO_FLOOR:
         if cmp_versions(peft_v, floor["trigger_peft"]) >= 0:
