@@ -1365,9 +1365,7 @@ class TrainingBackend:
 
             # By key, not by id: another account presenting the same id must not
             # read as the owner of the run.
-            owns_current = (
-                self._current_start_key == key and self.current_job_id == existing.job_id
-            )
+            owns_current = self._current_start_key == key and self.current_job_id == existing.job_id
             if existing.state == "rejected" and (
                 not owns_current or existing.error_code == _START_CANCELLED_ERROR_CODE
             ):
@@ -1422,8 +1420,7 @@ class TrainingBackend:
                         return "superseded", existing
                     existing = latest
                     owns_current = (
-                        self._current_start_key == key
-                        and self.current_job_id == existing.job_id
+                        self._current_start_key == key and self.current_job_id == existing.job_id
                     )
                     if not reserved_cancel_tombstone:
                         reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
