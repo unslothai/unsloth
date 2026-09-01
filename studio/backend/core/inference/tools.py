@@ -1454,6 +1454,20 @@ def _is_start_title(token: str) -> bool:
 # action) is NOT blocked. Non-key entries deliberately omit the end
 # anchor: ``.aws/credentials.bak`` etc. are still credentials.
 _SSH_KEY_END = r"(?=$|[\s'\";&|)<>])"
+_HOME_SENSITIVE_LITERAL_PATHS = (
+    ".aws/credentials",
+    ".docker/config.json",
+    ".kube/config",
+    ".config/gcloud/application_default_credentials",
+    ".config/gcloud/access_tokens",
+    ".config/gcloud/credentials",
+    ".pypirc",
+    ".npmrc",
+    ".cargo/credentials",
+    ".netrc",
+    ".password-store",
+    ".gnupg/private-keys-v1.d",
+)
 _HOME_RELATIVE_SENSITIVE = (
     # SSH private keys (config / known_hosts / *.pub intentionally allowed)
     rf"\.ssh/id_rsa{_SSH_KEY_END}",
@@ -1461,21 +1475,9 @@ _HOME_RELATIVE_SENSITIVE = (
     rf"\.ssh/id_ecdsa{_SSH_KEY_END}",
     rf"\.ssh/id_dsa{_SSH_KEY_END}",
     rf"\.ssh/identity{_SSH_KEY_END}",
-    # Cloud provider credentials
-    r"\.aws/credentials",
-    r"\.docker/config\.json",
-    r"\.kube/config",
-    r"\.config/gcloud/application_default_credentials",
-    r"\.config/gcloud/access_tokens",
-    r"\.config/gcloud/credentials",
-    # Personal package-manager tokens (project-local rc stays readable)
-    r"\.pypirc",
-    r"\.npmrc",
-    r"\.cargo/credentials",
-    # Authentication / password stores
-    r"\.netrc",
-    r"\.password-store",
-    r"\.gnupg/private-keys-v1\.d",
+    # Keep literal credential paths in one authoritative list so the
+    # shell-glob candidate projection cannot drift from this regex.
+    *(re.escape(path) for path in _HOME_SENSITIVE_LITERAL_PATHS),
 )
 _ABSOLUTE_SENSITIVE = (
     r"/etc/shadow",
@@ -1690,7 +1692,7 @@ _SENSITIVE_ROOT_WITH_GLOB_RE = re.compile(
     + r"|/proc/(?:self|thread-self|\d+)/"
     + r"|/var/spool/"
     + r")"
-    + r"[^\s'\";&|`$]*[*?][^\s'\";&|`$]*",
+    + r"[^\s'\";&|`$]*[*?\[][^\s'\";&|`$]*",
     re.IGNORECASE,
 )
 
@@ -1706,16 +1708,8 @@ _SENSITIVE_GLOB_CANDIDATES = (
     "~/.ssh/id_ecdsa",
     "~/.ssh/id_dsa",
     "~/.ssh/identity",
-    "~/.aws/credentials",
-    "~/.docker/config.json",
-    "~/.kube/config",
+    *(f"~/{path}" for path in _HOME_SENSITIVE_LITERAL_PATHS),
     "~/.config/gcloud/application_default_credentials.json",
-    "~/.pypirc",
-    "~/.npmrc",
-    "~/.cargo/credentials",
-    "~/.netrc",
-    "~/.password-store",
-    "~/.gnupg/private-keys-v1.d",
     "/var/spool/cron/crontabs",
 )
 
@@ -1981,37 +1975,58 @@ def _find_sensitive_paths(command: str) -> set[str]:
     if not command:
         return set()
 
-    # Pre-normalise backslashes so the POSIX shlex below does not treat
-    # ``C:\Users\alice`` as containing escape sequences (POSIX shlex
-    # would otherwise collapse it to ``C:Usersalice`` and lose the path
-    # structure). Both projections feed the regex scan.
-    normalized = command.replace("\\", "/") if "\\" in command else command
+    def _path_scan_tokens(text: str) -> list[str]:
+        # Always use POSIX shlex for the dequote reconstruction regardless of
+        # host OS: the threat model is shell-quote splicing, which is POSIX
+        # syntax. Pre-normalise Windows separators so shlex does not consume
+        # them as escapes.
+        normalized_text = text.replace("\\", "/") if "\\" in text else text
+        try:
+            lexer = shlex.shlex(
+                normalized_text,
+                posix = True,
+                punctuation_chars = ";&|()`",
+            )
+            lexer.whitespace_split = True
+            return list(lexer)
+        except ValueError:
+            return normalized_text.split()
 
-    # Always use POSIX shlex for the dequote reconstruction regardless of
-    # host OS: the threat model is shell-quote splicing (``cat /etc/sha''dow``,
-    # ``bash -c "cat ~/'.ssh/id_rsa'"``) which is POSIX syntax. Running
-    # non-POSIX shlex on Windows leaves the splice quotes intact and the
-    # bypass slips through.
-    try:
-        lexer = shlex.shlex(normalized, posix = True, punctuation_chars = ";&|()`")
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        tokens = normalized.split()
+    # Each helper only adds a deterministic projection of the original shell
+    # text. Combining them catches ordinary parameter expansion and ANSI-C
+    # quoted path bytes without executing or guessing dynamic shell state.
+    expanded_assignments = _expand_shell_assignments(command)
+    expanded_defaults = _expand_param_defaults(command)
+    seed_targets = {
+        command,
+        expanded_assignments,
+        expanded_defaults,
+        _expand_param_defaults(expanded_assignments),
+        _expand_shell_assignments(expanded_defaults),
+    }
+    seed_targets.update(_decode_ansi_c(text, keep_one_word = True) for text in tuple(seed_targets))
 
-    raw_targets = [command]
-    if normalized is not command:
-        raw_targets.append(normalized)
-    if tokens:
-        raw_targets.append(" ".join(tokens))
-        # Per-token normalisation catches ``..``-traversal that the
-        # full-command normpath cannot resolve safely (commands aren't
-        # paths). ``cat /etc/apt/../shadow`` reaches the regex as
-        # ``/etc/shadow`` once the token is normalised in isolation.
-        for tok in tokens:
-            for variant in _expand_token_normalisations(tok):
-                if variant != tok:
-                    raw_targets.append(variant)
+    raw_targets: set[str] = set()
+    for seed in seed_targets:
+        raw_targets.add(seed)
+        normalized_seed = seed.replace("\\", "/") if "\\" in seed else seed
+        raw_targets.add(normalized_seed)
+        projected_tokens = _path_scan_tokens(seed)
+        if not projected_tokens:
+            continue
+        raw_targets.add(" ".join(projected_tokens))
+        # Preserve the surrounding command when normalising an operand so the
+        # directory-copy policy still sees both the exfil verb and its source.
+        for index, token in enumerate(projected_tokens):
+            for variant in _expand_token_normalisations(token):
+                if variant == token:
+                    continue
+                rebuilt = list(projected_tokens)
+                rebuilt[index] = variant
+                raw_targets.add(" ".join(rebuilt))
+
+    # Keep the original token stream for nested-shell recursion below.
+    tokens = _path_scan_tokens(command)
 
     # Cross-product the projections so the regexes see every shape:
     # raw / backslash-normalised / shlex-dequoted x with-and-without
@@ -14057,12 +14072,50 @@ def _check_signal_escape_patterns(code: str):
     pathlib_module_aliases_prepass: set[str] = {"pathlib"}
     path_class_aliases_prepass: set[str] = set(_PATHLIB_PATH_CLASSES_PREPASS)
 
+    _LEXICAL_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+    def _definition_time_children(node: ast.AST) -> list[ast.AST]:
+        """Expressions evaluated by the enclosing scope when defining a scope."""
+        children: list[ast.AST] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            args = node.args
+            children.extend(args.defaults)
+            children.extend(default for default in args.kw_defaults if default is not None)
+            for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+                if arg.annotation is not None:
+                    children.append(arg.annotation)
+            if args.vararg is not None and args.vararg.annotation is not None:
+                children.append(args.vararg.annotation)
+            if args.kwarg is not None and args.kwarg.annotation is not None:
+                children.append(args.kwarg.annotation)
+            if not isinstance(node, ast.Lambda):
+                children.extend(node.decorator_list)
+                if node.returns is not None:
+                    children.append(node.returns)
+        elif isinstance(node, ast.ClassDef):
+            children.extend(node.decorator_list)
+            children.extend(node.bases)
+            children.extend(keyword.value for keyword in node.keywords)
+        children.extend(getattr(node, "type_params", ()))
+        return children
+
+    def _walk_lexical_scope(subtree: ast.AST):
+        """Walk one scope plus nested definitions' enclosing expressions."""
+        stack = list(reversed(list(ast.iter_child_nodes(subtree))))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, _LEXICAL_SCOPE_NODES):
+                stack.extend(reversed(_definition_time_children(node)))
+                continue
+            yield node
+            stack.extend(reversed(list(ast.iter_child_nodes(node))))
+
     def _run_alias_prepass(subtree: ast.AST) -> None:
         """Collect import aliases (os/os.path/posixpath/shutil/pathlib)
         from ``subtree``. Idempotent and additive so eval/exec payloads
         that contain ``import shutil as sh`` see their aliases tracked
         before the inner visitor runs."""
-        for _node in ast.walk(subtree):
+        for _node in _walk_lexical_scope(subtree):
             if isinstance(_node, ast.Import):
                 for alias in _node.names:
                     _local = alias.asname or alias.name
@@ -14333,16 +14386,18 @@ def _check_signal_escape_patterns(code: str):
                         return v
                 return None
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            # Flatten left-leaning ``+`` chains iteratively to avoid
-            # the recursion depth cap rejecting long concat bypasses
-            # like ``open(v0+v1+...+v64+'/etc/shadow')``.
+            # Flatten the complete ``+`` tree iteratively. Walking only the
+            # left spine leaves a deeply right-associated subtree to recurse
+            # past the depth cap even though every leaf is a static literal.
             operands: list[ast.AST] = []
-            cur = node
-            while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
-                operands.append(cur.right)
-                cur = cur.left
-            operands.append(cur)
-            operands.reverse()
+            pending: list[ast.AST] = [node]
+            while pending:
+                current = pending.pop()
+                if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Add):
+                    pending.append(current.right)
+                    pending.append(current.left)
+                else:
+                    operands.append(current)
             parts: list[str] = []
             for op in operands:
                 s = _extract_string_from_node(op, _depth + 1)
@@ -14416,18 +14471,6 @@ def _check_signal_escape_patterns(code: str):
             if is_path_expanduser and len(node.args) == 1:
                 return _extract_string_from_node(node.args[0], _depth + 1)
         return None
-
-    _LEXICAL_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
-
-    def _walk_lexical_scope(subtree: ast.AST):
-        """Walk one lexical scope without leaking bindings from nested scopes."""
-        stack = list(reversed(list(ast.iter_child_nodes(subtree))))
-        while stack:
-            node = stack.pop()
-            if isinstance(node, _LEXICAL_SCOPE_NODES):
-                continue
-            yield node
-            stack.extend(reversed(list(ast.iter_child_nodes(node))))
 
     def _run_string_binding_prepass(subtree: ast.AST) -> None:
         """Collect simple ``name = 'literal'`` string assignments and
@@ -14688,6 +14731,21 @@ def _check_signal_escape_patterns(code: str):
         saved_bindings = dict(string_bindings)
         saved_all = {name: list(values) for name, values in string_bindings_all.items()}
         saved_eval_aliases = dict(eval_exec_aliases)
+        saved_prepass_aliases = (
+            set(os_path_module_aliases),
+            set(bare_path_join_aliases),
+            set(bare_path_expanduser_aliases),
+            set(shutil_module_aliases),
+            dict(bare_shutil_copy_aliases),
+            set(pathlib_module_aliases_prepass),
+            set(path_class_aliases_prepass),
+        )
+        saved_visitor_aliases = {
+            name: value.copy()
+            for name, value in vars(visitor).items()
+            if isinstance(value, (dict, set))
+        }
+        _run_alias_prepass(node)
         _run_string_binding_prepass(node)
         try:
             visitor.generic_visit(node)
@@ -14698,6 +14756,24 @@ def _check_signal_escape_patterns(code: str):
             string_bindings_all.update(saved_all)
             eval_exec_aliases.clear()
             eval_exec_aliases.update(saved_eval_aliases)
+            for current, saved in zip(
+                (
+                    os_path_module_aliases,
+                    bare_path_join_aliases,
+                    bare_path_expanduser_aliases,
+                    shutil_module_aliases,
+                    bare_shutil_copy_aliases,
+                    pathlib_module_aliases_prepass,
+                    path_class_aliases_prepass,
+                ),
+                saved_prepass_aliases,
+            ):
+                current.clear()
+                current.update(saved)
+            for name, saved in saved_visitor_aliases.items():
+                current = getattr(visitor, name)
+                current.clear()
+                current.update(saved)
 
     def _eval_exec_call_name(func, builtins_aliases):
         """Match ``eval`` / ``exec`` invocations including:

@@ -2460,3 +2460,120 @@ class TestCurrentMainConflictRegressions:
     )
     def test_sensitive_globs_still_blocked(self, cmd):
         assert _find_sensitive_paths(cmd), f"sensitive glob leaked: {cmd!r}"
+
+
+class TestCurrentHeadReviewRegressions:
+    def test_right_associated_literal_concat_blocked(self):
+        expression = "'shadow'"
+        for _ in range(66):
+            expression = f"'' + ({expression})"
+        code = f"open('/etc/' + ({expression})).read()"
+        assert _is_blocked(code), "deep right-associated literal concat leaked"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            r"cat $'\x2fetc\x2fshadow'",
+            "x=shadow; cat /etc/$x",
+            "x=.aws/credentials; cat ~/$x",
+            "unset x; cat /etc/${x:-shadow}",
+        ],
+    )
+    def test_shell_encoded_and_parameter_paths_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"shell path projection leaked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cp -r ~/.ssh/. /tmp/out",
+            "cp -r /etc/. /tmp/out",
+            "rsync -a ~/.aws/. /tmp/out",
+        ],
+    )
+    def test_normalized_sensitive_directory_copy_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"normalized directory copy leaked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc/sha[a-z]ow",
+            "cat /etc/sha[!x]ow",
+            "cat ~/.ssh/id_[a-z]sa",
+            "cat ~/.config/gcloud/access_*",
+            "cat ~/.config/gcloud/cred*",
+        ],
+    )
+    def test_character_class_and_gcloud_globs_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"sensitive glob leaked: {cmd!r}"
+
+    def test_function_default_binding_visible_to_enclosing_scope(self):
+        code = "def f(x=(p := '/etc/shadow')): pass\nopen(p).read()"
+        assert _is_blocked(code), "function-default walrus binding leaked"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "def helper():\n    import requests as r\n"
+                "class Client:\n    def get(self, url): return url\n"
+                "r = Client()\nr.get('https://private.example')"
+            ),
+            (
+                "def helper():\n    import shutil as sh\n"
+                "class Copier:\n    def copy(self, src, dst): return dst\n"
+                "sh = Copier()\nsh.copy('/etc/shadow', 'x')"
+            ),
+            (
+                "def helper():\n    import builtins as b\n"
+                "class Runner:\n    def exec(self, value): return value\n"
+                "b = Runner()\nb.exec(\"open('/etc/shadow').read()\")"
+            ),
+            (
+                "def helper():\n    import os as o\n"
+                "class Runner:\n    def system(self, value): return value\n"
+                "o = Runner()\no.system('cat /etc/shadow')"
+            ),
+            (
+                "def helper():\n    import pathlib as pl\n"
+                "class LocalPath:\n"
+                "    def __init__(self, value): self.value = value\n"
+                "    def read_text(self): return self.value\n"
+                "class LocalPathlib:\n    Path = LocalPath\n"
+                "pl = LocalPathlib()\npl.Path('/etc/shadow').read_text()"
+            ),
+        ],
+    )
+    def test_nested_import_alias_does_not_leak(self, code):
+        assert not _is_blocked(code), "nested requests alias leaked into module scope"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "def helper():\n    import requests as r\n    r.get('https://private.example')",
+            "def helper():\n    import shutil as sh\n    sh.copy('/etc/shadow', 'x')",
+            "def helper():\n    import builtins as b\n    b.exec(\"open('/etc/shadow').read()\")",
+            "def helper():\n    import os as o\n    o.system('cat /etc/shadow')",
+            "def helper():\n    import pathlib as pl\n    pl.Path('/etc/shadow').read_text()",
+        ],
+    )
+    def test_nested_import_alias_still_blocks_in_its_scope(self, code):
+        assert _is_blocked(code), "function-local requests alias was not checked"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            r"cat $'docs\x2fguide.md'",
+            "x=guide.md; cat docs/$x",
+            "cp -r ./src/. /tmp/out",
+            "cat /etc/*.conf",
+            "cat ~/.config/gcloud/logs/*",
+            "cat /etc/sha[x]ow",
+            "cat ~/.ssh/id_[x]sa",
+        ],
+    )
+    def test_new_shell_projections_preserve_legitimate_paths(self, cmd):
+        assert not _find_sensitive_paths(cmd), f"legitimate shell path blocked: {cmd!r}"
+
+    def test_safe_function_default_allowed(self):
+        code = "def f(x=(p := 'README.md')): pass\nopen(p).read()"
+        assert not _is_blocked(code), "safe function-default binding blocked"
