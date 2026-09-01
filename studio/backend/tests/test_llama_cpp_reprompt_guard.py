@@ -1131,9 +1131,14 @@ def test_only_a_leading_block_is_reasoning():
 def test_unclosed_leading_reasoning_is_all_hidden():
     """A thought the window cut off has no closing tag, so a leading block without
     one runs to the end and none of it was shown, artifact included."""
-    for opener in ("<think>", "<thinking>"):
+    for opener in ("<think>", "<thinking>", "<think id=1>"):
         turn = f"{opener}First, let me draft it.\n```python\nx = 1\n```"
         assert _gate_would_reprompt(turn, "", True), opener
+    # The opener ends at a tag boundary: an element that merely starts with the same
+    # letters is part of the answer.
+    answer = "<think-card>First, I will show it.</think-card>\n```python\nx = 1\n```"
+    assert _has_answer_artifact(answer)
+    assert not _gate_would_reprompt(answer, "", True)
 
 
 def test_reasoning_marker_inside_an_example_is_not_reasoning():

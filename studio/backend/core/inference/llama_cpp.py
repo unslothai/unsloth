@@ -1051,6 +1051,13 @@ def _strip_markup_outside_fences(text: str) -> str:
     return _CLOSED_MARKUP_ARTIFACT.sub(_keep_examples, text)
 
 
+# A reasoning opener ends at a tag boundary: "<think-card>" is an element of the
+# answer, not a thought.
+_THINK_OPEN_RE = re.compile(r"<think[\s>]")
+_THINKING_OPEN_RE = re.compile(r"<thinking[\s>]")
+_BRACKET_THINK_OPEN_RE = re.compile(r"\[THINK\]")
+
+
 def _artifact_spans(text: str) -> "list[tuple[int, int]]":
     """Spans of the complete fences and complete markup in ``text``."""
     return [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)] + [
@@ -1084,19 +1091,19 @@ def _text_outside_think(text: str) -> str:
     """
     stripped = text.lstrip()
     # Longest opener first: "<think" is also a prefix of "<thinking".
-    for opener, closer in (
-        ("<thinking", "</thinking>"),
-        ("<think", "</think>"),
-        ("[THINK]", "[/THINK]"),
+    for lead, opener, closer in (
+        (_THINKING_OPEN_RE, "<thinking", "</thinking>"),
+        (_THINK_OPEN_RE, "<think", "</think>"),
+        (_BRACKET_THINK_OPEN_RE, "[THINK]", "[/THINK]"),
     ):
         close = _find_outside_artifacts(text, closer)
         if close < 0:
             # A leading block with no closer runs to the end: a thought the window
             # cut off has no closing tag, and none of it was shown.
-            if stripped.startswith(opener):
+            if lead.match(stripped):
                 return ""
             continue
-        if stripped.startswith(opener) or opener not in text[:close]:
+        if lead.match(stripped) or opener not in text[:close]:
             return text[close + len(closer) :]
     return text
 
@@ -29977,25 +29984,11 @@ class LlamaCppBackend:
                                 yield _meta
                             return
 
-                        _names_render_html = re.search(
+                        _render_html_already_done_intent = _tool_succeeded(
+                            "render_html"
+                        ) and re.search(
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
-                        )
-                        # For the PENDING flag, only prose counts: the name also appears
-                        # as an identifier in code the model is answering with.
-                        _announces_render_html = re.search(
-                            r"(?i)\brender[_\s-]?html\b",
-                            _CLOSED_MARKUP_ARTIFACT.sub("", _CLOSED_CODE_FENCE.sub("", _stripped)),
-                        )
-                        _render_html_already_done_intent = (
-                            _tool_succeeded("render_html") and _names_render_html
-                        )
-                        # Markup drafted for a canvas tool that has not run yet is not a
-                        # finished answer, so the artifact exemption does not apply to it.
-                        _render_html_pending_intent = bool(
-                            _announces_render_html
-                            and "render_html" in _enabled_tool_names
-                            and not _tool_succeeded("render_html")
                         )
                         # A post-tool stall still deserves a nudge, but each retry
                         # re-runs tools, so allow only one. RAG autoinject never lands
@@ -30020,11 +30013,7 @@ class LlamaCppBackend:
                             # intent text can be a short tail of a very long turn.
                             and len(_stripped) < _REPROMPT_MAX_CHARS
                             and _is_short_intent_without_action(_intent_text)
-                            and not (
-                                _artifact_text
-                                and not _render_html_pending_intent
-                                and _has_answer_artifact(_artifact_text)
-                            )
+                            and not (_artifact_text and _has_answer_artifact(_artifact_text))
                         ):
                             _reprompt_count += 1
                             if _already_acted:
