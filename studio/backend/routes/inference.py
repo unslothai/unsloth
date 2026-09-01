@@ -7754,10 +7754,26 @@ def _classify_and_probe_residency(
     return is_gguf, _resolves_to_resident(load_path, llama_only = llama_only, exact_only = not is_gguf)
 
 
+def _catalog_models_here() -> tuple:
+    """The cached /v1/models scan, but only if this workspace produced it.
+
+    One cache serves the whole process and records whose scan filled it. Readers
+    that skipped that check saw another account's private scan-folder paths,
+    which both changed their answer and, through that, told them a model they
+    cannot reach exists.
+    """
+    # .get, not [..]: this runs inside a caller that swallows exceptions, so a
+    # cache dict missing the key would silently answer "no catalog" forever
+    # instead of failing loudly.
+    if _CATALOG_CACHE.get("subject") != current_workspace_subject():
+        return ()
+    return tuple(_CATALOG_CACHE["models"] or ())
+
+
 def _innermost_indexed_owner(path: str) -> Optional[str]:
     """Longest catalog-listed model path containing *path*, or None if none does."""
     best = None
-    for info in _CATALOG_CACHE["models"] or ():
+    for info in _catalog_models_here():
         listed = getattr(info, "path", None)
         if not listed:
             continue
@@ -23952,7 +23968,9 @@ def _openai_model_objects() -> list[dict]:
 # per account, so one global entry serves them to whoever asks next.
 _CATALOG_CACHE: dict = {"subject": None, "at": 0.0, "models": []}
 # Ids the last catalog scan listed, rebuilt only when that scan is replaced.
-_ADVERTISED_CACHE: dict = {"at": None, "paths": {}}
+# Derived from _CATALOG_CACHE, so it carries the same subject: the stamp alone
+# would let one account reuse a table built from another account's scan.
+_ADVERTISED_CACHE: dict = {"at": None, "subject": None, "paths": {}}
 
 
 def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
@@ -23984,14 +24002,18 @@ def _advertised_local_path(model: str) -> Optional[str]:
     advertised a local model the resolver index has not picked up yet, which is
     evidence the name means something other than the resident one.
     """
-    if _ADVERTISED_CACHE["at"] != _CATALOG_CACHE["at"]:
+    subject = current_workspace_subject()
+    if (
+        _ADVERTISED_CACHE.get("at") != _CATALOG_CACHE.get("at")
+        or _ADVERTISED_CACHE.get("subject") != subject
+    ):
         paths = {}
-        for info in _CATALOG_CACHE["models"] or ():
+        for info in _catalog_models_here():
             cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
             path = getattr(info, "path", None)
             if cid and path:
                 paths.setdefault(cid.strip().lower(), path)
-        _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], paths = paths)
+        _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], subject = subject, paths = paths)
     return _ADVERTISED_CACHE["paths"].get(model.strip().lower())
 
 

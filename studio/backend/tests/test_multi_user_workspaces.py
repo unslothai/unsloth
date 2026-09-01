@@ -2056,3 +2056,130 @@ def test_the_embedding_model_setting_cannot_name_another_workspace():
     # Caching the choice per workspace stopped it reaching another account's RAG;
     # it did not stop the choice itself naming a path the loader then opens.
     assert '_reject_uncontained_local_path(model, "use embedding models from")' in src
+
+
+def test_the_embedding_resolution_memo_is_per_account():
+    from utils import embedding_model_settings as ems
+
+    saved = dict(ems._resolved_gguf_memo)
+    ems._resolved_gguf_memo.clear()
+    try:
+        stored = (None, None, "alice/repo", "llama", True, {"files": ["a.gguf"]})
+        token = _bind("alice")
+        try:
+            ems._remember_resolution("shared-model", stored)
+        finally:
+            reset_workspace_subject(token)
+        token = _bind("bob")
+        try:
+            # Keyed by model alone, whichever account resolved last decided which
+            # weights the other's ingestion loaded mid-index.
+            assert ems._remembered("shared-model") is None
+        finally:
+            reset_workspace_subject(token)
+        token = _bind("alice")
+        try:
+            assert ems._remembered("shared-model")[0] == "alice/repo"
+        finally:
+            reset_workspace_subject(token)
+    finally:
+        ems._resolved_gguf_memo.clear()
+        ems._resolved_gguf_memo.update(saved)
+
+
+def test_the_model_catalog_cache_is_not_read_across_accounts():
+    from routes import inference as inference_routes
+
+    saved = dict(inference_routes._CATALOG_CACHE)
+    saved_adv = dict(inference_routes._ADVERTISED_CACHE)
+    try:
+        inference_routes._CATALOG_CACHE.update(
+            subject = "alice",
+            at = 1.0,
+            models = [SimpleNamespace(model_id = "shared-alias", id = None, path = "/alice/m.gguf")],
+        )
+        inference_routes._ADVERTISED_CACHE.update(at = None, subject = None, paths = {})
+        token = _bind("alice")
+        try:
+            assert inference_routes._advertised_local_path("shared-alias") == "/alice/m.gguf"
+        finally:
+            reset_workspace_subject(token)
+        token = _bind("bob")
+        try:
+            # Otherwise Bob's completion probes Alice's private scan-folder path,
+            # and the rejection it produces tells him that model is there.
+            assert inference_routes._advertised_local_path("shared-alias") is None
+            assert inference_routes._innermost_indexed_owner("/alice/m.gguf") is None
+        finally:
+            reset_workspace_subject(token)
+    finally:
+        inference_routes._CATALOG_CACHE.clear()
+        inference_routes._CATALOG_CACHE.update(saved)
+        inference_routes._ADVERTISED_CACHE.clear()
+        inference_routes._ADVERTISED_CACHE.update(saved_adv)
+
+
+def test_one_accounts_clear_all_does_not_fence_anothers_search_images():
+    from core.inference import search_images
+    search_images.reset_registry_for_tests()
+    try:
+        token = _bind("bob")
+        try:
+            # Bob samples the generation his in-flight registration will check.
+            bob_generation = search_images.cache_generation()
+        finally:
+            reset_workspace_subject(token)
+
+        token = _bind("alice")
+        try:
+            search_images.state_for_tests().registry["aaaaaaaaaaaa"] = {
+                "thumbnail": "https://example.test/a.jpg",
+                "source": "https://example.test/a",
+                "created": time.monotonic(),
+                "policy": None,
+            }
+            # Alice clears all her chats. The snapshot used to pick up every
+            # account's ids and the fence refused every account's in-flight work.
+            ids = search_images.snapshot_and_fence_registrations()
+            assert ids is None or "aaaaaaaaaaaa" in ids
+        finally:
+            reset_workspace_subject(token)
+
+        token = _bind("bob")
+        try:
+            assert search_images.cache_generation() == bob_generation
+            with search_images._registry_lock:
+                assert search_images._reaped_since_locked("ffffffffffff", bob_generation) is False
+        finally:
+            reset_workspace_subject(token)
+    finally:
+        search_images.reset_registry_for_tests()
+
+
+def test_the_unstructured_chunk_cache_follows_the_calling_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import importlib.util
+
+    # Loaded by path: the plugin package's __init__ pulls in data_designer, which
+    # is not installed here, and this module has no relative imports of its own.
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "plugins" / "data-designer-unstructured-seed" / "src"
+        / "data_designer_unstructured_seed" / "chunking.py"
+    )
+    spec = importlib.util.spec_from_file_location("_unstructured_chunking", source)
+    chunking = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(chunking)
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    seen = {}
+    for subject in ("unsloth", "alice"):
+        token = _bind(subject)
+        try:
+            # Pinned at import, whichever account opened the first preview owned
+            # the directory for the process and everyone else wrote under it.
+            seen[subject] = chunking._cache_dir().resolve()
+        finally:
+            reset_workspace_subject(token)
+    assert seen["unsloth"] != seen["alice"]
