@@ -1115,12 +1115,15 @@ def _archive_branch_chain(
             tip = proof[-1].get("id")
             if not any(row.get("id") == tip for row in chain):
                 return None
-            # Rows past that tip ride on the unstored turn alone. A COMPLETED one whose
-            # text the request does not carry belongs to a sibling; an unfinished reply is
-            # simply left out of the re-send, which is the cancelled-epoch case.
+            # Rows past that tip ride on the unstored turns alone, so they may only carry
+            # THOSE turns' text: matching the whole request instead let an abandoned row
+            # in on a text repeated earlier in it. An unfinished reply carries nothing to
+            # match, being left out of the re-send, which is the cancelled-epoch case.
             carried = {
                 _archive_message_text(message.get("content"))
-                for message in conversation_archive._as_wire(list(branch_messages))
+                for message in conversation_archive._as_wire(
+                    list(branch_messages[len(settled) :])
+                )
             }
             past_tip = False
             for row in chain:

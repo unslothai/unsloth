@@ -1991,6 +1991,47 @@ def test_a_chain_that_skips_past_the_settled_proof_is_refused(monkeypatch):
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
+def test_a_repeated_text_earlier_in_the_request_cannot_admit_an_abandoned_row(monkeypatch):
+    """Rows past the settled tip are justified by the unstored turns, and only those.
+
+    Checking them against the whole request let the abandoned continuation in on "Q" and
+    "Same", which the request does carry, but earlier, as the turns it rewound TO.
+    """
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    rows = [
+        {"id": "u1", "parentId": None, "role": "user", "content": "Q"},
+        {
+            "id": "a1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": "Same",
+            "metadata": {"generationStatus": "completed"},
+        },
+        {"id": "u2", "parentId": "a1", "role": "user", "content": "Q"},
+        {
+            "id": "a2",
+            "parentId": "u2",
+            "role": "assistant",
+            "content": "Same",
+            "metadata": _checkpoint_metadata(18),
+        },
+        {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue"},
+    ]
+    branch = [
+        {"role": "user", "content": "Q"},
+        {"role": "assistant", "content": "Same"},
+        {"role": "user", "content": "Continue"},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert llama_cpp._archive_branch_chain(rows, branch) is None
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
+
+
 def test_a_research_row_is_recognised_under_custom_metadata(monkeypatch):
     """The archive accepts the research keys in either place, so this must too."""
     from core.inference import checkpoint, llama_cpp
