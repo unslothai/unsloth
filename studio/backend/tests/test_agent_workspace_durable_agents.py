@@ -505,6 +505,31 @@ def test_owned_worktree_merge_records_success(tmp_path, monkeypatch):
     cleanup_worktree("project", worktree["id"])
 
 
+def test_owned_worktree_merge_uses_studio_identity_without_local_config(tmp_path, monkeypatch):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _repository(repository)
+    _folder_project(repository)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
+    worktree = create_worktree("project")
+    worktree_path = Path(worktree["path"])
+    (worktree_path / "agent.txt").write_text("agent\n", encoding = "utf-8")
+    _git(worktree_path, "add", "agent.txt")
+    _git(worktree_path, "commit", "-qm", "agent change")
+    _git(repository, "config", "--unset", "user.name")
+    _git(repository, "config", "--unset", "user.email")
+    expected = _git(repository, "rev-parse", "HEAD")
+
+    merged = merge_worktree("project", worktree["id"], expected)
+
+    assert merged["merge"]["status"] == "merged"
+    assert (
+        _git(repository, "log", "-1", "--format=%an <%ae>|%cn <%ce>")
+        == "Unsloth Studio <studio@localhost>|Unsloth Studio <studio@localhost>"
+    )
+    cleanup_worktree("project", worktree["id"])
+
+
 def test_owned_worktree_merge_conflict_does_not_modify_primary(tmp_path, monkeypatch):
     repository = tmp_path / "repo"
     repository.mkdir()

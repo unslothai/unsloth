@@ -211,6 +211,79 @@ def test_delegation_budgets_are_reserved_atomically(tmp_path, monkeypatch):
     cleanup_worktree("project", parent_worktree["id"])
 
 
+@pytest.mark.parametrize(
+    ("policy_updates", "requires_live_child", "message"),
+    [
+        ({"maxChildren": 1, "maxParallelChildren": 1}, False, "count budget"),
+        ({"maxChildren": 3, "maxParallelChildren": 1}, True, "parallel budget"),
+        (
+            {
+                "maxChildren": 3,
+                "maxParallelChildren": 3,
+                "totalChildOutputTokens": 8_192,
+            },
+            True,
+            "resource budget",
+        ),
+    ],
+)
+def test_child_retry_reapplies_root_delegation_limits(
+    tmp_path, monkeypatch, policy_updates, requires_live_child, message
+):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _project(repository)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "worktrees"))
+    parent_worktree = create_worktree("project")
+    first_worktree = create_worktree("project")
+    second_worktree = create_worktree("project")
+    manager = BackgroundTaskManager(max_workers = 1)
+    second = None
+    try:
+        parent = manager.enqueue_agent(
+            "project",
+            "Coordinate",
+            runtime_selection = _runtime(),
+            worktree_id = parent_worktree["id"],
+            delegation_policy = _policy(**policy_updates),
+            start = False,
+        )
+        first = manager.enqueue_child_agent(
+            "project",
+            parent["id"],
+            "First",
+            role = "explorer",
+            budget = _budget(),
+            worktree_id = first_worktree["id"],
+            start = False,
+        )
+        update_background_task(first["id"], "cancelled")
+        if requires_live_child:
+            second = manager.enqueue_child_agent(
+                "project",
+                parent["id"],
+                "Second",
+                role = "reviewer",
+                budget = _budget(),
+                worktree_id = second_worktree["id"],
+                start = False,
+            )
+
+        with pytest.raises(AgentWorkspaceError, match = message):
+            manager.retry(first["id"], start = False)
+
+        assert get_worktree(first_worktree["id"])["backgroundTaskId"] == first["id"]
+        if second is not None:
+            update_background_task(second["id"], "cancelled")
+        update_background_task(parent["id"], "cancelled")
+    finally:
+        manager._executor.shutdown(wait = True)
+
+    cleanup_worktree("project", second_worktree["id"])
+    cleanup_worktree("project", first_worktree["id"])
+    cleanup_worktree("project", parent_worktree["id"])
+
+
 def test_cancelling_parent_cannot_admit_a_new_child(tmp_path, monkeypatch):
     repository = tmp_path / "repo"
     repository.mkdir()

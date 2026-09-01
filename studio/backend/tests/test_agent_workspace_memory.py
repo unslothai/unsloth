@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+import core.agent_workspace.memory as memory_module
 from core.agent_workspace.background import BackgroundTaskManager
 from core.agent_workspace.common import AgentWorkspaceError
 from core.agent_workspace.memory import (
@@ -19,6 +20,7 @@ from core.agent_workspace.memory import (
     search_memory,
     write_memory_entry,
 )
+from core.agent_workspace.state import get_background_task, update_background_task
 from core.agent_workspace.project_automation import install_project_skill, skill_digest
 from core.agent_workspace.project_context import (
     resolve_project_context,
@@ -301,6 +303,37 @@ def test_dream_uses_tool_failures_and_honors_focus_instructions(tmp_path):
     assert "Tool web_search failed: Timeout" in result["proposals"][0]["content"]
 
 
+def test_dream_merges_findings_that_normalize_to_one_memory_path(tmp_path):
+    _project(tmp_path)
+    _thread("thread-1")
+    _thread("thread-2")
+    _message("message-1", "thread-1", "I prefer tabs.")
+    _message("message-2", "thread-2", "I prefer tabs!")
+
+    result = run_dream_task(
+        "project",
+        {"threadIds": ["thread-1", "thread-2"]},
+        threading.Event(),
+    )
+
+    assert len(result["proposals"]) == 1
+    proposal = result["proposals"][0]
+    assert proposal["path"] == "project/dreams/i-prefer-tabs.md"
+    assert proposal["sourceTranscriptIds"] == ["thread-1", "thread-2"]
+    assert proposal["prevalence"]["transcripts"] == 2
+
+
+def test_memory_context_enforces_utf8_byte_limit(tmp_path, monkeypatch):
+    _project(tmp_path)
+    write_memory_entry("project", "project/emoji.md", "😀" * 200)
+    monkeypatch.setattr(memory_module, "MEMORY_CONTEXT_LIMIT_BYTES", 600)
+
+    rendered = memory_context("project")
+
+    assert len(rendered.encode("utf-8")) <= memory_module.MEMORY_CONTEXT_LIMIT_BYTES
+    assert "emoji.md" not in rendered
+
+
 def test_dream_uses_durable_background_lifecycle(tmp_path):
     _project(tmp_path)
     _thread("thread-1")
@@ -352,6 +385,104 @@ def test_dream_routes_hold_proposals_until_user_acceptance(tmp_path):
     )
     assert entry.status_code == 200
     assert entry.json()["dreamId"] == dream_id
+
+
+def test_concurrent_dream_proposal_decisions_preserve_each_other(tmp_path, monkeypatch):
+    _project(tmp_path)
+    _thread("thread-1")
+    manager = BackgroundTaskManager(max_workers = 1)
+    try:
+        dream = manager.enqueue_dream("project", thread_ids = ["thread-1"], start = False)
+        update_background_task(dream["id"], "running")
+        update_background_task(
+            dream["id"],
+            "completed",
+            result = {
+                "proposals": [
+                    {
+                        "id": "first",
+                        "path": "project/dreams/first.md",
+                        "scope": "project",
+                        "operation": "create",
+                        "content": "first",
+                        "expectedHash": None,
+                        "sourceTranscriptIds": ["thread-1"],
+                        "decision": "pending",
+                    },
+                    {
+                        "id": "second",
+                        "path": "project/dreams/second.md",
+                        "scope": "project",
+                        "operation": "create",
+                        "content": "second",
+                        "expectedHash": None,
+                        "sourceTranscriptIds": ["thread-1"],
+                        "decision": "pending",
+                    },
+                ]
+            },
+        )
+        first_entered = threading.Event()
+        second_read = threading.Event()
+        release_first = threading.Event()
+        real_write = agent_workspace_routes.write_memory_entry
+        real_dream_for_project = agent_workspace_routes._dream_for_project
+
+        def blocking_write(project_id, path, content, **kwargs):
+            if path.endswith("first.md"):
+                first_entered.set()
+                assert release_first.wait(timeout = 3)
+            return real_write(project_id, path, content, **kwargs)
+
+        def observed_dream_for_project(project_id, task_id):
+            task = real_dream_for_project(project_id, task_id)
+            if threading.current_thread().name == "dream-second":
+                second_read.set()
+            return task
+
+        monkeypatch.setattr(agent_workspace_routes, "write_memory_entry", blocking_write)
+        monkeypatch.setattr(
+            agent_workspace_routes,
+            "_dream_for_project",
+            observed_dream_for_project,
+        )
+        outcomes = {}
+
+        def decide(proposal_id):
+            try:
+                outcomes[proposal_id] = agent_workspace_routes.decide_memory_dream_proposal(
+                    "project",
+                    dream["id"],
+                    proposal_id,
+                    agent_workspace_routes.DreamDecisionRequest(decision = "accept"),
+                    current_subject = "test-subject",
+                )
+            except Exception as exc:  # Preserve worker failures for the assertion below.
+                outcomes[proposal_id] = exc
+
+        first = threading.Thread(target = decide, args = ("first",), name = "dream-first")
+        second = threading.Thread(target = decide, args = ("second",), name = "dream-second")
+        first.start()
+        assert first_entered.wait(timeout = 3)
+        second.start()
+        assert second_read.wait(timeout = 3)
+        release_first.set()
+        first.join(timeout = 5)
+        second.join(timeout = 5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert not isinstance(outcomes["first"], Exception)
+        assert not isinstance(outcomes["second"], Exception)
+        completed = get_background_task(dream["id"])
+        assert completed is not None
+        assert {item["id"]: item["decision"] for item in completed["result"]["proposals"]} == {
+            "first": "accepted",
+            "second": "accepted",
+        }
+    finally:
+        release_first.set()
+        manager._executor.shutdown(wait = True)
 
 
 def test_dream_cleanup_deletion_requires_and_records_user_acceptance(tmp_path):

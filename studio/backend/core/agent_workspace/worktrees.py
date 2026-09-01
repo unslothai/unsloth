@@ -24,6 +24,7 @@ from .execution import (
     release_workspace_execution_slot,
 )
 from .git_service import (
+    _STUDIO_GIT_IDENTITY,
     _git,
     _neutral_filter_overrides,
     _neutral_merge_driver_overrides,
@@ -1185,6 +1186,7 @@ def _merge_worktree_after_writer_slots(
                     ["merge", "--no-ff", "--no-edit", source_head],
                     timeout_seconds = 120,
                     output_limit = 128_000,
+                    env = _STUDIO_GIT_IDENTITY,
                     neutralize_filters = True,
                     neutralize_merge_drivers = True,
                 )

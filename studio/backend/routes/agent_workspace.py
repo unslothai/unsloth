@@ -78,6 +78,7 @@ from core.agent_workspace.state import (
     list_background_task_tree,
     list_plans,
     list_worktrees,
+    mutate_completed_dream_result,
     set_verification_config,
     update_background_task,
     update_plan_status,
@@ -1072,43 +1073,46 @@ def decide_memory_dream_proposal(
     dream = _dream_for_project(project_id, dream_id)
     if dream.get("status") != "completed":
         raise HTTPException(status_code = 409, detail = "Dream proposals are not ready yet.")
-    result = dict(dream.get("result") or {})
-    proposals = list(result.get("proposals") or [])
-    proposal = next((item for item in proposals if item.get("id") == proposal_id), None)
-    if proposal is None:
-        raise HTTPException(status_code = 404, detail = "Dream proposal not found.")
-    if proposal.get("decision") != "pending":
-        return {"dream": _public_background_task(dream), "proposal": proposal}
     try:
-        if payload.decision == "accept":
-            expected_hash = payload.expectedHash or proposal.get("expectedHash")
-            if proposal.get("operation") == "delete":
-                if not isinstance(expected_hash, str) or len(expected_hash) != 64:
-                    raise AgentWorkspaceError(
-                        "A deletion proposal requires its current memory hash."
+
+        def mutate(result: dict) -> dict:
+            proposals = result.get("proposals")
+            if not isinstance(proposals, list):
+                raise AgentWorkspaceError("Dream proposal state is invalid.")
+            proposal = next((item for item in proposals if item.get("id") == proposal_id), None)
+            if not isinstance(proposal, dict):
+                raise HTTPException(status_code = 404, detail = "Dream proposal not found.")
+            if proposal.get("decision") != "pending":
+                return proposal
+            if payload.decision == "accept":
+                expected_hash = payload.expectedHash or proposal.get("expectedHash")
+                if proposal.get("operation") == "delete":
+                    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+                        raise AgentWorkspaceError(
+                            "A deletion proposal requires its current memory hash."
+                        )
+                    proposal["deletedEntry"] = delete_memory_entry(
+                        project_id,
+                        str(proposal["path"]),
+                        expected_hash = expected_hash,
+                        actor = "user",
                     )
-                proposal["deletedEntry"] = delete_memory_entry(
-                    project_id,
-                    str(proposal["path"]),
-                    expected_hash = expected_hash,
-                    actor = "user",
-                )
-            else:
-                entry = write_memory_entry(
-                    project_id,
-                    str(proposal["path"]),
-                    str(proposal.get("content") or ""),
-                    expected_hash = expected_hash,
-                    actor = "user",
-                    source_transcript_ids = proposal.get("sourceTranscriptIds"),
-                    dream_id = dream_id,
-                )
-                proposal["acceptedEntry"] = entry
-        proposal["decision"] = "accepted" if payload.decision == "accept" else "rejected"
-        updated = _public_background_task(
-            update_background_task(dream_id, "completed", result = result) or dream
-        )
-        return {"dream": updated, "proposal": proposal}
+                else:
+                    entry = write_memory_entry(
+                        project_id,
+                        str(proposal["path"]),
+                        str(proposal.get("content") or ""),
+                        expected_hash = expected_hash,
+                        actor = "user",
+                        source_transcript_ids = proposal.get("sourceTranscriptIds"),
+                        dream_id = dream_id,
+                    )
+                    proposal["acceptedEntry"] = entry
+            proposal["decision"] = "accepted" if payload.decision == "accept" else "rejected"
+            return proposal
+
+        updated, proposal = mutate_completed_dream_result(dream_id, mutate)
+        return {"dream": _public_background_task(updated), "proposal": proposal}
     except AgentWorkspaceError as exc:
         raise _workspace_error(exc) from exc
 

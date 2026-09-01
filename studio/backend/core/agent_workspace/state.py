@@ -7,7 +7,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 
 from storage.studio_db import get_connection
 
@@ -29,6 +29,7 @@ _NOT_PROVIDED = object()
 _DELEGATION_ROLES = frozenset({"explorer", "implementer", "verifier", "reviewer"})
 _MAX_DELEGATION_DEPTH = 1
 _MAX_DELEGATION_CHILDREN = 8
+_ResultMutation = TypeVar("_ResultMutation")
 
 
 def _database_key(conn: sqlite3.Connection) -> str:
@@ -1101,6 +1102,39 @@ def _normalized_delegation_budget(value: Optional[dict]) -> dict:
     return normalized
 
 
+def _reserve_child_delegation_budget(
+    conn: sqlite3.Connection, root_task_id: str, policy: dict, budget: dict
+) -> None:
+    """Reserve one child attempt against the root agent's durable policy."""
+    existing_children = conn.execute(
+        """
+        SELECT status, delegation_budget_json
+        FROM agent_background_tasks
+        WHERE root_task_id = ? AND parent_task_id IS NOT NULL
+        """,
+        (root_task_id,),
+    ).fetchall()
+    if len(existing_children) >= int(policy["maxChildren"]):
+        raise AgentWorkspaceError("Child-agent count budget is exhausted.")
+    live_children = sum(
+        row["status"] in {"queued", "running", "cancelling"} for row in existing_children
+    )
+    if live_children >= int(policy["maxParallelChildren"]):
+        raise AgentWorkspaceError("Child-agent parallel budget is exhausted.")
+    reserved = {"maxOutputTokens": 0, "maxToolCalls": 0, "wallSeconds": 0}
+    for row in existing_children:
+        prior_budget = _loads(row["delegation_budget_json"], {})
+        for name in reserved:
+            reserved[name] += max(0, int(prior_budget.get(name) or 0))
+    ceilings = {
+        "maxOutputTokens": int(policy["totalChildOutputTokens"]),
+        "maxToolCalls": int(policy["totalChildToolCalls"]),
+        "wallSeconds": int(policy["totalChildWallSeconds"]),
+    }
+    if any(reserved[name] + int(budget[name]) > ceilings[name] for name in ceilings):
+        raise AgentWorkspaceError("Child-agent resource budget is exhausted.")
+
+
 def create_agent_background_task(
     project_id: str,
     instruction: str,
@@ -1179,35 +1213,7 @@ def create_agent_background_task(
             delegation_depth = int(parent["delegation_depth"] or 0) + 1
             if delegation_depth > int(policy["maxDepth"]):
                 raise AgentWorkspaceError("Child-agent delegation depth is exhausted.")
-            existing_children = conn.execute(
-                """
-                SELECT status, delegation_budget_json
-                FROM agent_background_tasks
-                WHERE root_task_id = ? AND parent_task_id IS NOT NULL
-                """,
-                (root_task_id,),
-            ).fetchall()
-            if len(existing_children) >= int(policy["maxChildren"]):
-                raise AgentWorkspaceError("Child-agent count budget is exhausted.")
-            live_children = sum(
-                row["status"] in {"queued", "running", "cancelling"} for row in existing_children
-            )
-            if live_children >= int(policy["maxParallelChildren"]):
-                raise AgentWorkspaceError("Child-agent parallel budget is exhausted.")
-            reserved = {"maxOutputTokens": 0, "maxToolCalls": 0, "wallSeconds": 0}
-            for row in existing_children:
-                prior_budget = _loads(row["delegation_budget_json"], {})
-                for name in reserved:
-                    reserved[name] += max(0, int(prior_budget.get(name) or 0))
-            ceilings = {
-                "maxOutputTokens": int(policy["totalChildOutputTokens"]),
-                "maxToolCalls": int(policy["totalChildToolCalls"]),
-                "wallSeconds": int(policy["totalChildWallSeconds"]),
-            }
-            if any(
-                reserved[name] + int(normalized_budget[name]) > ceilings[name] for name in ceilings
-            ):
-                raise AgentWorkspaceError("Child-agent resource budget is exhausted.")
+            _reserve_child_delegation_budget(conn, root_task_id, policy, normalized_budget)
             runtime_snapshot = parent_payload.get("runtime")
             delegation_policy = None
             normalized_policy = policy
@@ -1431,6 +1437,62 @@ def update_background_task(
         conn.close()
 
 
+def mutate_completed_dream_result(
+    dream_id: str, mutate: Callable[[dict], _ResultMutation]
+) -> tuple[dict, _ResultMutation]:
+    """Serialize one decision against a completed dream's durable result.
+
+    The mutation runs while the result row is exclusively held, so separate
+    proposal decisions always see and persist the newest result rather than
+    replacing one another with stale JSON snapshots.
+    """
+    conn = connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM agent_background_tasks WHERE id = ?", (dream_id,)
+        ).fetchone()
+        if row is None or row["kind"] != "dream":
+            raise AgentWorkspaceError("Dream not found.")
+        if row["status"] != "completed":
+            raise AgentWorkspaceError("Dream proposals are not ready yet.")
+        result = _loads(row["result_json"], {})
+        if not isinstance(result, dict):
+            raise AgentWorkspaceError("Dream proposal state is invalid.")
+        outcome = mutate(result)
+        current = now_ms()
+        cursor = conn.execute(
+            """
+            UPDATE agent_background_tasks
+            SET result_json = ?, updated_at = ?
+            WHERE id = ? AND kind = 'dream' AND status = 'completed'
+            """,
+            (
+                _encoded_json(
+                    result,
+                    limit = _BACKGROUND_RESULT_LIMIT,
+                    label = "Background task result",
+                ),
+                current,
+                dream_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise AgentWorkspaceError("Dream changed in another session. Refresh and retry.")
+        conn.commit()
+        updated = conn.execute(
+            "SELECT * FROM agent_background_tasks WHERE id = ?", (dream_id,)
+        ).fetchone()
+        if updated is None:
+            raise AgentWorkspaceError("Dream not found.")
+        return _background_task(updated), outcome
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def claim_background_task(task_id: str) -> Optional[dict]:
     """Atomically claim one queued task for execution."""
     current = now_ms()
@@ -1632,7 +1694,7 @@ def retry_background_task(task_id: str) -> dict:
         parent_task_id = previous["parent_task_id"]
         if parent_task_id is not None:
             parent = conn.execute(
-                "SELECT kind, status, project_id FROM agent_background_tasks WHERE id = ?",
+                "SELECT * FROM agent_background_tasks WHERE id = ?",
                 (parent_task_id,),
             ).fetchone()
             if (
@@ -1642,6 +1704,19 @@ def retry_background_task(task_id: str) -> dict:
                 or parent["status"] not in {"queued", "running"}
             ):
                 raise AgentWorkspaceError("The parent agent is no longer active.")
+            parent_payload = _loads(parent["payload_json"], {})
+            policy = _normalized_delegation_policy(parent_payload.get("delegationPolicy"))
+            if not policy["enabled"]:
+                raise AgentWorkspaceError("Child-agent delegation is disabled for this task.")
+            if parent_payload.get("workspaceMode") != "owned":
+                raise AgentWorkspaceError(
+                    "Child-agent delegation requires an owned parent worktree."
+                )
+            retry_budget = _normalized_delegation_budget(
+                _loads(previous["delegation_budget_json"], {})
+            )
+            root_task_id = str(previous["root_task_id"] or parent["root_task_id"] or parent["id"])
+            _reserve_child_delegation_budget(conn, root_task_id, policy, retry_budget)
         worktree_id = previous["worktree_id"]
         if worktree_id is not None:
             worktree = conn.execute(

@@ -73,6 +73,12 @@ _ALLOWED_GIT_ENV = frozenset(
         "GIT_INDEX_FILE",
     }
 )
+_STUDIO_GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Unsloth Studio",
+    "GIT_AUTHOR_EMAIL": "studio@localhost",
+    "GIT_COMMITTER_NAME": "Unsloth Studio",
+    "GIT_COMMITTER_EMAIL": "studio@localhost",
+}
 _PREPARED_COMMIT_TTL_MS = 5 * 60 * 1000
 _PREPARED_COMMIT_OPERATION = "prepare_commit"
 
@@ -763,10 +769,7 @@ def _build_selected_commit_object(
         root,
         {
             "GIT_INDEX_FILE": index_name,
-            "GIT_AUTHOR_NAME": "Unsloth Studio",
-            "GIT_AUTHOR_EMAIL": "studio@localhost",
-            "GIT_COMMITTER_NAME": "Unsloth Studio",
-            "GIT_COMMITTER_EMAIL": "studio@localhost",
+            **_STUDIO_GIT_IDENTITY,
         },
     )
     try:
