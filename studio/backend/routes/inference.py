@@ -49,7 +49,12 @@ from urllib.parse import quote as _urlquote
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
-from utils.workspace_context import current_workspace_subject
+from utils import signed_media_links
+from utils.workspace_context import (
+    current_workspace_subject,
+    reset_workspace_subject,
+    set_workspace_subject,
+)
 from auth.authentication import require_install_admin
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
@@ -32812,30 +32817,12 @@ _IMAGE_LINK_SECRET = _secrets.token_bytes(32)
 
 
 def _sign_image_id(image_id: str) -> str:
-    exp = int(time.time()) + _IMAGE_LINK_TTL
-    payload = f"{image_id}.{exp}"
-    sig = _hmac.new(_IMAGE_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
-    return f"{payload}.{sig}"
+    return signed_media_links.sign(_IMAGE_LINK_SECRET, image_id, _IMAGE_LINK_TTL)
 
 
 def _verify_image_link_token(token: str) -> Optional[str]:
-    """The image id a valid, unexpired token names, else None. Gallery ids are
-    ``[A-Za-z0-9_-]`` so the two dots always split id / expiry / signature."""
-    try:
-        image_id, exp_s, sig = token.rsplit(".", 2)
-    except ValueError:
-        return None
-    expected = _hmac.new(
-        _IMAGE_LINK_SECRET, f"{image_id}.{exp_s}".encode(), _hashlib.sha256
-    ).hexdigest()
-    if not _hmac.compare_digest(sig, expected):
-        return None
-    try:
-        if int(exp_s) < int(time.time()):
-            return None
-    except ValueError:
-        return None
-    return image_id
+    """The image id a valid, unexpired token names, else None."""
+    return signed_media_links.verify(_IMAGE_LINK_SECRET, token)[0]
 
 
 def _absolute_image_url(request: Request, image_id: str) -> str:
@@ -32855,9 +32842,16 @@ async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
     authenticated route, and the token names the single image it may serve."""
     from core.inference import image_gallery
 
-    if _verify_image_link_token(token) != image_id:
+    signed_id, subject = signed_media_links.verify(_IMAGE_LINK_SECRET, token)
+    if signed_id != image_id:
         raise HTTPException(status_code = 401, detail = "Invalid or expired image link.")
-    path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
+    # The route takes no bearer, so without this the gallery resolves the owner's
+    # directory and every managed account gets a 404 for its own image.
+    _token = set_workspace_subject(subject)
+    try:
+        path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
+    finally:
+        reset_workspace_subject(_token)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Image not found.")
     data = await asyncio.to_thread(path.read_bytes)

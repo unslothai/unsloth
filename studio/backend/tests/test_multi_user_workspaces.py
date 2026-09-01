@@ -1185,3 +1185,58 @@ def test_streamed_tool_workers_keep_the_callers_workspace():
     from core.inference import tool_stream_exec
     src = inspect.getsource(tool_stream_exec.stream_tool_execution)
     assert "run_in_workspace(bound_subject" in src
+
+
+def test_signed_media_links_name_the_workspace_that_minted_them():
+    from utils import signed_media_links
+
+    secret = b"x" * 32
+    tokens = {}
+    for subject in ("unsloth", "alice"):
+        token = _bind(subject)
+        try:
+            tokens[subject] = signed_media_links.sign(secret, "img_1", 3600)
+        finally:
+            reset_workspace_subject(token)
+    assert tokens["unsloth"] != tokens["alice"]
+    assert signed_media_links.verify(secret, tokens["alice"]) == ("img_1", "alice")
+
+    # A token minted before the subject was carried still reads as the owner.
+    import hashlib
+    import hmac
+    import time as _t
+
+    exp = int(_t.time()) + 3600
+    payload = f"img_1.{exp}"
+    legacy = f"{payload}.{hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()}"
+    assert signed_media_links.verify(secret, legacy) == ("img_1", "unsloth")
+    assert signed_media_links.verify(secret, "img_1.1.deadbeef") == (None, "unsloth")
+
+
+def test_openai_video_jobs_are_not_listed_or_deletable_by_another_account():
+    from routes import video as video_routes
+    video_routes._jobs.clear()
+    try:
+        token = _bind("alice")
+        try:
+            video_routes._jobs["vid_alice"] = video_routes._VideoJob(
+                id = "vid_alice",
+                created_at = 1,
+                prompt = "alice private prompt",
+                model = "m",
+                size = "auto",
+                seconds = "auto",
+                subject = "alice",
+            )
+            assert "vid_alice" in video_routes._my_jobs_locked()
+        finally:
+            reset_workspace_subject(token)
+
+        token = _bind("bob")
+        try:
+            assert video_routes._my_jobs_locked() == {}
+            assert not video_routes._job_is_mine(video_routes._jobs["vid_alice"])
+        finally:
+            reset_workspace_subject(token)
+    finally:
+        video_routes._jobs.clear()
