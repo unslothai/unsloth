@@ -30,6 +30,10 @@ def _source_path(relative_path: str) -> Path:
 
 
 ADAPTER = _source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
+# Real source, inlined rather than stubbed: it imports nothing, so the module docstring's
+# "slice the real source VERBATIM, hand-write only the fixtures" rule applies to it, and a
+# hand-written mirror of these four knobs is exactly what would drift out of date.
+SERVER_TUNING = _source_path("studio/frontend/src/features/chat/lib/server-tuning-fields.ts")
 TEMP = WORKDIR / "temp" / "chat_autoload_failure_gate"
 DEFAULT_MODEL = "unsloth/gemma-4-E2B-it-GGUF"
 GEMMA_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
@@ -698,11 +702,16 @@ SCENARIO_HELPERS = """
     });
 """
 
+if SERVER_TUNING.exists():
+    # `export` on these is harmless in the generated module, which already exports
+    # autoLoadSmallestModel, and the missing-import guard below accepts the prefix.
+    PREAMBLE += "\n" + SERVER_TUNING.read_text(encoding = "utf-8")
+
 
 def _require_node():
     if shutil.which("node") is None:
         pytest.skip("node not available")
-    if not ADAPTER.exists():
+    if not ADAPTER.exists() or not SERVER_TUNING.exists():
         pytest.skip("studio chat sources not present")
     try:
         result = subprocess.run(
