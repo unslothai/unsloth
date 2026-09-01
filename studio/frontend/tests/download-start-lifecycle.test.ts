@@ -33,7 +33,7 @@ const { jobKeyOf, removeJob } =
   await import("../src/features/hub/download-manager/download-manager-state.ts");
 const { finalize } =
   await import("../src/features/hub/download-manager/poll-loop.ts");
-const { startToastId } =
+const { dismissStartToastsForModelSelection, startToastId } =
   await import("../src/features/hub/download-manager/start-toast.ts");
 
 function json(body: unknown): Response {
@@ -134,4 +134,81 @@ test("restart disclosure waits for acceptance and completion dismisses its one k
     id: startToastId(key),
   });
   removeJob(key);
+});
+
+test("a stale model selection does not spend an Xet notice reservation", async () => {
+  calls.length = 0;
+
+  let acceptStart!: () => void;
+  let markStartRequested!: () => void;
+  let reservations = 0;
+  const startRequested = new Promise<void>((resolve) => {
+    markStartRequested = resolve;
+  });
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.startsWith("/api/hub/active-downloads")) {
+      return json({ downloads: [] });
+    }
+    if (url.startsWith("/api/studio/download-transport-capabilities")) {
+      return json({
+        http: { available: true, reason: null },
+        xet: { available: true, reason: null },
+        auto_resolves_to: "xet",
+        auto_reason: null,
+      });
+    }
+    if (url.startsWith("/api/hub/transport-status")) {
+      return json({
+        has_partial: false,
+        last_transport: null,
+        resumable: false,
+      });
+    }
+    if (url === "/api/hub/download") {
+      markStartRequested();
+      return new Promise<Response>((resolve) => {
+        acceptStart = () =>
+          resolve(
+            json({
+              accepted: true,
+              attached: false,
+              state: "running",
+              generation: 8,
+              transport: "xet",
+              job_key: "backend-key",
+            }),
+          );
+      });
+    }
+    if (url === "/api/settings/xet-notice/reserve") {
+      reservations += 1;
+      return json({ granted: true, shown: reservations, limit: 3 });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }) as typeof fetch;
+
+  const request = {
+    kind: "model" as const,
+    repoId: "org/stale-model",
+    variant: "Q4_K_M",
+    expectedBytes: 4096,
+  };
+  const starting = requestStart(request);
+  await startRequested;
+
+  dismissStartToastsForModelSelection();
+  acceptStart();
+  assert.equal(await starting, "started");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const key = jobKeyOf(request.kind, request.repoId, request.variant);
+  try {
+    assert.equal(reservations, 0);
+    assert.deepEqual(visibleToastCalls(), []);
+  } finally {
+    finalize(key, "complete");
+    removeJob(key);
+  }
 });

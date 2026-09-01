@@ -776,8 +776,12 @@ export async function startJob(
     const discloseRestart = opts.restartDisclosure === true && liveOwnStart;
     // Checked BEFORE reserving: a reservation is one of three for the life of the install, and spending one on a toast discarded on arrival burns all three unseen.
     const onOriginRoute = currentRoute() === startRoute;
+    const onOriginSelection =
+      req.kind !== DOWNLOAD_KIND.MODEL ||
+      currentStartToastSelectionEpoch() === startSelectionEpoch;
     if (
       onOriginRoute &&
+      onOriginSelection &&
       shouldShowXetNotice({
         kind: req.kind,
         transport: started,
@@ -814,7 +818,7 @@ export async function startJob(
         }
         showCallerToast(key, caller, startRoute, startSelectionEpoch);
       });
-    } else if (!stopping && onOriginRoute) {
+    } else if (!stopping && onOriginRoute && onOriginSelection) {
       const caller = liveCallerToast(req.callerToast);
       if (discloseRestart) {
         showRestartStartToast(
