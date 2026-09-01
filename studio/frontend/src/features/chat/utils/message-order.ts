@@ -10,13 +10,26 @@ export type ParentLinkedMessage = {
 
 const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 
-// An explicit `parentId` is authoritative even when it is null; only a record from before
-// the field existed chains to its predecessor.
-export function resolveParentId(
+// A stored null means "this message starts a branch" only once the thread has shown that it
+// records parent links at all. Until then the row predates the field, so storage order stands
+// in for ancestry -- which is what keeps a legacy chain whole when later turns start carrying
+// real parents. Rows must be fed in the order they are stored.
+export function createParentResolver(): (
   message: ParentLinkedMessage,
-  previousId: string | null,
-): string | null {
-  return message.parentId !== undefined ? message.parentId : previousId;
+) => string | null {
+  let previousId: string | null = null;
+  let sawRecordedParent = false;
+  return (message) => {
+    const inferred =
+      message.parentId === undefined ||
+      (message.parentId === null && !sawRecordedParent);
+    const parentId = inferred ? previousId : message.parentId;
+    if (message.parentId != null) {
+      sawRecordedParent = true;
+    }
+    previousId = message.id;
+    return parentId ?? null;
+  };
 }
 
 export function orderBySelectedBranch<T extends ParentLinkedMessage>(
@@ -37,11 +50,10 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
 
   const byId = new Map<string, T>();
   const parentOf = new Map<string, string | null>();
-  let previousId: string | null = null;
+  const resolveParent = createParentResolver();
   for (const message of sorted) {
     byId.set(message.id, message);
-    parentOf.set(message.id, resolveParentId(message, previousId));
-    previousId = message.id;
+    parentOf.set(message.id, resolveParent(message));
   }
 
   const chain: T[] = [];

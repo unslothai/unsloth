@@ -5,10 +5,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createParentResolver,
   orderByParentChain,
   orderBySelectedBranch,
-  resolveParentId,
 } from "../src/features/chat/utils/message-order.ts";
+
+type Shape = { id: string; parentId?: string | null };
+
+// Feed rows through one resolver in storage order, the way every caller does.
+function resolveAll(rows: Shape[]): (string | null)[] {
+  const resolveParent = createParentResolver();
+  return rows.map((row) => resolveParent(row));
+}
 
 const EDITED_ROOT = [
   { id: "a", parentId: null, createdAt: 1, role: "user" },
@@ -17,19 +25,40 @@ const EDITED_ROOT = [
   { id: "reply-b", parentId: "b", createdAt: 4, role: "assistant" },
 ];
 
-test("a stored null parentId is a root, not a link to the message before it", () => {
-  assert.equal(resolveParentId({ id: "b", parentId: null }, "reply-a"), null);
+test("a stored null is a root once the thread has recorded a real parent", () => {
+  assert.deepEqual(
+    resolveAll([
+      { id: "a", parentId: null },
+      { id: "reply-a", parentId: "a" },
+      { id: "b", parentId: null },
+    ]),
+    [null, "a", null],
+  );
 });
 
 test("a record from before the field existed still chains to its predecessor", () => {
-  assert.equal(resolveParentId({ id: "b" }, "reply-a"), "reply-a");
-  assert.equal(resolveParentId({ id: "b" }, null), null);
+  assert.deepEqual(resolveAll([{ id: "a" }, { id: "b" }]), [null, "a"]);
 });
 
 test("an undefined parentId is treated as absent, not as a root", () => {
-  assert.equal(
-    resolveParentId({ id: "b", parentId: undefined }, "reply-a"),
-    "reply-a",
+  assert.deepEqual(
+    resolveAll([{ id: "a" }, { id: "b", parentId: undefined }]),
+    [null, "a"],
+  );
+});
+
+test("a leading run of stored nulls is legacy, so storage order stands in", () => {
+  // The server shape: _chat_message_from_row always emits the key, so a legacy row whose
+  // parent_id column is NULL arrives as an explicit null and cannot be told apart by
+  // property presence. Nothing has recorded a parent yet, so these still chain.
+  assert.deepEqual(
+    resolveAll([
+      { id: "old-1", parentId: null },
+      { id: "old-2", parentId: null },
+      { id: "new", parentId: "old-2" },
+      { id: "root", parentId: null },
+    ]),
+    [null, "old-1", "old-2", null],
   );
 });
 
@@ -54,17 +83,50 @@ test("a legacy thread with no parentIds at all still loads in order", () => {
   );
 });
 
-test("a mixed thread keeps its legacy chain and its recorded roots apart", () => {
+test("a mixed thread keeps its legacy chain instead of dropping it", () => {
   const mixed = [
     { id: "old-1", createdAt: 1, role: "user" },
     { id: "old-2", createdAt: 2, role: "assistant" },
-    { id: "new-root", parentId: null, createdAt: 3, role: "user" },
-    { id: "new-reply", parentId: "new-root", createdAt: 4, role: "assistant" },
+    { id: "new-1", parentId: "old-2", createdAt: 3, role: "user" },
+    { id: "new-2", parentId: "new-1", createdAt: 4, role: "assistant" },
   ];
 
   assert.deepEqual(
     orderBySelectedBranch(mixed).map(({ id }) => id),
-    ["new-root", "new-reply"],
+    ["old-1", "old-2", "new-1", "new-2"],
+  );
+});
+
+test("a server-backed legacy thread survives its first parent-linked turn", () => {
+  // Regression: every row carries the key, so the legacy rows below are explicit nulls.
+  // Rooting each of them left the branch walk holding only the newest turns, silently
+  // dropping the earlier conversation from the UI and from the next model request.
+  const serverBacked = [
+    { id: "old-u1", parentId: null, createdAt: 1, role: "user" },
+    { id: "old-a1", parentId: null, createdAt: 2, role: "assistant" },
+    { id: "old-u2", parentId: null, createdAt: 3, role: "user" },
+    { id: "old-a2", parentId: null, createdAt: 4, role: "assistant" },
+    { id: "new-u3", parentId: "old-a2", createdAt: 5, role: "user" },
+    { id: "new-a3", parentId: "new-u3", createdAt: 6, role: "assistant" },
+  ];
+
+  assert.deepEqual(
+    orderBySelectedBranch(serverBacked).map(({ id }) => id),
+    ["old-u1", "old-a1", "old-u2", "old-a2", "new-u3", "new-a3"],
+  );
+});
+
+test("editing the first message of a server-backed thread keeps both branches", () => {
+  const edited = [
+    { id: "u1", parentId: null, createdAt: 1, role: "user" },
+    { id: "a1", parentId: "u1", createdAt: 2, role: "assistant" },
+    { id: "u1-edited", parentId: null, createdAt: 3, role: "user" },
+    { id: "a1-edited", parentId: "u1-edited", createdAt: 4, role: "assistant" },
+  ];
+
+  assert.deepEqual(
+    orderBySelectedBranch(edited).map(({ id }) => id),
+    ["u1-edited", "a1-edited"],
   );
 });
 
@@ -174,9 +236,15 @@ test("orderByParentChain with siblings still returns every message", () => {
   }
 });
 
-test("resolveParentId is total over the three shapes", () => {
-  assert.equal(resolveParentId({ id: "x", parentId: null }, "p"), null);
-  assert.equal(resolveParentId({ id: "x", parentId: "q" }, "p"), "q");
-  assert.equal(resolveParentId({ id: "x" }, "p"), "p");
-  assert.equal(resolveParentId({ id: "x" }, null), null);
+test("the resolver is total over the three shapes", () => {
+  assert.deepEqual(
+    resolveAll([
+      { id: "p", parentId: null },
+      { id: "link", parentId: "p" },
+      { id: "root", parentId: null },
+      { id: "absent" },
+      { id: "dangling", parentId: "gone" },
+    ]),
+    [null, "p", null, "root", "gone"],
+  );
 });
