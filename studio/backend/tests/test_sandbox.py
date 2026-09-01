@@ -19,6 +19,7 @@ typography, not enforcement.
 import importlib.util
 import os
 import shlex
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -120,6 +121,59 @@ def test_wsl_gpu_device_remains_visible_inside_sandbox(sandboxed_workdir):
     sid, _workdir = sandboxed_workdir
     out = _run_python("import os; print(os.path.exists('/dev/dxg'))", sid)
     assert "True" in out, out
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "bubblewrap is Linux-only")
+def test_linux_private_shm_and_identity_work_inside_sandbox(sandboxed_workdir):
+    sid, _workdir = sandboxed_workdir
+    code = (
+        "import getpass, grp, os, pwd\n"
+        "print('SHM', os.path.isdir('/dev/shm'))\n"
+        "print('USER', getpass.getuser())\n"
+        "print('PWD', pwd.getpwuid(os.getuid()).pw_name)\n"
+        "print('GRP', grp.getgrgid(os.getgid()).gr_name)\n"
+    )
+    out = _run_python(code, sid)
+    assert "SHM True" in out, out
+    assert "USER sandbox" in out, out
+    assert "PWD sandbox" in out, out
+    assert "GRP sandbox" in out, out
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "bubblewrap is Linux-only")
+def test_linux_executable_ancestor_symlink_does_not_expose_sibling(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    if not sandbox.sandbox_available():
+        pytest.skip("sandbox unavailable")
+
+    real_home = tmp_path / "real-home"
+    runtime_bin = real_home / "runtime" / "bin"
+    runtime_bin.mkdir(parents = True)
+    launcher = runtime_bin / "python"
+    os.symlink(sys.executable, launcher)
+    secret = real_home / "credential.txt"
+    secret.write_text("must-not-leak")
+    alias_home = tmp_path / "alias-home"
+    os.symlink(real_home, alias_home, target_is_directory = True)
+    alias_launcher = alias_home / "runtime" / "bin" / "python"
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+
+    monkeypatch.setattr(sandbox.sys, "executable", str(alias_launcher))
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [os.path.realpath(runtime_bin.parent)])
+    code = f"import os; print('LEAKED' if os.path.exists({str(secret)!r}) else 'DENIED')"
+    argv = sandbox._linux_bwrap_argv([str(alias_launcher), "-c", code], str(workdir))
+    completed = subprocess.run(
+        argv,
+        cwd = workdir,
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(workdir)},
+        check = False,
+        capture_output = True,
+        text = True,
+        timeout = 20,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "DENIED", completed.stdout
 
 
 def test_workdir_write_succeeds(sandboxed_workdir):
@@ -521,6 +575,7 @@ def test_safe_env_preserves_accelerator_visibility_selectors(tmp_path, monkeypat
     from core.inference import tools
 
     selectors = {
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
         "CUDA_VISIBLE_DEVICES": "2,0",
         "HIP_VISIBLE_DEVICES": "1",
         "ROCR_VISIBLE_DEVICES": "GPU-deadbeef",
@@ -533,6 +588,8 @@ def test_safe_env_preserves_accelerator_visibility_selectors(tmp_path, monkeypat
 
     env = tools._build_safe_env(str(tmp_path))
     assert {name: env[name] for name in selectors} == selectors
+    assert env["USER"] == "sandbox"
+    assert env["LOGNAME"] == "sandbox"
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +753,26 @@ def test_linux_probe_canonicalizes_relative_path(monkeypatch, tmp_path):
 
     assert sandbox.sandbox_available() is True
     assert sandbox._linux_bwrap_path == os.path.realpath(tmp_path / "bin" / "bwrap")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
+def test_linux_probe_uses_runtime_mount_primitives(monkeypatch):
+    sandbox = _load_sandbox_module()
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
+
+    def fake_probe(argv, _label):
+        captured["argv"] = argv
+        return sandbox._ProbeResult(ok = True)
+
+    monkeypatch.setattr(sandbox, "_probe", fake_probe)
+    assert sandbox._linux_probe().ok is True
+    argv = captured["argv"]
+    for required in (("--proc", "/proc"), ("--dev", "/dev"), ("--tmpfs", "/tmp")):
+        index = argv.index(required[0])
+        if argv[index + 1] != required[1]:
+            index = argv.index(required[0], index + 1)
+        assert argv[index + 1] == required[1]
 
 
 # ---------------------------------------------------------------------------

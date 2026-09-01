@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -141,6 +142,50 @@ def test_linux_restores_accelerator_devices_after_synthetic_dev(tmp_path, monkey
     assert "/dev/nvidia-uvm" in device_targets
 
 
+def test_linux_restores_accelerator_sysfs_class_and_backing_tree(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    sysfs_root = tmp_path / "sys"
+    class_root = sysfs_root / "class" / "drm"
+    device = sysfs_root / "devices" / "pci0000" / "card0"
+    backing = device / "drm" / "card0"
+    class_root.mkdir(parents = True)
+    backing.mkdir(parents = True)
+    try:
+        os.symlink(backing, class_root / "card0", target_is_directory = True)
+        os.symlink(device, backing / "device", target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    monkeypatch.setattr(sandbox, "_LINUX_ACCELERATOR_SYSFS_CLASS_PATHS", (str(class_root),))
+    assert sandbox._linux_accelerator_sysfs_paths() == [
+        str(class_root),
+        os.path.realpath(backing),
+        os.path.realpath(device),
+    ]
+
+
+def test_linux_argv_mounts_private_shm_and_synthetic_identity(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    passwd_path = tmp_path / "passwd"
+    group_path = tmp_path / "group"
+    passwd_path.write_text("sandbox:x:1:1:Sandbox User:/tmp:/bin/sh\n")
+    group_path.write_text("sandbox:x:1:\n")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(
+        sandbox, "_linux_sandbox_identity_files", lambda: (str(passwd_path), str(group_path))
+    )
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+    assert ["--tmpfs", "/dev/shm"] == argv[argv.index("/dev/shm") - 1 : argv.index("/dev/shm") + 1]
+    assert ["--ro-bind", str(passwd_path), "/etc/passwd"] == argv[
+        argv.index("/etc/passwd") - 2 : argv.index("/etc/passwd") + 1
+    ]
+    assert ["--ro-bind", str(group_path), "/etc/group"] == argv[
+        argv.index("/etc/group") - 2 : argv.index("/etc/group") + 1
+    ]
+
+
 def test_external_workdir_hardlink_is_rejected(tmp_path):
     sandbox = _load_sandbox_module()
     outside = tmp_path / "outside.txt"
@@ -168,6 +213,106 @@ def test_internal_only_workdir_hardlinks_remain_allowed(tmp_path):
         pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
 
     sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_workdir_scan_fails_closed_above_entry_budget(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    for index in range(3):
+        (workdir / f"{index}.txt").write_text("x")
+    monkeypatch.setattr(sandbox, "_WORKDIR_SCAN_MAX_ENTRIES", 2)
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "entry limit"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_workdir_scan_fails_closed_above_depth_budget(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    (workdir / "a" / "b").mkdir(parents = True)
+    monkeypatch.setattr(sandbox, "_WORKDIR_SCAN_MAX_DEPTH", 1)
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "depth limit"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_linux_mountinfo_detects_same_filesystem_bind_mount(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "work dir"
+    mounted = workdir / "mounted"
+    mounted.mkdir(parents = True)
+    mountinfo = tmp_path / "mountinfo"
+    escaped_workdir = str(workdir).replace(" ", "\\040")
+    escaped_mounted = str(mounted).replace(" ", "\\040")
+    mountinfo.write_text(
+        f"1 0 8:1 / {escaped_workdir} rw - ext4 /dev/sda1 rw\n"
+        f"2 1 8:1 /host/data {escaped_mounted} rw - ext4 /dev/sda1 rw,bind\n"
+    )
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(sandbox, "_LINUX_MOUNTINFO", str(mountinfo))
+
+    assert sandbox._linux_nested_mount_points(str(workdir)) == {os.path.normpath(mounted)}
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "nested mount point"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_workdir_socket_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(workdir / "service.sock"))
+    except OSError as exc:
+        sock.close()
+        pytest.skip(f"pathname Unix sockets unavailable: {exc}")
+    try:
+        with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "special filesystem node"):
+            sandbox._assert_no_external_hardlinks(str(workdir))
+    finally:
+        sock.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "FIFOs unavailable")
+def test_workdir_fifo_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    os.mkfifo(workdir / "host.fifo")
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "special filesystem node"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX executable symlink layout")
+def test_linux_recreates_unbound_executable_symlink(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    target = runtime / "python-real"
+    target.write_text("binary")
+    launcher = runtime / "python"
+    try:
+        os.symlink("python-real", launcher)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox.sys, "executable", str(launcher))
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
+
+    link_index = argv.index("--symlink")
+    assert argv[link_index + 1 : link_index + 3] == ["python-real", str(launcher)]
+    assert not any(
+        argv[index : index + 3] == ["--ro-bind-try", str(launcher), str(launcher)]
+        for index in range(len(argv) - 2)
+    )
 
 
 def test_linux_reapplies_nested_runtime_after_writable_workdir(tmp_path, monkeypatch):
@@ -198,6 +343,7 @@ def test_linux_reapplies_nested_runtime_after_writable_workdir(tmp_path, monkeyp
 def test_macos_profile_allows_child_signals_and_dev_null_writes(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path: None)
     monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
     profile = sandbox._macos_seatbelt_profile("/tmp/work")
 
@@ -206,6 +352,24 @@ def test_macos_profile_allows_child_signals_and_dev_null_writes(monkeypatch):
     assert "(allow file-write-data" in profile
     assert '(path "/dev/null")' in profile
     assert "(vnode-type CHARACTER-DEVICE)" in profile
+    assert '(subpath "/dev/fd")' in profile
+
+
+def test_macos_profile_allows_installed_developer_toolchain(monkeypatch):
+    sandbox = _load_sandbox_module()
+    developer = "/Library/Developer/CommandLineTools"
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path: None)
+    monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
+    original_isdir = sandbox.os.path.isdir
+    monkeypatch.setattr(
+        sandbox.os.path,
+        "isdir",
+        lambda path: path == developer or original_isdir(path),
+    )
+    profile = sandbox._macos_seatbelt_profile("/tmp/work")
+
+    assert f'(subpath "{developer}")' in profile
 
 
 def test_macos_profile_denies_writes_to_nested_runtime(tmp_path, monkeypatch):
@@ -228,6 +392,7 @@ def test_macos_profile_denies_writes_to_nested_runtime(tmp_path, monkeypatch):
 def test_macos_ca_reads_exclude_private_key_directories(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path: None)
     monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
     profile = sandbox._macos_seatbelt_profile("/tmp/work")
 

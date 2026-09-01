@@ -6891,6 +6891,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     env = {
         "PATH": os.pathsep.join(deduped),
         "HOME": workdir,
+        "USER": "sandbox",
+        "LOGNAME": "sandbox",
         "TMPDIR": temp_dir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
@@ -6906,6 +6908,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Device nodes are restored inside the Linux sandbox; retain the standard
     # non-secret selectors so a job pinned to particular GPUs stays pinned.
     for selector in (
+        "CUDA_DEVICE_ORDER",
         "CUDA_VISIBLE_DEVICES",
         "HIP_VISIBLE_DEVICES",
         "ROCR_VISIBLE_DEVICES",

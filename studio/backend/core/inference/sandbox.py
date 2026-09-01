@@ -5,6 +5,7 @@
 OS-level sandbox wrapper for tool execution.
 """
 
+import atexit
 import errno
 import os
 import shutil
@@ -12,6 +13,7 @@ import site
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 
 from loggers import get_logger
@@ -34,6 +36,18 @@ _LINUX_ACCELERATOR_DEVICE_PATHS = (
     "/dev/nvidia-uvm",
     "/dev/nvidia-uvm-tools",
 )
+_LINUX_ACCELERATOR_SYSFS_CLASS_PATHS = (
+    "/sys/class/drm",
+    "/sys/class/kfd",
+)
+_LINUX_MOUNTINFO = "/proc/self/mountinfo"
+_WORKDIR_SCAN_MAX_ENTRIES = 100_000
+_WORKDIR_SCAN_MAX_DEPTH = 128
+
+_MACOS_DEVELOPER_PREFIXES = (
+    "/Library/Developer/CommandLineTools",
+    "/Applications/Xcode.app/Contents/Developer",
+)
 
 
 class SandboxProfilePathError(ValueError):
@@ -53,6 +67,8 @@ _linux_bwrap_path: str | None = None
 # Guards probe + cache so concurrent first-callers see a consistent
 # (cache, bwrap_path) snapshot rather than racing on partial writes.
 _sandbox_probe_lock = threading.Lock()
+_sandbox_identity_lock = threading.Lock()
+_sandbox_identity_paths: tuple[str, str] | None = None
 
 # Extra macOS exec/read prefixes Studio actually puts on PATH via
 # _build_safe_env (Homebrew on Intel + Apple Silicon). Without these
@@ -181,6 +197,12 @@ def _linux_probe() -> _ProbeResult:
             "/",
             "--unshare-all",
             "--die-with-parent",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
             _BWRAP_PROBE_BIN,
         ],
         "Linux bwrap",
@@ -267,23 +289,38 @@ def _safe_subpath(p: str) -> str:
 
 
 def _assert_no_external_hardlinks(workdir: str) -> None:
-    """Reject regular files whose inode has links outside *workdir*.
+    """Boundedly verify that *workdir* contains no boundary-crossing nodes.
 
     A path-scoped writable bind/profile still exposes every inode reachable by
     an in-tree hard link. Count all in-tree aliases and compare them with the
     filesystem link count; internal-only hard links remain valid, while a
-    pre-existing link to a host file fails closed before sandbox launch.
+    pre-existing link to a host file fails closed before sandbox launch. Unix
+    sockets, FIFOs, device nodes, foreign mounts, and trees too large to prove
+    safe are also rejected before the writable bind is created.
     """
     wd = os.path.realpath(workdir)
+    try:
+        root_dev = os.lstat(wd).st_dev
+    except OSError as exc:
+        raise UnsafeSandboxWorkdirError(
+            f"cannot inspect sandbox workdir safely: {wd!r}: {exc}"
+        ) from exc
     inode_counts: dict[tuple[int, int], int] = {}
     inode_links: dict[tuple[int, int], int] = {}
     representatives: dict[tuple[int, int], str] = {}
-    stack = [wd]
+    stack = [(wd, 0)]
+    inspected = 0
+    nested_mount_points = _linux_nested_mount_points(wd)
 
     while stack:
-        directory = stack.pop()
+        directory, depth = stack.pop()
+        if depth > _WORKDIR_SCAN_MAX_DEPTH:
+            raise UnsafeSandboxWorkdirError(
+                "sandbox workdir exceeds the safe directory-depth limit "
+                f"({_WORKDIR_SCAN_MAX_DEPTH})"
+            )
         try:
-            entries = list(os.scandir(directory))
+            entries = os.scandir(directory)
         except FileNotFoundError:
             continue
         except OSError as exc:
@@ -291,26 +328,47 @@ def _assert_no_external_hardlinks(workdir: str) -> None:
                 f"cannot inspect sandbox workdir safely: {directory!r}: {exc}"
             ) from exc
 
-        for entry in entries:
-            try:
-                # DirEntry.stat reports st_nlink=0 on some Windows/Python
-                # combinations; os.lstat returns the filesystem link count.
-                entry_stat = os.lstat(entry.path)
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise UnsafeSandboxWorkdirError(
-                    f"cannot inspect sandbox workdir safely: {entry.path!r}: {exc}"
-                ) from exc
-            if stat.S_ISDIR(entry_stat.st_mode):
-                stack.append(entry.path)
-                continue
-            if not stat.S_ISREG(entry_stat.st_mode) or entry_stat.st_nlink <= 1:
-                continue
-            key = (entry_stat.st_dev, entry_stat.st_ino)
-            inode_counts[key] = inode_counts.get(key, 0) + 1
-            inode_links[key] = max(inode_links.get(key, 0), entry_stat.st_nlink)
-            representatives.setdefault(key, entry.path)
+        with entries:
+            for entry in entries:
+                inspected += 1
+                if inspected > _WORKDIR_SCAN_MAX_ENTRIES:
+                    raise UnsafeSandboxWorkdirError(
+                        "sandbox workdir exceeds the safe entry limit "
+                        f"({_WORKDIR_SCAN_MAX_ENTRIES})"
+                    )
+                try:
+                    # DirEntry.stat reports st_nlink=0 on some Windows/Python
+                    # combinations; os.lstat returns the filesystem link count.
+                    entry_stat = os.lstat(entry.path)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise UnsafeSandboxWorkdirError(
+                        f"cannot inspect sandbox workdir safely: {entry.path!r}: {exc}"
+                    ) from exc
+                if entry_stat.st_dev != root_dev:
+                    raise UnsafeSandboxWorkdirError(
+                        f"sandbox workdir crosses a filesystem boundary: {entry.path!r}"
+                    )
+                if os.path.normpath(entry.path) in nested_mount_points:
+                    raise UnsafeSandboxWorkdirError(
+                        f"sandbox workdir contains a nested mount point: {entry.path!r}"
+                    )
+                if stat.S_ISDIR(entry_stat.st_mode):
+                    stack.append((entry.path, depth + 1))
+                    continue
+                if stat.S_ISLNK(entry_stat.st_mode):
+                    continue
+                if not stat.S_ISREG(entry_stat.st_mode):
+                    raise UnsafeSandboxWorkdirError(
+                        f"sandbox workdir contains a special filesystem node: {entry.path!r}"
+                    )
+                if entry_stat.st_nlink <= 1:
+                    continue
+                key = (entry_stat.st_dev, entry_stat.st_ino)
+                inode_counts[key] = inode_counts.get(key, 0) + 1
+                inode_links[key] = max(inode_links.get(key, 0), entry_stat.st_nlink)
+                representatives.setdefault(key, entry.path)
 
     external = [
         representatives[key] for key, count in inode_counts.items() if count < inode_links[key]
@@ -426,9 +484,9 @@ def _exec_chain_symlinks(executable: str) -> list[str]:
     """Symlinks encountered while resolving *executable* to its real binary.
 
     Returned paths are the symlinks themselves (not their targets). The
-    Linux bwrap argv binds each one so that, inside the sandbox, the
-    kernel can follow the chain during ``execve`` — otherwise it hits
-    ``ENOENT`` on an intermediate symlink we never mounted.
+    Linux bwrap argv recreates each link so that the kernel can follow the
+    chain during ``execve`` without bind-mounting and exposing an entire
+    directory target behind an ancestor symlink.
     """
     out: list[str] = []
     seen_links: set[str] = set()
@@ -459,6 +517,82 @@ def _exec_chain_symlinks(executable: str) -> list[str]:
             break
         current = target
     return out
+
+
+def _decode_mountinfo_path(path: str) -> str:
+    """Decode the octal escapes used for mountinfo path fields."""
+    for escaped, literal in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
+        path = path.replace(escaped, literal)
+    return path
+
+
+def _linux_nested_mount_points(workdir: str) -> set[str]:
+    """Return Linux mount points strictly below *workdir*, including bind mounts."""
+    if sys.platform != "linux":
+        return set()
+    wd = os.path.normpath(os.path.realpath(workdir))
+    mounts: set[str] = set()
+    try:
+        with open(_LINUX_MOUNTINFO, encoding = "utf-8") as handle:
+            for line in handle:
+                fields = line.split()
+                if len(fields) < 6:
+                    continue
+                mount_point = os.path.normpath(_decode_mountinfo_path(fields[4]))
+                if _path_is_within(mount_point, wd, strict = True):
+                    mounts.add(mount_point)
+    except OSError as exc:
+        raise UnsafeSandboxWorkdirError(
+            f"cannot inspect Linux mount boundaries safely: {_LINUX_MOUNTINFO!r}: {exc}"
+        ) from exc
+    return mounts
+
+
+def _linux_accelerator_sysfs_paths() -> list[str]:
+    """Return accelerator class trees and their canonical backing trees."""
+    paths: list[str] = []
+    for class_path in _LINUX_ACCELERATOR_SYSFS_CLASS_PATHS:
+        if not os.path.isdir(class_path):
+            continue
+        sysfs_root = os.path.realpath(os.path.join(class_path, os.pardir, os.pardir))
+        paths.append(class_path)
+        try:
+            with os.scandir(class_path) as entries:
+                for entry in entries:
+                    for candidate in (entry.path, os.path.join(entry.path, "device")):
+                        target = os.path.realpath(candidate)
+                        if _path_is_within(
+                            target, sysfs_root, strict = True
+                        ) and os.path.isdir(target):
+                            paths.append(target)
+        except OSError as exc:
+            logger.debug("accelerator sysfs discovery failed for %s: %s", class_path, exc)
+    return list(dict.fromkeys(paths))
+
+
+def _linux_sandbox_identity_files() -> tuple[str, str]:
+    """Create a private, minimal passwd/group view for the user namespace."""
+    global _sandbox_identity_paths
+    if _sandbox_identity_paths is not None:
+        return _sandbox_identity_paths
+    with _sandbox_identity_lock:
+        if _sandbox_identity_paths is not None:
+            return _sandbox_identity_paths
+        identity_dir = tempfile.mkdtemp(prefix = "unsloth-studio-sandbox-identity-")
+        os.chmod(identity_dir, 0o700)
+        passwd_path = os.path.join(identity_dir, "passwd")
+        group_path = os.path.join(identity_dir, "group")
+        uid = getattr(os, "getuid", lambda: 65534)()
+        gid = getattr(os, "getgid", lambda: 65534)()
+        with open(passwd_path, "w", encoding = "utf-8", newline = "\n") as handle:
+            handle.write(f"sandbox:x:{uid}:{gid}:Sandbox User:/tmp:/bin/sh\n")
+        with open(group_path, "w", encoding = "utf-8", newline = "\n") as handle:
+            handle.write(f"sandbox:x:{gid}:\n")
+        os.chmod(passwd_path, 0o600)
+        os.chmod(group_path, 0o600)
+        atexit.register(shutil.rmtree, identity_dir, ignore_errors = True)
+        _sandbox_identity_paths = (passwd_path, group_path)
+        return _sandbox_identity_paths
 
 
 def _python_read_paths() -> list[str]:
@@ -559,6 +693,9 @@ def _macos_seatbelt_profile(workdir: str) -> str:
     homebrew_subpaths = [
         f'(subpath "{_safe_subpath(p)}")' for p in _MACOS_EXTRA_EXEC_PREFIXES if os.path.isdir(p)
     ]
+    developer_subpaths = [
+        f'(subpath "{_safe_subpath(p)}")' for p in _MACOS_DEVELOPER_PREFIXES if os.path.isdir(p)
+    ]
     workdir_subpath = f'(subpath "{wd}")'
     # Paths the kernel needs mmap(PROT_EXEC) on so the loader can map
     # binaries and dylibs as code. Narrower than the full read allow
@@ -578,6 +715,7 @@ def _macos_seatbelt_profile(workdir: str) -> str:
             '(subpath "/Library/Frameworks")',
             *py_subpaths,
             *homebrew_subpaths,
+            *developer_subpaths,
             workdir_subpath,
         ]
     )
@@ -597,11 +735,15 @@ def _macos_seatbelt_profile(workdir: str) -> str:
             '(subpath "/Library/Frameworks")',
             *py_subpaths,
             *homebrew_subpaths,
+            *developer_subpaths,
             workdir_subpath,
         ]
     )
 
     homebrew_read_block = "\n    " + "\n    ".join(homebrew_subpaths) if homebrew_subpaths else ""
+    developer_read_block = (
+        "\n    " + "\n    ".join(developer_subpaths) if developer_subpaths else ""
+    )
 
     return f"""(version 1)
 (deny default)
@@ -653,7 +795,11 @@ def _macos_seatbelt_profile(workdir: str) -> str:
     (literal "/dev/urandom")
     (literal "/dev/dtracehelper")
     (literal "/dev/autofs_nowait")
-    {py_block}{homebrew_read_block}
+    (subpath "/dev/fd")
+    (literal "/dev/stdin")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+    {py_block}{homebrew_read_block}{developer_read_block}
 )
 
 ; Required for mmap(PROT_EXEC) on dylibs — without this Python cannot
@@ -673,6 +819,7 @@ def _macos_seatbelt_profile(workdir: str) -> str:
         (vnode-type CHARACTER-DEVICE)
     )
 )
+(allow file-write* (subpath "/dev/fd"))
 
 ; coreservices.launchservicesd + lsd.mapdb are intentionally NOT allowed:
 ; together with (allow process-exec /usr/bin) they let a tool run
@@ -797,6 +944,7 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         "/etc/ld.so.conf.d",
         *_LINUX_CA_READ_PATHS,
     )
+    passwd_path, group_path = _linux_sandbox_identity_files()
 
     assert _linux_bwrap_path is not None, "bwrap path unset despite successful probe"
     args: list[str] = [
@@ -808,6 +956,8 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         "/proc",
         "--dev",
         "/dev",
+        "--tmpfs",
+        "/dev/shm",
         "--tmpfs",
         "/tmp",
     ]
@@ -829,12 +979,16 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         nvidia_devices = []
     for device_path in nvidia_devices:
         args.extend(["--dev-bind-try", device_path, device_path])
+    for sysfs_path in _linux_accelerator_sysfs_paths():
+        args.extend(["--ro-bind-try", sysfs_path, sysfs_path])
     # -try variants skip missing paths so the same argv works on
     # usrmerge distros (/lib, /lib64 are symlinks into /usr or absent).
     for d in top_ro_dirs:
         args.extend(["--ro-bind-try", d, d])
     for d in etc_ro_entries:
         args.extend(["--ro-bind-try", d, d])
+    args.extend(["--ro-bind", passwd_path, "/etc/passwd"])
+    args.extend(["--ro-bind", group_path, "/etc/group"])
 
     def _is_under_top_ro(path: str) -> bool:
         return any(path == top or path.startswith(top + os.sep) for top in top_ro_dirs)
@@ -848,9 +1002,10 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
             continue
         args.extend(["--ro-bind-try", rp, rp])
 
-    # Bind exec-chain symlinks whose parent isn't already covered by
-    # an existing bind — binding into a read-only mount fails; symlinks
-    # under an existing bind are already reachable via path inheritance.
+    # Recreate exec-chain symlinks whose parent isn't already covered by
+    # an existing bind. A bwrap bind of a symlink source follows it and can
+    # expose the whole target tree; --symlink preserves only the link itself.
+    # Links under an existing bind are already reachable by path inheritance.
     bind_flags = ("--ro-bind", "--ro-bind-try", "--bind", "--bind-try")
     bound_dests = [
         args[i + 2] for i, arg in enumerate(args) if arg in bind_flags and i + 2 < len(args)
@@ -863,13 +1018,25 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     # and the bwrap child would fail to exec.
     exe = os.path.abspath(os.path.normpath(sys.executable))
     for sym in _exec_chain_symlinks(exe):
-        if sym in bound_links or _is_under_top_ro(sym):
+        # Once an ancestor link points at the canonical runtime bind, links
+        # below it are already present through that bind. Bubblewrap refuses
+        # to create a destination beneath a symlink, so do not recreate them.
+        if any(_path_is_within(sym, link, strict = True) for link in bound_links):
+            continue
+        if sym in bound_links or _is_under_top_ro(sym) or _path_is_within(sym, wd):
             continue
         parent = os.path.dirname(sym)
         if any(parent == b or parent.startswith(b + os.sep) for b in bound_dests):
             continue
+        try:
+            target = os.readlink(sym)
+        except OSError as exc:
+            raise UnsafeSandboxWorkdirError(
+                f"cannot safely recreate executable symlink {sym!r}: {exc}"
+            ) from exc
+        args.extend(["--dir", parent])
         bound_links.add(sym)
-        args.extend(["--ro-bind-try", sym, sym])
+        args.extend(["--symlink", target, sym])
 
     args.extend(["--bind", wd, wd])
     # A later writable parent bind hides earlier nested read-only mounts.
