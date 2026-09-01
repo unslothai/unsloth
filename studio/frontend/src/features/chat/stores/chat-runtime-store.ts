@@ -3535,7 +3535,7 @@ function noteModelDefaultsBeforeHydration(
   }
   // The model already resident at startup is the one the saved global set
   // describes, so its defaults must not stand in front of it.
-  if (modelLoadedBeforeHydration !== checkpoint) {
+  if (!sameCheckpointIdentity(modelLoadedBeforeHydration, checkpoint)) {
     modelLoadedBeforeHydration = null;
   }
 }
@@ -3580,7 +3580,10 @@ function getHydratedSettingsState(
 ): Partial<ChatRuntimeStore> {
   const nextState: Partial<ChatRuntimeStore> = {};
   const checkpoint = state.params.checkpoint;
-  const loadedBeforeHydration = modelLoadedBeforeHydration === checkpoint;
+  const loadedBeforeHydration = sameCheckpointIdentity(
+    modelLoadedBeforeHydration,
+    checkpoint,
+  );
   modelLoadedBeforeHydration = null;
   // The toggle as it will read once this response lands, under the same fence
   // the scalar loop below applies.
@@ -3664,7 +3667,12 @@ function getHydratedSettingsState(
   const left = modelLeftBeforeHydration;
   modelLeftBeforeHydration = null;
   const byModel = nextState.paramsByModel ?? state.paramsByModel;
-  if (remembersPerModel && left && left !== checkpoint && !byModel[left]) {
+  if (
+    remembersPerModel &&
+    left &&
+    !sameCheckpointIdentity(left, checkpoint) &&
+    !byModel[left]
+  ) {
     const inherited: PersistedInferenceParams = {};
     for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
       const value = settings.inferenceParams?.[key];
@@ -4394,7 +4402,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // fallback was saved. Only the model resident at startup can own a
         // global-only legacy snapshot.
         const globalBelongsToActiveCheckpoint =
-          modelLoadedBeforeHydration !== checkpoint &&
+          !sameCheckpointIdentity(modelLoadedBeforeHydration, checkpoint) &&
           modelLeftBeforeHydration === null &&
           !sameCheckpointIdentity(unownedCheckpointBeforeHydration, checkpoint);
         const remembersPerModel = qwenMigrationRemembersPerModel(
