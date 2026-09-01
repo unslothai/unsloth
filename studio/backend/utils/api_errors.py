@@ -194,7 +194,7 @@ def _summarize_validation_errors(errors) -> tuple:
 # whose traceback embedded the payload: one 531 KB upload logged 2.2 MB.
 _MAX_ECHOED_INPUT_CHARS = 200
 # A huge container of small values is as unbounded as one huge string (an array of 200k ints
-    # would have every element copied into the 422 body), so keep only enough to identify it.
+# would have every element copied into the 422 body), so keep only enough to identify it.
 _MAX_ECHOED_ITEMS = 20
 _MAX_ECHOED_DEPTH = 4
 

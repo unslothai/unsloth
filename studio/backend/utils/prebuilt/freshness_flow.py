@@ -379,5 +379,5 @@ def reset_caches(
         import shutil
 
         # cache_dir() is a freshness-only subdir re-created on the next save_disk_cache, and
-    # ignore_errors so a missing or locked dir cannot break an otherwise successful install.
+        # ignore_errors so a missing or locked dir cannot break an otherwise successful install.
         shutil.rmtree(cache_dir(), ignore_errors = True)

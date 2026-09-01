@@ -490,9 +490,9 @@ def slim_pairing_for_artifact(
     required_sonames = [str(name) for name in sonames]
     if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
         # The shared Windows manifest lists libomp only because the cpu bundle's ggml links against it, so
-    # requiring it for a GPU bundle only mis-rejects; link_ggml_runtime still wires it. Dropping the
-    # aarch64 name too is safe only while llama publishes no Windows arm64 GPU bundle, whose
-    # clang-built ggml really does need LLVM OpenMP: re-check this gate before adding one.
+        # requiring it for a GPU bundle only mis-rejects; link_ggml_runtime still wires it. Dropping the
+        # aarch64 name too is safe only while llama publishes no Windows arm64 GPU bundle, whose
+        # clang-built ggml really does need LLVM OpenMP: re-check this gate before adding one.
         required_sonames = [
             name
             for name in required_sonames
@@ -939,7 +939,7 @@ def link_runtime_directories(
         if not files:
             if not required:
                 # hipBLASLt has no kernels for this target, and llama pairs without the catalog and runs, so
-            # whisper must pair the same way.
+                # whisper must pair the same way.
                 log(f"slim install: paired ROCm runtime ships no {name} kernel catalog; skipping")
                 continue
             missing = "is missing its" if not source_root.is_dir() else "has an empty"
@@ -1074,7 +1074,7 @@ def existing_install_matches(
             return False
         runtime_dirs = marker.get("linked_runtime_directories")
         # Subset plus required, not equality: a target without hipBLASLt kernels wires rocblas alone and is
-    # complete (#8364), while an unknown name or a missing rocblas still means stale wiring.
+        # complete (#8364), while an unknown name or a missing rocblas still means stale wiring.
         if (
             marker.get("backend") == "rocm"
             and not host.is_windows
@@ -1284,7 +1284,7 @@ def _release_plan_for_host(
             continue
         try:
             # Establish host compatibility before fetching or trusting this candidate's checksum index: once
-    # selected, integrity failures must stop the install rather than silently downgrade again.
+            # selected, integrity failures must stop the install rather than silently downgrade again.
             select_artifact_with_cpu_fallback(bundle.manifest, host, requested_backend)
         except PrebuiltFallback:
             continue

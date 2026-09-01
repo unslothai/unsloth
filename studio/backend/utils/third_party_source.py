@@ -964,8 +964,8 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
                 expected_sha256 = _DAC_SHA256,
             ):
                 # Populate the pinned destination so later loads hit the fast path instead of re-downloading and
-        # re-hashing 295 MB under the install lock. The copy is an optimisation, so a full disk falls
-        # back to the hub path rather than failing a verified download.
+                # re-hashing 295 MB under the install lock. The copy is an optimisation, so a full disk falls
+                # back to the hub path rather than failing a verified download.
                 try:
                     _install_verified_artifact(downloaded, destination)
                 except OSError:
@@ -1061,7 +1061,7 @@ def import_pinned_module(module_name: str, *, package: str, source: Path | str) 
             invalid_modules = sorted(
                 name
                 # Snapshot: another thread importing here would otherwise raise "dictionary changed size during
-        # iteration" out of a good codec load.
+                # iteration" out of a good codec load.
                 for name, loaded_module in list(sys.modules.items())
                 if (name == package or name.startswith(f"{package}."))
                 and not _module_is_inside(loaded_module, package_root)

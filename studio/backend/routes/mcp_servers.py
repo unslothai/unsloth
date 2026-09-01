@@ -371,7 +371,7 @@ async def refresh_mcp_server_tools(
             current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
         ):
             # Start the cool-off so the next chat send does not re-hang on this server's timeout; a row
-        # that changed mid-probe belongs to the old config and must not be parked.
+            # that changed mid-probe belongs to the old config and must not be parked.
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 

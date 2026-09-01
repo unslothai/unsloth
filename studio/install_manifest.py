@@ -292,9 +292,9 @@ def write_manifest(
         "requirement_files": requirement_digests(installed_requirements_root(root) or req_root),
     }
     # Additive, so MANIFEST_SCHEMA does not move and existing manifests stay valid. Absent means
-# "unknown", NOT False: only a manifest written by a build that knew the key can answer. Recorded
-# because install.ps1 / install.sh export UNSLOTH_NO_TORCH for their own run only, so a later
-# `unsloth studio update` would otherwise reinstall torch into a GGUF-only venv.
+    # "unknown", NOT False: only a manifest written by a build that knew the key can answer. Recorded
+    # because install.ps1 / install.sh export UNSLOTH_NO_TORCH for their own run only, so a later
+    # `unsloth studio update` would otherwise reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
     # The FLAVOR, never the index URL it came from: a pinned index can carry a token

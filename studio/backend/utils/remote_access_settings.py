@@ -333,7 +333,7 @@ def stop_remote_access(app_state) -> dict:
             return
         if get_studio_tunnel_status()["managed_by"] == "settings":
             # Every Stop admitted before this teardown decision must finish traversing cloudflared, so
-    # admission closes at the end of the drain, else a later request creates an unobserved lease.
+            # admission closes at the end of the drain, else a later request creates an unobserved lease.
             _drain_and_close_remote_access_stop_responses()
             current = get_studio_tunnel_control_token()
             if current[0] != admission[0] or get_studio_tunnel_status()["managed_by"] != "settings":

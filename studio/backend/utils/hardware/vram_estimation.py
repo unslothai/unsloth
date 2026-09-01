@@ -426,7 +426,7 @@ def _is_kv_shared_layer(arch: ModelArchConfig, layer_idx: int) -> bool:
         return False
     first_shared = arch.num_hidden_layers - arch.num_kv_shared_layers
     # Gemma4 uses the same `> 0` guard, so a fully-shared config raises at model construction:
-            # matching upstream avoids estimating a shape the model code rejects.
+    # matching upstream avoids estimating a shape the model code rejects.
     # Gemma4's guard is at modeling_gemma4.py:1031 / modular_gemma4.py:863.
     return layer_idx >= first_shared > 0
 
@@ -589,7 +589,7 @@ def _module_path_matches(skip_module: str, alias: str) -> bool:
     if not prefix_parts:
         return True
     # Bound the prefix to text-tower roots so VLM keys like vision_tower.model.layers do not shadow
-        # the text alias.
+    # the text alias.
     return ".".join(prefix_parts) in _SKIP_MODULE_TEXT_PREFIXES
 
 

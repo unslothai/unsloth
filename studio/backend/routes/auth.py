@@ -678,8 +678,6 @@ async def change_password(
     )
 
 
-
-
 # API key management
 # ---------------------------------------------------------------------------
 def _row_to_api_key_response(row: dict) -> ApiKeyResponse:

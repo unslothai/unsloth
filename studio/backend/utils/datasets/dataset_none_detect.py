@@ -126,8 +126,6 @@ def _probe_conversation(dataset: Dataset, candidates = None):
     return all_corrupt_fallback
 
 
-
-
 # None-detection helpers
 # ---------------------------------------------------------------------------
 def is_none_or_empty(value) -> bool:
@@ -184,8 +182,6 @@ def _classify_empty(value) -> str:
     return "valid"  # unreachable if is_none_or_empty was True
 
 
-
-
 # Alpaca detection
 # ---------------------------------------------------------------------------
 def find_none_alpaca(dataset: Dataset) -> dict:
@@ -220,8 +216,6 @@ def find_none_alpaca(dataset: Dataset) -> dict:
             stats["bad_row_indices"].append(i)
 
     return stats
-
-
 
 
 # ChatML / conversational detection
@@ -368,8 +362,6 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
     return stats
 
 
-
-
 # Convenience wrappers per format (all delegate to the same scan logic)
 # ---------------------------------------------------------------------------
 def find_none_sharegpt(dataset: Dataset, col: str = None) -> dict:
@@ -402,7 +394,6 @@ def find_none_gptoss(dataset: Dataset, col: str = None) -> dict:
             )
         col = conv_info["column"]
     return find_none_chatml(dataset, col = col)
-
 
 
 # Format registry, first match wins: put specific formats before general ones (gptoss before chatml, since gptoss is
@@ -556,8 +547,6 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
         stats = scanner(dataset)
     stats["format"] = fmt
     return stats
-
-
 
 
 # Report printing
@@ -754,7 +743,6 @@ def show_row(
                     print(f"  [{i:>3d}] {role:<12s} {preview}{status}")
 
         print(f"{'=' * 64}")
-
 
 
 # CLI entry point

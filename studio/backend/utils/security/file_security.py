@@ -468,8 +468,8 @@ def _cached_pickle_weight_files(snapshot: Path, load_subdirs = ()) -> list:
         # A torch weight index makes from_pretrained load nested shards iterdir never sees, torch.loading
         # Probe the canonical index name with the loader's own lookup so an oddly-cased artifact it would never open
         # does not block. model.safetensors wins over both.
-    # any not ending in .safetensors, so probe the canonical index name with the loader's own lookup
-    # (an oddly-cased artifact it would never open must not block). model.safetensors wins over both.
+        # any not ending in .safetensors, so probe the canonical index name with the loader's own lookup
+        # (an oddly-cased artifact it would never open must not block). model.safetensors wins over both.
         for index_name in _TORCH_INDEX_FILES:
             if not _loader_resolves(root, index_name):
                 continue

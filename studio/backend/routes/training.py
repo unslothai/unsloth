@@ -779,7 +779,7 @@ def _reject_untrainable_model_request(
     if path is None:
         try:
             # Raised inside the try on purpose: the except HTTPException handler still runs
-        # _resolve_model_snapshot, so a cached snapshot pins as before without the remote budget.
+            # _resolve_model_snapshot, so a cached snapshot pins as before without the remote budget.
             if _hub_unreachable():
                 raise _hf_preflight_error(
                     503,
@@ -1205,7 +1205,6 @@ async def start_training(
             if reservation == "conflict":
                 return _start_request_response(record)
             reserved_start_request_id = request.start_request_id
-
 
         # No in-process ensure_transformers_version(): worker.py activates it before ML imports.
         # A consented latest-transformers install stage-and-swaps .venv_t5_latest mid-spawn.
@@ -1673,7 +1672,7 @@ async def start_training(
         def _run_backend_start() -> bool:
             try:
                 # Keep the diffusion admission in the worker thread across the whole spawn: a disconnected
-        # request must not release it while the shielded start is still freeing VRAM.
+                # request must not release it while the shielded start is still freeing VRAM.
                 with _diffusion_gpu_admission():
                     return _run_backend_start_without_admission()
             except _DiffusionStartInFlight as exc:
@@ -2452,8 +2451,6 @@ async def stream_training_progress(
             "X-Accel-Buffering": "no",
         },
     )
-
-
 
 
 # ── Diffusion (SDXL) LoRA training ──────────────────────────────────────────── A separate, lightweight job path:

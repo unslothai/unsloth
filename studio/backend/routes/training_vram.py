@@ -187,7 +187,7 @@ def can_keep_chat_during_training(
             aggregate_fits = usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
 
             # Activations don't shard: enforce a per-GPU floor so an uneven split (free [45, 10]) cannot be
-    # kept into an OOM the aggregate misses.
+            # kept into an OOM the aggregate misses.
             per_gpu_fits = True
             min_free_gb = min(free_vals) if free_vals else 0.0
             if len(resolved) > 1:
@@ -358,8 +358,8 @@ def can_load_chat_during_training(
                     raise ValueError
             except (TypeError, ValueError):
                 # A non-numeric device token (CUDA UUID / MIG handle) has no free-VRAM index, but the runner
-            # still drives ONE device: size against the worst-case visible device, never the aggregate
-            # pool, or a single-device load is OK'd on capacity it cannot use.
+                # still drives ONE device: size against the worst-case visible device, never the aggregate
+                # pool, or a single-device load is OK'd on capacity it cannot use.
                 free_vals = [min(free_by_index.values())] if free_by_index else []
             else:
                 free_vals = [free_by_index.get(selected_gpu, 0.0)]

@@ -610,7 +610,7 @@ def _run_node(
     node_bin = node_binary_path(install_dir, host)
     env = os.environ.copy()
     # Keep any `npm -g` writes inside the isolated prefix: Windows npm otherwise defaults its global
-        # prefix to %APPDATA%\npm and touches the system install.
+    # prefix to %APPDATA%\npm and touches the system install.
     env["NPM_CONFIG_PREFIX"] = str(install_dir)
     env["npm_config_prefix"] = str(install_dir)
     env.pop("NODE_PATH", None)

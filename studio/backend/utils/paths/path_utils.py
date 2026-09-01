@@ -16,11 +16,7 @@ logger = get_logger(__name__)
 
 # Opening a cloud placeholder for data recalls it. These attributes are available through
 # ``stat_result.st_file_attributes`` on Windows without reading file contents.
-_WINDOWS_CONTENT_RECALL_ATTRIBUTES = (
-    0x00001000
-    | 0x00040000
-    | 0x00400000
-)
+_WINDOWS_CONTENT_RECALL_ATTRIBUTES = 0x00001000 | 0x00040000 | 0x00400000
 
 
 def file_contents_available_locally(path, stat_result = None) -> bool:
@@ -35,7 +31,6 @@ def file_contents_available_locally(path, stat_result = None) -> bool:
         return False
     attributes = int(getattr(info, "st_file_attributes", 0) or 0)
     return not bool(attributes & _WINDOWS_CONTENT_RECALL_ATTRIBUTES)
-
 
 
 # A volume without native xattrs makes macOS keep them in a "._" companion that answers every name-shaped question the
@@ -241,12 +236,7 @@ def is_local_path(path: str) -> bool:
         return False
 
     # Filesystem indicators
-    return (
-        path.startswith(("/", ".", "~"))
-        or ":" in path
-        or "\\" in path
-        or os.path.isabs(path)
-    )
+    return path.startswith(("/", ".", "~")) or ":" in path or "\\" in path or os.path.isabs(path)
 
 
 def get_cache_path(model_name: str) -> Optional[Path]:

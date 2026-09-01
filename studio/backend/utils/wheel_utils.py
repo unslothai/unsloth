@@ -362,8 +362,8 @@ def redact_url_credentials(url: str) -> str:
 def flash_attn_package_version(torch_mm: str) -> str | None:
     if torch_mm == "2.10":
         # Newest flash-attn release still carrying the full torch2.10 asset matrix. Do not bump to "the
-    # latest release": v2.8.3 publishes only cu13/cp312 for torch2.10 and v2.8.3.post1 dropped every
-    # torch2.10 asset, 404ing most users into a source build.
+        # latest release": v2.8.3 publishes only cu13/cp312 for torch2.10 and v2.8.3.post1 dropped every
+        # torch2.10 asset, 404ing most users into a source build.
         # The full matrix is cu12 + cu13, cp312 + cp313, x86_64 + aarch64, and post1's newest tag is torch2.9, which
         # will not load here at all.
         return "2.8.1"

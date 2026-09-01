@@ -483,8 +483,6 @@ async def export_lora_adapter(
         )
 
 
-
-
 # Live export log SSE. Same shape as stream_training_progress: id/event/data, a leading `retry:`, and Last-Event-ID
 # honoured on reconnect.
 # Worker stdout/stderr reaches the orchestrator as log entries (core/export/worker.py, orchestrator.py); shape follows

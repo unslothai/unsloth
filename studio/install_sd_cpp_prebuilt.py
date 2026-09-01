@@ -700,8 +700,8 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         # extractall would create the tree itself, so the probe must not be what needs it first.
         base.mkdir(parents = True, exist_ok = True)
         # A probe a killed install left behind must not answer for this one: symlink_to raises EEXIST on an
-    # existing path, which reads below as "no symlink support", and a restarted container reuses the
-    # pid. Sweep stragglers and take a unique name so a concurrent install cannot collide either.
+        # existing path, which reads below as "no symlink support", and a restarted container reuses the
+        # pid. Sweep stragglers and take a unique name so a concurrent install cannot collide either.
         for stale in base.glob(".unsloth-symlink-probe-*"):
             try:
                 stale.unlink()
@@ -859,8 +859,8 @@ def _resolve_with_fallback(
                     flush = True,
                 )
                 # A mirror-only pin means the shipped default carries fixes upstream has not released. Falling
-        # back beats no native engine, but the H3 failures are SILENT (it renders, just wrongly), so
-        # this has to be said out loud rather than left to the generic line above.
+                # back beats no native engine, but the H3 failures are SILENT (it renders, just wrongly), so
+                # this has to be said out loud rather than left to the generic line above.
                 if mirror_only:
                     print(
                         f"warning: {repo} has no {tag}; this build lacks the MiniMax-H3 fixes, "
@@ -942,11 +942,11 @@ def install(
         with zipfile.ZipFile(archive) as zf:
             supplied = _archive_binary_paths(zf, target)
             # The boundary opens HERE, not at the sweep, whenever an existing bundle is about to gain a SECOND
-    # copy of a binary: zipfile rewrites members in place, so an interrupted extract leaves the old
-    # sd-cli truncated, and a different layout is the same problem because the new copy WINS the next
-    # lookup without having had the sweep, _make_executable, or the cudart DLLs. Treating that as an
-    # ordinary failure makes ensure_* memoise the half-finished copy for the rest of the process. A
-    # first install has nothing to compete with, so it stays ordinary.
+            # copy of a binary: zipfile rewrites members in place, so an interrupted extract leaves the old
+            # sd-cli truncated, and a different layout is the same problem because the new copy WINS the next
+            # lookup without having had the sweep, _make_executable, or the cudart DLLs. Treating that as an
+            # ordinary failure makes ensure_* memoise the half-finished copy for the rest of the process. A
+            # first install has nothing to compete with, so it stays ordinary.
             replacing = bool(supplied) and _tree_has_binaries(target)
             _safe_extractall(zf, target)
         # Nothing is swept until this bundle is known to have supplied the one binary the install cannot do without, or
@@ -963,10 +963,10 @@ def install(
         if _may_own:
             # Set BEFORE the call, not after: the sweep removes copies one at a time, so a failure
             # inside it has already changed the tree.
-        # Extraction merges, so anything the previous bundle put somewhere this one does not write survives and outranks
-        # the new copy whenever its path sorts higher; drop what this bundle did not supply. LAST, and past it the tree
-        # is mixed whatever the layout was, so the caller has to retry the sweep rather than memoise the accelerator as
-        # unavailable.
+            # Extraction merges, so anything the previous bundle put somewhere this one does not write survives and outranks
+            # the new copy whenever its path sorts higher; drop what this bundle did not supply. LAST, and past it the tree
+            # is mixed whatever the layout was, so the caller has to retry the sweep rather than memoise the accelerator as
+            # unavailable.
             replacing = True
             _discard_superseded_binaries(target, supplied)
     except SupersededBinaryError:

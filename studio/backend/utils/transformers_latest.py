@@ -506,7 +506,6 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         return None
 
 
-
 # Sidecars install transformers --no-deps atop the base env. Before installing, compare
 # requires_dist: unsatisfied shadowable deps become exact --target pins, anything else blocks.
 # --- Dependency compatibility preflight ------------------------------------------------------

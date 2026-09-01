@@ -164,8 +164,6 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
                 pass
 
 
-
-
 # ─── Public API ───────────────────────────────────────────────────────
 def llm_generate_vlm_instruction(
     column_names: list[str],
@@ -325,8 +323,6 @@ def llm_generate_dataset_warning(
 
     logger.info(f"LLM-generated warning: {warning}")
     return warning
-
-
 
 
 # ─── Dataset Conversion Advisor ──────────────────────────────────────

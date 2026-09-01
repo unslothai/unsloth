@@ -739,8 +739,8 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
             )
             return False
         # The loader's executable closure is every present .py plus any referenced entry file. With a
-    # non-empty listing, an entry ref absent from present_py is stale and is dropped; with an EMPTY
-    # listing staleness cannot be proven, so keep fetching and fail closed. Never under-scan.
+        # non-empty listing, an entry ref absent from present_py is stale and is dropped; with an EMPTY
+        # listing staleness cannot be proven, so keep fetching and fail closed. Never under-scan.
         # A PRESENT file that cannot be fetched still fails closed below.
         repo_file_set = set(repo_files)
         present_py = {f for f in repo_files if f.endswith(".py")}

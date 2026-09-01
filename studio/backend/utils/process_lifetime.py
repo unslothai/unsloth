@@ -129,8 +129,6 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
-
-
 # ── Parent setup ──
 def initialize_parent_lifetime() -> None:
     """Install the parent-death reaper once, as early as possible at startup.
@@ -263,8 +261,6 @@ def _install_windows_job() -> None:
         _record_job_status(True, "kill-on-close job installed")
     except Exception as error:
         _record_job_status(False, f"{type(error).__name__}: {error}")
-
-
 
 
 # ── Child binding ──

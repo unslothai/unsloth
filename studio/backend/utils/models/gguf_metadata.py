@@ -847,7 +847,6 @@ def is_gguf_embedding_model(
     return any(_has_embedding_name_hint(value) for value in name_candidates)
 
 
-
 # Deliberately not re-exported: importing anything from THIS package runs utils.models.__init__,
 # which pulls in model_config and therefore PyYAML, while core.inference.llama_cpp needs the
 # verdict at import time. Import it from utils.gguf_archs.

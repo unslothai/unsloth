@@ -25,7 +25,7 @@ _PREVIEW_TOKEN_VERSION = "v1"
 
 def _canonical_payload(ref: str) -> bytes:
     # Sign the canonical ref only, never host/path, so links stay portable across localhost / LAN IP
-# / tunnel host changes.
+    # / tunnel host changes.
     return f"preview:{_PREVIEW_TOKEN_VERSION}:{ref}".encode("utf-8")
 
 

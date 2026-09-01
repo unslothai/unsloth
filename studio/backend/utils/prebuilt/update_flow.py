@@ -362,7 +362,7 @@ def managed_install_root(
     if not binary:
         return None
     # The server-path pin is an explicit user choice that wins in discovery, so never auto-replace
-        # its tree, even the user's own checkout.
+    # its tree, even the user's own checkout.
     if os.environ.get(server_path_var):
         return None
     p = Path(binary)
@@ -657,8 +657,8 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         if result.get("message"):
             done_messages.append(result["message"])
         # Only phases affecting the primary llama server may raise the job-level reload flag: the
-    # frontend resyncs chat model state off it, and a whisper-only sidecar reload must not clear
-    # the chat checkpoint. Per-phase reload_required stays visible under job["phases"].
+        # frontend resyncs chat model state off it, and a whisper-only sidecar reload must not clear
+        # the chat checkpoint. Per-phase reload_required stays visible under job["phases"].
         if phase.get("affects_job_reload", True):
             reload_required = reload_required or bool(result.get("reload_required"))
             # The legacy job-level to_tag means "the llama build now installed"

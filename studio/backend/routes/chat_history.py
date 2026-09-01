@@ -612,7 +612,7 @@ class ChatImportLedgerRecordResponse(BaseModel):
 
 
 # Both conflicts are 409 and mean opposite things (protected: stop resending; thread
-    # collision: surface the failure), so they are told apart by a header, not by `detail`.
+# collision: surface the failure), so they are told apart by a header, not by `detail`.
 # main.py must expose the header for a cross-origin Studio to read it.
 CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
 
@@ -1308,7 +1308,7 @@ async def delete_project(
             )
             if not idle:
                 # Nothing else comes back to it: the collection would otherwise wait for a later delete
-            # that may never happen.
+                # that may never happen.
                 finish_workspace_delete_when_idle(project_id)
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
@@ -1533,7 +1533,7 @@ async def clear_history(
         reapable_image_ids,
     ) = await run_in_threadpool(_clear_rows)
     # A chat started between the listing and the transaction is in `cleared` but was never
-        # cancelled, so its live generation could rebuild the sandbox this call removes.
+    # cancelled, so its live generation could rebuild the sandbox this call removes.
     listed = set(thread_ids)
     late = [thread_id for thread_id in cleared if thread_id not in listed]
     _cancel_active_generations(thread_ids)

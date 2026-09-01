@@ -2669,7 +2669,7 @@ def update_embedding_model(
             local_only_load = local_only_load,
         ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway" flow, but this is a
-    # hard, non-forceable security refusal.
+            # hard, non-forceable security refusal.
             if local_only_load:
                 detail = (
                     f"{model!r} has cached pickle weights that cannot be security-scanned "
@@ -2724,7 +2724,7 @@ def update_embedding_model(
         # it out also prevents a later runtime fallback from mislabelling it.
         trusted_gguf_repo = plan.download_repo if destination_is_llama else None
         # The setting may activate so both settings surfaces stay in sync, but its loader stays
-    # cache-only until the transfer completes, or a close/cancel becomes an implicit download.
+        # cache-only until the transfer completes, or a close/cancel becomes an implicit download.
         trusted_download_pending = bool(plan.download_repo and not plan.cached)
     else:
         # Save anyway, over a failed plan: nothing validated to record, but the

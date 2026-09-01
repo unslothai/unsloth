@@ -536,8 +536,8 @@ def start_mlx_autorepair_if_needed() -> bool:
     epoch = _hw.current_detection_epoch()
     if mlx_stack_available():
         # Asked as the warm's first stage, early enough to race another thread's first transformers
-    # import: CPython hands the loser a partially initialised module, so mlx_lm's chain raises on a
-    # healthy install (#9120).
+        # import: CPython hands the loser a partially initialised module, so mlx_lm's chain raises on a
+        # healthy install (#9120).
         if _hw.overturn_the_mlx_verdict(epoch):
             logger.info(
                 "MLX stack measures usable after the warm, against a chat-only verdict "

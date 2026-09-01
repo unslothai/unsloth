@@ -465,7 +465,7 @@ def classify(
 
     if exited == 0 and ran_for <= 20:
         # A clean, immediate exit is almost always the single-instance guard (another copy already open,
-    # so this launch handed over and quit), and calling that "crashed" would be wrong and alarming.
+        # so this launch handed over and quit), and calling that "crashed" would be wrong and alarming.
         return (
             "SKIPPED: the app exited immediately and cleanly, which usually means "
             "another copy of Unsloth is already running. Close it and re-run"

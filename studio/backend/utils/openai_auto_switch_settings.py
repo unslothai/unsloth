@@ -397,7 +397,6 @@ def set_openai_auto_switch(
     )
 
 
-
 # An override is the server-side twin of the UI's per-model config, mirrored on every save so an API
 # load applies the same launch settings the picker would; every field is optional and absent means
 # "app default". Mirrors _valid_cache_types in core/inference/llama_cpp.py.

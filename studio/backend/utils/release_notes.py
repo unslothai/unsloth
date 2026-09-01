@@ -607,14 +607,14 @@ def get_latest_release(refresh: bool = False) -> ReleaseSource:
 
     if refresh:
         # Only a cached failure is dropped, never a rate-limit lockout: retrying into one spends nothing
-    # and only delays the reset.
+        # and only delays the reset.
         with _cache_condition:
             rate_limited = _rate_limited_until > time.time()
             if _remote_cache and _remote_cache.source.release is None and not rate_limited:
                 _remote_cache = None
 
     # A caller waits only as long as a fetch may take, then answers without notes rather than
-# holding a worker behind a stalled upstream.
+    # holding a worker behind a stalled upstream.
     deadline = time.monotonic() + RELEASES_TIMEOUT_SECONDS + 1
     while True:
         now = time.monotonic()
