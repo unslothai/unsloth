@@ -5,7 +5,14 @@ import type { PersistedChatSettings } from "../api/chat-settings-api";
 import type { PersistedInferenceParams } from "../types/runtime";
 import { isExternalModelId } from "../external-providers";
 import { normalizeModelIdentity } from "../../hub/lib/model-identity";
-import { resolveQwenThinkingParams } from "./qwen-sampling-table";
+import {
+  isOllamaManifestRef,
+  resolveQwenThinkingParams,
+} from "./qwen-sampling-table";
+
+function isOpaqueModelRef(modelId: string): boolean {
+  return isExternalModelId(modelId) || isOllamaManifestRef(modelId);
+}
 
 const LEGACY_QWEN_DEFAULTS = {
   temperature: 0.6,
@@ -138,20 +145,20 @@ function migrateStoredModelDefaults(
   // normalizeModelIdentity, not toLowerCase: it folds case for repository ids
   // and case-insensitive path forms while preserving it for POSIX paths, which
   // can name two different files differing only by case.
-  // An external id is provider-qualified and opaque, so its case is the
-  // provider's business, not ours. It is also always built by
-  // buildExternalModelId, so it has no legacy spellings to reconcile.
+  // An opaque id is compared exactly. An external one is provider-qualified,
+  // built by buildExternalModelId, so it has no legacy spellings to reconcile;
+  // an Ollama manifest ref wraps an encoded path whose case is significant.
   const activeIdentity = normalizeModelIdentity(activeCheckpoint);
-  const activeIsExternal = isExternalModelId(activeCheckpoint);
+  const activeIsOpaque = isOpaqueModelRef(activeCheckpoint);
   // Only the sole alias is normalized, and that is checked rather than assumed:
   // with two historical spellings one may hold the legacy snapshot and the
   // other the user's own sampling, and picking by insertion order would serve
   // generated defaults over a customization for the same model.
-  const aliases = activeIsExternal
+  const aliases = activeIsOpaque
     ? []
     : storedEntries.filter(
         ([modelId]) =>
-          !isExternalModelId(modelId) &&
+          !isOpaqueModelRef(modelId) &&
           normalizeModelIdentity(modelId) === activeIdentity,
       );
   const activeStoredId =

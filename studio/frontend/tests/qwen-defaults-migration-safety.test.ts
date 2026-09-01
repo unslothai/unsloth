@@ -885,3 +885,105 @@ test("a write outlasting the flush timeout rearms the migration", async () => {
   ]);
   assert.equal(serverRow().presencePenalty, 1.5);
 });
+
+test("a status-only reasoning marker does not pick the migration table", async () => {
+  // Status for a resident model lands before the settings GET, so the marker
+  // carries this browser's local default rather than an answer about the model.
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    reasoningEnabled: false,
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: { ...LEGACY_SNAPSHOT } },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    supportsReasoning: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: true,
+  }));
+  noteLoadedModelReasoningMode(QWEN38, true);
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // The persisted toggle is off, so the non-thinking row is what the pill will
+  // hydrate against.
+  assert.equal(serverRow().temperature, 0.7);
+  assert.equal(serverRow().topP, 0.8);
+});
+
+test("a null model map is fenced rather than treated as empty", async () => {
+  // Only a genuinely empty map means "no per-model memory". A null is a key the
+  // row holds, so another tab can replace it with rows this write never saw,
+  // and the compare-and-set asserts neither its value nor its absence.
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParams: { ...LEGACY_SNAPSHOT },
+    inferenceParamsByModel: null,
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "custom",
+    rememberParamsPerModel: false,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: true,
+    settingsHydrated: true,
+  }));
+
+  useChatRuntimeStore.getState().setActivePresetSource("builtin-default");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  const globals = settingsHttp.settings.inferenceParams as Record<
+    string,
+    number
+  >;
+  assert.equal(globals.presencePenalty, 0);
+  assert.equal(globals.minP, 0.01);
+});
+
+test("per-model memory enabled during the read cancels the global migration", async () => {
+  const OTHER = "unsloth/Llama-3.2-3B-GGUF";
+  // Scheduled while the global snapshot was the active model's to rewrite; the
+  // confirming read shows per-model memory on, so it no longer is.
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    inferenceParams: { ...LEGACY_SNAPSHOT },
+    inferenceParamsByModel: { [OTHER]: { ...LEGACY_SNAPSHOT } },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "custom",
+    rememberParamsPerModel: false,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: true,
+    settingsHydrated: true,
+  }));
+
+  useChatRuntimeStore.getState().setActivePresetSource("builtin-default");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  const globals = settingsHttp.settings.inferenceParams as Record<
+    string,
+    number
+  >;
+  assert.equal(globals.presencePenalty, 0);
+  assert.equal(globals.minP, 0.01);
+});

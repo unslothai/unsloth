@@ -30,6 +30,16 @@ const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[-_/\\.:])/;
 const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
 /**
+ * An Ollama inventory reference wraps a percent-encoded absolute path, so
+ * normalizeModelIdentity sees the wrapper rather than a path and folds the case
+ * of the path with it. Two manifests differing only by path case are two files
+ * on a case-sensitive filesystem, so callers compare these exactly.
+ */
+export function isOllamaManifestRef(modelId: string): boolean {
+  return modelId.startsWith(OLLAMA_MANIFEST_REF_PREFIX);
+}
+
+/**
  * The bare model id, with any external wrapper removed.
  *
  * An external checkpoint is `external::<provider>::<percent-encoded id>`, so

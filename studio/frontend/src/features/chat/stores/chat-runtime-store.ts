@@ -26,6 +26,7 @@ import {
   isExternalModelId,
   parseExternalModelId,
 } from "../external-providers";
+import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
@@ -349,6 +350,10 @@ function loadLastExternalCheckpoint(): string | null {
  * the case-insensitive path forms while preserving it for POSIX paths, where
  * /home/u/Models/qwen3.8 and /home/u/models/qwen3.8 are two different files.
  */
+function isOpaqueModelRef(modelId: string): boolean {
+  return isExternalModelId(modelId) || isOllamaManifestRef(modelId);
+}
+
 function sameCheckpointIdentity(
   left: string | null | undefined,
   right: string | null | undefined,
@@ -356,10 +361,11 @@ function sameCheckpointIdentity(
   if (!(left && right)) {
     return false;
   }
-  // External ids are provider-qualified and opaque, so their case is the
-  // provider's business. normalizeModelIdentity would fold it, since it
+  // Opaque ids compare exactly. An external id is provider-qualified, so its
+  // case is the provider's business, and an Ollama manifest ref wraps an
+  // encoded POSIX path. normalizeModelIdentity would fold both, since it
   // lowercases anything that is not a local path.
-  if (isExternalModelId(left) || isExternalModelId(right)) {
+  if (isOpaqueModelRef(left) || isOpaqueModelRef(right)) {
     return left === right;
   }
   return normalizeModelIdentity(left) === normalizeModelIdentity(right);
@@ -3893,7 +3899,11 @@ function qwenMigrationThinkingOn(
   if (statusSeen && !state.supportsReasoning) {
     return false;
   }
-  const established = loadEstablishedReasoningMode(state);
+  // requireLoad, as the hydrated pill uses: a status refresh echoes the toggle
+  // already in the store, which before hydration is this browser's local
+  // default, and letting that pick the table would persist thinking sampling
+  // under a pill hydrating off.
+  const established = loadEstablishedReasoningMode(state, true);
   if (established) {
     return established.enabled;
   }
@@ -3933,9 +3943,20 @@ const QWEN_MIGRATION_DECISION_FIELDS = [
  * null. The compare-and-set asserts a value or an absence and neither fits: the
  * sanitized copy has nothing to send, while the row still holds the key, so an
  * absence assertion rejects every time. Decline rather than migrate unfenced.
- * inferenceParamsByModel is exempt: an empty map sanitizes away and means what
- * the migration already assumes, no per-model memory.
+ * An empty inferenceParamsByModel map is exempt, and only that: it sanitizes
+ * away and means what the migration already assumes, no per-model memory. Any
+ * other unsanitizable value there, a null included, is still a key the row
+ * holds and another tab can replace with real per-model rows.
  */
+function isEmptyPlainObject(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 0
+  );
+}
+
 function qwenMigrationHasUnfenceableField(
   rawSettings: unknown,
   sanitized: PersistedChatSettings,
@@ -3946,9 +3967,9 @@ function qwenMigrationHasUnfenceableField(
       : {};
   return QWEN_MIGRATION_DECISION_FIELDS.some(
     (field) =>
-      field !== "inferenceParamsByModel" &&
       Object.hasOwn(raw, field) &&
-      sanitized[field] === undefined,
+      sanitized[field] === undefined &&
+      !(field === "inferenceParamsByModel" && isEmptyPlainObject(raw[field])),
   );
 }
 
@@ -4157,7 +4178,11 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       checkpoint,
       qwenMigrationThinkingOn(confirmed, confirmedState),
       includeOwnedGlobal,
-      migrateOwnedGlobalAlongsideModelMemory,
+      // Recomputed from the confirming read, as hydration derives it: per-model
+      // memory turned on elsewhere since scheduling means the global snapshot
+      // is no longer the active checkpoint's to rewrite.
+      migrateOwnedGlobalAlongsideModelMemory &&
+        !qwenMigrationRemembersPerModel(confirmed, confirmedState),
     );
     if (!migration.patch) return;
     if (qwenMigrationHasUnfenceableField(confirmedRaw, confirmed)) return;

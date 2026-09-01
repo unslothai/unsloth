@@ -427,3 +427,26 @@ test("two aliases normalizing to the active checkpoint are left alone", () => {
   assert.deepEqual(migrated.migratedModelIds, []);
   assert.equal(migrated.patch, null);
 });
+
+test("two Ollama manifests differing only by path case stay separate", () => {
+  // The ref wraps a percent-encoded absolute path, and two paths differing only
+  // by case are two files on a case-sensitive filesystem.
+  const ref = (path: string): string =>
+    `ollama-manifest:${encodeURIComponent(path)}`;
+  const active = ref("/home/u/.ollama/models/manifests/Qwen3.8/latest");
+  const other = ref("/home/u/.ollama/models/manifests/qwen3.8/latest");
+  const result = migrateLegacyQwenDefaults(
+    {
+      activePreset: "Default",
+      activePresetSource: "builtin-default",
+      inferenceParamsByModel: {
+        [other]: { ...LEGACY_SNAPSHOT, maxTokens: 4096 },
+      },
+    },
+    active,
+    true,
+  );
+
+  assert.deepEqual(result.migratedModelIds, []);
+  assert.equal(result.patch, null);
+});

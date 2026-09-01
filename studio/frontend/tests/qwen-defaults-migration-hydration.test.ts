@@ -1082,7 +1082,9 @@ test("migration follows the reasoning mode established by the loaded model", asy
     reasoningEnabled: false,
     settingsHydrated: true,
   }));
-  noteLoadedModelReasoningMode(QWEN38, false);
+  // An actual load, as the test name says: a status refresh only echoes the
+  // toggle already in the store and must not outrank the persisted one.
+  noteLoadedModelReasoningMode(QWEN38, false, true);
 
   const active = useChatRuntimeStore.getState();
   active.setParams(
