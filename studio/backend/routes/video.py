@@ -36,7 +36,8 @@ from starlette.datastructures import UploadFile
 
 from auth.authentication import get_current_subject, request_admitted_without_credential
 from core.inference.model_ids import public_model_id
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_request_hf_token
+from hub.utils.hf_tokens import HfTokenArg
 from loggers import get_logger
 from models.inference import (
     DiffusionDownloadPlanResponse,
@@ -381,7 +382,7 @@ async def video_load_progress(current_subject: str = Depends(get_current_subject
 async def generate_video(
     request: VideoGenerateRequest,
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Start a generation job and return at once (the begin_load pattern): a clip
     takes minutes, and secure mode's tunnel caps the origin response window near
@@ -1265,7 +1266,7 @@ async def _reference_to_data_url(reference: Any) -> Optional[str]:
 async def openai_create_video(
     request: Request,
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     # The body has to be read before the row can name a model and prompt, so the parse
     # sits out here and the rest of the handler runs inside the monitor context.
