@@ -29,16 +29,24 @@ function count(source: string, pattern: RegExp): number {
   return source.match(pattern)?.length ?? 0;
 }
 
+/** Brace nesting at `needle`, counted from the start of `source`. */
+function depthAt(source: string, needle: string): number {
+  const upto = source.slice(0, source.indexOf(needle));
+  return count(upto, /{/g) - count(upto, /}/g);
+}
+
 // From the signature, so a filter folded into the input is in scope too.
 const outboundPrune = slice(
   adapter,
   "function pruneOutboundHistory(",
   "function extractImageBase64(",
 );
+// Through the reconstruction, not just up to it: the branches below build the repository
+// from msgs, so a filter there drops turns after every check above has passed.
 const historyLoad = slice(
   runtimeProvider,
   "let msgs: MessageRecord[];",
-  "const hasParentIds",
+  "append({ parentId, message }: ExportedMessageRepositoryItem) {",
 );
 const historyAppend = slice(
   runtimeProvider,
@@ -53,8 +61,13 @@ test("the outbound prune drops a turn only for the abandoned-turn guard", () => 
   // each. A second is a dedupe, whatever it is called.
   assert.equal(count(outboundPrune, /\bcontinue;/g), 1);
   assert.equal(count(outboundPrune, /surviving\.pop\(\)/g), 1);
-  // Unconditional: `if (...) surviving.push(message);` would skip turns silently.
   assert.equal(count(outboundPrune, /surviving\.push\(message\);/g), 1);
+  // Directly in the loop and first on its line. A block wrapper changes the depth, an
+  // inline one leaves something before it, and either is a condition on surviving at all.
+  assert.equal(
+    depthAt(outboundPrune, "surviving.push(message);"),
+    depthAt(outboundPrune, "const message = history[index];"),
+  );
   assert.match(outboundPrune, /\n\s*surviving\.push\(message\);/);
 });
 
