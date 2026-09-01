@@ -764,6 +764,14 @@ _export_portable_roots() {
     # on different filesystems silently degrades that to a full copy, which for
     # a torch install is several GB written twice.
     mkdir -p -- "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" 2>/dev/null || true
+
+    # On-disk marker so the roots survive an invocation that carries none of
+    # this environment. The installer itself suggests `source .../activate;
+    # unsloth studio`, which reaches the venv binary directly, past the shim;
+    # without the marker the backend infers ~/.unsloth and quietly builds a
+    # second, split install beside the portable one. storage_roots reads it.
+    printf '%s\n' "$UNSLOTH_ROOT" > "$UNSLOTH_ROOT/.unsloth-portable-root" 2>/dev/null || true
+
     substep "portable: everything under $UNSLOTH_ROOT"
 }
 _export_portable_roots

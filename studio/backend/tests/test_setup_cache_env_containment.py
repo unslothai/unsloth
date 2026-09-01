@@ -332,6 +332,49 @@ def test_studio_home_outranks_unsloth_home(monkeypatch, tmp_path):
     assert sr.studio_root() == explicit.resolve()
 
 
+def test_the_on_disk_marker_finds_the_root_without_any_environment(monkeypatch, tmp_path):
+    # `source <root>/studio/unsloth_studio/bin/activate; unsloth studio` is in
+    # the installer's own closing message, and it reaches the venv binary
+    # directly, past the shim that exports UNSLOTH_HOME. Without the marker the
+    # backend resolved ~/.unsloth and built a second, split install.
+    master = tmp_path / "portable"
+    studio = master / "studio"
+    studio.mkdir(parents = True)
+    (master / ".unsloth-portable-root").write_text(str(master), encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() == master
+    assert sr.portable_mode() is True
+    sr._setup_cache_env()
+    assert os.environ["TORCH_HOME"].startswith(str(master))
+
+
+def test_the_marker_also_works_when_the_root_is_the_studio_root(monkeypatch, tmp_path):
+    # The flat layout, which is what UNSLOTH_PORTABLE=1 UNSLOTH_STUDIO_HOME=...
+    # produces: master root and Studio root are the same directory.
+    root = tmp_path / "flat"
+    root.mkdir()
+    (root / ".unsloth-portable-root").write_text(str(root), encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() == root
+    assert sr.portable_mode() is True
+
+
+def test_no_marker_means_no_portable_mode(monkeypatch, tmp_path):
+    # A plain UNSLOTH_STUDIO_HOME install must not be silently upgraded into
+    # portable mode, or its HF cache would move out from under it.
+    studio = tmp_path / "plain"
+    studio.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() is None
+    assert sr.portable_mode() is False
+
+
 def test_data_designer_home_is_set_before_the_library_would_read_it(tmp_path):
     sr = _load_storage_roots()
 

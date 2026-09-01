@@ -20,10 +20,18 @@ from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_pat
 logger = get_logger(__name__)
 
 
+# Written by install.sh --portable / --root at the master root. On disk rather
+# than in the environment because a venv-activated `unsloth` (which the
+# installer itself suggests: source .../activate) inherits no variables, and
+# without this it silently falls back to ~/.unsloth -- a second, split install.
+PORTABLE_MARKER = ".unsloth-portable-root"
+
+
 def _infer_studio_home_from_venv() -> Path | None:
     """Return parent of sys.prefix as STUDIO_HOME when running from an
-    installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf
-    or bin shim) so a dev venv named unsloth_studio isn't misidentified.
+    installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf,
+    bin shim, or the portable marker beside it) so a dev venv named
+    unsloth_studio isn't misidentified.
     """
     try:
         prefix = Path(sys.prefix).resolve()
@@ -34,9 +42,14 @@ def _infer_studio_home_from_venv() -> Path | None:
     candidate = prefix.parent
     shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
     try:
-        has_sentinel = (candidate / "share" / "studio.conf").is_file() or (
-            candidate / "bin" / shim_name
-        ).is_file()
+        has_sentinel = (
+            (candidate / "share" / "studio.conf").is_file()
+            or (candidate / "bin" / shim_name).is_file()
+            # A nested portable install keeps share/ and bin/ at the master
+            # root, one level up, so neither sentinel above is beside the venv.
+            or (candidate / PORTABLE_MARKER).is_file()
+            or (candidate.parent / PORTABLE_MARKER).is_file()
+        )
     except OSError:
         return None
     if has_sentinel:
@@ -51,11 +64,12 @@ def _resolved(value: str) -> Path:
         return Path(value).expanduser()
 
 
-def unsloth_home() -> Path | None:
-    """The master root every Unsloth-owned directory hangs off, or None. One level above
-    STUDIO_HOME, which is its studio/ child. llama.cpp, node and whisper.cpp are SIBLINGS of
-    studio/, the spelling studio/setup.sh and scripts/build_whisper_cpp.sh already give
-    UNSLOTH_HOME, so node_runtime, stt_ggml_sidecar and run.py resolve them here."""
+def _env_unsloth_home() -> Path | None:
+    """UNSLOTH_HOME as set in the environment, nothing inferred.
+
+    Separate from unsloth_home() to break a cycle: studio_root() needs the
+    master root, and the on-disk fallback in unsloth_home() needs studio_root().
+    """
     override = (os.environ.get("UNSLOTH_HOME") or "").strip()
     return _resolved(override) if override else None
 
@@ -80,6 +94,32 @@ def _warn_unrecognized_portable(raw: str) -> None:
         "/".join(_PORTABLE_ON_VALUES),
         "/".join(_PORTABLE_OFF_VALUES),
     )
+
+
+def unsloth_home() -> Path | None:
+    """The master root every Unsloth-owned directory hangs off, or None. Set by
+    `install.sh --portable` / `--root DIR`, one level above STUDIO_HOME, but
+    equal to it when a portable install was pointed at UNSLOTH_STUDIO_HOME.
+
+    llama.cpp, node and whisper.cpp are SIBLINGS of studio/, the same spelling
+    studio/setup.sh and scripts/build_whisper_cpp.sh already give UNSLOTH_HOME,
+    which is why node_runtime, stt_ggml_sidecar and run.py resolve them here.
+
+    Falls back to the on-disk marker: a directly-invoked venv binary carries
+    none of the installer's environment.
+    """
+    from_env = _env_unsloth_home()
+    if from_env is not None:
+        return from_env
+    root = studio_root()
+    try:
+        if (root / PORTABLE_MARKER).is_file():
+            return root
+        if (root.parent / PORTABLE_MARKER).is_file():
+            return root.parent
+    except OSError:
+        return None
+    return None
 
 
 def portable_mode() -> bool:
@@ -131,14 +171,22 @@ def studio_root() -> Path:
         override = (os.environ.get("STUDIO_HOME") or "").strip()
     if override:
         resolved = _resolved(override)
-        master = unsloth_home()
-        # Path.parents excludes the path itself, so the supported flat layout (both naming one
-        # root) would otherwise warn on every call.
+        # _env_unsloth_home, not unsloth_home: the latter's on-disk fallback
+        # calls back into here. Path.parents excludes the path itself, so the
+        # supported flat layout would otherwise warn on every call.
+        master = _env_unsloth_home()
         if master is not None and master != resolved and master not in resolved.parents:
             _warn_root_conflict(resolved, master)
         return resolved
-    master = unsloth_home()
+    master = _env_unsloth_home()
     if master is not None:
+        # Flat when the master root IS the Studio root, which is what
+        # `UNSLOTH_PORTABLE=1 UNSLOTH_STUDIO_HOME=...` installs.
+        try:
+            if (master / "unsloth_studio").is_dir():
+                return master
+        except OSError:
+            pass
         return master / "studio"
     inferred = _infer_studio_home_from_venv()
     if inferred is not None:
