@@ -4094,3 +4094,250 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     guard = body.index("async with mcp_server_snapshot_guard():")
     snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+# --- guided decoding (`response_format`) -----------------------------------------------
+# Against a synthetic character-level tokenizer, so real llguidance masks without a
+# downloaded checkpoint; the engine being optional, these cases skip where it is absent.
+
+import numpy as np  # noqa: E402
+
+from core.inference import grammar_constraint as gc
+from core.inference.grammar_constraint import (
+    ResponseFormatError,
+    build_constraint,
+    constraint_spec_from_response_format,
+)
+
+SCHEMA = {
+    "type": "object",
+    "properties": {"a": {"type": "integer"}},
+    "required": ["a"],
+    "additionalProperties": False,
+}
+
+JSON_SCHEMA_FORMAT = {"type": "json_schema", "schema": SCHEMA}
+
+
+def _char_tokenizer(*extra_specials, markers_are_special = False):
+    """A character-level fast tokenizer with ``</think>`` as an added token."""
+    pytest.importorskip("llguidance")
+    tk = pytest.importorskip("tokenizers")
+    transformers = pytest.importorskip("transformers")
+
+    chars = list('{}"[]:,0123456789abcdefghijklmnopqrstuvwxyz \n.-')
+    backend = tk.Tokenizer(tk.models.BPE(vocab = {c: i for i, c in enumerate(chars)}, merges = []))
+    backend.pre_tokenizer = tk.pre_tokenizers.ByteLevel(add_prefix_space = False, use_regex = False)
+    backend.decoder = tk.decoders.ByteLevel()
+    backend.add_special_tokens([tk.AddedToken("<eos>", special = True)])
+    # Qwen3's shape: <...> excludes them from llguidance's lexer; added-not-special keeps them.
+    markers = [tk.AddedToken(t, special = markers_are_special) for t in ("</think>", *extra_specials)]
+    if markers_are_special:
+        backend.add_special_tokens(markers)
+    else:
+        backend.add_tokens(markers)
+    tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object = backend, eos_token = "<eos>")
+    # A reasoning protocol lives in the template, not the vocabulary.
+    tokenizer.chat_template = "{{ messages[0].content }}<think>"
+    return tokenizer
+
+
+@pytest.fixture(scope = "module")
+def tiny_tokenizer():
+    return _char_tokenizer()
+
+
+def _allowed(constraint, width):
+    """Token ids the constraint permits at the current step, over a logits row that wide."""
+    mx = pytest.importorskip("mlx.core")
+    masked = np.asarray(constraint.mask_logits(mx.zeros((width,), dtype = mx.float32)))
+    return set(np.nonzero(~np.isneginf(masked))[0].tolist())
+
+
+def test_every_spelling_of_a_supplied_schema_agrees_and_a_non_schema_is_refused(tiny_tokenizer):
+    wrapped = constraint_spec_from_response_format(
+        {"type": "json_schema", "json_schema": {"name": "city", "schema": SCHEMA}}
+    ).grammar
+    for spelling in (
+        JSON_SCHEMA_FORMAT,
+        {"type": "json_schema", "schema": dict(reversed(list(SCHEMA.items())))},
+        {"type": "json_object", "schema": SCHEMA},
+    ):
+        assert constraint_spec_from_response_format(spelling).grammar == wrapped
+    for supplied in (False, True, "nonsense", [1, 2]):
+        with pytest.raises(ResponseFormatError):
+            constraint_spec_from_response_format({"type": "json_object", "schema": supplied})
+    # json_object's own promise; a json_schema `{}` keeps its spec meaning of any value.
+    plain = constraint_spec_from_response_format({"type": "json_object"}).grammar
+    for spelling in (
+        {"type": "json_object", "schema": None},
+        {"type": "json_object", "schema": {}},
+        {"type": "json_schema", "schema": {"type": "object"}},
+    ):
+        assert constraint_spec_from_response_format(spelling).grammar == plain
+    # Behaviour, not the compiled string: a `{}` root admits a scalar, the promise does not.
+    digit = tiny_tokenizer.encode("4", add_special_tokens = False)[0]
+    width = len(tiny_tokenizer)
+    any_value = build_constraint({"type": "json_schema", "schema": {}}, tiny_tokenizer, "p")
+    assert digit in _allowed(any_value, width)
+    assert digit not in _allowed(
+        build_constraint({"type": "json_object"}, tiny_tokenizer, "p"), width
+    )
+
+
+def test_the_schema_itself_constrains_not_merely_json_syntax(tiny_tokenizer):
+    """Property names and value types come from the schema, not from being JSON."""
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    _allowed(constraint, len(tiny_tokenizer))
+    for token_id in tiny_tokenizer.encode('{"', add_special_tokens = False):
+        constraint.advance(int(token_id))
+    assert _allowed(constraint, len(tiny_tokenizer)) == set(
+        tiny_tokenizer.encode("a", add_special_tokens = False)
+    )
+    for token_id in tiny_tokenizer.encode('a":', add_special_tokens = False):
+        constraint.advance(int(token_id))
+    quote = tiny_tokenizer.encode('"', add_special_tokens = False)[0]
+    assert quote not in _allowed(constraint, len(tiny_tokenizer))
+
+
+def test_advance_raises_on_a_token_the_grammar_rejects(tiny_tokenizer):
+    """A token the mask never offered is a decode-loop fault, not the schema's doing."""
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    _allowed(constraint, len(tiny_tokenizer))
+    illegal = tiny_tokenizer.encode("]", add_special_tokens = False)[0]
+    with pytest.raises(gc.GrammarDesyncError, match = "desynced on token") as excinfo:
+        constraint.advance(int(illegal))
+    assert not isinstance(excinfo.value, ResponseFormatError)
+
+
+def test_binding_waits_for_the_logits_width_a_padded_lm_head_widens(tiny_tokenizer):
+    """A padded lm_head is wider than the vocabulary, so the row decides."""
+    gc._TOKENIZER_CACHE.clear()
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    padded = len(tiny_tokenizer) + 16
+    legal = _allowed(constraint, padded)
+    assert legal == set(tiny_tokenizer.encode("{", add_special_tokens = False))
+    assert max(legal) < len(tiny_tokenizer)
+
+
+def test_prelude_is_bounded_so_an_unclosed_think_block_cannot_eat_the_budget(
+    tiny_tokenizer, monkeypatch
+):
+    monkeypatch.setattr(gc, "_PRELUDE_MAX_CHARS", 6)
+    constraint = build_constraint(
+        JSON_SCHEMA_FORMAT, tiny_tokenizer, "chat\n<think>\n", reasoning_is_extracted = True
+    )
+    _allowed(constraint, len(tiny_tokenizer))
+    for token_id in tiny_tokenizer.encode("abcdef", add_special_tokens = False):
+        constraint.advance(int(token_id))
+    close_id = tiny_tokenizer.encode("</think>", add_special_tokens = False)[0]
+    assert _allowed(constraint, len(tiny_tokenizer)) == {close_id}
+    # Closing the block does not release the contract: the document is still owed.
+    constraint.advance(int(close_id))
+    assert _allowed(constraint, len(tiny_tokenizer)) == set(
+        tiny_tokenizer.encode("{", add_special_tokens = False)
+    )
+
+
+@pytest.mark.parametrize("reply_keeps_special_tokens", [False, True])
+def test_a_close_marker_is_refused_only_where_the_reply_would_lose_it(reply_keeps_special_tokens):
+    """Whether the marker reaches the caller is the path's property, not the tokenizer's."""
+    tokenizer = _char_tokenizer(markers_are_special = True)
+    ids = tokenizer.encode("</think>", add_special_tokens = False)
+    assert (
+        tokenizer.decode(ids, skip_special_tokens = True) != "</think>"
+    ), "fixture no longer models a marker a skip_special_tokens decode strips"
+
+    def _build():
+        return build_constraint(
+            JSON_SCHEMA_FORMAT,
+            tokenizer,
+            "chat\n<think>",
+            reasoning_is_extracted = True,
+            reply_keeps_special_tokens = reply_keeps_special_tokens,
+        )
+
+    if not reply_keeps_special_tokens:
+        with pytest.raises(ResponseFormatError):
+            _build()
+        return
+    constraint = _build()
+    assert constraint.allows_reasoning
+    # Not just offered: the reasoning closes and the document follows, as it must.
+    for token_id in tokenizer.encode('x</think>{"a":1}', add_special_tokens = False):
+        assert int(token_id) in _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token_id))
+
+
+def _two_stop_tokenizer():
+    """A tokenizer naming one end token while a runtime may stop on another."""
+    tokenizer = _char_tokenizer("<end_of_text>", markers_are_special = True)
+    tokenizer.chat_template = "{{ messages[0].content }}"
+    runtime_stop = tokenizer.convert_tokens_to_ids("<end_of_text>")
+    assert runtime_stop != tokenizer.eos_token_id, "fixture no longer models a disagreement"
+    return tokenizer, runtime_stop
+
+
+def _stop_offered_after_the_document(target, tokenizer):
+    """The ids the mask still allows once the document is complete."""
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, target, "prompt")
+    for token_id in tokenizer.encode('{"a":1}', add_special_tokens = False):
+        _allowed(constraint, len(tokenizer))
+        constraint.advance(int(token_id))
+    assert constraint._matcher.is_stopped(), "the document did not complete"
+    return _allowed(constraint, len(tokenizer))
+
+
+def test_the_grammar_stops_on_the_token_the_decode_loop_stops_on():
+    """End on the token the loop stops for, or a finished document burns max_tokens."""
+    mlx_lm = pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
+    assert _stop_offered_after_the_document(wrapped, tokenizer) == {runtime_stop}
+    assert _stop_offered_after_the_document(tokenizer, tokenizer) == {tokenizer.eos_token_id}
+
+
+def test_a_schema_forced_through_a_stop_token_is_refused_while_it_can_still_be_reported():
+    """A stop token offered as content never reaches ``advance``, so the mask is the last
+    place to refuse a document the loop would truncate the instant one is sampled."""
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    # The runtime's stop token, not the tokenizer's: reading the wrong one keeps the truncation.
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    wrapped = TokenizerWrapper(tokenizer, eos_token_ids = [runtime_stop])
+
+    def replay(schema, text):
+        constraint = build_constraint({"type": "json_schema", "schema": schema}, wrapped, "p")
+        for token in tokenizer.encode(text, add_special_tokens = False):
+            _allowed(constraint, len(tokenizer))
+            constraint.advance(int(token))
+        return _allowed(constraint, len(tokenizer))
+
+    with pytest.raises(ResponseFormatError, match = "reserves as a control token"):
+        replay({"const": tokenizer.convert_ids_to_tokens(runtime_stop)}, '"')
+    assert runtime_stop in replay({"type": "integer"}, "42")
+    assert runtime_stop in replay(SCHEMA, '{"a":1}')
+
+
+def test_a_scalar_end_token_does_not_hide_the_runtime_stop_set():
+    """transformers answers ``eos_token_ids`` with the scalar end token, which must not shadow
+    the set the criteria names -- hung off the processor's tokenizer, so both are asked."""
+    pytest.importorskip("mlx_vlm")
+    from mlx_vlm.utils import StoppingCriteria
+
+    tokenizer, runtime_stop = _two_stop_tokenizer()
+    assert getattr(tokenizer, "eos_token_ids", None) == tokenizer.eos_token_id, "not a scalar"
+    criteria = StoppingCriteria([runtime_stop], tokenizer = tokenizer)
+    tokenizer.stopping_criteria = criteria
+    for target in (tokenizer, SimpleNamespace(tokenizer = tokenizer)):
+        assert _stop_offered_after_the_document(target, tokenizer) == set(criteria.eos_token_ids)
+
+
+def test_advance_before_the_first_mask_raises_rather_than_dropping_the_token(tiny_tokenizer):
+    """Advancing before the first mask is this loop's fault, not a refusal naming a field."""
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    with pytest.raises(gc.GrammarDesyncError, match = "before the grammar was bound"):
+        constraint.advance(tiny_tokenizer.encode("{", add_special_tokens = False)[0])
