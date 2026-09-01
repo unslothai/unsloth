@@ -4411,11 +4411,14 @@ def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
         def convert_ids_to_tokens(self, token_id):
             return self._IDS[token_id]
 
-        def decode(self, token_ids, skip_special_tokens = False, **_kwargs):
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
             return "".join(
-                ""
-                if (skip_special_tokens and i in self.all_special_ids)
-                else self._IDS.get(i, "")
+                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
                 for i in token_ids
             )
 
@@ -4428,9 +4431,7 @@ def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
 
     def _vlm_stream(*_a, **_k):
         for token_id, text in ((None, "hi"), (5, "")):
-            yield SimpleNamespace(
-                text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1
-            )
+            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = _vlm_stream
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
