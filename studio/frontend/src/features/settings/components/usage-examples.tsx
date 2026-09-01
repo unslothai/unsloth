@@ -636,7 +636,13 @@ export function UsageExamples({
   // describes the resident model, which is the model these snippets name.
   // What the store currently claims to describe. The answer below is tagged with it, so
   // a switch made here invalidates the previous answer instead of outliving it.
-  const storeModelKey = `${activeCheckpoint} ${activeGgufVariant} ${activeNativePathToken}`;
+  // JSON rather than a delimiter: every one of these can be a path or a repo id, so
+  // there is no separator that is guaranteed not to appear inside one of them.
+  const storeModelKey = JSON.stringify([
+    activeCheckpoint,
+    activeGgufVariant,
+    activeNativePathToken,
+  ]);
   const [statusAnswer, setStatusAnswer] = useState<{
     key: string;
     isGguf: boolean | null;
@@ -656,7 +662,10 @@ export function UsageExamples({
           if (cancelled) return false;
           // Absent means "this server does not report it", never "not GGUF" -- the same
           // reading the CLI gate takes, so both refuse to guess from the same silence.
-          setStatusAnswer({ key: storeModelKey, isGguf: status.is_gguf ?? null });
+          setStatusAnswer({
+            key: storeModelKey,
+            isGguf: status.is_gguf ?? null,
+          });
           return status.is_gguf != null;
         })
         .catch(() => {
@@ -736,7 +745,10 @@ export function UsageExamples({
     if (isGguf === null) return;
     if (clickedUnderGgufRef.current === isGguf) return;
     if (localAgentDetection && !agentsLoaded) return;
-    if (availableAgents.includes(agent) && agentRunsOnActiveModel(agent, isGguf)) {
+    if (
+      availableAgents.includes(agent) &&
+      agentRunsOnActiveModel(agent, isGguf)
+    ) {
       return;
     }
     const reset = fallbackAgent(isGguf, availableAgents);

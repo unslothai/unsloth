@@ -122,7 +122,11 @@ test("a GGUF model never steers away from a detected GGUF-only agent", () => {
 
 test("the pre-PR rule and the current rule differ only where Claude was unrunnable", () => {
   // The old auto-pick, verbatim from usage-examples.tsx before this change.
-  const before = (detected: readonly string[], agent: string, isGguf: boolean) => {
+  const before = (
+    detected: readonly string[],
+    agent: string,
+    isGguf: boolean,
+  ) => {
     const preferred = detected.find((a) => a !== "codex" || isGguf);
     if (preferred) return preferred;
     if (agent === "codex" && !isGguf) return "claude";
@@ -133,14 +137,17 @@ test("the pre-PR rule and the current rule differ only where Claude was unrunnab
     for (const start of VISIBLE_AGENTS) {
       for (const isGguf of [true, false]) {
         const b = before(detected, start, isGguf) ?? start;
-        const a = pickCompatibleAgent(detected, start, isGguf, VISIBLE_AGENTS) ?? start;
+        const a =
+          pickCompatibleAgent(detected, start, isGguf, VISIBLE_AGENTS) ?? start;
         if (a !== b) {
           assert.ok(
             !agentRunsOnActiveModel(b, isGguf),
             `changed a runnable answer: ${b} -> ${a} (isGguf=${isGguf})`,
           );
           assert.ok(agentRunsOnActiveModel(a, isGguf));
-          deltas.push(`${JSON.stringify(detected)}/${start}/${isGguf}: ${b} -> ${a}`);
+          deltas.push(
+            `${JSON.stringify(detected)}/${start}/${isGguf}: ${b} -> ${a}`,
+          );
         }
       }
     }
@@ -165,7 +172,10 @@ test("fallbackAgent stays inside a narrowed offered list", () => {
 
 test("a panel offering only GGUF-only agents leaves the pick alone", () => {
   for (const start of ["claude", "codex"]) {
-    assert.equal(pickCompatibleAgent([], start, false, ["claude", "codex"]), null);
+    assert.equal(
+      pickCompatibleAgent([], start, false, ["claude", "codex"]),
+      null,
+    );
     assert.equal(
       pickCompatibleAgent(["claude"], start, false, ["claude", "codex"]),
       null,
@@ -221,17 +231,26 @@ test("a manual pick is revalidated when the model changes under it", () => {
 // An external chat selection freezes the local GGUF fields (use-chat-model-runtime stops
 // applying status while one is active) while the snippet keeps naming the resident model
 // from /v1/models, so the two can drift with no way back. Compatibility is unknown there.
-function ggufState(checkpoint: string, fields: { variant?: string; ctx?: number }) {
+function ggufState(
+  checkpoint: string,
+  fields: { variant?: string; ctx?: number },
+) {
   const external = checkpoint.startsWith("external::");
   if (!checkpoint || external) return null;
   return fields.variant != null || fields.ctx != null;
 }
 
 test("an external selection makes GGUF-ness unknown, not stale-true", () => {
-  assert.equal(ggufState("unsloth/Qwen3-1.7B-GGUF", { variant: "Q4_K_M" }), true);
+  assert.equal(
+    ggufState("unsloth/Qwen3-1.7B-GGUF", { variant: "Q4_K_M" }),
+    true,
+  );
   assert.equal(ggufState("unsloth/Qwen3-1.7B", {}), false);
   // Frozen fields from before the external switch must not read as a live verdict.
-  assert.equal(ggufState("external::openai::gpt-5", { variant: "Q4_K_M" }), null);
+  assert.equal(
+    ggufState("external::openai::gpt-5", { variant: "Q4_K_M" }),
+    null,
+  );
   assert.equal(ggufState("", { variant: "Q4_K_M" }), null);
 });
 
@@ -251,7 +270,10 @@ test("a route that never mounts the chat runtime still learns the model kind", (
   assert.equal(resolveGgufCompatibility(null, false), false);
   assert.equal(resolveGgufCompatibility(null, true), true);
   // With the answer available, the gate is live again on those routes.
-  assert.equal(pickCompatibleAgent([], "claude", false, VISIBLE_AGENTS), UNIVERSAL_AGENT);
+  assert.equal(
+    pickCompatibleAgent([], "claude", false, VISIBLE_AGENTS),
+    UNIVERSAL_AGENT,
+  );
 });
 
 test("the server wins over the store when both have an answer", () => {
