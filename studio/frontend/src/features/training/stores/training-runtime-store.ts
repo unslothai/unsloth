@@ -2,6 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+// Module state outlives a logout, so this store clears with the session.
+// eslint-disable-next-line no-restricted-imports
+import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session-events";
 import { isTrainingProgressForJob } from "../lib/training-stream-scope.ts";
 import type {
   TrainingMetricsResponse,
@@ -605,6 +608,22 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       }),
   }),
 );
+
+// startHfToken holds a raw Hub credential, and this store is module state that outlives a
+// logout: reconcile() in __root remounts the app rather than reloading the document, so the
+// next account in the same tab would resume progress polling with the previous one's token.
+// useHfTokenStore already clears on this event; the runtime store has to as well.
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    useTrainingRuntimeStore.getState().resetRuntime();
+    useTrainingRuntimeStore.setState({
+      startHfToken: null,
+      startModelName: null,
+      startDatasetName: null,
+      startProjectName: null,
+    });
+  });
+}
 
 export function shouldShowTrainingView(state: TrainingRuntimeStore): boolean {
   return (

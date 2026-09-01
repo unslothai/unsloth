@@ -362,3 +362,43 @@ def test_an_anonymous_caller_does_not_get_the_unauthenticated_preview_cache(monk
 
     assert formatting._load_any_cached_hf_preview_slice(request, 5, False) is None
     assert called["cache"] == 1, "the anonymous caller reached the unauthenticated cache"
+
+
+def test_an_anonymous_caller_does_not_read_a_cached_chat_template(monkeypatch):
+    """The snapshot walk returns a private repo's raw template with no Hub call."""
+    from picker import service as picker_service
+
+    walked = {"n": 0}
+
+    def _snapshots(*_a, **_k):
+        walked["n"] += 1
+        return [Path("/nonexistent-snapshot")]
+
+    monkeypatch.setattr(picker_service, "iter_snapshots_preferring_whole", _snapshots)
+    monkeypatch.setattr(picker_service, "_chat_template_from_dir", lambda *_a, **_k: "TEMPLATE")
+
+    assert picker_service.read_default_chat_template("org/private", None) == "TEMPLATE"
+    assert walked["n"] == 1
+
+    picker_service.read_default_chat_template("org/private", False)
+    assert walked["n"] == 1, "the anonymous caller walked the cached snapshots"
+
+
+@pytest.mark.parametrize("hf_token", [None, "hf_tok"])
+def test_the_config_inspection_target_still_uses_the_cache_for_the_ambient_caller(hf_token):
+    """A caller allowed the ambient credential keeps the prefer_local_cache fast path.
+
+    With no snapshot on disk the resolver raises its own 404; reaching that proves the
+    cache branch ran rather than short-circuiting back to the bare repo id.
+    """
+    import fastapi
+
+    with pytest.raises(fastapi.HTTPException):
+        models_routes._model_config_inspection_target("org/private", True, None, hf_token)
+
+
+def test_the_config_inspection_target_skips_the_cache_for_anonymous():
+    """The snapshot read returns private metadata without consulting the token."""
+    target = models_routes._model_config_inspection_target("org/private", True, None, False)
+
+    assert target == "org/private", "the anonymous caller was pointed at the cache"

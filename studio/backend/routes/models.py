@@ -194,7 +194,7 @@ if str(backend_path) not in sys.path:
 
 from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.dependencies import get_hf_token, get_request_hf_token
-from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
 
 
 def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> HfTokenArg:
@@ -2345,9 +2345,16 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
 
 
 def _model_config_inspection_target(
-    model_name: str, prefer_local_cache: bool, local_path: Optional[str]
+    model_name: str,
+    prefer_local_cache: bool,
+    local_path: Optional[str],
+    hf_token: HfTokenArg = None,
 ) -> str:
     if not prefer_local_cache or is_local_path(model_name):
+        return model_name
+    # The cached snapshot answers from disk without consulting the token, so a caller
+    # denied the ambient credential is sent to the Hub, which refuses a private repo.
+    if is_anonymous(hf_token):
         return model_name
     from hub.utils.hf_cache_state import (
         latest_snapshot_from_cache_path,
@@ -2406,6 +2413,7 @@ async def get_model_config(
                 model_name,
                 prefer_local_cache,
                 local_path,
+                hf_token,
             )
             config_dict = load_model_defaults(model_name)
 
@@ -2569,6 +2577,7 @@ async def scan_model_remote_code(
                 exact_snapshot_repo_id,
                 True,
                 normalize_path(exact_snapshot_path),
+                hf_token,
             )
         elif prefer_local_cache is True and not local_model:
             from core.training.training import _resolve_model_snapshot

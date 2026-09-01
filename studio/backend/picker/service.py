@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from hub.utils.hf_tokens import is_anonymous
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
@@ -363,16 +364,20 @@ def read_default_chat_template(
 
     resolved = resolve_cached_repo_id_case(name)
 
-    try:
-        # Resolve within each cached revision, newest first. A revision's sidecar
-        # supersedes its own embedded GGUF copy, but must not override a newer
-        # revision, so precedence stays per-snapshot rather than global.
-        for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
-            template = _chat_template_from_dir(snapshot, gguf_variant)
-            if template:
-                return template
-    except Exception as exc:
-        logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+    # The snapshot walk returns a private repo's raw template without asking the Hub
+    # anything, so a caller denied the ambient credential goes to the Hub instead and
+    # is refused there. A UI session resolves to None and keeps the cache.
+    if not is_anonymous(hf_token):
+        try:
+            # Resolve within each cached revision, newest first. A revision's sidecar
+            # supersedes its own embedded GGUF copy, but must not override a newer
+            # revision, so precedence stays per-snapshot rather than global.
+            for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
+                template = _chat_template_from_dir(snapshot, gguf_variant)
+                if template:
+                    return template
+        except Exception as exc:
+            logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
 
     try:
         from huggingface_hub import HfApi, hf_hub_download
