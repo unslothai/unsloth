@@ -91,6 +91,25 @@ def is_github_rate_limit_text(text: str) -> bool:
     )
 
 
+def github_token_present(env: Optional[dict] = None) -> bool:
+    """Whether the installer ran with a GitHub token, as fetch_json reads it."""
+    source = os.environ if env is None else env
+    return bool(source.get("GH_TOKEN") or source.get("GITHUB_TOKEN"))
+
+
+def github_rate_limit_advice(token_present: bool) -> str:
+    """What the user can actually do about the rate limit they just hit.
+
+    An authenticated run has already spent the larger quota, or tripped a
+    secondary limit, and telling it to set the token it is holding is advice it
+    cannot act on. The installer draws the same distinction: fetch_json only
+    appends the token hint when neither variable is set.
+    """
+    if token_present:
+        return "Wait for the limit to reset and try again."
+    return "Set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits."
+
+
 def _installer_verdict(lines: Sequence[str]) -> str | None:
     """The reason the installer exited on, with its continuation lines.
 
@@ -125,6 +144,7 @@ def format_installer_failure_message(
     lines: Sequence[str],
     verdict_lines: Sequence[str] = (),
     hint_lines: Sequence[str] = (),
+    env: Optional[dict] = None,
 ) -> str:
     """Build an installer failure message that prefers the verdict over tail noise.
 
@@ -132,15 +152,16 @@ def format_installer_failure_message(
     streamed: the system report is long enough on a Linux CUDA host to push the
     reason out of the bounded tail, so the tail alone is not a reliable place to
     find it. A rate-limit hint only annotates the tail, because the run may have
-    retried past it and died of something else entirely.
+    retried past it and died of something else entirely. *env* is the
+    environment the installer ran with, which decides the rate-limit advice.
     """
+    advice = github_rate_limit_advice(github_token_present(env))
     detail = _installer_verdict(verdict_lines) or _installer_verdict(lines)
     if detail:
         if is_github_rate_limit_text(detail):
             return (
                 f"installer exited {returncode}: GitHub API rate limit exceeded while "
-                "fetching prebuilt releases. Set GH_TOKEN or GITHUB_TOKEN to avoid "
-                "GitHub API rate limits."
+                f"fetching prebuilt releases. {advice}"
             )
         clipped = detail if len(detail) <= 1500 else detail[:1497] + "..."
         return f"installer exited {returncode}: {clipped}"
@@ -148,8 +169,7 @@ def format_installer_failure_message(
     if any(is_github_rate_limit_text(line) for line in (*hint_lines, *lines)):
         return (
             f"installer exited {returncode}: GitHub API rate limit exceeded while fetching "
-            "prebuilt releases. Set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits. "
-            f"Installer output: {tail}"
+            f"prebuilt releases. {advice} Installer output: {tail}"
         )
     return f"installer exited {returncode}: {tail}"
 
@@ -533,7 +553,9 @@ def stream_installer(
     if returncode != 0:
         raise InstallerExit(
             returncode,
-            format_installer_failure_message(returncode, tail_lines, verdict_lines, hint_lines),
+            format_installer_failure_message(
+                returncode, tail_lines, verdict_lines, hint_lines, env = env
+            ),
         )
 
 

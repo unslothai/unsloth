@@ -777,10 +777,16 @@ def _run_llama_phase(
             # like a rate-limited huggingface.co validation-model fetch, which
             # GH_TOKEN cannot fix.
             if _flow.is_github_rate_limit_text(message):
-                logger.warning("llama update: GitHub rate limit")
+                token_present = _flow.github_token_present(env)
+                logger.warning("llama update: GitHub rate limit", authenticated = token_present)
+                advice = (
+                    "Wait for the limit to reset and try again."
+                    if token_present
+                    else "Set GH_TOKEN or GITHUB_TOKEN in your environment and try again."
+                )
                 raise _LlamaPhaseError(
                     "Could not update llama.cpp: GitHub is rate-limiting release downloads. "
-                    "Set GH_TOKEN or GITHUB_TOKEN in your environment and try again.",
+                    f"{advice}",
                     reload_required = model_was_active,
                 ) from exc
             logger.warning("llama update: prebuilt fallback", error = message)
