@@ -4598,6 +4598,11 @@ class DiffusionBackend:
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is explicit.
                     resolved = build_resolved_record(
                         {
+                            "family_override": (
+                                family_override,
+                                fam.name,
+                                "detected from the model" if family_override is None else "requested",
+                            ),
                             "speed_mode": (
                                 speed_mode,
                                 "deferred" if speed_deferred else effective_speed,

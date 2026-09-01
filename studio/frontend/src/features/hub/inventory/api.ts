@@ -71,6 +71,7 @@ export interface CachedModelRepo {
   inventory_id?: string | null;
   load_id?: string | null;
   model_format?: ModelInventoryFormat | null;
+  artifact_kind?: LocalArtifactKind | null;
   runtime?: ModelInventoryRuntime | null;
   format_variant?: string | null;
   capabilities?: BackendModelCapabilities | null;
@@ -103,6 +104,7 @@ export interface LocalModelInfo {
   path: string;
   size_bytes?: number;
   model_format?: ModelInventoryFormat | null;
+  artifact_kind?: LocalArtifactKind | null;
   runtime?: ModelInventoryRuntime | null;
   format_variant?: string | null;
   capabilities?: BackendModelCapabilities | null;
@@ -125,6 +127,14 @@ export interface LocalModelInfo {
   library_name?: string | null;
   quant_method?: string | null;
 }
+
+export type LocalArtifactKind =
+  | "diffusers_pipeline"
+  | "transformers_model"
+  | "single_file_checkpoint"
+  | "gguf"
+  | "adapter"
+  | "unknown";
 
 export interface LocalModelListResponse {
   models_dir: string;

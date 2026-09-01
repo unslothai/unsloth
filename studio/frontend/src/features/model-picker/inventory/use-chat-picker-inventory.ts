@@ -59,6 +59,7 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     // Delete targets the copy the row describes; without it the request hits the active cache.
     cache_path: row.cachePath,
     size_bytes: row.bytes,
+    artifact_kind: row.artifactKind,
     last_modified: epochMillisecondsToSeconds(row.lastModified),
     // Listed but not loadable: the row renders a partial mark and its click opens the download.
     partial: row.partial,
@@ -81,6 +82,7 @@ function toLocalModelInfo(row: LocalInventoryRow): LocalModelInfo {
     source: row.source as LocalModelInfo["source"],
     model_id: row.modelId ?? row.repoId,
     model_format: row.modelFormat,
+    artifact_kind: row.artifactKind,
     updated_at: epochMillisecondsToSeconds(row.updatedAt),
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
@@ -101,6 +103,9 @@ export function useChatPickerInventory(
     enabled?: boolean;
     /** Exact task-page artifacts that may bypass chat's hidden-model list. */
     allowedHiddenModelIds?: ReadonlySet<string>;
+    /** Include Diffusers pipeline roots whose task metadata is opaque. The
+     * task picker still applies the explicit-family gate before rendering them. */
+    includeOpaqueDiffusersPipelines?: boolean;
   } = {},
 ): ChatPickerInventory {
   const inventory = useHubInventory({
@@ -155,7 +160,9 @@ export function useChatPickerInventory(
             // toLocalModelInfo drops capabilities, so this is the only place the guard can live. A row the backend classified as a generation task is
             // exempt: canChat is about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
             (row.capabilities.canChat ||
-              studioPageForTask(row.task) !== undefined) &&
+              studioPageForTask(row.task) !== undefined ||
+              (options.includeOpaqueDiffusersPipelines &&
+                row.artifactKind === "diffusers_pipeline")) &&
             (!isHiddenModelId(row.modelId, row.repoId, row.path) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,
@@ -164,7 +171,11 @@ export function useChatPickerInventory(
               )),
         )
         .map(toLocalModelInfo),
-    [inventory.localRows, options.allowedHiddenModelIds],
+    [
+      inventory.localRows,
+      options.allowedHiddenModelIds,
+      options.includeOpaqueDiffusersPipelines,
+    ],
   );
 
   return {

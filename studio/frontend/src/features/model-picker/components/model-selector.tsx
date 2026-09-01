@@ -183,6 +183,9 @@ interface ModelSelectorProps {
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages
    *  whose runtime loads arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
+  /** Explicit media family. Only positively typed Diffusers pipeline directories may use it
+   * to bypass an otherwise unknown task classification. */
+  familyOverride?: string;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
@@ -378,6 +381,7 @@ function ModelSelectorContent({
   task,
   catalog,
   communityModelPolicy,
+  familyOverride,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -403,6 +407,7 @@ function ModelSelectorContent({
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
+  familyOverride?: string;
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
@@ -625,6 +630,7 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
+              familyOverride={familyOverride}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
@@ -683,6 +689,7 @@ export function ModelSelector({
   task,
   catalog,
   communityModelPolicy = "none",
+  familyOverride,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -853,6 +860,7 @@ export function ModelSelector({
         task={task}
         catalog={catalog}
         communityModelPolicy={communityModelPolicy}
+        familyOverride={familyOverride}
       />
     </Popover>
   );

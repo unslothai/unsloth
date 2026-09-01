@@ -547,6 +547,7 @@ export function useHubInventory(
           isGguf: false,
           loadId: ds.id,
           modelFormat: "unknown" as const,
+          artifactKind: "unknown" as const,
           runtime: "unknown" as const,
           formatVariant: null,
           capabilities: defaultCapabilities("unknown"),

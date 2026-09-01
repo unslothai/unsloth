@@ -1669,6 +1669,7 @@ class VideoBackend:
         gguf_filename: Optional[str] = None,
         hf_token: Optional[str] = None,
         memory_mode: Optional[str] = None,
+        family_override: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
         # NAMED, not left to the ``**_`` swallow below: an API-initiated load hands this in
         # through _run_load's kwargs, and swallowed it meant the four-file bundle, the sizing
@@ -2026,6 +2027,13 @@ class VideoBackend:
                         attention_backend = "flash",
                         resolved = build_resolved_record(
                             {
+                                "family_override": (
+                                    family_override,
+                                    fam.name,
+                                    "detected from the model"
+                                    if family_override is None
+                                    else "requested",
+                                ),
                                 "memory_mode": (memory_mode, policy, "native model offload"),
                                 "attention_backend": (
                                     None,
@@ -3490,6 +3498,7 @@ class VideoBackend:
                 gguf_filename = gguf_filename,
                 hf_token = hf_token,
                 memory_mode = memory_mode,
+                family_override = family_override,
                 # Carried, not defaulted: load_pipeline is also reached directly (no _run_load),
                 # and dropping it here would let an offline load fetch the four-file bundle.
                 local_files_only = local_files_only,
@@ -3554,6 +3563,7 @@ class VideoBackend:
                 device = device,
                 hf_token = hf_token,
                 memory_mode = memory_mode,
+                family_override = family_override,
                 # RAW, not normalised. Both normalisers fold "none"/"off" into the same None an
                 # omitted request produces, and for a modular workflow those are opposite answers:
                 # unset means "pick the hosted quantized components", "none" means "keep the
@@ -4106,6 +4116,11 @@ class VideoBackend:
 
             resolved = build_resolved_record(
                 {
+                    "family_override": (
+                        family_override,
+                        fam.name,
+                        "detected from the model" if family_override is None else "requested",
+                    ),
                     "memory_mode": (
                         memory_mode,
                         plan.requested_mode,
@@ -4285,6 +4300,7 @@ class VideoBackend:
         device: str,
         hf_token: Optional[str],
         memory_mode: Optional[str],
+        family_override: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         speed_mode: Optional[str] = None,
@@ -4882,6 +4898,11 @@ class VideoBackend:
 
         resolved = build_resolved_record(
             {
+                "family_override": (
+                    family_override,
+                    fam.name,
+                    "detected from the model" if family_override is None else "requested",
+                ),
                 "memory_mode": (
                     memory_mode,
                     offload_policy,
@@ -6346,6 +6367,7 @@ class VideoBackend:
                 "loaded": False,
                 "repo_id": None,
                 "family": None,
+                "supported_families": list(supported_video_family_names()),
                 "base_repo": None,
                 "device": None,
                 "dtype": None,
@@ -6382,6 +6404,7 @@ class VideoBackend:
             "loaded": True,
             "repo_id": state.repo_id,
             "family": fam.name,
+            "supported_families": list(supported_video_family_names()),
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": state.dtype,

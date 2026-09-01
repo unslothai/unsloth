@@ -54,6 +54,7 @@ import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import { familyOverrideOptions } from "@/features/model-picker/components/model-selector/family-override-options";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
@@ -1163,6 +1164,7 @@ type LoadAdvanced = Pick<
   | "attention_backend"
   | "memory_mode"
   | "transformer_cache"
+  | "family_override"
   | "loras"
   | "gpu_ids"
 >;
@@ -1278,6 +1280,7 @@ export function ImagesPage({
     "unsloth_images_advanced_open",
   );
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing them while loaded shows "Reapply".
+  const [familyOverride, setFamilyOverride] = useState("auto");
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
@@ -2375,6 +2378,12 @@ export function ImagesPage({
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
     if (!record) return;
+    const family = record.family_override;
+    if (family?.source === "auto") {
+      setFamilyOverride("auto");
+    } else if (typeof family?.requested === "string" && family.requested) {
+      setFamilyOverride(family.requested);
+    }
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
       // The engaged value spells "no quant" as "off"; the select's option for it is "none".
       (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
@@ -2418,6 +2427,7 @@ export function ImagesPage({
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+        family_override: familyOverride === "auto" ? undefined : familyOverride,
         loras: baked.length > 0 ? baked : undefined,
         // Dropped when the chosen card is gone (a driver reset, an eGPU unplugged), so a stale pick loads automatically instead of 400ing.
         gpu_ids:
@@ -2435,6 +2445,7 @@ export function ImagesPage({
       attentionBackend,
       memoryMode,
       transformerCache,
+      familyOverride,
       selectedGpu,
       gpuChoices,
     ],
@@ -2508,6 +2519,7 @@ export function ImagesPage({
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
+          family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
         });
@@ -2648,6 +2660,7 @@ export function ImagesPage({
         // Non-GGUF loads ignore this control; the plan must describe the same request as handleLoad.
         transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
         memory_mode: advanced.memory_mode,
+        family_override: advanced.family_override,
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it
         // planned a quantized file set and staged too little. Same list handleLoad bakes.
         loras: advanced.loras,
@@ -3493,6 +3506,14 @@ export function ImagesPage({
   const advancedControls = (
     <>
       <AdvancedSelect
+        label="Family"
+        hint="Architecture family. Auto detects it from the repository or pipeline metadata. Choose one only for a custom Diffusers pipeline whose metadata does not identify a supported family."
+        badge={<ResolvedBadge status={status} controlKey="family_override" />}
+        value={familyOverride}
+        onValueChange={setFamilyOverride}
+        options={familyOverrideOptions(status?.supported_families)}
+      />
+      <AdvancedSelect
         label="Speed"
         hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
@@ -3658,6 +3679,7 @@ export function ImagesPage({
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
+                familyOverride={familyOverride}
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}

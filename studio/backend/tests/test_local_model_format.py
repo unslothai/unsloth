@@ -438,6 +438,47 @@ def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
     assert rows[0].model_format is None
 
 
+def test_hub_inventory_types_opaque_diffusers_pipeline_structurally(tmp_path):
+    from hub.services.models.common import _classify_local_path
+
+    pipeline = tmp_path / "opaque-model"
+    _touch(pipeline / "model_index.json")
+    _touch(pipeline / "transformer" / "diffusion_pytorch_model.safetensors")
+
+    [row] = _classify_local_path(pipeline, "custom")
+
+    assert row.model_format == "unknown"
+    assert row.artifact_kind == "diffusers_pipeline"
+
+
+def test_hub_inventory_does_not_confuse_transformers_or_adapter_with_pipeline(tmp_path):
+    from hub.services.models.common import _classify_local_path
+
+    transformer = tmp_path / "transformer"
+    _touch(transformer / "model.safetensors")
+    (transformer / "config.json").write_text(
+        '{"architectures":["Qwen3ForCausalLM"]}', encoding = "utf-8"
+    )
+    adapter = tmp_path / "adapter"
+    _touch(adapter / "adapter_model.safetensors")
+    (adapter / "adapter_config.json").write_text("{}", encoding = "utf-8")
+
+    [transformer_row] = _classify_local_path(transformer, "custom")
+    [adapter_row] = _classify_local_path(adapter, "custom")
+
+    assert transformer_row.artifact_kind == "transformers_model"
+    assert adapter_row.artifact_kind == "adapter"
+
+
+def test_hub_inventory_never_discovers_loose_encoder_or_dtype_shard(tmp_path):
+    from hub.services.models.local_inventory import _scan_models_dir as scan_hub_models_dir
+
+    _touch(tmp_path / "qwen_3_4b.safetensors")
+    _touch(tmp_path / "diffusion_pytorch_model-00001-of-00002.bf16.safetensors")
+
+    assert scan_hub_models_dir(tmp_path) == []
+
+
 def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
     # A scan folder can also point DIRECTLY at a bare single-file checkpoint dir (one loose .safetensors). The child loop
     # admits that shape and the images route reinterprets it via resolve_local_single_file, so the root must be surfaced too.

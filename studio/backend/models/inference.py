@@ -4163,6 +4163,10 @@ class DiffusionStatusResponse(BaseModel):
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
     family: Optional[str] = Field(None, description = "Detected diffusion family")
+    supported_families: List[str] = Field(
+        default_factory = list,
+        description = "Canonical family names accepted by family_override",
+    )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
@@ -4962,6 +4966,10 @@ class VideoStatusResponse(BaseModel):
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
     family: Optional[str] = Field(None, description = "Detected video family")
+    supported_families: List[str] = Field(
+        default_factory = list,
+        description = "Canonical family names accepted by family_override",
+    )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")

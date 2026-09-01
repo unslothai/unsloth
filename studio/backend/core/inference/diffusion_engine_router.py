@@ -308,9 +308,12 @@ def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optiona
 
 def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     """Tag a backend status dict with the active engine + any fallback reason."""
+    from .diffusion_families import supported_family_names
+
     out = dict(status)
     out["engine"] = _active_engine_name
     out["fallback_reason"] = _fallback_reason
+    out["supported_families"] = list(supported_family_names())
     return out
 
 

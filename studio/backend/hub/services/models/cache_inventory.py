@@ -1193,6 +1193,15 @@ def _scan_cached_models(
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
+                    # A selected snapshot with a root pipeline index is a Diffusers pipeline
+                    # artifact even when its repo name/card cannot identify a family. Keep this
+                    # structural fact separate from task inference: an explicit family choice may
+                    # use it, while components and loose checkpoints remain ineligible.
+                    "artifact_kind": (
+                        "diffusers_pipeline"
+                        if hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                        else "unknown"
+                    ),
                     "task": row_task,
                     "audio_type": audio_type,
                     "partial": snapshot_partial,

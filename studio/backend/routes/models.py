@@ -5273,6 +5273,11 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "size_bytes": total_size,
                         "task": row_task,
                     }
+                    # This is a structural load contract, not family detection: a root
+                    # pipeline index proves the selected snapshot is a Diffusers pipeline
+                    # artifact even when its name/card leaves task unknown.
+                    if has_pipeline_index:
+                        row["artifact_kind"] = "diffusers_pipeline"
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
                     if model_load_id:
                         row["load_id"] = model_load_id

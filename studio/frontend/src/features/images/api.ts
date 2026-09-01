@@ -22,6 +22,7 @@ export interface DiffusionStatus {
   loaded: boolean;
   repo_id: string | null;
   family: string | null;
+  supported_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
