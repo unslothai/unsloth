@@ -148,7 +148,10 @@ def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
             # header, and nothing is written outside the temporary directory.
             argv = [cc, "/Zs", src] + [f"/I{d}" for d in inc_dirs if d]
             done = subprocess.run(
-                argv, cwd = tmp, capture_output = True, timeout = 90,
+                argv,
+                cwd = tmp,
+                capture_output = True,
+                timeout = 90,
             )
     except Exception:  # noqa: BLE001
         logger.debug("The compiler probe could not be run", exc_info = True)

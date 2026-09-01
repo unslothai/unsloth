@@ -361,7 +361,6 @@ def test_the_union_still_gates_when_neither_half_is_there(tmp_path, monkeypatch)
     assert _msvc_env.crt_headers_reachable() is False
 
 
-
 def test_a_compiler_that_actually_works_overrules_the_header_heuristic(tmp_path, monkeypatch):
     """The heuristic reads directories; clang-cl locates MSVC through its own search and can
     compile from an -internal-isystem we see no trace of (measured on an R9700 with INCLUDE,
@@ -421,6 +420,7 @@ def test_the_probe_really_compiles_and_really_reports_failure(tmp_path):
     # matters here; on a real clang-cl it answers True.
     assert flag_style_ok in (True, False)
     assert _msvc_env._compiles_a_trivial_translation_unit("no-such-compiler", []) is None
+
 
 def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
     import sysconfig
