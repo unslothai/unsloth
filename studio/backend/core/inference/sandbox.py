@@ -475,10 +475,11 @@ def _assert_no_external_hardlinks(
     an in-tree hard link. Count all in-tree aliases and compare them with the
     filesystem link count; internal-only hard links remain valid, while a
     pre-existing link to a host file fails closed before sandbox launch. A
-    validated runtime path nested below the workdir may be skipped only when it
-    is re-bound/denied read-only after the writable parent. Unix sockets, FIFOs,
-    device nodes, foreign mounts, and trees too large to prove safe are also
-    rejected before the writable bind is created.
+    Regular files below a validated runtime path nested under the workdir may
+    skip only the external-hardlink comparison when that runtime is
+    re-bound/denied read-only after the writable parent. The runtime tree is
+    still traversed so Unix sockets, FIFOs, device nodes, foreign mounts, and
+    trees too large to prove safe are rejected before the writable bind.
     """
     wd = os.path.realpath(workdir)
     try:
@@ -537,11 +538,10 @@ def _assert_no_external_hardlinks(
                     raise UnsafeSandboxWorkdirError(
                         f"cannot inspect sandbox workdir safely: {entry.path!r}: {exc}"
                     ) from exc
-                if os.path.normpath(entry.path) in read_only_nested:
-                    # The Linux argv re-applies this exact path with --ro-bind
-                    # after the writable workdir bind; Seatbelt adds a matching
-                    # write deny. External aliases cannot be mutated through it.
-                    continue
+                entry_path = os.path.normpath(entry.path)
+                below_read_only_runtime = any(
+                    _path_is_within(entry_path, runtime) for runtime in read_only_nested
+                )
                 if entry_stat.st_dev != root_dev:
                     raise UnsafeSandboxWorkdirError(
                         f"sandbox workdir crosses a filesystem boundary: {entry.path!r}"
@@ -559,6 +559,12 @@ def _assert_no_external_hardlinks(
                     raise UnsafeSandboxWorkdirError(
                         f"sandbox workdir contains a special filesystem node: {entry.path!r}"
                     )
+                if below_read_only_runtime:
+                    # The Linux argv re-applies the runtime with --ro-bind after
+                    # the writable workdir bind; Seatbelt adds a matching write
+                    # deny. External aliases cannot be mutated through regular
+                    # files there, but special nodes above were still rejected.
+                    continue
                 if entry_stat.st_nlink <= 1:
                     continue
                 key = (entry_stat.st_dev, entry_stat.st_ino)

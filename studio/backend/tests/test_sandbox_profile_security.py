@@ -337,13 +337,48 @@ def test_external_hardlinks_below_nested_read_only_runtime_remain_allowed(tmp_pa
     cache_file.write_text("VALUE = 1\n")
     workdir = tmp_path / "workdir"
     runtime = workdir / ".venv"
-    runtime.mkdir(parents = True)
+    runtime_package = runtime / "lib" / "package.py"
+    runtime_package.parent.mkdir(parents = True)
     try:
-        os.link(cache_file, runtime / "package.py")
+        os.link(cache_file, runtime_package)
     except OSError as exc:
         pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
 
     sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
+
+
+def test_socket_below_nested_read_only_runtime_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable")
+    workdir = tmp_path / "workdir"
+    runtime = workdir / ".venv"
+    socket_path = runtime / "run" / "service.sock"
+    socket_path.parent.mkdir(parents = True)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(socket_path))
+    except OSError as exc:
+        sock.close()
+        pytest.skip(f"pathname Unix sockets unavailable: {exc}")
+    try:
+        with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "special filesystem node"):
+            sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
+    finally:
+        sock.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "FIFOs unavailable")
+def test_fifo_below_nested_read_only_runtime_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    runtime = workdir / ".venv"
+    fifo_path = runtime / "run" / "host.fifo"
+    fifo_path.parent.mkdir(parents = True)
+    os.mkfifo(fifo_path)
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "special filesystem node"):
+        sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
 
 
 def test_read_only_runtime_exception_does_not_cover_writable_siblings(tmp_path):
