@@ -4970,6 +4970,10 @@ class VideoStatusResponse(BaseModel):
         default_factory = list,
         description = "Canonical family overrides whose pipelines are available on this host",
     )
+    modular_families: List[str] = Field(
+        default_factory = list,
+        description = "Available family overrides whose loader accepts a Modular Diffusers root",
+    )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")

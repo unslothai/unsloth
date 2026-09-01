@@ -6,12 +6,30 @@ import test from "node:test";
 
 import {
   type DiffusionRouteSearch,
+  diffusionPipelineLoadTarget,
   diffusionRouteSearch,
   routedGgufFilename,
   routedGgufLabel,
 } from "../src/lib/diffusion-route-search.ts";
 
 const REPO = "unsloth/Z-Image-Turbo-GGUF";
+
+test("a cached pipeline loads the exact snapshot that established its manifest", () => {
+  assert.deepEqual(
+    diffusionPipelineLoadTarget("Org/Opaque", {
+      source: "hub",
+      loadId: " /cache/models--Org--Opaque/snapshots/abc ",
+    }),
+    {
+      repoId: "/cache/models--Org--Opaque/snapshots/abc",
+      source: "local",
+    },
+  );
+  assert.deepEqual(
+    diffusionPipelineLoadTarget("Org/Opaque", { source: "hub" }),
+    { repoId: "Org/Opaque", source: "hub" },
+  );
+});
 
 test("an expander pick routes its exact filename as the quant", () => {
   assert.deepEqual(

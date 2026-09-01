@@ -123,7 +123,7 @@ from .video_families import (
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
-    pipeline_available_video_family_names,
+    pipeline_available_video_families,
     VideoFamily,
     default_video_generation_params,
     detect_video_family,
@@ -6363,12 +6363,18 @@ class VideoBackend:
 
     def status(self) -> dict[str, Any]:
         state = self._state
+        available_families = pipeline_available_video_families(
+            device = resolve_diffusion_device_target().device
+        )
+        supported_families = [fam.name for fam in available_families]
+        modular_families = [fam.name for fam in available_families if fam.modular_workflow]
         if state is None:
             return {
                 "loaded": False,
                 "repo_id": None,
                 "family": None,
-                "supported_families": list(pipeline_available_video_family_names()),
+                "supported_families": supported_families,
+                "modular_families": modular_families,
                 "base_repo": None,
                 "device": None,
                 "dtype": None,
@@ -6405,7 +6411,8 @@ class VideoBackend:
             "loaded": True,
             "repo_id": state.repo_id,
             "family": fam.name,
-            "supported_families": list(pipeline_available_video_family_names()),
+            "supported_families": supported_families,
+            "modular_families": modular_families,
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": state.dtype,

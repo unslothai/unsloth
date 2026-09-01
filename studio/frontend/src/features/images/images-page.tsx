@@ -126,6 +126,7 @@ import {
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import {
+  diffusionPipelineLoadTarget,
   routedGgufFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
@@ -2945,6 +2946,7 @@ export function ImagesPage({
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any branch: staging never
       // sets `busy`, so any pick can land on an awaiting one.
       const token = pickGuard.claim();
+      const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -2959,9 +2961,9 @@ export function ImagesPage({
         setQuant(null);
         applyImageModelDefaults(id);
         void loadOrStage(
-          id,
+          pipelineTarget.repoId,
           { kind: spec.kind, filename: spec.filename },
-          meta.source,
+          pipelineTarget.source,
           token,
         ).then((started) => {
             if (!started && pickGuard.holds(token)) {
@@ -3055,7 +3057,10 @@ export function ImagesPage({
         return;
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos or on-device paths.
-      if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
+      if (
+        pipelineTarget.source !== "local" &&
+        !id.toLowerCase().startsWith("unsloth/")
+      ) {
         toast.error("Only unsloth or on-device image models can be loaded here");
         abandonPick();
         return;
@@ -3065,7 +3070,12 @@ export function ImagesPage({
       quantRevert.current = revert;
       setQuant(null);
       applyImageModelDefaults(id);
-      void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
+      void loadOrStage(
+        pipelineTarget.repoId,
+        { kind: "pipeline" },
+        pipelineTarget.source,
+        token,
+      ).then((started) => {
         if (!started && pickGuard.holds(token)) {
           revertPick(revert);
           quantRevert.current = null;

@@ -85,14 +85,18 @@ test("an opaque pipeline stays hidden until the explicit contract applies", () =
   );
 });
 
-test("a modular-only root is eligible for video but never for images", () => {
+test("a modular-only root requires a modular-capable video family", () => {
   const modular = row("diffusers_modular_pipeline");
   assert.equal(
     isFamilyOverrideLocalCandidate(modular, "z-image", "image"),
     false,
   );
   assert.equal(
-    isFamilyOverrideLocalCandidate(modular, "ltx-video", "video"),
+    isFamilyOverrideLocalCandidate(modular, "ltx-2", "video", ["minimax-h3"]),
+    false,
+  );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(modular, "minimax-h3", "video", ["minimax-h3"]),
     true,
   );
   assert.equal(
@@ -104,7 +108,7 @@ test("a modular-only root is eligible for video but never for images", () => {
     false,
   );
   assert.equal(
-    localArtifactPassesOverrideGate(modular, "ltx-video", "video"),
+    localArtifactPassesOverrideGate(modular, "minimax-h3", "video", ["minimax-h3"]),
     true,
   );
 });

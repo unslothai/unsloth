@@ -186,6 +186,8 @@ interface ModelSelectorProps {
   /** Explicit media family. Only positively typed Diffusers pipeline directories may use it
    * to bypass an otherwise unknown task classification. */
   familyOverride?: string;
+  /** Backend-derived families whose loader accepts Modular Diffusers roots on this host. */
+  modularFamilyOverrides?: readonly string[];
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
@@ -382,6 +384,7 @@ function ModelSelectorContent({
   catalog,
   communityModelPolicy,
   familyOverride,
+  modularFamilyOverrides,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -408,6 +411,7 @@ function ModelSelectorContent({
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
   familyOverride?: string;
+  modularFamilyOverrides?: readonly string[];
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
@@ -631,6 +635,7 @@ function ModelSelectorContent({
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
               familyOverride={familyOverride}
+              modularFamilyOverrides={modularFamilyOverrides}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
@@ -690,6 +695,7 @@ export function ModelSelector({
   catalog,
   communityModelPolicy = "none",
   familyOverride,
+  modularFamilyOverrides,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -861,6 +867,7 @@ export function ModelSelector({
         catalog={catalog}
         communityModelPolicy={communityModelPolicy}
         familyOverride={familyOverride}
+        modularFamilyOverrides={modularFamilyOverrides}
       />
     </Popover>
   );

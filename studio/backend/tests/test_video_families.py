@@ -199,6 +199,15 @@ def test_pipeline_available_names_filter_the_override_selector(monkeypatch):
     }
 
 
+def test_pipeline_available_names_hide_modular_workflows_on_mps(monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.diffusion_families.family_pipeline_available", lambda _fam: True
+    )
+    available = set(pipeline_available_video_family_names(device = "mps"))
+    assert "minimax-h3" not in available
+    assert "ltx-2" in available
+
+
 def test_minimax_h3_family_and_frame_lattice():
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert fam is not None and fam.name == "minimax-h3"

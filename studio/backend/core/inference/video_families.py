@@ -381,14 +381,26 @@ def supported_video_family_names() -> tuple[str, ...]:
     return tuple(fam.name for fam in _FAMILIES)
 
 
-def pipeline_available_video_family_names() -> tuple[str, ...]:
+def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[VideoFamily, ...]:
     """Video-family overrides whose pipeline can be built by installed Diffusers.
 
     The import stays local because the availability probe is shared with image families while
     this registry is also imported by modules that participate in the inference import graph.
+    Modular Diffusers relies on CUDA-style ``mem_get_info`` for offload and is rejected by the
+    loader on MPS, so the advertised host capability must make the same exclusion.
     """
     from .diffusion_families import family_pipeline_available
-    return tuple(fam.name for fam in _FAMILIES if family_pipeline_available(fam))
+
+    target = (device or "").strip().lower()
+    return tuple(
+        fam
+        for fam in _FAMILIES
+        if family_pipeline_available(fam) and not (target == "mps" and fam.modular_workflow)
+    )
+
+
+def pipeline_available_video_family_names(*, device: Optional[str] = None) -> tuple[str, ...]:
+    return tuple(fam.name for fam in pipeline_available_video_families(device = device))
 
 
 def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:

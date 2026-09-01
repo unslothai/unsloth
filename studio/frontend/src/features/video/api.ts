@@ -50,6 +50,8 @@ export interface VideoStatus {
   repo_id: string | null;
   family: string | null;
   supported_families?: string[];
+  /** Pipeline-capable families whose loader accepts a Modular Diffusers manifest on this host. */
+  modular_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;

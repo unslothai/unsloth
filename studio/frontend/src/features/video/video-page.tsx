@@ -127,6 +127,7 @@ import {
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import {
+  diffusionPipelineLoadTarget,
   routedGgufFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
@@ -2838,6 +2839,7 @@ function VideoGenerator({
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any branch: staging never
       // sets `busy`, so any pick can land on an awaiting one.
       const token = pickGuard.claim();
+      const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
       // Curated non-GGUF model: load as a full pipeline.
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -2855,17 +2857,17 @@ function VideoGenerator({
         applyVideoModelDefaults(spec.filename ? `${id}/${spec.filename}` : id);
         if (isH3PipelinePick(id, spec.kind, familyOverride)) {
           setPendingH3Load({
-            repoId: id,
+            repoId: pipelineTarget.repoId,
             opts: { kind: spec.kind, filename: spec.filename },
-            source: meta.source,
+            source: pipelineTarget.source,
             token,
           });
           return;
         }
         void loadOrStage(
-          id,
+          pipelineTarget.repoId,
           { kind: spec.kind, filename: spec.filename },
-          meta.source,
+          pipelineTarget.source,
           token,
         ).then((started) => {
             if (!started && pickGuard.holds(token)) {
@@ -2956,7 +2958,10 @@ function VideoGenerator({
         return;
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos, the family bases, or on-device paths.
-      if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
+      if (
+        pipelineTarget.source !== "local" &&
+        !id.toLowerCase().startsWith("unsloth/")
+      ) {
         toast.error("Only unsloth or on-device video models can be loaded here");
         abandonPick();
         return;
@@ -2971,14 +2976,19 @@ function VideoGenerator({
       // it needs the same partition question: without it the load silently takes fl2va.
       if (isH3PipelinePick(id, "pipeline", familyOverride)) {
         setPendingH3Load({
-          repoId: id,
+          repoId: pipelineTarget.repoId,
           opts: { kind: "pipeline" },
-          source: meta.source,
+          source: pipelineTarget.source,
           token,
         });
         return;
       }
-      void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
+      void loadOrStage(
+        pipelineTarget.repoId,
+        { kind: "pipeline" },
+        pipelineTarget.source,
+        token,
+      ).then((started) => {
         if (!started && pickGuard.holds(token)) {
           revertPick(revert);
           quantRevert.current = null;
@@ -3426,6 +3436,7 @@ function VideoGenerator({
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
             familyOverride={familyOverride}
+            modularFamilyOverrides={status?.modular_families}
             placeholder="Select video model"
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}

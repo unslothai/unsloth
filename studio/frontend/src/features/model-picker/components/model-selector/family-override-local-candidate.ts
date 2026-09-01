@@ -20,13 +20,22 @@ export function isFamilyOverrideLocalCandidate(
   model: FamilyOverrideArtifact,
   familyOverride: string | null | undefined,
   mediaKind: FamilyOverrideMediaKind | null | undefined,
+  modularFamilyOverrides?: readonly string[] | null,
 ): boolean {
+  const family = familyOverride?.trim().toLowerCase();
+  const familySupportsModular = Boolean(
+    family &&
+      modularFamilyOverrides?.some(
+        (candidate) => candidate.trim().toLowerCase() === family,
+      ),
+  );
   const manifestIsLoadable =
     model.artifact_kind === "diffusers_pipeline" ||
     (mediaKind === "video" &&
-      model.artifact_kind === "diffusers_modular_pipeline");
+      model.artifact_kind === "diffusers_modular_pipeline" &&
+      familySupportsModular);
   return (
-    Boolean(familyOverride && familyOverride !== "auto") &&
+    Boolean(family && family !== "auto") &&
     model.task == null &&
     manifestIsLoadable
   );
@@ -37,6 +46,7 @@ export function localArtifactPassesOverrideGate(
   model: FamilyOverrideArtifact,
   familyOverride: string | null | undefined,
   mediaKind: FamilyOverrideMediaKind | null | undefined,
+  modularFamilyOverrides?: readonly string[] | null,
 ): boolean {
   const isPipelineRoot =
     model.artifact_kind === "diffusers_pipeline" ||
@@ -44,6 +54,11 @@ export function localArtifactPassesOverrideGate(
   return (
     model.task != null ||
     !isPipelineRoot ||
-    isFamilyOverrideLocalCandidate(model, familyOverride, mediaKind)
+    isFamilyOverrideLocalCandidate(
+      model,
+      familyOverride,
+      mediaKind,
+      modularFamilyOverrides,
+    )
   );
 }

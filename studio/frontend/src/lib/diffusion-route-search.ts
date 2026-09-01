@@ -15,6 +15,24 @@ export interface DiffusionRouteSearch {
 const trimmed = (value: string | null | undefined): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 
+type DiffusionPickSource = "hub" | "lora" | "exported" | "local" | "external";
+
+/** Resolve a complete cached pipeline row to the exact snapshot that established its manifest.
+ *
+ * A loadId is only attached to complete snapshots outside the active cache. Treating that path as
+ * local avoids resolving the bare Hub id through a different cache (or the network) after the row
+ * was admitted from on-device evidence.
+ */
+export function diffusionPipelineLoadTarget(
+  model: string,
+  meta: { loadId?: string | null; source: DiffusionPickSource },
+): { repoId: string; source: DiffusionPickSource } {
+  const loadId = trimmed(meta.loadId);
+  return loadId
+    ? { repoId: loadId, source: "local" }
+    : { repoId: model, source: meta.source };
+}
+
 /** Search params for a diffusion pick routed out of the chat picker. The label rides its own param because `quant` is
  *  consumed as a filename; forwarding the filename alone left a pinned row as a bare repo id that read as a pipeline. */
 export function diffusionRouteSearch(
