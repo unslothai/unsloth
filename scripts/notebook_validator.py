@@ -464,6 +464,32 @@ _SHELL_BODY_KEYWORDS = frozenset({"then", "elif", "else", "do"})
 _SHELL_KEYWORDS = _SHELL_TEST_KEYWORDS | _SHELL_BODY_KEYWORDS | {"fi", "done", "esac"}
 
 
+def _unquoted_arm_close(text: str) -> int | None:
+    """Index of the `)` that closes a case-arm pattern, or None when there is none.
+
+    Shell quoting decides: `"x")` is a pattern, while the `)` in `pip install "a)b"` and in a
+    `$( )` substitution belongs to the command.
+    """
+    quote = ""
+    depth = 0
+    for index, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth:
+                depth -= 1
+            elif index:
+                return index
+            else:
+                return None
+    return None
+
+
 def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     """`( pip install x )` -> `("pip install x", False)`, `then pip install x` -> `(..., True)`.
 
@@ -486,11 +512,12 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
             break
         conditional = conditional or parts[0].lower() in _SHELL_BODY_KEYWORDS
         stripped = parts[1].strip() if len(parts) > 1 else ""
-    # A `case` arm label: `x in x) pip install ...` and the bare `b) pip install ...` of a
-    # later arm. Only the matching arm runs, so the command is conditional. An unbalanced `)`
-    # is what marks it; a quote or a `(` before one means it belongs to the command.
-    close = stripped.find(")")
-    if close > 0 and not set(stripped[:close]) & set("('\""):
+    # A `case` arm label: `x in x) pip install ...`, a quoted `"x") ...`, and the bare
+    # `b) pip install ...` of a later arm. Only the matching arm runs, so the command is
+    # conditional. The label ends at the first unquoted `)` with nothing open before it; a `)`
+    # inside quotes or inside a `$( )` belongs to the command.
+    close = _unquoted_arm_close(stripped)
+    if close is not None:
         stripped = stripped[close + 1 :].strip()
         conditional = True
     return (f"!{stripped}" if bang and stripped else stripped), conditional

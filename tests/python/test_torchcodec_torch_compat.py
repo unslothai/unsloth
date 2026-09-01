@@ -1657,7 +1657,18 @@ def test_notebook_validator_reads_case_arms():
         '!case x in x) pip install "torch==2.12.0" ;; esac', COLAB_TORCH211, "nb.ipynb", 0
     ) == []
 
-    # A `)` inside a quoted argument belongs to the command, not to an arm label.
+    # Bash accepts a quoted pattern, and the label still ends at its `)`.
+    quoted_pattern = '!case x in "x") pip install git+https://example.com/pkg.git ;; esac'
+    assert nv._split_chained(quoted_pattern) == [
+        ("!pip install git+https://example.com/pkg.git", True)
+    ]
+    assert any(
+        f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(quoted_pattern, "nb.ipynb", 0)
+    )
+
+    # A `)` inside a quoted argument, or inside a substitution, belongs to the command.
+    assert nv._unquoted_arm_close('pip install "a)b"') is None
+    assert nv._unquoted_arm_close("echo $(date) ; pip install a") is None
     quoted = '!pip install "a)b" git+https://example.com/evil.git'
     assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(quoted, "nb.ipynb", 0))
 
