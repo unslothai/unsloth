@@ -3610,6 +3610,9 @@ def test_storage_order_does_not_prove_ancestry_between_indistinguishable_rows(mo
     rows = [
         {"id": "u1", "role": "user", "content": "First question."},
         {"id": "sib", "role": "assistant", "content": twin, "metadata": _checkpoint_metadata(55)},
+        # The abandoned branch's own continuation separates the twins in storage, so an
+        # adjacent-only comparison misses them.
+        {"id": "u2", "role": "user", "content": "An abandoned follow-up."},
         {"id": "live", "role": "assistant", "content": twin, "metadata": _checkpoint_metadata(7)},
     ]
     branch = [

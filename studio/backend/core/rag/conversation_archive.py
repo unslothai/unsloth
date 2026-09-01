@@ -851,19 +851,22 @@ def _active_chain(
         previous = identifier
     if not by_id:
         return list(messages) if fallback else []
-    if require_unique:
-        # Storage order is not ancestry. Where it strung two INDISTINGUISHABLE rows
-        # together it made the abandoned twin an ancestor of the live one, and the trim
+    if require_unique and synthesized:
+        # Storage order is not ancestry. Where it strung INDISTINGUISHABLE rows into one
+        # chain it made the abandoned twin an ancestor of the live one, and the greedy trim
         # stopped on the twin, replaying ITS deeper boundary instead of the safe vote
-        # across them. Rows the text can still tell apart are left alone: declining on
-        # every invented link would refuse legacy threads whose ancestry order recovers.
-        ordered = [message for message in messages if message.get("id") is not None]
-        for previous_row, row in zip(ordered, ordered[1:]):
-            if row.get("id") in synthesized and (
-                previous_row.get("role"),
-                _normalise_cased(_probe_text(previous_row)),
-            ) == (row.get("role"), _normalise_cased(_probe_text(row))):
+        # across them. The twins need not be adjacent: the abandoned branch's own
+        # continuation sits between them. Threads the text can still tell apart are left
+        # alone, since declining on every invented link would refuse legacy ancestry that
+        # storage order does recover.
+        seen: set = set()
+        for message in messages:
+            if message.get("id") is None:
+                continue
+            key = (message.get("role"), _normalise_cased(_probe_text(message)))
+            if key[1] and key in seen:
                 return []
+            seen.add(key)
     # The request's own branch when it can be found, the newest row when it cannot: empty
     # positions empty every seat and send every turn to MAX + 1, which is worse than
     # reading the wrong branch.
