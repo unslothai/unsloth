@@ -35,6 +35,7 @@ from models.data_recipe import (
     PublishDatasetResponse,
     RecipePayload,
 )
+from utils.host_policy import dial_host, self_request_host
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
 logger = get_logger(__name__)
@@ -49,16 +50,13 @@ ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
 def _resolve_local_v1_endpoint(request: Request) -> str:
-    """Return the loopback /v1 URL for the actual backend listen port.
+    """The /v1 URL of this process's own backend, at the address it is bound to.
 
-    Resolution order:
-      1. ``app.state.server_port`` (run.py, post-bind) - survives proxies/tunnels.
-      2. ``request.scope["server"]`` - when Unsloth starts outside ``run_server``.
-      3. parsed ``request.base_url`` - last resort for test fixtures.
+    Port order: ``server_port`` (survives proxies/tunnels), the request scope, ``base_url``.
     """
+    server = request.scope.get("server")
     port: Any = getattr(request.app.state, "server_port", None)
     if not isinstance(port, int) or port <= 0:
-        server = request.scope.get("server")
         if (
             isinstance(server, tuple)
             and len(server) >= 2
@@ -69,7 +67,8 @@ def _resolve_local_v1_endpoint(request: Request) -> str:
         else:
             parsed = urlparse(str(request.base_url))
             port = parsed.port if parsed.port is not None else 8888
-    return f"http://127.0.0.1:{int(port)}/v1"
+    host = dial_host(self_request_host(request.app.state, server))
+    return f"http://{host}:{int(port)}/v1"
 
 
 def _request_has_desktop_access_token(request: Request) -> bool:

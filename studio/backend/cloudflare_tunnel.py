@@ -399,10 +399,8 @@ def _process_exited(proc: subprocess.Popen) -> bool:
 
 
 def _origin_url(host: str, port: int) -> str:
-    url_host = host.replace("%", "%25")
-    if ":" in url_host and not url_host.startswith("["):
-        url_host = f"[{url_host}]"
-    return f"http://{url_host}:{port}"
+    from utils.host_policy import published_url_host
+    return f"http://{published_url_host(host)}:{port}"
 
 
 class CloudflareTunnel:

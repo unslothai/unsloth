@@ -156,6 +156,7 @@ from utils.host_policy import (
     is_wildcard_host,
     normalize_wildcard_bind_host,
     resolved_bind_address_count,
+    published_url_host as _url_host,
     wildcard_ip_versions,
     wildcard_loopback_host,
 )
@@ -542,15 +543,6 @@ def _display_host_for_bind(host: str) -> str:
 
 def _loopback_bind_host_for(host: str) -> str:
     return wildcard_loopback_host(host) or "127.0.0.1"
-
-
-def _url_host(host: str) -> str:
-    url_host = host.replace("%", "%25")
-    return (
-        f"[{url_host}]"
-        if ":" in url_host and not (url_host.startswith("[") and url_host.endswith("]"))
-        else url_host
-    )
 
 
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:

@@ -179,6 +179,59 @@ def wildcard_loopback_host(host: str) -> "str | None":
     return "::1" if 6 in versions else None
 
 
+def published_url_host(host: str) -> str:
+    """Authority host for a URL Studio hands out - a banner line, `server_url`, a tunnel origin."""
+    escaped = host.replace("%", "%25")
+    if ":" not in escaped or (escaped.startswith("[") and escaped.endswith("]")):
+        return escaped
+    return f"[{escaped}]"
+
+
+def dial_host(host: str) -> str:
+    """Authority host for a URL this process dials itself. The IPv6 zone id stays literal: httpx
+    hands the RFC 6874 escaping `published_url_host` applies to the resolver unchanged."""
+    return f"[{host}]" if ":" in host else host
+
+
+# Self-call address resolution. A `--host` other than a wildcard binds one interface only, so
+# loopback is not served and a hardcoded `127.0.0.1` self-call cannot connect.
+LOOPBACK_FALLBACK_HOST = "127.0.0.1"
+
+
+def is_loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def scope_request_host(server) -> "str | None":
+    """Accepting address from an ASGI `scope["server"]`. Never carries an IPv6 zone id."""
+    if not isinstance(server, (tuple, list)) or len(server) < 2:
+        return None
+    host = server[0]
+    if not isinstance(host, str) or not host:
+        return None
+    return wildcard_loopback_host(host) or host
+
+
+def prefer_loopback(current: "str | None", candidate: str) -> str:
+    """Keep loopback once seen: a wildcard bind reports whichever interface each request arrived
+    on, and that address can change while the loopback it also serves stays valid."""
+    if current is not None and is_loopback_host(current):
+        return current
+    return candidate
+
+
+def self_request_host(app_state, server = None) -> str:
+    """`server_request_host` is authoritative - run_server publishes it from the live listener
+    sockets; the scope pair covers running outside run_server."""
+    published = getattr(app_state, "server_request_host", None)
+    if isinstance(published, str) and published:
+        return published
+    return scope_request_host(server) or LOOPBACK_FALLBACK_HOST
+
+
 # Tauri desktop webview origins. api-only serving (the desktop app calling a
 # local backend) locks CORS to these.
 _TAURI_CORS_ORIGINS = (

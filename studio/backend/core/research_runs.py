@@ -62,6 +62,12 @@ from storage.studio_db import (
     list_chat_messages,
     upsert_chat_message,
 )
+from utils.host_policy import (
+    LOOPBACK_FALLBACK_HOST,
+    dial_host,
+    prefer_loopback,
+    scope_request_host,
+)
 
 logger = get_logger(__name__)
 _URL_BLOCK = re.compile(
@@ -1094,8 +1100,19 @@ class ResearchSupervisor:
                 )
                 await asyncio.sleep(1)
 
-    def note_server_port(self, server: Any) -> None:
-        if isinstance(getattr(self.app.state, "server_port", None), int):
+    def note_server_address(self, server: Any) -> None:
+        state = self.app.state
+        # run_server publishes the port before it binds and the address only once the listener is
+        # up, so a known port must not suppress the address.
+        published = getattr(state, "server_request_host", None)
+        if not (isinstance(published, str) and published):
+            host = scope_request_host(server)
+            if host is not None:
+                state.research_request_host = prefer_loopback(
+                    getattr(state, "research_request_host", None),
+                    host,
+                )
+        if isinstance(getattr(state, "server_port", None), int):
             return
         if (
             isinstance(server, tuple)
@@ -1103,10 +1120,10 @@ class ResearchSupervisor:
             and isinstance(server[1], int)
             and server[1] > 0
         ):
-            self.app.state.research_request_port = server[1]
+            state.research_request_port = server[1]
 
-    def note_request_port(self, request: Any) -> None:
-        self.note_server_port(getattr(request, "scope", {}).get("server"))
+    def note_request_address(self, request: Any) -> None:
+        self.note_server_address(getattr(request, "scope", {}).get("server"))
 
     async def _loop(self) -> None:
         while not self._stopping.is_set():
@@ -1143,11 +1160,19 @@ class ResearchSupervisor:
             return None
         return port
 
+    def _server_host(self) -> str:
+        host = getattr(self.app.state, "server_request_host", None)
+        if not isinstance(host, str) or not host:
+            host = getattr(self.app.state, "research_request_host", None)
+        if not isinstance(host, str) or not host:
+            return LOOPBACK_FALLBACK_HOST
+        return host
+
     def _endpoint(self) -> str:
         port = self._server_port()
         if port is None:
             raise RuntimeError("Research is waiting for the Unsloth server port")
-        return f"http://127.0.0.1:{port}/v1/chat/completions"
+        return f"http://{dial_host(self._server_host())}:{port}/v1/chat/completions"
 
     async def _wait_for_local_model(
         self,
