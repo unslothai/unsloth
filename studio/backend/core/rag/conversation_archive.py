@@ -834,16 +834,36 @@ def _active_chain(
         return []
     by_id: dict = {}
     parent_of: dict = {}
+    # Rows whose parent is storage order rather than a real link. The root's absent parent
+    # is not synthesized: nothing stood in for it.
+    synthesized: set = set()
     previous = None
     for message in messages:
         identifier = message.get("id")
         if identifier is None:
             continue
         by_id[identifier] = message
-        parent_of[identifier] = message.get("parentId") or message.get("parent_id") or previous
+        parent = message.get("parentId") or message.get("parent_id")
+        if parent is None and previous is not None:
+            synthesized.add(identifier)
+            parent = previous
+        parent_of[identifier] = parent
         previous = identifier
     if not by_id:
         return list(messages) if fallback else []
+    if require_unique:
+        # Storage order is not ancestry. Where it strung two INDISTINGUISHABLE rows
+        # together it made the abandoned twin an ancestor of the live one, and the trim
+        # stopped on the twin, replaying ITS deeper boundary instead of the safe vote
+        # across them. Rows the text can still tell apart are left alone: declining on
+        # every invented link would refuse legacy threads whose ancestry order recovers.
+        ordered = [message for message in messages if message.get("id") is not None]
+        for previous_row, row in zip(ordered, ordered[1:]):
+            if row.get("id") in synthesized and (
+                previous_row.get("role"),
+                _normalise_cased(_probe_text(previous_row)),
+            ) == (row.get("role"), _normalise_cased(_probe_text(row))):
+                return []
     # The request's own branch when it can be found, the newest row when it cannot: empty
     # positions empty every seat and send every turn to MAX + 1, which is worse than
     # reading the wrong branch.

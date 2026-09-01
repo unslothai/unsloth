@@ -1123,22 +1123,31 @@ def _archive_branch_chain(
                 return None
             # Rows past that tip ride on the unstored turns alone, so they may only carry
             # THOSE turns' text: matching the whole request instead let an abandoned row
-            # in on a text repeated earlier in it. A row that renders nothing has nothing
-            # to match and is the cancelled-epoch case, since only THAT is what the client
-            # drops -- `isAbandonedAssistantTurn` re-sends a Stop that reached text.
-            carried = {
-                _archive_message_text(message.get("content"))
-                for message in conversation_archive._as_wire(
-                    list(branch_messages[len(settled) :])
-                )
-            }
+            # in on a text repeated earlier in it. Keyed by ROLE too, as the branch match
+            # is, so a stored reply cannot be justified by a user turn of the same words.
+            def _keys(rows):
+                return [
+                    (wire.get("role"), _archive_message_text(wire.get("content")))
+                    for wire in conversation_archive._as_wire(list(rows))
+                ]
+
+            carried = set(_keys(branch_messages[len(settled) :]))
             past_tip = False
             for row in chain:
-                if past_tip and _row_replayed(row):
-                    for wire in conversation_archive._as_wire([row]):
-                        text = _archive_message_text(wire.get("content"))
-                        if text and text not in carried:
+                if past_tip:
+                    checked = False
+                    for key in _keys([row]):
+                        if not key[1]:
+                            continue
+                        if key not in carried:
                             return None
+                        checked = True
+                    # Nothing comparable came back. Only a reply the client drops whole may
+                    # ride on the unstored turns unchecked; one it re-sends -- an image or
+                    # an attachment, or a tool call still awaiting its result -- is not
+                    # proof of anything, so refuse rather than take it on trust.
+                    if not checked and _row_replayed(row):
+                        return None
                 past_tip = past_tip or row.get("id") == tip
         return chain
     except Exception:
