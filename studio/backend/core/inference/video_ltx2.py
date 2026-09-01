@@ -249,8 +249,6 @@ _VOCODER_CONFIG: dict[str, Any] = {
 _DIT_PREFIX = "model.diffusion_model."
 
 
-
-
 # ── checkpoint inspection ────────────────────────────────────────────────────
 def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, ...]]:
     """Tensor name -> shape from the checkpoint HEADER only (no weight data). GGUF shapes come back
@@ -282,8 +280,6 @@ def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
         if name.endswith("transformer_blocks.0.scale_shift_table"):
             return 9 in shape
     return False
-
-
 
 
 # ── state-dict plumbing ──────────────────────────────────────────────────────
@@ -432,8 +428,6 @@ def ltx23_verbatim_sigmas(pipe: Any) -> Any:
     return _ctx()
 
 
-
-
 # ── component builders ───────────────────────────────────────────────────────
 def _build_from_config(
     model_cls: Any,
@@ -574,8 +568,6 @@ def load_ltx23_audio_vae_and_vocoder(
         vocoder = LTX2VocoderWithBWE.from_config(_VOCODER_CONFIG)
     vocoder.load_state_dict(vocoder_state, strict = True, assign = True)
     return audio_vae, vocoder.to(torch_dtype)
-
-
 
 
 # ── pipeline assembly ────────────────────────────────────────────────────────

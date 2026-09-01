@@ -2917,8 +2917,6 @@ def _gemma_parse_mapping(text: str, start: int):
     return out, i, False
 
 
-
-
 # ── DeepSeek R1 / V3 / V3.1 ─────────────────────────────────────────
 def _find_outside_json_strings(text: str, needle: str, start: int) -> int:
     """Index of ``needle`` at/after ``start`` OUTSIDE any JSON string, or -1: a
@@ -3081,8 +3079,6 @@ def _parse_deepseek_tool_calls(
     return out
 
 
-
-
 # ── GLM 4.5 / 4.6 / 4.7 ─────────────────────────────────────────────
 def _parse_glm_tool_calls(
     content: str,
@@ -3189,8 +3185,6 @@ def _parse_glm_tool_calls(
             )
         pos = close + len(_GLM_TC_CLOSE) if close >= 0 else len(content)
     return out
-
-
 
 
 # ── Kimi K2 / Moonshot ──────────────────────────────────────────────

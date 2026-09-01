@@ -391,8 +391,6 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     return env
 
 
-
-
 # --------------------------------------------------------------------------- Model file download (single files;
 # deliberately outside the Model Hub flow) ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -685,8 +683,6 @@ def cancel_model_download() -> bool:
     return _download_state.cancel()
 
 
-
-
 # ---------------------------------------------------------------------------
 def _pcm_to_wav_bytes(decoded_audio) -> bytes:
     """Wrap decoded float32 mono 16 kHz PCM into an in-memory 16-bit WAV."""
@@ -701,8 +697,6 @@ def _pcm_to_wav_bytes(decoded_audio) -> bytes:
         w.setframerate(_TARGET_SAMPLE_RATE)
         w.writeframes(pcm16.tobytes())
     return buf.getvalue()
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -757,7 +751,6 @@ class GgmlSttSidecar:
         process = self._process
         return process is not None and process.poll() is None
 
-
     # -- idle unload ------------------------------------------------------
     def _cancel_idle_unload_locked(self) -> None:
         self._idle_generation += 1
@@ -781,7 +774,6 @@ class GgmlSttSidecar:
                 return
             logger.info("Unloading idle GGUF STT model %s", self._model_id)
             self._release_locked()
-
 
     # -- process lifecycle -------------------------------------------------
     def _release_locked(self) -> None:
@@ -1049,7 +1041,6 @@ class GgmlSttSidecar:
         if process.poll() is not None:
             return False
         return b"whisper" in body.lower()
-
 
     # -- transcription ------------------------------------------------------
     def transcribe(

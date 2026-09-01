@@ -176,7 +176,6 @@ class SdCppServer:
         self._stopped = False
         atexit.register(self.stop)
 
-
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
@@ -463,7 +462,6 @@ class SdCppServer:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
-
 
     # ── generation ───────────────────────────────────────────────────────────
     def img_gen(

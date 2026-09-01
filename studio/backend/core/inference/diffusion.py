@@ -1970,7 +1970,6 @@ class DiffusionBackend:
         # off the Hub.
         assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
-
     # ── Background load + progress ─────────────────────────────────────────
     def begin_load(
         self,
@@ -3369,7 +3368,6 @@ class DiffusionBackend:
             }
 
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
-
 
     # ── Synchronous load / generate / unload ───────────────────────────────
     def load_pipeline(

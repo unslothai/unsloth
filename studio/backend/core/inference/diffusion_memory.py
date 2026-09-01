@@ -128,8 +128,6 @@ class MemoryPlan:
         }
 
 
-
-
 # ── hardware snapshot ─────────────────────────────────────────────────────────
 def snapshot_device_memory(target: Any) -> DeviceMemory:
     """Free / total memory for ``target``'s device. Never raises: a probe failure yields None
@@ -327,8 +325,6 @@ def _system_memory_mib() -> tuple[Optional[int], Optional[int]]:
         return int(total // (1024 * 1024)), int(avail // (1024 * 1024))
     except Exception:
         return None, None
-
-
 
 
 # ── size estimates ────────────────────────────────────────────────────────────
@@ -546,8 +542,6 @@ def _sum_required(*values: Optional[int]) -> Optional[int]:
     return total
 
 
-
-
 # ── the planner ───────────────────────────────────────────────────────────────
 def plan_diffusion_memory(
     *,
@@ -709,8 +703,6 @@ def plan_diffusion_memory(
         # only ever meaningful under group offload; every other tier already places the encoders
         stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
     )
-
-
 
 
 # ── apply to a built pipeline ─────────────────────────────────────────────────

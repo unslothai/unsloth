@@ -70,8 +70,6 @@ class SttWorkerSpawnError(SttWorkerError):
     """
 
 
-
-
 # ---------------------------------------------------------------------------
 def _ensure_backend_on_path() -> None:
     if _BACKEND_PATH not in sys.path:
@@ -284,8 +282,6 @@ def run_stt_worker(
             if kind == "load":
                 # nothing is resident after a failed load, and the attempt may already have taken a context
                 return
-
-
 
 
 # ---------------------------------------------------------------------------

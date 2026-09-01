@@ -323,7 +323,6 @@ class InferenceOrchestrator:
         # would call huggingface.co on every boot. First reader starts it.
         self._top_models_started = False
 
-
     # ------------------------------------------------------------------ Default models (top GGUFs fetched dynamically
     # from HF) ------------------------------------------------------------------
     def _refresh_static_models_if_stale(self) -> None:
@@ -423,7 +422,6 @@ class InferenceOrchestrator:
             logger.warning("Failed to fetch top models: %s", e)
         finally:
             self._top_models_ready.set()
-
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
@@ -765,7 +763,6 @@ class InferenceOrchestrator:
 
         return f"{message} Details: pid={pid}, exitcode={exitcode}."
 
-
     def _send_cmd(self, cmd: dict) -> None:
         """Send a command to the subprocess."""
         if self._cmd_queue is None:
@@ -951,7 +948,6 @@ class InferenceOrchestrator:
                 return
         logger.warning("Timed out waiting for gen_done after cancel")
 
-
     # ------------------------------------------------------------------ Generation command + token-stream helpers
     # (shared by all paths) ------------------------------------------------------------------
     def _build_generate_cmd(
@@ -1086,7 +1082,6 @@ class InferenceOrchestrator:
             elif rtype == "gen_error":
                 yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
-
 
     # ------------------------------------------------------------------ Dispatcher - per-request mailbox routing for
     # compare mode ------------------------------------------------------------------
@@ -1475,7 +1470,6 @@ class InferenceOrchestrator:
 
             raise RuntimeError("Timeout waiting for distributed object share")
 
-
     # Monotonic count of PUBLISHED loads, so the install route can detect a load (including a same-model reload) that
     # completed
     # Monotonic count of PUBLISHED loads; lets the install route detect a load (including a same-model reload) that
@@ -1791,7 +1785,6 @@ class InferenceOrchestrator:
         self.active_model_name = None
         self.models.clear()
         return True
-
 
     # --- Dictation models ------------------------------------------------- These run in the STT sidecars
     # (whisper-server, llama-server, and the Transformers spawn child), not the chat worker. Their lifecycle goes
@@ -2422,7 +2415,6 @@ class InferenceOrchestrator:
         except RuntimeError:
             pass
 
-
     # ------------------------------------------------------------------ Audio generation - TTS, ASR, audio input
     # ------------------------------------------------------------------
     def generate_audio_response(
@@ -2756,7 +2748,6 @@ class InferenceOrchestrator:
             finally:
                 self._release_worker(cancel_event)
                 release_mailbox()
-
 
     # ------------------------------------------------------------------ Local helpers (no subprocess needed)
     # ------------------------------------------------------------------

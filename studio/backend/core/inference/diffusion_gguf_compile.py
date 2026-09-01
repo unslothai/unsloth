@@ -52,7 +52,6 @@ def _gguf_utils():
         return None
 
 
-
 _compiled_dequant_installed = False
 _DEQUANT_ATTR = "dequantize_gguf_tensor"
 
@@ -97,8 +96,6 @@ def uninstall_compiled_dequant() -> None:
     if gguf_utils is not None:
         revert_patch(gguf_utils, _DEQUANT_ATTR)
     _compiled_dequant_installed = False
-
-
 
 
 # --- convenience -------------------------------------------------------------------

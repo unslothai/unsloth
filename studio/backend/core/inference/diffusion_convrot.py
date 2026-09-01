@@ -221,8 +221,6 @@ def _install_rotation(module: Any, group_size: int) -> None:
     module.__class__ = convrot_linear_class()
 
 
-
-
 # ── the metadata contract ─────────────────────────────────────────────────────────────────────
 def declares_rotation(metadata: Any) -> bool:
     """True when ``metadata`` claims its weights were rotated offline.
@@ -272,8 +270,6 @@ def rotation_metadata(group_size: int, fqns: Iterable[str]) -> dict:
         ROTATION_GROUP_KEY: int(group_size),
         ROTATION_FQNS_KEY: sorted(fqns),
     }
-
-
 
 
 # ── the two halves ────────────────────────────────────────────────────────────────────────────

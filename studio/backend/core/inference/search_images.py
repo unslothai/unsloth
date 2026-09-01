@@ -356,7 +356,6 @@ def _evict_cache() -> None:
 
 def _encode_thumbnail(raw: bytes) -> bytes | None:
     from PIL import Image
-
     try:
         with Image.open(io.BytesIO(raw)) as im:
             if im.format not in _ALLOWED_FORMATS:

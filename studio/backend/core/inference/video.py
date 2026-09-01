@@ -1083,7 +1083,6 @@ class VideoBackend:
         pin_cuda_ordinal(state.placed_ordinal)
         return target
 
-
     # ── validation ───────────────────────────────────────────────────────────
     def validate_load_request(
         self,
@@ -1300,7 +1299,6 @@ class VideoBackend:
         normalize_te_quant(text_encoder_quant)
         _ensure_mp4_encoder_available()
         return fam
-
 
     # ── background load + progress ───────────────────────────────────────────
     def begin_load(
@@ -3387,7 +3385,6 @@ class VideoBackend:
 
         return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO)
 
-
     # ── the load itself ──────────────────────────────────────────────────────
     def load_pipeline(
         self,
@@ -4898,7 +4895,6 @@ class VideoBackend:
             )
         )
 
-
     # ── generation ───────────────────────────────────────────────────────────
     def loaded_family(self) -> Optional[VideoFamily]:
         """The resident pipeline's family, or None when nothing is loaded.
@@ -6186,7 +6182,6 @@ class VideoBackend:
                 return False
             cancel.set()
             return True
-
 
     # ── teardown + status ────────────────────────────────────────────────────
     def _teardown_state_locked(self) -> None:

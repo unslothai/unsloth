@@ -1197,7 +1197,6 @@ class SdCppDiffusionBackend:
             logger.warning("sd.cpp accelerator upgrade failed: %s", exc)
             return server_binary
 
-
     # ── Background load + progress ─────────────────────────────────────────
     def begin_load(
         self,
@@ -2123,7 +2122,6 @@ class SdCppDiffusionBackend:
             )
             return _with_mirrors(repos)
 
-
     # ── Generate ───────────────────────────────────────────────────────────
     def generate(
         self,
@@ -2636,7 +2634,6 @@ class SdCppDiffusionBackend:
                 return False
             cancel.set()
             return True
-
 
     # ── Unload / status ──────────────────────────────────────────────────────
     def unload(self) -> dict[str, Any]:

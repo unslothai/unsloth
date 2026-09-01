@@ -717,7 +717,6 @@ class SdCppEngine:
             cancel_event = cancel_event,
         )
 
-
     # ── internals ─────────────────────────────────────────────────────────────
     def _require_binary(self) -> str:
         if not self.is_available():
@@ -834,7 +833,6 @@ class SdCppEngine:
             )
         logger.info("sd-cli run ok in %.1fs -> %s", time.time() - t0, out)
         return out
-
 
 
 # ── engine routing ──────────────────────────────────────────────────────────
