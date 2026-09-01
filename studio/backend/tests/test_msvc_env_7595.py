@@ -227,10 +227,8 @@ def test_stale_rocm_clang_cl_under_xpu_triton_is_not_gated(tmp_path, monkeypatch
 
 
 def test_tinycc_is_not_gated_on_a_release_without_is_clang_cl(tmp_path, monkeypatch):
-    """triton-windows 3.2.0.post18 through 3.5.1.post22 ship `get_cc` and `is_msvc` but no
-    `is_clang_cl`. Importing the three together lost `get_cc` too, so an AMD box that still had the
-    ROCm wheel on disk fell through to the wheel-layout guess and was gated, even though those
-    releases predate the ROCm clang-cl branch and pick TinyCC, which compiles."""
+    """3.2.0.post18 to 3.5.1.post22 have `get_cc` but no `is_clang_cl`; importing them together
+    lost `get_cc` and gated a TinyCC box that compiles fine (7 of the 14 real releases)."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("INCLUDE", raising = False)
     _fake_triton(monkeypatch, [], cc = "tcc.exe", with_is_clang_cl = False)
@@ -274,8 +272,8 @@ def _fake_triton_38(monkeypatch, inc_dirs, cc):
 
 
 def test_the_get_cc_rename_is_followed(tmp_path, monkeypatch):
-    """3.8.0.post28 is what a bare `pip install triton-windows` resolves to, and it has no `get_cc`.
-    Falling through to the wheel-layout guess stops asking Triton which compiler it will run."""
+    """3.8.0.post28, what a bare `pip install triton-windows` gives you, has no `get_cc`: the
+    wheel-layout guess answers from what is installed, not from what Triton will run."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("INCLUDE", raising = False)
     _fake_triton_38(monkeypatch, [], cc = "tcc.exe")

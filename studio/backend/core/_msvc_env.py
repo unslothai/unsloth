@@ -131,9 +131,8 @@ def crt_headers_reachable() -> bool:
         return True
     if _have_crt_headers():
         return True
-    # INCLUDE above is a positive signal only. A machine with Visual Studio but no INCLUDE is the
-    # normal case (Studio is not launched from a Developer Command Prompt), so the sole evidence
-    # that may gate is Triton's own search running and coming back empty.
+    # INCLUDE is a positive signal only: unset is the normal case (Studio is not launched from a
+    # Developer Command Prompt), so only Triton's own search coming back empty may gate.
     return _triton_finds_crt_headers() is not False
 
 

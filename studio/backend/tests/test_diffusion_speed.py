@@ -748,9 +748,8 @@ def test_torchdynamo_disable_is_honored_on_every_platform(monkeypatch, platform)
     # compile_eligible reads torch to test the dtype, and without the stub it returns False for
     # every input -- which would make the assertions below pass whatever the gate did.
     _stub_torch(monkeypatch)
-    # Both platforms, or the name is a claim the test never checks. The env var is read before
-    # any platform branch, but the positive control still has to clear the Windows toolchain
-    # question first, or the negatives below would hold for the wrong reason.
+    # Both platforms, or the name is a claim the test never checks. The positive control must
+    # clear the Windows toolchain question first, or the negatives hold for the wrong reason.
     monkeypatch.setattr(ds_mod.sys, "platform", platform)
     if platform == "win32":
         monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
