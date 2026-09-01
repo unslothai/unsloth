@@ -18,7 +18,7 @@ check() { # name expected actual
 blockA="$(awk '
     /^# ── Parse flags ──$/ {grab = 1}
     grab {print}
-    /^    _UNSLOTH_ROOT="\$HOME\/\.unsloth"$/ {seen = 1}
+    /^        _UNSLOTH_ROOT="\$HOME\/\.unsloth"$/ {seen = 1}
     seen && /^fi$/ {exit}
 ' "$INSTALL")"
 
@@ -46,6 +46,11 @@ case "$blockB" in *'STUDIO_HOME="$UNSLOTH_ROOT/studio"'*) : ;; *) echo "FAIL: bl
 case "$blockC" in *"UV_CACHE_DIR="*) : ;; *) echo "FAIL: blockC extraction broke"; exit 1 ;; esac
 case "$blockC" in *"UV_PYTHON_INSTALL_DIR="*) : ;; *) echo "FAIL: blockC lost the uv python dir"; exit 1 ;; esac
 case "$blockC" in *"UV_PYTHON_BIN_DIR="*) : ;; *) echo "FAIL: blockC lost the uv python bin dir"; exit 1 ;; esac
+# npm and the NVIDIA JIT cache: measured escaping a real portable install
+# (~/.npm/_logs, ~/.nv/ComputeCache) once uv was contained and they were what
+# was left. Easy to drop in a refactor, invisible without a clean-env run.
+case "$blockC" in *"NPM_CONFIG_CACHE="*) : ;; *) echo "FAIL: blockC lost the npm cache"; exit 1 ;; esac
+case "$blockC" in *"CUDA_CACHE_PATH="*) : ;; *) echo "FAIL: blockC lost the cuda cache"; exit 1 ;; esac
 
 SNIP='substep() { :; }
 '"$blockA"'
@@ -134,6 +139,25 @@ out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
     UNSLOTH_STUDIO_HOME="$H/leftover" bash -c "$SNIP" _ --root "$R")"
 check "--root beats UNSLOTH_STUDIO_HOME" "$R/studio" "$(field "$out" 2)"
 
+# ── 6b. UNSLOTH_PORTABLE=1 contains an existing UNSLOTH_STUDIO_HOME in place ──
+# The natural way to ask for this is `UNSLOTH_PORTABLE=1
+# UNSLOTH_STUDIO_HOME=/home/me/unsloth`. Before the _PORTABLE_FLAT branch that
+# silently ignored the named path and installed to ~/.unsloth/studio, leaving
+# the user with an install nowhere near where they asked for it.
+H="$(new_home)"
+out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
+    UNSLOTH_PORTABLE=1 UNSLOTH_STUDIO_HOME="$H/unsloth" bash -c "$SNIP" _)"
+check "portable + studio home: root is the named path" "$H/unsloth"       "$(field "$out" 1)"
+check "portable + studio home: nothing moves"          "$H/unsloth"       "$(field "$out" 2)"
+check "portable + studio home: uv contained"           "$H/unsloth/cache/uv" "$(field "$out" 5)"
+
+# The STUDIO_HOME alias has to reach the same place, or the two spellings of the
+# same request would produce two different installs.
+H="$(new_home)"
+out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
+    UNSLOTH_PORTABLE=1 STUDIO_HOME="$H/unsloth" bash -c "$SNIP" _)"
+check "portable + STUDIO_HOME alias"                   "$H/unsloth"       "$(field "$out" 2)"
+
 # ── 7. UNSLOTH_STUDIO_HOME alone still behaves exactly as before ──
 H="$(new_home)"
 mkdir -p "$H/custom"
@@ -176,7 +200,8 @@ shim_block="$(awk '
     grab && /^elif ! ln -sfn/ {exit}
 ' "$INSTALL")"
 for v in UNSLOTH_HOME UNSLOTH_PORTABLE UNSLOTH_STUDIO_HOME UNSLOTH_LLAMA_CPP_PATH \
-         UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR UV_NO_MODIFY_PATH; do
+         UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR UV_NO_MODIFY_PATH \
+         NPM_CONFIG_CACHE CUDA_CACHE_PATH; do
     case "$shim_block" in
         *"export $v="*) printf '  PASS  %s\n' "portable shim exports $v" ;;
         *) printf '  FAIL  %s\n' "portable shim exports $v"; fails=$((fails+1)) ;;
@@ -191,7 +216,8 @@ esac
 # The desktop launcher and `unsloth studio update` start from a fresh shell that
 # inherits nothing, so a conf without these repopulates ~/.cache/uv on update.
 conf_block="$(sed -n '/studio.conf: exe path/,/studio\.conf"$/p' "$INSTALL")"
-for v in UNSLOTH_HOME UNSLOTH_PORTABLE UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR; do
+for v in UNSLOTH_HOME UNSLOTH_PORTABLE UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR \
+         NPM_CONFIG_CACHE CUDA_CACHE_PATH; do
     case "$conf_block" in
         *"export $v="*) printf '  PASS  %s\n' "studio.conf exports $v" ;;
         *) printf '  FAIL  %s\n' "studio.conf exports $v"; fails=$((fails+1)) ;;
