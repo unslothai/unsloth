@@ -838,7 +838,9 @@ def rule_inst_002_no_deps_transitive(
 
 
 def _install_cell_lower_bound(
-    install_cell: str, target: str, environment: dict[str, str] | None = None
+    install_cell: str,
+    target: str,
+    environment: dict[str, str] | None = None,
 ) -> str | None:
     """Return the highest lower bound any install line places on `target`
     (treating `==V` as both bounds), or None. Used by R-INST-003 so a

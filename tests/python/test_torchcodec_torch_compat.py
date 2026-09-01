@@ -1511,13 +1511,16 @@ def test_torchao_floor_ignores_a_requirement_pip_skips():
     nv = _load_notebook_validator_module()
 
     colab = {"peft": "0.20.0", "torchao": "0.10.0"}
-    assert [f.rule for f in nv.rule_inst_003_peft_torchao(
-        '!pip install "torchao>=0.16.0; python_version < \'3.10\'"', colab, "nb.ipynb", 0
-    )] == ["R-INST-003"]
+    assert [
+        f.rule
+        for f in nv.rule_inst_003_peft_torchao(
+            "!pip install \"torchao>=0.16.0; python_version < '3.10'\"", colab, "nb.ipynb", 0
+        )
+    ] == ["R-INST-003"]
 
     # A marker that holds, and no marker at all, both still clear the floor.
     for cell in (
-        '!pip install "torchao>=0.16.0; python_version >= \'3.10\'"',
+        "!pip install \"torchao>=0.16.0; python_version >= '3.10'\"",
         '!pip install "torchao>=0.16.0"',
     ):
         assert nv.rule_inst_003_peft_torchao(cell, colab, "nb.ipynb", 0) == [], cell
