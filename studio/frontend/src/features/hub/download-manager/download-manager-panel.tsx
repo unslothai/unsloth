@@ -168,6 +168,16 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
     job.state === "cancelled" ||
     job.state === "error";
   const showProgress = active || resumable;
+  const resolveTransportConflict = (action: "resume" | "restart") => {
+    setResumePending(true);
+    const resolution =
+      action === "resume"
+        ? downloadManager.resumeConflict(jobKey, "downloads")
+        : downloadManager.restartConflict(jobKey, "downloads");
+    void resolution.finally(() => {
+      if (mounted.current) setResumePending(false);
+    });
+  };
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
@@ -281,12 +291,8 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
       <TransportConflictDialog
         conflict={transportConflict}
         onCancel={() => downloadManager.cancelConflict(jobKey, "downloads")}
-        onKeepTransport={() =>
-          downloadManager.resumeConflict(jobKey, "downloads")
-        }
-        onSwitchTransport={() =>
-          downloadManager.restartConflict(jobKey, "downloads")
-        }
+        onKeepTransport={() => resolveTransportConflict("resume")}
+        onSwitchTransport={() => resolveTransportConflict("restart")}
       />
     </li>
   );

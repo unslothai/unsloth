@@ -48,6 +48,9 @@ const REPO_DOWNLOAD = read(
 );
 const POLL = read("../src/features/hub/download-manager/poll-loop.ts");
 const HYDRATE = read("../src/features/hub/download-manager/hydration.ts");
+const CONFLICT = read(
+  "../src/features/hub/download-manager/transport-conflict.ts",
+);
 const STATE = read(
   "../src/features/hub/download-manager/download-manager-state.ts",
 );
@@ -69,6 +72,12 @@ test("a failed or cancelled row offers Resume in Downloads", () => {
     /disabled=\{job\.state === "cancelling" \|\| resumePending\}/,
   );
   assert.match(PANEL, /if \(mounted\.current\) setResumePending\(false\)/);
+  assert.match(PANEL, /resolveTransportConflict\("resume"\)/);
+  assert.match(PANEL, /resolveTransportConflict\("restart"\)/);
+  assert.match(PANEL, /void resolution\.finally/);
+  assert.match(CONFLICT, /export async function resumeConflict/);
+  assert.match(CONFLICT, /export async function restartConflict/);
+  assert.match(CONFLICT, /await runWithPendingStartGuard/);
   // Playwright and AppImage cancel/retry smokes wait on this exact copy.
   assert.match(PANEL, /Cancelled\. Partial files kept\./);
 });
@@ -165,6 +174,10 @@ test("hydration revalidates failed and cancelled jobs before keeping them", () =
   assert.match(
     HYDRATE,
     /RESUMABLE_STATES\.has\(current\.state\)[\s\S]*idleProbeVerdict\([\s\S]*?progressResp\.target_present[\s\S]*?=== "gone"[\s\S]*?removeJob\(key\)/,
+  );
+  assert.match(
+    HYDRATE,
+    /applyProgressUpdate\(key, current, progressResp\)[\s\S]*?hasObservedExpectedBytes\(updated\)[\s\S]*?removeJob\(key\)/,
   );
 });
 

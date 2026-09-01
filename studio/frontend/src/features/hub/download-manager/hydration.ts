@@ -216,6 +216,15 @@ async function revalidateHydratedResumableJob(
     );
     const current = getState().jobs[key];
     if (!current || !RESUMABLE_STATES.has(current.state)) return;
+    applyProgressUpdate(key, current, progressResp);
+    const updated = getState().jobs[key];
+    if (!updated || !RESUMABLE_STATES.has(updated.state)) return;
+    if (hasObservedExpectedBytes(updated)) {
+      // Completed jobs are not restored after a restart; removing the stale
+      // terminal row lets the verified inventory state show through.
+      removeJob(key);
+      return;
+    }
     if (
       idleProbeVerdict(
         progressResp.downloaded_bytes,

@@ -264,14 +264,14 @@ export async function requestStart(
   });
 }
 
-export function resumeConflict(
+export async function resumeConflict(
   conflictKey: string,
   owner: ConflictOwner = "caller",
-): void {
+): Promise<void> {
   const entry = getState().conflicts[conflictKey];
   if (!entry || entry.owner !== owner) return;
   setConflict(conflictKey, null);
-  void runWithPendingStartGuard(entry.pending, async () => {
+  await runWithPendingStartGuard(entry.pending, async () => {
     await startJob(entry.pending, {
       useXet: entry.info.previous === TRANSPORT.XET,
     });
@@ -279,14 +279,14 @@ export function resumeConflict(
   });
 }
 
-export function restartConflict(
+export async function restartConflict(
   conflictKey: string,
   owner: ConflictOwner = "caller",
-): void {
+): Promise<void> {
   const entry = getState().conflicts[conflictKey];
   if (!entry || entry.owner !== owner) return;
   setConflict(conflictKey, null);
-  void runWithPendingStartGuard(entry.pending, async () => {
+  await runWithPendingStartGuard(entry.pending, async () => {
     await startJob(entry.pending, {
       useXet: entry.info.next === TRANSPORT.XET,
     });
