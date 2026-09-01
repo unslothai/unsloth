@@ -1479,6 +1479,45 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(main_cpu_gb, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(draft_cpu_gb, 2000 / (1024**3), places = 9)
 
+    def test_an_extras_drafter_under_dspark_is_not_uncharged_by_a_main_cpu_device(self):
+        """The extras' own --model-draft replaces the sidecar's path, not its placement.
+
+        Studio still emits ``--spec-type draft-dspark`` and no --spec-draft-device, so
+        the drafter the child loads is on the GPU and belongs in a guard that protects
+        a resident training job. Under DFlash or MTP the emitted block does copy the
+        main device, and there the pin really does take it off the GPU.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            extras_draft = p / "my-draft.gguf"
+            target.write_bytes(b"x" * 2000)
+            extras_draft.write_bytes(b"z" * 4000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            extras = ["--model-draft", str(extras_draft), "--device", "none"]
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+                self._dspark_capable(),
+            ):
+                dspark_gb = self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "dspark", llama_extra_args = extras
+                )
+                mtp_gb = self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "mtp", llama_extra_args = extras
+                )
+        self.assertAlmostEqual(dspark_gb, 6000 / (1024**3), places = 9)
+        self.assertAlmostEqual(mtp_gb, 2000 / (1024**3), places = 9)
+
     def test_forced_dspark_on_an_incapable_binary_charges_no_drafter_at_all(self):
         """The loader's DSpark branch falls back to --spec-default, which loads no
         drafter, so charging the MTP one would refuse a load that fits. Auto is

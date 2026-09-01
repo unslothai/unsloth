@@ -19257,6 +19257,15 @@ class LlamaCppBackend:
                         _shared_gpu_ids = {
                             idx for idx, _free, total in _visible_gpu_mem if total <= 0
                         }
+                        # A row whose type the registry could not read reports a heap
+                        # like a dGPU, so total > 0 leaves it out of the set above. The
+                        # global term already refuses it; without this the per-candidate
+                        # search hands the same device the discount right back.
+                        _unclassified_gpu_ids = {
+                            int(row["index"])
+                            for row in (_vulkan_probe_rows or ())
+                            if not row.get("type_known", True)
+                        }
                     else:
                         _unclassified_gpu_ids = {
                             idx
@@ -22429,7 +22438,12 @@ class LlamaCppBackend:
                         _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
                         or (launch_mtp_draft_path and not _extra_args_set_spec_type(extra_args))
                     )
-                    and not _extra_args_draft_offloaded_to_cpu(extra_args)
+                    # DSpark's block appends no --spec-draft-device, so a main CPU
+                    # device does not move that drafter and cannot excuse the drop:
+                    # it would keep running on the device whose output is corrupt.
+                    and not _extra_args_draft_offloaded_to_cpu(
+                        extra_args, dspark_drafter = _spec_canon == "dspark"
+                    )
                 )
                 if _pv_draft_unpinnable:
                     logger.warning(
@@ -24364,9 +24378,12 @@ class LlamaCppBackend:
                         # once, so re-fit on that raw footprint. Original Auto policy:
                         # a fully-offloaded fitted context when one exists, else the
                         # useful offload context. A hand-set context is never reduced.
+                        # Gated on the restored bytes alone, not on the remaining
+                        # device being a KNOWN APU: an unclassified one restores the
+                        # same discount, and skipping the re-fit there would launch the
+                        # crashed selection's context against the larger footprint.
                         if (
-                            _retry_wants_unified
-                            and not explicit_ctx
+                            not explicit_ctx
                             and _retry_restored_discount > 0
                             and self._can_estimate_kv()
                             and effective_ctx > 0
@@ -24425,7 +24442,7 @@ class LlamaCppBackend:
                                     self._max_context_length = _retry_ctx
                                     logger.info(
                                         "Arch-crash retry restored %.1f GB of "
-                                        "discrete-only budget relief on the APU; replanned "
+                                        "discrete-only budget relief; replanned "
                                         "Auto context to %d.",
                                         _retry_restored_discount / (1024**3),
                                         _retry_ctx,

@@ -1017,3 +1017,48 @@ def test_load_model_hands_the_fit_the_pinned_floor_not_the_discount(backend):
         "host_only_bytes=((_cpu_draft_fit_bytesor0)+_host_pinned+_fit_extra_host_pinned"
         "+_draft_host_pinned+_fit_extra_draft_pinned)" in compact
     )
+
+
+def test_an_unreadable_vulkan_type_is_unclassified_for_the_candidate_search_too(backend):
+    """The global term and the per-candidate one must refuse the same device.
+
+    `_shared_memory` withholds the discount for a row whose type could not be read,
+    but the Vulkan branch built `_shared_gpu_ids` from `total <= 0` alone and left
+    `_unclassified_gpu_ids` empty. An unreadable row still reports a heap, so it fell
+    through both and `_candidate_targets_proved_discrete` handed the discount straight
+    back to the device the global term had just refused.
+    """
+    import inspect
+
+    compact = "".join(inspect.getsource(backend.load_model).split())
+    assert (
+        '_unclassified_gpu_ids={int(row["index"])forrowin(_vulkan_probe_rowsor())'
+        'ifnotrow.get("type_known",True)}' in compact
+    )
+    # And the set the candidate gate tests is the union of the two.
+    assert "_candidate_ids&(_shared_gpu_ids|_unclassified_gpu_ids)" in compact
+
+
+def test_the_arch_crash_refit_follows_the_restored_bytes_not_the_apu(backend):
+    """`_apply_candidate_discounts(_remaining)` restores the same bytes whether the
+    remaining device is a known APU or merely unclassified. Gating the only context
+    re-fit on the APU question left the unclassified retry running the crashed
+    selection's context against the larger footprint."""
+    import inspect
+
+    compact = "".join(inspect.getsource(backend.load_model).split())
+    assert "if(notexplicit_ctxand_retry_restored_discount>0" in compact
+    assert "if(_retry_wants_unifiedandnotexplicit_ctx" not in compact
+
+
+def test_the_paravirtual_drop_does_not_believe_a_dspark_drafter_is_on_cpu(backend):
+    """A virtualised Metal device corrupts whatever runs on it, so the guard drops a
+    drafter it cannot pin. Reading a main CPU device as the DSpark drafter's placement
+    would excuse the drop and leave it running there."""
+    import inspect
+
+    compact = "".join(inspect.getsource(backend.load_model).split())
+    assert (
+        "andnot_extra_args_draft_offloaded_to_cpu(extra_args,"
+        'dspark_drafter=_spec_canon=="dspark"))' in compact
+    )
