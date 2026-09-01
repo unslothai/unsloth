@@ -3653,13 +3653,17 @@ _cap_cuda_family_for_pre_turing() {
 # ── ROCm version sources ──
 # One helper per source, each returning 0 unconditionally: under set -e a failing source
 # would kill the installer before the actionable warning at the end of the ROCm branch.
+# Every source that execs something runs it through _run_bounded. Highest-wins made all
+# five unconditional, so a single wedged probe now hangs the installer where the old
+# first-answer-wins chain would have stopped before reaching it. A timed-out probe is
+# just a source that declined to answer.
 _rocm_tag_from_amd_smi() {
     command -v amd-smi >/dev/null 2>&1 || return 0
     # Cut at the field separator and require digits: the line is pipe-delimited
     # ("... | ROCm version: N/A | amdgpu version: 6.10.10 | ..."), so stripping every
     # non-digit fabricated rocm6.10 out of the amdgpu driver version. Position used to
     # hide that; under highest-wins a fabricated reading outvotes a real 6.1.
-    amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
+    _run_bounded amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
         'NF>1{v=$2; sub(/[ \t|].*$/, "", v); if (v ~ /^[0-9]+\.[0-9]+/) {split(v,a,"."); print "rocm"a[1]"."a[2]} exit}' || return 0
 }
 
@@ -3670,7 +3674,7 @@ _rocm_tag_from_version_file() {
 
 _rocm_tag_from_hipconfig() {
     command -v hipconfig >/dev/null 2>&1 || return 0
-    hipconfig --version 2>/dev/null \
+    _run_bounded hipconfig --version 2>/dev/null \
         | awk 'NR==1 && /^[0-9]/{split($1,a,"."); if(a[1]+0>0){print "rocm"a[1]"."a[2]}}' || return 0
 }
 
@@ -3686,7 +3690,7 @@ _rocm_tag_from_dpkg() {
     # line, so neutralize the status before pipefail sees it.
     # rocm-core wins outright, and libhsa-runtime64-1 is read only in its absence (the
     # Debian case): the HSA package comes from the distro archive and can be older.
-    { dpkg-query -W -f='${Package} ${Status} ${Version}\n' rocm-core libhsa-runtime64-1 2>/dev/null || true; } \
+    { _run_bounded dpkg-query -W -f='${Package} ${Status} ${Version}\n' rocm-core libhsa-runtime64-1 2>/dev/null || true; } \
         | awk '
             $4 == "installed" && $5 != "" {
                 v = $5
@@ -4211,12 +4215,12 @@ get_radeon_wheel_url() {
             ;;
     esac
     _host_ver=$({ command -v amd-smi >/dev/null 2>&1 && \
-        amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
+        _run_bounded amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
             'NF>1{if(match($2,/[0-9]+\.[0-9]+(\.[0-9]+)?/)){print substr($2,RSTART,RLENGTH); ok=1; exit}} END{exit !ok}'; } || \
         { [ -r /opt/rocm/.info/version ] && \
             awk 'match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1; exit} END{exit !found}' /opt/rocm/.info/version; } || \
         { command -v hipconfig >/dev/null 2>&1 && \
-            hipconfig --version 2>/dev/null | awk 'NR==1 && match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1} END{exit !found}'; }) 2>/dev/null || _host_ver=""
+            _run_bounded hipconfig --version 2>/dev/null | awk 'NR==1 && match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1} END{exit !found}'; }) 2>/dev/null || _host_ver=""
     if _radeon_host_ver_not_older "$_host_ver" "$_resolved_ver"; then
         _full_ver="$_host_ver"
     else
