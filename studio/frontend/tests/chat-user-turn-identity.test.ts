@@ -18,6 +18,11 @@ const runtimeProvider = readFileSync(
   "utf8",
 );
 
+/** Whitespace-insensitive so reformatting does not fail the pin, but nothing else is. */
+function normalise(source: string): string {
+  return source.trim().replace(/\s+/g, " ");
+}
+
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
   const end = source.indexOf(to, start);
@@ -27,6 +32,22 @@ function slice(source: string, from: string, to: string): string {
 
 // The WHOLE function, not just the loop: a dedupe folded into `const history = ...`
 // would sit above the loop and escape a narrower slice.
+const LOOP_START = "for (let index = 0; index < history.length; index += 1) {";
+const LOOP_BODY = normalise(`
+  for (let index = 0; index < history.length; index += 1) {
+    const message = history[index];
+    const refused = isAnthropicRefusalMessage(message);
+    if (refused || abandoned[index]) {
+      if (refused || index < lastSurviving) {
+        const last = surviving.at(-1);
+        if (last && last.role === "user") surviving.pop();
+      }
+      continue;
+    }
+    surviving.push(message);
+  }
+`);
+
 const outboundPrune = slice(
   adapter,
   "function pruneOutboundHistory(",
@@ -47,16 +68,11 @@ test("the outbound prune keeps every turn the abandoned-turn guard did not drop"
   // The input is copied whole. Folding a filter into this line is the one way to drop a
   // turn without touching the loop below.
   assert.match(outboundPrune, /\n {2}const history = \[\.\.\.messages\];\n/);
-  // The guard's continue runs straight into the push, leaving nowhere for a comparison.
-  assert.match(
-    outboundPrune,
-    /if \(refused \|\| abandoned\[index\]\) \{[\s\S]*?\n {6}continue;\n {4}\}\n {4}surviving\.push\(message\);\n {2}\}/,
-  );
-});
-
-test("the outbound prune pops a prompt only for the abandoned turn it belongs to", () => {
-  // A second, unguarded pop would delete a real prompt from the request.
-  assert.equal(outboundPrune.match(/surviving\.pop\(\)/g)?.length, 1);
+  // The loop body is pinned exactly, not pattern-matched. Three rounds of review each found
+  // another spelling a regex let through, the last being an early `continue` above the
+  // refusal check, so the only assertion that holds is that nothing was inserted at all.
+  // A deliberate refactor here has to update this string, which is the point.
+  assert.equal(normalise(slice(outboundPrune, LOOP_START, "return surviving;")), LOOP_BODY);
 });
 
 test("a message is persisted under the id the runtime gave it", () => {
@@ -80,6 +96,6 @@ test("loading a thread passes on every stored message", () => {
   );
   assert.doesNotMatch(
     historyLoad,
-    /\b(?:msgs|snapshot\.messages)\.(?:filter|splice|shift|pop|slice)\(/,
+    /\b(?:msgs|snapshot\.messages)(?:\.length\s*=|\.(?:filter|splice|shift|pop|slice)\()/,
   );
 });
