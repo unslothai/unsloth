@@ -40,8 +40,15 @@ def _wait_gate_source() -> str:
     gate = "\n".join(
         line
         for line in WAIT_GATE.read_text(encoding = "utf-8").splitlines()
-        if not line.startswith(("import ", "  disposableTimeoutSignal,", "  pollSignal,",
-                                "  type PollSignal,", '} from "@/features/hub'))
+        if not line.startswith(
+            (
+                "import ",
+                "  disposableTimeoutSignal,",
+                "  pollSignal,",
+                "  type PollSignal,",
+                '} from "@/features/hub',
+            )
+        )
     ).replace(": PollSignal", "")
     assert "export function beginServerModelWait(" in gate
     return gate

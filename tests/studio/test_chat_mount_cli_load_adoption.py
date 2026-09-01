@@ -241,8 +241,15 @@ def _build_harness(run_dir: Path) -> None:
     gate = "\n".join(
         line
         for line in WAIT_GATE.read_text(encoding = "utf-8").splitlines()
-        if not line.startswith(("import ", "  disposableTimeoutSignal,", "  pollSignal,",
-                                "  type PollSignal,", '} from "@/features/hub'))
+        if not line.startswith(
+            (
+                "import ",
+                "  disposableTimeoutSignal,",
+                "  pollSignal,",
+                "  type PollSignal,",
+                '} from "@/features/hub',
+            )
+        )
     ).replace(": PollSignal", "")
     assert "export function beginServerModelWait(" in gate
     poll = _between(source, "const CLI_LOAD_POLL_IDLE_MS", "function parseTrailingEpoch(")
@@ -643,9 +650,9 @@ def test_the_shipped_per_read_cap_is_the_one_the_harness_stands_in_for():
     gate = WAIT_GATE.read_text(encoding = "utf-8")
     assert "export const STATUS_POLL_TIMEOUT_MS = 30_000;" in gate
     assert re.search(r"return parent\s*\?\s*pollSignal\(parent, STATUS_POLL_TIMEOUT_MS\)", gate)
-    adapter = _source_path(
-        "studio/frontend/src/features/chat/api/chat-adapter.ts"
-    ).read_text(encoding = "utf-8")
+    adapter = _source_path("studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
+        encoding = "utf-8"
+    )
     assert "statusPollSignal(options?.abortSignal)" in adapter
     assert "beginServerModelWait(options?.abortSignal)" in adapter
 
