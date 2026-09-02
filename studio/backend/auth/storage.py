@@ -961,9 +961,10 @@ def setup_code_login_allowed(username: str, password_hash: str) -> bool:
 def _resolve_subject_owned_roots(username: str) -> tuple[list, bool]:
     """``(roots, complete)`` for every directory whose path derives from ``username``.
 
-    The workspace tree, the projects tree (a separate Documents root) and the tool
-    sandbox tree each key on workspace_key(username), so retiring only the first
-    still hands a recycled name the other two.
+    The workspace tree, the projects tree (a separate Documents root), the tool
+    sandbox tree and the scoped temporary root each key on
+    workspace_key(username), so retiring only the first still hands a recycled
+    name the rest.
 
     ``complete`` is False when a root could not even be resolved -- a reduced
     install where ``core.inference.tools`` will not import, say. That is not the
@@ -973,12 +974,15 @@ def _resolve_subject_owned_roots(username: str) -> tuple[list, bool]:
     """
     from pathlib import Path
 
-    from utils.paths.storage_roots import project_workspaces_root, studio_root
+    from utils.paths.storage_roots import project_workspaces_root, studio_root, tmp_root
     from utils.workspace_context import run_in_workspace, workspace_key
 
     def _scoped() -> list:
         from core.inference.tools import sandbox_root
-        return [project_workspaces_root(), Path(sandbox_root())]
+        # tmp_root is keyed on workspace_key like the rest, so it is inherited
+        # by a recycled name exactly as the persistent roots are. Unstructured
+        # seed processing leaves plaintext parquet chunks under it.
+        return [project_workspaces_root(), Path(sandbox_root()), tmp_root()]
 
     roots = [studio_root() / "workspaces" / workspace_key(username)]
     try:

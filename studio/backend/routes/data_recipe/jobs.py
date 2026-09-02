@@ -289,6 +289,46 @@ def reject_env_credentials_in_recipe(recipe: Any) -> None:
         collection = recipe.get(key)
         if isinstance(collection, list):
             _reject_env_credentials_from_a_managed_account(collection)
+            _reject_private_destinations_from_a_managed_account(collection)
+
+
+def _reject_private_destinations_from_a_managed_account(providers: list) -> None:
+    """A recipe may not aim the worker at a loopback or LAN service.
+
+    The endpoints on these collections are caller-supplied and reach Data
+    Designer verbatim, which connects to them from the backend host during both
+    validation and the run. Saved inference providers and MCP servers already
+    refuse a private target for a managed account, for the reason that an
+    address the account cannot reach from its own browser would otherwise become
+    a probe of whatever else is on that network. A recipe is the same request
+    wearing different clothes.
+
+    Reuses the provider validator, so the two surfaces cannot drift on what
+    counts as private, including DNS aliases of one.
+    """
+    if is_installation_owner():
+        return
+    from core.inference.providers import validate_provider_base_url
+
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        if provider.get("is_local") is True:
+            # _inject_local_providers overwrites the endpoint of these with this
+            # server's own /v1, so whatever arrived here is never connected to.
+            continue
+        endpoint = provider.get("endpoint")
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            continue
+        try:
+            validate_provider_base_url(endpoint)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code = 403,
+                detail = (
+                    f"This account can only use recipe providers on public addresses. ({exc})"
+                ),
+            ) from exc
 
 
 def _reject_env_credentials_from_a_managed_account(providers: list) -> None:

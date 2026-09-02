@@ -145,6 +145,19 @@ async def video_download_plan(
     )
     from utils.native_path_leases import redact_native_paths
 
+    from routes.inference import (
+        _reject_private_hub_repo_without_an_account_token,
+        _reject_uncontained_local_path,
+    )
+
+    # The same two questions /video/load asks. resolve_local_single_file,
+    # validate_load_request and download_plan all read the target, so without
+    # these an absolute path from another workspace came back described as a
+    # plan even though the load would refuse it.
+    _reject_uncontained_local_path(request.model_path, "plan a download for")
+    _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
+    if request.base_repo:
+        _reject_private_hub_repo_without_an_account_token(request.base_repo, request.hf_token)
     backend = get_video_backend()
     try:
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)

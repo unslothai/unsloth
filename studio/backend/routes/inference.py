@@ -6695,6 +6695,19 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
         return
     from routes.models import _is_sizable_local_path, is_advertised_shared_model_path
 
+    # Asked FIRST, because a Hub cache path is under cache_root() and so passes
+    # the generic "inside an Unsloth data root" test below. Returning there
+    # skipped the credential question entirely, which is the one question a
+    # snapshot directory has to be asked: the path is predictable, and the
+    # loader would have opened another account's private weights from it.
+    repo_id = _hub_repo_id_for_cache_path(candidate)
+    if repo_id is not None:
+        _reject_private_hub_repo_without_an_account_token(
+            repo_id,
+            None,
+            shared_cache_answers_offline = False,
+        )
+        return
     if _is_sizable_local_path(candidate):
         return
     # And what the catalog already offered this account: ./models, the Hugging
@@ -6709,14 +6722,8 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
         # is an existing local path, not a repo id. So ask the same question the
         # repo id would have been asked, and let a path that names no repository
         # through: ./models and the LM Studio directories are ordinary folders.
-        repo_id = _hub_repo_id_for_cache_path(candidate)
-        if repo_id is None:
-            return
-        _reject_private_hub_repo_without_an_account_token(
-            repo_id,
-            None,
-            shared_cache_answers_offline = False,
-        )
+        # The cache-path question is asked above, before the data-root test, so
+        # by here the path names no repository.
         return
     raise HTTPException(
         status_code = 403,
@@ -33275,6 +33282,14 @@ async def diffusion_download_plan(
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
+    # The same two questions /images/load asks, and for the same reason: the
+    # validator reads the target's checkpoint names and pipeline config, so a
+    # path or repo this account may not have would be described back to it here
+    # even though the load itself would refuse the identical pick.
+    _reject_uncontained_local_path(request.model_path, "plan a download for")
+    _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
+    if request.base_repo:
+        _reject_private_hub_repo_without_an_account_token(request.base_repo, request.hf_token)
     backend = get_diffusion_backend()
     try:
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)

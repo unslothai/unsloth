@@ -1711,6 +1711,38 @@ def _looks_like_model_dir(directory: Path) -> bool:
     return False
 
 
+def _hub_cache_entry_is_hidden_from_this_account(resolved_child: str) -> bool:
+    """Whether a Hub cache directory must not be listed to this caller.
+
+    The cache roots stay in the browse allowlist, because a shared model that a
+    managed account may load has to remain readable through it. What that does
+    not license is READING OFF THE NAMES: ``models--owner--private-repo`` names
+    the repository, and the revision directories under it hand over the exact
+    snapshot path.
+
+    Asked with the same guard the load path uses, so browsing and loading cannot
+    disagree about which cached repositories this account may see. Anything that
+    is not a Hub cache directory is untouched, which is every ordinary folder.
+    """
+    from routes.inference import (
+        _hub_repo_id_for_cache_path,
+        _reject_private_hub_repo_without_an_account_token,
+    )
+
+    repo_id = _hub_repo_id_for_cache_path(resolved_child)
+    if repo_id is None:
+        return False
+    try:
+        _reject_private_hub_repo_without_an_account_token(
+            repo_id,
+            None,
+            shared_cache_answers_offline = False,
+        )
+    except HTTPException:
+        return True
+    return False
+
+
 def _build_browse_allowlist(
     media_roots: Optional[list[Path]] = None, drive_roots: Optional[list[Path]] = None
 ) -> list[Path]:
@@ -2122,6 +2154,8 @@ def browse_folders(
             except (OSError, ValueError):
                 resolved_child = str(child)
             if is_denied_system_path(resolved_child):
+                continue
+            if _hub_cache_entry_is_hidden_from_this_account(resolved_child):
                 continue
             entries.append(
                 BrowseEntry(

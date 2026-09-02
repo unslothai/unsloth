@@ -1061,7 +1061,10 @@ def test_deleting_an_account_retires_its_projects_and_sandbox_too(
     auth_storage.create_managed_user("casey")
 
     roots = auth_storage._subject_owned_roots("casey")
-    assert len(roots) == 3
+    # Workspace, projects, sandbox and the scoped temporary root: all four key on
+    # workspace_key, so all four are inherited by a recycled name.
+    assert len(roots) == 4
+    assert any("unsloth-studio" in str(root) for root in roots)
     for root in roots:
         root.mkdir(parents = True, exist_ok = True)
         (root / "private.txt").write_text("casey", encoding = "utf-8")
