@@ -40,6 +40,8 @@ _FAKE_BINARY_CONTENT = "stub"
 _UTF8_ENCODING = "utf-8"
 _SUBPROCESS_RUN_TARGET = "core.inference.llama_cpp.subprocess.run"
 _PRESERVE_ONLY_KWARGS = '{"preserve_thinking": false}'
+_PRESERVE_DEFAULT_KWARGS = '{"preserve_thinking": true}'
+_REASONING_EFFORT_KWARGS = '{"reasoning_effort": "high"}'
 _OLD_KWARGS = '{"enable_thinking": false, "preserve_thinking": false}'
 _REASONING_TEMPLATE = (
     "{% if enable_thinking %}thinking{% endif %}{% if preserve_thinking %}history{% endif %}"
@@ -68,8 +70,8 @@ def _load_backend(tmp_path):
     )
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda binary = None: []
-    backend._get_gpu_free_memory = lambda binary = None: []
+    backend._get_gpu_memory = lambda *args, **kwargs: []
+    backend._get_gpu_free_memory = lambda *args, **kwargs: []
     backend._read_gguf_metadata = lambda path: None
     backend._can_estimate_kv = lambda: False
     backend._get_gguf_size_bytes = lambda path: _MODEL_SIZE_BYTES
@@ -79,7 +81,7 @@ def _load_backend(tmp_path):
     backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
     backend._find_llama_server_binary = lambda include_denied = False: _FAKE_BINARY
     backend._is_vulkan_backend = lambda binary = None: False
-    backend._wait_for_health = lambda timeout: True
+    backend._wait_for_health = lambda *args, **kwargs: True
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda detected: True
     return backend, gguf
@@ -184,6 +186,35 @@ def test_launch_reasoning_args_use_modern_flag_with_old_binary_fallback(tmp_path
     old_command = [_SERVER_COMMAND]
     backend._append_launch_reasoning_args(old_command, False, {_REASONING_CAPABILITY: False})
     assert old_command == [_SERVER_COMMAND, _CHAT_TEMPLATE_KWARGS_FLAG, _OLD_KWARGS]
+
+
+def test_modern_launch_preserves_model_thinking_default():
+    backend = _backend(supports_preserve = True)
+    backend._preserve_thinking_default = True
+    command = [_SERVER_COMMAND]
+
+    backend._append_launch_reasoning_args(command, True, {_REASONING_CAPABILITY: True})
+
+    assert command == [
+        _SERVER_COMMAND,
+        _REASONING_FLAG,
+        _REASONING_ON,
+        _CHAT_TEMPLATE_KWARGS_FLAG,
+        _PRESERVE_DEFAULT_KWARGS,
+    ]
+
+
+def test_modern_launch_keeps_reasoning_effort_in_template_kwargs():
+    command = [_SERVER_COMMAND]
+
+    _backend(style = "reasoning_effort")._append_launch_reasoning_args(
+        command,
+        True,
+        {_REASONING_CAPABILITY: True},
+    )
+
+    assert _REASONING_FLAG not in command
+    assert command == [_SERVER_COMMAND, _CHAT_TEMPLATE_KWARGS_FLAG, _REASONING_EFFORT_KWARGS]
 
 
 def test_load_command_uses_reasoning_flag(tmp_path):
