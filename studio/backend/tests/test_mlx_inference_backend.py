@@ -2773,15 +2773,15 @@ def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     assert elig(lambda: [lm_cache.KVCache()], dim = 80) == "refused"
     # A container the quantizer never descends into is skipped, not fatal.
     assert elig(lambda: [lm_cache.CacheList(lm_cache.KVCache())]) == "none"
-    # Gemma 4's layout: the rotating window keeps its ring, the full layers convert.
     windowed = lambda: [lm_cache.KVCache(), lm_cache.RotatingKVCache(max_size = 8)]
     assert elig(windowed) == "partial"
     assert "sliding-window" in verdict(windowed)[1]
-    # A skip the window does not explain falls back to the general reason.
-    mixed = lambda: windowed() + [lm_cache.CacheList(lm_cache.KVCache())]
+    mixed = lambda: [lm_cache.KVCache()] + windowed() + [lm_cache.CacheList(lm_cache.KVCache())]
     assert verdict(mixed)[0] == "partial" and "sliding-window" not in verdict(mixed)[1]
     assert elig(lambda: [lm_cache.RotatingKVCache(max_size = 8)]) == "none"
-    # Attention that rejects the converted entry fails in the probe's second pass.
+    assert verdict(lambda: [lm_cache.KVCache() for _ in range(3)]) == ("full", "", True)
+    alone = verdict(lambda: [lm_cache.RotatingKVCache(max_size = 8)] * 2 + [lm_cache.KVCache()])
+    assert alone[0] == "none" and "stays unquantized" in alone[1]
     assert elig(windowed, attends_quantized = False) == "refused"
     # Mixed quantizable/non-quantizable is a real success, reported as partial.
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.CacheList(lm_cache.KVCache())]) == "partial"
@@ -3315,30 +3315,37 @@ def test_kv_quant_probe_rewinds_the_rng_without_assigning_to_the_state(monkeypat
 def test_generate_kwargs_and_history_carry_a_pre_quantized_cache_and_no_kv_bits():
     pytest.importorskip("mlx_lm")
     from mlx_lm.models import cache as lm_cache
+    from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
-    # Rotating first, so a conversion that only reads the leading entry is visible.
-    backend._model = _tiny_lm(lambda: [lm_cache.RotatingKVCache(max_size = 8), lm_cache.KVCache()])
+    backend._model = _tiny_lm(
+        lambda: [
+            lm_cache.RotatingKVCache(max_size = 8),
+            lm_cache.KVCache(),
+            lm_cache.KVCache(),
+            lm_cache.RotatingKVCache(max_size = 8),
+        ]
+    )
     backend._kv_quant = {"kv_bits": None}
     assert backend._kv_quant_generate_kwargs() == {}
 
     backend._kv_quant = {"kv_bits": 4}
     kwargs = backend._kv_quant_generate_kwargs()
     assert set(kwargs) == {"prompt_cache"}
-    rotating, full = kwargs["prompt_cache"]
-    assert isinstance(rotating, lm_cache.RotatingKVCache)
-    assert isinstance(full, lm_cache.QuantizedKVCache) and full.bits == 4
+    kinds = [type(entry).__name__ for entry in kwargs["prompt_cache"]]
+    assert kinds == ["RotatingKVCache", "QuantizedKVCache", "KVCache", "RotatingKVCache"]
+    assert kwargs["prompt_cache"][1].bits == 4
+    assert [
+        type(e).__name__
+        for e in mlx_inference._quantize_kv_entries([lm_cache.KVCache(), lm_cache.KVCache()], 4)
+    ] == ["QuantizedKVCache", "QuantizedKVCache"]
 
-    # The prompt-cache history hands out the same shape for a fresh conversation.
     cache, rest = backend._prompt_cache().fetch(backend._model, "key", [1, 2, 3])
-    assert isinstance(cache[1], lm_cache.QuantizedKVCache) and rest == [1, 2, 3]
+    assert [type(entry).__name__ for entry in cache] == kinds and rest == [1, 2, 3]
 
 
 def test_vlm_prompt_cache_session_starts_from_a_pre_quantized_cache(monkeypatch):
-    """The session builds the cache the vision path generates with, so the conversion
-    has to happen in its make_cache or a quantized load would run unquantized there.
-    """
     pytest.importorskip("mlx_lm")
     from mlx_lm.models import cache as lm_cache
     from core.inference.mlx_inference import MLXInferenceBackend, VLMPromptSnapshotStore
