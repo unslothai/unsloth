@@ -7,10 +7,8 @@ const source = (path: string) =>
 
 const BUTTON_CLASS = /className="([^"]+)"/;
 const WHITESPACE = /\s+/;
-const RUN_SETTINGS_HEADER_HEIGHT =
-  /h-\[var\(--studio-chat-header-height,48px\)\]/;
-const RUN_SETTINGS_HEADER_PADDING =
-  /pt-\[var\(--studio-chat-header-padding-top,11px\)\]/;
+const RUN_SETTINGS_HEADER =
+  /<div className="([^"]*h-\[var\(--studio-chat-header-height,48px\)\][^"]*)"/;
 
 function buttonAtMarker(
   contents: string,
@@ -59,8 +57,13 @@ test("run settings uses one aligned toggle in both states", async () => {
     assert.ok(classes.has("rounded-[10px]"));
     assert.ok(!classes.has("rounded-full"));
   }
-  assert.match(panel, RUN_SETTINGS_HEADER_HEIGHT);
-  assert.match(panel, RUN_SETTINGS_HEADER_PADDING);
+  const header = RUN_SETTINGS_HEADER.exec(panel);
+  assert.ok(header);
+  const headerClasses = new Set(header[1].split(WHITESPACE));
+  assert.ok(
+    headerClasses.has("pt-[var(--studio-chat-header-padding-top,11px)]"),
+  );
+  assert.ok(headerClasses.has("pr-[18px]"));
 });
 
 test("settings chrome uses the titlebar rounded-square hover shape", async () => {
