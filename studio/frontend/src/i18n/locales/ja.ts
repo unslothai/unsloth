@@ -1225,7 +1225,7 @@ export const ja = {
       description:
         "unsloth start で Claude Code や Codex などのコーディングエージェントをローカルモデルに接続します。",
       intro:
-        "は Claude Code、Codex、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
+        "は Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
       readDocs: "ドキュメントを読む",
       copy: "コピー",
       copied: "コピーしました",
