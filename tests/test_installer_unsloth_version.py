@@ -55,8 +55,12 @@ def test_posix_installer_reports_installed_distribution_version():
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_windows_version_reporter_uses_distribution_metadata():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
+    # The post-install report now delegates to the shared Get-StudioVersionProbe
+    # (also used by the pre-install banner lines), so both pieces have to be fed
+    # to pwsh together for the extracted fragment to run standalone.
+    probe_fn = _extract(r"    function Get-StudioVersionProbe \{.*?\n    \}\n", source)
     reporter = _extract(
-        r"    \$installedPackageVersion = .*?^    if .*?^    \} else \{.*?^    \}",
+        r"    \$_postInstallProbe = Get-StudioVersionProbe .*?^    if .*?^    \} else \{.*?^    \}",
         source,
     )
     # run_pwsh, not subprocess.run: a pwsh that aborted before reaching the reporter printed
@@ -71,6 +75,7 @@ def test_windows_version_reporter_uses_distribution_metadata():
             (
                 'function step { param($Label, $Value) Write-Output "$Label $Value" }; '
                 'function substep { param($Message, $Color) Write-Output "WARN $Message" }; '
+                f"{probe_fn} "
                 f"$VenvPython = '{sys.executable}'; $PackageName = 'pytest'; "
                 f"{reporter}"
             ),
