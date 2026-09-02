@@ -165,39 +165,21 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
   truncated: false,
 };
 
-/**
- * Turkish capital dotted I, the only code point in Unicode whose `toLowerCase` is longer than
- * itself. Verified by scanning every assigned one. It is folded to a bare `i`, which is the Turkic
- * case fold of it and the only fold that fits: the default one adds a combining dot, and one index
- * character has to stand for one document character.
- */
+/** Dotted I, the only code point whose `toLowerCase` grows (scanned all of them). Mapped to bare
+ *  `i`, the Turkic fold: the default adds a combining dot, and one index char must stand for one
+ *  document char. */
 const DOTTED_I_PATTERN = /\u0130/g;
 
-/**
- * Greek final sigma, folded to the medial one, which is what `CaseFolding.txt` maps it to.
- *
- * `toLowerCase` picks between the two by what follows, so `\u039f\u03a3` lowercases to a final
- * sigma while the same word typed with a medial one does not, and only one of the two spellings a
- * reader can produce finds text plainly on screen. Every engine's own find treats them as one
- * letter. Both are single code points, so this cannot change a length.
- */
+/** Final sigma, mapped to medial as `CaseFolding.txt` does. `toLowerCase` picks between them by
+ *  what follows, so only one of the two spellings a reader can type would match. One unit each. */
 const FINAL_SIGMA_PATTERN = /\u03c2/g;
 
 /**
- * Case-fold the whole flattened document without changing its length.
+ * Case-fold the flattened document without changing its length.
  *
- * Two mappings the default fold does not make, both of them one code point for one: dotted I,
- * whose own `toLowerCase` is the only one in Unicode that grows, and final sigma, which is a
- * position rather than a letter. Without them a word on screen matches only some of the ways it
- * can be typed.
- *
- * The whole string, not a node at a time. Sigma is the reason the two used to differ, and the
- * mapping above settles it, but the flatten already joins before it folds and there is nothing to
- * gain by unpicking that.
- *
- * With dotted I mapped first, `toLowerCase` cannot change a length, so this is one pass over the
- * string. On a document at the 4,000,000 character ceiling that is 11ms, of which the dotted I pass
- * is 0.7ms; walking code points to the same answer is 146ms.
+ * The two mappings above are what the default fold misses. With dotted I gone first `toLowerCase`
+ * cannot change a length, so this is one pass: 11ms at the 4M ceiling, against 146ms walking code
+ * points.
  */
 export function foldText(raw: string): string {
   const spaced = raw
@@ -229,22 +211,18 @@ export function skipsSubtree(element: FindElementLike): boolean {
   if (element.getAttribute("hidden") !== null) return true;
   if (element.getAttribute("inert") !== null) return true;
   if (element.getAttribute("aria-hidden") === "true") return true;
-  // Anything the engine is not painting. Attributes alone miss the common case: a responsive
-  // `hidden lg:flex` is a CLASS, and text under it would be counted, and walked to, while nobody
-  // can see it.
+  // Anything the engine is not painting. Attributes miss the common case: `hidden lg:flex` is a
+  // CLASS, and text under it would be counted and walked to while nobody can see it.
   //
-  // `contentVisibilityAuto` stays OFF. A `content-visibility: auto` subtree the reader has not
-  // scrolled to yet is skipped, not hidden, and asking about it would drop the far half of a Hub
-  // README (hub.css) and of a maths-bearing thread from the index. Nothing would put it back
-  // either: scrolling renders the subtree without mutating the DOM, so the observer never fires.
-  // Opacity is off too, so a message still fading in stays findable.
+  // `contentVisibilityAuto` off: such a subtree is skipped, not hidden, and asking would drop the
+  // far half of a Hub README and of a maths thread, with nothing to put it back (scrolling renders
+  // without mutating, so the observer never fires). Opacity off, so a message fading in stays
+  // findable.
   //
-  // Both spellings of each option go in. `visibilityProperty` and `opacityProperty` are renames;
-  // the original names are `checkVisibilityCSS` and `checkOpacity`, and an engine reads only the
-  // one it knows. Web IDL drops a dictionary member it does not recognise silently, so passing the
-  // modern name alone is not a fallback, it is a no-op on Chrome 105-120 and Firefox 106-121,
-  // which have the method but not the rename. Those builds would report `visibility: hidden` text
-  // as visible and index, count and highlight it.
+  // Both spellings of each option: `visibilityProperty`/`opacityProperty` are renames of
+  // `checkVisibilityCSS`/`checkOpacity`, an engine reads only the name it knows, and Web IDL drops
+  // an unknown member silently. The modern name alone is a no-op on Chrome 105-120 and Firefox
+  // 106-121, which would then index and highlight `visibility: hidden` text.
   const painted = element.checkVisibility?.({
     contentVisibilityAuto: false,
     opacityProperty: false,
@@ -254,17 +232,15 @@ export function skipsSubtree(element: FindElementLike): boolean {
   });
   const style = computedStyle(element);
   if (painted === false) {
-    // `display: contents` generates no box, and no box is the first thing `checkVisibility` calls
-    // invisible, so a wrapper whose children are all on screen answers false. The shell uses one
-    // (sidebar.tsx) and so does the training page (studio-page.tsx), which between them is most of
-    // what there is to search. A real box is what makes an element hidden rather than absent.
+    // `display: contents` has no box, and no box is the first thing `checkVisibility` calls
+    // invisible, so a wrapper whose children are all on screen answers false. The shell and the
+    // training page both use one, which is most of what there is to search. A real box is what
+    // makes an element hidden rather than absent.
     return style?.display !== "contents";
   }
-  // No `checkVisibility` to ask. It landed in Safari 17.4, and WebKitGTK is already a supported
-  // engine here -- it is the one `selectRangeFallback` exists for -- so this is a real path, and
-  // taking the visible branch on it would index every `display: none` subtree in the app. The two
-  // properties below are what the call above is asked for: `visibilityProperty` on, opacity and
-  // content-visibility off.
+  // No `checkVisibility` to ask: it landed in Safari 17.4, and WebKitGTK is a supported engine
+  // here, so this is a real path and the visible branch would index every `display: none` subtree.
+  // `paintsNothing` mirrors what the call above asks for.
   if (painted === undefined && paintsNothing(style)) return true;
   return clippedAway(style);
 }
@@ -278,16 +254,12 @@ interface ResolvedStyle {
 }
 
 /**
- * True when this element keeps its own text off the screen while still being descended into.
+ * True when this element keeps its own text off screen while still being descended into.
  *
- * Only `display: contents` reaches this. `skipsSubtree` lets that case through on purpose, because
- * a boxless wrapper is absent rather than hidden and its children are usually painted normally. But
- * `visibility` inherits, so a `contents` wrapper that is also `visibility: hidden` paints neither
- * itself nor its text, and its DIRECT TEXT children never pass through `skipsSubtree` at all -
- * only element children are re-checked. Without this they are indexed, counted and highlighted.
- *
- * Deliberately about the element's own text, not the subtree: a descendant that sets
- * `visibility: visible` is painted again, and is still reached because the walk does not turn back.
+ * Only `display: contents` reaches this, and `skipsSubtree` lets it through on purpose. But
+ * `visibility` inherits, and only ELEMENT children are re-checked, so a direct text child of a
+ * hidden `contents` wrapper would be indexed and highlighted. Scoped to the element's own text:
+ * a descendant restoring `visibility: visible` is painted again and still reached.
  */
 function hidesOwnText(style: ResolvedStyle | null): boolean {
   return (
@@ -296,25 +268,18 @@ function hidesOwnText(style: ResolvedStyle | null): boolean {
   );
 }
 
-/**
- * True when this element paints no box at all, for engines with no `checkVisibility` to ask.
- *
- * `display: contents` is not one of them: it is boxless rather than hidden, `hidesOwnText` covers
- * the text it holds directly, and the walk keeps descending so a child that turns visibility back
- * on is still found. That is what the branch above does when the API answers, so the two agree.
- */
+/** True when this element paints no box, for engines with no `checkVisibility`. `display: contents`
+ *  is boxless rather than hidden, so it is excluded here and `hidesOwnText` covers its own text,
+ *  which is what the branch above does when the API answers. */
 function paintsNothing(style: ResolvedStyle | null): boolean {
   if (style?.display === "none") return true;
   if (style?.display === "contents") return false;
   return style?.visibility === "hidden" || style?.visibility === "collapse";
 }
 
-/**
- * The two spellings of the visually-hidden idiom, which Tailwind's `sr-only` uses and nothing else
- * does: a real box, full opacity, clipped to nothing. `checkVisibility` calls that visible, so
- * without this the app's 46 screen-reader labels are counted and walked to under a highlight
- * clipped away with them.
- */
+/** The two spellings of Tailwind's `sr-only`: a real box, full opacity, clipped to nothing.
+ *  `checkVisibility` calls that visible, so without this the app's 46 screen-reader labels are
+ *  counted and walked to under a highlight clipped away with them. */
 function clippedAway(style: ResolvedStyle | null): boolean {
   return (
     style?.clipPath === "inset(50%)" ||
@@ -323,12 +288,11 @@ function clippedAway(style: ResolvedStyle | null): boolean {
 }
 
 /**
- * `display` and `white-space` as resolved, or null off the DOM, where the tag sets stand in.
+ * `display` and `white-space` as resolved, or null off the DOM where the tag sets stand in.
  *
- * One read per element, used for three things: telling a boxless wrapper from a hidden one, finding
- * the block boundaries no tag name carries, and knowing where whitespace is preserved. Measured at
- * 8000 elements, a thread-sized tree: 2.5ms for the visibility check alone, 4.3ms with this, against
- * a 300ms floor between rebuilds.
+ * Used for three things: telling a boxless wrapper from a hidden one, the block boundaries no tag
+ * name carries, and where whitespace is preserved. At 8000 elements: 2.5ms for the visibility check
+ * alone, 4.3ms with this, against a 300ms floor between rebuilds.
  */
 function computedStyle(element: FindElementLike): ResolvedStyle | null {
   const view = globalThis as unknown as {
@@ -337,13 +301,9 @@ function computedStyle(element: FindElementLike): ResolvedStyle | null {
   return view.getComputedStyle?.(element) ?? null;
 }
 
-/**
- * True when this element ends the line it sits on.
- *
- * `inline-block` and friends do not, and `contents` has no box of its own. Being wrong about an
- * exotic display inserts a separator that was not needed, which can only lose a match, never invent
- * one, so anything unrecognised counts as a boundary.
- */
+/** True when this element ends the line it sits on. `inline-block` and friends do not, `contents`
+ *  has no box. Being wrong inserts a needless separator, which can only lose a match and never
+ *  invent one, so anything unrecognised counts as a boundary. */
 function isBlockDisplay(display: string | undefined): boolean {
   if (display === undefined) return false;
   return !(
@@ -353,12 +313,8 @@ function isBlockDisplay(display: string | undefined): boolean {
   );
 }
 
-/**
- * True where whitespace is kept rather than collapsed: `pre`, `pre-wrap`, `break-spaces`.
- *
- * `pre-line` is not in it. That mode still collapses runs of spaces, which is the half the query
- * flexibility below cares about; it only keeps newlines.
- */
+/** True where whitespace is kept rather than collapsed. `pre-line` is excluded: it still collapses
+ *  runs of spaces, which is the half the query flexibility below cares about. */
 function preservesWhitespace(whiteSpace: string | undefined): boolean {
   return (
     whiteSpace === "pre" ||
@@ -371,7 +327,7 @@ function preservesWhitespace(whiteSpace: string | undefined): boolean {
  * Flatten `root` into one case-folded string plus the map back to its text nodes.
  *
  * Recursive rather than a `TreeWalker`: the walker reports entering an element but not leaving one,
- * and the closing separator is what stops `<p>a</p>b` reading as "ab". Depth is bounded by markup.
+ * and the closing separator is what stops `<p>a</p>b` reading as "ab".
  */
 export function buildTextIndex(
   root: FindElementLike,
@@ -395,9 +351,8 @@ export function buildTextIndex(
   const visit = (element: FindElementLike, inherited: boolean): void => {
     if (skipsSubtree(element)) return;
     const style = computedStyle(element);
-    // The tag set is the fallback and the fast answer for `<br>`, whose display is inline. Layout is
-    // the rest: Tailwind renders `span.block` all over the app, and two of those run together in the
-    // index without a boundary, so "Open" above "AI" reads as one word.
+    // The tag set answers `<br>`, whose display is inline. Layout is the rest: two `span.block`
+    // run together without a boundary, so "Open" above "AI" reads as one word.
     const block =
       BLOCK_TAGS.has(element.tagName) || isBlockDisplay(style?.display);
     if (block) pendingSeparator = true;
@@ -417,9 +372,8 @@ export function buildTextIndex(
         const node = child as FindTextNodeLike;
         const data = node.data;
         if (data.length === 0) continue;
-        // Checked before the separator is written, not after: a separator emitted with the ceiling
-        // already reached pushes `length` past it, and the negative `room` that follows turns
-        // `slice(0, room)` into "all but the last character" of the next node.
+        // Before the separator, not after: one emitted past the ceiling makes `take` negative, and
+        // `slice(0, negative)` takes all but the last character of the next node.
         if (length >= ceiling) {
           truncated = true;
           full = true;
@@ -432,9 +386,8 @@ export function buildTextIndex(
             length += 1;
           }
         }
-        // A share of the budget, not all of it. Taking the prefix that fits keeps a document made
-        // of one huge node findable, but taking the WHOLE remaining budget for it left everything
-        // after it out, the messages on screen included.
+        // A share, not all of it: the prefix keeps one huge node findable, while the whole
+        // remaining budget for it would leave out everything after, messages on screen included.
         const take = Math.min(ceiling - length, MAX_NODE_CHARS);
         if (take <= 0) {
           truncated = true;
@@ -445,9 +398,8 @@ export function buildTextIndex(
         parts.push(raw);
         segments.push({ node, start: length, length: raw.length, preserved });
         length += raw.length;
-        // Clipping a node is not the end of the walk: its siblings still have to be indexed. But
-        // what was dropped has to leave a boundary, or the retained prefix runs straight into the
-        // next node and a match across that seam paints over everything thrown away in between.
+        // Siblings still get indexed, but what was dropped must leave a boundary or the prefix
+        // runs into the next node and a match across that seam paints over the gap.
         if (raw.length < data.length) {
           truncated = true;
           pendingSeparator = true;
@@ -461,9 +413,8 @@ export function buildTextIndex(
   };
 
   visit(root, false);
-  // The reserve, handed over. A workspace that filled its share stops the walk, and the portaled
-  // surfaces come after it, so without this the one thing in front of the reader was the one thing
-  // left out. `truncated` stays as the workspace left it: what it dropped is still dropped.
+  // The reserve, handed over. Portaled surfaces come after the workspace, so without this the one
+  // thing in front of the reader is the one left out. `truncated` stays as the workspace left it.
   ceiling = MAX_INDEX_CHARS;
   full = false;
   for (const extra of extraRoots) {
@@ -476,10 +427,8 @@ export function buildTextIndex(
   return { text: foldText(parts.join("")), segments, truncated };
 }
 
-/**
- * Fold a query the way the haystack was folded. Null for a query that cannot match: empty, or one
- * carrying the separator, which only a paste could produce.
- */
+/** Fold a query the way the haystack was folded. Null when it cannot match: empty, or carrying the
+ *  separator, which only a paste could produce. */
 export function normalizeQuery(query: string): string | null {
   if (query.length === 0) return null;
   const folded = foldText(query);
@@ -497,15 +446,11 @@ export interface FindMatch {
 const REGEX_META_PATTERN = /[.*+?^${}()|[\]\\]/g;
 
 /**
- * The canonically equivalent spellings of `needle`, longest first, `needle` itself always included.
+ * The canonically equivalent spellings of `needle`, longest first so the fuller one wins.
  *
- * The same word can be composed or decomposed and look identical on screen: `café` is four code
- * points, `café` is five. macOS hands back decomposed filenames and a model writes composed
- * prose, so both forms turn up in one thread, and the platform's own find matches either from
- * either. Normalizing the index would change its length, and every offset in it stands for one
- * character of the document, so the variants go into the pattern and the document is left alone.
- *
- * Longest first, so where two could match at one position the fuller spelling wins.
+ * Composed and decomposed spellings look identical on screen and both turn up in one thread.
+ * Normalizing the index would change its length, and every offset stands for one document
+ * character, so the variants go into the pattern instead and the document is left alone.
  */
 function canonicalVariants(needle: string): string[] {
   const variants = [needle];
@@ -518,15 +463,11 @@ function canonicalVariants(needle: string): string[] {
 }
 
 /**
- * A pattern for a query that spans whitespace or is spelt more than one way, or null for a plain
- * scan.
+ * A pattern for a query spanning whitespace or spelt more than one way, or null for a plain scan.
  *
- * HTML collapses runs of whitespace, so a markdown paragraph soft-wrapped mid-sentence renders as
- * one line while its text node still holds the newline. Searching the phrase a reader can see would
- * otherwise miss it. Each run of whitespace in the query matches a run in the document; the
- * separator is not whitespace, so block boundaries stay closed.
- *
- * Single-word ASCII queries, which are most of them, keep the `indexOf` path.
+ * HTML collapses whitespace, so a soft-wrapped paragraph renders as one line while its node holds
+ * the newline; each run in the query matches a run in the document. The separator is not
+ * whitespace, so block boundaries stay closed. Single-word ASCII queries keep the `indexOf` path.
  */
 function matchPattern(variants: string[], needle: string): RegExp | null {
   if (variants.length === 1 && !/\s/.test(needle)) return null;
@@ -540,16 +481,12 @@ function matchPattern(variants: string[], needle: string): RegExp | null {
 }
 
 /**
- * Every occurrence of `query`, left to right, capped at `limit`. Non-overlapping, like every
- * browser's own find, which is what makes the walk terminate on a self-overlapping query.
- */
-/**
- * Walk every match for `needle` in document order, stopping when `visit` says so.
+ * Walk every match for `needle` in document order, stopping when `visit` says so. Non-overlapping,
+ * like every browser's own find, which is what terminates a self-overlapping query.
  *
- * One place, so the two ways of matching stay one behaviour. The flexible run is for prose, where
- * the source newline of a soft wrap renders as a space; inside a `<pre>` the whitespace on screen
- * IS the whitespace in the node, so a query for "foo bar" must not land on "foo   bar" there.
- * Measured: the platform's own find draws the same line.
+ * One place, so the two ways of matching stay one behaviour. Flexed whitespace is for prose; inside
+ * a `<pre>` the whitespace on screen IS the whitespace in the node, so "foo bar" must not land on
+ * "foo   bar" there. The platform's own find draws the same line.
  */
 function eachMatch(
   index: FindTextIndex,
@@ -605,17 +542,13 @@ function collectMatches(
 /**
  * Matches for `query`, at most `limit` of them, as a window around `anchor`.
  *
- * The window is what `anchor` is for. A single common letter in a long thread has tens of thousands
- * of matches, and keeping the first `limit` of them keeps only the top of the document: a reader at
- * the bottom is walked away from every occurrence beside them, to a match they were not looking for.
- * So when the cap bites, the kept matches are the ones nearest where the reader is.
+ * A common letter in a long thread has tens of thousands of matches, and keeping the first `limit`
+ * keeps only the top of the document, walking a reader at the bottom away from the occurrences
+ * beside them. When the cap bites the kept matches are the ones nearest the reader; under the cap
+ * this is the same single pass it always was.
  *
- * Costs nothing until it bites. Under the cap this is the same single pass it always was.
- *
- * `anchor` may be a thunk, and the caller that knows where the reader is passes one. Working out
- * the viewport offset means reading layout, and as a plain argument it was evaluated on every
- * keystroke however few matches there were, which is the one thing this comment promised it did
- * not do. A number still works and still means the same thing.
+ * `anchor` may be a thunk, because working it out reads layout and a plain argument is evaluated
+ * whether or not it is wanted. A number still means the same thing.
  */
 export function findMatches(
   index: FindTextIndex,
@@ -631,17 +564,13 @@ export function findMatches(
   const at = typeof anchor === "function" ? anchor() : anchor;
   if (at <= 0) return head;
 
-  // Capped, so where the window sits matters. Two more passes over a string, no allocation in the
-  // first: cheap next to the tens of thousands of matches this only happens for.
+  // Capped, so where the window sits matters. Two more passes, no allocation in the first.
   //
-  // The count stops early. `total` is only wanted to keep the window from running off the end, and
-  // once `total - limit` has reached the left edge below it can no longer pull that edge back, so
-  // every match after that point is counted for nothing. Past the anchor `before` is final, which
-  // is what makes the edge knowable there.
-  //
-  // It cannot cost the clamp: the clamp only binds when the reader is near the end, and there the
-  // true total is below the ceiling, so the walk never stops early in the first place. Measured on
-  // a 4,000,000 character index with a single-letter query, 444,444 matches, anchored halfway:
+  // The count stops early: `total` only keeps the window from running off the end, and once
+  // `total - limit` reaches the left edge it can no longer pull it back, so later matches are
+  // counted for nothing. Past the anchor `before` is final, which is what makes the edge knowable.
+  // The clamp is safe because it only binds near the end, where the true total is under the
+  // ceiling and the walk never stops early. At 4M chars, 444,444 matches, anchored halfway:
   // 6.4ms over all of them to 3.3ms over 224,722, same window either way.
   let total = 0;
   let before = 0;

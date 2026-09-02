@@ -179,17 +179,14 @@ export function useFindInPage(query: string): FindResults {
   const search = useCallback(
     (reveal: boolean, fromViewport: boolean) => {
       const index = indexRef.current;
-      // One past the cap. `findMatches` stops at the limit it is given, so a count that equals the
-      // cap cannot say whether it is the total or a floor, and the counter would read "5000+" for a
-      // page holding exactly 5000. The extra one is thrown away; only its existence is kept.
+      // One past the cap: a count equal to the cap cannot say whether it is the total or a floor,
+      // and the counter would read "5000+" for a page holding exactly 5000. Only its existence is
+      // kept.
       //
-      // The anchor decides WHICH matches survive the cap, and it only costs anything when the cap
-      // bites: a common letter in a long thread otherwise keeps the top of the document and walks
-      // the reader away from every occurrence beside them.
-      //
-      // Passed as a thunk so that stays true. `viewportOffset` walks the document reading rects,
-      // and an argument is evaluated whether or not the callee wants it, so spelling it inline ran
-      // a binary search over layout on every keystroke of every query, however few matches it had.
+      // The anchor decides WHICH matches survive the cap, keeping the ones nearest the reader. It
+      // is a thunk because `viewportOffset` reads layout and an argument is evaluated whether or
+      // not the callee wants it, so inline it ran on every keystroke however few matches there
+      // were.
       const matches = findMatches(
         index,
         queryRef.current,
@@ -250,21 +247,19 @@ export function useFindInPage(query: string): FindResults {
     // A fresh open always starts from the reader, whatever the index says.
     search(false, true);
 
-    // The thread mounts its tail first and widens over the next few frames, so a search against the
-    // document as found would miss everything above the fold. This asks for the rest and re-indexes
-    // once it has painted; the bar is usable throughout.
+    // The thread mounts its tail first and widens over the next few frames, so a search against
+    // the document as found would miss everything above the fold. The bar stays usable throughout.
     //
-    // Only the threads this search can read, though. The shell keeps every workspace mounted and
-    // marks the off-route ones `inert`, so asking globally would make a conversation nobody is
-    // looking at mount every row it withheld, to be skipped by the very walk that asked for it.
+    // Only the threads this search can read: asking globally would make an off-route conversation
+    // mount every row it withheld, to be skipped by the very walk that asked for it.
     let live = true;
     void completeProgressiveMounts((viewport) =>
       indexReaches(scope, viewport),
     ).then(() => {
       if (!live) return;
-      // Completion PREPENDS, so it renumbers and the walk re-anchors. On a settled thread it brings
-      // in nothing and waits out its search interval anyway, and there the reader may well have
-      // pressed Enter while it ran: an unconditional re-anchor would take that back.
+      // Completion PREPENDS, so it renumbers and the walk re-anchors. On a settled thread it
+      // brings in nothing, and the reader may have pressed Enter while it ran: an unconditional
+      // re-anchor would take that back.
       search(false, reindex());
     });
 
@@ -283,9 +278,8 @@ export function useFindInPage(query: string): FindResults {
       }, REINDEX_INTERVAL_MS);
     };
 
-    // A media query is not a mutation. Crossing a breakpoint hides or reveals whole columns
-    // (`hidden lg:flex`) with nothing in the DOM to observe, and the index reads computed
-    // visibility, so without this the bar goes on searching the layout that has gone.
+    // A media query is not a mutation: crossing a breakpoint hides or reveals whole columns with
+    // nothing in the DOM to observe, so without this the bar searches the layout that has gone.
     window.addEventListener("resize", invalidate);
 
     // And a container query does not even need the window to change. Images is an `@container` with
@@ -306,9 +300,8 @@ export function useFindInPage(query: string): FindResults {
     }
 
     // The body, not the scope: a portaled surface is a sibling of the shell, so a popover opening
-    // is not a mutation of the region it floats over. Everything the walk does not index still runs
-    // through `mutatesSearchableText` and the interval below, so the cost of the wider net is at
-    // most one flatten per interval.
+    // is not a mutation of the region it floats over. The wider net still costs at most one flatten
+    // per interval.
     const watched = scope?.ownerDocument?.body ?? scope;
     let observer: MutationObserver | null = null;
     if (watched && typeof MutationObserver !== "undefined") {
@@ -322,16 +315,13 @@ export function useFindInPage(query: string): FindResults {
         childList: true,
         subtree: true,
         characterData: true,
-        // Switching between two workspaces the shell keeps alive adds and removes nothing: it flips
-        // `inert` on one panel and off the other. A filter, not `attributes: true`, because `class`
-        // changes on every hover.
+        // Switching workspaces adds and removes nothing: it flips `inert` on one panel and off the
+        // other. A filter, not `attributes: true`, because `class` changes on every hover.
         attributes: true,
-        // `open` for the same reason: toggling a `<details>` changes that attribute and nothing
-        // else, while the body inside it goes from visible to not. A Hub README's collapsibles are
-        // the case, and without this one opened after indexing stays unfindable.
-        // `data-state` for the same reason as `open`: a popover, a menu and an accordion all say
-        // they are closing with that and nothing else, and they keep their box until the animation
-        // that follows finishes.
+        // `open` toggles a `<details>` and nothing else while its body goes from visible to not, so
+        // a Hub README collapsible opened after indexing would stay unfindable. `data-state` is how
+        // a popover, menu or accordion says it is closing, keeping its box until the animation
+        // ends.
         attributeFilter: [
           "inert",
           "hidden",

@@ -14,21 +14,18 @@ import {
 } from "./find-text-index.ts";
 
 /**
- * Registry names for the two highlights: every match paints with the first, the active one with the
- * second, on top.
+ * Registry names for the two highlights: every match with the first, the active one on top.
  *
- * The CSS Custom Highlight API is what keeps highlighting off the document: a `Highlight` is a set
- * of `Range`s painted over text already laid out, so nothing is inserted and nothing reflows.
- * Wrapping matches in `<mark>` would mutate the thread on every keystroke, splitting text nodes
- * that streaming markdown, `thread-fast-copy` and the export path all read back.
+ * The Custom Highlight API keeps highlighting off the document: a `Highlight` is a set of `Range`s
+ * painted over text already laid out, so nothing is inserted and nothing reflows. `<mark>` would
+ * mutate the thread on every keystroke, splitting nodes that streaming markdown, `thread-fast-copy`
+ * and the export path read back.
  */
 export const FIND_HIGHLIGHT = "unsloth-find";
 export const FIND_HIGHLIGHT_ACTIVE = "unsloth-find-active";
 
-/**
- * How many matches are painted at once. The window travels with the active match, so what is on
- * screen is always painted; the rest are counted and reachable, just not tinted yet.
- */
+/** How many matches are painted at once. The window travels with the active match, so what is on
+ *  screen is always painted; the rest are counted and reachable, just not tinted. */
 export const MAX_PAINTED_RANGES = 400;
 
 /** Distance kept from a scroller's edge before a match counts as needing to be scrolled to. */
@@ -41,12 +38,9 @@ type HighlightRegistry = {
   delete(name: string): void;
 };
 
-/**
- * The registry and constructor, or null on an engine without them.
- *
- * Read through `globalThis` rather than typed globals: the app's `lib` is ES2022 + DOM, which has
- * no `Highlight` in it. WebKitGTK is the engine that lands here, and `selectRangeFallback` covers it.
- */
+/** The registry and constructor, or null on an engine without them. Read through `globalThis`
+ *  because the app's `lib` is ES2022 + DOM, which has no `Highlight`. WebKitGTK lands here, and
+ *  `selectRangeFallback` covers it. */
 function highlightApi(): {
   registry: HighlightRegistry;
   Highlight: HighlightConstructor;
@@ -78,10 +72,9 @@ export function resolveFindScope(): Element | null {
 /**
  * Surfaces the shell renders in front of the workspace but outside it.
  *
- * A popover portals its content to the body, so the model picker's list is on screen and not in the
- * scope. Searching the page behind it while it is up is a lie, and it is the one thing the reader
- * can see. Narrow on purpose: the layers a reader works IN, not every portal, so a toast arriving
- * or a tooltip on the pointer does not change the count under them.
+ * A popover portals to the body, so the model picker's list is on screen but not in the scope, and
+ * searching the page behind it is a lie. Narrow on purpose: the layers a reader works IN, so a
+ * toast or a tooltip does not change the count under them.
  */
 const PORTAL_SURFACE_SELECTOR =
   '[data-slot="popover-content"], [role="menu"], [role="listbox"]';
@@ -93,8 +86,8 @@ export function resolvePortalSurfaces(scope: Element | null): Element[] {
     // Inside the scope already, or nested in a surface already taken.
     if (scope.contains(element)) continue;
     if (found.some((taken) => taken.contains(element))) continue;
-    // On its way out. These animate closed and are only unmounted when that finishes, and until
-    // then they still have a box, so nothing else here would turn them down.
+    // On its way out: these animate closed and keep a box until that finishes, so nothing else
+    // here would turn them down.
     if (element.getAttribute("data-state") === "closed") continue;
     found.push(element);
   }
@@ -104,9 +97,9 @@ export function resolvePortalSurfaces(scope: Element | null): Element[] {
 /**
  * The index offset nearest the top of the reader's viewport, or 0 when nothing can be measured.
  *
- * Binary search over the segments, the same shape as the one over matches: a dozen or so rect reads
- * whatever the size of the document. Only asked when a query is common enough to hit the match cap,
- * which is what needs to know where the reader is.
+ * Binary search over the segments: a dozen or so rect reads whatever the document's size. Only
+ * asked when a query is common enough to hit the match cap, which is what needs to know where the
+ * reader is.
  */
 export function viewportOffset(index: FindTextIndex): number {
   const segments = index.segments;
@@ -138,12 +131,10 @@ export function viewportOffset(index: FindTextIndex): number {
 /**
  * What the walk turns back at, as a selector.
  *
- * The shell keeps every workspace mounted and parks the off-route ones under `hidden` and `inert`
- * (`__root.tsx`) so a long generation is not cancelled by navigating away, and Radix marks the page
- * `aria-hidden` behind a modal. Being in the document is not the same as being searchable.
- *
- * Attributes only. A region hidden by a CLASS is skipped by the index all the same, through
- * resolved style, which no selector here can see.
+ * The shell keeps every workspace mounted and parks off-route ones under `hidden` and `inert` so a
+ * long generation survives navigation, and Radix marks the page `aria-hidden` behind a modal. Being
+ * in the document is not the same as being searchable. Attributes only: a region hidden by a CLASS
+ * is skipped through resolved style, which no selector can see.
  */
 const SKIPPED_REGION_SELECTOR = `[aria-hidden="true"], [inert], [hidden], [${FIND_SKIP_ATTRIBUTE}]`;
 
@@ -160,11 +151,10 @@ export function indexReaches(
 
 /**
  * True when a mutation touched text the index covers, rather than the bar's own chrome. `some()`
- * short-circuits on the first qualifying record, so this costs a `closest` call only on the batches
- * the bar itself produced.
+ * short-circuits, so this costs a `closest` call only on batches the bar itself produced.
  *
- * Lives here rather than beside its caller so a test can hand it a record: the hook imports React
- * and cannot be loaded under `node --test`.
+ * Lives here, not beside its caller, so a test can hand it a record: the hook imports React and
+ * cannot be loaded under `node --test`.
  */
 export function mutatesSearchableText(record: {
   target: { nodeType: number; parentElement: Element | null };
@@ -177,12 +167,11 @@ export function mutatesSearchableText(record: {
       ? (target as unknown as Element)
       : (target.parentElement ?? null);
   if (!element) return true;
-  // Whichever attribute changed, ask from the PARENT. `closest` matches the element it starts at,
-  // so an element that has just been parked answers with itself and its own record is filtered out
-  // - the one record that exists to say a region left the index. Removing the attribute reindexed
-  // fine, adding it never did, though the observer asks for both. Every attribute the observer
-  // watches is one that decides whether a region is searchable, so the rule is the same for all of
-  // them. A detached target has no parent to ask, so it counts as a change.
+  // Whichever attribute changed, ask from the PARENT. `closest` matches where it starts, so an
+  // element just parked answers with itself and its own record is dropped - the one record saying a
+  // region left the index. Removal reindexed fine, addition never did, though the observer watches
+  // both, and every attribute it watches decides searchability. A detached target counts as a
+  // change.
   const from = record.type === "attributes" ? element.parentElement : element;
   if (!from) return true;
   // Not just the bar's own chrome: an off-route workspace goes on streaming a reply into the
@@ -268,18 +257,16 @@ type CaretHold = {
 };
 
 /**
- * The find field's caret, captured before the document selection is moved out from under it.
+ * The find field's caret, captured before the selection is moved out from under it.
  *
- * Moving the selection into ordinary text while a field is focused takes the caret with it on
- * WebKit and Blink: `activeElement` still reports the field, but every keystroke after that is
- * swallowed, so the query freezes at one character and the bar cannot be typed into at all. Gecko
- * keeps the two apart and does not need this. WebKit is the case that matters, because an engine
- * with no highlight registry is either Firefox below 140 or the WebKitGTK the desktop build was
- * handed, and the second one lands here.
+ * On WebKit and Blink, moving the selection into ordinary text while a field is focused takes the
+ * caret with it: `activeElement` still reports the field, but every keystroke is swallowed, so the
+ * query freezes at one character. Gecko keeps the two apart. WebKit is the case that matters: an
+ * engine with no highlight registry is Firefox below 140 or the desktop build's WebKitGTK.
  */
 function holdCaret(): CaretHold | null {
-  // Read through `globalThis`: the node suite drives this with a hand-rolled window and has no
-  // document, and the constructors below are not defined there either.
+  // Through `globalThis`: the node suite drives this with a hand-rolled window, no document and
+  // none of the constructors below.
   const scope = globalThis as {
     document?: { activeElement?: unknown };
     HTMLInputElement?: unknown;
@@ -319,23 +306,22 @@ function releaseCaret(held: CaretHold | null): void {
 }
 
 /**
- * Show the active match by selecting it, for an engine with no highlight registry. This is what a
- * browser's own find does, so the tint is the platform's. A selection is one range, so on those
- * engines the bar counts every match and tints one.
+ * Show the active match by selecting it, for an engine with no highlight registry, which is what a
+ * browser's own find does. A selection is one range, so there the bar counts every match and tints
+ * one.
  *
- * The caret is handed back afterwards, which is what keeps the field typable. Whether the selection
- * survives that is the engine's call: Gecko keeps both, WebKit and Blink drop the selection to give
- * the caret back. Losing the tint is a worse look; losing the field is a broken feature.
+ * The caret is handed back afterwards, which keeps the field typable. Whether the selection
+ * survives is the engine's call: Gecko keeps both, WebKit and Blink drop it. Losing the tint is a
+ * worse look; losing the field is a broken feature.
  */
 export function selectRangeFallback(range: Range | null): void {
   if (typeof window === "undefined") return;
   const selection = window.getSelection();
   if (!selection) return;
   if (range === null) {
-    // Only ever clear the selection this put there, and only while it is still the one on screen.
-    // Opening the bar paints before a query is typed, and dragging over other text while the bar is
-    // open replaces the match: either way there is no way back, since closing cannot restore what
-    // was already gone.
+    // Only clear the selection this put there, and only while it is still the one on screen:
+    // opening paints before a query is typed, and dragging replaces the match, and neither has a
+    // way back.
     const owned = ownedSelection;
     ownedSelection = null;
     if (owned === null || !sameBoundaries(owned, currentRange(selection)))
@@ -380,11 +366,9 @@ function scrollsAxis(element: Element, axis: "x" | "y"): boolean {
   return overflow === "auto" || overflow === "scroll" || overflow === "overlay";
 }
 
-/**
- * Scroll one container so `rect` is comfortably inside it, or leave it alone when the match already
- * is. A match already on screen must not move the page, or stepping through matches inside one
- * paragraph would jerk the conversation on every press.
- */
+/** Scroll one container so `rect` sits comfortably inside it, or leave it alone when it already
+ *  does: a match on screen must not move the page, or stepping through one paragraph would jerk
+ *  the conversation on every press. */
 function revealWithin(scroller: Element, rect: DOMRect): boolean {
   const view = scroller.getBoundingClientRect();
   let top = scroller.scrollTop;
@@ -425,10 +409,9 @@ function elementFor(range: Range): Element | null {
 /**
  * A rect to aim at for `range`, or null when nothing about it is laid out.
  *
- * A `content-visibility: auto` subtree the reader has not reached is skipped, so a range inside it
- * has a collapsed rect at the origin while the subtree's own box still has its placeholder
- * geometry. Aiming at the nearest ancestor that is laid out gets the reader there; the subtree
- * renders on the way and the highlight lands once it does.
+ * A skipped `content-visibility: auto` subtree gives a range inside it a collapsed rect at the
+ * origin, while the subtree's own box keeps its placeholder geometry. Aiming at the nearest laid
+ * out ancestor gets the reader there, and the subtree renders on the way.
  */
 export function revealRect(range: Range): DOMRect | null {
   const rect = range.getBoundingClientRect();
@@ -447,13 +430,9 @@ export function rangeTop(range: Range): number | null {
   return revealRect(range)?.top ?? null;
 }
 
-/**
- * The top edge of the scroll container `range` sits in, in window coordinates.
- *
- * Not zero: the thread viewport starts below the navbar and the chat header, so a match clipped
- * just off the top of it still has a positive window-relative `top`. Treating that as visible sends
- * a fresh query backwards to an occurrence the reader cannot see.
- */
+/** The top edge of the scroll container `range` sits in, in window coordinates. Not zero: the
+ *  thread viewport starts below the navbar and header, so a match clipped just off its top still
+ *  has a positive `top`, and treating that as visible sends a query backwards out of sight. */
 export function scrollViewportTop(range: Range): number {
   let element = elementFor(range);
   while (element) {
@@ -463,13 +442,9 @@ export function scrollViewportTop(range: Range): number {
   return 0;
 }
 
-/**
- * Bring `range` into view, innermost scroller first.
- *
- * Nested scrollers are real here (a wide code fence inside the thread viewport), and the rect has to
- * be re-read after each one. The window itself is never scrolled: the shell is a fixed-height
- * `100dvh` grid with `overflow-hidden`.
- */
+/** Bring `range` into view, innermost scroller first. Nested scrollers are real (a wide code fence
+ *  in the thread viewport), so the rect is re-read after each. The window is never scrolled: the
+ *  shell is a fixed-height `100dvh` grid with `overflow-hidden`. */
 export function scrollRangeIntoView(range: Range): boolean {
   let element = elementFor(range);
   let moved = false;
@@ -489,22 +464,16 @@ export function scrollRangeIntoView(range: Range): boolean {
 /**
  * Bring `range` into view, and again for as long as the view keeps moving.
  *
- * A scroll reaches only as far as the scrollHeight the engine knows about, and a
- * `content-visibility: auto` subtree contributes its `contain-intrinsic-size` placeholder until it
- * renders. The Hub puts that containment on README prose and on each top-level child (hub.css), so
- * a long block can stand at 140px for a 2904px reality. Reaching toward it is itself what makes it
- * relevant, so the next frame has more document to scroll through and the match has moved.
+ * A scroll reaches only the scrollHeight the engine knows, and a `content-visibility: auto` subtree
+ * contributes its placeholder until it renders: a Hub README block can stand at 140px for a 2904px
+ * reality. Reaching toward it is what makes it render, so the next frame has more to scroll and the
+ * match has moved. Without this the reader was left 3415px below an 800px viewport on all three
+ * engines. Typing hides it, since every keystroke reveals again; one reveal from a paste or an
+ * Enter stays wrong.
  *
- * Measured on exactly that shape, without this: the reader was left 3415px below an 800px viewport
- * on chromium, firefox and webkit, the match counted and highlighted somewhere off screen. Typing
- * hides it, since every keystroke reveals again and those repeats do by accident what this does on
- * purpose; a pasted query, an Enter, or a click on the walk button is one reveal and stays wrong.
- *
- * "Still moving" rather than asking whether the subtree was skipped: `checkVisibility` is the
- * direct question but the engines that most need this are the ones that do not answer it, and a
- * scroll that changed nothing is the same news from any of them. It ends when a pass moves nothing:
- * measured, webkit took 2 frames and chromium and firefox 3. The bound is there so nothing can
- * spin, and 8 frames of reading rects is the whole cost of reaching it.
+ * "Still moving" rather than asking whether the subtree was skipped, because the engines that most
+ * need this are the ones that do not answer `checkVisibility`. Ends when a pass moves nothing: 2
+ * frames on webkit, 3 on chromium and firefox. The bound stops anything spinning.
  */
 export function revealRangeWhenPainted(range: Range, tries = 8): void {
   if (!scrollRangeIntoView(range) || tries <= 1) return;

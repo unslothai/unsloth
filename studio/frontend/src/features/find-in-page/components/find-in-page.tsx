@@ -33,20 +33,19 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   const requestFocus = useFindInPageStore((state) => state.requestFocus);
   const reset = useFindInPageStore((state) => state.reset);
 
-  // Leaving the shell for good, which on the web means signing out to /login: the store is
-  // module-global and deliberately keeps the query across a close, so without this the next person
-  // to sign in in the same tab is handed the last one's search, open and focused. Unmount, not
-  // `enabled`: a dialog turns that off and the search should still be there when it closes.
+  // Leaving the shell for good, which on the web means signing out: the store is module-global and
+  // keeps the query across a close, so without this the next person to sign in in the same tab is
+  // handed the last one's search. Unmount, not `enabled`, which a dialog also turns off.
   useEffect(() => reset, [reset]);
 
   // Not `skipInTextFields`: the chord has to work from the composer, and pressing it inside the
   // find field is how a find bar is asked to start over.
   useShortcut("findInPage", requestFocus, {
     enabled,
-    // Every modal, not just Settings: Radix marks the shell `aria-hidden`/`inert` for as long as one
-    // is up, so a bar opened behind it is unreachable and its scope unsearchable. As `claims` rather
-    // than a return from the handler, because the handler runs after the event has been prevented:
-    // declining there would leave the chord dead, with the browser's own find suppressed as well.
+    // Every modal, not just Settings: Radix marks the shell `aria-hidden`/`inert` while one is up,
+    // so a bar behind it is unreachable. As `claims`, not a return from the handler, which runs
+    // after the event is prevented: declining there would leave the chord dead and native find
+    // suppressed.
     claims: () => !isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`),
   });
 
@@ -90,19 +89,15 @@ function FindBar() {
     useFindInPage(query);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Hand focus back to whatever had it. The chord is usually pressed from the composer, and closing
-  // a search should leave the reader able to keep typing. Declared above the focus effect below so
-  // it reads `activeElement` before the field takes it.
+  // Hand focus back to whatever had it, usually the composer, so closing a search leaves the reader
+  // typing. Declared above the focus effect so it reads `activeElement` before the field takes it.
   const barRef = useRef<HTMLDivElement>(null);
   const originRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const active = document.activeElement as HTMLElement | null;
-    // First answer only, and never anything in the bar. StrictMode replays this effect in
-    // development, and by the second run the field below has taken focus: read plainly, the bar
-    // would end up trying to hand focus back to its own input, which by then is gone.
-    //
-    // The bar's own element, not `data-find-skip`: the composer carries that attribute too, and it
-    // is the single most likely place the chord is pressed from.
+    // First answer only, and never anything in the bar: StrictMode replays this effect, and by the
+    // second run the field has focus, so the bar would try to hand focus back to its own input.
+    // The bar's own element, not `data-find-skip`, which the composer carries too.
     if (
       originRef.current === null &&
       active !== null &&
@@ -142,14 +137,13 @@ function FindBar() {
       data-find-skip=""
       role="search"
       aria-label={t("shell.find.label")}
-      // On the bar, not the field: Escape has to close from the walk and close buttons too. Tab
-      // moves to one of those, and there Escape is not typing, so the bare-Escape decline would
-      // take it and answer a tool request instead. Stopped as well as prevented, which keeps the
-      // native event from reaching the window listener the shortcuts are on.
+      // On the bar, not the field: Escape has to close from the walk and close buttons too, where
+      // the bare-Escape shortcut would otherwise take it and answer a tool request. Stopped as well
+      // as prevented, to keep it off the window listener the shortcuts are on.
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
-        // Escape dismisses an IME candidate, and the field is the only thing in here that can be
-        // composing. Taken, it closes the bar out from under a word still being typed.
+        // Escape dismisses an IME candidate; taken, it closes the bar out from under a word still
+        // being typed.
         if (isImeComposing(event.nativeEvent)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -164,8 +158,8 @@ function FindBar() {
         onChange={(event) => setQuery(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
-            // The Enter that commits an IME candidate arrives here too, still flagged as composing.
-            // Taken, it walks to the next match and throws away the word being typed.
+            // The Enter committing an IME candidate arrives here too; taken, it walks to the next
+            // match and throws away the word.
             if (isImeComposing(event.nativeEvent)) return;
             event.preventDefault();
             if (event.shiftKey) previous();

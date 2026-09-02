@@ -3,26 +3,23 @@
 
 """Find in page, in a real browser, on three engines and three emulated platforms.
 
-Drives smoke-find-in-page.html. The node suite reaches the flatten, the offset
-map and the search, which are pure. Everything the feature is actually made of
-is not: a Range has no geometry off a document, CSS.highlights paints nothing,
-and a chord the browser owns cannot be taken from it in a unit test. So the
-count, the walk, the scroll, the teardown and the chord itself are only
-answerable here.
+Drives smoke-find-in-page.html. The node suite covers the flatten, the offset
+map and the search, which are pure; a Range has no geometry off a document,
+CSS.highlights paints nothing, and a chord the browser owns cannot be taken
+from it in a unit test, so the rest is only answerable here.
 
     SMOKE_ENGINES=chromium,firefox,webkit python3 tests/studio/playwright_find_in_page.py
 
-Two engine capabilities decide which path the bar takes, and both are degraded
+Three engine capabilities decide which path the bar takes, each degraded
 deliberately rather than waited for:
 
-  - no CSS Custom Highlight API, which is Firefox below 140 and whatever
-    WebKitGTK the host distro shipped, so the bar falls back to selecting the
-    active match;
-  - checkVisibility that honours only the historic option names, which is
-    Chrome 105-120 and Firefox 106-121, where the modern spellings are dropped
-    silently by Web IDL and hidden text would otherwise be indexed;
-  - no checkVisibility at all, which is Safari below 17.4 and WebKitGTK, where
-    the call answers undefined and the computed properties have to stand in.
+  - no Custom Highlight API (Firefox below 140, and whatever WebKitGTK the host
+    shipped), so the bar falls back to selecting the active match;
+  - checkVisibility honouring only the historic option names (Chrome 105-120,
+    Firefox 106-121), where Web IDL drops the modern spellings silently and
+    hidden text would otherwise be indexed;
+  - no checkVisibility at all (Safari below 17.4, WebKitGTK), where the call
+    answers undefined and the computed properties stand in.
 
 Platform is emulated the way the app reads it, through navigator.platform and
 the user agent, because isMacPlatform() is memoised on first call.

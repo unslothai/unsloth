@@ -411,11 +411,10 @@ test("content-visibility skipping is not treated as invisibility", () => {
 });
 
 test("both spellings of every visibility option are asked for", () => {
-  // `visibilityProperty` and `opacityProperty` are renames of `checkVisibilityCSS` and
-  // `checkOpacity`, and an engine reads only the name it knows. Web IDL drops an unrecognised
-  // dictionary member silently, so sending the modern name alone is not a fallback - it is a
-  // no-op on Chrome 105-120 and Firefox 106-121, which have `checkVisibility` but not the rename,
-  // and which would then index and highlight `visibility: hidden` text.
+  // `visibilityProperty`/`opacityProperty` are renames of `checkVisibilityCSS`/`checkOpacity`, an
+  // engine reads only the name it knows, and Web IDL drops an unknown member silently. The modern
+  // name alone is a no-op on Chrome 105-120 and Firefox 106-121, which would then index and
+  // highlight `visibility: hidden` text.
   const seen: Record<string, unknown>[] = [];
   const probe = {
     ...el("DIV", [text("readme")]),
@@ -568,13 +567,10 @@ function record(
 }
 
 test("the selection fallback hands the caret back to the field", async () => {
-  // Moving the document selection into ordinary text takes the caret with it on WebKit and Blink:
-  // `activeElement` still reports the field, but every keystroke after that is swallowed, so the
-  // query freezes at one character and the bar cannot be typed into. Measured with the highlight
-  // registry removed: the field held "u" and never grew. Gecko keeps the two apart and is fine.
-  //
-  // This matters precisely where the fallback runs, which is an engine with no highlight registry:
-  // Firefox below 140, or whatever WebKitGTK the desktop build was handed.
+  // Moving the selection into ordinary text takes the caret with it on WebKit and Blink: the field
+  // still reports as active but every keystroke is swallowed, so the query freezes at one
+  // character. Measured with the registry removed, the field held "u" and never grew. This matters
+  // exactly where the fallback runs: Firefox below 140, or the desktop build's WebKitGTK.
   const engine = await readFile(
     new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
     "utf8",
@@ -632,11 +628,9 @@ test("parking a workspace is itself a change, whichever attribute says so", () =
 });
 
 test("adding the skip attribute is what reindexes, not only removing it", () => {
-  // `closest` matches the element it starts at. So the moment an element is marked skippable, the
-  // very record announcing it answers "inside skipped content" and is thrown away - and the region
-  // stays in the index, counted and painted, until some unrelated mutation happens by. Removal
-  // always worked, which is what hid this: the attribute is in the observer's `attributeFilter`
-  // precisely so both directions land.
+  // `closest` matches where it starts, so the record announcing that an element became skippable
+  // answers "inside skipped content" and is thrown away, leaving the region counted and painted
+  // until some unrelated mutation happens by. Removal always worked, which is what hid this.
   const parent = skipNode({});
   const marked = skipNode({ skipped: true, parent });
   assert.equal(
@@ -654,7 +648,7 @@ test("adding the skip attribute is what reindexes, not only removing it", () => 
 });
 
 test("ordinary mutations inside skipped content are still ignored", () => {
-  // The whole point of the filter: the bar floats inside the region it searches, so its own counter
+  // The point of the filter: the bar floats inside the region it searches, so its own counter
   // re-rendering must not order a re-index of itself.
   const bar = skipNode({ skipped: true });
   const inside = skipNode({ parent: bar });
@@ -679,8 +673,7 @@ test("a detached target counts as a change rather than being dropped", () => {
 });
 
 test("an attribute that is not the skip flag is judged from the target itself", () => {
-  // Only the skip attribute changes where the question is asked from. `inert` flipping on a panel
-  // inside skipped chrome is still chrome.
+  // Chrome stays chrome: `inert` flipping inside a skipped region is still skipped.
   const bar = skipNode({ skipped: true });
   const inside = skipNode({ parent: bar });
   assert.equal(
@@ -690,11 +683,10 @@ test("an attribute that is not the skip flag is judged from the target itself", 
 });
 
 test("a display:contents wrapper that is itself invisible keeps its own text out", () => {
-  // `skipsSubtree` lets a boxless wrapper through on purpose: `checkVisibility` calls anything with
-  // no box invisible, and the shell and the training page both wrap visible content in one. But
-  // `visibility` inherits, and only ELEMENT children are re-checked on the way down - a direct text
-  // child is never asked. So text under a `display: contents` wrapper that is also
-  // `visibility: hidden` was indexed, counted and painted while nobody could see it.
+  // `skipsSubtree` lets a boxless wrapper through on purpose, since `checkVisibility` calls
+  // anything with no box invisible and the shell wraps visible content in one. But `visibility`
+  // inherits and only ELEMENT children are re-checked, so a direct text child of a hidden
+  // `contents` wrapper was indexed, counted and painted while nobody could see it.
   const ghost = el("SPAN", [text("invisible")]);
   (ghost as { checkVisibility?: () => boolean }).checkVisibility = () => false;
   withStyles(
@@ -708,8 +700,7 @@ test("a display:contents wrapper that is itself invisible keeps its own text out
 });
 
 test("a visible display:contents wrapper is still searched", () => {
-  // The other half of the same rule: the rescue has to keep working, or most of what there is to
-  // search disappears with it.
+  // The other half: the rescue has to keep working, or most of what there is to search goes.
   const wrapper = el("SPAN", [text("findable")]);
   (wrapper as { checkVisibility?: () => boolean }).checkVisibility = () =>
     false;
@@ -721,8 +712,8 @@ test("a visible display:contents wrapper is still searched", () => {
 });
 
 test("an element child that restores visibility inside a hidden contents wrapper is kept", () => {
-  // Scoped to the wrapper's OWN text, not its subtree: `visibility: visible` paints again, and the
-  // walk does not turn back, so that child has to survive.
+  // Scoped to the wrapper's OWN text: `visibility: visible` paints again and the walk does not
+  // turn back, so that child has to survive.
   const inner = el("SPAN", [text("restored")]);
   const ghost = el("SPAN", [text("invisible"), inner]);
   (ghost as { checkVisibility?: () => boolean }).checkVisibility = () => false;
@@ -740,10 +731,9 @@ test("an element child that restores visibility inside a hidden contents wrapper
 });
 
 test("the match window anchor is resolved only once the cap bites", () => {
-  // `viewportOffset` walks the document reading rects, and an argument is evaluated whether or not
-  // the callee wants it. Spelled inline it therefore ran on every keystroke of every query, however
-  // few matches it had, which is the opposite of what its own comment promises. As a thunk it is
-  // paid only where it changes the answer: when the cap actually cuts the list short.
+  // `viewportOffset` reads layout, and an argument is evaluated whether or not the callee wants
+  // it, so inline it ran on every keystroke however few matches there were. As a thunk it is paid
+  // only where it changes the answer: when the cap actually cuts the list short.
   const index = buildTextIndex(el("P", [text("a a a a a a a a")]));
 
   let asked = 0;
