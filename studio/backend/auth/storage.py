@@ -1573,6 +1573,13 @@ def delete_managed_user(username: str) -> bool:
         raise
     finally:
         conn.close()
+    # Before the sweep below, which can only see work that has already started.
+    # A request that authenticated a moment ago and has not reached that point
+    # yet is invisible to it, so fence every binding taken before now instead of
+    # trying to enumerate them.
+    from utils.workspace_context import note_workspace_retired
+
+    note_workspace_retired(username)
     # After the credentials are gone, so nothing this account starts can outlive
     # the stop, and before the rename below, so no worker is still writing into a
     # directory as it moves.

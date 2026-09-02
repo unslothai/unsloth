@@ -16,6 +16,7 @@ from loggers import get_logger
 from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
 from utils.workspace_context import (
     LEGACY_WORKSPACE_SUBJECT,
+    assert_workspace_binding_current,
     current_workspace_subject,
     workspace_key,
 )
@@ -81,6 +82,12 @@ def workspace_root() -> Path:
     an existing single-user installation. Additional accounts are isolated
     below ``workspaces/``.
     """
+    # Every per-account root is built from this one, so it is where a request
+    # that outlived its account stops. Deletion quiesces what is running, which
+    # cannot see a request admitted a moment earlier and paused before it
+    # started any work; without this that request resumes and recreates the
+    # directory the retirement just renamed away.
+    assert_workspace_binding_current()
     subject = current_workspace_subject()
     if subject == LEGACY_WORKSPACE_SUBJECT:
         return studio_root()

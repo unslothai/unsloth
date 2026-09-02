@@ -43,6 +43,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.utils import is_body_allowed_for_status_code
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from utils.workspace_context import RetiredWorkspaceError
+
 
 # Status-code -> error ``type`` string for the OpenAI error envelope.
 OPENAI_TYPE_BY_STATUS = {
@@ -390,3 +392,18 @@ def install_api_error_handlers(app) -> None:
             content = {"detail": exc.detail},
             headers = headers,
         )
+
+    @app.exception_handler(RetiredWorkspaceError)
+    async def _handle_retired_workspace(request, exc):
+        # A request that authenticated into an account deleted while it was in
+        # flight. Answered as 401 rather than 500: the credential it presented
+        # genuinely no longer exists, and the handler never reached anything
+        # that could have written to the retired workspace.
+        path = request.url.path
+        message = "This account no longer exists."
+        if wants_api_error_envelope(path):
+            return JSONResponse(
+                status_code = 401,
+                content = error_body_for_path(path, message, status = 401),
+            )
+        return JSONResponse(status_code = 401, content = {"detail": message})

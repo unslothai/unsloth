@@ -5228,3 +5228,62 @@ def test_the_image_routes_ask_about_every_adapter_they_pass_down():
     load = inspect.getsource(inference_routes.load_diffusion_model_gated)
     # And the load bakes its own selection in on the same credential.
     assert "_reject_private_generation_time_repo(_lora.id" in load
+
+
+def test_a_request_admitted_before_deletion_cannot_name_the_workspace_again():
+    from utils.paths.storage_roots import workspace_root
+    from utils.workspace_context import (
+        RetiredWorkspaceError,
+        note_workspace_retired,
+        reset_workspace_subject,
+        set_workspace_subject,
+    )
+
+    # The request authenticates, binds, and then pauses before it has started
+    # any work, which is exactly what the quiescence sweep cannot see.
+    admitted = set_workspace_subject("carol")
+    try:
+        before = workspace_root()
+        assert "carol" in str(before)
+        note_workspace_retired("carol")
+        # It resumes after the account is gone. Without the fence this rebuilt
+        # the username-derived directory the retirement had just renamed away,
+        # and a recreated carol would have inherited whatever it wrote.
+        with pytest.raises(RetiredWorkspaceError):
+            workspace_root()
+    finally:
+        reset_workspace_subject(admitted)
+
+    # The owner is unaffected, and so is every context that never bound.
+    assert workspace_root() == workspace_root()
+
+    # A binding taken after the deletion is current, so a recreated account
+    # works normally rather than inheriting the fence.
+    fresh = set_workspace_subject("carol")
+    try:
+        assert workspace_root() is not None
+    finally:
+        reset_workspace_subject(fresh)
+
+
+def test_the_fence_is_raised_before_the_quiescence_sweep():
+    import inspect
+
+    from auth import storage as auth_storage
+
+    source = inspect.getsource(auth_storage.delete_managed_user)
+    fence = source.index("note_workspace_retired(username)")
+    sweep = source.index("_quiesce_workspace_jobs(username)")
+    # Order is the whole point: the sweep answers for work that has already
+    # started, so anything admitted before it has to be fenced first.
+    assert fence < sweep
+
+
+def test_a_fenced_request_answers_401_rather_than_500():
+    import inspect
+
+    from utils import api_errors
+
+    source = inspect.getsource(api_errors.install_api_error_handlers)
+    assert "RetiredWorkspaceError" in source
+    assert "status_code = 401" in source
