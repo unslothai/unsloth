@@ -135,6 +135,11 @@ def _process_rss_bytes() -> Optional[int]:
     return None
 
 
+def _finite_json_number(value: float) -> Optional[float]:
+    """Keep benchmark JSON RFC-compliant when a metric is infinite or unavailable."""
+    return value if math.isfinite(value) else None
+
+
 def _versions() -> dict[str, Optional[str]]:
     out: dict[str, Optional[str]] = {"torch": None, "diffusers": None}
     try:
@@ -474,13 +479,13 @@ def _compare(args: argparse.Namespace) -> int:
 
     metrics["comparison"] = {
         "baseline_json": str(baseline_path),
-        "psnr_db": psnr,
+        "psnr_db": _finite_json_number(psnr),
         "latency_regression": latency_reg,
         "vram_regression": vram_reg,
         "failures": list(failures),
     }
     out_dir.mkdir(parents = True, exist_ok = True)
-    (out_dir / "compare.json").write_text(json.dumps(metrics, indent = 2))
+    (out_dir / "compare.json").write_text(json.dumps(metrics, indent = 2, allow_nan = False))
 
     if failures:
         print("\n  FAIL: " + "; ".join(failures), flush = True)
