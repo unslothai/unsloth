@@ -48,6 +48,29 @@ NO_VOCAB_OUTPUT_GGUF_ARCHS = frozenset(
 )
 
 
+# Speculative-decoding sidecars whose loader makes ``output.weight`` OPTIONAL and, when the
+# draft GGUF omits it, uses the TARGET model's projection instead of duplicating the draft's
+# own ``token_embd``. So a missing output.weight is not tying here either, for a different
+# reason than the encoder-only set above: those build no head at all, these inherit one.
+#
+# In llama.cpp both create it with TENSOR_NOT_REQUIRED rather than TENSOR_DUPLICATED
+# (src/models/dflash.cpp:158, src/models/eagle3.cpp:67) and fall back at graph build time to
+# ``model_other->output`` (dflash.cpp:775-780, eagle3.cpp:312-315). DSpark shares the dflash
+# ARCH and has the same fallback (dflash.cpp:984-989), so "dflash" covers it; llama-arch.cpp
+# registers only these two names for the family.
+INHERITS_TARGET_OUTPUT_GGUF_ARCHS = frozenset({"dflash", "eagle3"})
+
+
+def is_target_output_inheriting_gguf_architecture(architecture: Optional[str]) -> bool:
+    """Whether a missing ``output.weight`` means "inherit the target's", not "tied".
+
+    Same fail-towards-charging contract as the encoder-only check: an unknown or
+    undeclared arch is not exempted, because over-counting is the safe direction."""
+    if not architecture:
+        return False
+    return architecture.strip().lower() in INHERITS_TARGET_OUTPUT_GGUF_ARCHS
+
+
 def is_no_vocab_output_gguf_architecture(architecture: Optional[str]) -> bool:
     """Whether llama.cpp gives ``general.architecture`` no vocabulary output tensor.
 

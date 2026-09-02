@@ -448,6 +448,7 @@ from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_no_vocab_output_gguf_architecture,
     is_speech_gguf_architecture,
+    is_target_output_inheriting_gguf_architecture,
 )
 
 logger = get_logger(__name__)
@@ -8483,6 +8484,13 @@ class LlamaCppBackend:
                     embd = shard_embd
             # Encoder-only: no vocabulary head, so the missing output.weight is not tying.
             if is_no_vocab_output_gguf_architecture(architecture):
+                return 0
+            # A dflash/eagle3 sidecar INHERITS the target's output projection when it ships
+            # none of its own, so nothing is duplicated and the draft's token_embd stays the
+            # single host-pinned copy. Charging it here cancelled that host-pinned discount
+            # and left the drafter over-reserved by a whole vocabulary matrix, which costs
+            # context and can talk Auto out of speculative decoding.
+            if is_target_output_inheriting_gguf_architecture(architecture):
                 return 0
             return embd
         except Exception as exc:  # noqa: BLE001 - budget must not fail a launch

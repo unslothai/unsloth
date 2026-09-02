@@ -1051,3 +1051,59 @@ def test_a_shared_pool_is_not_credited_on_top_of_host_ram(backend, mib_embd_pair
         instance._launch_host_shortfall_message(argv, rows, avail_mib = avail_mib, shared_gpu_ids = [0])
         is not None
     ), "the same pool is host RAM, so the whole model has to fit in it"
+
+
+@pytest.mark.parametrize("architecture", ["dflash", "eagle3", "DFlash", "  Eagle3  "])
+def test_a_sidecar_that_inherits_the_target_output_is_charged_nothing(
+    backend, tmp_path: Path, architecture
+):
+    """dflash and eagle3 drafts without an ``output.weight`` INHERIT the target's.
+
+    Every other arch that ships ``token_embd`` and no ``output.weight`` is tied, and
+    llama.cpp duplicates the embedding into VRAM. These two are the exception: the
+    loader marks the output TENSOR_NOT_REQUIRED (dflash.cpp:158, eagle3.cpp:67) and
+    the graph falls back to ``model_other->output`` (dflash.cpp:775-780,
+    eagle3.cpp:312-315), so no second matrix is ever allocated. DSpark shares the
+    dflash arch and the same fallback (dflash.cpp:984-989).
+
+    Charging it was not free. ``_separate_drafter_weight_vram_bytes`` is
+    ``gguf_size + tied - host_pinned``, and for this shape the wrong ``tied`` exactly
+    cancelled the host-pinned discount on the draft's own ``token_embd``: the budget
+    came to the full file size where the truth is one embedding matrix less.
+
+    Case-insensitive and whitespace-tolerant, because ``general.architecture`` is
+    read verbatim out of the GGUF header.
+    """
+    sidecar = _write_gguf(
+        tmp_path / f"{architecture.strip().lower()}.gguf",
+        [
+            ("token_embd.weight", (8, 64)),
+            ("blk.0.attn_q.weight", (8, 8)),
+        ],
+        architecture = architecture,
+    )
+    assert backend._tied_output_bytes(str(sidecar)) == 0
+
+    # The drafter budget is now the file less its host-pinned embedding, not the
+    # whole file: the two errors no longer cancel.
+    gguf = backend._get_gguf_size_bytes(str(sidecar))
+    host_pinned = backend._host_pinned_weight_bytes(str(sidecar))
+    assert host_pinned == 8 * 64 * 4
+    assert backend._separate_drafter_weight_vram_bytes(
+        backend, str(sidecar), host_pinned_bytes = host_pinned
+    ) == gguf - host_pinned
+
+
+def test_an_unlisted_sidecar_arch_is_still_charged(backend, tmp_path: Path):
+    """The exemption is a blocklist and fails towards charging.
+
+    A speculative arch we have not verified inherits the target output keeps the
+    tied charge, because over-counting costs context while under-counting fails a
+    launch. This is what stops the check above becoming a blanket "drafts are free".
+    """
+    sidecar = _write_gguf(
+        tmp_path / "medusa.gguf",
+        [("token_embd.weight", (8, 64)), ("blk.0.attn_q.weight", (8, 8))],
+        architecture = "medusa",
+    )
+    assert backend._tied_output_bytes(str(sidecar)) == 8 * 64 * 4
