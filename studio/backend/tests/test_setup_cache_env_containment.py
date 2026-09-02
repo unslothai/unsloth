@@ -332,6 +332,47 @@ def test_studio_home_outranks_unsloth_home(monkeypatch, tmp_path):
     assert sr.studio_root() == explicit.resolve()
 
 
+def test_portable_mode_keeps_project_workspaces_inside_the_root(monkeypatch, tmp_path):
+    # Projects were the last Unsloth-owned thing outside the root: they default
+    # under ~/Documents, which is neither a cache nor anywhere a user clearing
+    # Unsloth out would think to look.
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    master = tmp_path / "portable"
+    monkeypatch.setenv("UNSLOTH_HOME", str(master))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert str(sr.project_workspaces_root()).startswith(str(master))
+    # The user's own Documents folder is a browse root for picking their files,
+    # not a directory Unsloth owns, so it must NOT be relocated.
+    assert not str(sr.documents_root()).startswith(str(master))
+
+
+def test_default_install_leaves_project_workspaces_in_documents(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising = False)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert sr.project_workspaces_root() == home / "Documents" / "Unsloth Studio" / "Projects"
+
+
+def test_an_explicit_projects_home_beats_portable_mode(monkeypatch, tmp_path):
+    chosen = tmp_path / "my-projects"
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(chosen))
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert sr.project_workspaces_root() == chosen
+
+
 def test_the_on_disk_marker_finds_the_root_without_any_environment(monkeypatch, tmp_path):
     # `source <root>/studio/unsloth_studio/bin/activate; unsloth studio` is in
     # the installer's own closing message, and it reaches the venv binary
