@@ -480,7 +480,7 @@ $ErrorActionPreference = "Stop"
 {functions}
 Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
 if ($env:TEST_INITIAL_PRESENT -eq "1") {{
-    [Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $env:TEST_INITIAL_VALUE, "Process")
+    Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $env:TEST_INITIAL_VALUE
 }}
 $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
 $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")

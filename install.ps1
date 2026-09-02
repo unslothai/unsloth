@@ -1237,12 +1237,12 @@ public static class UnslothStudioFinalPathV2
             [bool]$WasPresent,
             [AllowNull()][string]$PreviousValue
         )
+        # Use the PowerShell provider for both states. The .NET API maps an empty
+        # value to deletion on Windows and can leave the provider's view stale after
+        # deletion, so it cannot round-trip present-empty versus absent exactly.
         if ($WasPresent) {
-            [Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $PreviousValue, "Process")
+            Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $PreviousValue
         } else {
-            # PowerShell's environment provider can retain an empty entry after the
-            # .NET deletion API. Remove through the provider so an absent caller value
-            # is absent again, rather than leaking a present-but-empty variable.
             Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
         }
     }
