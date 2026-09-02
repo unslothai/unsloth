@@ -65,8 +65,7 @@ _CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
 
 
-# The embedded speculative-head count is read by discovery, launch and sizing.
-# Cache it separately so those callers agree without widening the staged-dims API.
+# Cache the embedded speculative-head count separately for discovery, launch, and sizing.
 _NEXTN_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 

@@ -1926,8 +1926,7 @@ def detect_mtp_file(
     """
 
     if Path(path).is_file() and (read_gguf_nextn_predict_layers(path) or 0) > 0:
-        # A repo-root mtp-*.gguf can be a compatibility mirror for llama.cpp's
-        # -hf discovery. Passing it as -md would replace, not augment, this head.
+        # A root mtp-*.gguf may mirror an embedded head; -md would replace it.
         return None
 
     def _matches_weight(candidate: Path) -> bool:

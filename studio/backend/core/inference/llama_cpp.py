@@ -13606,8 +13606,7 @@ class LlamaCppBackend:
                 else:
                     kv_complete = True
 
-            # GGUF metadata has no key-order contract. These keys can precede
-            # general.architecture, so bind their buffered values after the sweep.
+            # Bind buffered metadata after discovering the architecture namespace.
             if arch is not None:
                 self._pooling_type = pooling_by_arch.get(f"{arch}.pooling_type", self._pooling_type)
                 self._nextn_predict_layers = nextn_by_arch.get(
@@ -18635,9 +18634,7 @@ class LlamaCppBackend:
                 and mtp_draft_path
                 and _spec_canon not in ("dspark", "dflash")
             ):
-                # A discovered root mtp-*.gguf may be only an -hf compatibility
-                # mirror. llama.cpp's -md replaces the embedded head, so keep one
-                # authoritative MTP source before sizing and command construction.
+                # A root mtp-*.gguf may mirror the embedded head; -md would replace it.
                 logger.info("Main GGUF contains an embedded MTP head; ignoring separate drafter.")
                 mtp_draft_path = None
 
@@ -24866,8 +24863,7 @@ class LlamaCppBackend:
             and self._nextn_predict_layers
             and mtp_draft_path
         ):
-            # Resolver-level backstop for callers that bypass load_model's
-            # discovery normalization. Raw extra args remain user-owned.
+            # Backstop for callers that bypass load_model's discovery normalization.
             mtp_draft_path = None
         # MTP signals: head baked into the main GGUF (Qwen, via metadata or
         # name), or a separate drafter resolved from the repo (Gemma).

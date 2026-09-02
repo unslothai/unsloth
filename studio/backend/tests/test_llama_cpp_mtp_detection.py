@@ -2250,9 +2250,7 @@ def test_auto_non_mla_embedded_mtp_keeps_draft_mtp(monkeypatch):
 
 
 def test_auto_mla_embedded_head_ignores_separate_drafter(monkeypatch):
-    # Positive NextN metadata is authoritative even on MLA: a discovered -md
-    # sidecar would replace the embedded head and incorrectly bypass the MLA
-    # performance gate, so Auto keeps the embedded-MTP ngram fallback.
+    # Embedded NextN metadata wins: -md would replace the head and bypass MLA's gate.
     backend = _mla_resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
         speculative_type = "auto",

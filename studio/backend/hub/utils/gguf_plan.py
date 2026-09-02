@@ -285,10 +285,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             [n for n in all_weight_names if n != target_weight_name],
             max_bytes = sum(max(0, int(file.size or 0)) for file in kept_main),
         )
-        # A root mtp-*.gguf can be only an -hf compatibility mirror when this
-        # variant's own name advertises an embedded head. Header metadata makes
-        # the final launch decision; the listing-time hint avoids downloading a
-        # sidecar that would be discarded for the common published spelling.
+        # Skip the compatibility sidecar when this variant advertises an embedded head.
         variant_mtp_expected = (
             None
             if any(has_embedded_mtp_name_hint(file.path) for file in kept_main)

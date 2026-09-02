@@ -207,7 +207,7 @@ def test_nextn_predict_layers_uses_the_active_architecture_namespace(tmp_path: P
 
     assert read_gguf_nextn_predict_layers(str(reversed_order)) == 2
 
-    # The second read must use the file-identity cache rather than parse again.
+    # Verify the file-identity cache.
     import utils.models.gguf_metadata as metadata
 
     monkeypatch.setattr(
