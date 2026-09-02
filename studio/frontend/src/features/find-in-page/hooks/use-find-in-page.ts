@@ -11,6 +11,7 @@
 import { completeProgressiveMounts } from "@/components/assistant-ui/progressive-messages";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  cancelRevealPasses,
   clearHighlights,
   indexReaches,
   mutatesSearchableText,
@@ -335,6 +336,8 @@ export function useFindInPage(query: string): FindResults {
 
     return () => {
       live = false;
+      // The bar is going away; any queued reveal would scroll the reader after it is gone.
+      cancelRevealPasses();
       window.removeEventListener("resize", invalidate);
       sized?.disconnect();
       observer?.disconnect();

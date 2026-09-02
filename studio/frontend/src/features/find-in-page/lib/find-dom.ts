@@ -476,11 +476,26 @@ export function scrollRangeIntoView(range: Range): boolean {
  * frames on webkit, 3 on chromium and firefox. The bound stops anything spinning.
  */
 export function revealRangeWhenPainted(range: Range, tries = 8): void {
+  cancelRevealPasses();
+  revealPass(range, tries, revealGeneration);
+}
+
+/** The chain in flight. A new reveal or a closing bar supersedes the last one. */
+let revealGeneration = 0;
+
+/** Abandon any queued reveal. The workspace stays mounted after the bar closes, so `isConnected`
+ *  alone would let the old chain keep scrolling the reader toward a match nobody asked for. */
+export function cancelRevealPasses(): void {
+  revealGeneration += 1;
+}
+
+function revealPass(range: Range, tries: number, generation: number): void {
   if (!scrollRangeIntoView(range) || tries <= 1) return;
   if (typeof requestAnimationFrame !== "function") return;
   requestAnimationFrame(() => {
+    if (generation !== revealGeneration) return;
     // A streaming reply rewrites the nodes under the index, so the range can be gone by now.
     if (!range.startContainer.isConnected) return;
-    revealRangeWhenPainted(range, tries - 1);
+    revealPass(range, tries - 1, generation);
   });
 }

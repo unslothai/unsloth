@@ -1279,9 +1279,7 @@ test("the reveal looks again while the scroll is still moving", async () => {
     dom,
     /export function scrollRangeIntoView\(range: Range\): boolean/,
   );
-  const reveal = dom.slice(
-    dom.indexOf("export function revealRangeWhenPainted"),
-  );
+  const reveal = dom.slice(dom.indexOf("function revealPass("));
   const body = reveal.slice(0, reveal.indexOf("\n}\n"));
   // Stops as soon as a pass moves nothing, and is bounded so nothing can spin.
   assert.match(
@@ -1289,7 +1287,7 @@ test("the reveal looks again while the scroll is still moving", async () => {
     /if \(!scrollRangeIntoView\(range\) \|\| tries <= 1\) return;/,
   );
   assert.match(body, /tries - 1/);
-  assert.match(reveal.slice(0, reveal.indexOf("{")), /tries = \d/);
+  assert.match(dom, /revealRangeWhenPainted\(range: Range, tries = \d\)/);
   // Next frame, not a timer: what is being waited for is a paint.
   assert.match(body, /requestAnimationFrame\(/);
   // And a range whose nodes a streaming reply has replaced is dropped rather than scrolled to.
@@ -1304,6 +1302,39 @@ test("the reveal looks again while the scroll is still moving", async () => {
   );
   assert.match(engine, /revealRangeWhenPainted\(activeRange\)/);
   assert.equal(/scrollRangeIntoView\(activeRange\)/.test(engine), false);
+});
+
+test("a dismissed or superseded search abandons its queued reveal passes", async () => {
+  // The reveal chain walks up to seven more frames after the first scroll. The workspace stays
+  // mounted when the bar closes, so `isConnected` stays true and the old chain would keep scrolling
+  // the reader toward a match they already dismissed. A generation token retires it.
+  const dom = await readFile(
+    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
+    "utf8",
+  );
+  // Every new reveal retires the previous one, so two navigations cannot scroll against each other.
+  const entry = dom.slice(
+    dom.indexOf("export function revealRangeWhenPainted"),
+  );
+  assert.match(
+    entry.slice(0, entry.indexOf("\n}\n")),
+    /cancelRevealPasses\(\)/,
+  );
+  // And the queued frame checks the token it was queued under before scrolling again.
+  const pass = dom.slice(dom.indexOf("function revealPass("));
+  assert.match(
+    pass.slice(0, pass.indexOf("\n}\n")),
+    /if \(generation !== revealGeneration\) return;/,
+  );
+  // Teardown retires the chain: closing the bar is exactly when the reader stops asking to move.
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(engine, /cancelRevealPasses\(\);/);
 });
 
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
