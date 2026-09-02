@@ -1221,3 +1221,87 @@ def test_torchaudio_alone_can_still_decode_audio(monkeypatch):
     raw = _wav_header(8_000, 1, 8, len(payload)) + payload
     decoded = inference_route._decode_audio_base64(base64.b64encode(raw).decode())
     assert decoded.shape[0] == 8_000
+
+
+def test_a_tag_in_the_middle_cannot_shorten_a_concatenated_mp3(monkeypatch):
+    """`cat one.mp3 two.mp3 > both.mp3` is how people join MP3s, and it leaves
+    the first file's 128-byte ID3v1 tag sitting between the two streams.
+
+    Matching a trailer by its magic alone accepted that tag as the end of the
+    recording, so an hour of audio behind it reported the first file's few
+    seconds and was forwarded untouched. A trailer now has to account for its
+    own length and reach EOF, and one that does not means the walk never read
+    the whole file.
+    """
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 60)
+    joined = _mp3_frames(5) + b"TAG" + bytes(125) + _mp3_frames(300)
+    assert inference_route._mp3_seconds(joined, 60.0) is None
+
+    _decode_instead_of_forwarding(monkeypatch)
+    _encoded, container = inference_route._prepare_audio_for_llama(
+        base64.b64encode(joined).decode()
+    )
+    assert container == "wav"
+
+
+def test_a_trailer_that_reaches_eof_still_ends_the_count():
+    """The counterpart: real trailers must not cost a needless transcode."""
+    frames = _mp3_frames(10)
+    ape_size = 64
+    ape = (
+        b"APETAGEX"
+        + (2000).to_bytes(4, "little")
+        + ape_size.to_bytes(4, "little")
+        + (1).to_bytes(4, "little")
+        + (0x80000000).to_bytes(4, "little")
+        + bytes(8)
+        + bytes(ape_size)
+    )
+    for trailer in (b"", b"TAG" + bytes(125), ape, b"TAG" + bytes(125) + ape):
+        seconds = inference_route._mp3_seconds(frames + trailer, 60.0)
+        assert seconds is not None and 9.9 < seconds < 10.1, len(trailer)
+
+
+def test_pyav_writes_into_one_buffer_rather_than_collecting_blocks(monkeypatch):
+    """Dropping each block after copying it does not bound anything.
+
+    The blocks are small, so freeing them returns them to the allocator's free
+    lists and not to the OS: resident memory for a 30-minute 48 kHz upload
+    measured 2.0x the waveform whether the join was np.concatenate or a fill
+    loop. Only writing each block into the output as it arrives holds one copy,
+    so the decoder must never build a list of the whole decode.
+    """
+    raw = _encode_amr()
+    monkeypatch.setitem(sys.modules, "soundfile", None)
+    monkeypatch.setitem(sys.modules, "librosa", None)
+    expected, rate = inference_route._decode_audio_mono(raw)
+
+    # An under-reported duration has to grow the buffer instead of appending to
+    # a list, and the samples must survive the growth copies in decode order.
+    monkeypatch.setattr(inference_route, "_av_expected_samples", lambda *_args: 1)
+    grown, grown_rate = inference_route._decode_audio_mono(raw)
+    assert grown_rate == rate
+    assert np.array_equal(grown, expected)
+
+
+def test_a_forged_container_duration_cannot_ask_for_a_huge_buffer(monkeypatch):
+    """The duration only sizes the first allocation, so a lie costs a growth
+    copy, never a wrong result and never an allocation the decode would refuse."""
+
+    class _Stream:
+        duration = None
+        time_base = None
+
+    class _Container:
+        duration = 10 ** 18
+        streams = types.SimpleNamespace(audio = [_Stream()])
+
+    assert inference_route._av_expected_samples(_Container(), 48_000) == (
+        inference_route._MAX_DECODED_SAMPLES + 1
+    )
+
+    class _Undeclared(_Container):
+        duration = 0
+
+    # Nothing declared starts at a minute and grows from there.
+    assert inference_route._av_expected_samples(_Undeclared(), 48_000) == 60 * 48_000 + 1

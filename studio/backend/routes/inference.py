@@ -17652,9 +17652,31 @@ def _wav_seconds(raw: bytes) -> Optional[float]:
     return None
 
 
-# Trailers that legitimately follow the last audio frame. Anything else left
-# over means the walk stopped early and has not read the whole recording.
-_MP3_TRAILER_MAGICS = (b"TAG", b"APETAGEX", b"ID3", b"LYRICSBEGIN")
+def _mp3_trailer_length(raw: bytes, offset: int) -> int:
+    """Bytes the metadata trailer at `offset` occupies, or 0 if there is none.
+
+    Only the trailers whose length is written down are read, because the length
+    is the whole point: a trailer that is merely recognised by its first three
+    bytes proves nothing about what follows it. `cat one.mp3 two.mp3` leaves the
+    first file's 128-byte ID3v1 tag in the middle of the result, and matching on
+    the magic alone accepted that as the end of the recording and reported the
+    first file's duration for both. Lyrics3 has no fixed-size header, so it is
+    left unrecognised and the file gets decoded rather than measured.
+    """
+    tail = raw[offset:]
+    if tail[:3] == b"TAG":
+        # ID3v1 and ID3v1.1 are both exactly 128 bytes.
+        return 128 if len(tail) >= 128 else 0
+    if tail[:3] == b"ID3":
+        return _id3_tag_length(tail)
+    if tail[:8] == b"APETAGEX" and len(tail) >= 32:
+        # The size field covers the item data and the 32-byte footer but never
+        # the header. An APEv2 header is optional, and an APEv1 tag has none at
+        # all, but a tag reached from the front can only be showing its header,
+        # since a footer sits at the very end. A tag with neither begins with
+        # item data, does not match here, and the file is decoded instead.
+        return int.from_bytes(tail[12:16], "little") + 32
+    return 0
 
 
 def _mp3_seconds(raw: bytes, cap: float) -> Optional[float]:
@@ -17700,10 +17722,16 @@ def _mp3_seconds(raw: bytes, cap: float) -> Optional[float]:
     if not frames:
         return None
     # Fewer than four bytes cannot begin a frame, so a short tail is the end.
-    remainder = raw[offset:]
-    if len(remainder) < 4 or remainder.startswith(_MP3_TRAILER_MAGICS):
-        return seconds
-    return None
+    # Anything longer has to account for itself all the way to EOF: a trailer
+    # that stops short is followed by something this walk never read.
+    while offset < len(raw):
+        if len(raw) - offset < 4:
+            return seconds
+        length = _mp3_trailer_length(raw, offset)
+        if length <= 0:
+            return None
+        offset += length
+    return seconds
 
 
 def _passthrough_audio_seconds(raw: bytes, container: str, cap: float) -> Optional[float]:
@@ -17895,6 +17923,29 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
     return np.concatenate(chunks, axis = 0).astype(np.float32, copy = False), sample_rate
 
 
+def _av_expected_samples(container, sample_rate: int) -> int:
+    """Samples to size the output buffer for, from the container's own duration.
+
+    The duration is a hint, not a promise: it can be absent, wrong, or a lie. It
+    only decides the first allocation, so being wrong costs a growth copy or some
+    untouched address space, never a wrong result. Clamping it to the decode
+    ceiling keeps a forged duration from asking for an allocation the decode
+    would have refused anyway.
+    """
+    import av
+
+    micros = getattr(container, "duration", None) or 0
+    seconds = float(micros) / float(av.time_base) if micros > 0 else 0.0
+    if seconds <= 0.0:
+        stream = container.streams.audio[0]
+        if stream.duration and stream.time_base:
+            seconds = float(stream.duration * stream.time_base)
+    if not (seconds > 0.0):
+        # Nothing declared, so start at a minute and grow.
+        seconds = 60.0
+    return int(min(seconds * sample_rate, _MAX_DECODED_SAMPLES)) + 1
+
+
 def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
     """Decode an audio container with PyAV's bundled FFmpeg libraries."""
     import io
@@ -17902,19 +17953,34 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
     import av
     import numpy as np
 
-    chunks = []
+    # Collecting every decoded block and joining at the end costs two copies of
+    # the recording at once, whether the join is np.concatenate or a fill loop
+    # that drops blocks as it copies: the blocks are small enough that freeing
+    # them returns them to the allocator's free lists rather than to the OS, so
+    # resident memory only ever grows. Measured at 2.0x either way for a
+    # 30-minute 48 kHz upload. Writing each block into one output buffer as it
+    # arrives is the only shape that keeps a single copy live.
+    joined = None
     sample_rate = 0
     sample_count = 0
     resampler = None
 
     def append_resampled(resampled) -> None:
-        nonlocal sample_count
-        sample_count += int(resampled.samples)
+        nonlocal joined, sample_count
+        block = resampled.to_ndarray().reshape(-1)
+        sample_count += len(block)
         if sample_count > sample_rate * _MAX_AUDIO_SECONDS or sample_count > _MAX_DECODED_SAMPLES:
             raise _DecodedAudioTooLongError(
                 f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
-        chunks.append(resampled.to_ndarray().reshape(-1))
+        if sample_count > len(joined):
+            # The container under-reported its duration, or never declared one.
+            # Doubling makes the growth copies amortised, and the transient is
+            # the old buffer plus the new one rather than the whole decode.
+            grown = np.empty(max(sample_count, 2 * len(joined)), dtype = np.float32)
+            grown[: sample_count - len(block)] = joined[: sample_count - len(block)]
+            joined = grown
+        joined[sample_count - len(block) : sample_count] = block
 
     with av.open(io.BytesIO(raw), mode = "r", metadata_errors = "ignore") as container:
         if not container.streams.audio:
@@ -17929,24 +17995,19 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
                     layout = "mono",
                     rate = sample_rate,
                 )
+                joined = np.empty(_av_expected_samples(container, sample_rate), dtype = np.float32)
             for resampled in resampler.resample(frame):
                 append_resampled(resampled)
         if resampler is not None:
             for resampled in resampler.resample(None):
                 append_resampled(resampled)
-    if not chunks:
+    if not sample_count:
         raise ValueError("audio container decoded to no samples")
-    # np.concatenate holds the list and its result at once, so a 30-minute
-    # upload at the 48 kHz ceiling kept two 346 MB arrays live. Filling the
-    # output while dropping each block as it is copied costs one array and a
-    # block, and the copy order is the decode order.
-    joined = np.empty(sum(len(block) for block in chunks), dtype = np.float32)
-    filled = 0
-    for index, block in enumerate(chunks):
-        joined[filled : filled + len(block)] = block
-        filled += len(block)
-        chunks[index] = None
-    return joined, sample_rate
+    # A slice keeps the whole allocation alive, which is free when the declared
+    # duration was honest and wasteful when it was not.
+    if sample_count * 2 < len(joined):
+        return joined[:sample_count].copy(), sample_rate
+    return joined[:sample_count], sample_rate
 
 
 def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
