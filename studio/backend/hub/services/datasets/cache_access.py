@@ -74,7 +74,7 @@ def _persist_grant(repo_id: str, subject: str) -> None:
     try:
         run_in_workspace(subject, _write)
     except Exception:  # noqa: BLE001 - a grant that cannot be written is re-earned
-        pass                                # by the next download; never fail one over it.
+        pass  # by the next download; never fail one over it.
 
 
 def _persisted_grant(repo_id: str) -> bool:
@@ -111,11 +111,10 @@ def forget_workspace(subject: str) -> None:
 def _clear_persisted_grants(subject: str) -> None:
     from storage.studio_db import upsert_app_settings
     from utils.workspace_context import run_in_workspace
-
     try:
         run_in_workspace(subject, upsert_app_settings, {_GRANTS_SETTING: []})
     except Exception:  # noqa: BLE001 - a database that cannot be written holds no
-        pass                                # grant this process will go on to read.
+        pass  # grant this process will go on to read.
 
 
 def caller_may_read_cached_dataset(repo_id: Optional[str]) -> bool:
