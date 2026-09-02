@@ -273,8 +273,10 @@ export function buildTextIndex(
   let truncated = false;
   /** See `FindTextIndex.unsafe`. */
   const unsafe = new Set<number>();
-  /** Whether the separator now due stands for dropped text rather than a block boundary. */
-  let pendingClip = false;
+  /** The last code point dropped, while the separator now due stands for that rather than for a
+   *  block boundary. It is the only thing that can say whether the next node begins where it looks
+   *  like it does, and it is readable here and nowhere later. */
+  let pendingClip: string | null = null;
   /** The ceiling, the only thing that stops the walk. */
   let full = false;
   let ceiling =
@@ -290,7 +292,11 @@ export function buildTextIndex(
     // The tag set answers `<br>`, whose display is inline; layout catches two stacked `span.block`.
     const block =
       BLOCK_TAGS.has(element.tagName) || isBlockDisplay(style?.display);
-    if (block) pendingSeparator = true;
+    // A real boundary, which the dropped text cannot reach across however it ended.
+    if (block) {
+      pendingSeparator = true;
+      pendingClip = null;
+    }
     const preserved =
       style?.whiteSpace === undefined
         ? inherited
@@ -323,11 +329,22 @@ export function buildTextIndex(
             parts.push(BLOCK_SEPARATOR);
             length += 1;
             separated = true;
-            // The far side of a separator that stands for dropped text is no safer than the near
-            // side: this node begins where something was cut, and may carry on from it.
-            if (pendingClip) unsafe.add(length);
+            // The far side of a separator standing for dropped text is a boundary only when
+            // neither side reaches the other. `joinsForward` first, because the junction alone
+            // cannot see the pictograph a ZWJ needs behind it.
+            if (
+              pendingClip !== null &&
+              (joinsForward(pendingClip) ||
+                continuesGrapheme(
+                  pendingClip +
+                    String.fromCodePoint(data.codePointAt(0) as number),
+                  pendingClip.length,
+                ))
+            ) {
+              unsafe.add(length);
+            }
           }
-          pendingClip = false;
+          pendingClip = null;
         }
         // A share, not all: one huge node given the rest leaves out everything after it.
         const take = Math.min(ceiling - length, MAX_NODE_CHARS);
@@ -346,14 +363,19 @@ export function buildTextIndex(
           truncated = true;
           unsafe.add(length);
           pendingSeparator = true;
-          pendingClip = true;
+          // Only these can join to what follows them, so only these let the dropped tail reach
+          // into the next node. Anything else and the next node begins where it looks like it does.
+          pendingClip = lastPoint(data.slice(take));
         }
       } else if (child.nodeType === ELEMENT_NODE) {
         visit(child as FindElementLike, preserved);
         if (full) return;
       }
     }
-    if (block) pendingSeparator = true;
+    if (block) {
+      pendingSeparator = true;
+      pendingClip = null;
+    }
   };
 
   visit(root, false);
@@ -438,6 +460,26 @@ const EXTENDS_LEFT_PATTERN =
  *  `ccc=9` code point for which a consonant, that virama and a consonant make one cluster. */
 const LINKER_PATTERN =
   /[\u{94d}\u{9cd}\u{acd}\u{b4d}\u{c4d}\u{d4d}\u{e3a}\u{eba}\u{1039}\u{17d2}\u{1a60}\u{1b44}\u{1bab}\u{a9c0}\u{aaf6}\u{10a3f}\u{11133}\u{1193e}\u{11a47}\u{11a99}\u{11f42}]/u;
+
+/** The last code point of `text`, or the empty string. */
+function lastPoint(text: string): string {
+  if (text.length === 0) return "";
+  return text.slice(
+    text.length - (isTrailingHalf(text.charCodeAt(text.length - 1)) ? 2 : 1),
+  );
+}
+
+/** Whether a grapheme carrying this can carry on into whatever follows it. Prepend joins forward
+ *  by definition, Hangul builds a syllable forwards, a regional indicator pairs with the next and
+ *  a ZWJ exists to join. Nothing else reaches to its right. */
+function joinsForward(point: string): boolean {
+  return (
+    PREPEND_PATTERN.test(point) ||
+    REGIONAL_INDICATOR_PATTERN.test(point) ||
+    point === "\u200d" ||
+    hangulClass(point) !== null
+  );
+}
 
 /** The code point ending at `end`, and where it starts. */
 function pointBefore(text: string, end: number): [string, number] {
@@ -641,14 +683,8 @@ function alignsToGraphemes(
 /** True when a grapheme starts at `at`. */
 function startsGrapheme(index: FindTextIndex, at: number): boolean {
   const text = index.text;
-  if (index.unsafe.has(at)) {
-    // Where the walk stopped, what it left out is still on the page and anything at all can be
-    // extended by what follows it, so this end cannot be vouched for.
-    if (at === text.length || text[at] === BLOCK_SEPARATOR) return false;
-    // The far side of such a cut is answerable, though: nothing below U+0300 can continue a
-    // grapheme, so a character there starts one whatever was dropped in front of it.
-    return !JOINS_GRAPHEME.test(text[at]);
-  }
+  // Decided where the text was dropped, since that is the only place it could be seen.
+  if (index.unsafe.has(at)) return false;
   if (at === 0 || at === text.length) return true;
   const platform = graphemeSegmenter();
   if (platform === null) return !continuesGrapheme(text, at);

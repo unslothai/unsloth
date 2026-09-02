@@ -1775,12 +1775,49 @@ test("a cut in the middle of the document is unsafe on both sides", () => {
       ]),
     ]),
   );
+  // Both sides here: what was dropped is a trailing Jamo, which reaches forward as readily as the
+  // vowel form before it reaches back. `a clipped node does not run into the next one` holds the
+  // other direction, where the dropped text ends in a space and the next node keeps its first
+  // character.
   assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
   assert.equal(index.text[MAX_NODE_CHARS - 1], "\uac00");
   assert.deepEqual(findMatches(index, "\uac00", 10), []);
-  // The far side is still answerable for anything that cannot continue a grapheme, or every node
-  // after a cut would lose its first character.
-  assert.equal(findMatches(index, "tail", 10).length, 1);
+  assert.equal(findMatches(index, "ail", 10).length, 1);
+});
+
+test("what was dropped decides the far side of a cut, not what was kept", () => {
+  // Reading the retained character alone was the wrong question. Nothing below U+0300 joins
+  // backwards, which is what made an ASCII character look safe, but a Prepend in the dropped text
+  // joins forwards into it, and the page shows the two as one grapheme. The dropped text is only
+  // visible while the index is being built, so that is where this is settled.
+  const reaching = buildTextIndex(
+    el("DIV", [
+      el("P", [text(`${"x".repeat(MAX_NODE_CHARS)}\u0600`), text("a")]),
+    ]),
+  );
+  assert.deepEqual([...reaching.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+  assert.deepEqual(findMatches(reaching, "a", 10), []);
+  // A dropped tail that cannot reach forward leaves the next node whole, even in Hangul.
+  const settled = buildTextIndex(
+    el("DIV", [el("P", [text(`${"x".repeat(MAX_NODE_CHARS)}zz`), text("가")])]),
+  );
+  assert.deepEqual([...settled.unsafe], [MAX_NODE_CHARS]);
+  assert.equal(findMatches(settled, "가", 10).length, 1);
+});
+
+test("a real block boundary after a cut is still a boundary", () => {
+  // The separator standing in for dropped text and the one a block writes are the same character,
+  // but only the first is uncertain: a block break is one wherever the dropped text ended. The
+  // dropped tail here is a leading Jamo, which would reach into the next syllable were the two
+  // still on the same line, so this fails unless the block boundary is told apart from the cut.
+  const index = buildTextIndex(
+    el("DIV", [
+      el("SPAN", [text(`${"x".repeat(MAX_NODE_CHARS)}\u1100`)]),
+      el("P", [text("가")]),
+    ]),
+  );
+  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS]);
+  assert.equal(findMatches(index, "가", 10).length, 1);
 });
 
 test("a node cut exactly at the ceiling stays unsafe once past it", () => {
