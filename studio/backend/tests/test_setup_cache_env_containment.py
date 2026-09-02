@@ -59,6 +59,11 @@ def _clean_env(monkeypatch, tmp_path):
     # hf_cache_settings._default_cache_home reads this before ~/.cache, and CI
     # runners set it, so a test asserting on the home default has to clear it.
     monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
+    # A developer machine may hold a real ~/.data-designer, which the resolver
+    # reads before it pins a home of its own. Point Path.home() at an empty
+    # directory so these assert on the code and not on who ran them.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
 
 
@@ -164,7 +169,9 @@ def test_unsloth_portable_alone_enables_portable_mode(monkeypatch, tmp_path):
     assert os.environ["TORCH_HOME"].startswith(str(tmp_path / "studio"))
 
 
-@pytest.mark.parametrize("value", ("0", "false", "False", ""))
+@pytest.mark.parametrize(
+    "value", ("0", "false", "False", "FALSE", "off", "OFF", "no", "No", " false ", ""),
+)
 def test_unsloth_portable_off_values_do_not_enable_portable_mode(monkeypatch, value):
     monkeypatch.setenv("UNSLOTH_PORTABLE", value)
     sr = _load_storage_roots()
@@ -215,3 +222,46 @@ def test_data_designer_home_is_set_before_the_library_would_read_it(tmp_path):
     assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(
         tmp_path / "studio" / "data-designer" / "managed-assets"
     )
+
+
+def test_an_existing_data_designer_home_is_left_where_it_is(tmp_path):
+    # DATA_DESIGNER_HOME holds model_configs.yaml, model_providers.yaml and the
+    # multi-GB persona parquet under managed-assets. Repointing it does not move
+    # that state, it hides it behind a freshly seeded default.
+    legacy = tmp_path / "home" / ".data-designer"
+    (legacy / "managed-assets").mkdir(parents = True)
+    (legacy / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "DATA_DESIGNER_HOME" not in os.environ
+    assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
+
+
+def test_managed_assets_follow_an_explicit_data_designer_home(monkeypatch, tmp_path):
+    # The library derives <DATA_DESIGNER_HOME>/managed-assets itself, and its CLI
+    # downloader writes there unconditionally. Forcing the assets path against
+    # someone else's home splits the writer from the reader.
+    chosen = tmp_path / "mine" / ".data-designer"
+    monkeypatch.setenv("DATA_DESIGNER_HOME", str(chosen))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["DATA_DESIGNER_HOME"] == str(chosen)
+    assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
+
+
+def test_an_explicit_triton_home_keeps_its_own_cache_dir(monkeypatch, tmp_path):
+    # triton/knobs.py: TRITON_CACHE_DIR outranks the <TRITON_HOME>/.triton/cache
+    # derivation, so pinning it would move the kernels away from the dump and
+    # override dirs that stay under the user's TRITON_HOME.
+    chosen = tmp_path / "mine" / "triton-home"
+    monkeypatch.setenv("TRITON_HOME", str(chosen))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["TRITON_HOME"] == str(chosen)
+    assert "TRITON_CACHE_DIR" not in os.environ
