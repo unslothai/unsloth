@@ -51,8 +51,8 @@ _LINKS_VERSION = 1
 _MAX_LINKS = 512
 # ... and per checkpoint, for the same reason: one key must not grow the file on its own.
 _MAX_BASES_PER_CHECKPOINT = 16
-# Serialises the read-modify-write below. Losing a link to a lost update is the one direction
-# that matters: an unrecorded base can look orphaned and be offered for removal.
+# Serialises the read-modify-write below: losing a link to a lost update is the one direction that
+# matters, since an unrecorded base can look orphaned and be offered for removal.
 _WRITE_LOCK = threading.Lock()
 
 
@@ -105,10 +105,7 @@ def _write_companion_links(links: dict[str, list[str]]) -> bool:
     payload = {"version": _LINKS_VERSION, "links": links}
     tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
-        # NOT sort_keys: json.loads keeps document order, so the file IS the recency record the
-        # trim above reads. Sorting it made the next read alphabetical, and the trim then evicted
-        # the lexicographically smallest link rather than the oldest -- so a link recorded minutes
-        # ago could go, and its base become deletable while the checkpoint was still installed.
+        # NOT sort_keys: json.loads keeps document order, so the file IS the recency record the trim reads.
         tmp.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
         os.replace(tmp, path)
         return True
@@ -147,18 +144,11 @@ def record_companion_link(checkpoint_repo_id: str, base_repo_id: str) -> bool:
         key = _normalise(checkpoint)
         existing = links.get(key, [])
         known = any(_normalise(b) == _normalise(base) for b in existing)
-        # Re-inserted at the end, not updated in place: recording is the only recency signal the
-        # trim has, so a checkpoint that just resolved must not keep an old position and be
-        # evicted ahead of one nothing has touched since. That applies to a REPEAT resolution too
-        # -- a checkpoint reloaded every day but first recorded long ago is the most-used link
-        # there is, and returning early on it let the cap throw it away.
+        # Re-inserted at the end, not updated in place: recording is the only recency signal the trim has,
+        # and returning early on a REPEAT resolution let the cap throw away the most-used link.
         links.pop(key, None)
-        # Recency inside the list too, and capped: an explicit base_repo (or a card tag that
-        # changes) makes one checkpoint resolve a new base each load, and appending forever grew
-        # the file that _MAX_LINKS is supposed to bound -- it counts checkpoints, not their bases,
-        # and every dependency check parses and mirror-expands the whole list. A checkpoint has
-        # one or two bases in practice, so the cap is only ever reached by the runaway writer it
-        # is here for, and dropping the least recently resolved degrades to derivation.
+        # Recency inside the list too, and capped: an explicit base_repo or a changing card tag makes one
+        # checkpoint resolve a new base each load, and appending forever grew the file _MAX_LINKS bounds.
         fresh = [b for b in existing if _normalise(b) != _normalise(base)]
         links[key] = [*fresh, base][-_MAX_BASES_PER_CHECKPOINT:]
         wrote = _write_companion_links(links)
@@ -337,16 +327,14 @@ def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]
     except Exception:  # noqa: BLE001
         return set()
     if fam is None:
-        # The loader resolves a base with this same call. No family means no load, so there is
-        # no dependent here to protect -- not a gap, the two fail together.
+        # The loader resolves a base with this same call, so no family means no load and there is no
+        # dependent here to protect: the two fail together.
         return set()
     bases = {resolve_base_repo(fam, None)}
     bases |= _curated_variant_bases(fam, repo_id, gguf_filename)
-    # The NATIVE engine's companions as well. It never reads the diffusers base: it fetches a
-    # single-file VAE and text encoder from their own repos, and those repos are offerable for
-    # deletion, so a pre-existing native GGUF with no recorded link would have had its encoder
-    # listed as an unused asset and removed underneath it. The recorded links cover a load that
-    # has happened since; this covers the install that predates them.
+    # The NATIVE engine never reads the diffusers base: it fetches a single-file VAE and text encoder
+    # from their own repos, so a pre-existing native GGUF with no recorded link would have had its
+    # encoder listed as unused and removed underneath it.
     bases |= {repo for repo, _file in _sd_cpp_component_specs(fam, repo_id, gguf_filename)}
     return _with_mirrors(bases)
 
@@ -413,10 +401,8 @@ def _sd_cpp_component_specs(
         vae = getattr(fam, "sd_cpp_vae", None)
         if vae and vae[0]:
             specs.add((vae[0], vae[1]))
-        # EVERY set the family could pick, not the one the string fallback guesses. There is no
-        # header to read here, and a renamed FLUX.2-klein 9B file carries no size token either,
-        # so guessing answers 4B and leaves the 9B encoder the load actually fetched unprotected.
-        # Naming both costs a delete that is refused; guessing costs an installed model.
+        # EVERY set the family could pick: there is no header to read and a renamed FLUX.2-klein 9B file
+        # carries no size token, so guessing answers 4B and leaves the 9B encoder unprotected.
         for encoder in sd_cpp_text_encoder_candidates(fam) or ():
             if encoder and encoder[0]:
                 specs.add((encoder[0], encoder[1]))
@@ -435,8 +421,7 @@ def required_companion_asset_files(cache_scans) -> dict[str, set[str]]:
     pick_names = _cached_checkpoint_pick_names(cache_scans)
     files: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
-        # Every cached GGUF, because one repo can hold checkpoints of two families and each opens
-        # its own components.
+        # One repo can hold checkpoints of two families, and each opens its own components.
         for name in dict.fromkeys([None, *pick_names.get(_normalise(repo_id), [])]):
             fam = _detect_family(repo_id, name)
             if fam is None:
@@ -497,17 +482,12 @@ def known_companion_base_ids() -> set[str]:
     Deliberately NOT "anything a link ever named": orphan cleanup offers only repos this set
     recognises, so a mis-recorded link can never turn an unrelated repo into a delete candidate.
     """
-    # Family bases and their gated/mirror variants. The pairs are companion bases by construction
-    # -- they exist only because a GGUF pick of that family needs an ungated copy of them -- and
-    # they cover the variants one family entry serves through a card tag (klein-9B under the
-    # klein-4B family, and so on).
+    # The pairs are companion bases by construction, existing only because a GGUF pick of that family
+    # needs an ungated copy, and they cover the variants one family entry serves through a card tag.
     bases = _curated_base_ids()
-    # The native engine's component-only repos (a single-file VAE, a text encoder) are curated
-    # table entries too, and for an sd.cpp pick they ARE the companions -- the largest half of the
-    # footprint. Leaving them out made them link-only strangers: unlisted by Free up space and
-    # dropped from the delete preview, so the assets this cleanup exists for stayed invisible.
-    # Safe against the one hazard that table warns about, a chat model borrowed as a text encoder:
-    # the orphan listing skips any repo holding a GGUF, so it is never offered as a leftover.
+    # The native engine's component-only repos ARE the companions for an sd.cpp pick, and the largest
+    # half of the footprint; leaving them out made them link-only strangers. Safe against a chat model
+    # borrowed as a text encoder, since the orphan listing skips any repo holding a GGUF.
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
         bases |= set(sd_cpp_companion_only_repo_ids())
@@ -517,12 +497,9 @@ def known_companion_base_ids() -> set[str]:
 
 
 def _mirror_pair_ids() -> set[str]:
-    # The WHOLE table, gated and ungated. Gating decides whether a fetch may override a user's
-    # cache; it says nothing about whether a base can strand companions, and most of the table
-    # is ungated (Klein 4B and base-4B, HiDream Dev / Fast, SDXL Turbo, ...). Reading only the
-    # gated half would drop those from the curated ids, so before a companion link is recorded
-    # the cleanup would not recognise them and could offer an installed checkpoint's companions
-    # for deletion.
+    # The WHOLE table, gated and ungated: gating decides whether a fetch may override a user's cache,
+    # not whether a base can strand companions, so reading only the gated half would offer an
+    # installed checkpoint's companions for deletion.
     try:
         from core.inference.diffusion_families import _MIRROR_PAIRS
     except Exception:  # noqa: BLE001
@@ -542,10 +519,8 @@ def is_companion_base(repo_id: str) -> bool:
     key = _normalise(repo_id)
     if key in known_companion_base_ids():
         return True
-    # Through the same identity expansion required_companion_bases uses, so the two agree on
-    # WHICH copy is protected. A link recorded against the unsloth mirror is satisfied on an
-    # upgraded install by the community repack the fetch fell back to, and comparing the literal
-    # id alone left that copy deletable while the checkpoint holding it was still installed.
+    # Through the same identity expansion required_companion_bases uses, so the two agree WHICH copy
+    # is protected: comparing the literal id left an upgraded install's repack copy deletable.
     return any(
         key in {_normalise(rid) for rid in _with_mirrors([base])}
         for bases in read_companion_links().values()
@@ -595,10 +570,8 @@ def required_companion_bases(
         recorded = links.get(key)
         if recorded:
             bases |= _with_mirrors(recorded)
-        # Canonical, not literal: a cached MIRROR of a base resolves its own family back to the
-        # UPSTREAM id, which would make each identity a dependent of the other and leave a cache
-        # holding both unable to delete either. They are copies of one repo, not a pair that
-        # needs each other.
+        # Canonical, not literal: a cached MIRROR resolves its own family back to the UPSTREAM id, which
+        # would make each identity a dependent of the other and leave a cache holding both stuck.
         self_keys = {key, _normalise(_canonical(repo_id))}
         for base in bases:
             base_key = _normalise(base)

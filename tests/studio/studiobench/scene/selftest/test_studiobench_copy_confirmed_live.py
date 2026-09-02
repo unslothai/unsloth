@@ -173,8 +173,8 @@ def test_a_failed_sentinel_write_does_not_re_admit_the_unchanged_clipboard(page)
     plausible non-empty copy of the whole thread with the 250ms settle beside it as `copy_ms`. That
     is the exact measurement the sentinel exists to refuse, re-admitted by its own fallback.
     """
-    # Whatever an earlier action in the film left behind. Non-empty and plausible, which is what
-    # makes it dangerous: an empty clipboard would have been caught by `clipboard_chars > 0`.
+    # Whatever an earlier action in the film left behind. Non-empty and plausible, which is what makes
+    # it dangerous: an empty clipboard would have been caught by `clipboard_chars > 0`.
     page.evaluate("async () => await navigator.clipboard.writeText('x'.repeat(2400))")
     _refuse_the_sentinel_write(page)
     _swallow_the_copy(page)
@@ -224,10 +224,9 @@ def test_the_guard_is_on_the_clipboard_and_not_on_the_engine_name():
 
     src = inspect.getsource(A.select_all_copy)
     assert "sentinel" in src
-    # EXECUTABLE LINES ONLY. The engine names belong in the comment that explains which engine was
-    # observed failing and with what numbers; what must not exist is a BRANCH on one.
+    # EXECUTABLE LINES ONLY. The engine names belong in the comment explaining which engine was
+    # observed failing and with what numbers; what must not exist is a BRANCH on one. The word
+    # "engine" is allowed because it appears in the refusal MESSAGE; a specific engine's NAME is not.
     code = "\n".join(line for line in src.splitlines() if not line.lstrip().startswith("#"))
-    # The word "engine" is allowed: it appears in the refusal MESSAGE, which is where it belongs.
-    # A specific engine's NAME is not, because that is what a branch would need.
     for name in ("webkit", "WebKit", "firefox", "Firefox", "browser_name", "browser_type"):
         assert name not in code, f"the guard branches on {name!r} rather than on the clipboard"

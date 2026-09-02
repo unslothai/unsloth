@@ -64,8 +64,7 @@ def _now() -> str:
 
 
 _TOKEN = re.compile(r"\w+", re.UNICODE)
-# Straight and curly double quotes, single quotes and backticks: how a user names a word
-# instead of using it. Non-greedy and single-line so an unclosed quote spans nothing.
+# Quotes mark a word being named rather than used; non-greedy and single-line so an unclosed quote spans nothing.
 _QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([^`\n]+)`")
 
 
@@ -76,11 +75,9 @@ def _match_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in toks)
 
 
-# A closed list of function words, so behaviour is identical on every install. Nothing
-# here can carry the subject of a question.
-#
-# `no` and `not` are deliberately NOT here: they carry the whole difference in "what did I
-# say not to delete?", where dropping them leaves only terms BM25 floors at 1e-6.
+# A closed list of function words, so behaviour is identical on every install. no and not are
+# deliberately NOT here: they carry the whole difference in "what did I say not to delete?",
+# where dropping them leaves only terms BM25 floors at 1e-6.
 _ARCHIVE_STOPWORDS = frozenset(
     """
 a about all am an and any are as at be been being but by can could did do does doing
@@ -90,11 +87,8 @@ was we were what when where which who why will with would you your
 """.split()
 )
 
-# Identifier-ish: a token containing a digit (ZQXVARA123, 9134) or an underscore, or one
-# written in capitals and long enough not to be an "I" or an "OK". These are the tokens a
-# person uses when they mean one specific thing. Containing a digit, not mixing one with a
-# letter: a purely numeric subject ("the current value of 9134") otherwise has no shape at
-# all once the capitals rule needs contrast.
+# Identifier-ish tokens are how a person names one specific thing; a digit alone counts, since a
+# purely numeric subject has no other shape.
 _HAS_DIGIT = re.compile(r"\d", re.UNICODE)
 _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
@@ -115,9 +109,7 @@ def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
     if "_" in token:
         return True
     if _HAS_DIGIT.search(token):
-        # A bare number needs LENGTH to be a name, the same bar the capitals rule carries.
-        # Without it "answer in 2 sentences" filters the archive on "2". A token mixing
-        # letters and digits is a name at any length.
+        # A bare number needs LENGTH to be a name, else "answer in 2 sentences" filters the archive on "2".
         return bool(_HAS_LETTER.search(token)) or len(token) >= 3
     return len(token) >= 3 and token.upper() in raw_tokens
 
@@ -158,15 +150,13 @@ def conversation_match_queries(query: str) -> list[str]:
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
         return []
-    # The capitals rule needs CONTRAST: in an all-caps line every word passes it, so the
-    # filter ORs in "what" and "the" and filters nothing. Shape still decides, so
-    # ZQXVARA123 is an identifier either way; only shouted prose changes.
+    # Identifier-ish: a token containing a digit (ZQXVARA123, 9134) or an underscore, or one in
+    # capitals and long enough not to be an "I" or an "OK". The capitals rule needs CONTRAST: in an
+    # all-caps line every word passes it and the filter filters nothing.
     raw_tokens = frozenset() if query == query.upper() else frozenset(_TOKEN.findall(query))
     identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
-    # A QUOTED word is the subject whatever the stopword list thinks: `What did I say about
-    # "this"?` otherwise reduces to '"say"' and an archived `Use this endpoint` is
-    # unreachable. Quoted tokens stay out of `identifiers`, so this widens only the
-    # permissive pass.
+    # A QUOTED word is the subject whatever the stopword list thinks; quoted tokens stay out of
+    # identifiers, so this widens only the permissive pass.
     quoted = frozenset(
         token
         for match in _QUOTED.findall(query.lower())
@@ -568,25 +558,18 @@ def search_lexical(
     if not scopes:
         return []
     placeholders = ",".join("?" * len(scopes))
-    # One snapshot for the gate and the read: WAL pins it at the transaction's first
-    # read, so a scope retired in between cannot land rows in a result the gate already
-    # decided to run unfiltered. A caller's own transaction is used instead.
+    # One snapshot for the gate and the read: WAL pins it at the transaction's first read, so a scope
+    # retired in between cannot land rows in a result the gate decided to run unfiltered.
     own_read_txn = not conn.in_transaction
+    # Read-only, but it has to end: an open snapshot blocks WAL checkpointing.
     if own_read_txn:
         conn.execute("BEGIN")
     try:
-        # The filtered form joins chunks and documents and runs both subqueries for every
-        # matched row BEFORE the LIMIT, so it costs more the commoner the query terms are.
-        # With nothing linked that work is provably wasted (linked_folder_rows_exist).
+        # The filtered form runs both subqueries for every matched row BEFORE the LIMIT, and with nothing
+        # linked that work is provably wasted (linked_folder_rows_exist).
         if oldest_first:
-            # The mirror of `newest_first`, for the same reason: rowid ordering is
-            # scrambled by a re-embed, which can push the oldest turn out of the window.
-            # NULLs first, since a row archived before the column existed is the oldest.
-            # Then `created_at`, then the chunk id: on a LEGACY archive every ordinal is
-            # NULL, so every term after the score was constant and both halves of the
-            # two-ended fetch returned the same arbitrary subset, which `_both_ends` then
-            # deduplicated -- the 256-candidate strategy reaching one end twice and the
-            # later revisions not at all.
+            # Order by archive ordinal, not rowid, which a re-embed scrambles; NULLs first as oldest, then
+            # created_at and chunk id, else on a legacy archive both halves return the same subset.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
@@ -596,9 +579,7 @@ def search_lexical(
                 f"d.created_at ASC, chunks_fts.chunk_id ASC LIMIT ?"
             )
         elif newest_first:
-            # Ordered by archive ordinal, not rowid: rowid is insertion order, and a
-            # re-embed reinserts a chunk, so a rowid DESC window returned ordinals
-            # 70, 193, 116, ... and missed the newest turn. NULLs sort last, as oldest.
+            # rowid is insertion order and a re-embed reinserts a chunk, so a rowid DESC window missed the newest turn.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
@@ -627,7 +608,6 @@ def search_lexical(
             )
         rows = conn.execute(sql, (mq, *scopes, k)).fetchall()
     finally:
-        # Read-only, but it has to end: an open snapshot blocks WAL checkpointing.
         if own_read_txn:
             conn.commit()
     # bm25() is negative (more negative = better); flip to higher-is-better.
@@ -655,15 +635,12 @@ def search_dense(
         return []
     dim = rag_db.vec_table_dim(conn)
     if dim is not None and dim != len(vector):
-        # Embedding model switched widths and nothing re-indexed yet; the stale
-        # table cannot answer new-model queries (vec0 errors on the MATCH).
+        # The stale table cannot answer new-model queries: vec0 errors on the MATCH.
         return []
-    # The pre-tag spelling of the same request, kept acceptable so an existing index
-    # keeps answering after an upgrade.
+    # The pre-tag spelling of the same request, kept acceptable so an existing index keeps answering after an upgrade.
     untagged = config.embedding_identity_model(embedding_model) or embedding_model
-    # dict.fromkeys keeps the caller's order and collapses a scope named twice, which
-    # is now load-bearing: widening carries per-scope state, and a repeat would both
-    # multiply that scope's fetch twice per round and emit its hits twice into the merge.
+    # dict.fromkeys collapses a scope named twice: a repeat would multiply that scope's fetch and emit
+    # its hits twice into the merge.
     scopes = list(
         dict.fromkeys(
             s
@@ -673,16 +650,10 @@ def search_dense(
             ).fetchone()
         )
     )
-    # Over-fetch when filtering so stale-model hits don't starve the top-k. Their
-    # distances come from another space, so they can fill every fetched slot while
-    # compatible chunks sit further down the KNN list: widen until k of them survive
-    # the filter or the scope has nothing left to give.
-    #
-    # Per scope, not across the merge. vec0 constrains its partition key by equality,
-    # so each scope is its own KNN list with its own stale prefix; a project scope
-    # buried under another embedder's vectors would otherwise stop widening the
-    # moment the thread scope handed over k weak hits, and the merge would then rank
-    # a stronger project chunk it never fetched.
+    # Stale-model hits come from another space and can fill every fetched slot, so widen until k
+    # compatible ones survive the filter.
+    # Per scope, not across the merge: vec0 constrains its partition key by equality, so each scope has
+    # its own stale prefix.
     kept: dict[str, list[tuple[str, float]]] = {}
     fetches = dict.fromkeys(scopes, max(k * 3, k + 10))
     pending = list(scopes)
@@ -710,8 +681,7 @@ def search_dense(
     return out[:k]
 
 
-# Widening is bounded: past this many nearest neighbours per scope the scope is
-# effectively another embedder's, and a re-upload is the answer, not a longer scan.
+# Past this many nearest neighbours the scope is effectively another embedder's, and a re-upload is the answer.
 _MAX_DENSE_FETCH = 4096
 # One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
 _ID_BATCH = 900

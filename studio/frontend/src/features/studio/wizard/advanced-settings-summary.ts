@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { CPT_TARGET_MODULES, DEFAULT_HYPERPARAMS } from "@/config/training";
+import { DEFAULT_HYPERPARAMS, resolveCptTargetModules } from "@/config/training";
 import type {
   AdvancedSettingsBaseline,
   TrainingConfigState,
@@ -90,7 +90,13 @@ function countNonDefaultLoraSettings(
     0,
   );
   const defaultTargetModules = isCpt
-    ? CPT_TARGET_MODULES
+    ? resolveCptTargetModules(
+        baselineValue(
+          baseline,
+          "targetModules",
+          DEFAULT_HYPERPARAMS.targetModules,
+        ),
+      )
     : baselineValue(
         baseline,
         "targetModules",

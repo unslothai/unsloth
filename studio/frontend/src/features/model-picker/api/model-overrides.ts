@@ -319,11 +319,20 @@ export function fromApiOverride(
   // Only a physical pin travels (toApiOverride drops the rest), so a row without ids
   // says nothing about placement and a local Vulkan ordinal keeps its own namespace.
   const serverGpuIds = override.gpu_ids?.length ? override.gpu_ids : null;
+  // The pin is ONE setting in one of two fields, and an edit clears the other
+  // (contextPinPatch). Filling them from different sources mints a record that loads at
+  // two lengths, since the picker reads customContextLength first and the API's
+  // auto-switch max_seq_length first. So a row stating either field owns both.
+  const serverStatesPin =
+    override.custom_context_length != null || override.max_seq_length != null;
   const normalized = normalizePerModelConfig({
     ...DEFAULT_PER_MODEL_CONFIG,
-    customContextLength:
-      override.custom_context_length ?? local.customContextLength,
-    maxSeqLength: override.max_seq_length ?? local.maxSeqLength,
+    customContextLength: serverStatesPin
+      ? (override.custom_context_length ?? null)
+      : local.customContextLength,
+    maxSeqLength: serverStatesPin
+      ? (override.max_seq_length ?? null)
+      : local.maxSeqLength,
     kvCacheDtype: override.kv_cache_dtype ?? local.kvCacheDtype,
     mlxKvBits: override.mlx_kv_bits ?? local.mlxKvBits,
     speculativeType: override.speculative_type ?? local.speculativeType,

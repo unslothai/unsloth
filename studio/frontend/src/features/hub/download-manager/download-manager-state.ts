@@ -5,6 +5,11 @@ import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { INVENTORY_HINT_KIND } from "../inventory/constants";
+import {
+  discardPendingInventoryHint,
+  forgetObservedInventoryHint,
+  rememberCompletedInventoryHints,
+} from "../inventory/inventory-hint-store";
 import { inventoryHintKey } from "../inventory/inventory-hints";
 import type { InventoryHint } from "../inventory/types";
 import { createThrottledStorage, noopStorage } from "../stores/persist-storage";
@@ -18,11 +23,14 @@ import {
 import {
   ACTIVE_STATES,
   MAX_PROGRESS_FRACTION,
+  isPersistedJobState,
 } from "./download-manager-config";
 import {
   type DownloadManagerState,
   type JobListeners,
   type ManagedDownload,
+  downloadInventoryHintKind,
+  scopedDownloadInventoryKind,
 } from "./download-manager-types";
 import {
   clearRuntimeTimer,
@@ -32,8 +40,7 @@ import {
 } from "./runtime-registry";
 
 const PERSIST_KEY = "unsloth.studio.downloads";
-// 2 is the first version whose records can say whether their byte counters were measured.
-// Below it, an absent marker is not evidence of anything, so the migration decides.
+// Below version 2 an absent measuredTransfer marker is not evidence of anything, so the migration decides.
 const PERSIST_VERSION = 2;
 const MEASURED_TRANSFER_VERSION = 2;
 const PERSIST_THROTTLE_MS = 1_000;
@@ -50,6 +57,33 @@ function nonNegativeNumber(value: unknown, fallback = 0): number {
   return Math.max(0, finiteNumber(value, fallback));
 }
 
+/**
+ * Inventory kind of a persisted job. Records written before the field carry `scopedFiles`, the same evidence
+ * `startJob` classifies a fresh scoped request from: without it a scoped GGUF download comes back as a model
+ * download, so its row changes format until backend adoption repairs it.
+ */
+function inventoryKindOfPersisted(
+  value: Record<string, unknown>,
+  variant: string | null,
+): { inventoryKind?: Exclude<InventoryHint["kind"], "dataset"> } {
+  if (
+    value.inventoryKind === INVENTORY_HINT_KIND.MODEL ||
+    value.inventoryKind === INVENTORY_HINT_KIND.GGUF
+  ) {
+    return { inventoryKind: value.inventoryKind };
+  }
+  if (
+    variant?.startsWith("@") &&
+    Array.isArray(value.scopedFiles) &&
+    value.scopedFiles.every((file) => typeof file === "string")
+  ) {
+    return {
+      inventoryKind: scopedDownloadInventoryKind(value.scopedFiles as string[]),
+    };
+  }
+  return {};
+}
+
 function sanitizePersistedJob(
   value: unknown,
   legacy = false,
@@ -58,7 +92,7 @@ function sanitizePersistedJob(
   const kind = isDownloadKind(value.kind) ? value.kind : null;
   const repoId = typeof value.repoId === "string" ? value.repoId : null;
   const state = value.state as DownloadJobState;
-  if (!kind || !repoId || !ACTIVE_STATES.has(state)) return null;
+  if (!kind || !repoId || !isPersistedJobState(state)) return null;
 
   const variant = typeof value.variant === "string" ? value.variant : null;
   const key = jobKeyOf(kind, repoId, variant);
@@ -87,14 +121,9 @@ function sanitizePersistedJob(
     ...(typeof value.checkpoint === "boolean"
       ? { checkpoint: value.checkpoint }
       : {}),
-    // A held reading survives the reload that carried it: dropping the flag restores the stale
-    // downloadedBytes with the guard reading undefined (so, measured), which is the "0 B left"
-    // the guard exists to stop.
-    //
-    // Absent means "never polled" only for a record written since the field existed. Below that
-    // version a job that HAD polled says nothing either way, so a legacy record already carrying
-    // counters is read as held. It costs one poll of an untightened remainder; believing it
-    // costs the "0 B left" this whole marker is for.
+    ...inventoryKindOfPersisted(value, variant),
+    // A held reading must survive the reload: dropping the flag restores the stale downloadedBytes reading as measured, the "0 B left" the guard exists to stop.
+    // Absent means "never polled" only since the field existed, so a legacy record already carrying counters is read as held.
     ...(typeof value.measuredTransfer === "boolean"
       ? { measuredTransfer: value.measuredTransfer }
       : legacy && nonNegativeNumber(value.downloadedBytes) > 0
@@ -147,22 +176,21 @@ function toPersistedJob(
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
+    ...(job.inventoryKind !== undefined
+      ? { inventoryKind: job.inventoryKind }
+      : {}),
     ...(job.measuredTransfer !== undefined
       ? { measuredTransfer: job.measuredTransfer }
       : {}),
     ...(job.transport !== undefined ? { transport: job.transport } : {}),
-    // Alongside the transport, never instead of it: a fallback run reads as
-    // plain HTTP without this and the reloaded card offers Pause for a stop
-    // that leaves a restart-only partial.
+    // Alongside the transport, never instead of it: a fallback run reads as plain HTTP and the reloaded card offers Pause for a restart-only stop.
     ...(job.cancelTransport !== undefined
       ? { cancelTransport: job.cancelTransport }
       : {}),
   };
 }
 
-// Mirrors the backend's normalize_repo_key (strip().lower()) so two casings of
-// one repo share a key (else duplicate jobs / mismatched listeners). Keys only;
-// `repoId` keeps original casing for display and API calls.
+// Mirrors the backend's normalize_repo_key (strip().lower()) for keys only; `repoId` keeps its casing for display and API calls.
 function normalizeRepoIdentity(repoId: string): string {
   return repoId.trim().toLowerCase();
 }
@@ -185,24 +213,17 @@ export function jobKeyOf(
   return variantKey ? `${base}#${variantKey}` : base;
 }
 
-function completedInventoryHintKind(
-  kind: DownloadKind,
-  variant: string | null,
-): InventoryHint["kind"] {
-  return kind === DOWNLOAD_KIND.DATASET
-    ? INVENTORY_HINT_KIND.DATASET
-    : variant
-      ? INVENTORY_HINT_KIND.GGUF
-      : INVENTORY_HINT_KIND.MODEL;
-}
-
 function liveCompletedInventoryHintKeys(): Set<string> {
   const keys = new Set<string>();
   for (const job of Object.values(getState().jobs)) {
     if (job.state !== "complete") continue;
     keys.add(
       inventoryHintKey(
-        completedInventoryHintKind(job.kind, job.variant),
+        downloadInventoryHintKind(
+          job.kind,
+          job.variant,
+          job.inventoryKind,
+        ),
         job.repoId,
       ),
     );
@@ -215,11 +236,13 @@ function collectCompletedInventoryHints(
 ): InventoryHint[] {
   return Object.values(jobs).flatMap((job) => {
     if (job.state !== "complete") return [];
-    // A dictation download is not a chat model arriving. A custom Whisper repo
-    // is only hidden once the backend has scanned its config, so an optimistic
-    // hint would surface it in the chat inventory for the hint's whole TTL.
+    // A dictation download is not a chat model arriving: a custom Whisper repo stays visible in chat for the hint's whole TTL until the backend scans its config.
     if (job.external) return [];
-    const kind = completedInventoryHintKind(job.kind, job.variant);
+    const kind = downloadInventoryHintKind(
+      job.kind,
+      job.variant,
+      job.inventoryKind,
+    );
     if (
       runtimeRegistry.suppressedCompletedInventoryHints.has(
         inventoryHintKey(kind, job.repoId),
@@ -233,6 +256,8 @@ function collectCompletedInventoryHints(
         kind,
         repoId: job.repoId,
         ...(bytes > 0 ? { bytes } : {}),
+        startedAt: job.startedAt,
+        ...(job.completedAt ? { createdAt: job.completedAt } : {}),
       },
     ];
   });
@@ -240,7 +265,10 @@ function collectCompletedInventoryHints(
 
 function buildCompletedHintSignature(hints: readonly InventoryHint[]): string {
   return hints
-    .map((hint) => `${hint.kind}:${hint.repoId}:${hint.bytes ?? ""}`)
+    .map(
+      (hint) =>
+        `${hint.kind}:${hint.repoId}:${hint.bytes ?? ""}:${hint.startedAt ?? ""}:${hint.createdAt ?? ""}`,
+    )
     .sort()
     .join("|");
 }
@@ -273,7 +301,9 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
       jobs: Object.fromEntries(
         Object.entries(state.jobs)
           // External jobs have no hub job to resume into, so they are not saved.
-          .filter(([, job]) => !job.external && ACTIVE_STATES.has(job.state))
+          // Failed and cancelled jobs stay: the Downloads list is the resume
+          // entry after a mid-transfer failure or a restart (#9780).
+          .filter(([, job]) => !job.external && isPersistedJobState(job.state))
           .map(([key, job]) => [key, toPersistedJob(job)] as const),
       ),
       conflicts: {},
@@ -285,14 +315,11 @@ export const setState = useDownloadManagerStore.setState;
 export const getState = useDownloadManagerStore.getState;
 
 /**
- * Downloads run in the backend, which the quit path reaps, but only this store knows they
- * are in flight. A Tauri quit never fires beforeunload, so mirror it to Rust to ask first.
- */
+ * A Tauri quit never fires beforeunload, and only this store knows a backend download is in flight. */
 export function hasActiveDownloadJob(
   jobs: Record<string, ManagedDownload>,
 ): boolean {
-  // External jobs count too, unlike in `partialize`: their STT sidecars are reached
-  // through the backend, so a quit kills those transfers as well.
+  // External jobs count too, unlike in `partialize`: their STT sidecars go through the backend, so a quit kills those transfers.
   return Object.values(jobs).some((job) => ACTIVE_STATES.has(job.state));
 }
 
@@ -305,7 +332,6 @@ function publishDownloadsActive(active: boolean): void {
     .catch(() => {});
 }
 
-// Transitions only: the poll loop patches progress several times a second.
 let lastPublishedDownloadsActive: boolean | null = null;
 
 function syncDownloadsActivity(state: DownloadManagerState): void {
@@ -315,7 +341,6 @@ function syncDownloadsActivity(state: DownloadManagerState): void {
   publishDownloadsActive(active);
 }
 
-// Once for whatever the persisted state restored, then on every change.
 syncDownloadsActivity(getState());
 useDownloadManagerStore.subscribe(syncDownloadsActivity);
 
@@ -373,9 +398,6 @@ function hasRuntimePeerForRepo(
   return false;
 }
 
-// Shared rule for what blocks a fresh GGUF variant start. Peer guard passes
-// includeOwnRuntime:false (runs after this start made its own runtime);
-// requestStart passes both true (runs before any runtime or job exists).
 export function hasVariantRepoActivity(
   kind: DownloadKind,
   repoId: string,
@@ -418,10 +440,33 @@ function refreshCompletedHintSignature(): void {
 }
 
 export function patchJob(key: string, patch: Partial<ManagedDownload>): void {
+  const previousJob = getState().jobs[key];
+  if (
+    previousJob &&
+    previousJob.state !== "complete" &&
+    patch.state === "complete"
+  ) {
+    runtimeRegistry.suppressedCompletedInventoryHints.delete(
+      inventoryHintKey(
+        downloadInventoryHintKind(
+          previousJob.kind,
+          previousJob.variant,
+          previousJob.inventoryKind,
+        ),
+        previousJob.repoId,
+      ),
+    );
+  }
   setState((state) => {
     const job = state.jobs[key];
     if (!job) return state;
-    const nextJob = { ...job, ...patch };
+    const nextJob = {
+      ...job,
+      ...patch,
+      ...(job.state !== "complete" && patch.state === "complete"
+        ? { completedAt: patch.completedAt ?? Date.now() }
+        : {}),
+    };
     const nextState = {
       ...state,
       jobs: { ...state.jobs, [key]: nextJob },
@@ -431,14 +476,34 @@ export function patchJob(key: string, patch: Partial<ManagedDownload>): void {
     }
     return withCompletedHintSignature(nextState);
   });
+  const completedJob = getState().jobs[key];
+  if (
+    previousJob &&
+    previousJob.state !== "complete" &&
+    completedJob?.state === "complete"
+  ) {
+    rememberCompletedInventoryHints(
+      collectCompletedInventoryHints({ [key]: completedJob }),
+    );
+  }
 }
 
 export function putJob(job: ManagedDownload): void {
   runtimeRegistry.clearRemovalTimer(job.key);
+  if (!job.external) {
+    forgetObservedInventoryHint(
+      downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind),
+      job.repoId,
+    );
+  }
   const suppressionChanged =
     runtimeRegistry.suppressedCompletedInventoryHints.delete(
       inventoryHintKey(
-        completedInventoryHintKind(job.kind, job.variant),
+        downloadInventoryHintKind(
+          job.kind,
+          job.variant,
+          job.inventoryKind,
+        ),
         job.repoId,
       ),
     );
@@ -462,23 +527,13 @@ export function putJob(job: ManagedDownload): void {
 export function removeJob(key: string): void {
   const job = getState().jobs[key];
   teardownRuntime(key);
-  let suppressionChanged = false;
-  if (job) {
-    suppressionChanged =
-      runtimeRegistry.suppressedCompletedInventoryHints.delete(
-        inventoryHintKey(
-          completedInventoryHintKind(job.kind, job.variant),
-          job.repoId,
-        ),
-      );
-  }
   runtimeRegistry.clearRemovalTimer(key);
   setState((state) => {
     if (!(key in state.jobs)) return state;
     const next = { ...state.jobs };
     delete next[key];
     const nextState = { ...state, jobs: next };
-    if (!suppressionChanged && job?.state !== "complete") return nextState;
+    if (job?.state !== "complete") return nextState;
     return withCompletedHintSignature(nextState);
   });
 }
@@ -532,6 +587,50 @@ export function clearCompletedInventoryHint(hint: InventoryHint): void {
   refreshCompletedHintSignature();
 }
 
+export function discardDeletedInventoryHints(
+  repoId: string,
+  kinds: readonly InventoryHint["kind"][],
+): void {
+  for (const kind of kinds) {
+    discardPendingInventoryHint(kind, repoId);
+    clearCompletedInventoryHint({ kind, repoId });
+  }
+  const repoIdentity = normalizeRepoIdentity(repoId);
+  for (const job of Object.values(getState().jobs)) {
+    if (
+      job.state === "complete" &&
+      normalizeRepoIdentity(job.repoId) === repoIdentity &&
+      kinds.includes(
+        downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind),
+      )
+    ) {
+      removeJob(job.key);
+    }
+  }
+}
+
+export function discardDeletedModelInventoryHints(
+  repoId: string,
+  variant?: string,
+): void {
+  if (!variant) {
+    discardDeletedInventoryHints(repoId, ["model", "gguf"]);
+    return;
+  }
+  const job = getState().jobs[jobKeyOf(DOWNLOAD_KIND.MODEL, repoId, variant)];
+  // Every other hint site classifies a scoped `@variant` as a model download; hardcoding "gguf" leaves a scoped model download's hint behind, so the deleted row returns until it expires.
+  const kind = downloadInventoryHintKind(
+    DOWNLOAD_KIND.MODEL,
+    variant,
+    job?.inventoryKind,
+  );
+  discardPendingInventoryHint(kind, repoId);
+  clearCompletedInventoryHint({ kind, repoId });
+  if (job?.state === "complete") {
+    removeJob(job.key);
+  }
+}
+
 export function subscribeJobListeners(
   kind: DownloadKind,
   repoId: string,
@@ -562,8 +661,7 @@ export function setExpectedBytesForJob(
   if (!job || job.state !== "running" || bytes <= job.expectedBytes) return;
   patchJob(job.key, {
     expectedBytes: bytes,
-    // Measured against the old, smaller total, so it is wrong the moment the
-    // total grows. The bar hides it until the next poll measures one.
+    // Measured against the old, smaller total, so wrong the moment the total grows.
     etaSeconds: 0,
     fraction:
       job.fraction > 0

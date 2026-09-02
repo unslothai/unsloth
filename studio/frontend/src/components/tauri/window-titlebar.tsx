@@ -123,7 +123,7 @@ export function DesktopTitlebarNavigation({
   return (
     <div
       className={cn(
-        "flex mt-1 translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
+        "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
         className,
       )}
       role="toolbar"

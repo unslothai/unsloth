@@ -2625,6 +2625,24 @@ def test_native_context_read_still_reports_a_length_within_budget(monkeypatch, t
     assert models_route._read_native_context_length(str(tmp_path), is_local = True) == 8192
 
 
+def test_native_context_read_skips_online_only_file(monkeypatch, tmp_path):
+    """A cloud placeholder keeps its logical filename without being opened for metadata."""
+    gguf = tmp_path / "model-Q4_K_M.gguf"
+    gguf.write_bytes(b"placeholder")
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root, deadline = None: iter([gguf]))
+    monkeypatch.setattr(
+        "utils.paths.path_utils.file_contents_available_locally",
+        lambda path, stat_result = None: False,
+    )
+
+    def forbidden(_path):
+        raise AssertionError("online-only GGUF was opened")
+
+    monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", forbidden)
+
+    assert models_route._read_native_context_length(str(tmp_path), is_local = True) is None
+
+
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
     siblings = [
         SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),
@@ -3571,6 +3589,11 @@ def test_hub_local_rows_are_tagged_with_their_task():
     compact = "".join(src.split())
     assert '"task":task' in compact
     assert '"audio_type":audio_type' in compact
+
+    from hub.services.models import catalog_classification
+
+    classifier_src = inspect.getsource(catalog_classification._local_model_audio_type)
+    assert "native_audio_type_from_local_path" in classifier_src
 
 
 def test_pipeline_class_guard_fires_before_any_download():

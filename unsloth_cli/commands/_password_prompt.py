@@ -17,12 +17,11 @@ import os
 import sys
 from typing import Callable, TextIO
 
-# Keep in sync with studio/backend/models/auth.py ChangePasswordRequest
-# (new_password min_length) and studio/backend/auth/storage.py.
+# Keep in sync with studio/backend/models/auth.py ChangePasswordRequest and auth/storage.py.
+# The bound is `new_password` min_length.
 MIN_PASSWORD_LENGTH = 8
 
-# Env var that supplies the initial admin password non-interactively (mirror in
-# studio/backend/auth/terminal_prompt.py). Keep the name in sync.
+# Mirror of studio/backend/auth/terminal_prompt.py; keep the name in sync.
 SUPPLIED_PASSWORD_ENV = "UNSLOTH_STUDIO_PASSWORD"
 
 _BACKSPACE_CHARS = ("\x7f", "\x08")
@@ -57,7 +56,7 @@ class _RestoreTtyOnSignals:
                 continue
             try:
                 self._previous.append((sig, signal.signal(sig, _restore_and_reraise)))
-            except (ValueError, OSError):  # non-main thread / unsupported
+            except (ValueError, OSError):
                 pass
         return self
 
@@ -82,32 +81,28 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
     chars: list[str] = []
     try:
         with _RestoreTtyOnSignals(fd, old_attrs):
-            # cbreak + ISIG off (mirrors terminal_prompt.py): with ISIG on,
-            # Ctrl-Z would suspend mid-read and leave the shell no-echo before
-            # the finally restores it. Ctrl-C/Ctrl-Z arrive as \x03/\x1a here.
+            # cbreak + ISIG off (mirrors terminal_prompt.py): with ISIG on, Ctrl-Z suspends mid-read and leaves
+            # the shell no-echo.
             tty.setcbreak(fd)
             new_attrs = termios.tcgetattr(fd)
             new_attrs[3] &= ~termios.ISIG
             termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
-            # Decode byte-at-a-time with errors="replace" (mirrors
-            # terminal_prompt.py): text-mode read(1) can raise UnicodeDecodeError
-            # on a pasted non-UTF-8 password or yield a lone surrogate that later
-            # crashes pbkdf2. os.read + incremental decoder maps bad bytes to
-            # U+FFFD and continues.
+            # os.read + incremental decoder with errors="replace": text-mode read(1) can raise or yield a lone
+            # surrogate that later crashes pbkdf2.
+            # It raises UnicodeDecodeError.
             decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
             submitted = False
             while not submitted:
                 raw = os.read(fd, 1)
                 if not raw:  # stream ended mid-line: abort, don't submit
                     raise EOFError
-                # One byte can complete >1 char, so iterate over the decoder's output.
                 for ch in decoder.decode(raw):
                     if ch in _SUBMIT_CHARS:
                         submitted = True
                         break
                     if ch == "\x03":  # Ctrl-C (ISIG off: surfaces as a char)
                         raise KeyboardInterrupt
-                    if ch in ("\x04", "\x1a"):  # Ctrl-D / Ctrl-Z
+                    if ch in ("\x04", "\x1a"):
                         if not chars:
                             raise EOFError
                         continue
@@ -117,7 +112,7 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
                             out.write("\b \b")
                             out.flush()
                         continue
-                    if ch < " ":  # other control characters
+                    if ch < " ":
                         continue
                     chars.append(ch)
                     out.write("*")
@@ -142,11 +137,11 @@ def _read_masked_windows(prompt: str, out: TextIO) -> str:
                 break
             if ch == "\x03":  # Ctrl-C: getwch swallows the signal, re-raise
                 raise KeyboardInterrupt
-            if ch in ("\x04", "\x1a"):  # Ctrl-D / Ctrl-Z
+            if ch in ("\x04", "\x1a"):
                 if not chars:
                     raise EOFError
                 continue
-            if ch in ("\x00", "\xe0"):  # function/arrow key: swallow the code
+            if ch in ("\x00", "\xe0"):
                 msvcrt.getwch()
                 continue
             if ch in _BACKSPACE_CHARS:
