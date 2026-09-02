@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { carriesOverSeed, seededMeasuredTransfer } from "./adopt-rules";
+import {
+  carriesOverSeed,
+  idleProbeVerdict,
+  seededMeasuredTransfer,
+} from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
@@ -15,12 +19,11 @@ import {
 } from "./api";
 import { cancelExternalJob, isExternalJob } from "./external-jobs";
 import {
-  CANCELLED_LINGER_MS,
   CANCEL_WATCHDOG_MS,
   COMPLETE_LINGER_MS,
-  ERROR_LINGER_MS,
   HIDDEN_POLL_INTERVAL_MS,
   IDLE_EVICT_GRACE_MS,
+  INTERRUPTED_DOWNLOAD_MESSAGE,
   INVENTORY_BUMP_DEBOUNCE_MS,
   POLL_BACKOFF_AFTER_MS,
   POLL_BACKOFF_INTERVAL_MS,
@@ -66,13 +69,16 @@ import {
   type Terminal,
 } from "./download-manager-types";
 import {
+  RESTART_NOTICE_TITLE,
   XET_NOTICE_TITLE,
   composeNoticeDescription,
+  composeRestartNoticeDescription,
   shouldShowXetNotice,
 } from "./xet-progress-notice";
 import { reserveXetNoticeFromServer } from "@/features/settings/api/xet-notice";
 import {
   currentRoute,
+  currentStartToastSelectionEpoch,
   dismissStartToast,
   liveCallerToast,
   showCallerToast,
@@ -101,6 +107,26 @@ import {
 } from "./runtime-registry";
 import { resolveTransportMode } from "./transport-preference";
 
+function showRestartStartToast(
+  key: string,
+  xet: boolean,
+  caller: DownloadRequest["callerToast"],
+  originRoute: string,
+  originSelectionEpoch: number,
+): void {
+  showStartToast(
+    key,
+    {
+      title: RESTART_NOTICE_TITLE,
+      description: composeRestartNoticeDescription({
+        xet,
+        callerToast: caller,
+      }),
+    },
+    originRoute,
+    originSelectionEpoch,
+  );
+}
 function notify(
   job: ManagedDownload,
   event: keyof JobListeners,
@@ -243,7 +269,8 @@ export function finalize(
       error: null,
     });
     notify(job, "onCancelled", 0);
-    scheduleRemoval(key, CANCELLED_LINGER_MS);
+    // Stay in Downloads until dismissed so the user can resume the partial
+    // without searching the model again.
   } else {
     const rawError =
       typeof opts.error === "string" && opts.error
@@ -257,7 +284,6 @@ export function finalize(
       etaSeconds: 0,
     });
     notify(job, "onError", 0);
-    scheduleRemoval(key, ERROR_LINGER_MS);
   }
   scheduleInventoryBump();
 }
@@ -383,18 +409,30 @@ function handleIdleAfterProgress(
   rt: JobRuntime,
   key: string,
   madeProgress: boolean,
+  progressResp: ProgressLike,
 ): void {
   const updatedJob = getState().jobs[key];
   if (updatedJob && hasObservedExpectedBytes(updatedJob)) {
     finalize(key, "complete", { bytes: updatedJob.downloadedBytes });
   } else if (rt.cancelRequested) {
     finalize(key, "cancelled");
+  } else if (
+    idleProbeVerdict(
+      progressResp.downloaded_bytes,
+      progressResp.cache_path,
+      progressResp.target_present,
+      progressResp.cache_measured,
+    ) === "gone"
+  ) {
+    finalize(key, "gone");
   } else if (madeProgress) {
     rt.idleSinceMs = null;
   } else {
     rt.idleSinceMs ??= Date.now();
     if (Date.now() - rt.idleSinceMs >= IDLE_EVICT_GRACE_MS) {
-      finalize(key, "gone");
+      // The backend went idle with the card still up: keep a resumable row
+      // instead of dropping it. "gone" is only when the cache itself vanished.
+      finalize(key, "error", { error: INTERRUPTED_DOWNLOAD_MESSAGE });
     }
   }
 }
@@ -483,7 +521,7 @@ async function tick(key: string): Promise<void> {
     );
 
     if (status.state === "idle") {
-      handleIdleAfterProgress(rt, key, madeProgress);
+      handleIdleAfterProgress(rt, key, madeProgress, progressResp);
     } else {
       rt.idleSinceMs = null;
     }
@@ -570,10 +608,14 @@ export async function startJob(
     transport?: ResolvedTransport;
     cancelTransport?: ResolvedTransport | null;
     originRoute?: string;
+    originSelectionEpoch?: number;
+    restartDisclosure?: boolean;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
   const startRoute = opts.originRoute ?? currentRoute();
+  const startSelectionEpoch =
+    opts.originSelectionEpoch ?? currentStartToastSelectionEpoch();
   // Peer guard stops a FRESH start from double-starting a variant already downloading. Skipped when ADOPTING:
   // the restored own entry would look like a peer and freeze the bar, and adoptJob already guards double-polling.
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
@@ -725,12 +767,21 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
-  // One start, one toast: a cancel can land mid-flight, and neither message is true of a start that is already stopping.
+    // One accepted start, one job-owned toast. A preflight restart disclosure
+    // waits until here so rejected, attached and already-stopping starts cannot
+    // leave a claim behind for the next model selection.
     const stopping = rt.cancelRequested;
-  // Checked BEFORE reserving: a reservation is one of three for the life of the install, and spending one on a toast discarded on arrival burns all three unseen.
+    const liveOwnStart =
+      result.attached !== true && result.state === "running" && !stopping;
+    const discloseRestart = opts.restartDisclosure === true && liveOwnStart;
+    // Checked BEFORE reserving: a reservation is one of three for the life of the install, and spending one on a toast discarded on arrival burns all three unseen.
     const onOriginRoute = currentRoute() === startRoute;
+    const onOriginSelection =
+      req.kind !== DOWNLOAD_KIND.MODEL ||
+      currentStartToastSelectionEpoch() === startSelectionEpoch;
     if (
       onOriginRoute &&
+      onOriginSelection &&
       shouldShowXetNotice({
         kind: req.kind,
         transport: started,
@@ -739,10 +790,20 @@ export async function startJob(
       })
     ) {
       void reserveXetNoticeFromServer().then(({ granted }) => {
-  // This round trip can outlive the transfer: finalize() dismisses by id before it resolves, so raising here would leave a finished or cancelled job claiming to run.
+        // This round trip can outlive the transfer: finalize() dismisses by id before it resolves, so raising here would leave a finished or cancelled job claiming to run.
         if (!isCurrent(key, epoch) || rt.cancelRequested) return;
-  // The caller's line can go stale while the notice stays true: chat moved thread, but the 0% still needs explaining.
+        // The caller's line can go stale while the transport/restart facts stay true.
         const caller = liveCallerToast(req.callerToast);
+        if (discloseRestart) {
+          showRestartStartToast(
+            key,
+            granted,
+            caller,
+            startRoute,
+            startSelectionEpoch,
+          );
+          return;
+        }
         if (granted) {
           showStartToast(
             key,
@@ -751,13 +812,25 @@ export async function startJob(
               description: composeNoticeDescription(caller),
             },
             startRoute,
+            startSelectionEpoch,
           );
           return;
         }
-        showCallerToast(key, caller, startRoute);
+        showCallerToast(key, caller, startRoute, startSelectionEpoch);
       });
-    } else if (!stopping && onOriginRoute) {
-      showCallerToast(key, liveCallerToast(req.callerToast), startRoute);
+    } else if (!stopping && onOriginRoute && onOriginSelection) {
+      const caller = liveCallerToast(req.callerToast);
+      if (discloseRestart) {
+        showRestartStartToast(
+          key,
+          false,
+          caller,
+          startRoute,
+          startSelectionEpoch,
+        );
+      } else {
+        showCallerToast(key, caller, startRoute, startSelectionEpoch);
+      }
     }
     // An adopted job may already have fallen back from Xet to HTTP, which keeps its original cancel marker and so its stop control.
     if (isResolvedTransport(result.cancel_transport)) {

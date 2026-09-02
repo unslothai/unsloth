@@ -19,6 +19,8 @@ must not be the process that takes one.
 
 from __future__ import annotations
 
+from hub.utils.hf_tokens import normalize_token
+
 import gc
 import hashlib
 import io
@@ -764,7 +766,7 @@ class _SnapshotDownloadState:
             terminate_download,
         )
 
-        process = spawn_download(args, hf_token = hf_token or None, hub_cache = hub_cache)
+        process = spawn_download(args, hf_token = normalize_token(hf_token), hub_cache = hub_cache)
         with self._lock:
             if self._cancelled:
                 terminate_download(process)
@@ -835,7 +837,7 @@ class _SnapshotDownloadState:
         try:
             from huggingface_hub import HfApi, hf_hub_download
 
-            info = HfApi(token = hf_token or None).model_info(
+            info = HfApi(token = normalize_token(hf_token)).model_info(
                 repo,
                 revision = revision,
                 files_metadata = True,

@@ -1001,15 +1001,29 @@ class TestConfirmedSpoofIsClearedBeforeLaunch:
             "the clear must be guarded by the corroborated-spoof verdict, never "
             "applied to a host whose override was not disproved"
         )
-        # Exactly one clear of the caller's own environment; the only other unset scopes
+        # Two clears of the caller's own environment, one per branch that installs native
+        # per-arch wheels: the Strix rocm* reroute above, and the no-version reroute, which
+        # produces a gfx* leaf and so never reaches this branch. The only other unset scopes
         # three variables inside the re-probe's subshell. Every other branch keeps the
         # override, which on generic wheels is what makes the GPU usable at all.
+        #
+        # The count alone is the weak half of this assertion, so each clear is also required
+        # to sit under a corroborated-spoof guard. Adding an unguarded third would keep the
+        # count honest and still strand a host whose override was never disproved.
         _lasting = [
-            ln.strip()
-            for ln in source.splitlines()
+            i
+            for i, ln in enumerate(source.splitlines())
             if ln.strip().startswith("unset HSA_OVERRIDE_GFX_VERSION")
         ]
-        assert _lasting == ["unset HSA_OVERRIDE_GFX_VERSION"], _lasting
+        assert len(_lasting) == 2, _lasting
+        _lines = source.splitlines()
+        for _at in _lasting:
+            _guard = "\n".join(_lines[max(0, _at - 6) : _at])
+            assert "_spoof_physical" in _guard, (
+                f"the clear at line {_at + 1} is not guarded by a corroborated-spoof "
+                f"verdict; every clear must be, or a host whose override was not "
+                f"disproved loses the only thing making its GPU usable"
+            )
 
 
 def _spoof_clear_guard() -> str:
