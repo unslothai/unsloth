@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
@@ -41,18 +41,30 @@ async def _inline_to_thread(func, /, *args, **kwargs):
     return func(*args, **kwargs)
 
 
-def _fake_unsloth_attention_modules(resolver):
+@contextmanager
+def _patched_unsloth_attention_modules(resolver):
     unsloth_module = ModuleType("unsloth")
     models_module = ModuleType("unsloth.models")
     utils_module = ModuleType("unsloth.models._utils")
     utils_module.resolve_attention_implementation = resolver
     models_module._utils = utils_module
     unsloth_module.models = models_module
-    return {
+    replacements = {
         "unsloth": unsloth_module,
         "unsloth.models": models_module,
         "unsloth.models._utils": utils_module,
     }
+    missing = object()
+    previous = {name: sys.modules.get(name, missing) for name in replacements}
+    sys.modules.update(replacements)
+    try:
+        yield
+    finally:
+        for name, module in previous.items():
+            if module is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
 
 def _load_route_module(name: str, relative_path: str):
@@ -2001,7 +2013,7 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
             cfg._attn_implementation = "eager"
             return "eager"
 
-        with patch.dict(sys.modules, _fake_unsloth_attention_modules(_stub_resolver)):
+        with _patched_unsloth_attention_modules(_stub_resolver):
             hardware_module._determine_attention_impl_for_gpu_estimate(config)
 
         self.assertFalse(hasattr(config, "_attn_implementation"))
@@ -2029,7 +2041,7 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
         with (
             patch.object(AutoModelForCausalLM, "_model_mapping", new = None),
             patch.object(AutoModel, "_model_mapping", new = None),
-            patch.dict(sys.modules, _fake_unsloth_attention_modules(_stub_resolver)),
+            _patched_unsloth_attention_modules(_stub_resolver),
         ):
             result = hardware_module._determine_attention_impl_for_gpu_estimate(config)
 
@@ -2066,7 +2078,7 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
                 inner._attn_implementation = "eager"
             return "eager"
 
-        with patch.dict(sys.modules, _fake_unsloth_attention_modules(_stub_resolver)):
+        with _patched_unsloth_attention_modules(_stub_resolver):
             hardware_module._determine_attention_impl_for_gpu_estimate(config)
 
         self.assertFalse(hasattr(config, "_attn_implementation"))

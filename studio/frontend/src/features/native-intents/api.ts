@@ -19,7 +19,7 @@ async function invokeNative<T>(
 }
 
 export interface NativeDocumentFolderSelection {
-  /** Opaque directory lease. This is deliberately not a filesystem path. */
+  /** Opaque picker token. It is signed for one operation only when committed. */
   token: string;
   displayName: string;
 }
@@ -32,6 +32,17 @@ export async function pickNativeDocumentFolder(): Promise<NativeDocumentFolderSe
   }
   return invokeNative<NativeDocumentFolderSelection | null>(
     "pick_native_document_folder",
+  );
+}
+
+export async function pickNativeProjectFolder(): Promise<NativeDocumentFolderSelection | null> {
+  if (!isTauri) {
+    throw new Error(
+      "Existing project folders are only available in the desktop app.",
+    );
+  }
+  return invokeNative<NativeDocumentFolderSelection | null>(
+    "pick_native_project_folder",
   );
 }
 

@@ -11,6 +11,7 @@ credential kind/scope are authenticated so ciphertext rows cannot be swapped.
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
 import sqlite3
 import threading
@@ -36,6 +37,46 @@ _NONCE_BYTES = 12
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+
+
+def _secret_binding_digest(row: sqlite3.Row | None) -> str:
+    """Return a non-secret generation binding for one encrypted row.
+
+    AES-GCM writes a fresh nonce on every replacement, so the digest changes
+    even when SQLite timestamp resolution or the plaintext value is unchanged.
+    The absent-row sentinel also binds queued work to the absence of a key.
+    """
+    digest = hashlib.sha256()
+    digest.update(b"unsloth-studio-credential-binding-v1\0")
+    if row is None:
+        digest.update(b"absent")
+        return digest.hexdigest()
+    digest.update(str(int(row["format_version"])).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(bytes(row["nonce"]))
+    digest.update(b"\0")
+    digest.update(bytes(row["ciphertext"]))
+    return digest.hexdigest()
+
+
+def _decrypt_secret_row(
+    credential_kind: str, scope_id: str, row: sqlite3.Row | None
+) -> Optional[str]:
+    if row is None or row["format_version"] != _FORMAT_VERSION:
+        return None
+    try:
+        plaintext = AESGCM(get_or_create_credential_encryption_key()).decrypt(
+            bytes(row["nonce"]),
+            bytes(row["ciphertext"]),
+            _associated_data(credential_kind, scope_id),
+        )
+        return plaintext.decode("utf-8")
+    except Exception:
+        logger.warning(
+            "Saved credential is unreadable; re-entry is required (kind=%s)",
+            credential_kind,
+        )
+        return None
 
 
 def _associated_data(credential_kind: str, scope_id: str) -> bytes:
@@ -175,21 +216,43 @@ def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
         ).fetchone()
     finally:
         conn.close()
-    if row is None or row["format_version"] != _FORMAT_VERSION:
-        return None
+    return _decrypt_secret_row(credential_kind, scope_id, row)
+
+
+def get_secret_with_binding(credential_kind: str, scope_id: str) -> tuple[Optional[str], str]:
+    """Read one credential and its replacement binding from the same DB row."""
+    conn = get_connection()
     try:
-        plaintext = AESGCM(get_or_create_credential_encryption_key()).decrypt(
-            bytes(row["nonce"]),
-            bytes(row["ciphertext"]),
-            _associated_data(credential_kind, scope_id),
-        )
-        return plaintext.decode("utf-8")
-    except Exception:
-        logger.warning(
-            "Saved credential is unreadable; re-entry is required (kind=%s)",
-            credential_kind,
-        )
-        return None
+        row = conn.execute(
+            """
+            SELECT format_version, nonce, ciphertext
+            FROM credential_secrets
+            WHERE credential_kind = ? AND scope_id = ?
+            """,
+            (credential_kind, scope_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return (
+        _decrypt_secret_row(credential_kind, scope_id, row),
+        _secret_binding_digest(row),
+    )
+
+
+def get_secret_binding(credential_kind: str, scope_id: str) -> str:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT format_version, nonce, ciphertext
+            FROM credential_secrets
+            WHERE credential_kind = ? AND scope_id = ?
+            """,
+            (credential_kind, scope_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return _secret_binding_digest(row)
 
 
 def has_secret(credential_kind: str, scope_id: str) -> bool:
@@ -236,6 +299,14 @@ def delete_hf_token() -> bool:
 
 def get_provider_api_key(provider_id: str) -> Optional[str]:
     return get_secret(PROVIDER_API_KEY_KIND, provider_id)
+
+
+def get_provider_api_key_binding(provider_id: str) -> str:
+    return get_secret_binding(PROVIDER_API_KEY_KIND, provider_id)
+
+
+def get_provider_api_key_with_binding(provider_id: str) -> tuple[Optional[str], str]:
+    return get_secret_with_binding(PROVIDER_API_KEY_KIND, provider_id)
 
 
 def save_provider_api_key(

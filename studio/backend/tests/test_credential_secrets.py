@@ -65,6 +65,20 @@ def test_upsert_and_delete_are_idempotent():
     assert credential_secrets.delete_provider_api_key("provider-1") is False
 
 
+def test_provider_credential_binding_changes_on_every_replacement():
+    absent = credential_secrets.get_provider_api_key_binding("provider-1")
+    credential_secrets.save_provider_api_key("provider-1", "same-secret")
+    first = credential_secrets.get_provider_api_key_binding("provider-1")
+    value, atomic_first = credential_secrets.get_provider_api_key_with_binding("provider-1")
+    credential_secrets.save_provider_api_key("provider-1", "same-secret")
+    second = credential_secrets.get_provider_api_key_binding("provider-1")
+
+    assert value == "same-secret"
+    assert atomic_first == first
+    assert absent != first
+    assert first != second
+
+
 def test_tampering_and_key_loss_fail_closed(isolated_databases):
     credential_secrets.save_hf_token("hf_private")
     conn = sqlite3.connect(isolated_databases)

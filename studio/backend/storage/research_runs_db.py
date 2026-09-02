@@ -21,6 +21,7 @@ ACTIVE_STATUSES = frozenset(
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_CHANGED = threading.Condition()
+_EXPECTED_PROJECT_ID_UNSET = object()
 
 
 class ResearchConflictError(RuntimeError):
@@ -71,6 +72,104 @@ def _commit_event(conn: sqlite3.Connection) -> None:
     conn.commit()
     with _EVENTS_CHANGED:
         _EVENTS_CHANGED.notify_all()
+
+
+def _replace_project_context_snapshot_locked(
+    conn: sqlite3.Connection, *, run_id: str, snapshot: dict[str, Any] | None, created_at: int
+) -> None:
+    """Replace one run's immutable server-owned project context snapshot."""
+    conn.execute("DELETE FROM research_project_context_snapshots WHERE run_id=?", (run_id,))
+    if snapshot is None:
+        return
+    context = snapshot.get("context")
+    if not isinstance(context, dict):
+        raise ValueError("Invalid server-owned project context snapshot")
+    conn.execute(
+        """INSERT INTO research_project_context_snapshots
+           (id, run_id, project_id, context_json, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (
+            str(snapshot["id"]),
+            run_id,
+            str(snapshot["projectId"]),
+            json.dumps(context, ensure_ascii = False),
+            created_at,
+        ),
+    )
+
+
+def _require_thread_project_locked(
+    conn: sqlite3.Connection,
+    *,
+    thread_id: str,
+    expected_project_id: str | None,
+    project_context_snapshot: dict[str, Any] | None,
+) -> None:
+    """Fence the route's thread read and context snapshot inside the write transaction."""
+    row = conn.execute(
+        "SELECT project_id FROM chat_threads WHERE id=?",
+        (thread_id,),
+    ).fetchone()
+    normalized_expected_project_id = str(expected_project_id or "").strip() or None
+    actual_project_id = str(row["project_id"] or "").strip() or None if row is not None else None
+    snapshot_project_id = (
+        str(project_context_snapshot.get("projectId") or "").strip() or None
+        if project_context_snapshot is not None
+        else None
+    )
+    if (
+        row is None
+        or actual_project_id != normalized_expected_project_id
+        or (project_context_snapshot is None) != (normalized_expected_project_id is None)
+        or snapshot_project_id != normalized_expected_project_id
+    ):
+        raise ResearchConflictError("The thread project changed while Deep Research was starting")
+
+
+def get_project_context_snapshot(
+    snapshot_id: str,
+    *,
+    run_id: str | None = None,
+    project_id: str | None = None,
+    owner_subject: str | None = None,
+) -> dict[str, Any] | None:
+    """Load a durable snapshot only through its opaque id and optional server bindings."""
+    conn = get_connection()
+    try:
+        clauses = ["snapshot.id=?"]
+        values: list[Any] = [snapshot_id]
+        if run_id is not None:
+            clauses.append("snapshot.run_id=?")
+            values.append(run_id)
+        if project_id is not None:
+            clauses.append("snapshot.project_id=?")
+            values.append(project_id)
+        if owner_subject is not None:
+            clauses.append("run.owner_subject=?")
+            values.append(owner_subject)
+        row = conn.execute(
+            "SELECT snapshot.id, snapshot.run_id, snapshot.project_id, "
+            "snapshot.context_json, snapshot.created_at "
+            "FROM research_project_context_snapshots AS snapshot "
+            "JOIN research_runs AS run ON run.id=snapshot.run_id "
+            f"WHERE {' AND '.join(clauses)}",
+            tuple(values),
+        ).fetchone()
+        if row is None:
+            return None
+        context = _loads(row["context_json"], None)
+        if not isinstance(context, dict):
+            return None
+        return {
+            "id": row["id"],
+            "runId": row["run_id"],
+            "projectId": row["project_id"],
+            "sessionId": f"project-{row['project_id']}",
+            "context": context,
+            "createdAt": row["created_at"],
+        }
+    finally:
+        conn.close()
 
 
 def _worker_can_write_locked(
@@ -208,12 +307,21 @@ def create_run(
     user_message_id: str,
     assistant_message_id: str | None,
     config: dict[str, Any],
+    expected_project_id: str | None | object = _EXPECTED_PROJECT_ID_UNSET,
+    project_context_snapshot: dict[str, Any] | None = None,
     created_at: int | None = None,
 ) -> dict:
     created = created_at or now_ms()
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if expected_project_id is not _EXPECTED_PROJECT_ID_UNSET:
+            _require_thread_project_locked(
+                conn,
+                thread_id = thread_id,
+                expected_project_id = expected_project_id,
+                project_context_snapshot = project_context_snapshot,
+            )
         try:
             conn.execute(
                 "INSERT INTO research_thread_claims (owner_subject, thread_id, created_at) "
@@ -237,6 +345,10 @@ def create_run(
             plan_revision = 0,
             created = created,
         )
+        stored_config = dict(config)
+        stored_config.pop("projectContextSnapshotId", None)
+        if project_context_snapshot is not None:
+            stored_config["projectContextSnapshotId"] = str(project_context_snapshot["id"])
         conn.execute(
             """
             INSERT INTO research_runs
@@ -250,10 +362,16 @@ def create_run(
                 thread_id,
                 user_message_id,
                 assistant_message_id,
-                json.dumps(config, ensure_ascii = False),
+                json.dumps(stored_config, ensure_ascii = False),
                 created,
                 created,
             ),
+        )
+        _replace_project_context_snapshot_locked(
+            conn,
+            run_id = run_id,
+            snapshot = project_context_snapshot,
+            created_at = created,
         )
         _event_locked(conn, run_id, "run.created", {"status": "planning"})
         _commit_event(conn)
@@ -330,6 +448,8 @@ def rebind_cancelled(
     user_message_id: str,
     assistant_message_id: str | None,
     config: dict[str, Any],
+    expected_project_id: str | None | object = _EXPECTED_PROJECT_ID_UNSET,
+    project_context_snapshot: dict[str, Any] | None = None,
 ) -> dict | None:
     """Re-point the thread's stopped run at a newer message, or return None.
 
@@ -340,6 +460,13 @@ def rebind_cancelled(
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if expected_project_id is not _EXPECTED_PROJECT_ID_UNSET:
+            _require_thread_project_locked(
+                conn,
+                thread_id = thread_id,
+                expected_project_id = expected_project_id,
+                project_context_snapshot = project_context_snapshot,
+            )
         run = _stopped_run_locked(conn, thread_id)
         if run is None:
             conn.commit()
@@ -368,6 +495,10 @@ def rebind_cancelled(
         # reasoning (get_reasoning_text joins every event at the run's current attempt) and its
         # activity panel would fold the two questions together. The retry BUDGET is counted per
         # question in retry(), so spending an epoch here does not spend a retry.
+        stored_config = dict(config)
+        stored_config.pop("projectContextSnapshotId", None)
+        if project_context_snapshot is not None:
+            stored_config["projectContextSnapshotId"] = str(project_context_snapshot["id"])
         conn.execute(
             "UPDATE research_runs SET user_message_id=?, assistant_message_id=?, "
             "status='planning', cancel_requested=0, plan_json=NULL, plan_hash=NULL, "
@@ -381,10 +512,16 @@ def rebind_cancelled(
                 revision,
                 now,
                 now,
-                json.dumps(config, ensure_ascii = False),
+                json.dumps(stored_config, ensure_ascii = False),
                 now,
                 run_id,
             ),
+        )
+        _replace_project_context_snapshot_locked(
+            conn,
+            run_id = run_id,
+            snapshot = project_context_snapshot,
+            created_at = now,
         )
         conn.execute("DELETE FROM research_plan_steps WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_sources WHERE run_id=?", (run_id,))

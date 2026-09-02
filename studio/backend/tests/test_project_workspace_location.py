@@ -117,7 +117,7 @@ def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         chat_history,
         "upsert_chat_project",
-        lambda payload: (_ for _ in ()).throw(
+        lambda payload, **kwargs: (_ for _ in ()).throw(
             ProjectWorkspaceError(str(blocked), PermissionError(13, "Permission denied"))
         ),
     )
@@ -144,7 +144,7 @@ def test_a_database_folder_failure_is_not_blamed_on_the_projects_folder(monkeypa
     monkeypatch.setattr(
         chat_history,
         "upsert_chat_project",
-        lambda payload: (_ for _ in ()).throw(PermissionError(13, "studio.db")),
+        lambda payload, **kwargs: (_ for _ in ()).throw(PermissionError(13, "studio.db")),
     )
 
     with pytest.raises(PermissionError):
