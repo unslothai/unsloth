@@ -3532,8 +3532,14 @@ else
             # a later setup run report "already matches" and skip repairing the
             # prebuilt over the source binary. Drop it before building.
             rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
+            # build_whisper_cpp.sh resolves UNSLOTH_STUDIO_HOME before UNSLOTH_HOME, and the
+            # inherited one is <root>/studio in a nested portable install and the LIVE studio
+            # home under a staged run, so the build lands where the sidecar never looks (and,
+            # staged, inside the environment the app is running from).
+            # Blanked rather than unset: `env -u` is not POSIX, and the builder uses `:-`.
             if run_quiet_no_exit "whisper.cpp source build" \
-                    env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"; then
+                    env UNSLOTH_HOME="$UNSLOTH_HOME" UNSLOTH_STUDIO_HOME= STUDIO_HOME= \
+                    sh "$_WHISPER_BUILD"; then
                 _WHISPER_RECOVERED=true
                 step "whisper.cpp" "source build installed"
                 if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then

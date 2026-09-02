@@ -333,6 +333,13 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 ```powershell
 $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
 ```
+`UNSLOTH_STUDIO_HOME` moves Studio itself, but the uv, npm and pip caches it downloads stay in your home directory. To keep those inside the install too, use portable mode (macOS, Linux and WSL only; `install.ps1` rejects it):
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PORTABLE=1 sh
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_HOME=/abs/path sh
+./install.sh --local --root /abs/path
+```
+`--portable` defaults the root to `~/.unsloth`; `--root DIR` (or `UNSLOTH_HOME=DIR`) puts Studio, llama.cpp, whisper.cpp, the managed Node runtime and every download cache under `DIR`. Nothing is written outside it: no shell rc line, no `~/.local/bin` shim and no desktop entry, so launch it by absolute path with `DIR/bin/unsloth studio -p 8888` and remove it with `rm -rf DIR`. The install is self-contained on the machine that created it; it is not relocatable to another machine.
 
 Point the frontend build at a corporate npm mirror/proxy with `UNSLOTH_NPM_REGISTRY`:
 ```bash

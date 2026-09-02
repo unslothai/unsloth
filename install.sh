@@ -6236,6 +6236,39 @@ if [ "$_PORTABLE_MODE" = true ]; then
             substep "  $_legacy_shim" "$C_WARN"
             substep "  remove it, or always launch $_shim_path" "$C_WARN"
         fi
+        # The same conversion leaves the default install's managed launcher, and the
+        # desktop entry / .app that invokes it, under $HOME. Both still run this venv
+        # with no portable environment, and the launcher writes its log, port file,
+        # per-port PID file and macOS .command back beside itself. Named, not removed:
+        # portable mode writes nothing outside the root, so it deletes nothing either.
+        # Ownership comes from studio.conf, the way the symlink warning uses -ef, so an
+        # unrelated install's launcher is never named.
+        _legacy_data="$HOME/.local/share/unsloth"
+        _legacy_conf="$_legacy_data/studio.conf"
+        if [ -f "$_legacy_conf" ]; then
+            _legacy_exe=$(sed -n "s/^UNSLOTH_EXE='\(.*\)'\$/\1/p" "$_legacy_conf" | head -n1)
+            _legacy_exe=$(printf '%s' "$_legacy_exe" | sed "s/'\\\\''/'/g")
+            if [ -n "$_legacy_exe" ] && [ "$_legacy_exe" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
+                substep "an older launcher for this install still writes outside the root:" "$C_WARN"
+                substep "  $_legacy_data" "$C_WARN"
+                # Only the entries that actually point back at that launcher: these are
+                # fixed paths, and an unrelated install could own the one on disk.
+                for _legacy_entry in \
+                    "$HOME/.local/share/applications/unsloth-studio.desktop" \
+                    "$HOME/Desktop/unsloth-studio.desktop"; do
+                    grep -qF "$_legacy_data/launch-studio.sh" "$_legacy_entry" 2>/dev/null \
+                        || continue
+                    substep "  $_legacy_entry" "$C_WARN"
+                done
+                # The macOS bundle runs a stub one level in, so test that and name the bundle.
+                _legacy_app="$HOME/Applications/Unsloth Studio.app"
+                if grep -qF "$_legacy_data/launch-studio.sh" \
+                    "$_legacy_app/Contents/MacOS/launch-studio" 2>/dev/null; then
+                    substep "  $_legacy_app" "$C_WARN"
+                fi
+                substep "  remove them, or always launch $_shim_path" "$C_WARN"
+            fi
+        fi
     else
         rm -f "$_shim_tmp" 2>/dev/null || true
         echo "ERROR: could not create the shim at $_shim_path." >&2
@@ -6498,6 +6531,16 @@ if [ "$_PORTABLE_MODE" = true ]; then
 fi
 echo ""
 
+# Single-quote-escape so paths with spaces / apostrophes copy-paste cleanly.
+_li_shim_q="'$(printf '%s' "${_LOCAL_BIN}/unsloth" | sed "s/'/'\\\\''/g")'"
+_li_act_q="'$(printf '%s' "${VENV_DIR}/bin/activate" | sed "s/'/'\\\\''/g")'"
+# Env-mode appends nothing to the login PATH, so a fresh shell finds either no
+# `unsloth` at all or a different install; every deferred hint below names the shim.
+_li_launch_q="unsloth studio -p 8888"
+if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+    _li_launch_q="$_li_shim_q studio -p 8888"
+fi
+
 # In interactive terminals, ask the user before starting Unsloth unless the
 # caller explicitly disabled the post-install prompt.
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
@@ -6538,7 +6581,7 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
             ;;
         *)
             step "launch" "to start later, run:"
-            substep "unsloth studio -p 8888"
+            substep "$_li_launch_q"
             substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
             substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
             echo ""
@@ -6546,21 +6589,11 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     esac
 else
     step "launch" "manual commands:"
-    # Single-quote-escape so paths with spaces / apostrophes copy-paste cleanly.
-    _li_shim_q="'$(printf '%s' "${_LOCAL_BIN}/unsloth" | sed "s/'/'\\\\''/g")'"
-    _li_act_q="'$(printf '%s' "${VENV_DIR}/bin/activate" | sed "s/'/'\\\\''/g")'"
-    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-        # Env-mode skips the rc PATH append, so print the absolute shim path.
-        substep "$_li_shim_q studio -p 8888"
-        substep "or activate env first:"
-        substep "source $_li_act_q"
-        substep "unsloth studio -p 8888"
-    else
-        substep "unsloth studio -p 8888"
-        substep "or activate env first:"
-        substep "source $_li_act_q"
-        substep "unsloth studio -p 8888"
-    fi
+    substep "$_li_launch_q"
+    substep "or activate env first:"
+    substep "source $_li_act_q"
+    # Bare name is right here: activating the venv puts its bin/ first on PATH.
+    substep "unsloth studio -p 8888"
     substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
     substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
     echo ""
