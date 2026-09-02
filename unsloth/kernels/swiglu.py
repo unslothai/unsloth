@@ -17,7 +17,7 @@ import triton.language as tl
 import torch
 from .utils import calculate_settings, torch_gpu_device
 
-# signed int32 max is 2**31-1 so num_elements cannot exceed 2**31
+# signed int32 max is 2**31-1, so num_elements cannot exceed 2**31.
 NUM_INT32_ELEMENTS = 2**31
 SAFE_INT32_BUFFER_MULTIPLIER = 4
 BLOCK_SIZE = 1024
@@ -35,15 +35,14 @@ def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.
     mask = offsets < n_elements
 
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0)
 
-    # f = e * sigmoid(e)
-    f_row = e_row * tl.sigmoid(e_row)  # e_row / (1 + tl.exp(-e_row))
+    # f = e * sigmoid(e), h = f * g.
+    f_row = e_row * tl.sigmoid(e_row)
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     # h = f * g
     h_row = f_row * g_row
 
-    # Store h
     tl.store(h + offsets, h_row, mask = mask)
 
 
@@ -83,13 +82,12 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDE
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask = mask, other = 0)
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0)
 
-    # e = e.float()
-    # se = 1.0 / (1.0 + torch.exp(-e))
-    se_row = tl.sigmoid(e_row)  # 1.0 / (1.0 + tl.exp(-e_row))
+    # se = sigmoid(e), f = se * e, df = DW * f, dg = DW * g, de = dg * se * (1 + e * (1 - se)).
+    se_row = tl.sigmoid(e_row)
     # f = (se * e).to(dtype)
     f_row = se_row * e_row
     f_row = f_row.to(DW_row.dtype)
@@ -103,10 +101,9 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDE
     de_row = dg_row.to(tl.float32) * se_row * (1.0 + e_row * (1.0 - se_row))
     de_row = de_row.to(DW_row.dtype)
 
-    # Store derivatives in buffers
-    tl.store(DW + offsets, h_row, mask = mask)  # h  = f * g
-    tl.store(e + offsets, df_row, mask = mask)  # df = DW * f
-    tl.store(g + offsets, de_row, mask = mask)  # de
+    tl.store(DW + offsets, h_row, mask = mask)
+    tl.store(e + offsets, df_row, mask = mask)
+    tl.store(g + offsets, de_row, mask = mask)
 
 
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):

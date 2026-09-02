@@ -22,11 +22,9 @@ STATUS_PERMISSION_DENIED = "permission_denied"
 STATUS_MISSING = "missing"
 # Any other OSError: I/O error, dead network mount, symlink loop.
 STATUS_UNREADABLE = "unreadable"
-# The folder works, but something inside it is refused, so models are missing
-# from the list without the list looking wrong.
+# The folder works, but something inside it is refused.
 STATUS_PARTIAL = "partial"
-# Internal only: the probe ran out of budget before it saw everything, so it
-# proved nothing. Never recorded and never sent to the UI.
+# Internal only: the probe ran out of budget before it saw everything
 STATUS_UNKNOWN = "unknown"
 
 
@@ -34,12 +32,8 @@ STATUS_UNKNOWN = "unknown"
 _PROBE_DEPTH = 2
 # Total opens for one probe, whatever the shape. Bounds the cost; the depth does not.
 _PROBE_OPEN_LIMIT = 64
-# A huggingface_hub cache keeps the files one level below that, in
-# <root>/models--org--name/snapshots/<commit>/, and that commit directory is the
-# only place the weights are. Refuse it and every directory above it still lists
-# fine, while the cache scan drops the model without raising, so the folder looks
-# healthy and empty at once. Costs one extra open per cached revision, and only in
-# a directory actually named this, so no other layout pays for it.
+# A huggingface_hub cache keeps the weights only in <root>/models--org--name/snapshots/<commit>/, so refusing that
+# directory leaves the folder looking healthy and empty at once.
 _HF_SNAPSHOTS_DIR = "snapshots"
 
 
@@ -77,17 +71,13 @@ def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Option
     for name, subdir in subdirs:
         child_depth = depth - 1
         if child_depth <= 0 and name == _HF_SNAPSHOTS_DIR:
-            # Spend one more level here rather than raising the depth everywhere:
-            # a diffusers pipeline keeps component directories under each model, so
-            # a blanket extra level would burn the budget on folders shaped
-            # <root>/<publisher>/<model>/<component>.
+            # Spend one more level here rather than raising the depth everywhere: a diffusers pipeline's component
+            # directories would otherwise burn the budget.
             child_depth = 1
         status, cause = _probe_dir(subdir, depth = child_depth, budget = budget)
         if status == STATUS_MISSING:
-            # It was in the listing a moment ago and is gone now: a model being
-            # deleted, or a download renaming its temp directory away mid-walk.
-            # That says nothing about the folder the user registered. The folder
-            # itself disappearing is still caught by the scandir above.
+            # It was in the listing a moment ago and is gone now (a model being deleted, or a download renaming its temp
+            # directory), which says nothing about the folder the user registered.
             continue
         if status != STATUS_OK:
             return status, cause or subdir
@@ -123,10 +113,9 @@ def is_readable_dir(path: str) -> bool:
     return probe_status(path) == STATUS_OK
 
 
-# Windows reports the real reason in ``winerror``; ``errno`` is a lossy translation of
-# it, and CPython's PC/errmap.h folds ERROR_NOT_READY, ERROR_CRC, ERROR_GEN_FAILURE and
-# every other media or device failure onto EACCES. Without this, an ejected card reader
-# or an unmounted volume tells the user to go and fix the folder's permissions.
+# Windows reports the real reason in ``winerror``: CPython folds ERROR_NOT_READY, ERROR_CRC and every media failure onto
+# EACCES, so an ejected card reader reads as a permissions problem.
+# ``errno`` is a lossy translation, and CPython's PC/errmap.h folds ERROR_GEN_FAILURE onto EACCES as well.
 _WINDOWS_PERMISSION = frozenset((5, 65, 1314))
 _WINDOWS_MISSING = frozenset((2, 3, 15, 20, 21, 53, 55, 67, 161, 206, 267))
 
@@ -147,8 +136,8 @@ def classify_scan_error(error: OSError) -> str:
 
 
 # Read on every folder list, written only when a probe finds something wrong.
-# Each value is (status, the directory that refused), so a recheck can settle a
-# folder in one open instead of walking it again. Bounded by the folder count.
+# Each value is (status, the directory that refused), so a recheck can settle a folder in one open instead of walking it
+# again. Bounded by the folder count.
 _MAX_TRACKED = 256
 _failed: dict[str, tuple[str, str]] = {}
 
@@ -243,12 +232,7 @@ def refresh_failed_scan_folders(folders: list[dict]) -> None:
             and cause is not None
             and cause != path
         ):
-            # The probe cannot see that models were found, so keep the wording
-            # the scan chose. A folder that is gone still replaces it below.
-            # Only while the refusal is still something inside the folder: when
-            # the registered root itself is the one refusing, nothing can be
-            # scanned any more, and "some models could not be read" would be
-            # telling the user the wrong half of the problem.
+            # The probe cannot see that models were found.
             status = STATUS_PARTIAL
         _record(path, status, cause or path)
 

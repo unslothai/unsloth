@@ -676,28 +676,25 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
 
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "loadId={c.load_id}" in picker, "the quant list cannot pass on a pin it never gets"
-    # The collapsed single-quant row shares one meta object between its row and
-    # settings gear. Check those consumers, the VRAM bar and the expander
-    # individually instead of counting a source spelling: partial-cache handling
-    # deliberately made the load id conditional and the shared object removed
-    # duplicate literals without changing the contract.
-    sole_start = picker.index("const renderSoleQuantGgufRow")
-    sole_end = picker.index("const renderDownloadedModelRow", sole_start)
-    sole = picker[sole_start:sole_end]
-    select_meta = re.search(
-        r"const selectMeta: ModelSelectorChangeMeta = \{.*?\n\s*\};", sole, re.S
+    # Every row that can start a load, and every gear beside one, reloads through
+    # the same meta and so has to carry the pin. Counted rather than matched
+    # loosely, so a new row that forgets it is a failure here rather than a load
+    # that silently follows the default ref. #7736 added the third: the collapsed
+    # single-quant GGUF row. #7880 added the fourth: the per-quant VRAM bar, which
+    # has to price the pinned snapshot rather than the default ref. #10128 put three of
+    # them behind a torn-snapshot guard, so the guard is matched rather than one spelling.
+    pins = re.findall(r"loadId:\s*(?:(\w+)\s*\?\s*undefined\s*:\s*)?c\.load_id", picker)
+    assert len(pins) == 4, (
+        "a row or gear that can start a load is missing the pin, or a new one was "
+        "added and this count needs to follow it"
     )
-    assert select_meta and "loadId: isPartial ? undefined : c.load_id," in select_meta.group(
-        0
-    ), "the collapsed GGUF row drops the complete snapshot pin"
-    assert "onClick={() => onSelect(c.repo_id, selectMeta)}" in sole, (
-        "the collapsed GGUF row does not load through its pinned meta"
+    # #10128: the three that can START a load withhold the pin for a part-downloaded
+    # snapshot, since audio-page.tsx reads a forwarded loadId as proof the weights are
+    # on disk. The VRAM bar only prices what is there, so it pins unconditionally.
+    assert sorted(pins) == ["", "isPartial", "isPartial", "isPartial"], (
+        "a row that can start a load lost its partial-snapshot guard, or the VRAM bar "
+        f"gained one: {sorted(pins)}"
     )
-    assert "onConfigure={() => onConfigure(c.repo_id, selectMeta)}" in sole, (
-        "the collapsed GGUF gear does not configure through its pinned meta"
-    )
-    assert "loadId: c.load_id," in sole, "the per-quant VRAM bar drops the pin"
-    assert "loadId={c.load_id}" in sole, "the GGUF expander drops the pin"
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
@@ -1299,8 +1296,13 @@ def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
     prepare = runtime.index("prepareHfTokenForUse(")
     metadata = runtime.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
-    # The raw store token must not be handed to the preflight.
-    assert "hf_token: preparedToken.token" in runtime
+    # The raw store token must not be handed to the preflight. The prepared value now
+    # reaches it through the hoisted `hfToken` binding rather than inline, so pin both
+    # halves: the assignment, and that the preflight reads that binding.
+    assert "hfToken = preparedToken.token" in runtime
+    preflight = runtime.index("fetchGgufStagedMetadata({", prepare)
+    assert "hf_token: hfToken" in runtime[preflight : preflight + 400]
+    assert runtime.index("hfToken = preparedToken.token") < preflight
     assert (
         "hf_token: useChatRuntimeStore.getState().hfToken" not in runtime
     ), "GGUF metadata preflight must not send the unprepared stored token"

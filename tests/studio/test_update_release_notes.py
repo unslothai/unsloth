@@ -28,6 +28,7 @@ FRONTEND = REPO / "studio/frontend/src"
 MODULE = BACKEND / "utils/release_notes.py"
 BODIES = Path(__file__).parent / "fixtures/release_bodies"
 PANEL = FRONTEND / "components/update/release-notes-panel.tsx"
+NOTES_LAYOUT = FRONTEND / "components/update/update-notes-layout.ts"
 NOTES_HOOK = FRONTEND / "hooks/use-release-notes.ts"
 PREVIEW = FRONTEND / "lib/release-notes-preview.ts"
 CODE_SPANS = FRONTEND / "lib/markdown-code-spans.ts"
@@ -705,9 +706,10 @@ def test_panel_is_scrollable_and_shows_only_the_stripped_notes():
 
 def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     src = PANEL.read_text(encoding = "utf-8")
+    layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
     assert "border border-border" not in src, "the notes box is a fill, not a bordered box"
     # Lighter than the card behind it, rather than a darker inset.
-    assert "dark:bg-white/[0.06]" in src
+    assert "dark:bg-white/[0.06]" in layout
     # Streamdown's mt-6 clips the first heading against the scroller edge.
     assert "[&>*>*:first-child]:mt-0" in src
     # Shared utility: thumb hidden until the notes are hovered.
@@ -747,19 +749,21 @@ def test_preview_highlights_the_leading_sentence():
     assert "SENTENCE_BREAK" in preview and "(?=" in preview
 
     panel = PANEL.read_text(encoding = "utf-8")
-    assert '<span className="font-medium text-foreground">{item.lead}</span>' in panel
+    layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
+    assert "UPDATE_NOTES_LEAD_CLASS" in panel
+    assert '"font-medium text-foreground"' in layout
     assert "item.rest" in panel
 
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
-def test_update_popup_is_wider_than_the_other_overlays(banner):
-    """Sized for three same-size buttons on one row. Width moved from the shared
-    stack onto each overlay, so this does not widen the other overlays."""
+def test_update_popups_share_the_notes_width(banner):
+    """Every update popup uses the same width for its notes and action rows."""
     assert "max-w-[448px]" in banner.read_text(encoding = "utf-8")
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert "max-w-[400px]" not in provider, "stack must not cap overlay width"
     llama = (FRONTEND / "components/llama-update-banner.tsx").read_text(encoding = "utf-8")
-    assert "max-w-[400px]" in llama, "unrelated overlays keep their width"
+    assert "max-w-[448px]" in llama
+    assert "max-w-[400px]" not in llama
 
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
@@ -1082,9 +1086,11 @@ def test_only_the_notes_region_scrolls(banner):
     """The dismiss control sits inside the card, so the card must not scroll."""
     src = banner.read_text(encoding = "utf-8")
     assert "flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden" in src
-    assert 'className="min-h-0 flex-1"' in src
+    layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
+    assert "mt-3 flex min-h-0 flex-1 flex-col overflow-hidden" in layout
     panel = PANEL.read_text(encoding = "utf-8")
-    assert "max-h-64 min-h-0 flex-1 overflow-y-auto" in panel
+    assert "UPDATE_NOTES_EXPANDED_SCROLL_CLASS" in panel
+    assert "max-h-64 min-h-0 flex-1 overflow-y-auto" in layout
     # The collapsed summary scrolls too: without it the bullets were painted
     # over the row of buttons once the card's slot for them got small.
     assert "min-h-0 flex-1 space-y-1 overflow-y-auto" in panel

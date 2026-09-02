@@ -107,10 +107,7 @@ _ARCHIVE_MAX_TAR_BYTES = 160 * 1024 * 1024
 _ARCHIVE_SOCKET_TIMEOUT_SECONDS = 15
 _ARCHIVE_DOWNLOAD_DEADLINE_SECONDS = 300
 
-# Git for Windows still enforces MAX_PATH (260) unless told otherwise, and the pinned cache
-# nests a 40-char revision, a staging dir and .git/objects under the studio home; a
-# venv-inferred home already reaches ~253 chars, so a slightly longer one fails the
-# checkout with "Filename too long". Passed per-invocation so no user config is touched.
+# Git for Windows still enforces MAX_PATH (260) unless told otherwise.
 _GIT_LONG_PATHS = ["-c", "core.longpaths=true"]
 
 
@@ -442,9 +439,7 @@ def _valid_checkout(path: Path, spec: PinnedSource) -> bool:
 
 
 def _clear_read_only(function, path, _error) -> None:
-    # Git marks .git/objects read-only, and Windows refuses to delete a read-only file, so
-    # replacing a checkout dies with WinError 5. Only retry when the path really is not
-    # writable: an open handle (WinError 32) must still surface rather than spin.
+    # Git marks .git/objects read-only.
     if os.access(path, os.W_OK):
         raise
     os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE)
@@ -939,8 +934,8 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
                 expected_size = _DAC_SIZE,
                 expected_sha256 = _DAC_SHA256,
             ):
-                # Same as the download branch below: the copy is an optimisation, so a full
-                # disk must not reject weights that already passed the size and sha256 check.
+                # Same as the download branch below: the copy is an optimisation.
+                # A full disk must not reject weights that already passed the size and sha256 check.
                 try:
                     _install_verified_artifact(legacy, destination)
                 except OSError:
@@ -968,10 +963,9 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
                 expected_size = _DAC_SIZE,
                 expected_sha256 = _DAC_SHA256,
             ):
-                # Populate the pinned destination so later loads hit the fast path above
-                # instead of re-downloading and re-hashing 295 MB under the install lock.
-                # The copy is an optimisation, so a full disk must not fail a verified
-                # download; fall back to the hub path the caller used before.
+                # Populate the pinned destination so later loads hit the fast path instead of re-downloading and
+                # re-hashing 295 MB under the install lock. The copy is an optimisation, so a full disk falls
+                # back to the hub path rather than failing a verified download.
                 try:
                     _install_verified_artifact(downloaded, destination)
                 except OSError:
@@ -984,8 +978,6 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
                 ) from download_error
             raise RuntimeError("The downloaded DAC speech weights failed integrity validation")
     except OSError:
-        # Same reasoning as the mkdir above: taking the lock needs a writable cache, and
-        # verified weights we already hold are a better answer than failing the load.
         fallback = _verified_legacy()
         if fallback is None:
             raise
@@ -1012,10 +1004,7 @@ def _module_is_inside(module: ModuleType, package_root: Path) -> bool:
 
 
 def _purge_package_bytecode(package_root: Path) -> None:
-    # This is the only thing stopping a stale or planted .pyc from shadowing a verified .py:
-    # the manifest skips __pycache__ entirely, and the origin audit reads __file__, which
-    # still names the .py. So only the concurrent-purge race is tolerated (another worker
-    # deleting the same tree without the install lock); a PermissionError must stay fatal.
+    # This is the only thing stopping a stale or planted .pyc from shadowing a verified .py
     for directory, child_directories, files in os.walk(package_root, topdown = True):
         directory_path = Path(directory)
         for name in tuple(child_directories):
@@ -1064,15 +1053,15 @@ def import_pinned_module(module_name: str, *, package: str, source: Path | str) 
             sys.path.remove(source_value)
         sys.path.insert(0, source_value)
         try:
-            # Inside the try: anything raising here would otherwise strand the cache dir at
-            # sys.path[0] for the process lifetime, with nothing imported and no rollback.
+            # Inside the try: anything raising here would otherwise strand the cache dir at sys.path[0] for the process
+            # lifetime, with nothing imported and no rollback.
             _purge_package_bytecode(package_root)
             importlib.invalidate_caches()
             module = importlib.import_module(module_name)
             invalid_modules = sorted(
                 name
-                # Snapshot: another thread importing here would otherwise raise
-                # "dictionary changed size during iteration" out of a good codec load.
+                # Snapshot: another thread importing here would otherwise raise "dictionary changed size during
+                # iteration" out of a good codec load.
                 for name, loaded_module in list(sys.modules.items())
                 if (name == package or name.startswith(f"{package}."))
                 and not _module_is_inside(loaded_module, package_root)

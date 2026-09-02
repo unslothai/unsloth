@@ -38,9 +38,8 @@ NEAR_MISS = "near_miss"
 UNEXPLAINED = "unexplained_hot_frame"
 NOT_MEASURED = "not_measured"
 
-# Integer ratios worth naming when a count is off by a clean factor. Each has a
-# specific mechanical meaning, so reporting the ratio hands over a hypothesis
-# rather than a mystery.
+# Integer ratios worth naming when a count is off by a clean factor. Each has a specific mechanical
+# meaning, so reporting the ratio hands over a hypothesis rather than a mystery.
 _KNOWN_RATIOS: dict[Fraction, str] = {
     Fraction(
         2, 1
@@ -276,35 +275,25 @@ def predicted_next_rung(
     return quantity_fn(next_structural_input).value
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # M2 and M3: oracle shapes over PAGE-SIDE counters
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# M1 is settled with a call count from precise coverage, because the mechanism
-# lives inside react-dom where we can count invocations. M2 and M3 do not work
-# that way: their cost is in how much text is rescanned and how much layout is
-# forced, and neither is an invocation count. Those must be counted IN THE PAGE.
-#
-# Layer 3 owns `instruments/layoutcost.js` and already counts `scrollHeight`
-# reads, `scrollTop` writes and MutationObserver callbacks. This section does
-# NOT duplicate that file. It fixes the KEY NAMES that file should emit and
-# supplies the oracles that consume them, so that the counting and the
-# interpretation are owned separately and neither has to guess at the other.
-#
-# ONE HONEST DIFFERENCE, stated plainly rather than buried. The M1 oracle is an
-# EXACT INTEGER MATCH and it either holds or it does not. The M2 oracle is a
-# REGIME TEST: SSE deltas do not arrive in equal sizes, so the quadratic
-# prediction is exact only for a uniform stream and must be compared as a ratio
-# with a refusal band. That is weaker evidence and it is labelled as such
-# everywhere it is emitted. Do not let a regime verdict sit in a table next to a
-# naming as though they were the same thing.
+# M1 is settled with a call count from precise coverage, because the mechanism lives inside
+# react-dom where invocations can be counted. M2 and M3 do not work that way: their cost is in how
+# much text is rescanned and how much layout is forced, and those must be counted IN THE PAGE.
+# Layer 3 owns `instruments/layoutcost.js` and already counts `scrollHeight` reads, `scrollTop`
+# writes and MutationObserver callbacks. This section does NOT duplicate it: it fixes the KEY
+# NAMES that file should emit and supplies the oracles that consume them, so counting and
+# interpretation are owned separately.
+# ONE HONEST DIFFERENCE: the M1 oracle is an EXACT INTEGER MATCH that either holds or does not,
+# while the M2 oracle is a REGIME TEST, since SSE deltas do not arrive in equal sizes, so the
+# quadratic prediction is exact only for a uniform stream and must be compared as a ratio with a
+# refusal band. That is weaker evidence and is labelled as such everywhere it is emitted.
 
 REGIME_QUADRATIC = "cumulative_reparse_quadratic"
 REGIME_LINEAR = "incremental_parse_linear"
 REGIME_UNDECIDED = "undecided"
 
-# The counters Layer 3's page-side instrument should emit, per streamed reply.
-# Every one is an integer; none is a duration.
+# The counters Layer 3's page-side instrument should emit, per streamed reply. Every one is an
+# integer; none is a duration.
 PAGE_COUNTER_CONTRACT: dict[str, dict[str, str]] = {
     "m2_reparse": {
         "parse_calls": "invocations of parseAssistantContent during the reply",
@@ -394,8 +383,7 @@ def reparse_regime(
             "refusal band. This reply is too short to distinguish the regimes; use a longer rung."
         )
         return out
-    # Closer in log space wins; the ratio is reported either way so a reader can
-    # see how decisive the call was.
+    # Closer in log space wins; the ratio is reported either way so a reader can see how decisive the call was.
     r_lin = chars_rescanned / lin
     r_quad = chars_rescanned / quad
     out["ratio_to_linear"] = round(r_lin, 3)
