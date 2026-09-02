@@ -28,11 +28,7 @@ _DEEPSEEK_HARNESS_FILE_MARKERS = (
 CODING_AGENTS: tuple[str, ...] = ("claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh")
 
 
-def is_deepseek_harness_executable(
-    executable: str,
-    *,
-    allow_execution: bool = True,
-) -> bool:
+def is_deepseek_harness_executable(executable: str, *, allow_execution: bool = True) -> bool:
     """Return whether ``executable`` identifies itself as DeepSeek Harness."""
     try:
         with open(executable, "rb") as launcher:

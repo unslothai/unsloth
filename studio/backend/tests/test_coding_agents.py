@@ -80,7 +80,7 @@ def test_detects_dsh_that_identifies_as_deepseek_harness():
 def test_identifies_an_npm_dsh_launcher_without_executing_it(tmp_path):
     launcher = tmp_path / "dsh"
     launcher.write_text(
-        "#!/bin/sh\nexec node /usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \"$@\"\n"
+        '#!/bin/sh\nexec node /usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js "$@"\n'
     )
     with patch(
         "utils.coding_agents.subprocess.run",
