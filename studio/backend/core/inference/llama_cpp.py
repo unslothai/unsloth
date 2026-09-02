@@ -31723,9 +31723,13 @@ class LlamaCppBackend:
                             stream_payload.get("chat_template_kwargs"),
                             True,
                         )
-                        if _refit_evicted is not None and _continuation_would_be_served(
-                            _refit_evicted, True
-                        ):
+                        if _refit_evicted is not None:
+                            # Adopted whether or not it clears the gate. When it does
+                            # not, nothing else will either -- what is left is the
+                            # current turn and the partial, and neither can go -- so
+                            # the smaller of the two candidates is the retry's best
+                            # chance, and llama-server's own context error names the
+                            # real numbers if it still does not fit.
                             stream_payload["messages"] = _refit_evicted
                 if truncation:
                     if _records_boundary(truncation):
