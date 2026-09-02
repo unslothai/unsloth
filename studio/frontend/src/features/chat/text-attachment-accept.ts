@@ -383,6 +383,11 @@ export async function isBinaryVobSubSubtitle(file: File): Promise<boolean> {
 const TRACKER_MOD_MAGICS = new Set([
   "M.K.",
   "M!K!",
+  // ProTracker's other 4-channel marker. file(1) lists it at offset 1080
+  // alongside M.K., and the 31-sample layout puts byte 470 inside a sample name
+  // rather than the order table, so the Soundtracker fallback does not catch
+  // one either: without this the module is read as UTF-8 text.
+  "!PM!",
   "PATT",
   "NSMS",
   "LARD",
@@ -1029,10 +1034,24 @@ function declaredEmailCharsets(bytes: Uint8Array, fileName: string): string[] {
   return found;
 }
 
-/** A charset this browser has no decoder for. */
-function unsupportedCharsetError(charset: string): Error {
-  return new Error(
-    `Charset "${charset}" isn't supported. Convert the file to UTF-8 before attaching it.`,
+/** A charset this browser has no decoder for.
+ *
+ *  An UndecodableTextError rather than a plain one, because that is the type
+ *  the composer recognises: every other refusal in TextAttachmentAdapter.add
+ *  toasts before it throws, and this one went out as a bare Error, failed the
+ *  `instanceof` there, and left the attachment silently missing. The labels
+ *  that land here are not exotic. Six of them are standard: the Encoding
+ *  Standard maps iso-2022-kr, hz-gb-2312 and the iso-2022-cn family to
+ *  "replacement", which TextDecoder is required to refuse, so a Korean or
+ *  Chinese .eml declaring its own charset disappeared with no message at all.
+ */
+function unsupportedCharsetError(
+  fileName: string,
+  charset: string,
+): UndecodableTextError {
+  return new UndecodableTextError(
+    fileName,
+    `It declares charset "${charset}", which this browser has no decoder for.`,
   );
 }
 
@@ -1063,7 +1082,7 @@ function decodeWithCharset(
     decoder = new TextDecoder(label, { fatal: true });
   } catch (error) {
     if (error instanceof RangeError) {
-      throw unsupportedCharsetError(charset);
+      throw unsupportedCharsetError(fileName, charset);
     }
     throw error;
   }
@@ -1179,7 +1198,7 @@ function decodeVCardPerProperty(
           valueCharset = charsets[0] ?? null;
           valueDecoder = decoderFor(valueCharset);
           if (!valueDecoder) {
-            return { failure: unsupportedCharsetError(valueCharset!) };
+            return { failure: unsupportedCharsetError(fileName, valueCharset!) };
           }
           out.push(parameters, ":");
           out.push(

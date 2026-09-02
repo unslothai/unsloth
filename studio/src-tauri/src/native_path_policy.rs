@@ -376,8 +376,9 @@ pub fn is_binary_vobsub(path: &Path, bytes: &[u8]) -> bool {
 }
 
 const TRACKER_MOD_MAGICS: &[&[u8; 4]] = &[
-    b"M.K.", b"M!K!", b"PATT", b"NSMS", b"LARD", b"M&K!", b"FEST", b"N.T.", b"OKTA", b"OCTA",
-    b"CD81", b"CD61", b"FLT4", b"FLT8", b"EXO4", b"EXO8", b".M.K", b"WARD", b"M\0\0\0", b"8\0\0\0",
+    b"M.K.", b"M!K!", b"!PM!", b"PATT", b"NSMS", b"LARD", b"M&K!", b"FEST", b"N.T.", b"OKTA",
+    b"OCTA", b"CD81", b"CD61", b"FLT4", b"FLT8", b"EXO4", b"EXO8", b".M.K", b"WARD", b"M\0\0\0",
+    b"8\0\0\0",
 ];
 
 const SOUNDTRACKER_HEADER_BYTES: usize = 600;

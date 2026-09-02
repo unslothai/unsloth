@@ -1348,6 +1348,80 @@ test("an XML prolog encoding is honoured for every XML dialect", async () => {
   );
 });
 
+test("the tracker magic tables agree, and cover ProTracker's second marker", async () => {
+  // The two lists are hand-mirrored, so drift is only visible if something
+  // compares them. !PM! is the marker that was missing from both: file(1) lists
+  // it at 1080 beside M.K., and a 31-sample module puts byte 470 inside a
+  // sample name rather than the order table, so the Soundtracker fallback does
+  // not catch one either and the module was read as UTF-8 text.
+  const rust = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const table = rust.match(
+    /const TRACKER_MOD_MAGICS: &\[&\[u8; 4\]\] = &\[([\s\S]*?)\];/,
+  );
+  assert.ok(table, "TRACKER_MOD_MAGICS not found in native_path_policy.rs");
+  const rustMagics = [...table[1]!.matchAll(/b"((?:[^"\\]|\\.){1,8})"/g)].map((m) =>
+    m[1]!.replace(/\\0/g, "\0"),
+  );
+  assert.ok(rustMagics.includes("!PM!"), "Rust table is missing !PM!");
+
+  const module = await import("../src/features/chat/text-attachment-accept.ts");
+  const source = readFileSync(
+    new URL("../src/features/chat/text-attachment-accept.ts", import.meta.url),
+    "utf8",
+  );
+  const tsTable = source.match(/const TRACKER_MOD_MAGICS = new Set\(\[([\s\S]*?)\]\)/);
+  assert.ok(tsTable, "TRACKER_MOD_MAGICS not found in text-attachment-accept.ts");
+  const tsMagics = [...tsTable[1]!.matchAll(/"((?:[^"\\]|\\.){1,8})"/g)].map((m) =>
+    m[1]!.replace(/\\0/g, "\0"),
+  );
+  assert.deepEqual([...tsMagics].sort(), [...rustMagics].sort());
+  assert.ok(module.isBinaryTrackerModule, "the sniffer is still exported");
+
+  // And the marker is actually acted on, not merely listed.
+  const bytes = new Uint8Array(1084 + 4);
+  bytes.set(new TextEncoder().encode("!PM!"), 1080);
+  assert.equal(
+    await module.isBinaryTrackerModule(new File([bytes], "tune.mod")),
+    true,
+  );
+  // A go.mod of the same length is still text.
+  const text = new Uint8Array(1084 + 4).fill(0x20);
+  assert.equal(
+    await module.isBinaryTrackerModule(new File([text], "go.mod")),
+    false,
+  );
+});
+
+test("a charset with no decoder here is reported, not swallowed", async () => {
+  // The composer only toasts an UndecodableTextError; a bare Error failed that
+  // check and the attachment vanished with no message at all. These are not
+  // exotic labels: the Encoding Standard maps the ISO-2022-KR, ISO-2022-CN and
+  // HZ-GB-2312 families to "replacement", which TextDecoder is required to
+  // refuse, so a Korean or Chinese card declaring its own charset went out
+  // silently on every engine.
+  for (const charset of ["ISO-2022-KR", "HZ-GB-2312", "ISO-2022-CN", "cp437"]) {
+    const card = new File(
+      [`BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=${charset}:name\r\nEND:VCARD\r\n`],
+      "contact.vcf",
+    );
+    await assert.rejects(
+      readTextAttachment(card),
+      (error: Error) => {
+        assert.ok(
+          error instanceof UndecodableTextError,
+          `${charset} produced a ${error.name}, which the composer does not toast`,
+        );
+        assert.match(error.message, new RegExp(charset, "i"));
+        return true;
+      },
+      charset,
+    );
+  }
+});
+
 test("a declared charset is decoded as strictly as an undeclared one", async () => {
   // The declared-charset paths used a lenient decoder, so a file claiming UTF-8
   // and holding broken bytes came through as replacement characters, which is
@@ -1550,7 +1624,10 @@ test("the composer adapter reads the shared text accept list", () => {
 
 // Mirrors `bmff_box` and `three_gp_with_tracks` in native_intents.rs, so the
 // browser classifier is tested against the same containers as the native one.
-function bmffBox(kind: string, payload: Uint8Array): Uint8Array {
+// The return types name their buffer: a bare Uint8Array is generic over
+// ArrayBufferLike, which includes SharedArrayBuffer, and BlobPart takes neither
+// that nor a view onto it. Every one of these ends up inside a File.
+function bmffBox(kind: string, payload: Uint8Array): Uint8Array<ArrayBuffer> {
   const boxed = new Uint8Array(8 + payload.length);
   new DataView(boxed.buffer).setUint32(0, boxed.length);
   boxed.set(new TextEncoder().encode(kind), 4);
@@ -1558,8 +1635,8 @@ function bmffBox(kind: string, payload: Uint8Array): Uint8Array {
   return boxed;
 }
 
-function threeGpWithTracks(handlers: readonly string[]): Uint8Array {
-  const traks: Uint8Array[] = [];
+function threeGpWithTracks(handlers: readonly string[]): Uint8Array<ArrayBuffer> {
+  const traks: Uint8Array<ArrayBuffer>[] = [];
   for (const handler of handlers) {
     const hdlrPayload = new Uint8Array(12);
     hdlrPayload.set(new TextEncoder().encode(handler), 8);
@@ -2390,7 +2467,7 @@ test("an unsupported charset is refused however many others sit beside it", asyn
       ],
       "contact.vcf",
     );
-  const message = /Charset "UTF-7" isn't supported/;
+  const message = /declares charset "UTF-7", which this browser has no decoder for/;
   await assert.rejects(readTextAttachment(card("")), (error: Error) => {
     assert.match(error.message, message);
     return true;
