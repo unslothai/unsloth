@@ -1124,7 +1124,7 @@ export function createAutoContinueLeaseKeeper({
     idle: boolean;
     /** That run has started. Only an armed hold is ever released. */
     armed: boolean;
-    /** That run has ended, per its own promise. Only meaningful while it never armed. */
+    /** That run has ended, per its own promise. Nothing running after it is that run. */
     settled: boolean;
   };
   const holds = new Map<string, Hold>();
@@ -1133,10 +1133,33 @@ export function createAutoContinueLeaseKeeper({
   const key = (messageId: string, threadId: string) =>
     `${threadId}\u0000${messageId}`;
 
+  /**
+   * Its own run is over and it continued nothing, so it is forgotten rather than released.
+   *
+   * Either the stream never began -- Stop during preflight, which the adapter wrapper reports
+   * to nobody because the abort is what was asked for -- or the run still on the thread is the
+   * one that SUPERSEDED it, a new message having aborted the continuation and taken the thread
+   * for itself. The second cannot be this hold's own run: the adapter clears the flag from its
+   * own `finally`, strictly before the runtime hands the run's promise back, so a hold whose
+   * own run streamed is already released by the time that promise settles. Without this the
+   * newcomer's stream armed the abandoned hold and the newcomer's end stamped the truncated
+   * message `done`, telling every other tab it had been continued by a run that produced not
+   * one token of it.
+   */
+  function discarded(hold: Hold): boolean {
+    return hold.settled && (!hold.armed || signal.isRunning(hold.threadId));
+  }
+
   /** Arm, release, or forget. No writes to storage beyond the release itself. */
   function observe(): void {
     const at = now();
     for (const [id, hold] of [...holds]) {
+      if (discarded(hold)) {
+        // The lease lapses on its own TTL and the message comes back to whoever is still
+        // looking at it, which is what a failed preflight already does.
+        holds.delete(id);
+        continue;
+      }
       if (signal.isRunning(hold.threadId)) {
         // Only a run that started after this hold was taken can be its own.
         hold.armed ||= hold.idle;
@@ -1147,15 +1170,6 @@ export function createAutoContinueLeaseKeeper({
         // This hold's own run has ended: finished, cancelled or failed.
         holds.delete(id);
         release(hold.messageId, hold.threadId, at);
-        continue;
-      }
-      if (hold.settled) {
-        // Its own run is over and the stream never began: Stop during preflight, which the
-        // adapter wrapper reports to nobody because the abort is what was asked for.
-        // Discarded exactly as a failed preflight is -- forgotten, never released -- so the
-        // lease lapses on its own TTL rather than being renewed for the life of the tab, and
-        // no `done` marker claims a message that produced not one token.
-        holds.delete(id);
         continue;
       }
       // Not armed and not settled, so its run is still in preflight, which has no upper bound

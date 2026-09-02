@@ -1912,6 +1912,68 @@ test("the run that ends is the one the hold was taken for, not the round before 
   assert.equal(keeper.held(), 0);
 });
 
+test("the run that supersedes a stopped continuation does not stamp it continued", async () => {
+  // Sending a new message aborts the continuation and takes the thread: assistant-ui's
+  // `performRoundtrip` aborts the run in flight before it starts the next one. The abandoned
+  // hold is still waiting for a stream, so the newcomer's stream arms it and the newcomer's
+  // end released it -- with the `done` marker that tells every other tab the truncated message
+  // HAS been continued, when its continuation produced not one token. The hold's own run
+  // reporting itself over is what says the stream on the thread belongs to somebody else.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const issued = issuedRunFake();
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: () => {
+      assert.fail(
+        "a run that continued nothing has nothing to record as continued",
+      );
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A");
+  keeper.settleOn("m1", "thread-A", issued.issued);
+
+  // The user gives up on the preflight and sends something else. That run streams.
+  running.add("thread-A");
+  runs.change();
+
+  // Only now does the aborted continuation's own promise settle: its cleanup ran while the
+  // run that replaced it was already on the wire.
+  issued.settle();
+  assert.equal(
+    keeper.held(),
+    0,
+    "the hold followed a run that was never its own",
+  );
+
+  // And the newcomer ending reaches nothing.
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+
+  const lapsed = clock + AUTO_CONTINUE_LEASE_TTL_MS + 1;
+  clock = lapsed;
+  keeper.tick();
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("m1", { now: lapsed }),
+    "started",
+    "nothing renews it, so the lease lapses and the message comes back",
+  );
+});
+
 test("a run that ends after its hold is gone reaches nothing", async () => {
   // A promise settles whenever it settles, and by then the hold it was taken for may have been
   // given back by its own stream or claimed again for the next round under the same key. The
