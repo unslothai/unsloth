@@ -619,6 +619,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
 
 
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
+    titlebar = TITLEBAR.read_text(encoding = "utf-8")
     app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     primitive = SIDEBAR_PRIMITIVE.read_text(encoding = "utf-8")
     navbar = NAVBAR.read_text(encoding = "utf-8")
@@ -638,9 +639,14 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         encoding = "utf-8"
     )
     # The nudge has to move the navigation without pushing it out of the titlebar it sits
-    # in, so the button box travels with it. The container's mt-1 is deliberately not in
-    # the sum: translate-y is visual, and the margin already seats the box in the row.
-    button = _titlebar_nav_button_px(TITLEBAR.read_text(encoding = "utf-8"))
+    # in, so the button box travels with it. The mac-only margin is deliberately not in the
+    # sum: translate-y is visual, and the margin already seats the box in the native row.
+    navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
+        "export function WindowTitlebar", 1
+    )[0]
+    assert "mt-1" not in navigation
+    assert "mt-[var(--studio-titlebar-navigation-margin-top,0px)]" in navigation
+    button = _titlebar_nav_button_px(titlebar)
     assert button is not None, "navigation button size no longer readable from buttonClass"
     blocks = _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8"))
     nudged = {

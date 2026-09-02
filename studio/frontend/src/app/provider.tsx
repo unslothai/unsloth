@@ -474,6 +474,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-mac-titlebar-height": "34px",
   "--studio-desktop-titlebar-height": "34px",
+  "--studio-titlebar-navigation-margin-top": "4px",
   "--studio-titlebar-navigation-offset-y": "4px",
   "--studio-mac-traffic-light-inset": "78px",
   "--studio-collapsed-chat-controls-inset": "188px",
