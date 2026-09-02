@@ -390,17 +390,20 @@ $f
           while IFS= read -r p; do
             pp=$(CDPATH= cd -P -- "$(dirname "$p")" 2>/dev/null && pwd -P) || continue
             pp="$pp/$(basename "$p")"
+            # Leading "(" on every pattern: this case sits inside $( ), and
+            # macOS bash 3.2 ends the substitution at the first pattern-closing
+            # ")" unless the parentheses balance (autoconf "Shell Substitutions").
             case "$pp" in
-              "$root_p"|"$root_p"/*) continue ;;
-              "$home_p") continue ;;
-              "$home_p"/.bash_history|"$home_p"/.zsh_history) continue ;;
-              "$home_p"/.sudo_as_admin_successful) continue ;;
-              "$home_p"/.wget-hsts|"$home_p"/.lesshst) continue ;;
+              ("$root_p"|"$root_p"/*) continue ;;
+              ("$home_p") continue ;;
+              ("$home_p"/.bash_history|"$home_p"/.zsh_history) continue ;;
+              ("$home_p"/.sudo_as_admin_successful) continue ;;
+              ("$home_p"/.wget-hsts|"$home_p"/.lesshst) continue ;;
               # The directory NODES only: their mtime moves when anything is
               # added, and on a CI image something always is. Children are still
               # reported, which is the whole point -- ~/.cache/uv is the leak.
-              "$home_p"/.local|"$home_p"/.cache|"$home_p"/.config) continue ;;
-              "$home_p"/.docker/*|"$home_p"/.gitconfig) continue ;;
+              ("$home_p"/.local|"$home_p"/.cache|"$home_p"/.config) continue ;;
+              ("$home_p"/.docker/*|"$home_p"/.gitconfig) continue ;;
             esac
             printf ' %s\n' "$pp"
           done)

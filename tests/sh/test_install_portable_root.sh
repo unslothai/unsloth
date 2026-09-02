@@ -158,6 +158,28 @@ out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
     UNSLOTH_PORTABLE=1 STUDIO_HOME="$H/unsloth" bash -c "$SNIP" _)"
 check "portable + STUDIO_HOME alias"                   "$H/unsloth"       "$(field "$out" 2)"
 
+# ── 6b2. A flat root stays flat once the shim is what launches the installer ──
+# `unsloth studio update` re-runs install.sh --shortcuts-only from the shim,
+# which exports UNSLOTH_HOME=<root> as well as UNSLOTH_STUDIO_HOME=<root>. With
+# flatness decided only by "no root was named", that non-empty UNSLOTH_HOME made
+# the refresh re-derive <root>/studio, find no venv there and exit "unsloth
+# binary missing" -- a flat portable install could never be updated.
+H="$(new_home)"
+mkdir -p "$H/flat/unsloth_studio/bin"
+F="$(CDPATH= cd -P -- "$H/flat" && pwd -P)"
+out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
+    UNSLOTH_PORTABLE=1 UNSLOTH_HOME="$F" UNSLOTH_STUDIO_HOME="$F" bash -c "$SNIP" _)"
+check "flat root survives a refresh"   "$F"     "$(field "$out" 2)"
+check "flat root keeps its bin"        "$F/bin" "$(field "$out" 4)"
+
+# ...and a nested root must still nest, or the same refresh would relocate it.
+H="$(new_home)"
+mkdir -p "$H/nested/studio/unsloth_studio/bin"
+NR="$(CDPATH= cd -P -- "$H/nested" && pwd -P)"
+out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
+    UNSLOTH_PORTABLE=1 UNSLOTH_HOME="$NR" UNSLOTH_STUDIO_HOME="$NR/studio" bash -c "$SNIP" _)"
+check "nested root still nests on a refresh" "$NR/studio" "$(field "$out" 2)"
+
 # ── 6c. --root must refuse a missing or flag-shaped value ──
 # A directory gets created at whatever this resolves to. Untreated, `--root`
 # with nothing after it produced a plain default install (the opposite of the
@@ -220,9 +242,12 @@ shim_block="$(awk '
     /_shim_tmp/ {seen = 1}
     grab && /^elif ! ln -sfn/ {exit}
 ' "$INSTALL")"
+# UV_INSTALL_DIR is the one that decides where a re-bootstrapped uv BINARY
+# lands: setup.sh reinstalls uv whenever `command -v uv` misses, and portable
+# mode puts nothing on a login PATH, so it misses on every update.
 for v in UNSLOTH_HOME UNSLOTH_PORTABLE UNSLOTH_STUDIO_HOME UNSLOTH_LLAMA_CPP_PATH \
          UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR UV_NO_MODIFY_PATH \
-         NPM_CONFIG_CACHE CUDA_CACHE_PATH; do
+         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE CUDA_CACHE_PATH; do
     case "$shim_block" in
         *"export $v="*) printf '  PASS  %s\n' "portable shim exports $v" ;;
         *) printf '  FAIL  %s\n' "portable shim exports $v"; fails=$((fails+1)) ;;
@@ -238,7 +263,7 @@ esac
 # inherits nothing, so a conf without these repopulates ~/.cache/uv on update.
 conf_block="$(sed -n '/studio.conf: exe path/,/studio\.conf"$/p' "$INSTALL")"
 for v in UNSLOTH_HOME UNSLOTH_PORTABLE UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR \
-         NPM_CONFIG_CACHE CUDA_CACHE_PATH; do
+         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE CUDA_CACHE_PATH; do
     case "$conf_block" in
         *"export $v="*) printf '  PASS  %s\n' "studio.conf exports $v" ;;
         *) printf '  FAIL  %s\n' "studio.conf exports $v"; fails=$((fails+1)) ;;
@@ -265,6 +290,17 @@ if grep -q "export UNSLOTH_HOME=" "$UNINSTALL"; then
 else
     printf '  FAIL  %s\n' "uninstall.sh reads the master root from studio.conf"; fails=$((fails+1))
 fi
+
+# ── 14. ...and the closing message hands the user that variable ──
+# Portable mode writes studio.conf under <root>/share and leaves ~/.local/bin
+# alone, so a bare `scripts/uninstall.sh` discovers no root at all: it reports
+# success and leaves the whole install on disk.
+done_block="$(sed -n '/portable install; everything lives in:/,/were left untouched/p' "$INSTALL")"
+case "$done_block" in
+    *"UNSLOTH_HOME='"*"scripts/uninstall.sh"*)
+        printf '  PASS  %s\n' "closing message names UNSLOTH_HOME for the uninstaller" ;;
+    *) printf '  FAIL  %s\n' "closing message names UNSLOTH_HOME for the uninstaller"; fails=$((fails+1)) ;;
+esac
 
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "All checks passed"
