@@ -19,6 +19,13 @@ export const it = {
     shutdown: "Arresta",
   },
   shell: {
+    find: {
+      label: "Trova nella pagina",
+      previous: "Risultato precedente",
+      next: "Risultato successivo",
+      close: "Chiudi ricerca",
+      truncated: "Questa pagina è troppo lunga per essere cercata per intero.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -190,6 +197,10 @@ export const it = {
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
       actions: {
+        findInPage: {
+          label: "Trova nella pagina",
+          description: "Cerca il testo di questa pagina",
+        },
         openSettings: {
           label: "Apri le impostazioni",
           description: "Apri la finestra delle impostazioni",
@@ -825,6 +836,16 @@ export const it = {
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
       },
+      repairInstall: {
+        label: "Ripara l'installazione",
+        description:
+          "Riesegue il programma di installazione sull'ambiente gestito. Utile se la GPU non viene rilevata o se l'app non si avvia.",
+        action: "Ripara installazione",
+        confirmTitle: "Riparare questa installazione?",
+        confirmDescription:
+          "Arresta il server e riesegue il programma di installazione, che reinstalla PyTorch per la GPU di questa macchina. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
+        confirmAction: "Ripara ora",
+      },
       resetPreferences: {
         sectionTitle: "Zona pericolosa",
         label: "Reimposta tutte le preferenze locali",
@@ -1078,6 +1099,8 @@ export const it = {
         currentLoad: "Carico attuale",
         free: "Disponibili: {value}",
         noGpu: "Nessuna GPU visibile",
+        gpuUnusable: "GPU non utilizzabile",
+        gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
       },
       gpu: {
         title: "Dispositivi GPU",
@@ -1087,6 +1110,12 @@ export const it = {
         unreadable: "Impossibile leggere l'hardware di questo server.",
         noGpu:
           "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
+        noUsableGpu: "Nessuna GPU di questa macchina è utilizzabile da PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch è una build solo CPU ({version}), quindi le GPU sottostanti non possono essere usate. Ripara l'installazione per ripristinare il supporto GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) non riesce a inizializzare le GPU sottostanti, quindi non possono essere usate. Controlla il driver della GPU o ripara l'installazione.",
+        unusableDevice: "non utilizzabile",
         unknownDevice: "GPU sconosciuta",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1209,7 +1238,7 @@ export const it = {
       description:
         "Collega agenti di programmazione come Claude Code e Codex a un modello locale con unsloth start.",
       intro:
-        "collega Claude Code, Codex, Hermes, OpenClaw, OpenCode e altri agenti a un modello servito localmente da Unsloth, completamente offline. Avvia un server compatibile con le API OpenAI e non modifica i file di configurazione del tuo agente.",
+        "collega Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode e altri agenti a un modello servito localmente da Unsloth, completamente offline. Avvia un server compatibile con le API OpenAI e non modifica i file di configurazione del tuo agente.",
       readDocs: "Leggi la documentazione",
       copy: "Copia",
       copied: "Copiato",

@@ -1236,12 +1236,16 @@ def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA synchronous=NORMAL")
 
 
-def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlite3.Connection:
+def get_connection(
+    busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS, *, check_same_thread: bool = True
+) -> sqlite3.Connection:
     """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
     global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path), timeout = busy_timeout_seconds)
+    conn = sqlite3.connect(
+        str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
+    )
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
@@ -1257,6 +1261,53 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
                     raise
     _apply_wal_synchronous(conn)
     return conn
+
+
+# Every accessor here opens and closes its own connection, so a writer is routinely the last
+# WAL participant, and sqlite checkpoints the WAL back into studio.db on that close. At the
+# durable chat stream's flush cadence that is several rewrites a second (#9934).
+_wal_keeper: sqlite3.Connection | None = None
+_wal_keeper_lock = threading.Lock()
+
+
+def open_wal_keeper() -> bool:
+    """Hold this database's WAL open for the process. Returns whether a keeper is engaged."""
+    # Replace rather than inherit: a keeper from an earlier lifespan can belong to another
+    # database or a dead thread, and reusing it would keep nothing for the current one.
+    close_wal_keeper()
+    global _wal_keeper
+    with _wal_keeper_lock:
+        # Only ever runs the pragma below, on this thread. check_same_thread is off so a
+        # keeper stranded by an earlier lifespan can still be closed from this one.
+        conn = get_connection(check_same_thread = False)
+        try:
+            # What is in force, not what was asked for: journal_mode=WAL declines silently
+            # on filesystems without shared-memory support and persists in the file. Nothing
+            # to hold open there, so those installs go without, as _apply_wal_synchronous.
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        except (sqlite3.Error, TypeError, IndexError) as exc:
+            conn.close()
+            logger.warning("Could not read studio.db journal mode: %s", exc)
+            return False
+        if not isinstance(mode, str) or mode.lower() != "wal":
+            conn.close()
+            logger.info("studio.db is in %s mode, not WAL; WAL keeper not engaged.", mode)
+            return False
+        _wal_keeper = conn
+        return True
+
+
+def close_wal_keeper() -> None:
+    """Release the keeper; last-close checkpointing resumes."""
+    global _wal_keeper
+    with _wal_keeper_lock:
+        conn, _wal_keeper = _wal_keeper, None
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except Exception as exc:
+        logger.warning("Could not close the studio.db WAL keeper: %s", exc)
 
 
 def create_run(
@@ -4637,6 +4688,96 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
         )
         conn.commit()
         return merged
+    except CorruptSettingsError:
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _chat_settings_match_expected(current: Any, expected: Any) -> bool:
+    """Whether every expected leaf still has the value the caller read."""
+    if isinstance(expected, dict):
+        if not isinstance(current, dict):
+            return False
+        return all(
+            key in current and _chat_settings_match_expected(current[key], value)
+            for key, value in expected.items()
+        )
+    return current == expected
+
+
+def _chat_settings_path_exists(current: Any, path: Iterable[str]) -> bool:
+    """Whether every segment exists, without assigning meaning to its value."""
+    node = current
+    for segment in path:
+        if not isinstance(node, dict) or segment not in node:
+            return False
+        node = node[segment]
+    return True
+
+
+def upsert_chat_settings_merge_if_current(
+    expected: dict[str, Any],
+    updates: dict[str, Any],
+    expected_absent: Iterable[str] = (),
+    expected_absent_paths: Iterable[Iterable[str]] = (),
+) -> tuple[dict[str, Any], bool]:
+    """Atomically merge ``updates`` only if ``expected`` still matches.
+
+    Expected is a recursive subset so legacy keys omitted by the current client
+    do not prevent a guarded migration. Any field the client did read is fenced
+    against a newer tab write in the same BEGIN IMMEDIATE transaction.
+    """
+    # Contended timeout, not the default: this fires during hydration alongside
+    # the ordinary settings writer, and takes a write lock before knowing if it
+    # will write. Where WAL declined both share one writer, and the 5s default
+    # surfaces as a bare "database is locked" the route cannot map.
+    conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current, corrupt = _load_chat_settings_for_merge(conn)
+        matches_expected = _chat_settings_match_expected(current, expected)
+        has_new_expected_field = any(key in current for key in expected_absent)
+        has_new_expected_path = any(
+            _chat_settings_path_exists(current, path) for path in expected_absent_paths
+        )
+        if has_new_expected_field or has_new_expected_path or not matches_expected:
+            conn.commit()
+            return current, False
+        unsafe_partial_keys = [
+            key
+            for key, value in updates.items()
+            if key in corrupt and isinstance(value, dict) and key not in _ATOMIC_SETTING_KEYS
+        ]
+        if unsafe_partial_keys:
+            conn.commit()
+            keys = ", ".join(sorted(unsafe_partial_keys))
+            raise CorruptSettingsError(
+                f"Cannot apply partial settings patch to corrupt key(s): {keys}"
+            )
+        if not updates:
+            # Same short-circuit as the unconditional merge: without it an empty
+            # patch rewrites updated_at on every key, which anything watching
+            # those timestamps reads as a settings change.
+            conn.commit()
+            return current, True
+        merged = _deep_merge_settings(current, updates)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO chat_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [(key, json.dumps(value), now) for key, value in merged.items()],
+        )
+        conn.commit()
+        return merged, True
     except CorruptSettingsError:
         raise
     except Exception:

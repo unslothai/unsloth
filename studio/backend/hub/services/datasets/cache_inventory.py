@@ -201,21 +201,21 @@ _DATASET_NON_PAYLOAD_FILENAMES = (
 )
 
 
-# suffixes no loader can turn into rows: none is in `datasets`' extension map, and a script also
-# needs `trust_remote_code`, which no load path here passes and `datasets>=4` dropped.
+# suffixes no loader can turn into rows; a script also needs trust_remote_code, which no load path
+# here passes and datasets>=4 dropped.
 _DATASET_NON_PAYLOAD_SUFFIXES = frozenset({".cff", ".md", ".py", ".pyc"})
 
 
 def _is_payload_dir(name: str) -> bool:
-    # the only rule `datasets` applies to a directory, which also covers a Mac zip's `__MACOSX`.
-    # the metadata FILE names must not be applied here: `license/train.parquet` loads fine, and
-    # pruning that subtree hid the dataset from On Device.
+    # the only rule datasets applies to a directory, which also covers a Mac zip's __MACOSX. the
+    # metadata FILE names must not be applied here: license/train.parquet loads fine, and pruning that
+    # subtree hid the dataset from On Device.
     return not name.startswith(".") and not name.startswith("__")
 
 
 def _is_payload_name(name: str) -> bool:
     # as above, plus the metadata names: AppleDouble sidecars, every dotfile the list does not
-    # enumerate, and the cards and licences a cancelled download leaves behind.
+    # enumerate, and the cards a cancelled download leaves behind.
     if not _is_payload_dir(name):
         return False
     return name.lower() not in _DATASET_NON_PAYLOAD_FILENAMES
@@ -224,21 +224,20 @@ def _is_payload_name(name: str) -> bool:
 def _is_payload_file(name: str) -> bool:
     if not _is_payload_name(name):
         return False
-    # the resolver's suffix rule, which walks the whole chain and drops a trailing compression
-    # suffix: `train.parquet.backup` is still parquet, `data.py.gz` is still a script.
+    # the resolver's suffix rule drops a trailing compression suffix: train.parquet.backup is still
+    # parquet, data.py.gz is still a script.
     suffix = local_options._data_suffix(name)
     return suffix is None or suffix.lower() not in _DATASET_NON_PAYLOAD_SUFFIXES
 
 
 def _is_present_payload_file(path: Path) -> bool:
-    # existence is not enough. `_empty_payload` covers both shapes that look like payload and
-    # are not: a zero-byte file, and a `blobs/` link whose blob was pruned.
+    # existence is not enough: a zero-byte file, and a blobs/ link whose blob was pruned, both look like
+    # payload and are not.
     if not _is_payload_file(path.name):
         return False
     if local_options._empty_payload(path):
         return False
-    # bytes are not rows: `_rowless` probes a header-only csv or a `[]` json, reading a short
-    # head for those two builders only. it drops the file, not the snapshot, as datasets does.
+    # bytes are not rows: a header-only csv or a [] json drops the file, not the snapshot, as datasets does.
     module = local_options._file_module(path.name)
     return module is None or not local_options._rowless(path, path.name, module)
 
@@ -255,9 +254,8 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
         nonlocal unreadable
         unreadable = True
 
-    # roots still to walk, and every directory already walked or queued by resolved path. a
-    # junction pointing at its own ancestor resolves back inside the snapshot, so containment
-    # alone leaves `data/loop/loop/...` descending until the path length gives out.
+    # a junction pointing at its own ancestor resolves back inside the snapshot, so containment alone
+    # leaves data/loop/loop/... descending until the path length gives out.
     seen: set[Path] = set()
     pending: list[Path] = []
 
@@ -286,30 +284,28 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
                 base = Path(directory)
                 kept = []
                 for name in dirnames:
-                    # nothing under a hidden or `__`-prefixed dir can supply rows, so
-                    # `.hidden/notes.txt` must not clear `partial`.
+                    # nothing under a hidden or __-prefixed dir can supply rows, so .hidden/notes.txt must not clear
+                    # partial.
                     if not _is_payload_dir(name):
                         continue
                     entry = base / name
-                    # containment, not a link-type test: `is_symlink()` is false for a Windows
-                    # junction and `is_junction()` postdates 3.12, which this still supports, so
-                    # only comparing resolved paths catches every redirect on every runtime.
+                    # containment, not a link-type test: is_symlink() is false for a Windows junction and is_junction()
+                    # postdates 3.12, so only comparing resolved paths catches every redirect.
                     try:
                         redirected = not entry.resolve(strict = True).is_relative_to(root)
                         linked = entry.is_symlink()
                     except (OSError, RuntimeError, ValueError):
                         unreadable = True
                         continue
-                    # walked as a root of its own, not taken as proof: migrated caches keep
-                    # their data behind a redirect, and a stale one holds nothing.
+                    # walked as a root of its own, not taken as proof: migrated caches keep their data behind a
+                    # redirect, and a stale one holds nothing.
                     if redirected:
                         target = _book(entry)
                         if target is not None:
                             pending.append(target)
                         continue
-                    # a symlink back inside this root is skipped: the walk never descends one,
-                    # and booking its target would prune the real directory whenever `alias` is
-                    # listed before `data`. a junction reports False here, hence the visited set.
+                    # a symlink back inside this root is skipped, since booking its target would prune the real
+                    # directory whenever alias is listed before data; a junction reports False here.
                     if linked:
                         continue
                     if _book(entry) is None:
@@ -701,7 +697,7 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
 
     target_root = resolve_delete_target_root("dataset", repo_id, cache_path, owners.keys())
     # A processed-only dataset row sends its Arrow cache path, which is not a Hub datasets-- dir, so
-    # resolve_delete_target_root returns None. Accept it and fall through to the processed delete.
+    # resolve_delete_target_root returns None.
     if target_root is None and not (
         cache_path
         and (_is_processed_dataset_cache_path(repo_id, cache_path) or app_entry is not None)
@@ -733,9 +729,8 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
                 exc_info = True,
             )
 
-    # Restrict the processed Arrow-cache delete to the selected cache's datasets root. A processed
-    # cache_path scopes to its own root; a Hub target to the datasets root sharing its cache home;
-    # an unspecified cache_path stays global (legacy).
+    # A processed cache_path scopes to its own root, a Hub target to the datasets root sharing its cache
+    # home, and an unspecified one stays global.
     processed_roots: Optional[set[Path]]
     if not cache_path:
         processed_roots = None
@@ -773,7 +768,7 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
             ),
         )
 
-    # ``scan_cache_dir()`` skips blob-only/corrupt repos the revision delete can't touch, yet the
+    # scan_cache_dir() skips blob-only or corrupt repos the revision delete cannot touch, yet the
     # fallback scanner shows them, so purge the whole dir. Hub cache targets only.
     cache_purged = partial_purged = state_purged = False
     if target_root is not None:

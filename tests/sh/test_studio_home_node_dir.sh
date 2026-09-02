@@ -46,8 +46,10 @@ case "$blockB" in *'NODE_DIR="$_NODE_PARENT/node"'*) : ;; *) echo "FAIL: blockB 
 case "$blockB" in *'_STUDIO_HOME_IS_CUSTOM'*) : ;; *) echo "FAIL: blockB missed the custom-home branch"; exit 1 ;; esac
 case "$blockB" in *'STAGE_ROOT'*) : ;; *) echo "FAIL: blockB missed the staging branch"; exit 1 ;; esac
 
-node_dir_for() { # HOME UNSLOTH_STUDIO_HOME STUDIO_HOME
-    env -i HOME="$1" UNSLOTH_STUDIO_HOME="$2" STUDIO_HOME="$3" PATH="$PATH" \
+# Block A derives STAGE_ROOT from UNSLOTH_STUDIO_STAGE_ROOT.
+node_dir_for() { # HOME UNSLOTH_STUDIO_HOME STUDIO_HOME [UNSLOTH_STUDIO_STAGE_ROOT]
+    env -i HOME="$1" UNSLOTH_STUDIO_HOME="$2" STUDIO_HOME="$3" \
+        UNSLOTH_STUDIO_STAGE_ROOT="${4:-}" PATH="$PATH" \
         bash -c "$SNIP" 2>/dev/null | tail -1
 }
 

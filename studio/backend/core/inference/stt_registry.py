@@ -19,8 +19,8 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Every engine a dictation model can be resident on. Order is the order an
-# unload sweeps them, which matters only for logging.
+# Every engine a dictation model can be resident on. Order is the order an unload sweeps them, which matters only for
+# logging.
 STT_ENGINES = ("transformers", "gguf", "mtmd")
 
 # Serialises load-then-release so two loads on different engines cannot leave both resident.
@@ -55,11 +55,11 @@ def load(
     """
     others = [name for name in STT_ENGINES if name != engine]
     with _load_lock:
-        # Release the other engines BEFORE allocating, but only once the checkpoint is known
-        # to be on disk. Holding two engines across the load is what makes a switch OOM on a
-        # device that fits either alone; releasing blind would let a 409 for a model that was
-        # never downloaded cost the user the engine they were already using. When the answer
-        # is not certain, keep the old order and accept the peak.
+        # release other engines only once the checkpoint is on disk
+        # Release the other engines BEFORE allocating, but only once the checkpoint is known to be on disk. Holding two
+        # engines across the load is what makes a switch OOM on a device that fits either alone; releasing blind would
+        # let a 409 for a model that was never downloaded cost the user the engine they were already using. When the
+        # answer is not certain, keep the old order and accept the peak.
         if _model_is_downloaded(engine, model):
             unload(others, wait = False)
             sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)

@@ -65,6 +65,7 @@ from routes.inference import (
     _ResponsesReasoningExtractor,
     _SameTaskStreamingResponse,
     _build_chat_request,
+    _build_openai_passthrough_body,
     _chat_tool_calls_to_responses_output,
     _extract_response_format,
     _extract_responses_reasoning,
@@ -384,6 +385,17 @@ class TestToolChoiceTranslation:
 
 
 class TestBuildChatRequest:
+    def test_seed_reaches_the_llama_passthrough_policy(self):
+        payload = ResponsesRequest(input = "hi", seed = 3407)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = True)
+        body = _build_openai_passthrough_body(chat_req, backend_ctx = 4096)
+
+        assert chat_req.seed == 3407
+        assert body["seed"] == 3407
+        assert body["cache_prompt"] is False
+
     def test_parallel_tool_calls_false_is_preserved_for_passthrough_caps(self):
         payload = ResponsesRequest(
             input = "hi",

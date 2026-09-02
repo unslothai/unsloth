@@ -12,6 +12,8 @@ poll query, and log levels.
 """
 
 import asyncio
+import hashlib
+import inspect
 import logging
 import sqlite3
 import threading
@@ -33,7 +35,9 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(studio_db, "_schema_ready", False)
     conn = studio_db.get_connection()
     conn.close()
-    return tmp_path / "studio.db"
+    yield tmp_path / "studio.db"
+    # A keeper left open would hold this temp database past the test that made it.
+    studio_db.close_wal_keeper()
 
 
 def _journal_mode(path: Path) -> str:
@@ -738,3 +742,121 @@ def test_server_errors_keep_their_traceback(status):
     log_and_http_error(raised, status, "public", event = "e", log = log)
     level, kwargs = log.calls[0]
     assert level == "error" and kwargs.get("exc_info") is raised
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _short_lived_write(path: Path, value: str) -> None:
+    """One writer with the lifetime every studio_db accessor gives its connection."""
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) "
+            "VALUES ('wal-probe', ?, '0')",
+            (value,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_wal_keeper_keeps_short_lived_writers_out_of_the_main_database(db):
+    """The #9934 write amplification: without a keeper every close rewrites studio.db."""
+    wal = Path(f"{db}-wal")
+
+    for index in range(5):
+        _short_lived_write(db, f"unkept-{index}")
+        assert not wal.exists()
+    unkept = _digest(db)
+
+    assert studio_db.open_wal_keeper() is True
+    for index in range(5):
+        _short_lived_write(db, f"kept-{index}")
+        assert wal.is_file()
+    assert _digest(db) == unkept
+
+    studio_db.close_wal_keeper()
+    assert not wal.exists()
+    assert _digest(db) != unkept
+
+
+def test_a_second_open_replaces_the_keeper_instead_of_inheriting_it(db, tmp_path, monkeypatch):
+    """Inheriting a keeper left by an earlier lifespan holds a database this process has
+    stopped using, reporting success while keeping nothing for the current one."""
+    assert studio_db.open_wal_keeper() is True
+    stale = studio_db._wal_keeper
+
+    second = tmp_path / "second" / "studio.db"
+    second.parent.mkdir()
+    monkeypatch.setattr(studio_db, "studio_db_path", lambda: second)
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    assert studio_db.open_wal_keeper() is True
+    assert studio_db._wal_keeper is not stale
+    _short_lived_write(second, "kept")
+    assert Path(f"{second}-wal").is_file()
+
+    studio_db.close_wal_keeper()
+    assert studio_db._wal_keeper is None
+    assert not Path(f"{second}-wal").exists()
+    studio_db.close_wal_keeper()
+
+
+def test_the_replaced_keeper_is_not_left_open(db):
+    """Replacing must release the old connection, not merely drop the reference."""
+    assert studio_db.open_wal_keeper() is True
+    stale = studio_db._wal_keeper
+    assert studio_db.open_wal_keeper() is True
+
+    with pytest.raises(sqlite3.ProgrammingError, match = "closed database"):
+        stale.execute("SELECT 1")
+    studio_db.close_wal_keeper()
+
+
+def test_a_keeper_left_by_a_dead_thread_is_replaced(db):
+    """sqlite refuses a cross-thread close, so replacing has to survive that failing."""
+    opened = threading.Thread(target = studio_db.open_wal_keeper)
+    opened.start()
+    opened.join()
+    stale = studio_db._wal_keeper
+    assert stale is not None
+
+    assert studio_db.open_wal_keeper() is True
+    assert studio_db._wal_keeper is not stale
+    _short_lived_write(db, "kept")
+    assert Path(f"{db}-wal").is_file()
+
+    studio_db.close_wal_keeper()
+    assert not Path(f"{db}-wal").exists()
+
+
+def test_wal_keeper_declines_when_the_filesystem_refused_wal(db, caplog):
+    """A rollback-journal install has nothing to hold open, and must still boot."""
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    assert _journal_mode(db) == "delete"
+
+    with caplog.at_level(logging.INFO, logger = studio_db.logger.name):
+        assert studio_db.open_wal_keeper() is False
+    assert studio_db._wal_keeper is None
+    assert "not WAL" in caplog.text
+
+
+def test_the_lifespan_holds_the_keeper_across_every_writer():
+    """A keeper nothing opens saves nothing, and one released early stops saving early.
+
+    Reads the source rather than running the lifespan, which imports the whole stack.
+    Anchored on the awaited call, since the bare name is also in a comment further up.
+    """
+    import main
+
+    source = inspect.getsource(main.lifespan)
+    served = source.index("yield")
+    assert source.index("open_wal_keeper()") < source.index("cleanup_orphaned_runs()") < served
+    assert (
+        served < source.index("await run_lifespan_shutdown(") < source.index("close_wal_keeper()")
+    )

@@ -312,6 +312,42 @@ def test_incomplete_direct_split_is_not_collapsed(tmp_path):
     assert {Path(row.path) for row in rows} == {first, third}
 
 
+def test_grouped_split_reports_parts_without_counting_companions(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-F16-00001-of-00002.gguf", 11)
+    _write_gguf(model / "model-F16-00002-of-00002.gguf", 7)
+    _write_gguf(model / "model-mmproj-F16.gguf", 3)
+    _write_gguf(model / "mtp-model.gguf", 2)
+
+    rows = _custom_rows(root)
+    variants, _has_vision = gguf.list_local_gguf_variants(str(model), model_root = str(root))
+
+    assert len(rows) == 1
+    assert [(variant.quant, variant.shard_count) for variant in variants] == [("F16", 2)]
+
+
+def test_mixed_split_and_ordinary_models_stay_separate(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "alpha-F16-00001-of-00002.gguf")
+    _write_gguf(model / "alpha-F16-00002-of-00002.gguf")
+    _write_gguf(model / "beta-Q8_0.gguf")
+
+    rows = _custom_rows(root)
+    variants, _has_vision = gguf.list_local_gguf_variants(str(model), model_root = str(root))
+
+    assert len(rows) == 2
+    split_row = next(row for row in rows if Path(row.path).name.startswith("alpha-F16-00001"))
+    ordinary_row = next(row for row in rows if Path(row.path).name == "beta-Q8_0.gguf")
+    assert Path(split_row.path).name == "alpha-F16-00001-of-00002.gguf"
+    assert Path(ordinary_row.path).name == "beta-Q8_0.gguf"
+    assert {(variant.quant, variant.shard_count) for variant in variants} == {
+        ("F16", 2),
+        ("Q8_0", 0),
+    }
+
+
 def test_two_digit_split_like_names_stay_separate(tmp_path):
     root = tmp_path / "root"
     holder = root / "holder"

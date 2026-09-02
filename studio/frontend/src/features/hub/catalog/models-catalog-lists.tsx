@@ -9,7 +9,7 @@ import {
 } from "@/features/model-picker";
 import {
   CubeIcon,
-  DownloadCircle02Icon,
+  Download01Icon,
   PinIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
@@ -453,7 +453,7 @@ export function DownloadedList({
     }
     return (
       <EmptyState
-        icon={query.trim() ? Search01Icon : DownloadCircle02Icon}
+        icon={query.trim() ? Search01Icon : Download01Icon}
         title={query.trim() ? "No matches on device" : "Nothing on device yet"}
         body={
           query.trim()

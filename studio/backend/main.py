@@ -317,6 +317,7 @@ from routes import (
     youtube_router,
 )
 from routes.llama import router as llama_router
+from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
 from routes.preview import router as preview_router
 from hub.routes import (
@@ -641,6 +642,16 @@ async def lifespan(app: FastAPI):
     _lifespan_log = _structlog.get_logger(__name__)
     clear_compiled_cache_unless_shared(app)
 
+    # Here because both launch paths reach it after the frontend decision: run.py calls
+    # setup_frontend(), and `uvicorn main:app` bypasses run.py entirely. With no
+    # catch-all the engine paths match on method alone and answer 405, read as "exists".
+    if not getattr(app.state, "frontend_mounted", False):
+        try:
+            from routes.llama_compat import add_get_denials
+            add_get_denials(app)
+        except Exception:  # noqa: BLE001 -- never block startup over a discovery route
+            _lifespan_log.warning("could not install API-only probe denials", exc_info = True)
+
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.
     try:
@@ -663,6 +674,13 @@ async def lifespan(app: FastAPI):
 
     # Hardware detection and MLX autorepair moved out of this lifespan: both import heavy
     # runtimes and uvicorn binds only once this returns, so they held the login screen.
+
+    # Before the first writer, so startup's own connections stop checkpointing too.
+    try:
+        from storage.studio_db import open_wal_keeper
+        open_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
 
     # Reap workers/runs orphaned by a previous crash before new work starts.
     try:
@@ -839,6 +857,11 @@ async def lifespan(app: FastAPI):
     )
     # Shutdown cleared the state this warm produced, so release the one-per-process latch.
     reset_background_warm()
+
+    # Last, so every other shutdown step has had its final write first.
+    from storage.studio_db import close_wal_keeper
+
+    close_wal_keeper()
 
 
 app = FastAPI(
@@ -1460,6 +1483,11 @@ app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"]
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+# llama-server / Ollama discovery probes. Declares its own full paths (/props,
+# /version, /api/tags, ...) so it needs no prefix, and must be registered here --
+# ahead of the SPA catch-all in serve_frontend() -- or /props and /version go on
+# resolving to index.html with a 200.
+app.include_router(llama_compat_router, tags = ["openai-compat"])
 app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 
@@ -1545,11 +1573,15 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
         generation = _hw_module.DETECTION_GENERATION
         device = _hw_module.DEVICE
         chat_only = bool(_hw_module.CHAT_ONLY)
-        reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
-        # Inside the guarded read, with the reason it belongs to. Read after it, a forced
-        # re-detect starting in between would pair this reply's reason with a detail from
-        # a different pass, or with none at all.
-        detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
+        # Refreshed, not the frozen global: the three inventory-sensitive verdicts can change
+        # after startup (an eGPU attached, a driver that finished restarting). Reason and detail
+        # come back together, or a forced re-detect starting in between would pair this reply's
+        # reason with a detail from a different pass.
+        try:
+            reason, detail = _hw_module.current_chat_only_verdict()
+        except Exception:
+            reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+            detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
         if (
             device is not None
             and _hw_module.DETECTION_COMPLETE.is_set()
@@ -2041,8 +2073,9 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             llama_uses_vulkan = False
             gpu_ids_supported = True
-        # Preserve backend/index metadata from the visibility probe: a CPU training host can expose
-        # a Vulkan inference GPU, and the UI must label it Vulkan, not the top-level CPU backend.
+        # The spread also carries `physical_devices` and `mismatch`: GPUs the OS sees that this PyTorch
+        # cannot open (#8473). They stay their own fields, because `devices` below is the runtime-usable
+        # list that model fit budgets against and the training device picker pins from.
         gpu_info = {
             **visibility_info,
             "available": visibility_info.get("available", False),
@@ -2545,7 +2578,17 @@ def setup_frontend(
         if file_path.is_file():
             return FileResponse(file_path)
 
+        # Last, so a real asset always wins: an engine endpoint Studio does not serve
+        # must 404 rather than render the app shell, which reads as "supported" to a
+        # client that checks the status before the body. Deliberately after the file
+        # lookup -- a build that ever ships one of these names still serves it.
+        if is_engine_probe_path(full_path):
+            raise HTTPException(status_code = 404, detail = "API endpoint not found")
+
         # Serve index.html as bytes — avoids Content-Length mismatch
         return _build_index_response(request)
 
+    # The catch-all above is what 404s a GET probe. The lifespan reads this to decide
+    # whether the engine paths still need their own GET denial.
+    app.state.frontend_mounted = True
     return True
