@@ -80,9 +80,11 @@ from core.inference.mcp_client import (
 from core.inference.sandbox import (
     SandboxProfilePathError,
     build_sandbox_argv,
+    close_sandbox_argv_fds,
     configured_rocm_environment,
     opted_in_user_site_path,
     plain_pth_pythonpath_roots,
+    sandbox_argv_pass_fds,
     sandbox_available,
 )
 from storage import mcp_servers_db
@@ -6920,6 +6922,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "NVIDIA_VISIBLE_DEVICES",
         "ONEAPI_DEVICE_SELECTOR",
         "ZE_AFFINITY_MASK",
+        "HSA_ENABLE_DXG_DETECTION",
+        "HSA_OVERRIDE_GFX_VERSION",
     ):
         if selector in os.environ:
             env[selector] = os.environ[selector]
@@ -16196,7 +16200,13 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        pass_fds = sandbox_argv_pass_fds(argv)
+        if pass_fds:
+            popen_kwargs["pass_fds"] = pass_fds
+        try:
+            proc = subprocess.Popen(argv, **popen_kwargs)
+        finally:
+            close_sandbox_argv_fds(argv)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
@@ -16367,7 +16377,13 @@ def _bash_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        pass_fds = sandbox_argv_pass_fds(argv)
+        if pass_fds:
+            popen_kwargs["pass_fds"] = pass_fds
+        try:
+            proc = subprocess.Popen(argv, **popen_kwargs)
+        finally:
+            close_sandbox_argv_fds(argv)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.

@@ -8,7 +8,10 @@ OS-level sandbox wrapper for tool execution.
 from __future__ import annotations
 
 import atexit
+import ctypes
+import ctypes.util
 import errno
+import importlib.machinery
 import os
 import shutil
 import site
@@ -23,7 +26,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
-_BWRAP_PROBE_BIN = os.path.realpath(os.path.abspath(shutil.which("true") or "/usr/bin/true"))
+_BWRAP_PROBE_CANDIDATES = ("/usr/bin/true", "/bin/true", "/run/current-system/sw/bin/true")
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
 _NIX_STORE = "/nix/store"
 
@@ -46,6 +49,7 @@ _LINUX_ROCM_RUNTIME_LIBRARY_PREFIXES = (
     "libhsa-runtime64.so",
     "librocdxg.so",
 )
+_LINUX_ONEAPI_ROOTS = ("/opt/intel/oneapi",)
 _LINUX_ACCELERATOR_SYSFS_CLASS_PATHS = (
     "/sys/class/drm",
     "/sys/class/kfd",
@@ -69,6 +73,46 @@ class SandboxProfilePathError(ValueError):
 
 class UnsafeSandboxWorkdirError(RuntimeError):
     """The writable workdir would expose an inode outside its path boundary."""
+
+
+class SandboxArgv(list[str]):
+    """Sandbox command plus the narrow file descriptors it must inherit."""
+
+    def __init__(self, values: list[str], pass_fds: tuple[int, ...] = ()):
+        super().__init__(values)
+        self.pass_fds = pass_fds
+
+    def close_pass_fds(self) -> None:
+        for fd in self.pass_fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self.pass_fds = ()
+
+    def __del__(self):
+        self.close_pass_fds()
+
+
+def sandbox_argv_pass_fds(argv: list[str]) -> tuple[int, ...]:
+    """Descriptors a :class:`SandboxArgv` must pass through ``Popen``."""
+    return getattr(argv, "pass_fds", ())
+
+
+def close_sandbox_argv_fds(argv: list[str]) -> None:
+    """Release parent copies of descriptors after the sandbox process starts."""
+    close = getattr(argv, "close_pass_fds", None)
+    if close is not None:
+        close()
+
+
+class _ScmpArgCmp(ctypes.Structure):
+    _fields_ = (
+        ("arg", ctypes.c_uint),
+        ("op", ctypes.c_int),
+        ("datum_a", ctypes.c_uint64),
+        ("datum_b", ctypes.c_uint64),
+    )
 
 
 _sandbox_available_cache: bool | None = None
@@ -148,12 +192,15 @@ def _probe(argv: list[str], label: str) -> _ProbeResult:
     timed out under IO load); the caller should NOT cache the False.
     """
     try:
-        proc = subprocess.run(
-            argv,
+        run_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             timeout = 5,
         )
+        pass_fds = sandbox_argv_pass_fds(argv)
+        if pass_fds:
+            run_kwargs["pass_fds"] = pass_fds
+        proc = subprocess.run(argv, **run_kwargs)
     except subprocess.TimeoutExpired as e:
         # Slow runner / loaded box / cold filesystem. Don't pin the
         # answer to False forever; let the next caller re-probe.
@@ -312,6 +359,16 @@ def _linux_rocm_runtime_bindings() -> list[tuple[str, str]]:
     return bindings
 
 
+def _linux_oneapi_runtime_bindings() -> list[tuple[str, str]]:
+    """Detected system oneAPI trees as ``(real source, logical dest)``."""
+    bindings: list[tuple[str, str]] = []
+    for destination in _LINUX_ONEAPI_ROOTS:
+        if not os.path.isdir(destination):
+            continue
+        bindings.append((os.path.realpath(destination), os.path.normpath(destination)))
+    return list(dict.fromkeys(bindings))
+
+
 def _linux_supplementary_group_devices() -> list[str]:
     """GPU nodes whose read/write access depends on a supplementary group."""
     getgroups = getattr(os, "getgroups", None)
@@ -396,6 +453,97 @@ def _linux_executable_path_is_trusted(path: str) -> bool:
         current = parent
 
 
+def _linux_bwrap_probe_path() -> str | None:
+    """Return a fixed, root-controlled no-op executable for the bwrap probe."""
+    for candidate in _BWRAP_PROBE_CANDIDATES:
+        resolved = os.path.realpath(candidate)
+        if _linux_executable_path_is_trusted(resolved):
+            return resolved
+    return None
+
+
+def _linux_socket_seccomp_fd() -> int:
+    """Export a seccomp filter that blocks host Unix-socket access.
+
+    A network namespace does not isolate pathname or abstract Unix sockets.
+    Denying ``socket(AF_UNIX, ...)`` prevents a live writable workdir bind from
+    gaining host IPC access if another process creates a socket after the
+    bounded preflight scan. ``io_uring_setup`` is denied as well because its
+    socket opcode otherwise creates sockets outside the syscall filter.
+    """
+    library_name = ctypes.util.find_library("seccomp") or "libseccomp.so.2"
+    try:
+        lib = ctypes.CDLL(library_name, use_errno = True)
+    except OSError as exc:
+        raise UnsafeSandboxWorkdirError(
+            "libseccomp is required to isolate Unix sockets in the Linux sandbox"
+        ) from exc
+
+    lib.seccomp_init.argtypes = (ctypes.c_uint32,)
+    lib.seccomp_init.restype = ctypes.c_void_p
+    lib.seccomp_release.argtypes = (ctypes.c_void_p,)
+    lib.seccomp_rule_add.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_int,
+        ctypes.c_uint,
+    )
+    lib.seccomp_rule_add.restype = ctypes.c_int
+    lib.seccomp_syscall_resolve_name.argtypes = (ctypes.c_char_p,)
+    lib.seccomp_syscall_resolve_name.restype = ctypes.c_int
+    lib.seccomp_export_bpf.argtypes = (ctypes.c_void_p, ctypes.c_int)
+    lib.seccomp_export_bpf.restype = ctypes.c_int
+
+    allow = 0x7FFF0000
+    errno_action = 0x00050000 | errno.EPERM
+    compare_equal = 4
+    context = lib.seccomp_init(allow)
+    if not context:
+        raise UnsafeSandboxWorkdirError("could not initialize the Linux socket seccomp filter")
+    fd = -1
+    try:
+        socket_syscall = lib.seccomp_syscall_resolve_name(b"socket")
+        io_uring_syscall = lib.seccomp_syscall_resolve_name(b"io_uring_setup")
+        if socket_syscall < 0:
+            raise UnsafeSandboxWorkdirError("libseccomp cannot resolve the socket syscall")
+
+        socket_comparison = _ScmpArgCmp(0, compare_equal, 1, 0)  # AF_UNIX
+        socket_result = lib.seccomp_rule_add(
+            context,
+            ctypes.c_uint32(errno_action),
+            ctypes.c_int(socket_syscall),
+            ctypes.c_uint(1),
+            socket_comparison,
+        )
+        if socket_result != 0:
+            raise UnsafeSandboxWorkdirError("could not add the Unix-socket seccomp rule")
+        if io_uring_syscall >= 0:
+            io_uring_result = lib.seccomp_rule_add(
+                context,
+                ctypes.c_uint32(errno_action),
+                ctypes.c_int(io_uring_syscall),
+                ctypes.c_uint(0),
+            )
+            if io_uring_result != 0:
+                raise UnsafeSandboxWorkdirError("could not add the io_uring seccomp rule")
+
+        if not hasattr(os, "memfd_create"):
+            raise UnsafeSandboxWorkdirError("memfd_create is required for the Linux seccomp filter")
+        fd = os.memfd_create(
+            "unsloth-studio-sandbox-seccomp", flags = getattr(os, "MFD_CLOEXEC", 1)
+        )
+        if lib.seccomp_export_bpf(context, fd) != 0:
+            raise UnsafeSandboxWorkdirError("could not export the Linux socket seccomp filter")
+        os.lseek(fd, 0, os.SEEK_SET)
+        return fd
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        raise
+    finally:
+        lib.seccomp_release(context)
+
+
 def _linux_probe() -> _ProbeResult:
     """Smoke-test that ``bwrap`` can apply a minimal sandbox here.
 
@@ -429,23 +577,40 @@ def _linux_probe() -> _ProbeResult:
             ", ".join(group_devices[:3]),
         )
         return _ProbeResult(ok = False)
-    probe_argv = [
-        bwrap,
-        *(["--keep-groups"] if keep_groups else []),
-        "--ro-bind",
-        "/",
-        "/",
-        "--unshare-all",
-        "--die-with-parent",
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--tmpfs",
-        "/tmp",
-        _BWRAP_PROBE_BIN,
-    ]
-    result = _probe(probe_argv, "Linux bwrap")
+    probe_path = _linux_bwrap_probe_path()
+    if probe_path is None:
+        logger.warning("No trusted bwrap probe executable found; tool execution will run unsandboxed")
+        return _ProbeResult(ok = False)
+    try:
+        seccomp_fd = _linux_socket_seccomp_fd()
+    except UnsafeSandboxWorkdirError as exc:
+        logger.warning("Linux sandbox socket isolation is unavailable: %s", exc)
+        return _ProbeResult(ok = False)
+    probe_argv = SandboxArgv(
+        [
+            bwrap,
+            *(["--keep-groups"] if keep_groups else []),
+            "--ro-bind",
+            "/",
+            "/",
+            "--unshare-all",
+            "--die-with-parent",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--seccomp",
+            str(seccomp_fd),
+            probe_path,
+        ],
+        (seccomp_fd,),
+    )
+    try:
+        result = _probe(probe_argv, "Linux bwrap")
+    finally:
+        close_sandbox_argv_fds(probe_argv)
     if result.ok:
         _linux_bwrap_path = bwrap
         _linux_bwrap_keep_groups = keep_groups
@@ -529,19 +694,17 @@ def _safe_subpath(p: str) -> str:
 
 
 def _assert_no_external_hardlinks(
-    workdir: str, read_only_paths: tuple[str, ...] | list[str] = ()
+    workdir: str, _read_only_paths: tuple[str, ...] | list[str] = ()
 ) -> None:
     """Boundedly verify that *workdir* contains no boundary-crossing nodes.
 
     A path-scoped writable bind/profile still exposes every inode reachable by
     an in-tree hard link. Count all in-tree aliases and compare them with the
     filesystem link count; internal-only hard links remain valid, while a
-    pre-existing link to a host file fails closed before sandbox launch. A
-    Regular files below a validated runtime path nested under the workdir may
-    skip only the external-hardlink comparison when that runtime is
-    re-bound/denied read-only after the writable parent. The runtime tree is
-    still traversed so Unix sockets, FIFOs, device nodes, foreign mounts, and
-    trees too large to prove safe are rejected before the writable bind.
+    pre-existing link to a host file fails closed before sandbox launch.
+    Runtime paths nested below the workdir stay writable so editable installs
+    can compile and update their own sources. They receive the same complete
+    hard-link and special-node checks as the rest of the writable tree.
     """
     wd = os.path.realpath(workdir)
     try:
@@ -550,15 +713,6 @@ def _assert_no_external_hardlinks(
         raise UnsafeSandboxWorkdirError(
             f"cannot inspect sandbox workdir safely: {wd!r}: {exc}"
         ) from exc
-    read_only_nested: set[str] = set()
-    for path in read_only_paths:
-        if not path:
-            continue
-        resolved = os.path.normpath(os.path.realpath(path))
-        if _path_is_within(resolved, wd, strict = True) and (
-            os.path.isdir(resolved) or os.path.isfile(resolved)
-        ):
-            read_only_nested.add(resolved)
     inode_counts: dict[tuple[int, int], int] = {}
     inode_links: dict[tuple[int, int], int] = {}
     representatives: dict[tuple[int, int], str] = {}
@@ -600,10 +754,6 @@ def _assert_no_external_hardlinks(
                     raise UnsafeSandboxWorkdirError(
                         f"cannot inspect sandbox workdir safely: {entry.path!r}: {exc}"
                     ) from exc
-                entry_path = os.path.normpath(entry.path)
-                below_read_only_runtime = any(
-                    _path_is_within(entry_path, runtime) for runtime in read_only_nested
-                )
                 if entry_stat.st_dev != root_dev:
                     raise UnsafeSandboxWorkdirError(
                         f"sandbox workdir crosses a filesystem boundary: {entry.path!r}"
@@ -621,12 +771,6 @@ def _assert_no_external_hardlinks(
                     raise UnsafeSandboxWorkdirError(
                         f"sandbox workdir contains a special filesystem node: {entry.path!r}"
                     )
-                if below_read_only_runtime:
-                    # The Linux argv re-applies the runtime with --ro-bind after
-                    # the writable workdir bind; Seatbelt adds a matching write
-                    # deny. External aliases cannot be mutated through regular
-                    # files there, but special nodes above were still rejected.
-                    continue
                 if entry_stat.st_nlink <= 1:
                     continue
                 key = (entry_stat.st_dev, entry_stat.st_ino)
@@ -960,7 +1104,11 @@ def _plain_pth_import_paths() -> list[str]:
                 try:
                     if entry.is_file(follow_symlinks = True):
                         stem, extension = os.path.splitext(name)
-                        if extension == ".py" and stem.isidentifier():
+                        native_module = any(
+                            name.endswith(suffix) and name[: -len(suffix)].isidentifier()
+                            for suffix in importlib.machinery.EXTENSION_SUFFIXES
+                        )
+                        if (extension == ".py" and stem.isidentifier()) or native_module:
                             paths.append(entry.path)
                         continue
                     if not entry.is_dir(follow_symlinks = True) or not name.isidentifier():
@@ -1099,15 +1247,48 @@ def _linux_accelerator_sysfs_paths() -> list[str]:
     return list(dict.fromkeys(paths))
 
 
-def _linux_sandbox_identity_files() -> tuple[str, str]:
+def _linux_identity_paths_are_safe(paths: tuple[str, str], workdir: str) -> bool:
+    """Validate cached bind sources without following replaceable symlinks."""
+    passwd_path, group_path = paths
+    identity_dir = os.path.dirname(passwd_path)
+    if os.path.dirname(group_path) != identity_dir:
+        return False
+    if _path_is_within(os.path.realpath(identity_dir), os.path.realpath(workdir)):
+        return False
+    try:
+        directory_stat = os.lstat(identity_dir)
+        file_stats = [os.lstat(passwd_path), os.lstat(group_path)]
+    except OSError:
+        return False
+    if not stat.S_ISDIR(directory_stat.st_mode) or stat.S_IMODE(directory_stat.st_mode) != 0o700:
+        return False
+    return all(
+        stat.S_ISREG(file_stat.st_mode) and stat.S_IMODE(file_stat.st_mode) == 0o600
+        for file_stat in file_stats
+    )
+
+
+def _linux_sandbox_identity_files(workdir: str) -> tuple[str, str]:
     """Create a private, minimal passwd/group view for the user namespace."""
     global _sandbox_identity_paths
-    if _sandbox_identity_paths is not None:
+    if _sandbox_identity_paths is not None and _linux_identity_paths_are_safe(
+        _sandbox_identity_paths, workdir
+    ):
         return _sandbox_identity_paths
     with _sandbox_identity_lock:
-        if _sandbox_identity_paths is not None:
+        if _sandbox_identity_paths is not None and _linux_identity_paths_are_safe(
+            _sandbox_identity_paths, workdir
+        ):
             return _sandbox_identity_paths
-        identity_dir = tempfile.mkdtemp(prefix = "unsloth-studio-sandbox-identity-")
+        _sandbox_identity_paths = None
+        temp_root = "/tmp" if sys.platform == "linux" else tempfile.gettempdir()
+        if _path_is_within(os.path.realpath(temp_root), os.path.realpath(workdir)):
+            raise UnsafeSandboxWorkdirError(
+                "cannot create sandbox identity files outside the writable workdir"
+            )
+        identity_dir = tempfile.mkdtemp(
+            prefix = "unsloth-studio-sandbox-identity-", dir = temp_root
+        )
         os.chmod(identity_dir, 0o700)
         passwd_path = os.path.join(identity_dir, "passwd")
         group_path = os.path.join(identity_dir, "group")
@@ -1147,9 +1328,13 @@ def _python_read_paths() -> list[str]:
     user_site = opted_in_user_site_path()
     if user_site:
         candidates.append(user_site)
-    candidates.extend(_editable_source_paths())
-
     resolved_candidates = [os.path.realpath(p) for p in candidates if p]
+    for path in _editable_source_paths():
+        if not path:
+            continue
+        alias = os.path.abspath(os.path.normpath(path))
+        resolved_candidates.append(alias)
+        resolved_candidates.append(os.path.realpath(alias))
     if any(_path_is_within(p, _NIX_STORE) for p in resolved_candidates):
         # Nix packages keep their ELF loader and shared-library runtime closure
         # in sibling store derivations, not necessarily below sys.prefix.
@@ -1177,14 +1362,15 @@ def _python_read_paths() -> list[str]:
         # A root-valued prefix would turn the deny-by-default sandbox into a
         # read-all-files profile or bind mount. Embedded Python builds and
         # root-prefix containers can legitimately report this value.
-        if os.path.dirname(rp) == rp:
-            logger.warning("Ignoring unsafe filesystem-root Python read path: %s", rp)
+        canonical = os.path.realpath(rp)
+        if os.path.dirname(canonical) == canonical:
+            logger.warning("Ignoring unsafe filesystem-root Python read path: %s", canonical)
             continue
         # A prefix equal to $HOME (or an ancestor such as /home) exposes
         # credentials and unrelated user files. Narrow runtime dirs below HOME,
         # including ~/.local and project .venv directories, remain safe to bind.
-        if real_home and _path_is_within(real_home, rp):
-            logger.warning("Ignoring Python read path containing user home: %s", rp)
+        if real_home and _path_is_within(real_home, canonical):
+            logger.warning("Ignoring Python read path containing user home: %s", canonical)
             continue
         seen.add(rp)
         out.append(rp)
@@ -1203,16 +1389,6 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 
     py_subpaths = [_path_clause(path) for path in python_read_paths]
     py_block = "\n    ".join(py_subpaths)
-    nested_runtime_paths = [
-        _path_clause(p)
-        for p in python_read_paths
-        if _path_is_within(p, os.path.realpath(workdir), strict = True)
-    ]
-    runtime_write_deny_block = (
-        "\n(deny file-write* file-ioctl\n    " + "\n    ".join(nested_runtime_paths) + "\n)"
-        if nested_runtime_paths
-        else ""
-    )
     ca_block = "\n    ".join(
         f'(literal "{_safe_subpath(p)}")'
         if os.path.splitext(p)[1]
@@ -1290,8 +1466,6 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 (allow process-info-pidinfo (target self))
 (allow process-info-pidfdinfo (target self))
 (allow sysctl-read)
-(allow ipc-posix-shm)
-(allow ipc-posix-sem)
 (allow file-read-metadata)
 
 (allow file-read*
@@ -1347,7 +1521,6 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 (allow file-read* (subpath "{wd}"))
 (allow file-write* (subpath "{wd}"))
 (allow file-ioctl (subpath "{wd}"))
-{runtime_write_deny_block}
 (allow file-write-data
     (require-all
         (path "/dev/null")
@@ -1466,8 +1639,11 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     """
     wd = os.path.realpath(workdir)
     python_read_paths = _python_read_paths()
+    oneapi_runtime_bindings = _linux_oneapi_runtime_bindings()
     _assert_no_external_hardlinks(workdir, python_read_paths)
-    _assert_external_read_paths_have_no_special_nodes(workdir, python_read_paths)
+    _assert_external_read_paths_have_no_special_nodes(
+        workdir, [*python_read_paths, *(source for source, _dest in oneapi_runtime_bindings)]
+    )
     top_ro_dirs = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
     # Narrow /etc to runtime essentials; deny sshd_config, machine-id, etc.
     etc_ro_entries = (
@@ -1481,7 +1657,7 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         "/etc/ld.so.conf.d",
         *_LINUX_CA_READ_PATHS,
     )
-    passwd_path, group_path = _linux_sandbox_identity_files()
+    passwd_path, group_path = _linux_sandbox_identity_files(workdir)
 
     assert _linux_bwrap_path is not None, "bwrap path unset despite successful probe"
     group_devices = _linux_supplementary_group_devices()
@@ -1504,6 +1680,9 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         "/dev/shm",
         "--tmpfs",
         "/tmp",
+        "--ro-bind-try",
+        "/sys/fs/cgroup",
+        "/sys/fs/cgroup",
     ]
     # ``--dev /dev`` creates only a minimal synthetic tree. Restore the host's
     # accelerator device nodes while retaining its DAC/cgroup permissions; the
@@ -1532,6 +1711,8 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         args.extend(["--ro-bind-try", sysfs_path, sysfs_path])
     for source, destination in _linux_rocm_runtime_bindings():
         args.extend(["--ro-bind-try", source, destination])
+    for source, destination in oneapi_runtime_bindings:
+        args.extend(["--ro-bind-try", source, destination])
     # -try variants skip missing paths so the same argv works on
     # usrmerge distros (/lib, /lib64 are symlinks into /usr or absent).
     for d in top_ro_dirs:
@@ -1548,7 +1729,7 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     # and includes editable-install source dirs (so `pip install -e .`
     # repos like unsloth remain readable inside the sandbox).
     for rp in python_read_paths:
-        if _is_under_top_ro(rp):
+        if _is_under_top_ro(rp) or _path_is_within(rp, wd):
             continue
         args.extend(["--ro-bind-try", rp, rp])
 
@@ -1589,15 +1770,16 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         args.extend(["--symlink", target, sym])
 
     args.extend(["--bind", wd, wd])
-    # A later writable parent bind hides earlier nested read-only mounts.
-    # Reapply interpreter/runtime paths below the workdir after that bind.
-    for rp in python_read_paths:
-        if _path_is_within(rp, wd, strict = True):
-            args.extend(["--ro-bind-try", rp, rp])
+
+    wrapped_inner_argv = _linux_inner_rlimit_wrapper(inner_argv)
+    seccomp_fd = None
+    if sys.platform == "linux":
+        seccomp_fd = _linux_socket_seccomp_fd()
+        args.extend(["--seccomp", str(seccomp_fd)])
 
     args.append("--")
-    args.extend(_linux_inner_rlimit_wrapper(inner_argv))
-    return args
+    args.extend(wrapped_inner_argv)
+    return SandboxArgv(args, (seccomp_fd,) if seccomp_fd is not None else ())
 
 
 def build_sandbox_argv(inner_argv: list[str], workdir: str) -> list[str]:

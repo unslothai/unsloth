@@ -309,6 +309,8 @@ class TestSandboxEnvIsolation:
             "NVIDIA_VISIBLE_DEVICES",
             "ONEAPI_DEVICE_SELECTOR",
             "ZE_AFFINITY_MASK",
+            "HSA_ENABLE_DXG_DETECTION",
+            "HSA_OVERRIDE_GFX_VERSION",
             "SystemRoot",
             "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup

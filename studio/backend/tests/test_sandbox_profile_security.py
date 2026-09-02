@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import os
 import socket
@@ -109,6 +110,27 @@ def test_python_read_paths_includes_source_tree_sandbox_site(tmp_path, monkeypat
     assert os.path.realpath(sandbox._SANDBOX_SITE_DIR) in sandbox._python_read_paths()
 
 
+def test_python_read_paths_preserves_editable_symlink_alias_and_target(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    target = tmp_path / "source-target"
+    alias = tmp_path / "source-alias"
+    target.mkdir()
+    try:
+        os.symlink(target, alias, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    missing_prefix = tmp_path / "missing-prefix"
+    monkeypatch.setattr(sandbox.sys, "prefix", str(missing_prefix))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(missing_prefix))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [str(alias)])
+
+    paths = sandbox._python_read_paths()
+    assert os.path.abspath(alias) in paths
+    assert os.path.realpath(target) in paths
+
+
 def test_python_read_paths_includes_nix_store_for_nix_runtime(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     nix_store = tmp_path / "nix" / "store"
@@ -143,6 +165,22 @@ def test_plain_pth_root_exposes_import_entries_not_checkout_secrets(tmp_path, mo
     assert os.path.realpath(source) not in paths
     assert os.path.realpath(package) in paths
     assert os.path.realpath(module) in paths
+
+
+def test_plain_pth_root_exposes_native_extension_modules(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    site_dir.mkdir()
+    source.mkdir()
+    extension = source / f"native_module{importlib.machinery.EXTENSION_SUFFIXES[0]}"
+    extension.write_bytes(b"native-extension-placeholder")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    paths = {os.path.realpath(path) for path in sandbox._editable_source_paths()}
+    assert os.path.realpath(extension) in paths
 
 
 def test_plain_pth_preserves_nested_namespace_packages(tmp_path, monkeypatch):
@@ -266,6 +304,25 @@ def test_linux_binds_detected_rocm_runtime_libraries(tmp_path, monkeypatch):
     ]
 
 
+def test_linux_binds_detected_oneapi_runtime_tree(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    runtime = tmp_path / "opt" / "intel" / "oneapi"
+    workdir = tmp_path / "workdir"
+    runtime.mkdir(parents = True)
+    workdir.mkdir()
+    monkeypatch.setattr(sandbox, "_LINUX_ONEAPI_ROOTS", (str(runtime),))
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_assert_external_read_paths_have_no_special_nodes", lambda *_: None)
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
+    assert any(
+        argv[index : index + 3]
+        == ["--ro-bind-try", os.path.realpath(runtime), os.path.normpath(runtime)]
+        for index in range(len(argv) - 2)
+    )
+
+
 def test_linux_detects_versioned_rocm_library_roots(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     opt = tmp_path / "opt"
@@ -337,12 +394,25 @@ def test_linux_argv_mounts_private_shm_and_synthetic_identity(tmp_path, monkeypa
     group_path.write_text("sandbox:x:1:\n")
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
+    monkeypatch.setattr(sandbox, "_linux_nested_mount_points", lambda _path: set())
     monkeypatch.setattr(
-        sandbox, "_linux_sandbox_identity_files", lambda: (str(passwd_path), str(group_path))
+        sandbox,
+        "_linux_sandbox_identity_files",
+        lambda _workdir: (str(passwd_path), str(group_path)),
     )
 
     argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
     assert ["--tmpfs", "/dev/shm"] == argv[argv.index("/dev/shm") - 1 : argv.index("/dev/shm") + 1]
+    assert any(
+        argv[index : index + 3] == ["--ro-bind-try", "/sys/fs/cgroup", "/sys/fs/cgroup"]
+        for index in range(len(argv) - 2)
+    )
+    assert ["--seccomp", "123456"] == argv[argv.index("--seccomp") : argv.index("--seccomp") + 2]
+    assert sandbox.sandbox_argv_pass_fds(argv) == (123456,)
+    sandbox.close_sandbox_argv_fds(argv)
+    assert sandbox.sandbox_argv_pass_fds(argv) == ()
     assert ["--ro-bind", str(passwd_path), "/etc/passwd"] == argv[
         argv.index("/etc/passwd") - 2 : argv.index("/etc/passwd") + 1
     ]
@@ -380,7 +450,7 @@ def test_internal_only_workdir_hardlinks_remain_allowed(tmp_path):
     sandbox._assert_no_external_hardlinks(str(workdir))
 
 
-def test_external_hardlinks_below_nested_read_only_runtime_remain_allowed(tmp_path):
+def test_external_hardlinks_below_nested_writable_runtime_are_rejected(tmp_path):
     sandbox = _load_sandbox_module()
     cache_file = tmp_path / "cache" / "package.py"
     cache_file.parent.mkdir()
@@ -394,10 +464,11 @@ def test_external_hardlinks_below_nested_read_only_runtime_remain_allowed(tmp_pa
     except OSError as exc:
         pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
 
-    sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "hard-linked outside"):
+        sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
 
 
-def test_socket_below_nested_read_only_runtime_is_rejected(tmp_path):
+def test_socket_below_nested_writable_runtime_is_rejected(tmp_path):
     sandbox = _load_sandbox_module()
     if not hasattr(socket, "AF_UNIX"):
         pytest.skip("AF_UNIX unavailable")
@@ -597,7 +668,7 @@ def test_exec_chain_resolves_multi_hop_ancestor_symlinks(tmp_path):
     assert sandbox._exec_chain_symlinks(str(through_links)) == [str(first), str(second)]
 
 
-def test_linux_reapplies_nested_runtime_after_writable_workdir(tmp_path, monkeypatch):
+def test_linux_keeps_nested_editable_runtime_writable_with_workdir(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     workdir = tmp_path / "project"
     runtime = workdir / ".venv"
@@ -609,17 +680,14 @@ def test_linux_reapplies_nested_runtime_after_writable_workdir(tmp_path, monkeyp
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [rp])
     argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
 
-    writable_index = next(
-        index
+    assert any(
+        token == "--bind" and argv[index + 1 : index + 3] == [wd, wd]
         for index, token in enumerate(argv)
-        if token == "--bind" and argv[index + 1 : index + 3] == [wd, wd]
     )
-    readonly_indices = [
-        index
+    assert not any(
+        token == "--ro-bind-try" and argv[index + 1 : index + 3] == [rp, rp]
         for index, token in enumerate(argv)
-        if token == "--ro-bind-try" and argv[index + 1 : index + 3] == [rp, rp]
-    ]
-    assert readonly_indices[-1] > writable_index
+    )
 
 
 def test_linux_argv_keeps_supplementary_groups_when_supported(tmp_path, monkeypatch):
@@ -651,6 +719,8 @@ def test_linux_probe_uses_keep_groups_when_available(monkeypatch):
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
     monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_probe_path", lambda: "/usr/bin/true")
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
     monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
 
     def _probe(argv, _label):
@@ -668,6 +738,8 @@ def test_linux_probe_declines_group_device_on_older_bwrap(monkeypatch):
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
     monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: False)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_probe_path", lambda: "/usr/bin/true")
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
     monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
     monkeypatch.setattr(
         sandbox,
@@ -683,6 +755,8 @@ def test_linux_probe_retries_transient_group_capability_check(monkeypatch):
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
     monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: None)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_probe_path", lambda: "/usr/bin/true")
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
     monkeypatch.setattr(
         sandbox,
         "_probe",
@@ -694,7 +768,31 @@ def test_linux_probe_retries_transient_group_capability_check(monkeypatch):
     assert result.transient is True
 
 
-def test_macos_profile_allows_child_signals_and_dev_null_writes(monkeypatch):
+def test_linux_probe_payload_does_not_resolve_from_parent_path(monkeypatch):
+    sandbox = _load_sandbox_module()
+    captured = []
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/attacker/{name}")
+    monkeypatch.setattr(
+        sandbox,
+        "_linux_executable_path_is_trusted",
+        lambda path: path.endswith("bwrap") or path == "/usr/bin/true",
+    )
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: [])
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
+    monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
+
+    def _probe(argv, _label):
+        captured.extend(argv)
+        return sandbox._ProbeResult(ok = True)
+
+    monkeypatch.setattr(sandbox, "_probe", _probe)
+    assert sandbox._linux_probe().ok is True
+    assert captured[-1] == "/usr/bin/true"
+    assert "/attacker/true" not in captured
+
+
+def test_macos_profile_allows_child_signals_without_host_posix_ipc(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
     monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path, *_ro: None)
@@ -703,7 +801,8 @@ def test_macos_profile_allows_child_signals_and_dev_null_writes(monkeypatch):
 
     assert "(allow signal (target same-sandbox))" in profile
     assert "(allow signal (target self))" not in profile
-    assert "(allow ipc-posix-sem)" in profile
+    assert "(allow ipc-posix-shm)" not in profile
+    assert "(allow ipc-posix-sem)" not in profile
     assert "(allow file-write-data" in profile
     assert '(path "/dev/null")' in profile
     assert "(vnode-type CHARACTER-DEVICE)" in profile
@@ -727,7 +826,7 @@ def test_macos_profile_allows_installed_developer_toolchain(monkeypatch):
     assert f'(subpath "{developer}")' in profile
 
 
-def test_macos_profile_denies_writes_to_nested_runtime(tmp_path, monkeypatch):
+def test_macos_profile_keeps_nested_editable_runtime_writable(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     workdir = tmp_path / "project"
     runtime = workdir / ".venv"
@@ -739,9 +838,34 @@ def test_macos_profile_denies_writes_to_nested_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox, "_safe_subpath", lambda path: path.replace("\\", "/"))
     profile = sandbox._macos_seatbelt_profile(str(workdir))
 
-    expected = f'(deny file-write* file-ioctl\n    (subpath "{rp.replace(chr(92), "/")}")\n)'
     assert f'(allow file-write* (subpath "{wd.replace(chr(92), "/")}"))' in profile
-    assert expected in profile
+    assert f'(deny file-write* file-ioctl\n    (subpath "{rp.replace(chr(92), "/")}")\n)' not in profile
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX identity file permissions")
+def test_linux_identity_files_ignore_workdir_tmpdir_and_recover_from_replacement(
+    tmp_path, monkeypatch
+):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(workdir))
+    monkeypatch.setattr(sandbox, "_sandbox_identity_paths", None)
+
+    passwd_path, group_path = sandbox._linux_sandbox_identity_files(str(workdir))
+    assert not sandbox._path_is_within(passwd_path, str(workdir))
+    assert not sandbox._path_is_within(group_path, str(workdir))
+
+    outside = tmp_path / "outside"
+    outside.write_text("host-data")
+    os.unlink(passwd_path)
+    os.symlink(outside, passwd_path)
+
+    replacement_passwd, replacement_group = sandbox._linux_sandbox_identity_files(str(workdir))
+    assert replacement_passwd != passwd_path
+    assert replacement_group != group_path
+    assert not os.path.islink(replacement_passwd)
+    assert outside.read_text() == "host-data"
 
 
 def test_macos_ca_reads_exclude_private_key_directories(monkeypatch):

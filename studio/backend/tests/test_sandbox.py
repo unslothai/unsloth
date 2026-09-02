@@ -129,15 +129,33 @@ def test_linux_private_shm_and_identity_work_inside_sandbox(sandboxed_workdir):
     code = (
         "import getpass, grp, os, pwd\n"
         "print('SHM', os.path.isdir('/dev/shm'))\n"
+        "print('CGROUP', os.path.isdir('/sys/fs/cgroup'))\n"
         "print('USER', getpass.getuser())\n"
         "print('PWD', pwd.getpwuid(os.getuid()).pw_name)\n"
         "print('GRP', grp.getgrgid(os.getgid()).gr_name)\n"
     )
     out = _run_python(code, sid)
     assert "SHM True" in out, out
+    assert "CGROUP True" in out, out
     assert "USER sandbox" in out, out
     assert "PWD sandbox" in out, out
     assert "GRP sandbox" in out, out
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "bubblewrap is Linux-only")
+def test_linux_blocks_unix_sockets_after_workdir_preflight(sandboxed_workdir):
+    sid, _workdir = sandboxed_workdir
+    code = (
+        "import socket\n"
+        "try:\n"
+        "    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+        "    print('UNIX_ALLOWED')\n"
+        "except OSError as exc:\n"
+        "    print('UNIX_DENIED', exc.errno)\n"
+    )
+    out = _run_python(code, sid)
+    assert "UNIX_DENIED 1" in out, out
+    assert "UNIX_ALLOWED" not in out, out
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "bubblewrap is Linux-only")
@@ -168,15 +186,19 @@ def test_linux_executable_ancestor_symlink_does_not_expose_sibling(tmp_path, mon
     )
     code = f"import os; print('LEAKED' if os.path.exists({str(secret)!r}) else 'DENIED')"
     argv = sandbox._linux_bwrap_argv([str(alias_launcher), "-c", code], str(workdir))
-    completed = subprocess.run(
-        argv,
-        cwd = workdir,
-        env = {"PATH": "/usr/bin:/bin", "HOME": str(workdir)},
-        check = False,
-        capture_output = True,
-        text = True,
-        timeout = 20,
-    )
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd = workdir,
+            env = {"PATH": "/usr/bin:/bin", "HOME": str(workdir)},
+            check = False,
+            capture_output = True,
+            text = True,
+            timeout = 20,
+            pass_fds = sandbox.sandbox_argv_pass_fds(argv),
+        )
+    finally:
+        sandbox.close_sandbox_argv_fds(argv)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "DENIED", completed.stdout
 
@@ -463,17 +485,70 @@ def test_narrow_plain_pth_entries_import_inside_sandbox(tmp_path, monkeypatch):
         "PYTHONPATH": str(source),
         "USER": "sandbox",
     }
-    completed = subprocess.run(
-        argv,
-        cwd = workdir,
-        env = env,
-        check = False,
-        capture_output = True,
-        text = True,
-        timeout = 20,
-    )
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd = workdir,
+            env = env,
+            check = False,
+            capture_output = True,
+            text = True,
+            timeout = 20,
+            pass_fds = sandbox.sandbox_argv_pass_fds(argv),
+        )
+    finally:
+        sandbox.close_sandbox_argv_fds(argv)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "6"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "bubblewrap is Linux-only")
+def test_symlinked_editable_package_imports_inside_sandbox(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    if not sandbox.sandbox_available():
+        pytest.skip("sandbox unavailable")
+
+    target = tmp_path / "source-target"
+    alias = tmp_path / "source-alias"
+    package = target / "editable_package"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("VALUE = 7101\n")
+    os.symlink(target, alias, target_is_directory = True)
+    alias_package = alias / "editable_package"
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [str(alias_package)])
+    read_paths = sandbox._python_read_paths()
+    assert os.path.abspath(alias_package) in read_paths
+    assert os.path.realpath(alias_package) in read_paths
+
+    argv = sandbox._linux_bwrap_argv(
+        [sys.executable, "-c", "import editable_package; print(editable_package.VALUE)"],
+        str(workdir),
+    )
+    env = {
+        "HOME": str(workdir),
+        "LOGNAME": "sandbox",
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PYTHONPATH": str(alias),
+        "USER": "sandbox",
+    }
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd = workdir,
+            env = env,
+            check = False,
+            capture_output = True,
+            text = True,
+            timeout = 20,
+            pass_fds = sandbox.sandbox_argv_pass_fds(argv),
+        )
+    finally:
+        sandbox.close_sandbox_argv_fds(argv)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "7101"
 
 
 def test_python_read_paths_survives_missing_site_helpers(monkeypatch):
@@ -495,9 +570,11 @@ def test_python_read_paths_survives_missing_site_helpers(monkeypatch):
     assert os.path.realpath(sys.prefix) in paths
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason = "bubblewrap is Linux-only")
 def test_bwrap_probe_bin_exists_and_executable():
     sandbox = _load_sandbox_module()
-    bin_path = sandbox._BWRAP_PROBE_BIN
+    bin_path = sandbox._linux_bwrap_probe_path()
+    assert bin_path is not None
     assert os.path.exists(bin_path), bin_path
     assert os.access(bin_path, os.X_OK), bin_path
 
@@ -651,6 +728,8 @@ def test_safe_env_preserves_accelerator_visibility_selectors(tmp_path, monkeypat
         "NVIDIA_VISIBLE_DEVICES": "GPU-cafebabe",
         "ONEAPI_DEVICE_SELECTOR": "level_zero:gpu:0",
         "ZE_AFFINITY_MASK": "0.1",
+        "HSA_ENABLE_DXG_DETECTION": "1",
+        "HSA_OVERRIDE_GFX_VERSION": "10.3.0",
     }
     for name, value in selectors.items():
         monkeypatch.setenv(name, value)
