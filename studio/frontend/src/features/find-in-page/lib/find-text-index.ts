@@ -431,7 +431,6 @@ const HANGUL_SYLLABLE_PATTERN =
  * cannot be written in. Every engine's own find matches it. */
 function canonicalSource(needle: string, dotted: boolean): string {
   let out = "";
-  let fence = "";
   for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
     if (/^\s/.test(cluster)) {
       out += out.endsWith("\\s+") ? "" : "\\s+";
@@ -456,22 +455,78 @@ function canonicalSource(needle: string, dotted: boolean): string {
       spellings.length === 1
         ? escapeForRegex(spellings[0])
         : `(?:${spellings.map(escapeForRegex).join("|")})`;
-    // Only the last cluster's fence survives, so remember this one and let a later cluster
-    // overwrite it. Fencing every cluster would have the query reject its own next character.
-    fence = HANGUL_LEADING_PATTERN.test(cluster)
-      ? trailing !== null
-        ? HANGUL_AFTER_T
-        : HANGUL_SYLLABLE_PATTERN.test(cluster)
-          ? HANGUL_AFTER_V
-          : HANGUL_AFTER_L
-      : "";
   }
-  // A match may not STOP inside a grapheme. What can still join depends on how far the syllable
-  // got, which is what UAX 29 says about Hangul: a leading Jamo takes another leading Jamo, a vowel
-  // or a whole syllable; a vowel takes another vowel or a trailing Jamo; a trailing Jamo takes only
-  // another trailing Jamo. Any of them also takes a combining mark, a joiner or a variation
-  // selector. Guessing this rule one range at a time is what kept getting it wrong.
-  return out + fence;
+  return out;
+}
+
+/** How far back to look for a position that is certainly a grapheme boundary. Whitespace and the
+ *  block separator are both boundaries, and prose has one every few characters. */
+const ANCHOR_SCAN = 256;
+const BOUNDARY_ANCHOR = /[\s\u0000]/;
+
+/** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
+const JOINS_GRAPHEME = /[^\u0000-\u02ff]/;
+
+let segmenter:
+  | { segment(input: string): Iterable<{ index: number }> }
+  | null
+  | undefined;
+
+/** The platform's own grapheme segmenter, or null where there is none. */
+function graphemeSegmenter() {
+  if (segmenter !== undefined) return segmenter;
+  const scope = globalThis as unknown as {
+    Intl?: { Segmenter?: new (locale?: string, options?: object) => never };
+  };
+  segmenter =
+    typeof scope.Intl?.Segmenter === "function"
+      ? new scope.Intl.Segmenter(undefined, { granularity: "grapheme" })
+      : null;
+  return segmenter;
+}
+
+/**
+ * True when `[start, end)` begins and ends where a grapheme does.
+ *
+ * Asked of the platform rather than answered here. Six rounds of review found six ways to land
+ * inside a cluster, each a Unicode range that had not been enumerated, and there is no end to that
+ * list: Hangul Jamo, then combining marks, then Prepend, then spacing marks and skin tones. The
+ * segmenter already knows the whole of UAX 29 and is kept current with it.
+ *
+ * Only around the match, not over the whole index: a 4M character haystack is not worth segmenting
+ * to place two offsets. The window starts at the nearest whitespace or block separator behind the
+ * match, which are boundaries by definition, so the segmentation inside it is the real one. Where
+ * no anchor is near, the match is allowed, which is what this did before any of this existed.
+ */
+function alignsToGraphemes(text: string, start: number, end: number): boolean {
+  // Almost every match is in text that cannot join at either edge, and asking the segmenter costs
+  // far more than looking. Nothing below U+0300 extends a grapheme: the lowest combining mark is
+  // U+0300, the lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and
+  // everything astral arrives here as a surrogate. Latin prose therefore pays one comparison.
+  if (
+    !(start > 0 && JOINS_GRAPHEME.test(text[start - 1])) &&
+    !(end < text.length && JOINS_GRAPHEME.test(text[end]))
+  ) {
+    return true;
+  }
+  const segments = graphemeSegmenter();
+  if (segments === null) return true;
+  let from = start;
+  while (from > 0 && start - from < ANCHOR_SCAN) {
+    if (BOUNDARY_ANCHOR.test(text[from - 1])) break;
+    from -= 1;
+  }
+  if (from > 0 && start - from >= ANCHOR_SCAN) return true;
+  const to = Math.min(text.length, end + ANCHOR_SCAN);
+  let sawStart = start === from;
+  let sawEnd = false;
+  for (const { index } of segments.segment(text.slice(from, to))) {
+    const at = from + index;
+    if (at === start) sawStart = true;
+    if (at === end) sawEnd = true;
+    if (at > end) break;
+  }
+  return sawStart && (sawEnd || end === to);
 }
 
 function escapeForRegex(text: string): string {
@@ -482,14 +537,7 @@ function escapeForRegex(text: string): string {
  *  while its node holds the newline; the separator is not whitespace, so blocks stay shut. */
 function matchPattern(variants: string[], needle: string): RegExp | null {
   const dotted = variants.some((variant) => variant.includes(COMBINING_DOT));
-  // Hangul always takes the pattern, even when it has only one spelling: the grapheme fences live
-  // there, and the literal scan below would happily stop half way through a syllable.
-  if (
-    variants.length === 1 &&
-    !/\s/.test(needle) &&
-    !HANGUL_ANY_PATTERN.test(needle)
-  )
-    return null;
+  if (variants.length === 1 && !/\s/.test(needle)) return null;
   try {
     const pattern = new RegExp(canonicalSource(needle, dotted), "g");
     // V8 compiles lazily, so an oversized pattern is accepted here and throws on the first `exec`,
@@ -523,17 +571,14 @@ function eachMatch(
   const composedNeedle = needle.normalize("NFC");
   const asTyped = (hit: string): boolean =>
     variants.includes(hit) || hit.normalize("NFC") === composedNeedle;
-  // Only a Hangul-initial query can begin inside a grapheme in a way the pattern cannot see.
-  const fenced = HANGUL_LEADING_PATTERN.test(needle.normalize("NFD"));
   const pattern = matchPattern(variants, needle);
   if (pattern) {
     for (;;) {
       const hit = pattern.exec(index.text);
       if (hit === null) return;
       const end = hit.index + hit[0].length;
-      // The other half of the grapheme fence. The pattern carries the end of it; this is the start,
-      // which cannot be a lookbehind if the search is to work the same on every engine.
-      if (fenced && beginsInsideGrapheme(index.text, hit.index)) {
+      // Never part way through a grapheme, whichever way the match was found.
+      if (!alignsToGraphemes(index.text, hit.index, end)) {
         pattern.lastIndex = hit.index + 1;
         continue;
       }
@@ -552,8 +597,13 @@ function eachMatch(
   for (;;) {
     const at = index.text.indexOf(needle, from);
     if (at === -1) return;
-    if (!visit(at, at + needle.length)) return;
-    from = at + needle.length;
+    const end = at + needle.length;
+    if (!alignsToGraphemes(index.text, at, end)) {
+      from = at + 1;
+      continue;
+    }
+    if (!visit(at, end)) return;
+    from = end;
   }
 }
 

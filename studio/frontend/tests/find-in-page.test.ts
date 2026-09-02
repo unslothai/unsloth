@@ -6,6 +6,7 @@
 // the runner is `node --test` over a hand-rolled document.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -1567,6 +1568,65 @@ test("the grapheme fences do not depend on lookbehind", async () => {
   } finally {
     globalThis.RegExp = real;
   }
+});
+
+test("the grapheme boundary is the platform's answer, not a list of ranges", () => {
+  // Six rounds of review found six ways to land inside a cluster, each a Unicode range that had not
+  // been enumerated: Hangul Jamo, then combining marks, then Prepend, then spacing marks and skin
+  // tones. There is no end to that list, so the question now goes to `Intl.Segmenter`, which knows
+  // the whole of UAX 29. These are the cases that were wrong, one per round.
+  const index = (body: string) =>
+    buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  for (const [body, query] of [
+    ["\uac00\u093e", "\uac00"], // a spacing mark
+    ["\uac00\u{1f3fb}", "\uac00"], // an astral modifier
+    ["\u{1193f}\uac00", "\uac00"], // a supplementary Prepend
+    ["\uac00\u0301", "\uac00"], // a combining mark
+    ["\u0600\uac00", "\uac00"], // a BMP Prepend
+    ["\uac01\u11a8", "\uac01"], // one trailing Jamo too few
+    ["\u1100\uac00", "\uac00"], // starting after a leading Jamo
+  ] as const) {
+    assert.deepEqual(findMatches(index(body), query, 10), [], escape(body));
+  }
+  // Whitespace ends a grapheme, so a query that ends in a space is not held to what follows it.
+  assert.deepEqual(findMatches(index("\uac00 \u11a8"), "\uac00 ", 10), [
+    { start: 0, end: 2 },
+  ]);
+  // An emoji sequence is one grapheme too, and this was never Hangul-specific.
+  assert.deepEqual(
+    findMatches(
+      index("\u{1f469}\u200d\u{1f469}\u200d\u{1f466}"),
+      "\u{1f469}",
+      10,
+    ),
+    [],
+  );
+});
+
+test("a query that needs no pattern is not given one", () => {
+  // Forcing Hangul through the regex path so the fences could apply meant a large paste built a
+  // pattern that V8 accepted and then refused to run, and the throw escaped the search entirely.
+  // With the boundary asked of the segmenter instead, no query needs a pattern it did not earn.
+  const body = "\u11a8".repeat(50_000);
+  const index = buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  assert.deepEqual(findMatches(index, body, 10), [{ start: 0, end: 50_000 }]);
+});
+
+test("plain text does not pay for the boundary check", () => {
+  // The segmenter is asked only where something could actually join, which nothing below U+0300
+  // can. Latin prose therefore costs one comparison per match rather than a segmentation.
+  const source = readFileSync(
+    new URL(
+      "../src/features/find-in-page/lib/find-text-index.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /const JOINS_GRAPHEME = \/\[\^\\u0000-\\u02ff\]\//);
+  const guard = source.slice(source.indexOf("function alignsToGraphemes"));
+  const before = guard.indexOf("JOINS_GRAPHEME");
+  const asks = guard.indexOf("graphemeSegmenter()");
+  assert.ok(before > 0 && before < asks, "the cheap test comes first");
 });
 
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
