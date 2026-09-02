@@ -338,7 +338,9 @@ def test_system_gpu_info_keeps_a_reported_free_over_total_minus_used(monkeypatch
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
     monkeypatch.setattr(main, "_system_gpu_cache", None)
 
-    gpu, _inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+    gpu, _inference_gpu = main._get_cached_system_gpu_info(
+        SimpleNamespace(debug = lambda *args: None)
+    )
 
     assert gpu["devices"][0]["vram_free_gb"] == 6.0
 
@@ -382,6 +384,8 @@ def test_system_gpu_info_still_derives_free_when_the_probe_reports_none(monkeypa
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
     monkeypatch.setattr(main, "_system_gpu_cache", None)
 
-    gpu, _inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+    gpu, _inference_gpu = main._get_cached_system_gpu_info(
+        SimpleNamespace(debug = lambda *args: None)
+    )
 
     assert gpu["devices"][0]["vram_free_gb"] == 18.0
