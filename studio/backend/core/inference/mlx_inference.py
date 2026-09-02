@@ -491,8 +491,62 @@ PROMPT_CACHE_ENTRIES = 6
 
 # Every bit width mx.quantize supports; unrelated to llama.cpp's cache_type_kv names.
 MLX_KV_BITS_CHOICES = (8, 6, 5, 4, 3, 2)
-# Quantization group size; a head dim that is not a multiple makes mx.quantize raise.
-MLX_KV_GROUP_SIZE = 64
+# What a generation falls back to when the runtime cannot be asked, matching mlx-lm's defaults.
+MLX_PREFILL_CHUNK_FALLBACK = 2048
+MLX_KV_GROUP_SIZE_FALLBACK = 64
+
+
+def _generation_step(*, vision: bool, drafted: bool):
+    """The function that would run this generation's prefill."""
+    if vision:
+        # mlx-vlm drives a drafter inside its own generation path rather than a separate one.
+        from mlx_vlm.generate.ar import generate_step as vlm_generate_step
+        return vlm_generate_step
+    if drafted:
+        from mlx_lm.generate import speculative_generate_step
+        return speculative_generate_step
+    from mlx_lm.generate import generate_step
+
+    return generate_step
+
+
+def _generation_default(setting: str, fallback: int, *, vision: bool, drafted: bool) -> int:
+    """A prefill setting as the runtime that would run generation defaults to it.
+
+    Studio passes neither ``prefill_step_size`` nor ``kv_group_size``, so a load runs at
+    whichever default its runtime ships. Reading them beats restating them in a second
+    constant that can drift apart: a drafter alone moves the chunk from 2048 to 512, which
+    the memory estimate would price four times over on the quantized-cache path.
+    """
+    import inspect
+    try:
+        found = (
+            inspect.signature(_generation_step(vision = vision, drafted = drafted))
+            .parameters[setting]
+            .default
+        )
+        if isinstance(found, bool) or not isinstance(found, int) or found <= 0:
+            raise ValueError(f"the runtime states no usable {setting}")
+        return found
+    except Exception as exc:
+        logger.debug("Cannot read the runtime's %s: %s", setting, exc)
+        return fallback
+
+
+def mlx_prefill_chunk(*, vision: bool = False, drafted: bool = False) -> int:
+    """Most tokens one prefill step takes; the last step of a prompt may be shorter."""
+    return _generation_default(
+        "prefill_step_size", MLX_PREFILL_CHUNK_FALLBACK, vision = vision, drafted = drafted
+    )
+
+
+def mlx_kv_group_size(*, vision: bool = False, drafted: bool = False) -> int:
+    """Elements a quantized cache shares one scale and bias across."""
+    return _generation_default(
+        "kv_group_size", MLX_KV_GROUP_SIZE_FALLBACK, vision = vision, drafted = drafted
+    )
+
+
 # Surfaced with the resolved setting so an API client sees the reuse cost too.
 MLX_KV_QUANT_NO_REUSE = (
     "The installed mlx-lm cannot measure a quantized cache entry, so prompt-cache "
@@ -618,7 +672,13 @@ def _restore_mlx_rng_key(words):
     mx.random.seed((pair[0] << 32) | pair[1])
 
 
-def _kv_quant_probe(language_model, entries, bits):
+def _kv_quant_probe(
+    language_model,
+    entries,
+    bits,
+    *,
+    vision = False,
+):
     """Attempt the conversion the runtime will perform, on a real cache.
 
     Static proxies proved wrong in both directions: a model can declare a
@@ -662,7 +722,7 @@ def _kv_quant_probe(language_model, entries, bits):
                 skipped += 1
                 continue
             try:
-                quantized = convert(group_size = MLX_KV_GROUP_SIZE, bits = bits)
+                quantized = convert(group_size = mlx_kv_group_size(vision = vision), bits = bits)
                 mx.eval(quantized.state)
                 converted += 1
             except Exception as exc:
@@ -742,7 +802,9 @@ def _kv_quant_eligibility(
     if not entries:
         return "none", "this model builds no KV cache to quantize", True
 
-    converted, skipped, failure, retainable = _kv_quant_probe(language_model, entries, bits)
+    converted, skipped, failure, retainable = _kv_quant_probe(
+        language_model, entries, bits, vision = is_vlm
+    )
     # Released only here, once the probe's own locals are gone, or the pages stay
     # in the allocator.
     import mlx.core as mx

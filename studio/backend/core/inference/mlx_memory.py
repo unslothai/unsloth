@@ -40,9 +40,10 @@ MLX_KV_BLOCK = 256
 _PROBE_SHORT = 8
 _PROBE_LONG = 40
 
-# Mirrors ``generate_step``'s own prefill_step_size default; the estimate is only right
-# while the two agree.
+# What a load prefills at on a host where the runtime cannot be asked; the live value comes
+# from the loader, which reads it off the runtime that would run the generation.
 MLX_PREFILL_CHUNK = 2048
+_KV_GROUP_SIZE = 64
 
 # Live activations inside one attention block at its widest, and the allocator floor.
 _ATTENTION_LIVE = 3.5
@@ -287,6 +288,24 @@ def _runtime_dtype():
     return mx.float16 if chip.startswith(("Apple M1", "Apple M2")) else mx.bfloat16
 
 
+def _generation_settings(config: dict) -> tuple:
+    """``(prefill chunk, kv group size)`` the package that would load this model runs at.
+
+    Asked of the loader rather than restated here, so an upstream default change moves the
+    estimate instead of silently invalidating it. This module stays importable on a host with
+    no MLX, so a loader it cannot reach falls back.
+    """
+    try:
+        from core.inference.mlx_inference import mlx_kv_group_size, mlx_prefill_chunk
+    except Exception as exc:
+        logger.debug("MLX estimate cannot reach the loader's generation settings: %s", exc)
+        return MLX_PREFILL_CHUNK, _KV_GROUP_SIZE
+    vision = _loads_as_vision(config)
+    if vision and _routes_to_diffusion(config):
+        raise ValueError("mlx-vlm would divert this to a diffusion generator")
+    return mlx_prefill_chunk(vision = vision), mlx_kv_group_size(vision = vision)
+
+
 def _loads_as_vision(config: dict) -> bool:
     from types import SimpleNamespace
     try:
@@ -297,6 +316,39 @@ def _loads_as_vision(config: dict) -> bool:
             for key in ("vision_config", "img_processor", "image_token_index", "projector_config")
         )
     return bool(_is_vlm(SimpleNamespace(**config)))
+
+
+def _routes_to_diffusion(config: dict) -> bool:
+    """Whether mlx-vlm would divert this load to a diffusion generator.
+
+    ``stream_generate`` diverts before reaching the autoregressive chunking path, into a
+    generator each architecture writes for itself, and those share no parameter meaning the
+    same thing: LLaDA2's ``block_length`` of 32 is the block it prefills in, DiffusionGemma's
+    caps the denoising canvas while its prompt goes in one step, and Nemotron Labs Diffusion
+    declares 32 and still prefills whole. One name, three behaviours, so a load that lands
+    here is refused rather than priced from whichever the caller guessed at.
+
+    The verdict is mlx-vlm's own, on a wrapper built here for the purpose. A cheap marker
+    test comes first so that build stays off the path of every other architecture, and the
+    markers are a gate rather than the verdict: an architecture can carry one and still
+    generate autoregressively. Failing to classify a marker-bearing model raises, since not
+    knowing which generator runs is what the caller refuses rather than a vote for the
+    autoregressive one.
+    """
+    try:
+        from mlx_vlm.generate.diffusion import is_diffusion_model
+        from mlx_vlm.utils import get_model_and_args
+    except ImportError:
+        # An mlx-vlm with no diffusion generator diverts nothing to one.
+        return False
+    arch = get_model_and_args(config)[0]
+    loader_config = _loader_config(arch, config)
+    if (
+        getattr(loader_config, "canvas_length", None) is None
+        and getattr(loader_config, "mask_token_id", None) is None
+    ):
+        return False
+    return bool(is_diffusion_model(arch.Model(loader_config), {}))
 
 
 def _declines_to_chunk(model_class, model) -> bool:
@@ -985,8 +1037,8 @@ def mlx_memory_breakdown(
     *,
     n_ctx: int,
     kv_bits: Optional[int] = None,
-    kv_group_size: int = 64,
-    prefill_chunk: int = MLX_PREFILL_CHUNK,
+    kv_group_size: Optional[int] = None,
+    prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
 ) -> Optional[MlxMemoryBreakdown]:
     """Price an MLX load, or None when it cannot honestly be sized: a total assembled around an
@@ -1008,11 +1060,14 @@ def mlx_memory_breakdown(
     # Everything the architecture influences is inside the guard: raising here is a 500.
     try:
         dtype = _runtime_dtype()
-        plan, quant_start, facts = _cache_plan(config, dtype, kv_bits, kv_group_size)
+        loaded_chunk, loaded_group = _generation_settings(config)
+        plan, quant_start, facts = _cache_plan(
+            config, dtype, kv_bits, kv_group_size or loaded_group
+        )
         whole_prompt = facts["whole_prompt"]
         context = max(int(n_ctx or 0), 1)
         # A runtime that declines to chunk sizes every "per chunk" term per PROMPT.
-        chunk = context if whole_prompt else prefill_chunk
+        chunk = context if whole_prompt else (prefill_chunk or loaded_chunk)
         kv, quant_boundary = _kv_bytes(plan, context, quant_start, chunk, whole_prompt)
         # Per FIELD: a tower can state its hidden size and not its block width.
         widths = tuple(

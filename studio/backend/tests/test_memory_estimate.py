@@ -3673,6 +3673,246 @@ class TestProbeFollowsTheLoadersRoute:
         assert mm._runtime_dtype() is getattr(mx, expected)
 
 
+@pytest.mark.skipif(not _HAVE_MLX, reason = "asks the installed runtime")
+class TestGenerationSettingsComeFromTheLoader:
+    """What a load prefills at is read off the runtime, never restated beside it."""
+
+    def test_each_path_is_read_from_the_function_that_would_run_it(self):
+        import inspect
+
+        from core.inference import mlx_inference as mi
+
+        for vision, drafted in ((False, False), (True, False), (False, True), (True, True)):
+            step = mi._generation_step(vision = vision, drafted = drafted)
+            for setting, ask in (
+                ("prefill_step_size", mi.mlx_prefill_chunk),
+                ("kv_group_size", mi.mlx_kv_group_size),
+            ):
+                assert ask(vision = vision, drafted = drafted) == (
+                    inspect.signature(step).parameters[setting].default
+                )
+        # Named by package, not by asking the helper what it chose: both autoregressive
+        # defaults are 2048/64 today, so a vision request served mlx-lm's function would
+        # otherwise agree with every number this test checks.
+        assert mi._generation_step(vision = True, drafted = False).__module__.startswith("mlx_vlm")
+        assert mi._generation_step(vision = False, drafted = False).__module__.startswith("mlx_lm")
+        # A drafter alone moves the chunk, so a restated constant cannot tell these apart.
+        assert mi.mlx_prefill_chunk(drafted = True) != mi.mlx_prefill_chunk()
+        # But only on the text path: mlx-vlm drives a drafter inside its own generation.
+        assert mi.mlx_prefill_chunk(vision = True, drafted = True) == mi.mlx_prefill_chunk(vision = True)
+
+    @pytest.mark.parametrize("chunk, group", [(None, 0), (True, "64")])
+    def test_a_runtime_that_states_no_usable_value_falls_back(self, monkeypatch, chunk, group):
+        from core.inference import mlx_inference as mi
+
+        def _stated(**kw):
+            return lambda prefill_step_size = chunk, kv_group_size = group: None
+
+        monkeypatch.setattr(mi, "_generation_step", _stated)
+        # True is an int and "64" is truthy, so a bare truthiness check would price both.
+        assert mi.mlx_prefill_chunk() == mi.MLX_PREFILL_CHUNK_FALLBACK
+        assert mi.mlx_kv_group_size() == mi.MLX_KV_GROUP_SIZE_FALLBACK
+
+    def test_the_eligibility_probe_converts_at_the_width_generation_would(self, monkeypatch):
+        # The probe decides whether a request is offered at all, so a width of its own would
+        # accept a cache generation then refuses, or refuse one it would have taken.
+        import mlx.core as mx
+
+        from core.inference import mlx_inference as mi
+
+        asked = []
+
+        class _Entry:
+            state = mx.zeros((1,))
+
+            def to_quantized(self, group_size, bits):
+                asked.append((group_size, bits))
+                return self
+
+        seen = []
+        monkeypatch.setattr(
+            mi, "mlx_kv_group_size", lambda **kw: seen.append(kw.get("vision")) or 32
+        )
+        monkeypatch.setattr(mi, "_kv_entry_nbytes", lambda entry: 1)
+        mi._kv_quant_probe(lambda *a, **kw: None, [_Entry()], 4, vision = True)
+        assert asked == [(32, 4)]
+        # And of the runtime actually being probed: a VLM cache asked about mlx-lm's width
+        # would be admitted or refused on a width generation never uses.
+        assert seen == [True]
+
+    @pytest.mark.parametrize("is_vlm", [True, False])
+    def test_eligibility_tells_the_probe_which_runtime_it_is_probing(self, monkeypatch, is_vlm):
+        from mlx_lm.models import cache as lm_cache
+        from mlx_vlm.models import cache as vlm_cache
+
+        from core.inference import mlx_inference as mi
+
+        told = []
+        for module in (vlm_cache, lm_cache):
+            monkeypatch.setattr(module, "make_prompt_cache", lambda model: [object()])
+        monkeypatch.setattr(
+            mi,
+            "_kv_quant_probe",
+            lambda *a, vision = False, **kw: told.append(vision) or (1, 0, None, True),
+        )
+        mi._kv_quant_eligibility(SimpleNamespace(language_model = object()), is_vlm)
+        assert told == [is_vlm]
+
+    def test_the_estimator_tells_the_loader_which_package_would_load_it(self, monkeypatch):
+        from core.inference import mlx_inference as mi
+
+        seen = []
+        monkeypatch.setattr(mi, "mlx_prefill_chunk", lambda **kw: seen.append(kw["vision"]) or 2048)
+        monkeypatch.setattr(mi, "mlx_kv_group_size", lambda **kw: 64)
+        mm._generation_settings({"model_type": "kimi_vl", "vision_config": {"depth": 2}})
+        mm._generation_settings({"model_type": "qwen3"})
+        assert seen == [True, False]
+
+    def test_a_host_without_the_loader_prices_the_fallback(self, monkeypatch):
+        import builtins
+
+        real = builtins.__import__
+
+        def _no_loader(name, *a, **kw):
+            if name == "core.inference.mlx_inference":
+                raise ImportError("no loader here")
+            return real(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _no_loader)
+        assert mm._generation_settings({"model_type": "llama"}) == (mm.MLX_PREFILL_CHUNK, 64)
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize("reported, compute", [(None, 9_448_833_807), (512, 2_874_458_895)])
+def test_the_estimate_prices_the_chunk_the_loader_reports(monkeypatch, reported, compute):
+    # The drift this closes: a load prefilling at 512 priced at 2048 is 3.3x high on the
+    # quantized score term, which no assertion about the constant alone would catch.
+    _on_bfloat16_chip()
+    if reported is not None:
+        from core.inference import mlx_inference as mi
+        monkeypatch.setattr(mi, "mlx_prefill_chunk", lambda **kw: reported)
+    breakdown = mm.mlx_memory_breakdown(
+        _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
+        n_ctx = 32768,
+        load_in_4bit = True,
+        kv_bits = 4,
+    )
+    assert breakdown is not None and breakdown.compute_bytes == compute
+    # And an explicit chunk still outranks whatever the loader reports.
+    override = mm.mlx_memory_breakdown(
+        _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
+        n_ctx = 32768,
+        load_in_4bit = True,
+        kv_bits = 4,
+        prefill_chunk = 512,
+    )
+    assert override.compute_bytes == 2_874_458_895
+
+
+@_NEEDS_MLX
+def test_a_model_mlx_vlm_would_diffuse_is_refused_rather_than_priced():
+    # stream_generate diverts ahead of the autoregressive chunking path, and what each
+    # diffusion generator prefills in is not readable pre-load: LLaDA2's block_length of 32
+    # is the block it prefills in, DiffusionGemma's is a denoising-canvas cap. Priced at the
+    # autoregressive 2048 this quoted 18.61 GB for a prompt that goes in one step.
+    snapshot = _local_snapshot("mlx-community/diffusiongemma-26B-A4B-it-4bit")
+    assert mm._routes_to_diffusion(mm._snapshot_config(snapshot)) is True
+    assert mm.mlx_memory_breakdown(snapshot, n_ctx = 32768, load_in_4bit = True) is None
+
+
+@_NEEDS_MLX
+def test_an_ordinary_vision_model_is_not_mistaken_for_a_diffusion_one():
+    # The refusal must not reach a model that would have priced: this one carries no marker.
+    config = {"model_type": "kimi_vl", "vision_config": {"depth": 2}}
+    assert mm._routes_to_diffusion(config) is False
+    assert mm._generation_settings(config)[0] > 0
+
+
+@_NEEDS_MLX
+class TestDiffusionRouting:
+    """The markers gate a build; mlx-vlm's own predicate is the verdict."""
+
+    @staticmethod
+    def _resolving(
+        monkeypatch,
+        *,
+        canvas,
+        mask,
+        build = lambda config: object(),
+    ):
+        monkeypatch.setattr(
+            mm,
+            "_loader_config",
+            lambda arch, config: SimpleNamespace(canvas_length = canvas, mask_token_id = mask),
+        )
+        monkeypatch.setattr(
+            "mlx_vlm.utils.get_model_and_args",
+            lambda config: (SimpleNamespace(Model = build), None),
+        )
+
+    @pytest.mark.parametrize("verdict", [True, False])
+    def test_the_predicate_outranks_the_marker(self, monkeypatch, verdict):
+        # A marker only earns the model a classification. nemotron_labs_diffusion carries
+        # mask_token_id = 100 and still generates autoregressively under Studio's arguments,
+        # so a marker read as the verdict would refuse a load that prices.
+        from mlx_vlm.generate import diffusion as vlm_diffusion
+
+        self._resolving(monkeypatch, canvas = None, mask = 100)
+        monkeypatch.setattr(vlm_diffusion, "is_diffusion_model", lambda model, kw: verdict)
+        assert mm._routes_to_diffusion({"model_type": "whatever"}) is verdict
+
+    def test_a_diverted_load_refuses_without_needing_a_checkpoint(self, monkeypatch):
+        from mlx_vlm.generate import diffusion as vlm_diffusion
+
+        self._resolving(monkeypatch, canvas = 512, mask = None)
+        monkeypatch.setattr(vlm_diffusion, "is_diffusion_model", lambda model, kw: True)
+        monkeypatch.setattr(mm, "_loads_as_vision", lambda config: True)
+        with pytest.raises(ValueError, match = "diffusion generator"):
+            mm._generation_settings({"model_type": "whatever"})
+
+    def test_an_architecture_carrying_no_marker_is_never_built(self, monkeypatch):
+        # The marker gate keeps a wrapper build off every other architecture's path.
+        def _explode(config):
+            raise AssertionError("built a wrapper for a config carrying no marker")
+
+        self._resolving(monkeypatch, canvas = None, mask = None, build = _explode)
+        assert mm._routes_to_diffusion({"model_type": "whatever"}) is False
+
+    def test_a_marked_model_that_cannot_be_placed_is_refused_not_assumed(self, monkeypatch):
+        # Not knowing which generator runs is what the estimate refuses; treating it as
+        # autoregressive would quote a confident chunk for a load nobody could place.
+        def _explode(config):
+            raise RuntimeError("this wrapper cannot be built")
+
+        self._resolving(monkeypatch, canvas = 512, mask = None, build = _explode)
+        with pytest.raises(RuntimeError):
+            mm._routes_to_diffusion({"model_type": "whatever"})
+        # And nothing on the way to the estimate's guard swallows it, which is what turns it
+        # into a refusal rather than a number.
+        with pytest.raises(RuntimeError):
+            mm._generation_settings({"model_type": "whatever", "vision_config": {"depth": 2}})
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize("reported, explicit", [(32, None), (64, 32)])
+def test_the_estimate_prices_the_group_size_it_is_given(monkeypatch, reported, explicit):
+    # The same defect one setting over: a cache grouped at 32 costs more scales and biases
+    # than one grouped at 64, so restating either width prices a conversion that never ran.
+    # The loader supplies it, and an explicit width outranks what the loader reports.
+    _on_bfloat16_chip()
+    from core.inference import mlx_inference as mi
+
+    monkeypatch.setattr(mi, "mlx_kv_group_size", lambda **kw: reported)
+    breakdown = mm.mlx_memory_breakdown(
+        _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
+        n_ctx = 32768,
+        load_in_4bit = True,
+        kv_bits = 4,
+        kv_group_size = explicit,
+    )
+    assert breakdown is not None and breakdown.kv_bytes == 1_521_745_920
+
+
 @pytest.mark.skipif(not _HAVE_MLX, reason = "drives real cache classes")
 def test_the_peak_of_a_bounded_cache_is_measured_not_derived():
     # Hand-derived three times and wrong three times, so the peak is measured by driving the class.
