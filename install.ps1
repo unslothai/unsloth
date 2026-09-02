@@ -1254,10 +1254,11 @@ public static class UnslothStudioFinalPathV2
                 # blank inherited variable so it cannot override those sources.
                 Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
                 if ($UvExecutable) {
-                    $resolvedCache = (& $UvExecutable cache dir 2>$null | Select-Object -First 1)
+                    $resolvedCache = @(& $UvExecutable cache dir 2>$null)
                     $uvCacheExit = $LASTEXITCODE
-                    if ($uvCacheExit -eq 0 -and -not [string]::IsNullOrWhiteSpace($resolvedCache)) {
-                        $sharedCache = ([string]$resolvedCache).Trim()
+                    if ($uvCacheExit -eq 0 -and $resolvedCache.Count -gt 0 -and
+                        -not [string]::IsNullOrWhiteSpace($resolvedCache[0])) {
+                        $sharedCache = ([string]$resolvedCache[0]).Trim()
                     }
                 }
                 if (-not $sharedCache -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
