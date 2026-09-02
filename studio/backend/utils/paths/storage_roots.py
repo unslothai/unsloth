@@ -436,10 +436,13 @@ def _setup_cache_env() -> None:
         # Ollama, must stay where the other tools look. Portable mode moves those
         # too, because there the whole point is a self-contained directory.
         "TORCHINDUCTOR_CACHE_DIR": str(root / "torchinductor"),
-        # TRITON_HOME is the parent Triton derives ~/.triton from; setting only
-        # TRITON_CACHE_DIR still leaves the dump/override dirs in the home.
-        "TRITON_HOME": str(root / "triton"),
-        "TRITON_CACHE_DIR": str(root / "triton" / "cache"),
+        # TRITON_HOME names the directory Triton creates its ".triton" under,
+        # not that directory itself, so this yields <cache>/.triton rather than
+        # a redundant triton/.triton. Setting only TRITON_CACHE_DIR would leave
+        # the override and dump dirs in the home (triton-lang/triton#4265);
+        # TRITON_HOME is the one lever that covers all three.
+        "TRITON_HOME": str(root),
+        "TRITON_CACHE_DIR": str(root / "triton"),
         "TORCH_EXTENSIONS_DIR": str(root / "torch-extensions"),
         # NVIDIA's JIT compile cache; ~/.nv/ComputeCache otherwise.
         "CUDA_CACHE_PATH": str(root / "cuda"),
