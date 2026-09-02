@@ -845,7 +845,7 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
     fp = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
 
     def _prefetch_call(node):
-        # a bare call statement, or one whose return is captured (e.g.
+        # a bare call statement, or one whose return is captured (e.g. _st_prefetched = ...)
         value = node.value if isinstance(node, (ast.Expr, ast.Assign)) else None
         if (
             isinstance(value, ast.Call)

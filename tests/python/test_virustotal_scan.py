@@ -942,7 +942,8 @@ class TestWorkflowOrdering:
             "after one, and `needs:` already gates it correctly"
         )
 
-        # Nor may the individual steps be skipped, except the summary, which is `if:
+        # Nor may the individual steps be skipped, except the summary, which is `if: always()` precisely so the evidence
+        # survives a failed scan.
         for step in job["steps"]:
             condition = step.get("if")
             if step.get("name") == "Publish VirusTotal summary":

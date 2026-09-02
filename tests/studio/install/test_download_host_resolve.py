@@ -301,6 +301,6 @@ def test_latest_release_tag_none_on_404(monkeypatch):
 
 
 def test_latest_release_tag_none_when_not_a_tag_url(monkeypatch):
-    # No /releases/tag/ segment (e.g.
+    # No /releases/tag/ segment (e.g. redirected somewhere unexpected) -> None.
     monkeypatch.setattr(ILP, "_URL_OPENER", _FakeOpener(url = f"https://github.com/{FORK_REPO}"))
     assert ILP._download_host_latest_release_tag(FORK_REPO) is None

@@ -273,7 +273,7 @@ def _iter_executable(scope, enter_classes = True):
 def _rebound_names(scope):
     """Names this scope binds itself, which therefore no longer mean the import."""
     out = set()
-    # Class bodies excluded: `class C:
+    # Class bodies excluded: `class C: abort = ...` binds C.abort, not abort.
     for node in _iter_executable(scope, enter_classes = False):
         pair = _assigned_pair(node)
         if pair is not None:
@@ -562,7 +562,7 @@ def _helper_leaves_dumpable(
     target = functions.get(call.func.id)
     if target is None:
         return None
-    # A local `restore = lambda:
+    # A local `restore = lambda: None` before the call is not the module-level helper.
     if call.func.id in shadowed:
         return None
     # Calling an `async def` builds a coroutine and runs none of its body.

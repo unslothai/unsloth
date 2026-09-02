@@ -23,7 +23,8 @@ import pytest
 import torch
 
 # unsloth.kernels.utils imports bitsandbytes unconditionally, so skip the whole module up front on runners without it
-# (e.g.
+# (e.g. CPU-only) before importing unsloth, otherwise collection errors instead of producing a skip. Any other import
+# error still surfaces as a failure.
 pytest.importorskip("bitsandbytes")
 
 import unsloth  # noqa: F401  (sets UNSLOTH_IS_PRESENT before transformers)

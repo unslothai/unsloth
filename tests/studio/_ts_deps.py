@@ -524,8 +524,10 @@ def resolve_dependencies(
             pull(reference, source)
 
     # A declaration evaluated at import time cannot be left half-resolved: `const A = [B]` with `B` refused crashes the
-    # whole harness on load, which is worse than the lazy ReferenceError it replaced.
-    # A fixture the harness defines does not rescue one either: the fixtures sit BELOW this block, so reading one from
+    # whole harness on load, which is worse than the lazy ReferenceError it replaced. Drop those to a fixed point
+    # instead. Functions and types are lazy or erased, so an unfollowed reference in one costs nothing until it is
+    # called. A fixture the harness defines does not rescue one either: the fixtures sit BELOW this block, so reading
+    # one from here is a TDZ error rather than a resolution.
     eager = {"const", "let", "var", "class"}
     while True:
         doomed = {

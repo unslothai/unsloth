@@ -66,7 +66,8 @@ def test_chat_autoscroll_asserts_the_detached_stream_actually_grew() -> None:
 
 
 def test_research_freeze_asserts_the_dialog_took_the_modal_layer() -> None:
-    # The stranded-`pointer-events:
+    # The stranded-`pointer-events: none` checks are the reported symptom (an unclickable window). They only test
+    # anything if the dialog put the body on the modal layer first.
     main = verdict("playwright_research_freeze.py")
     assert 'modal["body_pointer_events_after_approve"]' in main
     assert 'modal["body_pointer_events_while_open"]' in main
@@ -87,7 +88,8 @@ def test_research_freeze_asserts_the_report_stall_and_its_own_probe() -> None:
 
 
 def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
-    # A synthetic element.click() skips hit testing and passes on a stranded `pointer-events:
+    # A synthetic element.click() skips hit testing and passes on a stranded `pointer-events: none` tree, so the verdict
+    # must read actionability, not just the counter.
     source_text = source("playwright_research_freeze.py")
     assert "page.click('[data-smoke=\"click-probe\"]'" in source_text
     # The stall budget is only a budget if a stall of zero fails too:

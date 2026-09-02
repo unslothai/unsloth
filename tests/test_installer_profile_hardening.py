@@ -1407,7 +1407,8 @@ def test_the_setup_child_does_not_hand_the_proxy_secret_to_its_descendants():
     removed_at = prelude.find("Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS")
     assert read_at >= 0, "the prelude must still read the handoff"
     assert removed_at > read_at, "and must clear it straight after reading it"
-    # Before anything that could start a child process -- i.e.
+    # Before anything that could start a child process -- i.e. before the defaults are applied, which is the last thing
+    # the prelude does.
     assert removed_at < prelude.find("$PSDefaultParameterValues[$_.Name]")
 
 

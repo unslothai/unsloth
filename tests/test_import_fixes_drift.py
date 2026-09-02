@@ -719,6 +719,7 @@ def test_psutil_cpu_freq_shape_and_wiring():
 
     if getattr(psutil, "cpu_freq", None) is None:
         # On macOS psutil decides at runtime whether to expose cpu_freq at all (an absent one is normal on virtualised
+        # Apple Silicon), so its absence is only drift off that platform.
         if platform.system() == "Darwin" and platform.machine() == "arm64":
             pytest.skip("this Apple Silicon host exposes no psutil.cpu_freq")
         pytest.fail(

@@ -613,7 +613,8 @@ def test_python_path_inside_venv_guards_root_prefix_in_all_copies():
 
 
 def test_path_inside_venv_returns_false_for_root_prefix():
-    # Behavioral: with sys.prefix realpath == a bare root, no external path counts as inside the venv (so a real HIP
+    # Behavioral: with sys.prefix realpath == a bare root, no external path counts as inside the venv (so a real HIP SDK
+    # on the same drive still opens the gate).
     root = "C:\\" if os.name == "nt" else "/"
     real = os.path.realpath
     with patch.object(

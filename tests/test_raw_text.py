@@ -559,7 +559,7 @@ def test_validate_dataset_accepts_objects_without_column_names():
     longest = max(len(t) for t in texts)
 
     class DuckTypedDataset:
-        # Only __len__ + __getitem__, i.e.
+        # Only __len__ + __getitem__, i.e. the pre-existing implicit contract.
         def __init__(self, data):
             self.data = data
 

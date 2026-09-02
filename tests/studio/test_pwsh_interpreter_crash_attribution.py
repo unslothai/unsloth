@@ -55,7 +55,8 @@ def test_a_clean_run_with_the_wrong_answer_still_fails_with_its_own_message():
     assert proc.returncode == 3
     assert proc.stdout.strip() == "WRONG"
 
-    # ...and `check` still raises the ordinary CalledProcessError a caller expects, so migrating a `subprocess.run(...
+    # ...and `check` still raises the ordinary CalledProcessError a caller expects, so migrating a `subprocess.run(...,
+    # check = True)` call site changes no failure text.
     with pytest.raises(subprocess.CalledProcessError):
         run_pwsh(_CLEAN_WRONG_ANSWER, check = True, capture_output = True, text = True)
 

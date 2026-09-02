@@ -1497,7 +1497,7 @@ with sync_playwright() as p:
             }""",
         )
 
-    # text-ui-15p5 unscaled (index.css:
+    # text-ui-15p5 unscaled (index.css: calc(0.96875rem * var(--ui-font-scale, 1))).
     _TEXT_UI_15P5_PX = 15.5
 
     def assert_chat_typography(label, typography):

@@ -72,7 +72,8 @@ class TestPrebuiltWheelTorchMapping:
 
 class TestFlashAttnWheelSelection:
     def test_torch_210_maps_to_v281(self):
-        # v2.8.1 is the newest release still publishing the full torch2.10 asset matrix (cu12 + cu13, cp312 + cp313
+        # v2.8.1 is the newest release still publishing the full torch2.10 asset matrix (cu12 + cu13, cp312 + cp313,
+        # x86_64 + aarch64).
         assert ips._select_flash_attn_version("2.10") == "2.8.1"
 
     def test_selected_version_is_never_a_post_release(self):

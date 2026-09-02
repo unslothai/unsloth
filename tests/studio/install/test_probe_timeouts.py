@@ -58,7 +58,7 @@ class TestInstallShBoundedProbe:
             "command -v timeout" in body
         ), "_run_bounded must check for the `timeout` binary before using it"
         assert "timeout 10" in body, "_run_bounded must apply a 10s timeout"
-        # Falls back to unbounded when `timeout` is absent (e.g.
+        # Falls back to unbounded when `timeout` is absent (e.g. macOS), keeping semantics there.
         assert (
             "else" in body and '"$@"' in body
         ), "_run_bounded must run the command unbounded when `timeout` is absent"

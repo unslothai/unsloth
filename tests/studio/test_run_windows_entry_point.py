@@ -93,7 +93,7 @@ def test_windows_respawns_through_the_interpreter_not_the_console_script():
     assert isinstance(
         branch, ast.IfExp
     ), f"expected launch_head to branch per platform, got {ast.dump(branch)}"
-    # Windows arm: _managed_cli_argv(studio_python), i.e.
+    # Windows arm: _managed_cli_argv(studio_python), i.e. the interpreter form.
     assert isinstance(branch.body, ast.Call), ast.dump(branch.body)
     assert isinstance(branch.body.func, ast.Name)
     assert branch.body.func.id == "_managed_cli_argv", (

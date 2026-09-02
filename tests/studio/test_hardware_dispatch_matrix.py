@@ -170,7 +170,7 @@ def spoof_hardware(monkeypatch):
                 raising = False,
             )
 
-        # torch.version.hip: None on NVIDIA, "6.1" etc.
+        # torch.version.hip: None on NVIDIA, "6.1" etc. on ROCm
         torch_version = torch.version
         monkeypatch.setattr(torch_version, "hip", profile.hip_version, raising = False)
 

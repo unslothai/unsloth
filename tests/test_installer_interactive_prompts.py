@@ -198,7 +198,7 @@ def _is_interactive_read(
 
 
 # `<<EOF`, not the `<<<` here-string, and not inside a quoted string: install.sh prints a shell-profile marker
-# containing `# <<< Unsloth ...
+# containing `# <<< Unsloth ... <<<`.
 _HEREDOC = re.compile(r"<<(?!<)-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?")
 _INTERPRETER = re.compile(r"\b(?:python[0-9.]*|node|perl|ruby|osascript)\b[^<]*<<")
 

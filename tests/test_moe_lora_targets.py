@@ -206,6 +206,8 @@ def test_in_scope_mlp_full_list_still_discovers_moe_parameters():
 
 def test_attention_only_list_prefers_original_when_in_scope():
     # The case the PR originally fixed: an attention-only list routed through get_peft_regex under a family scope (e.g.
+    # vision-off) still keeps experts off, because with MLP+language in scope detection uses the original attention-only
+    # list rather than the regex's spurious mlp component block.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,
