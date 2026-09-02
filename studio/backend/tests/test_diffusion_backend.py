@@ -6496,6 +6496,56 @@ def test_generate_non_oom_error_is_not_retried(fake_runtime, tmp_path):
     assert pipe.batch_attempts == [4]  # no backoff retries on a non-OOM error
 
 
+def test_generate_reclaims_model_offload_memory_once_after_success(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+
+    backend = _load_zimage_backend(tmp_path)
+    trace = []
+
+    def fake_reclaim(policy, logger = None):
+        if policy == "model":
+            trace.append("reclaim")
+            return True
+        return False
+
+    monkeypatch.setattr(dmod, "reclaim_offload_host_memory", fake_reclaim, raising = False)
+    monkeypatch.setattr(dmod.compile_cache, "register_shape", lambda *a, **k: None)
+    monkeypatch.setattr(dmod.compile_cache, "save", lambda *a, **k: trace.append("save"))
+
+    # The OOM backoff performs three forwards, but the successful backend generation reclaims once,
+    # after all chunks and post-denoise compile-cache work have completed.
+    object.__setattr__(backend._state, "offload_policy", "model")
+    object.__setattr__(backend._state, "pipe", _CountingPipe(max_images = 2))
+    out = backend.generate(prompt = "p", seeds = [1, 2, 3, 4])
+    assert len(out["images"]) == 4
+    assert trace == ["save", "reclaim"]
+
+    # The other effective placement policies never pressure the host allocator.
+    for policy in ("none", "group", "streaming", "sequential"):
+        object.__setattr__(backend._state, "offload_policy", policy)
+        object.__setattr__(backend._state, "pipe", _FakePipe())
+        backend.generate(prompt = policy)
+    assert trace.count("reclaim") == 1
+
+    # A failed or cancelled generation has no successful epilogue to reclaim from.
+    object.__setattr__(backend._state, "offload_policy", "model")
+    object.__setattr__(backend._state, "pipe", _BoomPipe())
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        backend.generate(prompt = "failed")
+
+    class _CancellingPipe(_FakePipe):
+        def __call__(self, *, prompt = None, **kwargs):
+            assert backend.cancel_generate() is True
+            return super().__call__(prompt = prompt, **kwargs)
+
+    object.__setattr__(backend._state, "pipe", _CancellingPipe())
+    with pytest.raises(RuntimeError, match = DIFFUSION_CANCELLED_MSG):
+        backend.generate(prompt = "cancelled")
+    assert trace.count("reclaim") == 1
+
+
 def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_runtime, tmp_path):
     # A prompt list needs a matching negative list: encode_prompt asserts equal lengths, and pipes that encode the negative separately would build batch-1 embeds against batch-N latents.
     backend = _load_zimage_backend(tmp_path)

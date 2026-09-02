@@ -16,9 +16,12 @@ imported lazily.
 
 from __future__ import annotations
 
+import ctypes
+import functools
 import os
+import sys
 from dataclasses import dataclass, replace
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 # ── memory modes (operator intent) ───────────────────────────────────────────
@@ -51,6 +54,78 @@ DEFAULT_IMAGE_WIDTH = 1024
 DEFAULT_IMAGE_HEIGHT = 1024
 # flat allowance for fixed pipeline costs (scheduler, embeddings, CUDA context, fragmentation)
 DEFAULT_BASE_OVERHEAD_MIB = 2048
+
+
+_host_memory_reclaim_warning_logged = False
+
+
+@functools.lru_cache(maxsize = 1)
+def _resolve_host_memory_reclaimer() -> Optional[Callable[[], None]]:
+    """Resolve this process allocator's native pressure API once, if the OS exposes one."""
+    try:
+        if sys.platform.startswith("linux"):
+            allocator = ctypes.CDLL(None)
+            pressure = allocator.malloc_trim
+            pressure.argtypes = [ctypes.c_size_t]
+            pressure.restype = ctypes.c_int
+
+            def reclaim() -> None:
+                pressure(0)
+
+        elif sys.platform == "darwin":
+            allocator = ctypes.CDLL(None)
+            pressure = allocator.malloc_zone_pressure_relief
+            pressure.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            pressure.restype = ctypes.c_size_t
+
+            def reclaim() -> None:
+                pressure(None, 0)
+
+        elif sys.platform == "win32":
+            pressure = None
+            for library_name in ("ucrtbase.dll", "msvcrt.dll"):
+                try:
+                    allocator = ctypes.CDLL(library_name)
+                    pressure = allocator._heapmin
+                    break
+                except Exception:
+                    continue
+            if pressure is None:
+                return None
+            pressure.argtypes = []
+            pressure.restype = ctypes.c_int
+
+            def reclaim() -> None:
+                if pressure() == -1:
+                    raise OSError("_heapmin failed")
+
+        else:
+            return None
+    except Exception:
+        return None
+    return reclaim
+
+
+def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool:
+    """Return unused allocator pages after whole-model CPU offload, without touching live
+    tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
+    global _host_memory_reclaim_warning_logged
+    if offload_policy != OFFLOAD_MODEL:
+        return False
+    try:
+        reclaim = _resolve_host_memory_reclaimer()
+        if reclaim is None:
+            return False
+        reclaim()
+        return True
+    except Exception as exc:  # noqa: BLE001 — allocator pressure is an optional optimisation
+        if logger is not None and not _host_memory_reclaim_warning_logged:
+            _host_memory_reclaim_warning_logged = True
+            try:
+                logger.warning("diffusion.memory: host allocator reclamation failed: %s", exc)
+            except Exception:  # noqa: BLE001 — even a broken logger cannot fail generation
+                pass
+        return False
 
 
 def normalize_memory_mode(value: Optional[str]) -> Optional[str]:

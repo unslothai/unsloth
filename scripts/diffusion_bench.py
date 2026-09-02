@@ -119,6 +119,23 @@ def _gpu_name() -> Optional[str]:
     return None
 
 
+def _process_rss_bytes() -> Optional[int]:
+    """Best-effort current-process RSS, without making the benchmark depend on psutil."""
+    try:
+        import psutil
+
+        return int(psutil.Process().memory_info().rss)
+    except Exception:
+        pass
+    try:
+        if sys.platform.startswith("linux"):
+            resident_pages = int(Path("/proc/self/statm").read_text().split()[1])
+            return resident_pages * int(os.sysconf("SC_PAGE_SIZE"))
+    except Exception:
+        pass
+    return None
+
+
 def _versions() -> dict[str, Optional[str]]:
     out: dict[str, Optional[str]] = {"torch": None, "diffusers": None}
     try:
@@ -231,13 +248,18 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         status = backend.status()
         print(f"  loaded: {status}", flush = True)
 
+        rss_after_load = _process_rss_bytes()
+
         # ── warmup (discarded) ──
         for _ in range(max(0, args.warmup)):
             _generate_once(backend, args)
 
+        rss_after_warmup = _process_rss_bytes()
+
         # ── measured generations (fixed seed -> deterministic) ──
         _cuda_reset_peak()
         latencies: list[float] = []
+        rss_after_generations: list[Optional[int]] = []
         first_image = None
         for i in range(max(1, args.iters)):
             _cuda_sync()
@@ -245,11 +267,19 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             image = _generate_once(backend, args)
             _cuda_sync()
             latencies.append(time.time() - g0)
+            rss_after_generations.append(_process_rss_bytes())
             if first_image is None:
                 first_image = image
             print(f"  gen[{i}] {latencies[-1]:.3f}s", flush = True)
 
         total = sum(latencies)
+        measured_rss = [value for value in rss_after_generations if value is not None]
+        post_warmup_rss_growth = (
+            max(0, max(measured_rss) - rss_after_warmup)
+            if rss_after_warmup is not None and measured_rss
+            else None
+        )
+
         gen_metrics = {
             "iters": len(latencies),
             "warmup": max(0, args.warmup),
@@ -260,6 +290,12 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             if total > 0
             else None,
             "peak_vram_bytes": _cuda_peak_alloc(),
+            "host_rss": {
+                "after_load_bytes": rss_after_load,
+                "after_warmup_bytes": rss_after_warmup,
+                "after_each_generation_bytes": rss_after_generations,
+                "post_warmup_growth_bytes": post_warmup_rss_growth,
+            },
         }
 
         # The fixed-seed image is the accuracy anchor.
@@ -337,6 +373,10 @@ def _write_baseline(args: argparse.Namespace) -> int:
         f"peak_vram={metrics['generate'].get('peak_vram_bytes')}",
         flush = True,
     )
+
+    rss_growth = (metrics["generate"].get("host_rss") or {}).get("post_warmup_growth_bytes")
+    if rss_growth is not None:
+        print(f"  host RSS growth after warmup: {rss_growth / 2**20:.1f} MiB", flush = True)
     return 0
 
 
@@ -383,6 +423,9 @@ def _compare(args: argparse.Namespace) -> int:
     cur_peak = cur_gen.get("peak_vram_bytes")
     vram_reg = ((cur_peak - base_peak) / base_peak) if (base_peak and cur_peak) else 0.0
 
+    base_rss_growth = (base_gen.get("host_rss") or {}).get("post_warmup_growth_bytes")
+    cur_rss_growth = (cur_gen.get("host_rss") or {}).get("post_warmup_growth_bytes")
+
     print("\n=== REGRESSION REPORT ===", flush = True)
     print(f"  {'metric':<22}{'baseline':>16}{'current':>16}{'delta':>12}", flush = True)
     print(
@@ -394,6 +437,19 @@ def _compare(args: argparse.Namespace) -> int:
             f"  {'peak_vram_MB':<22}{base_peak / 1e6:>16.1f}{cur_peak / 1e6:>16.1f}{vram_reg * 100:>11.1f}%",
             flush = True,
         )
+
+    if base_rss_growth is not None or cur_rss_growth is not None:
+        base_rss_label = f"{base_rss_growth / 2**20:.1f}" if base_rss_growth is not None else "-"
+        cur_rss_label = f"{cur_rss_growth / 2**20:.1f}" if cur_rss_growth is not None else "-"
+        rss_delta_label = (
+            f"{(cur_rss_growth - base_rss_growth) / 2**20:+.1f}"
+            if base_rss_growth is not None and cur_rss_growth is not None
+            else "-"
+        )
+        print(
+            f"  {'host_rss_growth_MiB':<22}{base_rss_label:>16}{cur_rss_label:>16}{rss_delta_label:>12}",
+            flush = True,
+        )
     print(f"  {'psnr_dB(vs ref)':<22}{'-':>16}{psnr:>16.2f}{'':>12}", flush = True)
 
     failures = []
@@ -403,10 +459,30 @@ def _compare(args: argparse.Namespace) -> int:
         )
     if base_peak and cur_peak and vram_reg > args.max_vram_regression:
         failures.append(f"peak VRAM +{vram_reg * 100:.1f}% > {args.max_vram_regression * 100:.0f}%")
+
+    if args.max_host_rss_growth_mib is not None:
+        if cur_rss_growth is None:
+            failures.append("host RSS unavailable; cannot verify the configured growth limit")
+        elif cur_rss_growth > args.max_host_rss_growth_mib * 2**20:
+            failures.append(
+                f"host RSS growth {cur_rss_growth / 2**20:.1f} MiB > "
+                f"{args.max_host_rss_growth_mib:.1f} MiB"
+            )
     if math.isnan(psnr):
         failures.append("PSNR reference image missing; cannot verify output quality")
     elif psnr < args.min_psnr:
         failures.append(f"PSNR {psnr:.2f}dB < {args.min_psnr:.1f}dB (output changed)")
+
+    metrics["comparison"] = {
+        "baseline_json": str(baseline_path),
+        "psnr_db": psnr,
+        "latency_regression": latency_reg,
+        "vram_regression": vram_reg,
+        "failures": list(failures),
+    }
+    out_dir.mkdir(parents = True, exist_ok = True)
+    (out_dir / "compare.json").write_text(json.dumps(metrics, indent = 2))
+
 
     if failures:
         print("\n  FAIL: " + "; ".join(failures), flush = True)
@@ -505,6 +581,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help = "fail if peak generation VRAM rises by more than this fraction",
     )
     p.add_argument(
+        "--max-host-rss-growth-mib",
+        type = float,
+        default = None,
+        help = "fail comparison if peak post-warmup process RSS growth exceeds this many MiB",
+    )
+    p.add_argument(
         "--min-psnr",
         type = float,
         default = 35.0,
@@ -523,6 +605,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
+    if isinstance(args.gguf, str):
+        args.gguf = args.gguf.strip() or None
     if bool(args.write_baseline) == bool(args.compare):
         print("error: pass exactly one of --write-baseline / --compare", file = sys.stderr)
         return 2

@@ -100,6 +100,7 @@ from .diffusion_memory import (
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
+    reclaim_offload_host_memory,
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
     snapshot_device_memory,
@@ -6214,6 +6215,10 @@ class DiffusionBackend:
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+
+                # Diffusers has now offloaded every component and dropped its transfer copies.
+                # Ask the host allocator to return those free pages before the next request.
+                reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 object.__setattr__(state, "generation_count", state.generation_count + 1)
                 return {
