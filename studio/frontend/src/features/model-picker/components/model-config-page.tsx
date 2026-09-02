@@ -3406,7 +3406,7 @@ export function ModelConfigPage({
         className={
           variant === "sidebar"
             ? "mt-4 flex flex-col gap-3 border-t border-border/60 pt-4"
-            : "mt-4 flex items-center justify-between gap-3 border-t border-border/60 pt-4"
+            : "mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4"
         }
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -3426,7 +3426,7 @@ export function ModelConfigPage({
           className={
             variant === "sidebar"
               ? "flex items-center justify-end gap-2"
-              : "flex shrink-0 items-center gap-2"
+              : "ml-auto flex shrink-0 items-center gap-2"
           }
         >
           <Button
