@@ -142,7 +142,6 @@ print(f"{'='*80}")
 
 
 from transformers import pipeline
-import torch
 
 output_audio_path = "csm_audio.wav"
 try:

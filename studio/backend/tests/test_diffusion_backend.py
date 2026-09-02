@@ -2357,7 +2357,7 @@ def test_load_unknown_family_raises():
 
 # load_progress state machine (no threads / network / real cache)
 
-from core.inference.diffusion import _LoadingState, _LoadState  # noqa: E402
+from core.inference.diffusion import _LoadingState  # noqa: E402
 
 
 def test_load_progress_idle_and_ready():

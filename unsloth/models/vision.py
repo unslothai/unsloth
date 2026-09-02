@@ -89,7 +89,6 @@ from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 
 from unsloth_zoo.utils import Version
-from transformers import __version__ as transformers_version
 
 import types
 import functools

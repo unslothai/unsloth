@@ -2626,9 +2626,6 @@ def has_internet(
         return False
 
 
-import psutil
-
-
 def _get_statistics(statistics = None, force_download = True):
     # We log some basic stats about which environment is being used.
     # We simply download a README.md file from HF - all data is made public.
