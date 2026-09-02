@@ -71,10 +71,13 @@ const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
 // Inside a block marked did not lex as code, the container markers and their indentation
 // have already been accounted for, so the label may sit behind any mix of them.
+// A block quote marker may be followed by nothing, but a list marker needs whitespace after
+// it or no list opens -- `-[label]:` is ordinary prose, not a bullet holding a definition.
 const LINK_DEFINITION_LINE_RE =
-  /^[ \t]*(?:(?:>|[-*+]|\d{1,9}[.)])[ \t]*)*\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
-// The two block shapes whose body is literal code: an opening fence, and a four-space indent.
-const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})| {4,}\S)/;
+  /^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\d{1,9}[.)])[ \t]+))*\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
+// The two block shapes whose body is literal code: an opening fence, and an indent that
+// reaches column four -- four spaces, or a tab, which advances to the same column.
+const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*\S)/;
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 // Still the first line of a single block, for `updateLinkDefinitionParity` below.

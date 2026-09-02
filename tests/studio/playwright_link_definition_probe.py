@@ -49,8 +49,25 @@ def info(message: str) -> None:
 def run_case(page, case: str) -> dict:
     page.goto(f"{BASE}/{PAGE}?case={case}", wait_until = "domcontentloaded")
     page.wait_for_function("() => window.__probe && window.__probe.ready()", timeout = 60_000)
-    # Shiki loads as its own chunk; the action bar mounts with the highlighted fence.
-    page.wait_for_timeout(2500)
+
+    # Shiki loads as its own chunk and the action bar mounts with the highlighted fence, so the
+    # counts are not final when the assistant container first appears. A fixed sleep is the
+    # wrong instrument twice over: too short on a loaded runner and the `code` row reads zero
+    # for a reason that is not the defect, too long and every case pays for the worst case.
+    # The `code` row is legitimately zero before the fix, so waiting for a specific count would
+    # never return there. Wait for the counts to stop moving instead, which is true either way.
+    page.wait_for_function(
+        """() => {
+            const now = JSON.stringify(window.__probe.counts());
+            const settled = window.__settled;
+            window.__settled = now === settled?.value
+                ? {value: now, hits: settled.hits + 1}
+                : {value: now, hits: 0};
+            return window.__settled.hits >= 3;
+        }""",
+        timeout = 60_000,
+        polling = 250,
+    )
     return page.evaluate("() => window.__probe.counts()")
 
 

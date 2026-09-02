@@ -109,6 +109,9 @@ const NEUTRAL_BLOCKS = [
   "<![CDATA[\n```\n]]>",
   "<!DOCTYPE html>",
   "    [g]: /indented-code-block",
+  "\t[g]: /tab-indented-code-block",
+  "-[g]: /no-space-is-not-a-list",
+  "1.[g]: /no-space-is-not-a-list",
   "| a | b |\n| - | - |\n| 1 | 2 |",
   // A bare custom tag opens a type-7 HTML block, and raw HTML nests inside a list item.
   "<x>\n```\n",
@@ -153,6 +156,22 @@ test("line endings other than LF do not hide the definition", () => {
       continue;
     }
     assert.equal(markdownRenderScope(reply), "document", JSON.stringify(reply));
+  }
+});
+
+test("a definition lookalike that no parser registers keeps block rendering", () => {
+  // These cost nothing if we get them wrong -- the reply keeps its content either way -- but
+  // each one that reaches `document` is a reply that loses its Copy/Download controls for no
+  // reason, which is the residue this path exists to shrink.
+  for (const lookalike of [
+    "\t[two]: /tab-indented-code-block",
+    "    [two]: /indented-code-block",
+    "-[two]: /no-space-is-not-a-list",
+    "1.[two]: /no-space-is-not-a-list",
+  ]) {
+    const reply = `Compare [one][two].\n\n${lookalike}\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n`;
+    assert.equal(asOneDocument(reply), asBlocks(reply), lookalike);
+    assert.equal(markdownRenderScope(reply), "blocks", lookalike);
   }
 });
 
