@@ -487,6 +487,7 @@ export function ChatSettingsPanel({
   externalProviderType = null,
 }: ChatSettingsPanelProps) {
   const asideRef = useRef<HTMLElement>(null);
+  const focusOpenTriggerOnCloseRef = useRef(false);
   const t = useT();
   const {
     width: settingsWidth,
@@ -1038,6 +1039,16 @@ export function ChatSettingsPanel({
   }, [open]);
 
   useEffect(() => {
+    if (open || !focusOpenTriggerOnCloseRef.current) {
+      return;
+    }
+    focusOpenTriggerOnCloseRef.current = false;
+    document
+      .querySelector<HTMLElement>("[data-chat-settings-open-trigger]")
+      ?.focus();
+  }, [open]);
+
+  useEffect(() => {
     measurePromptRef.current = () => {
       const el = systemPromptBoxRef.current;
       setSystemPromptOverflows(
@@ -1072,7 +1083,10 @@ export function ChatSettingsPanel({
                 <TooltipPrimitive.Trigger asChild={true}>
                 <button
                   type="button"
-                  onClick={() => onOpenChange?.(false)}
+                  onClick={() => {
+                    focusOpenTriggerOnCloseRef.current = true;
+                    onOpenChange?.(false);
+                  }}
                   className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
@@ -1787,6 +1801,8 @@ export function ChatSettingsPanel({
       ref={asideRef}
       data-tour="chat-settings"
       data-slot="chat-settings-panel"
+      aria-hidden={!open}
+      inert={!open || undefined}
       className={cn(
         "relative z-50 shrink-0 bg-panel-surface text-panel-surface-fg font-heading",
         open

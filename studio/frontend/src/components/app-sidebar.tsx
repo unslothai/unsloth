@@ -3461,6 +3461,8 @@ export function AppSidebar() {
       collapsible="icon"
       collapseToZero={isTauri}
       variant="sidebar"
+      role="navigation"
+      aria-label="Main navigation"
       className={cn(
         // Rail background comes from --sidebar-surface (index.css) so the footer fade can match it.
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",

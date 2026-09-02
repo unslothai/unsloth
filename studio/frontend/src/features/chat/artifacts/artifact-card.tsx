@@ -150,8 +150,12 @@ export function ArtifactCard({
             </span>
           </span>
           {isStreaming && !isCode ? (
-            <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-ui-10 font-medium text-primary motion-reduce:animate-none">
-              Generating
+            <span
+              role="status"
+              aria-label="Generating artifact"
+              className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-ui-10 font-medium text-primary motion-reduce:animate-none"
+            >
+              <span aria-hidden="true">Generating</span>
             </span>
           ) : null}
         </div>

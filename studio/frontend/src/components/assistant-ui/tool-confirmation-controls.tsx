@@ -168,6 +168,10 @@ export function ToolConfirmationControls({
 
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1">
+      <p role="alert" className="sr-only">
+        Tool call {toolName} needs your approval. Choose Allow, Always allow, or
+        Deny.
+      </p>
       <Button
         size="xs"
         disabled={pending !== null}
@@ -195,7 +199,7 @@ export function ToolConfirmationControls({
         Deny
       </Button>
       {failed ? (
-        <span className="text-xs text-destructive">
+        <span role="alert" className="text-xs text-destructive">
           Could not send your decision. Try again.
         </span>
       ) : null}
