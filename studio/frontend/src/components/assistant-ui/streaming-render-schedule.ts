@@ -72,7 +72,10 @@ const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
 // A definition still counts inside a block quote or a list item -- marked registers it
 // document-wide either way -- so the container prefix is skipped before the label. The
 // four-space indent that means `code block` is deliberately not one of these prefixes.
-const CONTAINER_PREFIX = "(?: {0,3}>[ \\t]?)*(?: {0,3}(?:[-*+]|\\d{1,9}[.)]) +)?";
+// Containers nest, and marked lexes them recursively, so `- > [g]: /x` registers the
+// definition just as `> [g]: /x` does. The leading indent stays capped at three: at four
+// the line is an indented code block, whatever follows it.
+const CONTAINER_PREFIX = "(?:(?:>[ \\t]?)|(?:(?:[-*+]|\\d{1,9}[.)])[ \\t]+)){0,6}";
 const LINK_DEFINITION_LINE_RE = new RegExp(
   `^ {0,3}${CONTAINER_PREFIX}\\[(?:\\\\.|[^\\]\\n\\\\]){1,200}\\]:`,
   "m",
@@ -109,6 +112,14 @@ const closesFence = (
 // verbatim tags, which run to their own closing tag, and the block-level tags, which run to
 // a blank line.
 const HTML_VERBATIM_OPEN_RE = /^ {0,3}<(pre|script|style|textarea)[\s>/]/i;
+// The four bracketed forms marked also lexes as raw HTML. Each ends on its own terminator,
+// never on a blank line, so a fence marker between the two is literal text.
+const HTML_BRACKETED_OPENERS: readonly (readonly [RegExp, RegExp])[] = [
+  [/^ {0,3}<!--/, /-->/],
+  [/^ {0,3}<\?/, /\?>/],
+  [/^ {0,3}<!\[CDATA\[/, /\]\]>/],
+  [/^ {0,3}<![A-Za-z]/, />/],
+];
 const HTML_BLOCK_OPEN_RE =
   /^ {0,3}<\/?(?:address|article|aside|blockquote|details|div|dl|fieldset|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|section|table|tbody|td|tfoot|th|thead|tr|ul)[\s>/]/i;
 
@@ -134,6 +145,15 @@ function textOutsideFencedCode(markdown: string): string {
     const verbatim = HTML_VERBATIM_OPEN_RE.exec(line);
     if (verbatim !== null) {
       htmlClose = new RegExp(`</${verbatim[1]}>`, "i");
+      lines.push(line);
+      if (htmlClose.test(line)) {
+        htmlClose = null;
+      }
+      continue;
+    }
+    const bracketed = HTML_BRACKETED_OPENERS.find(([open]) => open.test(line));
+    if (bracketed !== undefined) {
+      htmlClose = bracketed[1];
       lines.push(line);
       if (htmlClose.test(line)) {
         htmlClose = null;
