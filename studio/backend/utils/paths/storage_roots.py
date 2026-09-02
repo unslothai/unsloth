@@ -425,6 +425,52 @@ def _triton_cache_defaults(root: Path) -> dict[str, str]:
     }
 
 
+def _matplotlib_config_dir() -> Path | None:
+    """Where matplotlib reads matplotlibrc and stylelib/ from when MPLCONFIGDIR
+    is unset. Mirrors matplotlib.__init__._get_config_or_cache_dir, which takes
+    the XDG config base on Linux/FreeBSD and %LOCALAPPDATA% on Windows, but keeps
+    a pre-existing ~/.matplotlib there for backward compatibility.
+    """
+    try:
+        home = Path.home()
+    except (OSError, RuntimeError):
+        return None
+    if sys.platform.startswith(("linux", "freebsd")):
+        base = (os.environ.get("XDG_CONFIG_HOME") or "").strip() or str(home / ".config")
+        return Path(base) / "matplotlib"
+    if sys.platform == "win32":
+        try:
+            if (home / ".matplotlib").is_dir():
+                return home / ".matplotlib"
+        except OSError:
+            return None
+        local_app_data = (os.environ.get("LOCALAPPDATA") or "").strip()
+        return Path(local_app_data) / "matplotlib" if local_app_data else home / ".matplotlib"
+    return home / ".matplotlib"
+
+
+def _matplotlib_defaults(root: Path) -> dict[str, str]:
+    """MPLCONFIGDIR, unless matplotlib's own directory holds user configuration.
+
+    Otherwise matplotlib writes to both ~/.config/matplotlib and
+    ~/.cache/matplotlib. The one variable moves the CONFIG directory as well as
+    the cache, so pinning it also drops a user matplotlibrc and every custom
+    style, which silently changes the loss plots core/training/training.py
+    draws. matplotlib creates the directory on import, so its contents, not its
+    existence, decide.
+    """
+    config_dir = _matplotlib_config_dir()
+    try:
+        if config_dir is not None and (
+            (config_dir / "matplotlibrc").is_file()
+            or any((config_dir / "stylelib").glob("*.mplstyle"))
+        ):
+            return {}
+    except OSError:
+        pass
+    return {"MPLCONFIGDIR": str(root / "matplotlib")}
+
+
 def _data_designer_defaults(root: Path) -> dict[str, str]:
     """Data Designer's home, unless the user already has one.
 
@@ -474,10 +520,9 @@ def _setup_cache_env() -> None:
         "TORCH_EXTENSIONS_DIR": str(root / "torch-extensions"),
         # NVIDIA's JIT compile cache; ~/.nv/ComputeCache otherwise.
         "CUDA_CACHE_PATH": str(root / "cuda"),
-        # Otherwise writes to both ~/.config/matplotlib and ~/.cache/matplotlib.
-        "MPLCONFIGDIR": str(root / "matplotlib"),
         "NUMBA_CACHE_DIR": str(root / "numba"),
     }
+    defaults.update(_matplotlib_defaults(root))
     defaults.update(_triton_cache_defaults(root))
     defaults.update(_data_designer_defaults(root))
     defaults.update(_portable_cache_defaults(root))
