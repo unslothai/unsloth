@@ -3490,6 +3490,15 @@ _RECURRENT = _plan_entry(
 _UNQUANTIZED = {"quant_start": None, "prefill_chunk": mm.MLX_PREFILL_CHUNK}
 
 
+def _caption(
+    plan,
+    bits = None,
+    converted = False,
+    n_ctx = 32768,
+):
+    return mm._cache_width_name(plan, bits, converted, "bf16", n_ctx, mm.MLX_PREFILL_CHUNK)
+
+
 def _local_snapshot(repo):
     """This repo's snapshot directory, skipping the test when it is not here."""
     hub = os.path.expanduser("~/.cache/huggingface/hub")
@@ -3505,6 +3514,56 @@ def _on_bfloat16_chip():
     import mlx.core as mx
     if mm._runtime_dtype() is not mx.bfloat16:
         pytest.skip("measured on a chip the loader gives bfloat16")
+
+
+class TestCacheWidthName:
+    def test_only_the_entries_that_grow_name_the_cache(self):
+        # The majority recurrent state never moves with the context, so it names neither cache.
+        hybrid = [_RECURRENT] * 30 + [_GROWING] * 10
+        assert _caption(hybrid) == "bf16"
+        assert _caption(hybrid, 4, True) == "4-bit"
+        assert _caption([_RECURRENT]) == "bf16"
+
+    def test_a_converted_run_is_named_as_its_own_control_is_labelled(self):
+        assert [_caption([_GROWING] * 10, b, True) for b in (8, 6, 5, 4, 3, 2)] == [
+            "8-bit",
+            "6-bit",
+            "5-bit",
+            "4-bit",
+            "3-bit",
+            "2-bit",
+        ]
+        assert _caption([_GROWING] * 10, 4, False) == "bf16"
+
+    def test_an_entry_that_cannot_convert_keeps_its_width_through_a_converting_run(self):
+        # Conversion is per entry, so a run can convert part of what it holds.
+        staying = _plan_entry(converts = False, quant_slope = _GROWING["slope"])
+        assert _caption([staying] * 57 + [_GROWING] * 3, 4, True) == "bf16/4-bit"
+        # Ordered by what each carries: counting entries would name the heavy minority last.
+        heavy, light = (
+            _plan_entry(quant_slope = 100_000.0),
+            _plan_entry(converts = False, slope = 1.0, quant_slope = 1.0),
+        )
+        assert _caption([light] * 50 + [heavy] * 2, 4, True) == "4-bit/bf16"
+
+    @_NEEDS_MLX
+    def test_a_bounded_entry_is_weighed_by_what_it_holds_and_not_by_its_slope(self):
+        # Llama4's shape: past their bound the chunked entries stop growing.
+        from mlx_lm.models.cache import ChunkedKVCache
+
+        bounded = _plan_entry(converts = False, bound_spec = (ChunkedKVCache, "chunk_size", 8192))
+        plan = [bounded] * 3 + [_plan_entry(quant_slope = 1152.0)]
+        assert _caption(plan, 4, True, 8192).startswith("bf16")
+        assert _caption(plan, 4, True, 131_072).startswith("4-bit")
+
+    @_NEEDS_MLX
+    def test_every_width_a_cache_is_built_at_has_a_caption(self):
+        import mlx.core as mx
+        assert [mm._width_name(d) for d in (mx.bfloat16, mx.float16, mx.float32)] == [
+            "bf16",
+            "f16",
+            "f32",
+        ]
 
 
 class TestKvBytes:
@@ -3826,7 +3885,7 @@ class TestShardsTheLoaderReads:
 
 @_NEEDS_MLX
 @pytest.mark.parametrize(
-    "repo, n_ctx, kv_bits, weights, kv, compute, layers",
+    "repo, n_ctx, kv_bits, weights, kv, compute, layers, caption",
     [
         # Dense; the 4-bit row costs MORE, because unfused attention materializes scores.
         (
@@ -3837,6 +3896,7 @@ class TestShardsTheLoaderReads:
             4_869_586_944,
             863_355_535,
             36,
+            "bf16",
         ),
         (
             "unsloth/Qwen3-4B-Thinking-2507",
@@ -3846,8 +3906,9 @@ class TestShardsTheLoaderReads:
             1_369_571_328,
             9_448_833_807,
             36,
+            "4-bit",
         ),
-        # Hybrid: 30 layers hold a constant recurrent state and only 10 grow, a quarter of what an all-attention formula quotes.
+        # Hybrid: 30 constant states against 10 growing, captioned for the ten.
         (
             "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit",
             32768,
@@ -3856,10 +3917,11 @@ class TestShardsTheLoaderReads:
             740_720_640,
             2_737_160_847,
             40,
+            "bf16",
         ),
         # Windowed: conversion is refused, so 4-bit asked for is still held at full width.
-        ("unsloth/gemma-3-270m-it", 8192, None, 392_058_112, 65_258_496, 725_729_935, 18),
-        ("unsloth/gemma-3-270m-it", 8192, 4, 392_058_112, 65_258_496, 725_729_935, 18),
+        ("unsloth/gemma-3-270m-it", 8192, None, 392_058_112, 65_258_496, 725_729_935, 18, "bf16"),
+        ("unsloth/gemma-3-270m-it", 8192, 4, 392_058_112, 65_258_496, 725_729_935, 18, "bf16"),
         # Vision, through the tower its own loader resolves from the enclosing config.
         (
             "mlx-community/deepseek-vl2-tiny-4bit",
@@ -3869,6 +3931,7 @@ class TestShardsTheLoaderReads:
             267_386_880,
             803_717_775,
             12,
+            "bf16",
         ),
         # A tower not buildable from its own config, either side of mlx-vlm's conversion start.
         (
@@ -3879,6 +3942,7 @@ class TestShardsTheLoaderReads:
             342_392_832,
             5_167_104_719,
             36,
+            "4-bit",
         ),
         (
             "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -3888,6 +3952,7 @@ class TestShardsTheLoaderReads:
             241_827_840,
             874_685_711,
             36,
+            "4-bit",
         ),
         (
             "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -3897,6 +3962,7 @@ class TestShardsTheLoaderReads:
             241_827_840,
             874_685_647,
             36,
+            "4-bit",
         ),
         # A stale index naming three shards this snapshot never shipped: the load globs instead.
         (
@@ -3907,6 +3973,7 @@ class TestShardsTheLoaderReads:
             119_472_128,
             833_995_407,
             30,
+            "bf16",
         ),
         # Widths its tower does not state, taken from the checkpoint's own config.
         (
@@ -3917,6 +3984,7 @@ class TestShardsTheLoaderReads:
             249_561_088,
             1_281_737_359,
             28,
+            "bf16",
         ),
         # Recorded float32, resident at the width the chip gives the loader.
         (
@@ -3927,11 +3995,12 @@ class TestShardsTheLoaderReads:
             98_304,
             688_341_647,
             2,
+            "bf16",
         ),
     ],
 )
 def test_a_real_checkpoint_is_priced_to_the_byte(
-    repo, n_ctx, kv_bits, weights, kv, compute, layers
+    repo, n_ctx, kv_bits, weights, kv, compute, layers, caption
 ):
     _on_bfloat16_chip()
     breakdown = mm.mlx_memory_breakdown(
@@ -3941,3 +4010,18 @@ def test_a_real_checkpoint_is_priced_to_the_byte(
     assert (breakdown.weights_bytes, breakdown.kv_bytes) == (weights, kv)
     assert breakdown.compute_bytes == compute
     assert breakdown.layer_count == layers
+    assert breakdown.cache_type_kv == caption
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize("kv_bits, caption", [(6, "6-bit"), (8, "8-bit")])
+def test_the_caption_names_a_width_the_real_conversion_reaches(kv_bits, caption):
+    # Every width the control offers runs the whole probe / convert path, not just 4-bit.
+    _on_bfloat16_chip()
+    breakdown = mm.mlx_memory_breakdown(
+        _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
+        n_ctx = 32768,
+        load_in_4bit = True,
+        kv_bits = kv_bits,
+    )
+    assert breakdown is not None and breakdown.cache_type_kv == caption

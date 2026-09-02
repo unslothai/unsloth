@@ -1024,7 +1024,16 @@ class MemoryEstimate(BaseModel):
     native_context: Optional[int] = Field(
         None, description = "The model's own trained context length, when readable"
     )
-    cache_type_kv: Optional[str] = Field(None, description = "KV cache dtype the estimate priced")
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = (
+            "KV cache width the estimate priced, in the vocabulary of whichever backend "
+            "would load it: llama.cpp spellings such as f16 or q8_0 for a GGUF load, and "
+            "a dtype abbreviation or an N-bit width for an MLX one. An MLX cache whose "
+            "entries do not all end up at one width names each of them, the one carrying "
+            "the most of the cache first, as in bf16/4-bit"
+        ),
+    )
     n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
     layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
     gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")

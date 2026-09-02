@@ -56,6 +56,9 @@ _QUANT_SCORE_DTYPE_SIZE = 4
 
 _QUANT_SCORE_LIVE = 1.0
 
+# How the panel spells a width: "bf16", not "mlx.core.bfloat16".
+_WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16": "f16"}
+
 # How each cache class spells "this stops growing". ``window_size`` is absent: the one class using
 # it keeps the ENTIRE prefill, so reading it as a ceiling under-priced an 8k prompt sixty-six fold.
 _CACHE_BOUND_ATTRS = ("max_size", "chunk_size")
@@ -494,6 +497,38 @@ def _entry_bytes(entry) -> int:
     return total
 
 
+def _width_name(dtype) -> str:
+    name = str(dtype).rsplit(".", 1)[-1]
+    return _WIDTH_NAMES.get(name, name)
+
+
+def _cache_width_name(
+    plan, kv_bits, converted: bool, full_width: str, n_ctx: int, prefill_chunk: int
+) -> str:
+    """How to caption the cache, from the width each growing entry ends up at.
+
+    Conversion is per entry, so a run can grow a class with no ``to_quantized`` beside one that
+    converts and still hold most of its cache full width; every width is named, largest share
+    first. Shares come off the bytes the totals charge, not slope: a bounded entry stops growing at
+    its window and its slope would keep a share it no longer holds.
+    """
+    charged: dict = {}
+    for slot in plan:
+        if slot["slope"] <= 0:
+            continue
+        quantized = converted and slot["converts"]
+        name = f"{kv_bits}-bit" if quantized else full_width
+        const, slope = ("quant_const", "quant_slope") if quantized else ("const", "slope")
+        charged[name] = (
+            charged.get(name, 0.0)
+            + slot[const]
+            + slot[slope] * _held_tokens(slot, n_ctx, prefill_chunk, True)
+        )
+    if not charged:
+        return full_width
+    return "/".join(sorted(charged, key = lambda name: charged[name], reverse = True))
+
+
 def _conv_width(entry) -> int:
     """Total channel width of a linear-attention layer's convolution states: every rank-three state
     summed, not the first, since ``(B, kernel - 1, channels)`` streams that channel count.
@@ -687,7 +722,6 @@ def _held_tokens(
     prefill_chunk: int,
     decoding: bool = True,
 ) -> int:
-    """Tokens one entry's storage actually holds at a context of ``n_ctx``."""
     tokens = n_ctx
     block = entry.get("block") or MLX_KV_BLOCK
     if entry["slope"] > 0:
@@ -719,7 +753,6 @@ def _line_bytes(
 
 
 def _crossover_bytes(plan, boundary: int, prefill_chunk: int) -> int:
-    """Bytes live at the instant the cache is converted."""
     total = 0.0
     for entry in plan:
         held = _held_tokens(entry, boundary, prefill_chunk, decoding = False)
@@ -736,7 +769,6 @@ def _quant_boundary(
     n_ctx: int,
     whole_prompt: bool = False,
 ) -> Optional[int]:
-    """Offset the cache is first converted at, or None if the run never converts."""
     if n_ctx < 1:
         return None
     start = max(quant_start, 0)
@@ -784,7 +816,6 @@ def _config_width(value) -> int:
 
 
 def _widest_quantized_scores(n_ctx: int, boundary: int, prefill_chunk: int) -> int:
-    """Largest ``queries x keys`` score matrix any post-conversion call builds."""
     widest = 0
     remaining = n_ctx - boundary - 1
     if remaining > 0:
@@ -1006,6 +1037,8 @@ def mlx_memory_breakdown(
         gpu_bytes = total,
         n_ctx = context,
         layer_count = facts["layers"],
-        # What the cache is actually priced at, not what was asked for: a request the load would refuse reports no quantization.
-        cache_type_kv = f"q{kv_bits}" if quant_boundary is not None else None,
+        # What the cache is held at, not what was asked for. Never llama.cpp's vocabulary.
+        cache_type_kv = _cache_width_name(
+            plan, kv_bits, quant_boundary is not None, _width_name(dtype), context, chunk
+        ),
     )
