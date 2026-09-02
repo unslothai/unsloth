@@ -1133,30 +1133,24 @@ export function createAutoContinueLeaseKeeper({
   const key = (messageId: string, threadId: string) =>
     `${threadId}\u0000${messageId}`;
 
-  /**
-   * Its own run is over and it continued nothing, so it is forgotten rather than released.
-   *
-   * Either the stream never began -- Stop during preflight, which the adapter wrapper reports
-   * to nobody because the abort is what was asked for -- or the run still on the thread is the
-   * one that SUPERSEDED it, a new message having aborted the continuation and taken the thread
-   * for itself. The second cannot be this hold's own run: the adapter clears the flag from its
-   * own `finally`, strictly before the runtime hands the run's promise back, so a hold whose
-   * own run streamed is already released by the time that promise settles. Without this the
-   * newcomer's stream armed the abandoned hold and the newcomer's end stamped the truncated
-   * message `done`, telling every other tab it had been continued by a run that produced not
-   * one token of it.
-   */
-  function discarded(hold: Hold): boolean {
-    return hold.settled && (!hold.armed || signal.isRunning(hold.threadId));
-  }
-
   /** Arm, release, or forget. No writes to storage beyond the release itself. */
   function observe(): void {
     const at = now();
     for (const [id, hold] of [...holds]) {
-      if (discarded(hold)) {
-        // The lease lapses on its own TTL and the message comes back to whoever is still
-        // looking at it, which is what a failed preflight already does.
+      if (hold.settled && !hold.armed) {
+        // Its own run is over and the stream never began: Stop during preflight, which the
+        // adapter wrapper reports to nobody because the abort is what was asked for.
+        // Discarded exactly as a failed preflight is -- forgotten, never released -- so the
+        // lease lapses on its own TTL rather than being renewed for the life of the tab, and
+        // no `done` marker claims a message that produced not one token.
+        //
+        // Ahead of the running check, not after it: a hold whose own run is over must not be
+        // armed by whatever is on the thread now. Only ahead of it, though. An ARMED hold is
+        // left to the ordinary path even while the thread still reads busy, because the key
+        // can carry a second owner -- `scheduleGenerationRecovery` follows a durable run from
+        // outside the adapter -- and that says nothing about whether this hold's own run
+        // streamed. Dropping it there would withhold the `done` marker from a continuation
+        // that did stream, and another tab would pay for it again once the lease lapsed.
         holds.delete(id);
         continue;
       }
