@@ -1298,3 +1298,75 @@ def test_replaying_a_clear_does_not_signal_its_research_runs_again(tmp_path, mon
 
     replay = studio_db.clear_chat_history_with_active_research_runs(operation_id = "op-1")
     assert replay == ([], ["src"])
+
+
+def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch):
+    """Repeated identical user sends (e.g. user sending 'Hello' multiple times) have distinct IDs and persist separately."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    msg1 = {
+        "id": "u1",
+        "threadId": "thread-1",
+        "parentId": None,
+        "role": "user",
+        "content": [{"type": "text", "text": "Hello"}],
+        "attachments": [{"name": "doc.pdf", "content": [{"type": "text", "text": "raw"}]}],
+        "createdAt": 1000,
+    }
+    studio_db.upsert_chat_message(msg1)
+    studio_db.upsert_chat_message(
+        {
+            "id": "a1",
+            "threadId": "thread-1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hi"}],
+            "createdAt": 1500,
+        }
+    )
+
+    # Second turn with identical text & attachments, but distinct message ID
+    msg2 = {
+        "id": "u2",
+        "threadId": "thread-1",
+        "parentId": "a1",
+        "role": "user",
+        "content": [{"type": "text", "text": "Hello"}],
+        "attachments": [{"name": "doc.pdf", "content": [{"type": "text", "text": "raw"}]}],
+        "createdAt": 2000,
+    }
+    res = studio_db.upsert_chat_message(msg2)
+    assert res["id"] == "u2"
+
+    # Both messages must persist separately
+    messages = studio_db.list_chat_messages("thread-1")
+    assert {m["id"] for m in messages} == {"u1", "a1", "u2"}
+
+
+def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, monkeypatch):
+    """In a flat thread where parent_id is None, repeated identical sends with different IDs must not collapse."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    payload = [
+        {
+            "id": "u1",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "Hello"}],
+            "createdAt": 1000,
+        },
+        {
+            "id": "u2",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "Hello"}],
+            "createdAt": 2000,
+        },
+    ]
+    messages = studio_db.sync_chat_messages("thread-1", payload)
+    assert len(messages) == 2
+    assert [m["id"] for m in messages] == ["u1", "u2"]

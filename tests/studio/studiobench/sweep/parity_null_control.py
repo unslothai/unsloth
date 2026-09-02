@@ -43,7 +43,7 @@ if __package__ in (None, ""):  # pragma: no cover
 from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.sweep.ui_parity import collect, shards_of  # noqa: E402
 
-#: How much context to print either side of a differing run of characters.
+#:How much context to print either side of a differing run of characters.
 CONTEXT = 90
 
 

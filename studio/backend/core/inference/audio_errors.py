@@ -11,8 +11,7 @@ carry no path or user input, so the route passes them straight through.
 from __future__ import annotations
 
 
-# Tagged on the worker's audio_error payload so the parent recognises the case
-# without matching on prose.
+# Tagged on the worker's audio_error payload so the parent recognises the case without matching on prose.
 AUDIO_UNSUPPORTED_CODE = "audio_unsupported_backend"
 
 

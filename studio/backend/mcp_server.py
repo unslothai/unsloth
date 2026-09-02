@@ -27,8 +27,8 @@ class BearerTokenMiddleware:
             # A non-ASCII token cannot be sent in an HTTP header; reject it here.
             raise ValueError("Unsloth MCP bearer token must contain ASCII characters only")
         self.app = app
-        # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII
-        # input, which would surface as a 500 instead of a clean 401.
+        # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII input, which would
+        # surface as a 500 instead of a clean 401.
         self.expected = token.encode("utf-8")
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -168,9 +168,8 @@ def create_studio_mcp() -> FastMCP:
         from models.data_recipe import RecipePayload
         from routes.data_recipe.validate import validate
 
-        # Direct call, so the ViaApiKey dependency never runs and its `= False`
-        # default would read as a UI session. This surface is a remote static
-        # bearer, so say so explicitly.
+        # Direct call, so the ViaApiKey dependency never runs and its `= False` default would read as a UI
+        # session; this surface is a remote static bearer.
         return _dump(validate(RecipePayload(recipe = recipe), via_api_key = True))
 
     @mcp.tool
