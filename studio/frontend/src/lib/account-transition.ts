@@ -22,6 +22,16 @@
 const LAST_ACCOUNT_KEY = "unsloth.browser-account.v1";
 const LEGACY_DATA_OWNER_KEY = "unsloth.legacy-data-owner.v1";
 
+/**
+ * Dispatched on window when a different account signs in on this browser.
+ *
+ * Clearing a persisted key does not change an already-hydrated store: a
+ * same-window removeItem fires no storage event, and the SPA does not reload
+ * between accounts. Stores holding account content listen for this and reset
+ * themselves, the way they already reset on a cleared session.
+ */
+export const ACCOUNT_CHANGED_EVENT = "unsloth:account-changed";
+
 /** Whole keys holding one account's own content or credentials. */
 export const ACCOUNT_SCOPED_STORAGE_KEYS: readonly string[] = [
   // Hugging Face credential, and the legacy training blob that still embeds one.
@@ -36,6 +46,8 @@ export const ACCOUNT_SCOPED_STORAGE_KEYS: readonly string[] = [
   "unsloth_user_profile",
   // Absolute path of the last model loaded, which the startup auto-load reads.
   "unsloth.last-local-model-load.v1",
+  // Hub search terms, which are repository and model names somebody typed.
+  "unsloth.hub.recentSearches",
   // Custom provider names, base URLs and model lists, plus their key handles.
   "unsloth_chat_external_providers",
   "unsloth_chat_external_provider_keys",
@@ -118,7 +130,13 @@ export function purgeAccountScopedBrowserState(): void {
  */
 export function legacyBrowserDataBelongsToCurrentAccount(): boolean {
   const owner = readItem(LEGACY_DATA_OWNER_KEY);
-  if (owner === null) return true;
+  if (owner === null) {
+    // Unclaimed. That is the ordinary upgrade: an install that had one user has
+    // a live session already, and nobody signs in through the form again, so the
+    // data is that user's and the migrations should run exactly as before. Once
+    // any account has signed in here without claiming it, it is not theirs.
+    return readItem(LAST_ACCOUNT_KEY) === null;
+  }
   return owner === readItem(LAST_ACCOUNT_KEY);
 }
 
@@ -128,13 +146,27 @@ export function legacyBrowserDataBelongsToCurrentAccount(): boolean {
  * Returns whether a purge happened, which is what a caller uses to decide
  * whether it also has to reset in-memory stores before the new session mounts.
  */
-export function notifyAccountAuthenticated(username: string): boolean {
+export function notifyAccountAuthenticated(
+  username: string,
+  installationOwner?: string | null,
+): boolean {
   const account = username.trim().toLowerCase();
   if (!account) return false;
   const previous = readItem(LAST_ACCOUNT_KEY);
   writeItem(LAST_ACCOUNT_KEY, account);
-  if (readItem(LEGACY_DATA_OWNER_KEY) === null) writeItem(LEGACY_DATA_OWNER_KEY, account);
+  // Whoever signed in first is not the owner of the pre-accounts data: on an
+  // upgraded install a managed account can reach this page first, and claiming
+  // ownership there hands it the original user's conversations, prompts and Hub
+  // credential to migrate into its own workspace. The server says who the owner
+  // is, so use that and leave the data unattributed until they sign in.
+  const owner = (installationOwner ?? "").trim().toLowerCase();
+  if (owner && account === owner) writeItem(LEGACY_DATA_OWNER_KEY, account);
   if (previous === null || previous === account) return false;
   purgeAccountScopedBrowserState();
+  try {
+    window.dispatchEvent(new Event(ACCOUNT_CHANGED_EVENT));
+  } catch {
+    // No window (tests, SSR): the stores that listen do not exist either.
+  }
   return true;
 }

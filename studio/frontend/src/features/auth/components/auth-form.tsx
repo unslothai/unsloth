@@ -94,6 +94,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [loading, setLoading] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
   const [initialized, setInitialized] = useState<boolean | null>(null);
+  // Who the server says owns this installation, so the pre-accounts browser data
+  // is attributed to them rather than to whoever signs in first.
+  const [installationOwner, setInstallationOwner] = useState<string | null>(null);
   const [requiresPasswordChange, setRequiresPasswordChange] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
@@ -121,6 +124,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         const result = (await response.json()) as AuthStatusResponse;
         if (!canceled) {
           setInitialized(result.initialized);
+          setInstallationOwner(result.default_username ?? null);
           setUsername((current) => current || result.default_username);
           const accountRequiresPasswordChange =
             hasAuthToken() && mustChangePassword();
@@ -358,7 +362,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // the previous account's drafts, dictation history and provider metadata,
       // and have its legacy chats, chat settings and Hugging Face token migrated
       // into its own workspace.
-      if (notifyAccountAuthenticated(isLoginMode ? username : (username || ""))) {
+      if (
+        notifyAccountAuthenticated(
+          isLoginMode ? username : (username || ""),
+          installationOwner,
+        )
+      ) {
         // A request still waiting on a 401 belongs to the account that sent it.
         noteAuthSessionReplaced();
       }

@@ -13,6 +13,7 @@ registerBundlerResolver();
 const { store } = installLocalStorageFake();
 
 const {
+  ACCOUNT_CHANGED_EVENT,
   ACCOUNT_SCOPED_STORAGE_KEYS,
   legacyBrowserDataBelongsToCurrentAccount,
   notifyAccountAuthenticated,
@@ -27,18 +28,47 @@ function seedAlicesBrowser(): void {
   store.set("unsloth_settings_active_tab", "general");
 }
 
-test("the first account to sign in keeps this browser's pre-accounts data", () => {
+test("the installation owner keeps this browser's pre-accounts data", () => {
   seedAlicesBrowser();
-  assert.equal(notifyAccountAuthenticated("alice"), false);
+  assert.equal(notifyAccountAuthenticated("alice", "alice"), false);
   assert.equal(legacyBrowserDataBelongsToCurrentAccount(), true);
   // Nothing cleared: it is the same person who left it there.
   assert.equal(store.get("unsloth_hf_token"), "alice-value");
 });
 
+test("an upgraded browser that nobody has signed in to keeps its migrations", () => {
+  seedAlicesBrowser();
+  // The ordinary upgrade path: one user, a live session, and no sign-in through
+  // the form. The data is theirs and the legacy imports must still run.
+  assert.equal(legacyBrowserDataBelongsToCurrentAccount(), true);
+});
+
+test("a managed account signing in first does not inherit the legacy data", () => {
+  seedAlicesBrowser();
+  // On an upgraded install a managed account can reach the login page before
+  // the owner does. Claiming the data there would let it migrate the original
+  // user's conversations, prompts and Hub credential into its own workspace.
+  assert.equal(notifyAccountAuthenticated("bob", "alice"), false);
+  assert.equal(legacyBrowserDataBelongsToCurrentAccount(), false);
+  // Still on disk, for the account it belongs to.
+  assert.equal(store.get("unsloth_hf_token"), "alice-value");
+
+  assert.equal(notifyAccountAuthenticated("alice", "alice"), true);
+  assert.equal(legacyBrowserDataBelongsToCurrentAccount(), true);
+});
+
+test("hub search terms do not survive an account change", () => {
+  seedAlicesBrowser();
+  store.set("unsloth.hub.recentSearches", "[\"alice/private-model\"]");
+  notifyAccountAuthenticated("alice", "alice");
+  notifyAccountAuthenticated("bob", "alice");
+  assert.equal(store.get("unsloth.hub.recentSearches"), undefined);
+});
+
 test("a different account gets neither the content nor the migration input", () => {
   seedAlicesBrowser();
-  notifyAccountAuthenticated("alice");
-  assert.equal(notifyAccountAuthenticated("bob"), true);
+  notifyAccountAuthenticated("alice", "alice");
+  assert.equal(notifyAccountAuthenticated("bob", "alice"), true);
 
   for (const key of ACCOUNT_SCOPED_STORAGE_KEYS) {
     assert.equal(store.get(key), undefined, key);
@@ -53,15 +83,42 @@ test("a different account gets neither the content nor the migration input", () 
 
 test("signing back in restores the owner's claim on the legacy data", () => {
   seedAlicesBrowser();
-  notifyAccountAuthenticated("alice");
-  notifyAccountAuthenticated("bob");
-  assert.equal(notifyAccountAuthenticated("alice"), true);
+  notifyAccountAuthenticated("alice", "alice");
+  notifyAccountAuthenticated("bob", "alice");
+  assert.equal(notifyAccountAuthenticated("alice", "alice"), true);
   assert.equal(legacyBrowserDataBelongsToCurrentAccount(), true);
 });
 
 test("the same account signing in again clears nothing", () => {
   seedAlicesBrowser();
-  notifyAccountAuthenticated("alice");
-  assert.equal(notifyAccountAuthenticated("ALICE "), false);
+  notifyAccountAuthenticated("alice", "alice");
+  assert.equal(notifyAccountAuthenticated("ALICE ", "alice"), false);
   assert.equal(store.get("chat-draft:thread-1"), "unsent private text");
+});
+
+test("an account change tells the live stores to reset themselves", () => {
+  const seen: string[] = [];
+  const listeners = new Map<string, (event: unknown) => void>();
+  (globalThis as { window?: Record<string, unknown> }).window = {
+    ...((globalThis as { window?: Record<string, unknown> }).window ?? {}),
+    dispatchEvent: (event: { type: string }) => {
+      seen.push(event.type);
+      listeners.get(event.type)?.(event);
+      return true;
+    },
+  } as Record<string, unknown>;
+  (globalThis as { Event?: unknown }).Event ??= class {
+    type: string;
+    constructor(type: string) {
+      this.type = type;
+    }
+  };
+
+  seedAlicesBrowser();
+  notifyAccountAuthenticated("alice", "alice");
+  notifyAccountAuthenticated("bob", "alice");
+  // Clearing a persisted key does not change an already-hydrated store: a
+  // same-window removeItem fires no storage event, and the SPA does not reload
+  // between accounts.
+  assert.deepEqual(seen, [ACCOUNT_CHANGED_EVENT]);
 });
