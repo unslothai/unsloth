@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import platform
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +11,13 @@ from unsloth_cli._studio_deps import studio_backend_imports
 
 
 EXPORT_FORMATS = ["merged-16bit", "merged-4bit", "gguf", "lora"]
+ADAPTER_FORMATS = ["mlx", "peft"]
+
+
+def _is_apple_silicon() -> bool:
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
 GGUF_QUANTS = ["q4_k_m", "q5_k_m", "q8_0", "f16"]
 
 
@@ -62,6 +70,15 @@ def export(
     private: bool = typer.Option(False, "--private", help = "Make the HuggingFace repo private."),
     max_seq_length: int = typer.Option(2048, "--max-seq-length"),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
+    adapter_format: Optional[str] = typer.Option(
+        None,
+        "--adapter-format",
+        help = "LoRA adapter on-disk format (mlx or peft); omitted writes the "
+        "platform's native format. Apple-silicon hosts only.",
+        # Registered everywhere so explicit off-Mac use gets a clear error,
+        # but only advertised where it applies.
+        hidden = not _is_apple_silicon(),
+    ),
 ):
     """Export a checkpoint to various formats (merged, GGUF, LoRA adapter)."""
     if format not in EXPORT_FORMATS:
@@ -74,6 +91,28 @@ def export(
     if push_to_hub and not repo_id:
         typer.echo("Error: --repo-id required when using --push-to-hub", err = True)
         raise typer.Exit(code = 2)
+
+    if adapter_format is not None:
+        if adapter_format not in ADAPTER_FORMATS:
+            typer.echo(
+                f"Error: Invalid adapter format '{adapter_format}'. "
+                f"Choose from: {', '.join(ADAPTER_FORMATS)}",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
+        if format != "lora":
+            typer.echo(
+                "Error: --adapter-format only applies to --format lora",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
+        if not _is_apple_silicon():
+            typer.echo(
+                "Error: --adapter-format is only available on Apple-silicon "
+                "hosts; this platform exports the native PEFT format.",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
 
     with studio_backend_imports("unsloth export"):
         from studio.backend.core.export import ExportBackend
@@ -127,6 +166,7 @@ def export(
             repo_id = repo_id,
             hf_token = hf_token,
             private = private,
+            adapter_format = adapter_format,
         )
 
     if not success:
