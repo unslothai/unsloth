@@ -88,9 +88,8 @@ export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
   return typeof value === "string" && PROMPT_CACHE_TTL_VALUES.has(value as "5m" | "1h");
 }
 
-// Provider types exposing the connection-level "reasoning model" toggle.
-// Neither vLLM's nor Ollama's OpenAI-compat endpoint advertises this per
-// model, so the user says whether the connection serves a reasoning model.
+// Neither vLLM nor Ollama advertises reasoning per model on OpenAI-compat, so
+// the user flags the connection instead.
 const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm", "ollama"]);
 
 export function supportsProviderReasoningToggle(

@@ -1051,18 +1051,19 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 }
 
 export interface ExternalReasoningResolveOptions {
-  /** vLLM connection flagged as a reasoning model in provider config. */
+  /** vLLM or Ollama connection flagged as a reasoning model in provider config. */
   isReasoningProvider?: boolean;
   /** Provider base URL; used to detect custom Gemini OAI-compat gateways. */
   baseUrl?: string | null;
 }
 
-// vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
-// The non-"none" values ollama's /v1/chat/completions accepts for
-// reasoning_effort; the backend's _apply_ollama_reasoning_controls passes each
-// through untranslated and maps Thinking off to "none".
+// ollama's /v1/chat/completions also accepts "none", which Thinking off sends.
+// https://docs.ollama.com/api/openai-compatibility
 const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
 
+// Neither vLLM nor Ollama has a per-model reasoning signal on OpenAI-compat, so
+// the connection toggle pins it. Ollama errors a thinking request at a model
+// that cannot think, so the ladder only appears on a flagged connection (#9649).
 function resolveConnectionLevelReasoning(
   normalizedProvider: string,
   options: ExternalReasoningResolveOptions | undefined,
@@ -1074,8 +1075,6 @@ function resolveConnectionLevelReasoning(
     });
   }
   if (normalizedProvider === "ollama" && options?.isReasoningProvider) {
-    // Ollama errors a thinking request at a model that cannot think, so the
-    // ladder only appears on connections the user flagged (#9649).
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
