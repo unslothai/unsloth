@@ -16,7 +16,7 @@ $denyMatch = [regex]::Match($src, '(?ms)^    function Deny-PortableMode.*?\n    
 Check "Deny-PortableMode found in install.ps1" $denyMatch.Success
 if (-not $denyMatch.Success) { exit 1 }
 
-$envMatch = [regex]::Match($src, '(?ms)    if \(-not \[string\]::IsNullOrWhiteSpace\(\$env:UNSLOTH_HOME\)\).*?\n    \}\r?\n    if \(-not \[string\]::IsNullOrWhiteSpace\(\$env:UNSLOTH_PORTABLE\).*?\n    \}')
+$envMatch = [regex]::Match($src, '(?ms)    if \(-not \[string\]::IsNullOrWhiteSpace\(\$env:UNSLOTH_HOME\)\).*?\n    \}\r?\n(?:    #[^\r\n]*\r?\n)*    if \(-not \[string\]::IsNullOrWhiteSpace\(\$env:UNSLOTH_PORTABLE\).*?\n    \}')
 Check "UNSLOTH_HOME / UNSLOTH_PORTABLE guard found" $envMatch.Success
 if (-not $envMatch.Success) { exit 1 }
 
@@ -66,15 +66,24 @@ Check "deny message names the flag"           ($out -match '--portable is not su
 Check "deny message points at the POSIX flags" ($out -match 'install\.sh --portable')
 Check "deny message offers the Windows knob"   ($out -match 'UNSLOTH_STUDIO_HOME')
 
+# The real condition out of install.ps1, not a copy of it: a copy passes whatever
+# the installer actually does.
+$condMatch = [regex]::Match($src, '(?ms)if \((-not \[string\]::IsNullOrWhiteSpace\(\$env:UNSLOTH_PORTABLE\).*?)\) \{\r?\n\s*return \(Exit-InstallFailure \(Deny-PortableMode "UNSLOTH_PORTABLE"\)\)')
+Check "UNSLOTH_PORTABLE condition extracted" $condMatch.Success
+if (-not $condMatch.Success) { exit 1 }
+$isBlocked = [scriptblock]::Create($condMatch.Groups[1].Value)
+
 # Off-values count as unset, or a stray UNSLOTH_PORTABLE=0 blocks every install.
-foreach ($v in @("0", "false", "False", "", "   ")) {
-    $blocked = -not [string]::IsNullOrWhiteSpace($v) -and $v.Trim() -notin @("0", "false", "False")
-    Check "UNSLOTH_PORTABLE='$v' does not block the install" (-not $blocked)
+# install.sh and storage_roots.portable_mode() read all of these as off.
+foreach ($v in @("0", "false", "False", "FALSE", "off", "OFF", "Off", "no", "NO", "", "   ")) {
+    $env:UNSLOTH_PORTABLE = $v
+    Check "UNSLOTH_PORTABLE='$v' does not block the install" (-not (& $isBlocked))
 }
-foreach ($v in @("1", "true", "yes")) {
-    $blocked = -not [string]::IsNullOrWhiteSpace($v) -and $v.Trim() -notin @("0", "false", "False")
-    Check "UNSLOTH_PORTABLE='$v' blocks the install" $blocked
+foreach ($v in @("1", "true", "TRUE", "yes", "YES", "on", "ON")) {
+    $env:UNSLOTH_PORTABLE = $v
+    Check "UNSLOTH_PORTABLE='$v' blocks the install" (& $isBlocked)
 }
+$env:UNSLOTH_PORTABLE = $null
 
 Write-Host ""
 if ($fails -gt 0) { Write-Host "$fails check(s) failed"; exit 1 }

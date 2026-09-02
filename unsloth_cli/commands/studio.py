@@ -147,6 +147,18 @@ def _resolve_studio_home() -> tuple[Path, bool]:
 STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
 
+def _portable_marker_root() -> Optional[Path]:
+    """Master root the installer recorded beside or above STUDIO_HOME, or None."""
+    try:
+        if (STUDIO_HOME / _PORTABLE_MARKER).is_file():
+            return STUDIO_HOME
+        if (STUDIO_HOME.parent / _PORTABLE_MARKER).is_file():
+            return STUDIO_HOME.parent
+    except OSError:
+        return None
+    return None
+
+
 def _portable_master_root() -> Optional[Path]:
     """Master root of a portable install, or None.
 
@@ -159,14 +171,7 @@ def _portable_master_root() -> Optional[Path]:
             return Path(override).expanduser().resolve()
         except (OSError, ValueError):
             return Path(override).expanduser()
-    try:
-        if (STUDIO_HOME / _PORTABLE_MARKER).is_file():
-            return STUDIO_HOME
-        if (STUDIO_HOME.parent / _PORTABLE_MARKER).is_file():
-            return STUDIO_HOME.parent
-    except OSError:
-        return None
-    return None
+    return _portable_marker_root()
 
 
 _PORTABLE_CONF_EXPORT = re.compile(r"^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
@@ -215,7 +220,10 @@ def _ensure_studio_env_exported() -> None:
     studio subcommand entry rather than at import time, to avoid leaking env
     state into unrelated importers (tests, --help, CLI introspection).
     """
-    if not _STUDIO_HOME_IS_CUSTOM:
+    # `--portable` with its default root puts the venv at the legacy path, so
+    # STUDIO_HOME is not custom and only the marker tells that install apart from
+    # a plain one, which must keep exporting nothing.
+    if not _STUDIO_HOME_IS_CUSTOM and _portable_marker_root() is None:
         return
     # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
     # suppress the inferred custom root.
