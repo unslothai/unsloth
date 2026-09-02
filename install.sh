@@ -127,7 +127,10 @@ done
 # Env-var equivalents for piped installs; an explicit flag still wins.
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
-case "${UNSLOTH_PORTABLE:-}" in 1|true|TRUE|yes|YES|on|ON) _PORTABLE_MODE=true ;; esac
+# Stripped and case-folded first: storage_roots.portable_mode() and install.ps1 both do,
+# so UNSLOTH_PORTABLE=True read as off here would write the normal roots while the runtime
+# believes the install is contained. tr, not ${var,,}: this script is POSIX sh.
+case "$(_trim_ws "${UNSLOTH_PORTABLE:-}" | tr '[:upper:]' '[:lower:]')" in 1|true|yes|on) _PORTABLE_MODE=true ;; esac
 [ "$_next_is_root" = true ] && { echo "ERROR: --root requires a path argument." >&2; exit 1; }
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 [ -n "$_UNSLOTH_ROOT" ] && _PORTABLE_MODE=true
@@ -765,7 +768,9 @@ _export_portable_roots
 # is wrong.
 _portable_escapes() {
     [ "$_PORTABLE_MODE" = true ] || return 0
-    for _esc_name in studio share bin cache llama.cpp; do
+    # Every top-level name the install writes at the root: the layout dirs plus the three
+    # native runtimes setup.sh hangs off UNSLOTH_HOME (llama.cpp, node, whisper.cpp).
+    for _esc_name in studio share bin cache llama.cpp node whisper.cpp; do
         _esc_link="$UNSLOTH_ROOT/$_esc_name"
         [ -L "$_esc_link" ] || continue
         # No readlink -f / realpath: neither is POSIX and BSD readlink lacks -f.

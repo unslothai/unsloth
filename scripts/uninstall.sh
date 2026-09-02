@@ -369,6 +369,11 @@ _is_studio_root() {
     [ -n "$_r" ] || return 1
     [ -f "$_r/share/studio.conf" ] && return 0
     [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
+    # Nested portable root: the venv is one level down and the shim is a wrapper file, not a
+    # symlink, so neither test above fires until create_studio_shortcuts writes share/studio.conf
+    # and an install that failed before that is left on disk. Both sentinels, never the portable
+    # marker alone: the owner marker is the same ownership proof the checks above require.
+    [ -f "$_r/.unsloth-portable-root" ] && [ -f "$_r/studio/unsloth_studio/.unsloth-studio-owned" ] && return 0
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac

@@ -954,7 +954,9 @@ VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
 # A portable install promised the desktop app was left untouched, and these caches
 # live under $HOME, outside the root. The marker covers a shim-less activated venv.
 _setup_portable_mode() {
-    case "${UNSLOTH_PORTABLE:-}" in 1|true|TRUE|yes|YES|on|ON) return 0 ;; esac
+    # Stripped and case-folded like install.sh and storage_roots.portable_mode(); reading
+    # UNSLOTH_PORTABLE=True as off here clears webview caches a portable run promised to keep.
+    case "$(_setup_trim_ws "${UNSLOTH_PORTABLE:-}" | tr '[:upper:]' '[:lower:]')" in 1|true|yes|on) return 0 ;; esac
     if [ -n "${UNSLOTH_HOME:-}" ] && [ -f "${UNSLOTH_HOME}/.unsloth-portable-root" ]; then return 0; fi
     if [ -f "$STUDIO_HOME/.unsloth-portable-root" ] || [ -f "$STUDIO_HOME/../.unsloth-portable-root" ]; then return 0; fi
     return 1
