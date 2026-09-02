@@ -76,8 +76,6 @@ _EXIT_FALLBACK = 2
 _EXIT_NO_SPACE = 4
 # A concrete backend selection could not be satisfied.
 _EXIT_BACKEND_UNAVAILABLE = 5
-# Prebuilt path failed; setup scripts source-build, but the in-app updater cannot.
-_EXIT_FALLBACK = 2
 
 
 class _LlamaPhaseError(RuntimeError):
