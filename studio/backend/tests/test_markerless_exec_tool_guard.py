@@ -669,6 +669,8 @@ def test_a_promotable_gemma_peer_behind_a_blocked_call_is_held():
     # Settled prose, a disabled peer, or a promotable leading call are all somebody else's job.
     assert may_continue(f"{blocked} and prose", EXEC_ENABLED) is False
     assert may_continue(f"{blocked} I recall: nothing", EXEC_ENABLED) is False
+    assert may_continue(f"{blocked} c", EXEC_ENABLED) is True  # mid-word chunk boundary
+    assert may_continue(f"{blocked} rec", EXEC_ENABLED) is False
     assert may_continue("call:terminal{a:1} call:nope{b:2}", EXEC_ENABLED) is False
     assert may_continue("call:web_search{q:1}", EXEC_ENABLED) is False
     assert may_continue("hello world", EXEC_ENABLED) is False
@@ -1002,6 +1004,10 @@ def test_a_mid_prose_gemma_prefix_is_held_until_it_settles():
         for name in ("web_search", "terminal", "python", "edit_file")
     ]
     held = {
+        # A chunk can end mid-word, and the fragment cannot be retracted once sent.
+        "Here is prose c": 1,
+        "Here is prose ca": 2,
+        "Here is prose cal": 3,
         "Here is prose call": 4,
         "Here is prose call:": 5,
         "Here is prose call:web": 8,
@@ -1013,6 +1019,7 @@ def test_a_mid_prose_gemma_prefix_is_held_until_it_settles():
         'prose call:terminal{command:"i',  # blocked name: prose, and it streams as prose
         "I recall: nothing",
         "ordinary prose",
+        "I rec",  # a partial inside a word is not a call starting
     )
     for text, want in held.items():
         assert held_bare_gemma_tail_len(text, EXEC_ENABLED) == want, text

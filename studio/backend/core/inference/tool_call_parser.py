@@ -2877,6 +2877,19 @@ def _last_bare_call_word(text: str) -> int:
     return idx
 
 
+def _partial_call_word_len(text: str) -> int:
+    """Length of a trailing ``c``/``ca``/``cal`` that could still become ``call``.
+
+    A chunk can end mid-word. The leading-position buffer covers these with
+    ``"call:".startswith``; the mid-prose scans need the same reach from the other end."""
+    for n in (3, 2, 1):
+        start = len(text) - n
+        if start >= 0 and text[start:] == "call"[:n]:
+            if start == 0 or not (text[start - 1].isalnum() or text[start - 1] == "_"):
+                return n
+    return 0
+
+
 def gemma_tail_may_hide_a_call(tail: str, enabled_tool_names: Optional[set]) -> bool:
     """Whether a chain tail can still turn into a bare Gemma call the parser promotes.
 
@@ -2894,6 +2907,8 @@ def gemma_tail_may_hide_a_call(tail: str, enabled_tool_names: Optional[set]) -> 
         rest = trailing[idx:]
         if "call:".startswith(rest) or _GEMMA_BARE_TC_PREFIX_RE.match(rest) is not None:
             return True
+    if _partial_call_word_len(trailing):
+        return True
     return not tail  # an empty tail may still grow a peer
 
 
@@ -2908,14 +2923,15 @@ def held_bare_gemma_tail_len(text: str, enabled_tool_names: Optional[set]) -> in
     if partial is not None:
         return len(text) - partial.start()
     idx = _last_bare_call_word(text)
-    if idx < 0:
-        return 0
-    m = _GEMMA_BARE_TC_RE.match(text, idx)
-    if m is None or not _markerless_promotable(m.group(1), enabled_tool_names):
-        return 0
-    if _gemma_body_brace_end(text, m.end() - 1) is not None:
-        return 0
-    return len(text) - idx
+    if idx >= 0:
+        m = _GEMMA_BARE_TC_RE.match(text, idx)
+        if (
+            m is not None
+            and _markerless_promotable(m.group(1), enabled_tool_names)
+            and _gemma_body_brace_end(text, m.end() - 1) is None
+        ):
+            return len(text) - idx
+    return _partial_call_word_len(text)
 
 
 def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
