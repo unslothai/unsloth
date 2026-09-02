@@ -51,11 +51,11 @@ def _resolved(value: str) -> Path:
 
 def unsloth_home() -> Path | None:
     """The master root every Unsloth-owned directory hangs off, or None. One level
-    above STUDIO_HOME, so managed tools live at <UNSLOTH_HOME>/studio/<tool>.
+    above STUDIO_HOME, which is its studio/ child.
 
-    Name clash: studio/setup.sh and scripts/build_whisper_cpp.sh use UNSLOTH_HOME
-    for the studio root ITSELF, so they would build /portable/whisper.cpp while
-    this resolver looks in /portable/studio/whisper.cpp.
+    llama.cpp, node and whisper.cpp are SIBLINGS of studio/, the spelling
+    studio/setup.sh and scripts/build_whisper_cpp.sh already give UNSLOTH_HOME,
+    which is why node_runtime, stt_ggml_sidecar and run.py resolve them here.
     """
     override = (os.environ.get("UNSLOTH_HOME") or "").strip()
     return _resolved(override) if override else None
