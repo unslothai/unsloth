@@ -27,7 +27,10 @@ test("only a non-hub pick skips the plan, so a cached hub pick still gets one", 
   // The bypass is keyed on the pick's SOURCE. A curated artifact already on disk is still
   // source "hub" (localModelMeta is the only thing that emits "local"), so it keeps the plan:
   // "downloaded" is a property of the repo, and an H3 repo can be half downloaded.
-  assert.match(source, /if \(source !== "hub"\) return handleLoadRef\.current\(repoId, opts\);/);
+  assert.match(
+    source,
+    /if \(source !== "hub"\) return handleLoadRef\.current\(repoId, opts, advanced\);/,
+  );
   assert.doesNotMatch(source, /if \(isDownloaded !== false\) return handleLoadRef\.current/);
   // And the deferred choice re-enters loadOrStage rather than loading directly, so the plan
   // decision is made again with the chosen partition in hand.
@@ -49,10 +52,9 @@ test("an on-device copy of the pipeline reaches the same dialog", () => {
   assert.match(predicate, /split\("\/"\)\.at\(-1\)/);
   assert.match(predicate, /H3_BF16_REPO\.split\("\/"\)\[1\]\.toLowerCase\(\)/);
   // And the generic local-pipeline branch consults it, not only the curated branch.
-  assert.equal(
-    source.split('isH3PipelinePick(id, "pipeline", familyOverride)').length - 1,
-    1,
-    "the local-pipeline branch must intercept an H3 pick exactly once",
+  assert.match(
+    source,
+    /isH3PipelinePick\(\s*id,\s*"pipeline",\s*familyOverrideRequired \? familyOverride : undefined,\s*\)/,
   );
 });
 

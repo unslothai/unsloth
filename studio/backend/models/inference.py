@@ -4486,7 +4486,8 @@ class VideoLoadRequest(BaseModel):
     display_repo_id: Optional[str] = Field(
         None,
         description = "Logical Hub repo id shown by clients when model_path is an exact local "
-        "snapshot. Display metadata only; model_path remains the physical load identity.",
+        "snapshot. Used for family detection only when the physical path is opaque; model_path "
+        "remains the physical load identity.",
     )
     gguf_filename: Optional[str] = Field(
         None,

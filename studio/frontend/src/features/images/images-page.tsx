@@ -56,6 +56,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import {
   familyOverrideArtifactKind,
+  familyOverrideForPick,
   resolvedFamilyOverrideSelection,
 } from "@/features/model-picker/components/model-selector/family-override-local-candidate";
 import { familyOverrideOptions } from "@/features/model-picker/components/model-selector/family-override-options";
@@ -129,7 +130,10 @@ import {
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
-import { diffusionPipelineLoadTarget } from "@/lib/diffusion-pipeline-load-target";
+import {
+  diffusionPipelineLoadTarget,
+  stagedDiffusionLoadTarget,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
   routedGgufLabel,
@@ -2454,7 +2458,7 @@ export function ImagesPage({
 
   // One snapshot of every Advanced control a load sends, so a staged pick can pin the values it planned against.
   const currentLoadAdvanced = useCallback(
-    (repoId: string): LoadAdvanced => {
+    (repoId: string, familyOverrideRequired = true): LoadAdvanced => {
       const baked = bakedLorasFor(repoId);
       return {
         cpu_offload: cpuOffload,
@@ -2463,7 +2467,10 @@ export function ImagesPage({
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
-        family_override: familyOverride === "auto" ? undefined : familyOverride,
+        family_override: familyOverrideForPick(
+          familyOverride,
+          familyOverrideRequired,
+        ),
         loras: baked.length > 0 ? baked : undefined,
         // Dropped when the chosen card is gone (a driver reset, an eGPU unplugged), so a stale pick loads automatically instead of 400ing.
         gpu_ids:
@@ -2716,6 +2723,7 @@ export function ImagesPage({
       opts: ImageLoadOptions,
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
+      familyOverrideRequired = false,
     ): Promise<boolean> => {
       // Staging never sets `busy`, so a second pick passes handleModelSelect's guard while this
       // plan is still in flight. Plans then resolve in response order, not pick order: without
@@ -2730,49 +2738,59 @@ export function ImagesPage({
       stagedQuantRevert.current = null;
       const owns = () => token === undefined || pickGuard.holds(token);
       if (!owns()) return true;
-      if (source !== "hub") return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      const advanced = currentLoadAdvanced(repoId);
+      const advanced = currentLoadAdvanced(repoId, familyOverrideRequired);
+      if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
+      // A pinned Hub row loads from its exact snapshot, but planning still uses the logical
+      // repo so task-specific companion files (and future partitions) are discovered.
+      const planRepoId = opts.displayRepoId ?? repoId;
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
       const ownRevert = quantRevert.current;
       // Read inside the try, acted on outside it: refusing from in there would fall through to the
       // load if the refusal itself threw, which is the one outcome that must not happen.
       let incompatible: string | null = null;
       try {
-        const plan = await requestDownloadPlan(repoId, opts, advanced);
+        const plan = await requestDownloadPlan(planRepoId, opts, advanced);
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) return true;
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
-          pendingStagedLoad.current = {
+          const stagedEntries = plan.entries.map((e) => ({
+            repoId: e.repo_id,
+            files: e.files,
+            bytes: e.bytes,
+            ggufFilename: e.gguf_filename,
+            // The entry carrying the picked checkpoint file, so the panel can label it without
+            // guessing: filenames cannot tell the two apart once a checkpoint ships as
+            // .safetensors like its companions do. Repo identity alone is not enough, because a
+            // checkpoint that shares its repo with the companions and is already cached leaves an
+            // entry of companion files only. A pipeline pick has no one file: the repo IS it.
+            // The backend's own answer wins: a gated pipeline is staged from an ungated MIRROR,
+            // so its entry no longer carries the id we picked and the id test below reads the
+            // whole selected model as companion assets. `??`, not `||`: a planner that says false
+            // is answering, and the fallback exists only for a backend too old to send the key.
+            checkpoint:
+              e.checkpoint ??
+              (opts.filename
+                ? e.files.includes(opts.filename)
+                : e.repo_id === planRepoId),
+          }));
+          // If the picked pipeline itself had to be staged, the complete copy now lives under
+          // the logical Hub id in the active cache. Otherwise keep the exact pinned snapshot;
+          // only separate companion repos changed and its manifest identity remains authoritative.
+          const stagedRepoId = stagedDiffusionLoadTarget(
             repoId,
+            planRepoId,
+            stagedEntries,
+          );
+          pendingStagedLoad.current = {
+            repoId: stagedRepoId,
             opts,
             advanced,
             token: token ?? pickGuard.claim(),
           };
           stagedQuantRevert.current = ownRevert;
-          stage(
-            plan.entries.map((e) => ({
-              repoId: e.repo_id,
-              files: e.files,
-              bytes: e.bytes,
-              ggufFilename: e.gguf_filename,
-              // The entry carrying the picked checkpoint file, so the panel can label it without
-              // guessing: filenames cannot tell the two apart once a checkpoint ships as
-              // .safetensors like its companions do. Repo identity alone is not enough, because a
-              // checkpoint that shares its repo with the companions and is already cached leaves an
-              // entry of companion files only. A pipeline pick has no one file: the repo IS it.
-              // The backend's own answer wins: a gated pipeline is staged from an ungated MIRROR,
-              // so its entry no longer carries the id we picked and the id test below reads the
-              // whole selected model as companion assets. `??`, not `||`: a planner that says false
-              // is answering, and the fallback exists only for a backend too old to send the key.
-              checkpoint:
-                e.checkpoint ??
-                (opts.filename
-                  ? e.files.includes(opts.filename)
-                  : e.repo_id === repoId),
-            })),
-          );
+          stage(stagedEntries);
           return true;
         }
       } catch {
@@ -2795,7 +2813,7 @@ export function ImagesPage({
       const plan = await requestDownloadPlan(
         repoId,
         { kind: "gguf", filename: meta.ggufFilename },
-        currentLoadAdvanced(repoId),
+        currentLoadAdvanced(repoId, false),
       );
       const requiredBytes = plan.required_bytes ?? 0;
       if (requiredBytes <= 0) return null;
@@ -2881,6 +2899,9 @@ export function ImagesPage({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    // Routed Hub picks are normally detectable. Do not let an explicit override restored
+    // from the previously resident opaque pipeline classify this new model.
+    setFamilyOverride("auto");
     // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
     const token = pickGuard.claim();
     void navigateSelf({ to: "/images", search: {}, replace: true });
@@ -2974,6 +2995,8 @@ export function ImagesPage({
       // sets `busy`, so any pick can land on an awaiting one.
       const token = pickGuard.claim();
       const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
+      const familyOverrideRequired = meta.familyOverrideRequired === true;
+      if (!familyOverrideRequired) setFamilyOverride("auto");
       const displayRepoId =
         pipelineTarget.repoId !== pipelineTarget.displayRepoId
           ? pipelineTarget.displayRepoId
@@ -3048,7 +3071,11 @@ export function ImagesPage({
         quantRevert.current = revert;
         setQuant(filename);
         applyImageModelDefaults(id);
-        void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
+        void handleLoad(
+          dir,
+          { kind: "gguf", filename },
+          currentLoadAdvanced(dir, false),
+        ).then((started) => {
           if (!started) {
             revertPick(revert);
             quantRevert.current = null;
@@ -3067,7 +3094,11 @@ export function ImagesPage({
         quantRevert.current = revert;
         setQuant(filename);
         applyImageModelDefaults(id);
-        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
+        void handleLoad(
+          dir,
+          { kind: "single_file", filename },
+          currentLoadAdvanced(dir, false),
+        ).then((started) => {
           if (!started) {
             revertPick(revert);
             quantRevert.current = null;
@@ -3106,6 +3137,7 @@ export function ImagesPage({
         { kind: "pipeline", displayRepoId },
         pipelineTarget.source,
         token,
+        familyOverrideRequired,
       ).then((started) => {
         if (!started && pickGuard.holds(token)) {
           revertPick(revert);
@@ -3118,6 +3150,7 @@ export function ImagesPage({
       applyImageModelDefaults,
       beginPick,
       busy,
+      currentLoadAdvanced,
       handleLoad,
       loadGgufRepoPick,
       loadOrStage,

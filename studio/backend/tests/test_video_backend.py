@@ -846,6 +846,27 @@ def test_detect_load_family_filename_fallback():
     assert _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "bogus") is None
 
 
+def test_detect_load_family_uses_logical_id_for_an_opaque_pinned_snapshot():
+    # A complete cached Hub pipeline loads from its exact revision directory. That physical
+    # identity can be only a commit hash, while the picker still carries the logical repo id.
+    fam = _detect_load_family(
+        "/cache/snapshots/deadbeef",
+        None,
+        None,
+        "MiniMaxAI/MiniMax-H3",
+    )
+    assert fam is not None and fam.name == "minimax-h3"
+
+    # The logical identity outranks incidental tokens in a cache parent directory.
+    fam = _detect_load_family(
+        "/cache/wan2.2/snapshots/deadbeef",
+        None,
+        None,
+        "Lightricks/LTX-2",
+    )
+    assert fam is not None and fam.name == "ltx-2"
+
+
 def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
     # A cached HUB GGUF is admitted to the picker by its architecture, but an opaque repo id + renamed file carry no family token, so the cache fallback keeps a supported pick loadable.
     import huggingface_hub
@@ -1504,6 +1525,30 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
     assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
     assert result["num_frames"] == 9 and result["has_audio"] is False
     assert result["repo_id"] == "Org/pinned-hv15"
+
+
+def test_pipeline_load_uses_logical_identity_for_a_commit_named_snapshot(fake_runtime, tmp_path):
+    snapshot = tmp_path / "deadbeef"
+    snapshot.mkdir()
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTXPipeline",
+                "transformer": ["diffusers", "LTXVideoTransformer3DModel"],
+            }
+        )
+    )
+
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        str(snapshot),
+        display_repo_id = "Lightricks/LTX-2",
+        model_kind = "pipeline",
+    )
+
+    assert status["family"] == "ltx-2"
+    assert status["repo_id"] == str(snapshot)
+    assert status["display_repo_id"] == "Lightricks/LTX-2"
 
 
 def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):

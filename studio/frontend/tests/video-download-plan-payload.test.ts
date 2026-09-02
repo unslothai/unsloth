@@ -43,12 +43,21 @@ test("the staged plan pins its controls through the eventual load", () => {
     source.indexOf("const loadOrStage = useCallback("),
     source.indexOf("// A GGUF pick can arrive"),
   );
-  const advancedAt = flow.indexOf("const advanced = currentLoadAdvanced(opts.kind);");
+  const advancedAt = flow.indexOf(
+    "const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);",
+  );
   const planAt = flow.indexOf("await getVideoDownloadPlan({");
   assert.ok(advancedAt >= 0, "the staged flow must compute the advanced snapshot");
   assert.ok(planAt >= 0, "the staged flow must request the download plan");
   assert.ok(advancedAt < planAt, "the snapshot must precede the plan request");
-  assert.match(flow, /pendingStagedLoad\.current = \{\s*repoId,\s*opts,\s*advanced,/);
+  assert.match(
+    flow,
+    /pendingStagedLoad\.current = \{\s*repoId: stagedRepoId,\s*opts,\s*advanced,/,
+  );
+  assert.ok(
+    flow.includes("stagedDiffusionLoadTarget("),
+    "a restaged pipeline must load the complete active-cache snapshot",
+  );
   assert.ok(source.includes("pending.opts, pending.advanced"));
 
   assert.ok(flow.includes("handleLoadRef.current(repoId, opts, advanced)"));
@@ -95,7 +104,7 @@ test("a routed H3 pipeline pick asks for the task instead of loading a default",
   );
   assert.ok(routeEffect.length > 0, "the routed pick branch must exist");
   assert.ok(
-    routeEffect.includes("isH3PipelinePick(pick.repoId, pick.opts.kind, familyOverride)"),
+    routeEffect.includes("isH3PipelinePick(pick.repoId, pick.opts.kind)"),
     "the routed branch must intercept an H3 pipeline pick",
   );
   const intercept = routeEffect.indexOf("isH3PipelinePick(");
@@ -107,7 +116,10 @@ test("a routed H3 pipeline pick asks for the task instead of loading a default",
   assert.ok(routeEffect.includes("setPendingH3Load({"));
   // One predicate, so the two entry points cannot drift apart again.
   assert.ok(source.includes("function isH3PipelinePick("));
-  assert.ok(source.includes("isH3PipelinePick(id, spec.kind, familyOverride)"));
+  assert.match(
+    source,
+    /isH3PipelinePick\(\s*id,\s*spec\.kind,\s*familyOverrideRequired \? familyOverride : undefined,\s*\)/,
+  );
   assert.ok(
     source.includes('familyOverride?.trim().toLowerCase() === "minimax-h3"'),
   );

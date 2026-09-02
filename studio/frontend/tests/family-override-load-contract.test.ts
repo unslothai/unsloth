@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  diffusionPipelineLoadTarget,
+  stagedDiffusionLoadTarget,
+} from "../src/lib/diffusion-pipeline-load-target.ts";
 
 function source(path: string): string {
   return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
@@ -28,17 +32,21 @@ for (const [name, page] of [
 
 test("image defaults use explicit and resolved family keys for opaque paths", () => {
   const text = source("../src/features/images/images-page.tsx");
-  assert.ok(text.includes("defaultsFor(defaultsKeyFor(repoId, familyOverride))"));
   assert.ok(
-    text.includes("const seedKey = `${repoId}\\0${residentDefaults}`"),
+    text.includes("defaultsFor(defaultsKeyFor(repoId, familyOverride))"),
   );
+  assert.ok(text.includes("const seedKey = `${repoId}\\0${residentDefaults}`"));
   assert.ok(text.includes("defaultsFor(residentDefaults)"));
 });
 
 test("video defaults use the explicit family for opaque paths", () => {
   const text = source("../src/features/video/video-page.tsx");
-  assert.ok(text.includes("defaultsFor(defaultsKeyFor(repoId, familyOverride))"));
-  assert.ok(text.includes("MODEL_DEFAULTS.some((entry) => id.includes(entry.match))"));
+  assert.ok(
+    text.includes("defaultsFor(defaultsKeyFor(repoId, familyOverride))"),
+  );
+  assert.ok(
+    text.includes("MODEL_DEFAULTS.some((entry) => id.includes(entry.match))"),
+  );
 });
 
 test("pinned pipeline paths retain their Hub selector identity across remounts", () => {
@@ -60,8 +68,62 @@ test("pinned pipeline paths retain their Hub selector identity across remounts",
     "../src/features/model-picker/inventory/use-chat-picker-inventory.ts",
   );
   const images = source("../src/features/images/images-page.tsx");
-  assert.ok(images.includes("displayRepoId: status.display_repo_id ?? undefined"));
+  assert.ok(
+    images.includes("displayRepoId: status.display_repo_id ?? undefined"),
+  );
   assert.ok(picker.includes("c.load_id.trim() !== c.repo_id.trim()"));
   assert.ok(inventory.includes("taskOpaqueArtifactSupportsFamilyOverride("));
-  assert.ok(picker.includes("c.opaque === true"));
+  assert.ok(
+    picker.includes("familyOverrideRequired: c.opaque === true"),
+    "cached rows must say whether their explicit family admitted them",
+  );
+  assert.ok(
+    picker.includes("m.opaque === true"),
+    "filesystem rows must carry the same admission metadata",
+  );
+});
+
+test("a pinned Hub pipeline keeps Hub planning separate from its physical load target", () => {
+  assert.deepEqual(
+    diffusionPipelineLoadTarget("MiniMaxAI/MiniMax-H3", {
+      source: "hub",
+      loadId: "/cache/snapshots/deadbeef",
+    }),
+    {
+      repoId: "/cache/snapshots/deadbeef",
+      displayRepoId: "MiniMaxAI/MiniMax-H3",
+      source: "hub",
+    },
+  );
+  assert.equal(
+    stagedDiffusionLoadTarget(
+      "/cache/snapshots/deadbeef",
+      "MiniMaxAI/MiniMax-H3",
+      [{ checkpoint: false }],
+    ),
+    "/cache/snapshots/deadbeef",
+  );
+  assert.equal(
+    stagedDiffusionLoadTarget(
+      "/cache/snapshots/deadbeef",
+      "MiniMaxAI/MiniMax-H3",
+      [{ checkpoint: true }],
+    ),
+    "MiniMaxAI/MiniMax-H3",
+  );
+
+  for (const file of [
+    "../src/features/images/images-page.tsx",
+    "../src/features/video/video-page.tsx",
+  ]) {
+    const text = source(file);
+    assert.ok(
+      text.includes("const planRepoId = opts.displayRepoId ?? repoId"),
+      file,
+    );
+    assert.ok(text.includes("familyOverrideRequired = false"), file);
+    assert.ok(text.includes('setFamilyOverride("auto")'), file);
+    assert.ok(text.includes("repoId: stagedRepoId"), file);
+    assert.ok(text.includes("stagedDiffusionLoadTarget("), file);
+  }
 });

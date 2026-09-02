@@ -26,7 +26,9 @@ test("a cached pipeline loads the exact snapshot that established its manifest",
     {
       repoId: "/cache/models--Org--Opaque/snapshots/abc",
       displayRepoId: "Org/Opaque",
-      source: "local",
+      // Loading is pinned locally, but the Hub provenance is retained so companion
+      // planning still runs against the logical repo.
+      source: "hub",
     },
   );
   assert.deepEqual(

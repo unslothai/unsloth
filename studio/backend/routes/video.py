@@ -150,6 +150,7 @@ async def video_download_plan(
             request.model_path,
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             base_repo = request.base_repo,
             transformer_quant = request.transformer_quant,
@@ -186,6 +187,7 @@ async def video_download_plan(
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             hf_token = request.hf_token,
             # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so
@@ -261,6 +263,7 @@ async def load_video_model_gated(
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,

@@ -50,6 +50,18 @@ export function resolvedFamilyOverrideSelection(
     : undefined;
 }
 
+/** Only an opaque artifact consumes the explicit family that admitted its row. */
+export function familyOverrideForPick(
+  familyOverride: string | null | undefined,
+  required: boolean,
+): string | undefined {
+  if (!required) {
+    return undefined;
+  }
+  const family = familyOverride?.trim();
+  return family && family.toLowerCase() !== "auto" ? family : undefined;
+}
+
 export function familyOverrideArtifactKind(
   familyOverride: string | null | undefined,
   mediaKind: FamilyOverrideMediaKind | null | undefined,

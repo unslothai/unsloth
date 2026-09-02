@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   artifactKindSupportsFamilyOverride,
   familyOverrideArtifactKind,
+  familyOverrideForPick,
   resolvedFamilyOverrideSelection,
   taskOpaqueArtifactSupportsFamilyOverride,
 } from "../src/features/model-picker/components/model-selector/family-override-local-candidate.ts";
@@ -97,6 +98,12 @@ test("selector restoration prefers the canonical engaged family over an alias", 
     }),
     "auto",
   );
+});
+
+test("normal picks drop stale overrides while opaque picks keep their classifier", () => {
+  assert.equal(familyOverrideForPick("z-image", false), undefined);
+  assert.equal(familyOverrideForPick(" z-image ", true), "z-image");
+  assert.equal(familyOverrideForPick("auto", true), undefined);
 });
 
 test("family options follow the backend registry and deduplicate names", () => {

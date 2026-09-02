@@ -476,13 +476,23 @@ def _assert_pick_is_not_speech(
 
 
 def _detect_load_family(
-    repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
+    repo_id: str,
+    gguf_filename: Optional[str],
+    family_override: Optional[str],
+    display_repo_id: Optional[str] = None,
 ) -> Optional[VideoFamily]:
     """Family detection shared by validate_load_request and the load worker: the
-    repo id first, then the picked filename -- a local directory or generically
-    named repo often carries the family token only in the checkpoint filename,
-    and the worker must resolve the same family the validator accepted."""
-    fam = detect_video_family(repo_id, family_override) or (
+    explicit override first; otherwise the logical Hub identity, physical load id,
+    then picked filename. A pinned snapshot can be just a commit-named directory,
+    while its display identity still names the family. The worker must resolve the
+    same family the validator accepted."""
+    logical_id = display_repo_id.strip() if isinstance(display_repo_id, str) else ""
+    fam = detect_video_family(repo_id, family_override) if family_override else None
+    if fam is None and not family_override:
+        # The picker identity is more specific than an arbitrary cache parent path.
+        fam = detect_video_family(logical_id) if logical_id else None
+        fam = fam or detect_video_family(repo_id)
+    fam = fam or (
         detect_video_family(f"{repo_id}/{gguf_filename}")
         if gguf_filename and not family_override
         else None
@@ -1095,6 +1105,7 @@ class VideoBackend:
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
+        display_repo_id: Optional[str] = None,
         model_kind: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
@@ -1109,7 +1120,12 @@ class VideoBackend:
                 f"'{repo_id}' is a GGUF repo: pick one of its .gguf files "
                 "(gguf_filename) instead of loading it as a diffusers pipeline."
             )
-        fam = _detect_load_family(repo_id, gguf_filename, family_override)
+        fam = _detect_load_family(
+            repo_id,
+            gguf_filename,
+            family_override,
+            display_repo_id,
+        )
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported text-to-video model. Supported families: "
@@ -1353,6 +1369,7 @@ class VideoBackend:
             gguf_filename = gguf_filename,
             base_repo = base_repo,
             family_override = family_override,
+            display_repo_id = display_repo_id,
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
@@ -1442,7 +1459,10 @@ class VideoBackend:
         local_files_only = bool(kwargs.get("local_files_only"))
         try:
             fam = _detect_load_family(
-                kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                kwargs.get("family_override"),
+                kwargs.get("display_repo_id"),
             )
             # Also on the worker, which a direct begin_load reaches without a plan. Here rather than in
             # validate_load_request, which is network-free by contract.
@@ -2751,6 +2771,7 @@ class VideoBackend:
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
+        display_repo_id: Optional[str] = None,
         model_kind: Optional[str] = None,
         hf_token: Optional[str] = None,
         transformer_quant: Optional[str] = None,
@@ -2778,9 +2799,15 @@ class VideoBackend:
         download manager."""
         from huggingface_hub import HfApi
 
-        fam = _detect_load_family(repo_id, gguf_filename, family_override)
-        # _detect_load_family resolves from the REPO id first, so a mixed repo answers its media family for every file
-        # in it, a csm quant included. Refuse before the plan stages a byte.
+        fam = _detect_load_family(
+            repo_id,
+            gguf_filename,
+            family_override,
+            display_repo_id,
+        )
+        # Family detection resolves the selected model identity before its filename, so a mixed
+        # repo answers its media family for every file in it, a csm quant included. Refuse before
+        # the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         from .video_minimax_h3 import is_h3_native
@@ -3443,6 +3470,7 @@ class VideoBackend:
             gguf_filename = gguf_filename,
             base_repo = base_repo,
             family_override = family_override,
+            display_repo_id = display_repo_id,
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
