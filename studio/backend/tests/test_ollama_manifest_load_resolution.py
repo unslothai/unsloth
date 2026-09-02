@@ -602,6 +602,21 @@ def test_a_normally_pulled_model_resolves_for_a_load(tmp_path, monkeypatch):
     assert resolved.endswith(".gguf")
 
 
+@pytest.mark.parametrize("unsupported", _UNSUPPORTED_RUNTIME_LAYERS)
+def test_one_unsupported_layer_still_withholds_beside_the_metadata(
+    tmp_path, monkeypatch, unsupported
+):
+    # Pins each unsupported type on its own. The withholding test above carries both at
+    # once, so admitting just one of them back into the loadable set would still pass it.
+    from hub.services.models import ollama
+
+    root = tmp_path / f"ollama-{unsupported.rpartition('.')[2]}"
+    _write_ollama_store(root, extra_layers = _METADATA_LAYERS + (unsupported,))
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    assert ollama.scan_ollama_dir(root) == []
+
+
 def test_rich_manifest_ref_is_rejected_without_creating_links(tmp_path, monkeypatch):
     from models.inference import LoadRequest
     from routes.inference import _resolve_model_identifier_for_request
