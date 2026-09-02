@@ -4509,6 +4509,16 @@ def test_the_lan_port_is_owner_only_like_the_rest_of_lan_access():
         assert dependency.dependency is settings_routes._require_install_admin, route
 
 
+class _LoadRequestDouble:
+    """The two fields the identifier resolution reads off a request."""
+
+    def __init__(self, model_path: str) -> None:
+        self.model_path = model_path
+        self.native_path_lease = None
+        self.trust_remote_code = False
+        self.hf_token = None
+
+
 def test_a_private_resident_text_model_is_not_served_to_another_account(tmp_path, monkeypatch):
     from fastapi import HTTPException
 
@@ -4519,7 +4529,7 @@ def test_a_private_resident_text_model_is_not_served_to_another_account(tmp_path
     private.parent.mkdir(parents = True)
     private.write_bytes(b"")
     monkeypatch.setattr(models_routes, "advertised_shared_model_roots", lambda: [])
-    monkeypatch.setattr(inference_routes, "_TEXT_MODEL_LOADERS", {}, raising = False)
+    monkeypatch.setattr(inference_routes, "_RESIDENT_TEXT_OWNER", None, raising = False)
     monkeypatch.setattr(
         inference_routes,
         "_resident_text_model_identifiers",
@@ -4528,8 +4538,9 @@ def test_a_private_resident_text_model_is_not_served_to_another_account(tmp_path
 
     token = _bind("alice")
     try:
-        inference_routes._TEXT_MODEL_LOADERS[str(private)] = "alice"
+        inference_routes._note_text_model_loader(str(private), "alice")
         inference_routes._reject_generation_from_a_foreign_private_model()
+        assert inference_routes.resident_text_model_is_foreign() is False
     finally:
         reset_workspace_subject(token)
 
@@ -4541,12 +4552,35 @@ def test_a_private_resident_text_model_is_not_served_to_another_account(tmp_path
         with pytest.raises(HTTPException) as exc:
             inference_routes._reject_generation_from_a_foreign_private_model()
         assert exc.value.status_code == 409
+        # And the status route reports it as nothing loaded rather than handing
+        # over the absolute workspace path and the model's configuration.
+        assert inference_routes.resident_text_model_is_foreign() is True
+
+        # The record is pinned, not a bounded history: a caller cannot name
+        # enough identifiers to push the resident model's owner out of it.
+        for index in range(300):
+            inference_routes._resolve_model_identifier_for_request(
+                _LoadRequestDouble(f"/tmp/does-not-exist-{index}"),
+                operation = "validate-model",
+            )
+        assert inference_routes._text_model_loader(str(private)) == "alice"
+        with pytest.raises(HTTPException):
+            inference_routes._reject_generation_from_a_foreign_private_model()
     finally:
         reset_workspace_subject(token)
 
     token = _bind(LEGACY_WORKSPACE_SUBJECT)
     try:
         inference_routes._reject_generation_from_a_foreign_private_model()
+    finally:
+        reset_workspace_subject(token)
+
+    # Retirement drops the record, so a recreated namesake does not match it.
+    inference_routes.forget_text_model_owner("alice")
+    token = _bind("alice")
+    try:
+        with pytest.raises(HTTPException):
+            inference_routes._reject_generation_from_a_foreign_private_model()
     finally:
         reset_workspace_subject(token)
 
@@ -4724,7 +4758,9 @@ def test_the_idle_unload_loop_asks_the_owning_workspace(monkeypatch):
     from core.inference import llama_keepwarm
     from routes import inference as inference_routes
 
-    monkeypatch.setattr(inference_routes, "_TEXT_MODEL_LOADERS", {"m": "alice"}, raising = False)
+    monkeypatch.setattr(
+        inference_routes, "_RESIDENT_TEXT_OWNER", ("m", "alice"), raising = False
+    )
     monkeypatch.setattr(inference_routes, "_resident_text_model_identifiers", lambda: ["m"])
     assert inference_routes.resident_text_model_workspace() == "alice"
 

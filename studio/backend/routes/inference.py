@@ -7017,15 +7017,47 @@ def _reject_remote_code_from_a_managed_account(trust_remote_code: Any) -> None:
     )
 
 
-# Model identifier -> the workspace that last asked for it to be loaded. The text
-# backends are process-wide and hold one model between them, so without this the
-# account that follows a private load inherits the weights: it cannot browse or
-# load that path itself, but generation served whatever was already resident.
-_TEXT_MODEL_LOADERS: dict[str, str] = {}
-_TEXT_MODEL_LOADERS_LOCK = threading.Lock()
-# Bounded: one entry per identifier ever loaded here, and a long-lived install
-# with an automation loop would otherwise grow it without end.
-_TEXT_MODEL_LOADERS_MAX = 256
+# (identifier, workspace) for the text model this process was last asked to load.
+# The text backends are process-wide and hold one model between them, so without
+# this the account that follows a private load inherits the weights: it cannot
+# browse or load that path itself, but generation served whatever was resident.
+#
+# One slot, not a history: a bounded map is evictable, and anything an attacker
+# can evict is an authorization answer they can change. It is replaced by the
+# next load and never grows, so there is nothing to push out.
+_RESIDENT_TEXT_OWNER: Optional[tuple[str, str]] = None
+_RESIDENT_TEXT_OWNER_LOCK = threading.Lock()
+# Only these ask for a model to become resident. /validate and /estimate-memory
+# resolve an identifier too, and recording those let any caller name the slot.
+_LOAD_OPERATIONS = frozenset({"load-model"})
+
+
+def _note_text_model_loader(identifier: str, subject: str) -> None:
+    global _RESIDENT_TEXT_OWNER
+    with _RESIDENT_TEXT_OWNER_LOCK:
+        _RESIDENT_TEXT_OWNER = (identifier, subject)
+
+
+def _text_model_loader(identifier: str) -> Optional[str]:
+    """Who asked for this identifier, if it is the one this process last loaded."""
+    with _RESIDENT_TEXT_OWNER_LOCK:
+        owner = _RESIDENT_TEXT_OWNER
+    if owner is None or owner[0] != identifier:
+        return None
+    return owner[1]
+
+
+def forget_text_model_owner(subject: Optional[str] = None) -> None:
+    """Drop the ownership record, for retirement or an unload.
+
+    A username is reusable, so a record that outlives the account authorizes the
+    namesake against weights the previous holder loaded. Callers unload the model
+    as well; this is what stops the record itself from being inherited.
+    """
+    global _RESIDENT_TEXT_OWNER
+    with _RESIDENT_TEXT_OWNER_LOCK:
+        if subject is None or (_RESIDENT_TEXT_OWNER or ("", ""))[1] == subject:
+            _RESIDENT_TEXT_OWNER = None
 
 
 def _resolve_model_identifier_for_request(
@@ -7041,13 +7073,8 @@ def _resolve_model_identifier_for_request(
         resolved_ollama_path = resolved_ollama_path,
     )
     identifier = resolved[0]
-    if isinstance(identifier, str) and identifier.strip():
-        subject = current_workspace_subject()
-        with _TEXT_MODEL_LOADERS_LOCK:
-            _TEXT_MODEL_LOADERS.pop(identifier, None)
-            _TEXT_MODEL_LOADERS[identifier] = subject
-            while len(_TEXT_MODEL_LOADERS) > _TEXT_MODEL_LOADERS_MAX:
-                _TEXT_MODEL_LOADERS.pop(next(iter(_TEXT_MODEL_LOADERS)))
+    if operation in _LOAD_OPERATIONS and isinstance(identifier, str) and identifier.strip():
+        _note_text_model_loader(identifier.strip(), current_workspace_subject())
     return resolved
 
 
@@ -7076,14 +7103,10 @@ def resident_text_model_workspace() -> Optional[str]:
     model. This is what lets it consult the policy of the account whose model it
     is about to unload.
     """
-    identifiers = _resident_text_model_identifiers()
-    if not identifiers:
-        return None
-    with _TEXT_MODEL_LOADERS_LOCK:
-        for identifier in identifiers:
-            loader = _TEXT_MODEL_LOADERS.get(identifier)
-            if loader is not None:
-                return loader
+    for identifier in _resident_text_model_identifiers():
+        loader = _text_model_loader(identifier)
+        if loader is not None:
+            return loader
     return None
 
 
@@ -7100,27 +7123,22 @@ def _caller_could_have_loaded(identifier: str) -> bool:
     return True
 
 
-def _reject_generation_from_a_foreign_private_model() -> None:
-    """Refuse to serve a model this account could not have loaded itself.
+def resident_text_model_is_foreign() -> bool:
+    """Whether the resident text model is one this account could not have loaded.
 
-    Both text backends are process-wide and neither records who filled them, so
-    an account that could not browse or load another's checkpoint could still
-    run inference on it by asking the shared endpoint for a completion. Refused
-    rather than silently switched: the resident model is somebody's live session,
-    and taking it away to answer a request is its own cross-account effect.
+    True for another account's private checkpoint, and for a private one with no
+    recorded loader, which is the same answer the load path would have given.
     """
     subject = current_workspace_subject()
     if subject == LEGACY_WORKSPACE_SUBJECT:
-        return
+        return False
     identifiers = _resident_text_model_identifiers()
     if not identifiers:
-        return
-    with _TEXT_MODEL_LOADERS_LOCK:
-        loaders = {name: _TEXT_MODEL_LOADERS.get(name) for name in identifiers}
+        return False
+    loaders = {name: _text_model_loader(name) for name in identifiers}
     for identifier in identifiers:
-        loader = loaders.get(identifier)
-        if loader is not None and loader == subject:
-            return
+        if loaders.get(identifier) == subject:
+            return False
     for identifier in identifiers:
         loader = loaders.get(identifier)
         foreign = loader is not None and loader != subject
@@ -7128,14 +7146,27 @@ def _reject_generation_from_a_foreign_private_model() -> None:
             continue
         from auth.storage import is_installation_owner
 
-        if is_installation_owner():
-            return
-        raise HTTPException(
-            status_code = 409,
-            detail = (
-                "The loaded model belongs to another account. Load your own model and try again."
-            ),
-        )
+        return not is_installation_owner()
+    return False
+
+
+def _reject_generation_from_a_foreign_private_model() -> None:
+    """Refuse to serve a model this account could not have loaded itself.
+
+    Both text backends are process-wide, so an account that could not browse or
+    load another's checkpoint could still run inference on it by asking the
+    shared endpoint for a completion. Refused rather than silently switched: the
+    resident model is somebody's live session, and taking it away to answer a
+    request is its own cross-account effect.
+    """
+    if not resident_text_model_is_foreign():
+        return
+    raise HTTPException(
+        status_code = 409,
+        detail = (
+            "The loaded model belongs to another account. Load your own model and try again."
+        ),
+    )
 
 
 def _resolve_model_identifier_for_request_impl(
@@ -16663,6 +16694,20 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _loading = [_tracked_loading_id] if _tracked_loading_id else []
         backend = _peek_inference_backend()
 
+        # Another account's private checkpoint is not this account's status: the
+        # identifier is its absolute workspace path, and the rest of the payload
+        # is its configuration and chat template. Reported as nothing loaded,
+        # which is what this account can act on anyway, keeping its own pending
+        # load and the installation-wide llama.cpp version fields.
+        if resident_text_model_is_foreign():
+            return InferenceStatusResponse(
+                loading = _loading,
+                llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
+            )
+
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
@@ -25408,6 +25453,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
     # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
     _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
@@ -25712,6 +25761,10 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
     # upstream response would strand a preview-owned checkpoint as Unsloth-owned.
 
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
     monitor_id = None
@@ -26691,6 +26744,10 @@ async def _responses_stream(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
     body["stream_options"] = {"include_usage": True}
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     # The stream's own disconnect event, shared with the cancel/active-generation registries:
     # this path decodes on llama-server, so a non-forced /unload must see it and refuse instead
@@ -30452,6 +30509,10 @@ async def _passthrough_retry_url(llama_backend, exc):
     if respawn is None or not await asyncio.to_thread(respawn):
         return None
     logger.warning("llama-server was unreachable; respawned it and retrying the passthrough")
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     return f"{llama_backend.base_url}/v1/chat/completions"
 
 
@@ -30484,6 +30545,10 @@ async def _anthropic_passthrough_stream(
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its stream to Anthropic SSE without executing anything."""
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_passthrough_payload(
         openai_messages,
@@ -30792,6 +30857,10 @@ async def _anthropic_passthrough_non_streaming(
     without disturbing unrelated calls, which left this path registered with the
     swap gate but deaf to the event it registered.
     """
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_passthrough_payload(
         openai_messages,
@@ -31733,6 +31802,10 @@ async def _openai_passthrough_stream_admitted(
     deliberately not re-parsed locally, unlike the ``/completion`` paths.
     """
     _tracker = tracker
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
     # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is seen: the
@@ -32685,6 +32758,10 @@ async def _openai_passthrough_non_streaming_upstream(
     response ``id``, ``finish_reason`` (including ``"tool_calls"``), structured
     ``tool_calls``, and accurate ``usage`` token counts.
     """
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
     body = await _build_openai_passthrough_body_async(

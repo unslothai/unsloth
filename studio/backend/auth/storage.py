@@ -1411,6 +1411,35 @@ def _quiesce_workspace_jobs(username: str) -> None:
                 continue
             backend.unload()
 
+    def _unload_private_resident_text() -> None:
+        # The text backends are process-wide and hold whatever this account last
+        # loaded. The ownership record is keyed by the username, which a namesake
+        # reuses, so leaving either behind hands the replacement a checkpoint the
+        # previous holder loaded. Dropping the record alone is not enough: the
+        # weights stay resident and the next account would be answered from them.
+        from routes.inference import (
+            forget_text_model_owner,
+            resident_text_model_workspace,
+        )
+
+        if resident_text_model_workspace() != username:
+            return
+        forget_text_model_owner(username)
+        try:
+            from routes.inference import get_llama_cpp_backend
+            get_llama_cpp_backend().unload_model()
+        except Exception:  # noqa: BLE001 - an engine that cannot answer is left alone
+            logger.warning("Could not unload the resident GGUF for %s", username, exc_info = True)
+        try:
+            from routes.inference import _peek_inference_backend
+
+            backend = _peek_inference_backend()
+            active = getattr(backend, "active_model_name", None) if backend is not None else None
+            if backend is not None and active:
+                backend.unload_model(active)
+        except Exception:  # noqa: BLE001 - same
+            logger.warning("Could not unload the resident model for %s", username, exc_info = True)
+
     def _reset_diffusion_training() -> None:
         # is_active() is false once a run reaches a terminal state, so the stop
         # above skipped it and the singleton kept the subject alongside the whole
@@ -1456,6 +1485,7 @@ def _quiesce_workspace_jobs(username: str) -> None:
         ("completed video record", _forget_terminal_video),
         ("API monitor entries", _clear_api_monitor),
         ("private resident media models", _unload_private_resident_media),
+        ("private resident text models", _unload_private_resident_text),
     ):
         try:
             run_in_workspace(username, stop)
