@@ -168,6 +168,10 @@ test("a definition lookalike that no parser registers keeps block rendering", ()
     "    [two]: /indented-code-block",
     "-[two]: /no-space-is-not-a-list",
     "1.[two]: /no-space-is-not-a-list",
+    // An indented code block whose first content character is one CommonMark counts as
+    // ordinary content but JavaScript's `\S` calls whitespace.
+    "     first\n    [two]: /still-code",
+    "    \u00a0\n    [two]: /still-code",
   ]) {
     const reply = `Compare [one][two].\n\n${lookalike}\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n`;
     assert.equal(asOneDocument(reply), asBlocks(reply), lookalike);

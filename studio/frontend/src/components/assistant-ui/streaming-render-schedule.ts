@@ -77,7 +77,7 @@ const LINK_DEFINITION_LINE_RE =
   /^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\d{1,9}[.)])[ \t]+))*\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
 // The two block shapes whose body is literal code: an opening fence, and an indent that
 // reaches column four -- four spaces, or a tab, which advances to the same column.
-const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*\S)/;
+const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 // Still the first line of a single block, for `updateLinkDefinitionParity` below.
