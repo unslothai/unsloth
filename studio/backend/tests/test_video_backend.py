@@ -932,9 +932,7 @@ def test_a_stop_during_the_reclaim_cannot_be_answered_true(fake_runtime, tmp_pat
 
     monkeypatch.setattr(video_mod, "reclaim_offload_host_memory", stop_midway)
 
-    result = backend.generate(
-        prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8
-    )
+    result = backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
     # The clip is returned, so the cancel must NOT have claimed success.
     assert result["mp4_bytes"] == b"MP4"
     assert answered == [False], "cancel_generate answered true for a clip that was still persisted"

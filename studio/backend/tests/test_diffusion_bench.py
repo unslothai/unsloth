@@ -113,20 +113,34 @@ def test_compare_refuses_to_overwrite_its_own_baseline(tmp_path, monkeypatch, na
     reference = tmp_path / "reference.png"
     reference.write_bytes(b"reference")
     baseline_path = out_dir / name
-    baseline_path.write_text(json.dumps({
-        "env": {"gpu_name": "test-gpu", "status": {"device": "cuda", "dtype": "bfloat16"}},
-        "generate": {"median_latency_s": 1.0, "peak_vram_bytes": 100,
-                     "host_rss": {"post_warmup_growth_bytes": 0}},
-        "accuracy": {"reference_png": str(reference)},
-    }))
+    baseline_path.write_text(
+        json.dumps(
+            {
+                "env": {"gpu_name": "test-gpu", "status": {"device": "cuda", "dtype": "bfloat16"}},
+                "generate": {
+                    "median_latency_s": 1.0,
+                    "peak_vram_bytes": 100,
+                    "host_rss": {"post_warmup_growth_bytes": 0},
+                },
+                "accuracy": {"reference_png": str(reference)},
+            }
+        )
+    )
     before = baseline_path.read_text()
 
     monkeypatch.setattr(_DIFFUSION_BENCH, "_gpu_name", lambda: "test-gpu")
-    monkeypatch.setattr(_DIFFUSION_BENCH, "_run", lambda args: {
-        "env": {"status": {"device": "cuda", "dtype": "bfloat16"}},
-        "generate": {"median_latency_s": 1.0, "peak_vram_bytes": 100,
-                     "host_rss": {"post_warmup_growth_bytes": 0}},
-    })
+    monkeypatch.setattr(
+        _DIFFUSION_BENCH,
+        "_run",
+        lambda args: {
+            "env": {"status": {"device": "cuda", "dtype": "bfloat16"}},
+            "generate": {
+                "median_latency_s": 1.0,
+                "peak_vram_bytes": 100,
+                "host_rss": {"post_warmup_growth_bytes": 0},
+            },
+        },
+    )
     monkeypatch.setattr(_DIFFUSION_BENCH, "_psnr", lambda ref, candidate: 99.0)
 
     args = SimpleNamespace(
