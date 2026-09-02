@@ -444,6 +444,8 @@ def _opencode_supports_native_auto(command: str = "opencode") -> bool:
         output = subprocess.check_output(
             [executable, "--version"],
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 10,
             stderr = subprocess.DEVNULL,
             env = _probe_env(),
@@ -2875,7 +2877,13 @@ def _claude_version() -> Optional[tuple]:
         return None
     try:
         result = subprocess.run(
-            [executable, "--version"], capture_output = True, text = True, timeout = 10, env = _probe_env()
+            [executable, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            env = _probe_env(),
         )
         # Pull the X.Y.Z out of the output rather than assuming it is the first token.
         # claude prints it first today ("2.1.98 (Claude Code)"), but a format change
@@ -2990,6 +2998,8 @@ def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]
         output = subprocess.check_output(
             [executable, "--version"],
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 10,
             stderr = subprocess.DEVNULL,
             env = _probe_env(),
@@ -3116,9 +3126,17 @@ def _wsl_windows_user_profile(executable: str) -> Path:
             profile = subprocess.check_output(
                 ["cmd.exe", "/d", "/c", "echo %USERPROFILE%"],
                 text = True,
+                encoding = "utf-8",
+                # The path is the value: a corrupted home is worse than a loud failure.
+                errors = "strict",
                 stderr = subprocess.DEVNULL,
                 cwd = str(Path(executable).parent),
             ).strip()
+        except UnicodeDecodeError as exc:
+            _fail(
+                f"Could not read the Windows user profile for Codex ({exc}); "
+                "set USERPROFILE in the WSL environment, for example through WSLENV."
+            )
         except (OSError, subprocess.CalledProcessError) as exc:
             _fail(f"Could not find the Windows user profile for Codex: {exc}")
     if not profile or profile == "%USERPROFILE%":
@@ -3129,6 +3147,8 @@ def _wsl_windows_user_profile(executable: str) -> Path:
         translated = subprocess.check_output(
             ["wslpath", "-u", profile],
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             stderr = subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -3147,6 +3167,8 @@ def _codex_source_home(*, ignore_configured: bool = False) -> Path:
                     configured = subprocess.check_output(
                         ["wslpath", "-u", configured],
                         text = True,
+                        encoding = "utf-8",
+                        errors = "replace",
                         stderr = subprocess.DEVNULL,
                     ).strip()
                 except (OSError, subprocess.CalledProcessError) as exc:
@@ -3180,6 +3202,8 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
             ["cmd.exe", "/d", "/c", "mklink", "/J", str(target), str(source)],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 30,
             check = False,
         )
@@ -3357,6 +3381,8 @@ def _opencode_subagent_inline_config(
                 [executable, "debug", "config"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 15,
                 env = env,
             )
@@ -3569,7 +3595,9 @@ def _wsl_windows_executable(command: list) -> Optional[str]:
 
 def _wsl_windows_path(path: Path) -> str:
     try:
-        translated = subprocess.check_output(["wslpath", "-w", str(path)], text = True).strip()
+        translated = subprocess.check_output(
+            ["wslpath", "-w", str(path)], text = True, encoding = "utf-8", errors = "replace"
+        ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         _fail(f"Could not translate WSL path {path}: {exc}")
     if not translated:

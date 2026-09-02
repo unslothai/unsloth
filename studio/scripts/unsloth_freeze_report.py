@@ -213,7 +213,14 @@ def is_executable(path) -> bool:
 
 def sh(args, timeout = 20):
     try:
-        r = subprocess.run(args, capture_output = True, text = True, timeout = timeout)
+        r = subprocess.run(
+            args,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = timeout,
+        )
         return (r.stdout or r.stderr).strip()
     except (OSError, subprocess.SubprocessError):
         return ""
