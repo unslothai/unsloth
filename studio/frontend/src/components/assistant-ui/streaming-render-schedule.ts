@@ -75,7 +75,7 @@ const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
 // Containers nest, and marked lexes them recursively, so `- > [g]: /x` registers the
 // definition just as `> [g]: /x` does. The leading indent stays capped at three: at four
 // the line is an indented code block, whatever follows it.
-const CONTAINER_PREFIX = "(?:(?:>[ \\t]?)|(?:(?:[-*+]|\\d{1,9}[.)])[ \\t]+)){0,6}";
+const CONTAINER_PREFIX = "(?:(?:>[ \\t]?)|(?:(?:[-*+]|\\d{1,9}[.)])[ \\t]+))*";
 const LINK_DEFINITION_LINE_RE = new RegExp(
   `^ {0,3}${CONTAINER_PREFIX}\\[(?:\\\\.|[^\\]\\n\\\\]){1,200}\\]:`,
   "m",
@@ -84,6 +84,7 @@ const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(`{3,}|~{3,})/;
 const FENCE_CLOSE_SUFFIX_RE = /^[ \t]*\r?$/;
+const BLANK_LINE_RE = /^[ \t]*\r?$/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -120,8 +121,18 @@ const HTML_BRACKETED_OPENERS: readonly (readonly [RegExp, RegExp])[] = [
   [/^ {0,3}<!\[CDATA\[/, /\]\]>/],
   [/^ {0,3}<![A-Za-z]/, />/],
 ];
-const HTML_BLOCK_OPEN_RE =
-  /^ {0,3}<\/?(?:address|article|aside|blockquote|details|div|dl|fieldset|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|section|table|tbody|td|tfoot|th|thead|tr|ul)[\s>/]/i;
+// CommonMark's type-6 tag list, in full. A tag missing from it is read as an ordinary
+// paragraph, and a fence marker inside one would then move the fence state wrongly.
+const HTML_BLOCK_TAGS =
+  "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|" +
+  "details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|" +
+  "h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|" +
+  "optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|" +
+  "track|ul";
+const HTML_BLOCK_OPEN_RE = new RegExp(
+  `^ {0,3}</?(?:${HTML_BLOCK_TAGS})(?:[ \\t/>]|$)`,
+  "i",
+);
 
 function textOutsideFencedCode(markdown: string): string {
   const lines: string[] = [];
@@ -161,7 +172,7 @@ function textOutsideFencedCode(markdown: string): string {
       continue;
     }
     if (HTML_BLOCK_OPEN_RE.test(line)) {
-      htmlClose = /^\s*$/;
+      htmlClose = BLANK_LINE_RE;
       lines.push(line);
       continue;
     }
