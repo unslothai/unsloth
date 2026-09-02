@@ -152,6 +152,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
+import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -6292,10 +6293,11 @@ export function createOpenAIStreamAdapter(
                             ...(ragAutoInject === "off"
                               ? { whole_doc: false }
                               : {}),
-                            context_length:
-                              runtime.loadedContextLength ??
-                              params.maxSeqLength ??
-                              undefined,
+                            context_length: ragScopeContextLength({
+                              isExternalRequest,
+                              loadedContextLength: runtime.loadedContextLength,
+                              maxSeqLength: params.maxSeqLength,
+                            }),
                           },
                         }
                       : {}),
@@ -6514,10 +6516,11 @@ export function createOpenAIStreamAdapter(
                           ...(ragAutoInject === "off"
                             ? { whole_doc: false }
                             : {}),
-                          context_length:
-                            runtime.loadedContextLength ??
-                            params.maxSeqLength ??
-                            undefined,
+                          context_length: ragScopeContextLength({
+                            isExternalRequest,
+                            loadedContextLength: runtime.loadedContextLength,
+                            maxSeqLength: params.maxSeqLength,
+                          }),
                         },
                       }
                     : {}),
