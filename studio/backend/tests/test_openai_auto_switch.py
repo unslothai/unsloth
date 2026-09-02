@@ -3891,7 +3891,6 @@ def test_minimax_has_no_window_to_preflight_against(monkeypatch):
     # _context_length returns 0 for MiniMax, so there is no limit a saved override or a
     # declared window could impose; refusing against one would be inventing a rule.
     from utils import openai_auto_switch_settings as settings
-
     monkeypatch.setattr(
         settings,
         "resolve_override_for_load",
