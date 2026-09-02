@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# Regression test: the path resolver must work in a clean interpreter with only
-# its declared dependency present, and seeding the cache environment must not
-# have surprising side effects.
-#
-# The database check is the one that caught a real problem: get_app_setting opens
-# a connection, which CREATES and migrates studio.db, so routing the CLI through
-# this resolver built a ~250 KB database on machines that had never opened
-# Studio. Needs uv on PATH; skips cleanly without it.
+# The path resolver must work in a clean interpreter with only structlog, and
+# seeding must create no studio.db (get_app_setting CREATES one). Needs uv.
 set -u
 REPO="${1:-$(CDPATH= cd -P -- "$(dirname "$0")/../.." && pwd -P)}"
 if ! command -v uv >/dev/null 2>&1; then

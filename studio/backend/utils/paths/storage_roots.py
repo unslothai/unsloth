@@ -50,38 +50,23 @@ def _resolved(value: str) -> Path:
 
 
 def unsloth_home() -> Path | None:
-    """The master root every Unsloth-owned directory hangs off, or None.
+    """The master root every Unsloth-owned directory hangs off, or None. One level
+    above STUDIO_HOME, so managed tools live at <UNSLOTH_HOME>/studio/<tool>.
 
-    Set by a portable install (`install.sh --portable` / `--root DIR`). This is
-    one level above STUDIO_HOME: `studio/` is a child of it, and the shared
-    caches hang off the tree.
-
-    The managed tools are NOT siblings of `studio/` today. llama.cpp, node and
-    whisper.cpp are resolved off studio_root() (main.py, run.py,
-    utils/node_runtime.py, core/inference/stt_ggml_sidecar.py), so they live at
-    <UNSLOTH_HOME>/studio/<tool>.
-
-    Careful with the name: studio/setup.sh and scripts/build_whisper_cpp.sh
-    already use UNSLOTH_HOME for the managed root ITSELF (the studio root, or
-    ~/.unsloth), not for its parent. Reading it here as the parent means a shell
-    that exports UNSLOTH_HOME=/portable and then runs the whisper builder gets
-    /portable/whisper.cpp while the resolver above looks in
-    /portable/studio/whisper.cpp. Settle the two spellings before the installer
-    starts exporting this.
+    Name clash: studio/setup.sh and scripts/build_whisper_cpp.sh use UNSLOTH_HOME
+    for the studio root ITSELF, so they would build /portable/whisper.cpp while
+    this resolver looks in /portable/studio/whisper.cpp.
     """
     override = (os.environ.get("UNSLOTH_HOME") or "").strip()
     return _resolved(override) if override else None
 
 
 def portable_mode() -> bool:
-    """Whether this install promises to keep everything under one directory.
-
-    Implied by UNSLOTH_HOME, since nothing sets that but a portable install, and
-    settable on its own so an existing UNSLOTH_STUDIO_HOME install can opt in.
+    """Whether this install keeps everything under one directory. Implied by
+    UNSLOTH_HOME, and settable on its own so an existing install can opt in.
     """
-    # Case-folded: an environment flag is written however the shell that set it
-    # felt like writing it, and reading UNSLOTH_PORTABLE=FALSE as "on" would move
-    # the HF caches out from under a user who asked for the opposite.
+    # Case-folded: UNSLOTH_PORTABLE=FALSE read as "on" would move the HF caches
+    # out from under a user who asked for the opposite.
     if (os.environ.get("UNSLOTH_PORTABLE") or "").strip().lower() not in (
         "", "0", "false", "off", "no",
     ):
@@ -94,9 +79,8 @@ def studio_root() -> Path:
 
     Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then UNSLOTH_HOME's
     studio/ child, then sys.prefix inference, then legacy ~/.unsloth/studio.
-    UNSLOTH_STUDIO_HOME wins if both are set (specific signal beats generic
-    alias), and it also outranks UNSLOTH_HOME: it names this exact directory,
-    while UNSLOTH_HOME only names the tree it would sit in.
+    UNSLOTH_STUDIO_HOME outranks both: it names this exact directory, while the
+    others only name the tree it sits in.
     """
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
@@ -105,8 +89,7 @@ def studio_root() -> Path:
         resolved = _resolved(override)
         master = unsloth_home()
         if master is not None and master not in resolved.parents:
-            # Not fatal: a split install still works, it just is not contained,
-            # and failing here would break a resolver called at import time.
+            # Not fatal: failing here would break a resolver called at import time.
             logger.warning(
                 "UNSLOTH_STUDIO_HOME (%s) is outside UNSLOTH_HOME (%s); this "
                 "install is not self-contained.",
@@ -408,17 +391,10 @@ def well_known_model_dirs() -> list[Path]:
 
 
 def _portable_cache_defaults(root: Path) -> dict[str, str]:
-    """Cache vars that only move under the root in portable mode.
-
-    These hold shared user data or large re-downloads, so a default install
-    leaves them where the rest of the ecosystem looks and only a portable install
-    pays the cold-cache cost. The hub and xet caches are not here: they come from
-    hf_cache_settings.get_hf_cache_paths, which has to agree with the Settings UI
-    and with every worker's child_env, so portable mode is a fallback tier inside
-    that resolver instead of a second opinion out here.
-
-    HF_HOME stays put in every mode: it is where the token lives, and
-    credentials should not follow a cache onto a removable volume.
+    """Cache vars that only move under the root in portable mode, since they hold
+    shared user data or large re-downloads. The hub and xet caches are handled
+    inside hf_cache_settings, which must agree with the Settings UI. HF_HOME
+    never moves: credentials should not follow a cache onto a removable volume.
     """
     if not portable_mode():
         return {}
@@ -431,16 +407,10 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
 def _triton_cache_defaults(root: Path) -> dict[str, str]:
     """Triton's directories, without stepping on a TRITON_HOME the user set.
 
-    TRITON_HOME names the directory Triton creates its ".triton" under, not that
-    directory itself (triton/knobs.py: ``get_triton_dir`` joins
-    ``home_dir/".triton"/name``), so pinning it yields <cache>/.triton rather
-    than a redundant triton/.triton, and it is the one lever that covers the
-    cache, dump and override dirs at once (triton-lang/triton#4265).
-
-    TRITON_CACHE_DIR outranks that derivation for the cache, so it is only ours
-    to fill when TRITON_HOME is ours too: a user who exported TRITON_HOME asked
-    for <TRITON_HOME>/.triton/cache, and pinning TRITON_CACHE_DIR anyway would
-    split their kernels away from the dump and override dirs we just left there.
+    TRITON_HOME is the PARENT Triton joins ".triton" under, not that directory
+    itself, and is the one lever covering the cache, dump and override dirs at
+    once (triton-lang/triton#4265). TRITON_CACHE_DIR outranks that derivation, so
+    it is only ours to fill when TRITON_HOME is ours too.
     """
     if (os.environ.get("TRITON_HOME") or "").strip():
         return {}
@@ -453,22 +423,11 @@ def _triton_cache_defaults(root: Path) -> dict[str, str]:
 def _data_designer_defaults(root: Path) -> dict[str, str]:
     """Data Designer's home, unless the user already has one.
 
-    DATA_DESIGNER_HOME is not a cache: the library reads model_configs.yaml,
-    model_providers.yaml, mcp_providers.yaml and tool_configs.yaml out of it, and
-    `data-designer download personas` writes multi-GB parquet under its
-    managed-assets/. Repointing an existing ~/.data-designer therefore does not
-    move that state, it hides it, and the new home is silently re-seeded with
-    built-in defaults. So this pins the home only when there is nothing to
-    strand -- the same rule the HF hub cache follows above.
-
-    MANAGED_ASSETS_PATH is derived by the library as
-    <DATA_DESIGNER_HOME>/managed-assets, so it is only ours to set when the home
-    is ours as well. Forcing it against someone else's home splits the CLI
-    downloader (which always writes <HOME>/managed-assets/datasets) from the SDK
-    reader, and the reader then raises for a storage path that does not exist.
-
-    Read at import time by data_designer.config.utils.constants, so this has to
-    be set before the Data Recipes worker imports the package.
+    Not a cache: repointing an existing ~/.data-designer hides its yaml configs
+    and multi-GB parquet behind a re-seeded default. MANAGED_ASSETS_PATH is
+    derived as <DATA_DESIGNER_HOME>/managed-assets, so it is only ours to set
+    when the home is. DATA_DESIGNER_HOME is read at IMPORT time by
+    data_designer.config.utils.constants.
     """
     if (os.environ.get("DATA_DESIGNER_HOME") or "").strip():
         return {}
@@ -503,18 +462,14 @@ def _setup_cache_env() -> None:
         # cache landed in the user home. Must be set before unsloth_zoo.compiler imports: it reads the value at import
         # time and puts it on sys.path.
         "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
-        # Everything below is regenerable and scoped to this process, so pinning
-        # it costs a cold cache once and keeps the home directory clean. Shared
-        # user data (the HF hub cache, torch.hub checkpoints) is deliberately NOT
-        # here: models downloaded before Unsloth, or shared with LM Studio and
-        # Ollama, must stay where the other tools look. Portable mode moves those
-        # too, because there the whole point is a self-contained directory.
+        # Regenerable and process-scoped. Shared user data (HF hub cache,
+        # torch.hub checkpoints) stays where the other tools look, except in
+        # portable mode.
         "TORCHINDUCTOR_CACHE_DIR": str(root / "torchinductor"),
         "TORCH_EXTENSIONS_DIR": str(root / "torch-extensions"),
         # NVIDIA's JIT compile cache; ~/.nv/ComputeCache otherwise.
         "CUDA_CACHE_PATH": str(root / "cuda"),
-        # matplotlib is imported for the loss plots and otherwise writes to both
-        # ~/.config/matplotlib and ~/.cache/matplotlib.
+        # Otherwise writes to both ~/.config/matplotlib and ~/.cache/matplotlib.
         "MPLCONFIGDIR": str(root / "matplotlib"),
         "NUMBA_CACHE_DIR": str(root / "numba"),
     }

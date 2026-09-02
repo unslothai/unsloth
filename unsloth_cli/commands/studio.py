@@ -45,8 +45,8 @@ def _enable_verbose_access_logs() -> None:
 # Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then
 # UNSLOTH_HOME's studio/ child, then sys.prefix inference (so a direct call to
 # <root>/bin/unsloth resolves after the installer's env var has expired), then
-# legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins when both env vars are set.
-# Same order as storage_roots.studio_root(); the two must not disagree.
+# legacy ~/.unsloth/studio. Same order as storage_roots.studio_root(); the two
+# must not disagree.
 # Both halves, and the 8 KB ceiling, are Test-UnslothCmdShimFile's in install.ps1 and
 # _IsUnslothCmdShim's in scripts/uninstall.ps1. Bytes, not text: the shim is written
 # without a BOM but an edited copy may carry one, and a decode error here would be
@@ -106,12 +106,8 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             return Path(override).expanduser().resolve(), True
         except (OSError, ValueError):
             return Path(override).expanduser(), True
-    # UNSLOTH_HOME names the tree the install sits in, and storage_roots.py puts
-    # studio/ directly under it. Reading it here too is what keeps the CLI and
-    # the backend on one root: without it the backend writes its database, auth
-    # files and pid file under <UNSLOTH_HOME>/studio while this process looks for
-    # them in ~/.unsloth/studio, so `studio start` cannot find the bootstrap
-    # password it just printed and `studio stop` cannot find the server.
+    # Keeps the CLI on the same root as storage_roots.py; see
+    # tests/test_unsloth_home_root_agreement.py.
     master = (os.environ.get("UNSLOTH_HOME") or "").strip()
     if master:
         try:

@@ -14,14 +14,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""UNSLOTH_HOME has to mean the same install to the CLI and to the backend.
-
-storage_roots.studio_root() puts studio/ directly under UNSLOTH_HOME. The CLI
-resolves its own copy of that root at import time (commands/studio.py), and the
-two disagreeing is not a cosmetic split: the backend would write studio.db, the
-auth directory and the pid file under <UNSLOTH_HOME>/studio while `unsloth
-studio start` reads the bootstrap password out of ~/.unsloth/studio/auth and
-`unsloth studio stop` looks for a pid file that is not there.
+"""UNSLOTH_HOME has to mean the same install to the CLI and to the backend: if
+the two disagree the backend writes studio.db, auth and the pid file under
+<UNSLOTH_HOME>/studio while the CLI reads ~/.unsloth/studio.
 """
 
 from __future__ import annotations
@@ -71,8 +66,7 @@ def test_unsloth_home_resolves_to_one_studio_root(tmp_path):
 
     assert result["backend"] == str(master / "studio")
     assert result["cli"] == result["backend"]
-    # Custom, so `unsloth studio ...` re-exports UNSLOTH_STUDIO_HOME and every
-    # child (hub paths, the llama.cpp and node resolvers) lands on the same root.
+    # Custom, so `unsloth studio ...` re-exports UNSLOTH_STUDIO_HOME.
     assert result["cli_is_custom"] is True
 
 
