@@ -6922,7 +6922,9 @@ def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
 
 
 def _reject_private_generation_time_repo(
-    identifier: Any, what: str, hf_token: Any = None
+    identifier: Any,
+    what: str,
+    hf_token: Any = None,
 ) -> None:
     """A repo named at generation time is fetched on the LOADER's credential.
 
