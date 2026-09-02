@@ -6903,9 +6903,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
     return index > 0 ? thread.messages[index - 1].id : null;
   });
 
-  // Hands the started run back to its caller, untyped. `startRun` is declared to return `void`
-  // and returns the roundtrip's promise, which is the only handle identified with THIS run and
-  // so the only thing that can say it has ended rather than that some run on this thread has.
+  // Hands the started run back, untyped: `startRun` is declared `void` and returns the
+  // roundtrip's promise, the only handle identified with THIS run.
   const startContinuation = useCallback((): unknown => {
     const messages = aui.thread().getState().messages;
     const index = messages.findIndex((message) => message.id === messageId);
@@ -7029,11 +7028,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
         // Recorded BEFORE the run, so a round that produces nothing still spends its
         // budget instead of re-firing this effect forever.
         recordAutoContinue(parentId);
-        // The run's own promise is what ends the hold if this preflight is stopped: an
-        // aborted run raises no failure, by design, since the abort is what was asked for.
-        // Taken from the run itself rather than from anything per-thread, because the next
-        // round is claimed while the previous one is still winding down and only the promise
-        // says WHICH run ended.
+        // The run's own promise is what ends the hold if this preflight is stopped: an aborted
+        // run raises no failure, by design.
         watchAutoContinueRun(messageId, runThreadId, startContinuation());
         return;
       }

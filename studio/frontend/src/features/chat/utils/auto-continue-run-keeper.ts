@@ -121,17 +121,10 @@ export function holdAutoContinueRun(
 /**
  * Tie the hold just taken for `messageId` to the run the bar has just issued for it.
  *
- * `started` is whatever `startRun` handed back, passed through untyped: the runtime declares
- * `void` and returns the roundtrip's promise, and `issuedRunFrom` is what decides which of
- * those it actually got.
- *
- * This is the only thing that ends a hold whose preflight the user STOPPED. That run raises no
- * failure -- the abort is what was asked for, so the adapter wrapper skips its notice on
- * purpose -- and it never reached the stream flag either, so without this the hold renewed its
- * lease until the tab closed and every other tab refused the message for just as long.
- *
- * Nothing here reads a clock. A preflight that is merely long leaves the promise pending, and
- * a pending promise settles nothing, which is what the absence of an arming deadline is for.
+ * `started` is whatever `startRun` handed back, passed through untyped; `issuedRunFrom` decides
+ * what it actually got. This is the only thing that ends a hold whose preflight the user
+ * STOPPED: that run raises no failure and never reached the stream flag, so without it the hold
+ * renewed its lease until the tab closed and every other tab refused the message meanwhile.
  */
 export function watchAutoContinueRun(
   messageId: string,

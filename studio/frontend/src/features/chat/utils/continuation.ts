@@ -1041,24 +1041,14 @@ export type AutoContinueRunSignal = {
 /**
  * The run a hold was taken for, and the one thing that knows when it is over: its own promise.
  *
- * `AutoContinueRunSignal` answers off the STREAM. It turns true when the first token is on its
- * way, which is what a lease's lifetime is read from, and says nothing about the minutes before
- * that -- deliberately, because preflight has no upper bound. It is also silent when the user
- * ENDS that preflight: Stop aborts the run's signal, the adapter wrapper skips its per-thread
- * failure notice precisely because the abort is what was asked for, and the stream flag never
- * moved in either direction. So the hold had nothing to arm on and nothing to settle on, and
- * renewed its lease for the life of the tab.
+ * `AutoContinueRunSignal` answers off the STREAM, so it is silent for a preflight the user
+ * STOPPED: the abort raises no failure, on purpose, and the flag never moved in either
+ * direction. `startRun` hands back a promise that settles when THAT run ends however it ends,
+ * and is pending for the whole preflight, so a run that is merely slow settles nothing.
  *
- * `startRun` hands back a promise that settles when THAT run ends, however it ends -- finished,
- * failed, or cancelled in the middle of a model load. It is pending for the whole preflight, so
- * a run that is merely slow settles nothing and keeps its hold and its renewals; no clock is
- * consulted anywhere.
- *
- * It has to be the run's OWN promise rather than any per-thread notice of a run ending. The
- * next round is claimed while the previous one is still winding down, and a thread-wide signal
- * cannot say which of the two ended: the predecessor's end would settle the successor's hold
- * mid-preflight and lapse the lease under a live continuation. A promise is the only handle
- * here that is identified with one run.
+ * It must be the run's OWN promise. The next round is claimed while the previous one is still
+ * winding down, and a thread-wide notice cannot say which of the two ended: the predecessor's
+ * would settle the successor's hold mid-preflight and lapse the lease under a live run.
  */
 export type AutoContinueIssuedRun = {
   whenSettled(onSettled: () => void): void;
@@ -1087,12 +1077,10 @@ export type AutoContinueIssuedRun = {
  * Renewing instead costs only this: a claim whose run genuinely never starts holds its lease
  * until the tab is closed, and the manual Continue button is never gated on any of it.
  *
- * What ends such a hold is a FACT reported by something that knows, never an elapsed time.
- * There are two, and they are the two ways a preflight can end without a stream: `failed`,
- * which the adapter wrapper announces when `adapter.run` throws, and `settleOn`, which is the
- * run's own promise settling and so covers the abort the wrapper deliberately says nothing
- * about. Neither is a deadline in disguise: a preflight that is merely long reports nothing,
- * settles nothing, and keeps its hold and its renewals for as long as it takes.
+ * What ends such a hold is a FACT reported by something that knows, never an elapsed time:
+ * `failed`, the adapter wrapper announcing that `adapter.run` threw, and `settleOn`, the run's
+ * own promise settling, which is what a stopped preflight looks like. A preflight that is
+ * merely long reports neither and keeps its hold and its renewals for as long as it takes.
  */
 export function createAutoContinueLeaseKeeper({
   signal,
@@ -1138,19 +1126,15 @@ export function createAutoContinueLeaseKeeper({
     const at = now();
     for (const [id, hold] of [...holds]) {
       if (hold.settled && !hold.armed) {
-        // Its own run is over and the stream never began: Stop during preflight, which the
-        // adapter wrapper reports to nobody because the abort is what was asked for.
-        // Discarded exactly as a failed preflight is -- forgotten, never released -- so the
-        // lease lapses on its own TTL rather than being renewed for the life of the tab, and
-        // no `done` marker claims a message that produced not one token.
+        // Its own run is over and the stream never began: Stop during preflight. Discarded as
+        // a failed preflight is, so the lease lapses on its own TTL and no `done` marker
+        // claims a message that produced not one token.
         //
-        // Ahead of the running check, not after it: a hold whose own run is over must not be
-        // armed by whatever is on the thread now. Only ahead of it, though. An ARMED hold is
-        // left to the ordinary path even while the thread still reads busy, because the key
-        // can carry a second owner -- `scheduleGenerationRecovery` follows a durable run from
-        // outside the adapter -- and that says nothing about whether this hold's own run
-        // streamed. Dropping it there would withhold the `done` marker from a continuation
-        // that did stream, and another tab would pay for it again once the lease lapsed.
+        // Ahead of the running check so nothing on the thread now can arm it, and only for an
+        // UNARMED hold: the key can carry a second owner (`scheduleGenerationRecovery` follows
+        // a durable run from outside the adapter), which says nothing about whether this
+        // hold's own run streamed. Dropping an armed hold there costs a continuation that did
+        // stream its marker, and the next tab pays for it again.
         holds.delete(id);
         continue;
       }
@@ -1199,14 +1183,9 @@ export function createAutoContinueLeaseKeeper({
     /**
      * Tie an existing hold to the run that was just issued for it.
      *
-     * Separate from `hold` because the hold is taken on the line BEFORE the run is started --
-     * it has to be, since the bar unmounts as soon as the continuation's sibling becomes the
-     * selected branch -- so the promise does not exist yet when the hold does.
-     *
-     * The callback is scoped to this exact hold, not to the message or the thread. A round
-     * that hits Max Tokens again is claimed moments later under the same key, and an older
-     * round's promise settling must not reach into the new round's hold and settle a
-     * preflight that has only just begun.
+     * Separate from `hold` because the hold is taken on the line BEFORE the run starts: the
+     * bar unmounts as soon as the continuation's sibling becomes the selected branch, so the
+     * promise does not exist yet when the hold does.
      */
     settleOn(messageId, threadId, issued) {
       if (!issued || !messageId || !threadId) {
@@ -1217,11 +1196,8 @@ export function createAutoContinueLeaseKeeper({
         return;
       }
       issued.whenSettled(() => {
-        // Marked on the hold this run was issued for, CAPTURED here rather than looked up
-        // again when it settles. The same key is claimed again as soon as a round hits Max
-        // Tokens once more, and an older round's run reaching into the hold that replaced it
-        // would settle a preflight that has only just begun. A hold already given back is
-        // simply detached by then, and marking it reaches nothing.
+        // The captured hold, never a fresh lookup: the same key is claimed again as soon as
+        // the next round hits Max Tokens, and this run must not settle that round's preflight.
         hold.settled = true;
         observe();
       });
