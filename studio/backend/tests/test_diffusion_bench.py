@@ -28,10 +28,7 @@ _SPEC.loader.exec_module(_DIFFUSION_BENCH)
     ((math.inf, 0), (-math.inf, 1), (math.nan, 1)),
 )
 def test_compare_report_serializes_non_finite_psnr_as_strict_json(
-    tmp_path,
-    monkeypatch,
-    psnr,
-    expected_exit,
+    tmp_path, monkeypatch, psnr, expected_exit
 ):
     reference = tmp_path / "reference.png"
     reference.write_bytes(b"reference")
@@ -62,19 +59,19 @@ def test_compare_report_serializes_non_finite_psnr_as_strict_json(
     monkeypatch.setattr(_DIFFUSION_BENCH, "_psnr", lambda ref, candidate: psnr)
     out_dir = tmp_path / "out"
     args = SimpleNamespace(
-        compare=str(baseline_path),
-        out_dir=str(out_dir),
-        force_compare=False,
-        max_latency_regression=0.1,
-        max_vram_regression=0.1,
-        max_host_rss_growth_mib=1.0,
-        min_psnr=30.0,
+        compare = str(baseline_path),
+        out_dir = str(out_dir),
+        force_compare = False,
+        max_latency_regression = 0.1,
+        max_vram_regression = 0.1,
+        max_host_rss_growth_mib = 1.0,
+        min_psnr = 30.0,
     )
 
     assert _DIFFUSION_BENCH._compare(args) == expected_exit
     report_text = (out_dir / "compare.json").read_text()
     report = json.loads(
         report_text,
-        parse_constant=lambda token: pytest.fail(f"non-standard JSON constant: {token}"),
+        parse_constant = lambda token: pytest.fail(f"non-standard JSON constant: {token}"),
     )
     assert report["comparison"]["psnr_db"] is None
