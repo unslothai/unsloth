@@ -202,3 +202,45 @@ def test_null_cells_match_the_merged_prompt_path():
     plain = to_sharegpt(Dataset.from_dict(rows))
 
     assert [r["conversations"] for r in merged] == [r["conversations"] for r in plain]
+
+
+def test_conversation_extension_with_columns_kept():
+    # Both flags are documented. Extending shuffled copies used to concatenate
+    # the caller's columns once per extension, which datasets rejects.
+    to_sharegpt = _load_to_sharegpt()
+    converted = to_sharegpt(
+        _alpaca(),
+        merged_prompt = "{instruction}",
+        remove_unused_columns = False,
+        conversation_extension = 3,
+    )
+
+    assert converted.column_names == ["instruction", "output", "conversations"]
+    assert len(converted[0]["conversations"]) == 6
+
+
+def test_conversation_extension_drops_its_scaffolding_columns():
+    to_sharegpt = _load_to_sharegpt()
+    for extension in (2, 3, 4):
+        converted = to_sharegpt(
+            _alpaca(),
+            merged_prompt = "{instruction}",
+            remove_unused_columns = False,
+            conversation_extension = extension,
+        )
+        numbered = [name for name in converted.column_names if name.startswith("conversations")]
+        assert numbered == ["conversations"], converted.column_names
+        assert len(converted[0]["conversations"]) == 2 * extension
+
+
+def test_conversation_extension_unchanged_when_columns_removed():
+    to_sharegpt = _load_to_sharegpt()
+    converted = to_sharegpt(
+        _alpaca(),
+        merged_prompt = "{instruction}",
+        conversation_extension = 3,
+    )
+
+    assert converted.column_names == ["conversations"]
+    assert len(converted[0]["conversations"]) == 6
+    assert all(turn["value"] for row in converted for turn in row["conversations"])
