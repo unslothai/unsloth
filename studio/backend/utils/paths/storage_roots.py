@@ -400,6 +400,9 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
         return {}
     return {
         "HF_DATASETS_CACHE": str(root / "huggingface" / "datasets"),
+        # Derived as <HF_HOME>/assets otherwise, which is the host copy we leave
+        # behind, so the one HF root that would still write outside the volume.
+        "HF_ASSETS_CACHE": str(root / "huggingface" / "assets"),
         "TORCH_HOME": str(root / "torch"),
     }
 
