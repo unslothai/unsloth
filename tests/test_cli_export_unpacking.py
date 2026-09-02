@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from pathlib import Path
@@ -12,11 +13,6 @@ from pathlib import Path
 import pytest
 import typer
 from typer.testing import CliRunner
-
-# Import the CLI package before any test stubs studio.backend: unsloth_cli/__init__.py
-# reaches studio.backend.utils through commands/start.py, and the stub in
-# _install_fake_studio_backend shadows it, so whichever test ran first errored in setup.
-import unsloth_cli.commands.export  # noqa: F401
 
 
 class _FakeExportBackend:
@@ -55,6 +51,10 @@ class _FakeExportBackend:
 
 def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inject a fake studio.backend.core.export into sys.modules so the CLI's lazy import binds to it; parent packages stubbed to skip the structlog-dependent tree."""
+    # Load the real CLI first: unsloth_cli/__init__.py reaches studio.backend.utils through
+    # commands/start.py, and the stubs below shadow it, so whichever test ran first errored.
+    importlib.import_module("unsloth_cli.commands.export")
+
     for name in ("studio", "studio.backend", "studio.backend.core"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
