@@ -17,6 +17,18 @@ export function artifactKindSupportsFamilyOverride(
   );
 }
 
+/** A family choice may classify only a structurally valid row whose task is unknown. */
+export function taskOpaqueArtifactSupportsFamilyOverride(
+  task: string | null | undefined,
+  artifactKind: string | null | undefined,
+  requiredKind: FamilyOverrideArtifactKind | null | undefined,
+): boolean {
+  return (
+    (task == null || task.trim() === "") &&
+    artifactKindSupportsFamilyOverride(artifactKind, requiredKind)
+  );
+}
+
 /** Restore the selector from the canonical family that actually engaged, not a request alias. */
 export function resolvedFamilyOverrideSelection(
   control:

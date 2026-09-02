@@ -62,6 +62,6 @@ test("pinned pipeline paths retain their Hub selector identity across remounts",
   const images = source("../src/features/images/images-page.tsx");
   assert.ok(images.includes("displayRepoId: status.display_repo_id ?? undefined"));
   assert.ok(picker.includes("c.load_id.trim() !== c.repo_id.trim()"));
-  assert.ok(inventory.includes("artifactKindSupportsFamilyOverride("));
+  assert.ok(inventory.includes("taskOpaqueArtifactSupportsFamilyOverride("));
   assert.ok(picker.includes("c.opaque === true"));
 });

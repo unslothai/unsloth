@@ -1449,6 +1449,7 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
     backend = VideoBackend()
     status = backend.load_pipeline(
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        display_repo_id = "Org/pinned-hv15",
         model_kind = "pipeline",
     )
     assert status["family"] == "hunyuanvideo-1.5"
@@ -1466,6 +1467,7 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
     assert pipe.scheduler.calls == 4
     assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
     assert result["num_frames"] == 9 and result["has_audio"] is False
+    assert result["repo_id"] == "Org/pinned-hv15"
 
 
 def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
@@ -5773,10 +5775,12 @@ def test_h3_native_generate_records_the_build_it_ran_on(monkeypatch):
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
+    object.__setattr__(backend._state, "display_repo_id", "Org/pinned-h3")
 
     result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
 
     state = backend._state
+    assert result["repo_id"] == "Org/pinned-h3"
     assert result["model_kind"] == state.kind == "gguf"
     assert result["gguf_filename"] == state.gguf_filename
     assert result["memory_mode"] == state.memory_mode

@@ -84,6 +84,7 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .model_ids import hf_cache_repo_id
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
@@ -4992,11 +4993,12 @@ class DiffusionBackend:
         LOWERS the estimate -- a table that reads higher than the shards (a narrow fp8 base that
         upcasts) is already handled in the plan, and taking the max here would double-count it.
         Left alone entirely for single-file/GGUF kinds, whose on-disk size IS their resident size,
-        on any target that is not sized in bf16, and for a LOCAL directory: the table is keyed on
-        upstream repo ids, so a local checkpoint can only ever reach the coarse family entry, and
-        a family covering more than one size (a local FLUX.2-klein 9B against klein's 4B default)
-        would be lowered to a number less than half what it loads. On disk is the measured truth
-        there; only a hub id the table actually recognises earns the substitution."""
+        on any target that is not sized in bf16, and for a LOCAL directory outside the Hugging Face
+        cache: the table is keyed on upstream repo ids, so an arbitrary local checkpoint can only
+        ever reach the coarse family entry, and a family covering more than one size (a local
+        FLUX.2-klein 9B against klein's 4B default) would be lowered to a number less than half what
+        it loads. On disk is the measured truth there. A ``models--*/snapshots/*`` path can recover
+        its Hub provenance and earns the substitution only when the exact id is recognised."""
         try:
             # A whole-pipeline single file (SDXL) carries the U-Net, VAE and text encoders itself, and the base repo is
             # read for config only -- but the plan still adds the base's cached companion weights, so a user who once
@@ -5014,7 +5016,15 @@ class DiffusionBackend:
                         },
                     )
                 return plan
-            if kind != "pipeline" or _is_local_path(base):
+            if kind != "pipeline":
+                return plan
+            # A scanner-pinned Hub pipeline loads from its immutable snapshot path. Recover the
+            # logical Hub identity from that path for table lookups; unlike display_repo_id this
+            # provenance is not caller-controlled. Ordinary local directories retain their
+            # measured on-disk size and never borrow a coarse family estimate.
+            local_base = _is_local_path(base)
+            table_base = hf_cache_repo_id(base) if local_base else base
+            if local_base and table_base is None:
                 return plan
             import torch
 
@@ -5025,13 +5035,13 @@ class DiffusionBackend:
             # carrying two sizes that entry is the smaller one, so a 9B derivative would be lowered to the 4B number and
             # walk past the refusal. Accept the family's own default base and anything with an explicit override;
             # anything else keeps its measured size.
-            canonical = canonical_base(base)
+            canonical = canonical_base(table_base)
             if (
-                base_repo_bf16_components_gb(base) is None
+                base_repo_bf16_components_gb(table_base) is None
                 and canonical.lower() != str(getattr(fam, "base_repo", "") or "").lower()
             ):
                 return plan
-            table = family_bf16_components_gb(fam, base)
+            table = family_bf16_components_gb(fam, table_base)
             if table is None:
                 return plan
             # The table's encoder term is the DENSE one. When this pick takes its encoder pre-cast from a hosted fp8
@@ -5045,7 +5055,7 @@ class DiffusionBackend:
                 fam,
                 te_quant_mode = text_encoder_quant,
                 target = target,
-                base = base,
+                base = table_base,
             )
             transformer_gb, text_encoders_gb, vae_gb = table
             resident_gb = transformer_gb + text_encoders_gb * te_scale + vae_gb
@@ -6239,7 +6249,7 @@ class DiffusionBackend:
                     "images": list(images),
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
-                    "repo_id": state.repo_id,
+                    "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD this ran on, not just the repo id: a GGUF quant and a torchao scheme each change the
                     # pixels.
                     "model_kind": state.kind,

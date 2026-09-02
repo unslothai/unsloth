@@ -1010,6 +1010,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
 
     status = backend.load_pipeline(
         str(tmp_path),
+        display_repo_id = "Org/pinned-z-image",
         gguf_filename = "model.gguf",
         base_repo = "base/repo",
         family_override = "z-image",
@@ -1033,7 +1034,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
         prompt = "a sloth", negative_prompt = "blurry", width = 512, height = 512, steps = 4, guidance = 3.0
     )
     assert gen["seed"] == 4242  # random seed reported back
-    assert gen["repo_id"] == str(tmp_path)  # echoed so the route can record the model
+    assert gen["repo_id"] == "Org/pinned-z-image"  # stable picker identity for the recipe
     assert len(gen["images"]) == 1  # PIL images handed to the route for persistence
     # z-image guides via guidance_scale; the signature-gated negative_prompt and the step callback both land.
     call = backend._state.pipe.last_kwargs
@@ -9532,6 +9533,46 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
         plan, fam, "black-forest-labs/FLUX.2-klein-4B", target, "pipeline"
     )
     assert lowered.estimates["model_dense_mib"] < measured
+
+
+def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(
+    fake_runtime, tmp_path
+):
+    """A cache snapshot is a local load target but still has trustworthy Hub provenance.
+
+    The inventory pins opaque pipelines to the exact snapshot it inspected. Treating that path as
+    an arbitrary local directory skips the post-cast table and can reject fp32-sharded pipelines
+    that fit once loaded as bf16.
+    """
+    import torch
+
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    snapshot = (
+        tmp_path
+        / "models--Tongyi-MAI--Z-Image-Turbo"
+        / "snapshots"
+        / ("a" * 40)
+    )
+    snapshot.mkdir(parents = True)
+    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    measured = 40_000
+
+    sized = DiffusionBackend()._resident_sized_plan(
+        _plan_with_weights(measured), fam, str(snapshot), target, "pipeline"
+    )
+
+    assert sized.estimates["model_dense_mib"] < measured
 
 
 def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, monkeypatch):

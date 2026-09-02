@@ -8,6 +8,7 @@ import {
   artifactKindSupportsFamilyOverride,
   familyOverrideArtifactKind,
   resolvedFamilyOverrideSelection,
+  taskOpaqueArtifactSupportsFamilyOverride,
 } from "../src/features/model-picker/components/model-selector/family-override-local-candidate.ts";
 import { familyOverrideOptions } from "../src/features/model-picker/components/model-selector/family-override-options.ts";
 
@@ -46,6 +47,33 @@ test("a dual-manifest root satisfies either family loader contract", () => {
   assert.equal(
     artifactKindSupportsFamilyOverride(
       "diffusers_pipeline",
+      "diffusers_modular_pipeline",
+    ),
+    false,
+  );
+});
+
+test("a structural family override never crosses a known task boundary", () => {
+  assert.equal(
+    taskOpaqueArtifactSupportsFamilyOverride(
+      null,
+      "diffusers_pipeline",
+      "diffusers_pipeline",
+    ),
+    true,
+  );
+  assert.equal(
+    taskOpaqueArtifactSupportsFamilyOverride(
+      "text-to-image",
+      "diffusers_pipeline",
+      "diffusers_pipeline",
+    ),
+    false,
+  );
+  assert.equal(
+    taskOpaqueArtifactSupportsFamilyOverride(
+      "text-to-video",
+      "diffusers_dual_pipeline",
       "diffusers_modular_pipeline",
     ),
     false,

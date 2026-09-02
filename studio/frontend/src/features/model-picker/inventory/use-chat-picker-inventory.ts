@@ -18,8 +18,8 @@ import {
 import { useMemo } from "react";
 import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-picker-policy";
 import {
-  artifactKindSupportsFamilyOverride,
   type FamilyOverrideArtifactKind,
+  taskOpaqueArtifactSupportsFamilyOverride,
 } from "../components/model-selector/family-override-local-candidate";
 
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
@@ -66,7 +66,11 @@ function toCachedModelRepo(
     // Delete targets the copy the row describes; without it the request hits the active cache.
     cache_path: row.cachePath,
     size_bytes: row.bytes,
-    opaque: artifactKindSupportsFamilyOverride(row.artifact, opaqueKind),
+    opaque: taskOpaqueArtifactSupportsFamilyOverride(
+      row.task,
+      row.artifact,
+      opaqueKind,
+    ),
     last_modified: epochMillisecondsToSeconds(row.lastModified),
     // Listed but not loadable: the row renders a partial mark and its click opens the download.
     partial: row.partial,
@@ -92,7 +96,11 @@ function toLocalModelInfo(
     source: row.source as LocalModelInfo["source"],
     model_id: row.modelId ?? row.repoId,
     model_format: row.modelFormat,
-    opaque: artifactKindSupportsFamilyOverride(row.artifact, opaqueKind),
+    opaque: taskOpaqueArtifactSupportsFamilyOverride(
+      row.task,
+      row.artifact,
+      opaqueKind,
+    ),
     updated_at: epochMillisecondsToSeconds(row.updatedAt),
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
@@ -171,7 +179,8 @@ export function useChatPickerInventory(
             // exempt: canChat is about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
             (row.capabilities.canChat ||
               studioPageForTask(row.task) !== undefined ||
-              artifactKindSupportsFamilyOverride(
+              taskOpaqueArtifactSupportsFamilyOverride(
+                row.task,
                 row.artifact,
                 options.opaqueKind,
               )) &&
