@@ -1092,7 +1092,7 @@ def test_hip_luid_join_bounds_the_counter_by_the_carve_out(win_rocm, monkeypatch
 
     # Inside the carve-out still resolves, so the decline above is the bound.
     under = [("luid_0x00000000_0x00015369_phys_0", 0.25 * GB)]
-    assigned, aggregate = hw._match_adapter_used_by_hip_luid(under, apu)
+    assigned, aggregate, _whole = hw._match_adapter_used_by_hip_luid(under, apu)
     assert assigned[0] == pytest.approx(0.25 * GB)
     assert aggregate == pytest.approx(0.25 * GB)
 
