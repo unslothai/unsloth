@@ -341,16 +341,89 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored
 
 
-def test_legacy_bundles_are_kept_on_a_normal_install(monkeypatch, tmp_path):
+# -------------------------------------------------------------------------- legacy root
+def _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache) -> tuple:
+    """Write a bundle under a fake pre-relocation root, then hand back an upgraded install.
+
+    Returns ``(legacy_root, studio_home)`` with the environment already pointing at a
+    non-portable install whose new default root is empty.
+    """
+    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
+    studio_home = tmp_path / "studio"
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.setenv(cc._ENV_DIR, str(legacy))
+    seeded = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(seeded) is True
+
     monkeypatch.delenv(cc._ENV_DIR, raising = False)
     monkeypatch.delenv("UNSLOTH_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_PORTABLE", raising = False)
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
-    legacy.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
     monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
+    return legacy, studio_home
 
-    assert cc.cache_root() == legacy
+
+def test_legacy_bundle_is_read_but_the_new_root_takes_the_writes(
+    monkeypatch, tmp_path, fake_megacache
+):
+    # An upgraded install must stay warm WITHOUT the home directory becoming the
+    # permanent write root: begin() points TORCHINDUCTOR_CACHE_DIR at ctx.dir, and
+    # save() writes every later bundle there, so that is GBs outside the studio root.
+    legacy, studio_home = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    import os
+
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+
+    assert ctx.hit is True  # warm: the legacy bundle still counts
+    assert str(ctx.dir).startswith(str(studio_home))
+    assert str(os.environ["TORCHINDUCTOR_CACHE_DIR"]).startswith(str(studio_home))
+    assert legacy not in ctx.dir.parents
+    # The read fallback migrates rather than persisting: the pair now lives in the
+    # write root, byte-identical to what just loaded.
+    assert ctx.bundle.read_bytes() == (legacy / ctx.key / cc._BUNDLE_NAME).read_bytes()
+    assert ctx.manifest_path.exists()
+
+
+def test_migrated_bundle_serves_the_next_run_without_the_legacy_root(
+    monkeypatch, tmp_path, fake_megacache
+):
+    legacy, _ = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
+
+    import shutil
+
+    shutil.rmtree(legacy)  # the old cache gets cleaned up: the warm start must survive
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx.hit is True
+
+
+def test_load_only_mode_reads_legacy_without_writing_to_it(
+    monkeypatch, tmp_path, fake_megacache
+):
+    legacy, _ = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    monkeypatch.setenv(cc._ENV_SAVE, "0")
+
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+
+    assert ctx.hit is True
+    assert not ctx.bundle.exists()  # a read-only cache stays read-only, both roots
+    assert (legacy / ctx.key / cc._BUNDLE_NAME).exists()
+
+
+def test_key_absent_from_legacy_never_writes_into_it(monkeypatch, tmp_path, fake_megacache):
+    # The old fallback swapped the WHOLE root, so even a key the legacy cache never
+    # held wrote its bundle and its inductor output into the home directory.
+    legacy, studio_home = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
+    before = {p.name for p in legacy.iterdir()}
+
+    other = dict(_BEGIN_KW, family = "qwen-image")
+    ctx = cc.begin(transformer = _transformer(("QwenImageTransformerBlock",)), **other)
+
+    assert ctx.hit is False
+    assert cc.save(ctx) is True
+    assert str(ctx.bundle).startswith(str(studio_home))
+    assert {p.name for p in legacy.iterdir()} == before
 
 
 def test_portable_mode_never_falls_back_to_the_home_directory(monkeypatch, tmp_path):
@@ -367,3 +440,14 @@ def test_portable_mode_never_falls_back_to_the_home_directory(monkeypatch, tmp_p
 
     assert root != legacy
     assert str(root).startswith(str(tmp_path / "portable"))
+    assert cc.legacy_cache_root() is None  # not even read: not part of the install
+
+
+def test_explicit_dir_override_ignores_the_legacy_root(monkeypatch, tmp_path):
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "chosen"))
+    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
+    legacy.mkdir(parents = True)
+    monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
+
+    assert cc.cache_root() == tmp_path / "chosen"
+    assert cc.legacy_cache_root() is None
