@@ -166,6 +166,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
 
 # ─── Public API ───────────────────────────────────────────────────────
 
+
 def llm_generate_vlm_instruction(
     column_names: list[str],
     samples: list[dict],
@@ -327,6 +328,7 @@ def llm_generate_dataset_warning(
 
 
 # ─── Dataset Conversion Advisor ──────────────────────────────────────
+
 
 def _parse_json_response(text: str) -> Optional[dict]:
     """Parse JSON from LLM response, handling markdown fences and noise."""
