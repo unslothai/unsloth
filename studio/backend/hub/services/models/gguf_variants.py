@@ -1492,6 +1492,27 @@ async def get_gguf_variants_answer(
         def _is_fully_downloaded(variant) -> bool:
             quant = variant.quant.lower()
             requirement = requirements_by_quant.get(quant)
+            # The managed GGUF scope includes non-vision companions (MTP,
+            # DSpark and DFlash) as well as the quant. A cached main file with a
+            # newly-required drafter is loadable without speculation, but it is
+            # not ready for the requested load: calling it downloaded makes the
+            # picker bypass the manager and the loader fetches gigabytes inline
+            # with no Downloads-panel row. Keep the existing any-precision
+            # mmproj rule below; the loader can genuinely use any compatible
+            # projector, while it selects one exact planned drafter.
+            non_mmproj_companions = (
+                tuple(
+                    file
+                    for file in requirement.expected_files
+                    if _is_mtp_drafter_path(file.path) and not _is_mmproj_filename(file.path)
+                )
+                if requirement is not None
+                else ()
+            )
+            companions_ready = not non_mmproj_companions or _filenames_cached(
+                frozenset(file.path for file in non_mmproj_companions),
+                sum(max(0, int(file.size or 0)) for file in non_mmproj_companions),
+            )
             # Vision repos ship an mmproj adapter; any precision on disk suffices.
             if (
                 requirement is not None
@@ -1499,6 +1520,7 @@ async def get_gguf_variants_answer(
                     requirement.main_filenames,
                     requirement.main_size_bytes,
                 )
+                and companions_ready
                 and (
                     not requirement.mmproj_filenames
                     or _any_mmproj_cached(requirement.mmproj_filenames)
@@ -1508,6 +1530,8 @@ async def get_gguf_variants_answer(
             # Byte fallback so a present quant is not demoted by a filename mismatch; vision repos still need an
             # mmproj cached, at any precision.
             if not _quant_bytes_present(quant, variant.size_bytes):
+                return False
+            if not companions_ready:
                 return False
             if (
                 requirement is not None

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -118,9 +119,14 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     ``mtp-*.gguf`` copy unsloth ships for llama.cpp ``-hf`` auto-discovery
     (Gemma 4). Same pick as the loader's drafter resolution (root-level
     ``mtp-`` prefix, first in sort order) so download and load resolve the same
-    file; the higher-precision ``MTP/`` subdir copies are for explicit
-    selection and are not auto-fetched. None for repos with the head baked into
-    the main GGUF (Qwen)."""
+    file.
+
+    Qwen3.8-Flash-Next is the one published exception: its ``qwen4exp`` weights
+    have no embedded head and the loader deliberately falls back to ``MTP/``.
+    Include that exact family in the managed plan too, or a cached main quant
+    bypasses the Downloads panel and the loader silently pulls the 2.6 GiB
+    sidecar during startup. Other Qwen families keep the root-only rule because
+    their nested sidecars can merely displace an embedded head."""
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
     candidates = sorted(
         (
@@ -130,7 +136,33 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
         ),
         key = lambda s: getattr(s, "rfilename"),
     )
-    return candidates[0] if candidates else None
+    if candidates:
+        return candidates[0]
+
+    # The remote planner cannot read an undownloaded GGUF header to prove
+    # ``qwen4exp`` the way the loader can. This family token is part of every
+    # main weight and every sidecar in the sole repo that needs the fallback,
+    # and boundary matching keeps future names such as Flash-Next2 out.
+    flash_next = any(
+        re.search(r"(?:^|[/_-])qwen3\.8-flash-next(?:$|[/_.-])", name, re.IGNORECASE)
+        for sibling in siblings
+        if (name := _gguf_rfilename(sibling)) and not is_mtp_drafter_path(name)
+    )
+    if not flash_next:
+        return None
+
+    from utils.models.drafters.preference import mtp_preference_key
+
+    nested = [
+        sibling
+        for sibling in siblings
+        if (name := _gguf_rfilename(sibling))
+        and "/" in name.replace("\\", "/")
+        and is_mtp_drafter_path(name)
+    ]
+    return (
+        min(nested, key = lambda sibling: mtp_preference_key(sibling.rfilename)) if nested else None
+    )
 
 
 def preferred_dflash_sibling(

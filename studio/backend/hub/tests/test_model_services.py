@@ -2358,6 +2358,40 @@ def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
     )
 
 
+def test_qwen38_flash_next_plan_includes_the_loaders_nested_mtp_choice():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf", 18_000, "main"),
+            _sibling("MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf", 7_700, "bf16"),
+            _sibling("MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf", 4_100, "q8"),
+            _sibling("MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", 2_600, "shared-q8"),
+        ]
+    )
+
+    req = requirements["ud-q4_k_xl"]
+
+    assert req.target_filenames == (
+        "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf",
+    )
+    assert req.download_size_bytes == 20_600
+    assert req.companion_hashes == frozenset({"shared-q8"})
+
+
+def test_qwen38_embedded_head_family_does_not_plan_its_nested_mtp_copy():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("Qwen3.8-27B-UD-Q4_K_XL.gguf", 18_000, "main"),
+            _sibling("MTP/mtp-Qwen3.8-27B-Q4_0.gguf", 1_300, "nested"),
+        ]
+    )
+
+    req = requirements["ud-q4_k_xl"]
+
+    assert req.target_filenames == ("Qwen3.8-27B-UD-Q4_K_XL.gguf",)
+    assert req.download_size_bytes == 18_000
+
+
 def test_gguf_variant_requirements_skip_big_endian_sibling():
     requirements = gguf_variants._build_gguf_variant_requirements(
         [
@@ -4627,6 +4661,64 @@ def test_gguf_variants_scopes_partial_state_to_requested_cache(monkeypatch, tmp_
 
     assert result.variants[0].downloaded is True
     assert result.variants[0].partial is False
+
+
+def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(monkeypatch, tmp_path):
+    """A pre-MTP cache must enter the manager instead of downloading at load time."""
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    repo_id = "unsloth/Qwen3.8-Flash-Next-GGUF"
+    snapshot = (
+        tmp_path / "cache" / "models--unsloth--Qwen3.8-Flash-Next-GGUF" / "snapshots" / "rev0"
+    )
+    snapshot.mkdir(parents = True)
+    main_name = "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf"
+    mtp_name = "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+    (snapshot / main_name).write_bytes(b"m" * 100)
+    siblings = [
+        _sibling(main_name, 100, "main"),
+        _sibling(mtp_name, 20, "mtp"),
+    ]
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(gguf_variants.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_gguf_variants",
+        lambda *_args, **_kwargs: (
+            [
+                SimpleNamespace(
+                    filename = main_name,
+                    quant = "UD-Q4_K_XL",
+                    display_label = None,
+                    size_bytes = 100,
+                )
+            ],
+            False,
+            siblings,
+        ),
+    )
+    monkeypatch.setattr(
+        gguf_variants,
+        "iter_hf_cache_snapshots",
+        lambda _repo_id, root = None: [snapshot],
+    )
+    monkeypatch.setattr(
+        gguf_variants.download_registry,
+        "incomplete_blob_hashes",
+        lambda *_args, **_kwargs: set(),
+    )
+
+    before = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
+    assert before.variants[0].downloaded is False
+    assert before.variants[0].download_size_bytes == 120
+
+    companion = snapshot / mtp_name
+    companion.parent.mkdir()
+    companion.write_bytes(b"d" * 20)
+    after = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
+    assert after.variants[0].downloaded is True
 
 
 def test_download_registry_repo_keys_are_case_insensitive():
