@@ -16,6 +16,19 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Torch on ROCm keeps its AOTriton flash and memory-efficient SDPA kernels
+# behind TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL. With the gate shut every
+# sub-quadratic backend declines, SDPA falls through to MATH, and MATH
+# materialises the full B x H x N x N score matrix, so finetuning memory grows
+# with the square of the context (#8819: the difference between a 4-8k and a
+# 32k context on a 16 GB card). Nothing on the pip-installed library path
+# opened it - only install.sh's WSL drop-in did. Torch reads the variable
+# lazily, into a function-local static in its first ROCm SDPA capability probe,
+# so this lands even when the caller imported torch first. `setdefault` keeps
+# an existing value, so an explicit "0" stays a working opt-out; a non-ROCm
+# host never reads it at all.
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 # Transformers 4.x imports TensorFlow / Flax merely because they are installed
 # (`processing_utils` -> `image_transforms`), breaking Unsloth, which uses neither.
 # It reads these variables once at its own import, so this has to land first. An
