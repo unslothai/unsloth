@@ -211,7 +211,8 @@ class ApiUsageWriter:
             if not self._stopped:
                 self._stopped = True
                 self._queue.put_nowait(_STOP)
-        # Production calls this through asyncio.to_thread so even the bounded
+        # Production calls this through asyncio.to_thread so even the bounded wait cannot pause inference or the event
+        # loop.
         self._thread.join(timeout = max(0.0, timeout))
         drained = not self._thread.is_alive()
         if not drained:

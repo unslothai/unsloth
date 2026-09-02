@@ -1349,7 +1349,7 @@ class SdCppDiffusionBackend:
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
     ) -> None:
-        # This load's own event: a later load replaces self._cancel_event rather than clearing it
+        # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = _cancel_event if _cancel_event is not None else self._cancel_event
         # The server this load publishes to _pending_server, out here so the backstop below can always unpublish it. A
         # leaked _pending_server reads as "the managed tree is busy" for the rest of the process and blocks every later
@@ -1714,7 +1714,7 @@ class SdCppDiffusionBackend:
             if self._load_token != _load_token:
                 return
             logger.error("sd_cpp.load_failed: %s", exc)
-            # Redact filesystem paths before this reaches /images/load-progress (as diffusers does)
+            # Redact filesystem paths before this reaches /images/load-progress (as diffusers does).
             from utils.native_path_leases import redact_native_paths
 
             with self._lock:
@@ -2140,7 +2140,7 @@ class SdCppDiffusionBackend:
         # would render them serially.
         prompts: Optional[list[str]] = None,
         seeds: Optional[list[int]] = None,
-        # Accepted for interface parity; native is text-to-image only
+        # Accepted for interface parity; native is text-to-image only, so image-conditioned requests are rejected below.
         init_image: Optional[str] = None,
         mask_image: Optional[str] = None,
         strength: Optional[float] = None,
@@ -2350,7 +2350,7 @@ class SdCppDiffusionBackend:
         images: list = []
         seeds: list[int] = []
         # Stage LoRAs into a per-request subdir of the server lora-model-dir (so a prior request's adapters cannot leak
-        # in)
+        # in); removed after.
         lora_payload: Optional[list[dict]] = None
         lora_stage: Optional[Path] = None
         if lora_resolved:

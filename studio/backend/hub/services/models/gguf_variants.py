@@ -75,9 +75,10 @@ _VARIANT_HASH_MAX = 512
 # Blob hashes are derived from the same mutable remote revision metadata as variant requirements, so
 # they must not outlive that freshness window.
 _VARIANT_HASH_POS_TTL = 60.0
-# Refresh resolved variant requirements so a moved repo revision is picked up
+# Refresh resolved variant requirements so a moved repo revision is picked up within the session instead of being pinned
+# for the backend's lifetime.
 _VARIANT_REQUIREMENT_POS_TTL = 60.0
-# Suppress retries on a metadata-fetch failure so a slow/flaky link doesn't
+# Suppress retries on a metadata-fetch failure so a slow/flaky link doesn't re-hammer the API on every page refresh.
 _VARIANT_REQUIREMENT_NEG_TTL = 60.0
 # Fail fast on a slow link so the variant render isn't blocked for seconds.
 _GGUF_METADATA_TIMEOUT_SECONDS = 5.0
@@ -792,7 +793,8 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
     try:
         found = _indexes_beside(path, sibling)
         if not found >= set(range(1, total + 1)) and path.is_symlink():
-            # _local_gguf_load_path resolves siblings from the TARGET, so a renamed alias
+            # _local_gguf_load_path resolves siblings from the TARGET, so a renamed alias still loads the target's real
+            # set -- and a torn target stays torn.
             return _target_set_is_whole(path.resolve())
     except OSError:
         return True
@@ -1588,7 +1590,8 @@ async def get_gguf_variants_answer(
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 if requirement is None or not _repo_signals_apply_to(variant.quant):
                     continue
-                # companion_hashes adds the MTP drafter (mmproj_hashes covers
+                # companion_hashes adds the MTP drafter (mmproj_hashes covers every mmproj precision in the repo, not
+                # just the planned one).
                 if (
                     (requirement.mmproj_hashes | requirement.companion_hashes) & incomplete_hashes
                 ) and _filenames_cached(

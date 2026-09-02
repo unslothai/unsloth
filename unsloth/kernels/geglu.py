@@ -218,7 +218,8 @@ def _approx_backward_kernel(
     Q2 = -T2 * (T - 2.0) * (a + 3.0 * b)
     df_de = T2 + Q2
 
-    # f = 1/2 * e * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3 ) ))
+    # f = 1/2 * e * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3 ) )) f = 1/2 * e * (1 + tanh( sqrt(2/pi) * x * (1 +
+    # 0.044715 * x^2 ) )) h = f * up
     f_row = T2 * e_row
     f_row = f_row.to(DW_row.dtype)
     # h = f * g
