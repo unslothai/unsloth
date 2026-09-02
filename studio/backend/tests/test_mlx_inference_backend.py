@@ -2630,7 +2630,7 @@ def test_worker_forwards_use_adapter_on_the_audio_command():
     assert '"use_adapter"' in src
 
 
-def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypatch):
+def test_kv_quant_status_applies_only_when_eligible(monkeypatch):
     from core.inference import mlx_inference
 
     monkeypatch.setattr(
@@ -2648,9 +2648,7 @@ def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypat
     text = mlx_inference._kv_quant_status(8, object(), False)
     vlm = mlx_inference._kv_quant_status(8, object(), True)
     assert text["kv_bits"] == 8 and not text["note"]
-    # The threshold caveat rides with the resolved value, so an API client sees it.
-    assert vlm["kv_bits"] == 8 and "vision models" in vlm["note"]
-    assert str(mlx_inference._vlm_quantized_kv_start()) in vlm["note"]
+    assert vlm["kv_bits"] == 8 and not vlm["note"]
 
     monkeypatch.setattr(
         mlx_inference,
@@ -2662,8 +2660,13 @@ def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypat
     assert refused["requested_kv_bits"] == 8  # what the reload decision compares
 
 
-def _tiny_lm(cache_factory, dim = 128):
-    """Minimal model whose forward populates whatever cache it is given."""
+def _tiny_lm(
+    cache_factory,
+    dim = 128,
+    attends_quantized = True,
+):
+    """Minimal model whose forward populates whatever cache it is given;
+    ``attends_quantized = False`` rejects a quantized one, as Gemma 4's KV-shared layers do."""
     import mlx.core as mx
 
     class _LM:
@@ -2679,7 +2682,9 @@ def _tiny_lm(cache_factory, dim = 128):
                 target = getattr(entry, "update_and_fetch", None)
                 if target is not None:
                     k = mx.zeros((1, 2, inputs.shape[1], dim))
-                    target(k, k)
+                    keys, _ = target(k, k)
+                    if not attends_quantized and not isinstance(keys, mx.array):
+                        raise TypeError("incompatible function arguments")
             return mx.zeros((1, inputs.shape[1], 8))
 
     return _LM()
@@ -2747,16 +2752,37 @@ def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     pytest.importorskip("mlx_lm")
     from mlx_lm.models import cache as lm_cache
 
-    def elig(factory, dim = 128):
-        lm = _tiny_lm(factory, dim)
+    def verdict(
+        factory,
+        dim = 128,
+        **kwargs,
+    ):
+        lm = _tiny_lm(factory, dim, **kwargs)
         monkeypatch.setattr(lm_cache, "make_prompt_cache", lambda m, **_: lm.make_cache())
-        return mlx_inference._kv_quant_eligibility(lm, False, 8)[0]
+        return mlx_inference._kv_quant_eligibility(lm, False, 8)
+
+    def elig(
+        factory,
+        dim = 128,
+        **kwargs,
+    ):
+        return verdict(factory, dim, **kwargs)[0]
 
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.KVCache()]) == "full"
     # A width mx.quantize rejects is caught by attempting it, not by naming it.
     assert elig(lambda: [lm_cache.KVCache()], dim = 80) == "refused"
     # A container the quantizer never descends into is skipped, not fatal.
     assert elig(lambda: [lm_cache.CacheList(lm_cache.KVCache())]) == "none"
+    # Gemma 4's layout: the rotating window keeps its ring, the full layers convert.
+    windowed = lambda: [lm_cache.KVCache(), lm_cache.RotatingKVCache(max_size = 8)]
+    assert elig(windowed) == "partial"
+    assert "sliding-window" in verdict(windowed)[1]
+    # A skip the window does not explain falls back to the general reason.
+    mixed = lambda: windowed() + [lm_cache.CacheList(lm_cache.KVCache())]
+    assert verdict(mixed)[0] == "partial" and "sliding-window" not in verdict(mixed)[1]
+    assert elig(lambda: [lm_cache.RotatingKVCache(max_size = 8)]) == "none"
+    # Attention that rejects the converted entry fails in the probe's second pass.
+    assert elig(windowed, attends_quantized = False) == "refused"
     # Mixed quantizable/non-quantizable is a real success, reported as partial.
     assert elig(lambda: [lm_cache.KVCache(), lm_cache.CacheList(lm_cache.KVCache())]) == "partial"
 
@@ -3276,13 +3302,82 @@ def test_kv_quant_probe_rewinds_the_rng_without_assigning_to_the_state(monkeypat
     outcome = mlx_inference._kv_quant_probe(language_model, [entry], 8)
 
     assert outcome == (1, 0, None, True)
-    # A rewind that ran before the forward pass would leave the probe's own
+    # A rewind that ran before the forward passes would leave the probe's own
     # draws in the stream the caller goes on to sample.
     assert events == [
         ("forward", None),
         ("convert", None),
+        ("forward", None),
         ("seed", (words[0] << 32) | words[1]),
     ]
+
+
+def test_generate_kwargs_and_history_carry_a_pre_quantized_cache_and_no_kv_bits():
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models import cache as lm_cache
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    # Rotating first, so a conversion that only reads the leading entry is visible.
+    backend._model = _tiny_lm(lambda: [lm_cache.RotatingKVCache(max_size = 8), lm_cache.KVCache()])
+    backend._kv_quant = {"kv_bits": None}
+    assert backend._kv_quant_generate_kwargs() == {}
+
+    backend._kv_quant = {"kv_bits": 4}
+    kwargs = backend._kv_quant_generate_kwargs()
+    assert set(kwargs) == {"prompt_cache"}
+    rotating, full = kwargs["prompt_cache"]
+    assert isinstance(rotating, lm_cache.RotatingKVCache)
+    assert isinstance(full, lm_cache.QuantizedKVCache) and full.bits == 4
+
+    # The prompt-cache history hands out the same shape for a fresh conversation.
+    cache, rest = backend._prompt_cache().fetch(backend._model, "key", [1, 2, 3])
+    assert isinstance(cache[1], lm_cache.QuantizedKVCache) and rest == [1, 2, 3]
+
+
+def test_vlm_prompt_cache_session_starts_from_a_pre_quantized_cache(monkeypatch):
+    """The session builds the cache the vision path generates with, so the conversion
+    has to happen in its make_cache or a quantized load would run unquantized there.
+    """
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models import cache as lm_cache
+    from core.inference.mlx_inference import MLXInferenceBackend, VLMPromptSnapshotStore
+
+    names = ("mlx_vlm", "mlx_vlm.generate", "mlx_vlm.generate.common", "mlx_vlm.models")
+    modules = {name: types.ModuleType(name) for name in names + ("mlx_vlm.models.cache",)}
+    modules["mlx_vlm.models.cache"].make_prompt_cache = lambda _model, max_kv_size = None: [
+        lm_cache.RotatingKVCache(max_size = 8),
+        lm_cache.KVCache(),
+    ]
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._vlm_snapshot_store = VLMPromptSnapshotStore(10**6)
+    backend._vlm_snapshot_store_unavailable = False
+    backend._vlm_is_diffusion_model = lambda _model: False
+    backend._model = SimpleNamespace(config = SimpleNamespace(), language_model = object())
+    backend._kv_cache_window = None
+    backend.active_model_name = "m"
+    backend._kv_quant = {"kv_bits": 4}
+    session = backend._vlm_prompt_cache_session("base")
+    kinds = [type(entry).__name__ for entry in session.cache]
+    assert kinds == ["RotatingKVCache", "QuantizedKVCache"] and session.cache[1].bits == 4
+
+    import mlx.core as mx
+    from core.inference.mlx_inference import (
+        cache_entries_nbytes,
+        cache_entries_offset,
+        copy_cache_entries,
+    )
+
+    for entry in session.cache:
+        entry.update_and_fetch(mx.ones((1, 1, 4, 64)), mx.ones((1, 1, 4, 64)))
+    snapshot = copy_cache_entries(session.cache)
+    assert type(snapshot[1]).__name__ == "QuantizedKVCache" and snapshot[1].bits == 4
+    assert cache_entries_offset(snapshot) == 4
+    assert cache_entries_nbytes(snapshot[1:]) > 0
+    assert backend._vlm_snapshot_store.store("m", [1, 2, 3, 4], snapshot)
 
 
 def test_a_successful_override_does_not_pin_the_tokenizer_past_load(monkeypatch):
