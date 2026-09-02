@@ -72,20 +72,43 @@ const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
 const LINK_DEFINITION_LINE_RE = /^ {0,3}\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
-const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
+const FENCED_CODE_BLOCK_RE = /^ {0,3}(`{3,}|~{3,})/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
+// A marker only opens a fence if it is not a backtick run whose info string
+// carries another backtick, and only closes the one it opened: same character,
+// at least as long, nothing but whitespace after it. Toggling on any marker
+// instead desynchronises on the shapes that nest them -- a four-backtick
+// wrapper around a three-backtick example, a `~~~` line inside a ``` block --
+// and every line after the miscount is then dropped as if it were code.
+const opensFence = (line: string, marker: RegExpExecArray): boolean =>
+  marker[1][0] === "~" || !line.slice(marker[0].length).includes("`");
+
+const closesFence = (
+  line: string,
+  marker: RegExpExecArray,
+  fence: string,
+): boolean =>
+  marker[1][0] === fence[0] &&
+  marker[1].length >= fence.length &&
+  line.slice(marker[0].length).trim() === "";
+
 function textOutsideFencedCode(markdown: string): string {
   const lines: string[] = [];
-  let inFence = false;
+  let fence: string | null = null;
   for (const line of markdown.split("\n")) {
-    if (FENCED_CODE_BLOCK_RE.test(line)) {
-      inFence = !inFence;
+    const marker = FENCED_CODE_BLOCK_RE.exec(line);
+    if (fence === null) {
+      if (marker !== null && opensFence(line, marker)) {
+        fence = marker[1];
+      } else {
+        lines.push(line);
+      }
       continue;
     }
-    if (!inFence) {
-      lines.push(line);
+    if (marker !== null && closesFence(line, marker, fence)) {
+      fence = null;
     }
   }
   return lines.join("\n");
@@ -93,24 +116,28 @@ function textOutsideFencedCode(markdown: string): string {
 
 // A definition is a line, not a substring: `a[href]:hover` and a TypeScript index
 // signature are not one, and neither is anything inside a fence. The whole-string tests
-// stay in front so only replies they admit pay for the line scan.
-function hasGlobalLinkReference(markdown: string): boolean {
+// stay in front so only replies they admit pay for the line scan. Returns the prose the
+// verdict was read off, so the render key can reuse it rather than scan a second time.
+function documentProse(markdown: string): string | null {
   if (!LINK_REFERENCE_RE.test(markdown) || !LINK_DEFINITION_RE.test(markdown)) {
-    return false;
+    return null;
   }
   const prose = textOutsideFencedCode(markdown);
-  return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose);
+  return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
+    ? prose
+    : null;
 }
 
 export function markdownRenderScope(markdown: string): "blocks" | "document" {
-  return hasGlobalLinkReference(markdown) ? "document" : "blocks";
+  return documentProse(markdown) === null ? "blocks" : "document";
 }
 
 export function markdownRenderKey(markdown: string): string {
-  if (markdownRenderScope(markdown) === "blocks") {
+  const prose = documentProse(markdown);
+  if (prose === null) {
     return "blocks";
   }
-  return `document:${textOutsideFencedCode(markdown)
+  return `document:${prose
     .split("\n")
     .filter((line) => LINK_DEFINITION_LINE_RE.test(line))
     .join("\n")}`;

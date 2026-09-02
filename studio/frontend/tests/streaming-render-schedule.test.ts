@@ -208,6 +208,58 @@ test("the document render key ignores definitions inside fences", () => {
   assert.equal(markdownRenderKey(withFence), markdownRenderKey(real));
 });
 
+test("a four-backtick wrapper around a fence example does not swallow the definition", () => {
+  const reply = [
+    "To open a Python block, type this line:",
+    "",
+    "````",
+    "```python",
+    "````",
+    "",
+    "Then see [the guide][d] for the rest.",
+    "",
+    "[d]: https://example.com/guide",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
+test("a tilde line inside a backtick fence does not close it", () => {
+  const reply = [
+    "Fence markers:",
+    "",
+    "```text",
+    "~~~",
+    "```",
+    "",
+    "See [the guide][d].",
+    "",
+    "[d]: https://example.com/guide",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
+test("a marker carrying an info string does not close a fence", () => {
+  const reply = [
+    "See [one][two].",
+    "",
+    "```ts",
+    "type T = { [k: string]: number };",
+    "```ts",
+    "const x: T = {};",
+    "```",
+    "",
+    "[two]: https://example.com/two",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "document");
+  assert.equal(
+    markdownRenderKey(reply),
+    "document:[two]: https://example.com/two",
+  );
+});
+
 test("link references and definitions stay in one rendered document", () => {
   const usage = `Before [reference][math-ref].\n\n${paragraphs(20)}`;
   const cache = new IncrementalMarkdownCache();

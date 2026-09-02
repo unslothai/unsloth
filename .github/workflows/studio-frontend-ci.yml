@@ -29,6 +29,7 @@ on:
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
+      - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
@@ -401,6 +402,13 @@ jobs:
         env:
           SMOKE_FLICKER_ENGINES: chromium
         run: python3 tests/studio/playwright_code_block_flicker.py
+
+      # The `plain` case inside is the positive control: a fence with no brackets that
+      # MUST keep its controls. A run where it has none measured nothing, and the two
+      # rows that matter mean nothing either.
+      - name: Browser smoke for code-block controls under a link-definition lookalike
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_link_definition_probe.py
 
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all
