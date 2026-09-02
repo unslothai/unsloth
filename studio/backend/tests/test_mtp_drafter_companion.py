@@ -162,7 +162,6 @@ def test_baked_in_repo_plans_unchanged():
     assert plans["q4_k_m"].target_filenames == ("Qwen3.6-27B-MTP-Q4_K_M.gguf",)
 
 
-
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
@@ -175,7 +174,6 @@ def test_baked_in_repo_plans_unchanged():
 )
 def test_embedded_mtp_name_hint_is_bounded_to_the_quant(path, expected):
     assert has_embedded_mtp_name_hint(path) is expected
-
 
 
 def test_embedded_mtp_variant_omits_root_compatibility_sidecar():
@@ -218,7 +216,6 @@ def test_detect_mtp_file_finds_root_sibling(tmp_path):
     found = detect_mtp_file(str(tmp_path / "model-Q4_K_M.gguf"))
     assert found is not None
     assert found.endswith("mtp-model.gguf")
-
 
 
 def test_detect_mtp_file_ignores_sidecar_for_embedded_head(tmp_path, monkeypatch):
@@ -866,7 +863,6 @@ def test_download_mtp_prefers_main_snapshot_offline(tmp_path, monkeypatch):
     )
 
     assert got == str(old_drafter)
-
 
 
 def test_download_mtp_skips_discovery_for_embedded_head(tmp_path, monkeypatch):

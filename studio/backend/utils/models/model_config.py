@@ -1929,6 +1929,7 @@ def detect_mtp_file(
         # A repo-root mtp-*.gguf can be a compatibility mirror for llama.cpp's
         # -hf discovery. Passing it as -md would replace, not augment, this head.
         return None
+
     def _matches_weight(candidate: Path) -> bool:
         return _drafter_matches_weight(candidate.name, weight_name, kind = "mtp")
 

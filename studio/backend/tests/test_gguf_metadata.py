@@ -172,10 +172,7 @@ def test_context_length_ignores_foreign_arch_key(tmp_path: Path):
     assert read_gguf_context_length(str(p)) is None
 
 
-def test_nextn_predict_layers_uses_the_active_architecture_namespace(
-    tmp_path: Path,
-    monkeypatch,
-):
+def test_nextn_predict_layers_uses_the_active_architecture_namespace(tmp_path: Path, monkeypatch):
     embedded = _write_synthetic_gguf(
         tmp_path / "embedded.gguf",
         {"general.architecture": "qwen35"},
@@ -201,9 +198,7 @@ def test_nextn_predict_layers_uses_the_active_architecture_namespace(
     reversed_body = _enc_kv_uint32("qwen35.nextn_predict_layers", 2) + _enc_kv_string(
         "general.architecture", "qwen35"
     )
-    reversed_order.write_bytes(
-        struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2) + reversed_body
-    )
+    reversed_order.write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2) + reversed_body)
 
     assert read_gguf_nextn_predict_layers(str(embedded)) == 1
     assert read_gguf_nextn_predict_layers(str(headless)) == 0
@@ -211,7 +206,6 @@ def test_nextn_predict_layers_uses_the_active_architecture_namespace(
     assert read_gguf_nextn_predict_layers(str(malformed)) is None
 
     assert read_gguf_nextn_predict_layers(str(reversed_order)) == 2
-
 
     # The second read must use the file-identity cache rather than parse again.
     import utils.models.gguf_metadata as metadata

@@ -180,9 +180,8 @@ def has_embedded_mtp_name_hint(path: str) -> bool:
         after = stem[quant.end() :].lstrip("._-")
         before_hint = _EMBEDDED_MTP_TOKEN_RE.search(before)
         if (
-            (before_hint is not None and before_hint.end() == len(before))
-            or _EMBEDDED_MTP_TOKEN_RE.match(after)
-        ):
+            before_hint is not None and before_hint.end() == len(before)
+        ) or _EMBEDDED_MTP_TOKEN_RE.match(after):
             return True
     return False
 

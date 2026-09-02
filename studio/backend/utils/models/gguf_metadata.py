@@ -276,7 +276,6 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
     return found
 
 
-
 def read_gguf_nextn_predict_layers(path: str) -> Optional[int]:
     """Return the selected architecture's embedded NextN/MTP layer count.
 

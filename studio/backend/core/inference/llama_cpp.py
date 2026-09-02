@@ -14657,7 +14657,6 @@ class LlamaCppBackend:
 
         if near_path:
             from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
-
             if (read_gguf_nextn_predict_layers(near_path) or 0) > 0:
                 logger.info("Main GGUF contains an embedded MTP head; skipping separate drafter.")
                 return None

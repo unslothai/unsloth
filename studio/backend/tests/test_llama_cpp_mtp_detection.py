@@ -118,9 +118,7 @@ def _write_minimal_gguf(
     extra_uint32 = dict(extra_uint32 or {})
     arch_entry = _enc_kv_string("general.architecture", arch)
     nextn_entry = (
-        _enc_kv_uint32(f"{arch}.nextn_predict_layers", nextn)
-        if nextn is not None
-        else b""
+        _enc_kv_uint32(f"{arch}.nextn_predict_layers", nextn) if nextn is not None else b""
     )
     body = nextn_entry + arch_entry if nextn_first else arch_entry + nextn_entry
     kv_count = 1 + int(nextn is not None)
@@ -730,7 +728,6 @@ def test_read_gguf_metadata_captures_nextn_predict_layers(tmp_path, arch, nextn)
     backend = LlamaCppBackend()
     backend._read_gguf_metadata(str(gguf))
     assert backend._nextn_predict_layers == nextn
-
 
 
 def test_read_gguf_metadata_captures_nextn_before_architecture(tmp_path):
@@ -1972,6 +1969,7 @@ def test_auto_keeps_embedded_mtp(monkeypatch):
     assert parsed["--spec-type"] == "draft-mtp"
     assert backend.spec_fallback_reason is None
 
+
 @pytest.mark.parametrize(
     ("mode", "expected_spec_type"),
     [
@@ -1981,10 +1979,7 @@ def test_auto_keeps_embedded_mtp(monkeypatch):
     ],
 )
 def test_embedded_mtp_ignores_discovered_root_sidecar(
-    monkeypatch,
-    tmp_path,
-    mode,
-    expected_spec_type,
+    monkeypatch, tmp_path, mode, expected_spec_type
 ):
     backend = _resolver_backend(monkeypatch)
     backend._nextn_predict_layers = 1
