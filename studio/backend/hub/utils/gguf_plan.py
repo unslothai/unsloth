@@ -9,11 +9,11 @@ from typing import Optional, Sequence
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
     bare_quant_alias,
+    drop_shadowed_appledouble_siblings,
     extract_quant_label,
     gguf_variant_family,
     gguf_variant_key,
     is_big_endian_gguf_path,
-    drop_shadowed_appledouble_siblings,
     is_gguf_filename,
     is_imatrix_filename,
     is_mmproj_filename,
@@ -233,9 +233,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
     mtp_sibling = preferred_mtp_sibling(siblings)
     mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
-    companions_expected = tuple(
-        file for file in (companion_expected, mtp_expected) if file is not None
-    )
+    common_companions_expected = (companion_expected,) if companion_expected is not None else ()
 
     for sibling in siblings:
         name = _gguf_rfilename(sibling)
@@ -282,7 +280,12 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             [n for n in all_weight_names if n != target_weight_name],
             max_bytes = sum(max(0, int(file.size or 0)) for file in kept_main),
         )
-        expected_files = (*main_expected, *companions_expected, *dflash_expected)
+        expected_files = (
+            *main_expected,
+            *common_companions_expected,
+            *((mtp_expected,) if mtp_expected is not None else ()),
+            *dflash_expected,
+        )
         plans[quant] = plan_from_expected_files(
             quant,
             expected_files,

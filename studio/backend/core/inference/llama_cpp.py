@@ -13459,6 +13459,8 @@ class LlamaCppBackend:
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
             pooling_by_arch: dict[str, int] = {}
+
+            nextn_by_arch: dict[str, int] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -13506,7 +13508,12 @@ class LlamaCppBackend:
                         break
 
                     try:
-                        if key in WANTED or key in arch_keys or key.endswith(".pooling_type"):
+                        if (
+                            key in WANTED
+                            or key in arch_keys
+                            or key.endswith(".pooling_type")
+                            or key.endswith(".nextn_predict_layers")
+                        ):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
@@ -13554,6 +13561,9 @@ class LlamaCppBackend:
                                     canvas_seen = True
                                 if key.endswith(".pooling_type"):
                                     pooling_by_arch[key] = val_i
+
+                                if key.endswith(".nextn_predict_layers"):
+                                    nextn_by_arch[key] = val_i
                                 attr = arch_keys.get(key)
                                 if attr:
                                     if attr == "sliding_window_pattern":
@@ -13596,10 +13606,13 @@ class LlamaCppBackend:
                 else:
                     kv_complete = True
 
-            # GGUF metadata has no key-order contract. Pooling can precede
-            # general.architecture, so bind the buffered value after the sweep.
+            # Bind buffered metadata after discovering the architecture namespace.
             if arch is not None:
                 self._pooling_type = pooling_by_arch.get(f"{arch}.pooling_type", self._pooling_type)
+                self._nextn_predict_layers = nextn_by_arch.get(
+                    f"{arch}.nextn_predict_layers",
+                    self._nextn_predict_layers,
+                )
 
             # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
             # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
@@ -14640,6 +14653,12 @@ class LlamaCppBackend:
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         if cancel_event.is_set():
             return None
+
+        if near_path:
+            from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+            if (read_gguf_nextn_predict_layers(near_path) or 0) > 0:
+                logger.info("Main GGUF contains an embedded MTP head; skipping separate drafter.")
+                return None
 
         pick = _pick_mtp if allow_nested else _pick_mtp_root_only
 
@@ -18609,6 +18628,15 @@ class LlamaCppBackend:
 
             # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)
+
+            if (
+                self._nextn_predict_layers
+                and mtp_draft_path
+                and _spec_canon not in ("dspark", "dflash")
+            ):
+                # A root mtp-*.gguf may mirror the embedded head; -md would replace it.
+                logger.info("Main GGUF contains an embedded MTP head; ignoring separate drafter.")
+                mtp_draft_path = None
 
             if _load_cancelled():
                 logger.info("Load cancelled after download phase")
@@ -24828,6 +24856,15 @@ class LlamaCppBackend:
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
         canonical_mode = _canonicalize_spec_mode(speculative_type)
+        user_owns_spec_type = _extra_args_set_spec_type(extra_args)
+        if (
+            not user_owns_spec_type
+            and canonical_mode in ("auto", "mtp", "mtp+ngram")
+            and self._nextn_predict_layers
+            and mtp_draft_path
+        ):
+            # Backstop for callers that bypass load_model's discovery normalization.
+            mtp_draft_path = None
         # MTP signals: head baked into the main GGUF (Qwen, via metadata or
         # name), or a separate drafter resolved from the repo (Gemma).
         is_mtp_model = (
@@ -24835,7 +24872,6 @@ class LlamaCppBackend:
             or _is_mtp_model_name(model_identifier, model_path)
             or bool(mtp_draft_path)
         )
-        user_owns_spec_type = _extra_args_set_spec_type(extra_args)
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
         # (Gemma) is a cheap standalone model that wins below 3B, so exempt it.
