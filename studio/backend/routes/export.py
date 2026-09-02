@@ -431,6 +431,12 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     try:
+        from routes.inference import _reject_uncontained_local_path
+
+        # The same containment the checkpoint gets: the exporter opens this as the
+        # importance-matrix input, so an absolute path read another workspace's
+        # private calibration data into the caller's exported model.
+        _reject_uncontained_local_path(request.imatrix_path, "export")
         await _ensure_export_supported()
         backend = get_export_backend()
         # A custom path wins; otherwise the imatrix toggle requests the upstream auto-download.

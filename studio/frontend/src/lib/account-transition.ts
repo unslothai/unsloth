@@ -105,14 +105,104 @@ function storedKeys(): string[] {
 }
 
 
-/** Drop every account-scoped key, whole or prefixed. */
+/**
+ * Keys that are chrome rather than content, and so survive an account change.
+ *
+ * The list below is INVERTED on purpose. An allowlist of account-scoped keys
+ * missed four stores in a single review round (downloads, per-model configs,
+ * recipe databases, pending chat media), and each miss is one account's data
+ * read by the next. The app stores over a hundred keys and grows more; a new one
+ * is cleared until somebody decides it is chrome, because that failure is a
+ * re-run of a preference and the other one is a disclosure.
+ */
+const ACCOUNT_NEUTRAL_STORAGE_KEYS: ReadonlySet<string> = new Set([
+  // The session itself, and this module's own bookkeeping.
+  "unsloth_auth_token",
+  LAST_ACCOUNT_KEY,
+  LEGACY_DATA_OWNER_KEY,
+  LEGACY_QUARANTINE_KEY,
+  // Appearance, language and layout.
+  "unsloth_appearance_customization",
+  "unsloth_locale",
+  "unsloth-rag-preview-width",
+  "unsloth_loaded_models_collapsed",
+  "unsloth_loaded_models_dismissed",
+  "unsloth_loaded_models_position",
+  "unsloth_show_loaded_models_indicator",
+  "unsloth_model_selector_section",
+  "unsloth_settings_active_tab",
+  "unsloth_settings_panel_prefs",
+  "unsloth_sidebar_navigate_open",
+  "unsloth_sidebar_organization",
+  "unsloth_monitor_overlay",
+  "unsloth_api_monitor_overlay",
+  "unsloth_video_advanced_open",
+  "unsloth_plus_menu_pins",
+  // Which tab or view was open, and filters over a shared catalog.
+  "unsloth.hub.allModelsView",
+  "unsloth.hub.inventorySort",
+  "unsloth.hub.modelsTab",
+  "unsloth.hub.ownerScope",
+  "unsloth.studio.train.datasetPickerTab",
+  "unsloth.studio.train.modelPickerTab",
+  "unsloth.studio.train.paramMode",
+  "unsloth_train_param_mode",
+  "unsloth_models_fit_on_device_only",
+  // Notices already dismissed, and install-level transport.
+  "unsloth_onboarding_done",
+  "unsloth_web_update_dismissed",
+  "unsloth_show_llama_update_banner",
+  "unsloth.studio.xetNoticeCount",
+  "unsloth.studio.xetNoticeMigrated",
+  "unsloth.studio.transportMode",
+]);
+
+/** Everything this app persists starts with one of these. */
+const APP_STORAGE_PREFIXES: readonly string[] = ["unsloth_", "unsloth.", "unsloth-", "chat-draft"];
+
+/** Whether a stored key holds content belonging to one account. */
+function isAccountScopedKey(key: string): boolean {
+  if (ACCOUNT_NEUTRAL_STORAGE_KEYS.has(key)) return false;
+  if (ACCOUNT_SCOPED_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) return true;
+  // Only this app's own keys: a third-party library's storage is not ours to delete.
+  return APP_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+/**
+ * IndexedDB databases holding one account's records.
+ *
+ * localStorage was only ever half of it: recipes carry plaintext provider and
+ * Hub tokens, prompts and local paths, and execution records carry generated
+ * rows and logs.
+ */
+const ACCOUNT_SCOPED_DATABASES: readonly string[] = [
+  "unsloth-data-recipes",
+  "unsloth-data-recipe-executions",
+];
+
+function deleteAccountScopedDatabases(): void {
+  try {
+    if (typeof indexedDB === "undefined") return;
+    for (const name of ACCOUNT_SCOPED_DATABASES) {
+      try {
+        indexedDB.deleteDatabase(name);
+      } catch {
+        // An open handle blocks the delete; the reload below drops it, and the
+        // next transition deletes it for real.
+      }
+    }
+  } catch {
+    // No IndexedDB (tests, private modes that disable it): nothing to drop.
+  }
+}
+
+/** Drop every account-scoped key and database. */
 export function purgeAccountScopedBrowserState(): void {
   for (const key of ACCOUNT_SCOPED_STORAGE_KEYS) removeItem(key);
   for (const key of storedKeys()) {
-    if (ACCOUNT_SCOPED_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
-      removeItem(key);
-    }
+    if (isAccountScopedKey(key)) removeItem(key);
   }
+  deleteAccountScopedDatabases();
 }
 
 /**
@@ -200,6 +290,7 @@ export function notifyAccountAuthenticated(
   const isOwner = Boolean(owner) && account === owner;
   if (isOwner) writeItem(LEGACY_DATA_OWNER_KEY, account);
   if (previous === null && !isOwner) {
+    renderedAccount = account;
     // First sign-in after the upgrade, and not by the owner: everything on this
     // browser is the previous single user's.
     quarantineLegacyState();
@@ -207,6 +298,7 @@ export function notifyAccountAuthenticated(
     return true;
   }
   const changed = previous !== null && previous !== account;
+  renderedAccount = account;
   if (changed) purgeAccountScopedBrowserState();
   // After the purge, never before it: the held values are this account's own and
   // clearing the incoming account's keys would take them straight back out.
@@ -224,6 +316,17 @@ function announceAccountChange(): void {
   }
 }
 
+// The account this document was rendered for, captured at load and updated by a
+// sign-in in THIS tab. Compared against, rather than against localStorage: a
+// storage event is delivered after the write, so reading the key back always
+// returned the new value and the guard below never fired once.
+let renderedAccount: string | null = null;
+try {
+  renderedAccount = readItem(LAST_ACCOUNT_KEY);
+} catch {
+  renderedAccount = null;
+}
+
 // A sign-in in one tab writes origin-wide storage every other tab's authFetch
 // reads, so a tab mounted for the previous account sends its actions on the new
 // token. The storage event is the only cross-document signal, and a reload is
@@ -233,7 +336,8 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
     const changed = (event as StorageEvent).key;
     if (changed !== LAST_ACCOUNT_KEY) return;
     const next = (event as StorageEvent).newValue;
-    if (next === null || next === readItem(LAST_ACCOUNT_KEY)) return;
+    if (next === null || next === renderedAccount) return;
+    renderedAccount = next;
     try {
       window.location.reload();
     } catch {

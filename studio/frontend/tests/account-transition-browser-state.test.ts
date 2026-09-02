@@ -17,6 +17,7 @@ const {
   ACCOUNT_SCOPED_STORAGE_KEYS,
   legacyBrowserDataBelongsToCurrentAccount,
   notifyAccountAuthenticated,
+  purgeAccountScopedBrowserState,
 } = await import("../src/lib/account-transition.ts");
 
 function seedAlicesBrowser(): void {
@@ -134,4 +135,50 @@ test("an account change tells the live stores to reset themselves", () => {
   // same-window removeItem fires no storage event, and the SPA does not reload
   // between accounts.
   assert.deepEqual(seen, [ACCOUNT_CHANGED_EVENT]);
+});
+
+test("the purge is inverted, so a store nobody listed is still cleared", () => {
+  store.clear();
+  store.set("unsloth_hf_token", "hf_alice");
+  // None of these four were on any list. Each was reported separately, which is
+  // the reason the rule is now "clear unless it is chrome".
+  store.set("unsloth.studio.downloads", "[alice's private repo jobs]");
+  store.set("unsloth_model_configs", "{alice's templates and args}");
+  store.set("unsloth_pinned_chats", "[alice's chats]");
+  store.set("unsloth_reasoning_effort", "high");
+  // Chrome, which survives so the next account does not get a reset browser.
+  store.set("unsloth_locale", "en");
+  store.set("unsloth.hub.modelsTab", "installed");
+  store.set("unsloth_onboarding_done", "1");
+  // Not ours to delete.
+  store.set("some-other-app.state", "keep");
+
+  purgeAccountScopedBrowserState();
+
+  assert.equal(store.get("unsloth_hf_token"), undefined);
+  assert.equal(store.get("unsloth.studio.downloads"), undefined);
+  assert.equal(store.get("unsloth_model_configs"), undefined);
+  assert.equal(store.get("unsloth_pinned_chats"), undefined);
+  assert.equal(store.get("unsloth_reasoning_effort"), undefined);
+  assert.equal(store.get("unsloth_locale"), "en");
+  assert.equal(store.get("unsloth.hub.modelsTab"), "installed");
+  assert.equal(store.get("unsloth_onboarding_done"), "1");
+  assert.equal(store.get("some-other-app.state"), "keep");
+});
+
+test("the session and this module's own markers are never purged", () => {
+  store.clear();
+  store.set("unsloth_auth_token", "the new account's session");
+  store.set("unsloth.browser-account.v1", "bob");
+  store.set("unsloth.legacy-data-owner.v1", "unsloth");
+  store.set("unsloth.legacy-quarantine.v1", "{held}");
+
+  purgeAccountScopedBrowserState();
+
+  // Purging the token would sign the incoming account straight back out, and
+  // dropping the markers would re-arm the legacy migration for whoever is next.
+  assert.equal(store.get("unsloth_auth_token"), "the new account's session");
+  assert.equal(store.get("unsloth.browser-account.v1"), "bob");
+  assert.equal(store.get("unsloth.legacy-data-owner.v1"), "unsloth");
+  assert.equal(store.get("unsloth.legacy-quarantine.v1"), "{held}");
 });

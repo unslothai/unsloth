@@ -3384,7 +3384,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 SummaryWriter = None
         if SummaryWriter is not None:
             try:
-                tb_dir = config.get("tensorboard_dir") or f"{output_dir}/runs"
+                # Through the same resolver the non-MLX path uses: this value
+                # comes from the request, and handed to SummaryWriter raw it wrote
+                # event files into any directory the backend can reach.
+                from utils.paths import resolve_tensorboard_dir
+                tb_dir = str(
+                    resolve_tensorboard_dir(config.get("tensorboard_dir"))
+                    if config.get("tensorboard_dir")
+                    else f"{output_dir}/runs"
+                )
                 tb_writer = SummaryWriter(log_dir = tb_dir)
             except Exception as e:
                 _send("status", status_message = f"tensorboard init failed: {e}")

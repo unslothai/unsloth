@@ -2263,8 +2263,18 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
 
         default_models = inference_backend.default_models
 
+        # The status route already refuses to name a resident model this account
+        # could not have loaded. This listing publishes the same identity, and for
+        # a local checkpoint that identity IS the absolute workspace path, so it
+        # answers the same question rather than routing around it.
+        from routes.inference import resident_text_model_is_foreign
+
+        hide_resident = await asyncio.to_thread(resident_text_model_is_foreign)
+
         loaded_models = []
         for model_name, model_data in inference_backend.models.items():
+            if hide_resident:
+                continue
             _is_vision = model_data.get("is_vision", False)
             _audio_type = model_data.get("audio_type")
             model_info = ModelDetails(
@@ -2285,7 +2295,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded and llama_backend.model_identifier:
+        if llama_backend.is_loaded and llama_backend.model_identifier and not hide_resident:
             display_id, _reported_identifier = _llama_status_model_ids(llama_backend)
             loaded_models.append(
                 ModelDetails(

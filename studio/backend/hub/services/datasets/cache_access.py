@@ -16,6 +16,9 @@ _dataset_downloaders: dict[str, set[str]] = {}
 _lock = threading.Lock()
 _MAX_TRACKED = 512
 
+# One kind of grant among several; see utils/workspace_grants for the durable half.
+_GRANT_KIND = "dataset"
+
 
 # Job key -> (repo, workspace) for a download that has started but not finished.
 # Starting one proves nothing: the worker has not authenticated yet, so recording
@@ -48,50 +51,17 @@ def confirm_dataset_download(key: str) -> None:
         _dataset_downloaders.setdefault(repo_id, set()).add(subject)
         while len(_dataset_downloaders) > _MAX_TRACKED:
             _dataset_downloaders.pop(next(iter(_dataset_downloaders)))
-    _persist_grant(repo_id, subject)
+    from utils.workspace_grants import record_grant
 
-
-# The grant, written into the downloading account's OWN studio.db. In memory
-# alone it did not survive a restart, so the account that fetched a private
-# dataset with its own token lost its cached copy on the next boot, and offline
-# there was no Hub call left to recover it. Retirement renames the workspace,
-# which takes the persisted grants with it.
-_GRANTS_SETTING = "dataset_cache_grants"
-
-
-def _persist_grant(repo_id: str, subject: str) -> None:
-    from storage.studio_db import get_app_setting, upsert_app_settings
-    from utils.workspace_context import run_in_workspace
-
-    def _write() -> None:
-        held = get_app_setting(_GRANTS_SETTING, []) or []
-        if not isinstance(held, list):
-            held = []
-        if repo_id in held:
-            return
-        upsert_app_settings({_GRANTS_SETTING: ([*held, repo_id])[-_MAX_TRACKED:]})
-
-    try:
-        run_in_workspace(subject, _write)
-    except Exception:  # noqa: BLE001 - a grant that cannot be written is re-earned
-        pass  # by the next download; never fail one over it.
-
-
-def _persisted_grant(repo_id: str) -> bool:
-    """Whether this workspace's own database records the download."""
-    from storage.studio_db import get_app_setting
-
-    try:
-        held = get_app_setting(_GRANTS_SETTING, []) or []
-    except Exception:  # noqa: BLE001 - an unreadable database grants nothing
-        return False
-    return isinstance(held, list) and repo_id in held
+    record_grant(_GRANT_KIND, repo_id, subject)
 
 
 def forget_workspace(subject: str) -> None:
     """Drop an account's grants and pending attempts, for retirement: the subject is
     a reusable username, so a surviving grant lets a namesake preview the previous
     holder's cached private datasets."""
+    from utils.workspace_grants import clear_grants
+
     with _lock:
         for repo_id in list(_dataset_downloaders):
             holders = _dataset_downloaders.get(repo_id)
@@ -102,19 +72,7 @@ def forget_workspace(subject: str) -> None:
                 _dataset_downloaders.pop(repo_id, None)
         for key in [key for key, value in _pending_downloads.items() if value[1] == subject]:
             _pending_downloads.pop(key, None)
-    # The written grants too. Retirement renames the workspace, which normally
-    # takes them with it, but this runs before the rename and the rename is
-    # allowed to fail: a grant left behind is one a namesake reads back.
-    _clear_persisted_grants(subject)
-
-
-def _clear_persisted_grants(subject: str) -> None:
-    from storage.studio_db import upsert_app_settings
-    from utils.workspace_context import run_in_workspace
-    try:
-        run_in_workspace(subject, upsert_app_settings, {_GRANTS_SETTING: []})
-    except Exception:  # noqa: BLE001 - a database that cannot be written holds no
-        pass  # grant this process will go on to read.
+    clear_grants(_GRANT_KIND, subject)
 
 
 def caller_may_read_cached_dataset(repo_id: Optional[str]) -> bool:
@@ -139,7 +97,9 @@ def caller_may_read_cached_dataset(repo_id: Optional[str]) -> bool:
         downloaders = _dataset_downloaders.get(key)
     if downloaders and subject in downloaders:
         return True
-    if _persisted_grant(key):
+    from utils.workspace_grants import has_grant
+
+    if has_grant(_GRANT_KIND, key):
         return True
     from routes.inference import _hub_repo_is_anonymously_readable
 

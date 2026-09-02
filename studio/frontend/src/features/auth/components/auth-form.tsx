@@ -362,16 +362,32 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // the previous account's drafts, dictation history and provider metadata,
       // and have its legacy chats, chat settings and Hugging Face token migrated
       // into its own workspace.
-      if (
-        notifyAccountAuthenticated(
-          isLoginMode ? username : (username || ""),
-          installationOwner,
-        )
-      ) {
+      //
+      // The login step ONLY. In change-password mode this form has remounted and
+      // its username state comes from /api/auth/status.default_username, which is
+      // the installation owner, not the account whose password is being changed:
+      // notifying with that moved the browser marker to the owner and released
+      // the quarantined legacy state into a managed user's live session. The
+      // login that produced this session already recorded the right account.
+      let accountChanged = false;
+      if (isLoginMode) {
+        accountChanged = notifyAccountAuthenticated(username, installationOwner);
         // A request still waiting on a 401 belongs to the account that sent it.
-        noteAuthSessionReplaced();
+        if (accountChanged) noteAuthSessionReplaced();
       }
       storeAuthTokens(token.access_token, token.refresh_token);
+      if (accountChanged) {
+        // A different account on the same browser. Purging storage does not touch
+        // anything already hydrated, and enumerating the stores that hold account
+        // content is what kept missing one; a document load resets all of them,
+        // including the Dexie handles whose databases the purge just deleted.
+        try {
+          window.location.replace(getPostAuthRoute());
+          return;
+        } catch {
+          // No navigation (tests): fall through to the router.
+        }
+      }
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
       // The backend returns the correct PATH-based command ("unsloth studio

@@ -17172,6 +17172,11 @@ async def audio_download_plan(
     from core.inference.native_audio import native_audio_download_plan
     from utils.native_path_leases import redact_native_paths
 
+    # The same two questions the media loads ask. The planner builds HfApi with
+    # whatever token arrived, so a tokenless managed plan for an owner-private
+    # audio repo came back with its file names, revisions and sizes.
+    _reject_uncontained_local_path(request.model_path, "plan a download for")
+    _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
     try:
         plan = await asyncio.to_thread(
             native_audio_download_plan,
@@ -17940,6 +17945,8 @@ _STT_DOWNLOAD_INITIATORS_LOCK = threading.Lock()
 # credential, so this is what tells a private repo's own downloader apart from an
 # account that merely learned its name.
 _STT_MODEL_DOWNLOADERS: dict[str, set[str]] = {}
+# The durable half of the same record; see utils/workspace_grants.
+_STT_GRANT_KIND = "stt_model"
 
 
 def forget_stt_model_downloader(subject: str) -> None:
@@ -17959,13 +17966,24 @@ def forget_stt_model_downloader(subject: str) -> None:
         for engine, initiator in list(_STT_DOWNLOAD_INITIATORS.items()):
             if initiator == subject:
                 _STT_DOWNLOAD_INITIATORS.pop(engine, None)
+    from utils.workspace_grants import clear_grants
+
+    clear_grants(_STT_GRANT_KIND, subject)
 
 
 def _note_stt_model_downloader(model: Any) -> None:
     if not isinstance(model, str) or not model.strip():
         return
+    from utils.workspace_grants import record_grant
+
+    subject = current_workspace_subject()
     with _STT_DOWNLOAD_INITIATORS_LOCK:
-        _STT_MODEL_DOWNLOADERS.setdefault(model.strip(), set()).add(current_workspace_subject())
+        _STT_MODEL_DOWNLOADERS.setdefault(model.strip(), set()).add(subject)
+    # And durably, in that account's own database: in memory alone the grant died
+    # with the process, so after a restart the account that fetched a private
+    # Whisper repo with its own token was refused its own cached snapshot, and
+    # /audio/stt/load carries no token to re-earn it with.
+    record_grant(_STT_GRANT_KIND, model.strip(), subject)
 
 
 def _reject_private_stt_model_from_another_account(model: Any) -> None:
@@ -17983,6 +18001,10 @@ def _reject_private_stt_model_from_another_account(model: Any) -> None:
     with _STT_DOWNLOAD_INITIATORS_LOCK:
         downloaders = _STT_MODEL_DOWNLOADERS.get(candidate)
     if downloaders and current_workspace_subject() in downloaders:
+        return
+    from utils.workspace_grants import has_grant
+
+    if has_grant(_STT_GRANT_KIND, candidate):
         return
     _reject_private_hub_repo_without_an_account_token(
         candidate,
@@ -28075,6 +28097,45 @@ def _image_bytes_to_png_b64(raw: bytes) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _reject_private_image_url(url: Any) -> None:
+    """A managed account may not have the backend fetch an image from a private address.
+
+    Every image part on the local GGUF path arrives here, so this is where the
+    rule belongs rather than on each route. The backend does the fetching, so a
+    loopback or LAN URL is a probe of a network the account cannot reach from its
+    own browser, which is the reason saved providers and MCP targets are already
+    refused. Non-HTTP schemes go too: llama-server would read a file:// path off
+    the host. Data URLs never reach this, and the owner is unaffected.
+    """
+    from urllib.parse import urlparse
+
+    from auth.storage import subject_may_reach_private_hosts
+
+    if subject_may_reach_private_hosts():
+        return
+    if not isinstance(url, str) or not url.strip():
+        return
+    parsed = urlparse(url.strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code = 403,
+            detail = "This account can only send image URLs over http or https.",
+        )
+    hostname = (parsed.hostname or "").rstrip(".")
+    if not hostname:
+        raise HTTPException(status_code = 400, detail = "Image URL is missing a host.")
+    from core.inference.providers import _reject_non_public
+
+    try:
+        _reject_non_public(hostname, parsed.port, scheme)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = 403,
+            detail = f"This account can only send image URLs on public addresses. ({exc})",
+        ) from exc
+
+
 def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: bool) -> bool:
     """Enforce the vision guard on translated Anthropic messages and normalize
     any base64-data-URL ``image_url`` parts to PNG.
@@ -28107,8 +28168,10 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
 
             url = (part.get("image_url") or {}).get("url", "")
             if not url.startswith("data:"):
-                # Remote URLs are forwarded as-is; llama-server will
-                # fetch (or fail) per its own support matrix.
+                # Remote URLs are forwarded as-is and llama-server fetches them
+                # FROM THE BACKEND HOST, so this is the same outbound request the
+                # provider and MCP destinations are already policed for.
+                _reject_private_image_url(url)
                 continue
 
             try:

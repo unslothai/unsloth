@@ -5225,6 +5225,33 @@ _GUARD_WIRING = (
         ("_reject_unauthorized_cached_dataset(dataset_id)",),
         (),
     ),
+    # The importance-matrix input is opened by the exporter like the checkpoint is.
+    (
+        "routes.export::export_gguf",
+        ('_reject_uncontained_local_path(request.imatrix_path, "export")',),
+        (),
+    ),
+    # The planner builds HfApi with whatever token arrived.
+    (
+        "routes.inference::audio_download_plan",
+        (
+            '_reject_uncontained_local_path(request.model_path, "plan a download for")',
+            "_reject_private_hub_repo_without_an_account_token(request.model_path",
+        ),
+        (),
+    ),
+    # Every image part on the local GGUF path passes through here.
+    (
+        "routes.inference::_normalize_anthropic_openai_images",
+        ("_reject_private_image_url(url)",),
+        (),
+    ),
+    # The listing publishes the same identity the status route redacts.
+    (
+        "routes.models::list_models",
+        ("resident_text_model_is_foreign", "hide_resident"),
+        (),
+    ),
     (
         "routes.video",
         (
@@ -5363,3 +5390,71 @@ def test_training_will_not_pin_a_cached_dataset_this_account_cannot_read(monkeyp
     assert exc.value.status_code == 403
     monkeypatch.setattr(cache_access, "caller_may_read_cached_dataset", lambda repo: True)
     training_routes._reject_unauthorized_cached_dataset("org/mine")
+
+
+def test_a_cache_grant_outlives_the_process_that_earned_it(tmp_path, monkeypatch):
+    """The dataset and dictation caches answer the same question the same way."""
+    from utils import workspace_grants
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+
+    token = _bind("dana")
+    try:
+        assert not workspace_grants.has_grant("dataset", "org/private")
+        workspace_grants.record_grant("dataset", "org/private", "dana")
+        # Written to disk, not to a dictionary: this is what a restart loses.
+        assert workspace_grants.has_grant("dataset", "org/private")
+        # Kinds do not bleed into each other.
+        assert not workspace_grants.has_grant("stt_model", "org/private")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("eve")
+    try:
+        # Held in the granting account's own database, so it is not readable from
+        # another workspace.
+        assert not workspace_grants.has_grant("dataset", "org/private")
+    finally:
+        reset_workspace_subject(token)
+
+    workspace_grants.clear_grants("dataset", "dana")
+    token = _bind("dana")
+    try:
+        assert not workspace_grants.has_grant("dataset", "org/private")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_managed_account_cannot_point_the_backend_at_a_private_image_url(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+
+    guard = inference_routes._reject_private_image_url
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        # The owner keeps every address, as they do for providers and MCP.
+        guard("http://127.0.0.1:8080/x.png")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("mallory")
+    try:
+        # llama-server fetches these FROM THE BACKEND HOST, so a loopback or LAN
+        # URL is a probe of a network this account cannot reach itself.
+        for private in ("http://127.0.0.1:8080/x.png", "http://169.254.169.254/latest/meta-data"):
+            with pytest.raises(HTTPException) as exc:
+                guard(private)
+            assert exc.value.status_code == 403
+        # And a scheme that would read a file off the host.
+        with pytest.raises(HTTPException):
+            guard("file:///etc/passwd")
+        # A public IP literal, not a hostname: _reject_non_public resolves names
+        # and this suite must not depend on DNS. The consequence for a real
+        # install is the one the provider check already has, an unresolvable host
+        # fails closed.
+        guard("https://93.184.216.34/cat.png")
+        guard("")
+    finally:
+        reset_workspace_subject(token)
