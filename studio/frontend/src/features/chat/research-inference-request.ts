@@ -30,6 +30,7 @@ export function buildResearchInferenceRequest(input: {
   topP: number;
   maxTokens: number;
   reasoningRequested: boolean;
+  supportsReasoningOff: boolean;
   reasoningStyle: string;
   reasoningEffort: ReasoningEffort;
   reasoningEffortLevels: readonly ReasoningEffort[];
@@ -73,6 +74,15 @@ export function buildResearchInferenceRequest(input: {
       input.reasoningEffort,
       input.reasoningEffortLevels,
     );
+  } else if (
+    input.reasoningStyle === "reasoning_effort" &&
+    input.supportsReasoningOff
+  ) {
+    // reasoning_effort sends no enableThinking, so an off that emits nothing is
+    // thinking on wherever the provider defaults it on: ollama sets Think true
+    // whenever the model can think and no control arrives. Send the same
+    // explicit off the chat path sends, gated on off being a legal value.
+    request.reasoningEffort = "none";
   }
   return request;
 }
