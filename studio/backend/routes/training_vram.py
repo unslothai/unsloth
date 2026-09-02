@@ -471,9 +471,20 @@ def _stt_sidecar_holds_no_vram(sidecar) -> bool:
             return True
         # whisper.cpp and llama.cpp report a runtime name rather than a device,
         # so read the flag each sets when it started without the GPU.
-        return getattr(sidecar, "_forced_cpu", False) is True or (
-            getattr(sidecar, "_gpu_disabled", False) is True
-        )
+        #
+        # Only a flag written next to the spawn describes the running process.
+        # mtmd keeps two: _gpu_disabled is the offload state the live server was
+        # started with, while _forced_cpu is the user's standing wish, which
+        # _load_locked records even on the branch that deliberately does NOT
+        # restart a server with a request in flight. Reading the wish there
+        # reports a server still resident at -ngl 99 as holding no VRAM, so
+        # training skips the teardown and starts beside it. Prefer the fact.
+        gpu_disabled = getattr(sidecar, "_gpu_disabled", None)
+        if gpu_disabled is not None:
+            return gpu_disabled is True
+        # whisper.cpp has no separate wish: it sets _forced_cpu only alongside a
+        # spawned --no-gpu and clears it on release, so there it is the fact.
+        return getattr(sidecar, "_forced_cpu", False) is True
     except Exception:  # noqa: BLE001 - a probe must never fail the release it precedes
         return False
 

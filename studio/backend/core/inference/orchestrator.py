@@ -28,7 +28,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Sequence, Tuple, Union
 from core.inference.audio_device import audio_device_forces_cpu
-from core.inference.native_audio import NATIVE_AUDIO_TYPES
+from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
     AUDIO_UNSUPPORTED_CODE,
     AudioBackendUnsupportedError,
@@ -1540,12 +1540,24 @@ class InferenceOrchestrator:
                 # the weights.
                 "audio_device": audio_device,
             }
-            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-                gpu_ids,
-                model_name = model_name,
-                hf_token = hf_token,
-                load_in_4bit = load_in_4bit,
-            )
+            if audio_device_forces_cpu(audio_device) and is_native_audio_model(model_name):
+                # A load that takes no card needs no card chosen for it, and choosing
+                # one does active harm twice over. Automatic selection returns every
+                # GPU needed to hold the checkpoint, and the worker forwards that list
+                # to NativeAudioBackend.load_model, which rejects more than one as
+                # unsupported sharding. Its required_gb also becomes expected_free_gb
+                # below, so the settle wait raises when an Images or Video pipeline
+                # holds the card, aborting the load after the previous worker is
+                # already gone. Both land in exactly the full-GPU case this option
+                # exists for.
+                resolved_gpu_ids, gpu_selection = None, {"selection_mode": "cpu_audio"}
+            else:
+                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                    gpu_ids,
+                    model_name = model_name,
+                    hf_token = hf_token,
+                    load_in_4bit = load_in_4bit,
+                )
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
             # Parent-detected backend for the worker's apply_gpu_ids().

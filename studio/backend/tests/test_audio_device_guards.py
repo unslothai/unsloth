@@ -23,6 +23,17 @@ import routes.inference as ri  # noqa: E402
 from routes.training_vram import _stt_sidecar_holds_no_vram  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def _neutral_audio_device_env(monkeypatch):
+    """A server-wide default must not decide the outcome of these tests.
+
+    Placement here is asserted against no opinion, so a host that sets
+    UNSLOTH_AUDIO_DEVICE would fail these on correct behaviour, and that host is
+    exactly the one most likely to run them.
+    """
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+
+
 def _audio(audio_type = "higgs_tts2", **kwargs):
     return types.SimpleNamespace(audio_type = audio_type, is_lora = False, identifier = "x/y", **kwargs)
 
@@ -272,14 +283,19 @@ def test_the_mask_runs_before_hardware_detection():
 def test_a_zero_gpu_standard_load_drops_the_stale_chat_claim():
     """The load replaced whatever held CHAT. Leaving the claim makes the next
     Images/Video acquire run the CHAT evictor and unload a CPU audio model that
-    was never on the GPU. The GGUF branch already releases; both do now."""
+    was never on the GPU. The GGUF branch already releases; both do now.
+
+    Three sites: the GGUF branch, and the standard branch both before its load
+    (the claim is useless across a load that can run for minutes, and holding it
+    there lets the evictor cancel this very load) and after it (the load cannot
+    cover a claim re-taken while it ran)."""
     src = _inference_source()
-    assert src.count("await asyncio.to_thread(release, CHAT)") == 2
+    assert src.count("await asyncio.to_thread(release, CHAT)") == 3
 
 
 def test_the_release_is_gated_on_the_same_flag_as_the_409():
     src = _inference_source()
-    assert src.count("if not chat_load_needs_gpu:") == 2
+    assert src.count("if not chat_load_needs_gpu:") == 3
 
 
 def test_every_http_device_field_pins_the_three_canonical_values():
@@ -306,3 +322,55 @@ def test_every_http_device_field_pins_the_three_canonical_values():
     # The raw endpoint takes it as a query param, so it is annotated rather than
     # declared on a model; it must not be the odd one out.
     assert inspect.signature(ri.transcribe_audio_raw).parameters["device"].annotation == expected
+
+
+def test_a_gpu_resident_mtmd_server_is_never_reported_as_holding_no_vram():
+    """mtmd records the user's wish on the branch that does not restart the server.
+
+    _load_locked writes _forced_cpu even when an in-flight request keeps the running
+    server, so a llama-server still at -ngl 99 carries a CPU wish. Trusting it would
+    let training start beside a model that holds the whole checkpoint in VRAM.
+    """
+    resident_on_gpu = types.SimpleNamespace(
+        device = "llama.cpp", _gpu_disabled = False, _forced_cpu = True,
+    )
+    assert _stt_sidecar_holds_no_vram(resident_on_gpu) is False
+
+    really_cpu = types.SimpleNamespace(
+        device = "llama.cpp", _gpu_disabled = True, _forced_cpu = True,
+    )
+    assert _stt_sidecar_holds_no_vram(really_cpu) is True
+
+
+def test_whisper_cpp_still_exempts_a_server_started_with_no_gpu():
+    """ggml has no separate wish: _forced_cpu sits next to the spawned --no-gpu."""
+    assert _stt_sidecar_holds_no_vram(
+        types.SimpleNamespace(device = "whisper.cpp", _forced_cpu = True)
+    ) is True
+    assert _stt_sidecar_holds_no_vram(
+        types.SimpleNamespace(device = "whisper.cpp", _forced_cpu = False)
+    ) is False
+
+
+def test_a_forced_cpu_native_audio_load_selects_no_gpu():
+    """Selection returns every card needed to hold the checkpoint, and the worker
+    forwards that list to a backend that rejects more than one. Its required_gb also
+    becomes expected_free_gb, whose settle wait raises when Images holds the card."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    src = inspect.getsource(InferenceOrchestrator.load_model)
+    head = src[: src.index("prepare_gpu_selection(")]
+    assert "audio_device_forces_cpu" in head
+    assert "is_native_audio_model" in head
+
+
+def test_the_stale_chat_claim_is_dropped_before_the_load_not_only_after():
+    """A download and load can run for minutes. Held across that window the claim
+    makes an Images acquire run the chat evictor, which cancels this load."""
+    import inspect
+
+    src = inspect.getsource(ri._load_model_impl)
+    before_load = src[: src.index("backend.load_model,")]
+    assert before_load.count("release, CHAT") >= 1

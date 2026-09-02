@@ -25,6 +25,17 @@ from core.inference.audio_device import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse = True)
+def _neutral_audio_device_env(monkeypatch):
+    """A server-wide default must not decide the outcome of these tests.
+
+    Placement here is asserted against no opinion, so a host that sets
+    UNSLOTH_AUDIO_DEVICE would fail these on correct behaviour, and that host is
+    exactly the one most likely to run them.
+    """
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+
+
 # --- the preference itself -------------------------------------------------
 
 

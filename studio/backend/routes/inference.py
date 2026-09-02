@@ -14069,6 +14069,16 @@ async def _load_model_impl(
         _prior_alias = getattr(backend, "_openai_advertised_id", None)
         _prior_active = getattr(backend, "active_model_name", None)
         backend._openai_advertised_id = None
+        if not chat_load_needs_gpu:
+            # Before the load, not only after it. A download and load can run for
+            # minutes, and the claim being dropped here is one this load never
+            # needed. Held across that window, an Images or Video acquire_for
+            # finds CHAT still owning the GPU and runs the chat evictor, which
+            # sees this model in loading_models and cancels it. acquire_for only
+            # evicts when the arbiter has an owner, so clearing the claim first
+            # lets the two coexist instead. The post-load release below stays:
+            # this branch cannot cover a claim re-taken during the load.
+            await asyncio.to_thread(release, CHAT)
         try:
             success = await asyncio.to_thread(
                 backend.load_model,

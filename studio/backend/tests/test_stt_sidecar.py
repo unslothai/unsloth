@@ -35,6 +35,16 @@ from core.inference.stt_sidecar import (
     validate_remote_model,
 )
 
+@pytest.fixture(autouse = True)
+def _neutral_audio_device_env(monkeypatch):
+    """A server-wide default must not decide the outcome of these tests.
+
+    Placement here is asserted against no opinion, so a host that sets
+    UNSLOTH_AUDIO_DEVICE would fail these on correct behaviour, and that host is
+    exactly the one most likely to run them.
+    """
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+
 _REAL_DECODE_AUDIO_BOUNDED = stt_sidecar_module._decode_audio_bounded
 _REAL_ENSURE_STT_AVAILABLE = stt_sidecar_module.ensure_stt_available
 _REAL_SNAPSHOT_IS_COMPLETE = stt_sidecar_module._snapshot_is_complete
