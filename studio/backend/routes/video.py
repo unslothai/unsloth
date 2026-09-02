@@ -883,9 +883,7 @@ def forget_workspace_jobs(subject: str) -> None:
     """
     with _jobs_lock:
         for job_id in [
-            job_id
-            for job_id, job in _jobs.items()
-            if getattr(job, "subject", None) == subject
+            job_id for job_id, job in _jobs.items() if getattr(job, "subject", None) == subject
         ]:
             _jobs.pop(job_id, None)
 
