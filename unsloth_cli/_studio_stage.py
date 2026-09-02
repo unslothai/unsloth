@@ -188,8 +188,7 @@ def probe_console_script(venv: Path, env: dict[str, str]) -> None:
     try:
         result = _run([str(script), "-h"], cwd = venv.parent, env = env)
     except OSError as exc:
-        # A shebang naming an interpreter that is not there fails here, not with a
-        # return code: the kernel refuses the exec.
+        # A shebang naming a missing interpreter fails here, not with a return code: the kernel refuses the exec.
         raise StageError(f"staged launcher is not executable: {exc}") from exc
     if result.returncode != 0:
         raise StageError(f"staged launcher failed to start: {result.stderr.strip()[-2000:]}")
