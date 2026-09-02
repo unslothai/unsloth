@@ -833,6 +833,39 @@ test("a word matches whichever way either side spells it", () => {
   }
 });
 
+test("an occurrence that mixes the two spellings is still one word", () => {
+  // Alternating whole spellings of the query only reaches text that is all-composed or
+  // all-decomposed. Joining two text nodes joins two sources, so one visible word can be neither,
+  // and then no spelling the query CAN be written in matches it. Every engine's own find reaches
+  // this: measured `true` on chromium, firefox and webkit for both all-composed and all-decomposed
+  // queries against a mixed occurrence.
+  const composed = "é";
+  const decomposed = "é";
+  const mixed = `caf${composed}caf${decomposed}`;
+  for (const typed of [
+    `caf${composed}caf${composed}`,
+    `caf${decomposed}caf${decomposed}`,
+    mixed,
+  ]) {
+    const index = buildTextIndex(el("DIV", [el("P", [text(`a ${mixed} b`)])]));
+    const matches = findMatches(index, typed);
+    assert.equal(
+      matches.length,
+      1,
+      `query ${escape(typed)} missed a mixed word`,
+    );
+    // Still the document's own offsets, so the highlight covers what was written.
+    assert.deepEqual(matches[0], { start: 2, end: 2 + mixed.length });
+    assert.equal(index.text.slice(matches[0].start, matches[0].end), mixed);
+  }
+
+  // The shape that produces it here: one word, two inline nodes, one source each.
+  const split = buildTextIndex(
+    el("DIV", [el("P", [text(`caf${composed}`), text(`caf${decomposed}`)])]),
+  );
+  assert.equal(findMatches(split, `caf${composed}caf${composed}`).length, 1);
+});
+
 test("the index itself is left in the form the document wrote", () => {
   // Normalizing it is the other way to fix the above, and it would change its length: every offset
   // in the index stands for one character of a text node, so a shorter index misplaces them all.

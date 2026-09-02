@@ -500,6 +500,48 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
   return variants;
 }
 
+/** A base character with the combining marks that belong to it, which compose or decompose as one. */
+const CLUSTER_PATTERN = /[\s\S][̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
+
+/**
+ * The needle as a regex source in which each cluster may match either of its spellings.
+ *
+ * Alternating whole spellings of the WHOLE query only reaches text that is all-composed or
+ * all-decomposed. A single occurrence can be neither: joining two text nodes joins two sources, so
+ * `café` in one and `café` in the next make one visible word with a spelling the query
+ * cannot be written in. Every engine's own find matches that (measured on chromium, firefox and
+ * webkit), so it is below the baseline the rest of this file is held to.
+ *
+ * Per cluster rather than per query, which is also SMALLER: the old form repeated the query once
+ * per spelling, this writes it once and pays about eight characters for each cluster that actually
+ * has two spellings. Decomposed first, since it is the longer of the two.
+ */
+function canonicalSource(needle: string, dotted: boolean): string {
+  let out = "";
+  for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
+    if (/^\s/.test(cluster)) {
+      // A whitespace run in the query matches a run in the document, however it is spelt there.
+      out += out.endsWith("\\s+") ? "" : "\\s+";
+      continue;
+    }
+    const spellings = [cluster];
+    const composed = cluster.normalize("NFC");
+    if (composed !== cluster) spellings.push(composed);
+    // A decomposed dotted I folds to `i` plus a combining dot, which has no precomposed form, so
+    // NFC cannot put it back and the plain query would miss a word plainly on screen.
+    if (dotted && cluster === "i") spellings.push(`i${COMBINING_DOT}`);
+    out +=
+      spellings.length === 1
+        ? escapeForRegex(spellings[0])
+        : `(?:${spellings.map(escapeForRegex).join("|")})`;
+  }
+  return out;
+}
+
+function escapeForRegex(text: string): string {
+  return text.replace(REGEX_META_PATTERN, "\\$&");
+}
+
 /**
  * A pattern for a query spanning whitespace or spelt more than one way, or null for a plain scan.
  *
@@ -508,10 +550,9 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
  * whitespace, so block boundaries stay closed. Single-word ASCII queries keep the `indexOf` path.
  */
 function matchPattern(variants: string[], needle: string): RegExp | null {
+  const dotted = variants.some((variant) => variant.includes(COMBINING_DOT));
   if (variants.length === 1 && !/\s/.test(needle)) return null;
-  const escaped = variants.map((variant) =>
-    variant.replace(REGEX_META_PATTERN, "\\$&").replace(/\s+/g, "\\s+"),
-  );
+  const escaped = [canonicalSource(needle, dotted)];
   try {
     const pattern = new RegExp(
       escaped.length === 1 ? escaped[0] : `(?:${escaped.join("|")})`,
@@ -557,6 +598,12 @@ function eachMatch(
     Math.min(...variants.map((variant) => variant.length)) > index.text.length
   )
     return;
+  // What counts as "spelt the way it was typed": any whole-query spelling, or any mixture of the
+  // per-cluster ones, which compare equal once composed. Whitespace flexing survives NFC, so a hit
+  // that only flexed a space is still told apart from one that merely spells a letter differently.
+  const composedNeedle = needle.normalize("NFC");
+  const asTyped = (hit: string): boolean =>
+    variants.includes(hit) || hit.normalize("NFC") === composedNeedle;
   const pattern = matchPattern(variants, needle);
   if (pattern) {
     for (;;) {
@@ -566,7 +613,7 @@ function eachMatch(
       // Any spelling of the query counts as typed exactly; only flexed whitespace does not.
       if (
         touchesPreserved(index.segments, hit.index, end) &&
-        !variants.includes(hit[0])
+        !asTyped(hit[0])
       ) {
         pattern.lastIndex = hit.index + 1;
         continue;
