@@ -81,6 +81,9 @@ class _Stub:
     # Discrete CUDA by default. An integrated SoC (Jetson, DGX Spark) is the
     # unified-memory answer on the CUDA side, exercised deliberately below.
     _integrated_cuda = False
+    # A generative model by default, which is every existing case here. The
+    # --embedding server has no decode phase at all and is exercised below.
+    is_embedding_gguf = False
 
     def _amd_apu_wants_unified_memory(self, gpu_indices = None):
         return self._unified
@@ -131,7 +134,26 @@ class _Stub:
             ),
             lm_head_bytes = self._lm_head_bytes or 0,
             token_embd_bytes = 512 * MIB,
-            kv_bytes_per_token_f16 = 65536,
+            # 96 KiB per token, i.e. 3 GiB at the 32768 these tests plan at.
+            # RE-ANCHORED, deliberately, and not to make a particular assertion
+            # pass. At the old 64 KiB the stub's dense cell sat inside the cost
+            # gate's 10% near-tie band at EVERY budget, so whether a plumbing
+            # test got a spill back was decided by the +/-1 block that
+            # _select_blocks and the fallback's layer loop each round off, not by
+            # anything the test was about: sweeping free VRAM by the GiB gave
+            # S S D D S S S D S S D D, a comb with no trend in it. Two changes
+            # landed on that comb at once -- lm_head is no longer charged to the
+            # fitter's host side (it never leaves the device on a partial fit),
+            # and the fitter's moved cache is now priced at the calibrated cache
+            # rate -- and re-rolled it.
+            #
+            # A cache this size is what a 64-layer dense model with 6 KV heads at
+            # head_dim 256 actually reserves at 32K, and it puts the planner's
+            # KV-residency advantage clear of the rounding, so these tests go back
+            # to asserting what the seam HANDS the planner. It does not make the
+            # gate lenient: 3, 4, 5 and 16 GiB still decline, the first three
+            # because spilling nearly everything really does lose to the fitter.
+            kv_bytes_per_token_f16 = 98304,
             n_ctx_train = 262144,
             is_moe = bool(self.n_moe_layers),
             n_expert = 256 if self.n_moe_layers else 0,
@@ -144,7 +166,9 @@ class _Stub:
 
 def _inputs(
     model_size = 30 * GIB,
-    kv = 2 * GIB,
+    # Matches the layout's own 96 KiB per token at 32768 above, so the floor the
+    # seam passes and the product the layout computes describe one cache.
+    kv = 3 * GIB,
     free_mib = 24 * 1024,
     indices = None,
     usable_mib = None,
@@ -159,6 +183,7 @@ def _inputs(
     env_mmproj = 0,
     env_mmproj_unsized = False,
     separate_draft = False,
+    n_ubatch = None,
 ):
     return {
         "model_size": model_size,
@@ -174,6 +199,7 @@ def _inputs(
         "soft_overhead": 0,
         "model_path": "/models/stub.gguf",
         "n_ctx": 32768,
+        "n_ubatch": n_ubatch,
         "n_parallel": n_parallel,
         "n_threads": n_threads,
         "shared_gpu_ids": set() if shared is None else set(shared),
@@ -794,8 +820,12 @@ def test_the_planner_gets_the_budget_the_fit_tested_not_raw_free():
     -ot overrides, and then appends --fit off over the result.
     """
     stub = _Stub()
-    on_free = _plan(stub, free_mib = 14 * 1024)
-    on_budget = _plan(stub, free_mib = 14 * 1024, usable_mib = 13 * 1024)
+    # 12 and 11 GiB, not 14 and 13: at 13 the gate declines on its own merits
+    # (see the cache re-anchor on _Stub), and this test is about which NUMBER the
+    # seam hands the planner, so both arms have to be on the planning side of the
+    # gate for the block counts to be comparable at all.
+    on_free = _plan(stub, free_mib = 12 * 1024)
+    on_budget = _plan(stub, free_mib = 12 * 1024, usable_mib = 11 * 1024)
 
     assert on_free is not None and on_budget is not None
     assert on_free.spills_anything and on_budget.spills_anything
@@ -2301,3 +2331,68 @@ def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "psutil", _PhysicalHost)
     assert llama_mod._spilled_decode_threads() == 12
+def test_the_seam_scores_at_the_micro_batch_that_launches():
+    """rank() amortises the spilled-weight stream over ONE ubatch.
+
+    The launch already resolves the Studio field, the extras, LLAMA_ARG_UBATCH
+    and the slot-dependent floor into ``_effective_ubatch`` and then emits it, so
+    scoring at PlanOptions' 512 default while the child runs ``-ub 64`` prices
+    prefill eight times too cheap. Measured on the head of this branch before the
+    fitter model was corrected, that alone flipped 66 cells of a dense-27B sweep
+    from spill to abstain, i.e. the gate returned the opposite placement from the
+    one the launch actually gets.
+    """
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        seen["opts"] = kwargs["opts"]
+        raise AssertionError("stop after the options are built")
+
+    import core.inference.offload_planner as planner_mod
+
+    real = planner_mod.plan_placement
+    planner_mod.plan_placement = _capture
+    try:
+        for launched, expected in ((64, 64), (2048, 2048), (None, 512), (0, 512)):
+            seen.clear()
+            with pytest.raises(AssertionError):
+                _plan(_Stub(), free_mib = 14 * 1024, n_ubatch = launched)
+            assert seen["opts"].n_ubatch == expected, launched
+    finally:
+        planner_mod.plan_placement = real
+
+
+def test_an_embedding_server_is_scored_without_a_decode_phase():
+    """``--embedding`` returns the pooled vector; there is no generation at all.
+
+    So a spill's decode advantage -- which on a routed MoE is its ENTIRE
+    advantage, since experts are charged ``n_expert_used / n_expert`` for
+    generation but full bytes for prefill -- is winnings this workload can never
+    collect. On the head of this branch, scoring 256 phantom generated tokens
+    flipped 452 cells of a dense-27B sweep from abstain to spill.
+    """
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        seen["opts"] = kwargs["opts"]
+        raise AssertionError("stop after the options are built")
+
+    import core.inference.offload_planner as planner_mod
+
+    real = planner_mod.plan_placement
+    planner_mod.plan_placement = _capture
+    try:
+        generative = _Stub()
+        with pytest.raises(AssertionError):
+            _plan(generative, free_mib = 14 * 1024)
+        assert seen["opts"].workload_generated_tokens > 0
+
+        embedder = _Stub()
+        embedder.is_embedding_gguf = True
+        seen.clear()
+        with pytest.raises(AssertionError):
+            _plan(embedder, free_mib = 14 * 1024)
+        assert seen["opts"].workload_generated_tokens == 0
+        assert seen["opts"].workload_prompt_tokens > 0, "prefill is the whole workload here"
+    finally:
+        planner_mod.plan_placement = real

@@ -21114,6 +21114,13 @@ class LlamaCppBackend:
                         "model_path": model_path,
                         "n_ctx": effective_ctx,
                         "n_threads": n_threads,
+                        # The micro-batch that LAUNCHES, after the Studio field, the
+                        # extras, LLAMA_ARG_UBATCH and the slot-dependent floor have
+                        # all had their say. The cost gate divides the spilled-weight
+                        # streaming cost by it, so scoring at the 512 default while
+                        # the child runs -ub 64 prices prefill eight times too cheap
+                        # and can return the opposite placement.
+                        "n_ubatch": _effective_ubatch,
                         # The slot count the KV and recurrent state were PRICED at.
                         # A pass-through --parallel is appended after Unsloth's own
                         # and wins, and both caches scale with it.
@@ -26634,6 +26641,23 @@ class LlamaCppBackend:
                 # its answer. Everywhere else the planner is asked what it CAN
                 # place, which is a different question and keeps its old answer.
                 require_cost_win = True,
+                # Scored at the batch that launches, not the dataclass default:
+                # rank() amortises the spilled-weight stream over one ubatch, so
+                # a user who moved this knob would otherwise get the placement
+                # the gate predicted for 512 rather than the one for their value.
+                n_ubatch = (
+                    int(inputs["n_ubatch"])
+                    if int(inputs.get("n_ubatch") or 0) > 0
+                    else PlanOptions.n_ubatch
+                ),
+                # An --embedding server never decodes: llama-server returns the
+                # pooled embedding and stops, so there is no generation phase for
+                # a spill's generation advantage to be realised in. Scoring one
+                # anyway accepted spills purely on decode wins these requests can
+                # never collect. Prefill-only is the whole workload here.
+                workload_generated_tokens = (
+                    0 if self.is_embedding_gguf else PlanOptions.workload_generated_tokens
+                ),
                 # Spilled decode runs on the CPU backend (ggml migrates an op to the
                 # GPU only at batch >= 32, and decode is batch 1), so the penalty
                 # tracks core count. Read the real one, not a default.

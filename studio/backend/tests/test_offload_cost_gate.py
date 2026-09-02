@@ -25,6 +25,7 @@ from core.inference.offload_planner import (
 )
 
 GIB = 1024**3
+MIB = 1024**2
 
 
 def dense_layout(
@@ -118,13 +119,17 @@ def test_the_workload_shape_moves_the_trade():
     did, cannot see the difference at all.
 
     The claim here is the DIRECTION, not a crossing: on this fixture the spill
-    stays inside the margin at every shape, because the fitter's cost is
-    dominated by the output tensor and that is charged to decode as well.
+    stays inside the margin at every shape.
+
+    Every shape below carries the same TOTAL, because the fallback's live-cache
+    term is sized from ``prompt + generated`` -- a shape that reads more of the
+    cache charges the fitter more for it, which is a second effect and not the
+    one under test. Holding the total fixed isolates the split.
     """
     layout = dense_layout()
     card = [14848 * 1024 * 1024]
     ratios = []
-    for n_prompt, n_generated in ((8192, 16), (2048, 256), (512, 2048), (16, 8192)):
+    for n_prompt, n_generated in ((8192, 16), (6000, 2208), (2208, 6000), (16, 8192)):
         plan = plan_placement(
             layout,
             card,
@@ -147,9 +152,25 @@ def test_the_margin_is_what_decides_a_near_tie():
 
     Which confirms the decline above is the MARGIN talking and not an accident
     of the arithmetic: the spill really is cheaper here, just not by enough.
+
+    17.2 GiB, RE-ANCHORED from 18.8. The band did not disappear, it moved: the
+    fitter's moved cache is now priced at Access.KV_CACHE's calibrated rate
+    instead of the contiguous weight rate, which is worth 5 to 12 points of the
+    ratio on a dense cell, so 18.8 GiB is now a clear planner win (1.19x) and a
+    strict margin plans it too. That is the gate working, not the near-tie
+    property lapsing, and re-anchoring is the honest response -- deleting the
+    test would drop the only check that the margin is load-bearing rather than
+    decorative.
+    ---
+    This budget is chosen for the SAME reason 18.8 was: it is the band. At 17.2
+    the spill is 0.95x the fitter -- genuinely cheaper, by less than the 10%
+    margin -- so strict declines and lenient plans, and neither passes for the
+    wrong reason. Do not re-anchor this to a budget where the spill is outright
+    more expensive: a zero margin would decline there too and the test would go
+    green while asserting nothing.
     """
     layout = dense_layout()
-    card = [14848 * 1024 * 1024]
+    card = [17584 * 1024 * 1024]
     strict = plan_placement(layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
     lenient = plan_placement(
         layout,
@@ -239,9 +260,66 @@ def test_the_dense_fallback_does_move_whole_layers_and_the_cache_with_them():
     assert placement is not None
     names = {g.name for g in placement.host_groups}
     assert "layers" in names, "a dense fit moves attention weights too"
-    assert any(
-        g.name.startswith("kv") for g in placement.host_groups
-    ), "a dense fit drags the moved layers' cache to host with them"
+    # ``kv_host_bytes``, the same field the MoE case above asserts is ZERO, and
+    # not a host group named "kv" as this used to look for. The moved cache was
+    # re-expressed in that field so it is charged at Access.KV_CACHE's calibrated
+    # rate rather than the contiguous weight rate; asserting it here keeps the two
+    # halves of the branch stated in one vocabulary, and makes this test fail if
+    # the cache is ever demoted back to a plain host group, which is precisely the
+    # regression it exists to catch.
+    assert placement.kv_host_bytes > 0, (
+        "a dense fit drags the moved layers' cache to host with them"
+    )
+
+
+def test_a_moved_layer_takes_its_share_of_the_recurrent_state_with_it():
+    """The state follows the layer, so the fallback has to free it AND pay for it.
+
+    llama.cpp allocates layer ``i``'s recurrent state in
+    ``ggml_backend_dev_buffer_type(model.dev_layer(i))`` when offload is on
+    (llama-memory-recurrent.cpp:85-89) -- the same branch that puts the attention
+    cache with its layer at llama-kv-cache.cpp:214-225 -- which is what
+    ``ModelLayout.recurrent_bytes`` documents.
+
+    ``all_resident_bytes`` counts the whole state, and the dense fallback loop
+    used to free none of it and price none of it. It is not caught upstream
+    either: the uneven-cache abstain returns early on a single device, so a dense
+    hybrid on one card walks straight into this. The result was a fallback built
+    from more layers than llama.cpp would move, scored on that heavier placement,
+    which biases the gate towards ACCEPTING -- at 4 GiB of state on this cell it
+    is the whole difference between a spill and an abstain.
+    """
+    import dataclasses
+
+    plain = dense_layout()
+    hybrid = dataclasses.replace(plain, recurrent_bytes = 4 * GIB)
+    card, ram = [12 * GIB], 94 * GIB
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+
+    placement = _fit_fallback_placement(hybrid, gated(), 12 * GIB, 32768, **args)
+    assert placement is not None
+    priced = [g for g in placement.host_groups if g.name.startswith("recurrent")]
+    assert priced and priced[0].bytes_total > 0, "the moved state is never charged to the host"
+
+    # Freed as well as charged: the state is 4 GiB of VRAM that moving layers
+    # really does release, so the fallback reaches the budget on fewer of them
+    # than a loop that only ever frees weights and cache. 39 layers before, 32
+    # now, on a 64-block layout.
+    def moved_layers(layout):
+        p = _fit_fallback_placement(layout, gated(), 12 * GIB, 32768, **args)
+        ffn = [g for g in p.host_groups if g.name == "ffn"][0]
+        return round(ffn.bytes_total / int(0.20 * GIB))
+
+    assert moved_layers(plain) < moved_layers(hybrid) < 39, (
+        "a bigger state still needs more layers moved, but not as many as a loop "
+        "that never frees it"
+    )
+
+    # And it reaches the verdict. Pre-fix this cell planned a spill at 1.13x;
+    # the fallback it was beating was one llama.cpp would not have chosen.
+    gate = plan_placement(hybrid, card, ram, 32768, opts = gated(host = HostProfile(threads = 6)))
+    assert not gate.spilled_blocks
+    assert "not worth it" in gate.reason
 
 
 def test_a_spill_larger_than_host_ram_is_refused_outright():
@@ -258,7 +336,9 @@ def test_a_spill_larger_than_host_ram_is_refused_outright():
     fitter completed both times on the same box.
     """
     layout = dense_layout()
-    card = [14848 * 1024 * 1024]
+    # The near-tie band, so the cost comparison alone would plan this cell and
+    # the refusal below is demonstrably the RAM test rather than the cost one.
+    card = [18688 * 1024 * 1024]
     roomy = plan_placement(
         layout,
         card,
@@ -271,7 +351,7 @@ def test_a_spill_larger_than_host_ram_is_refused_outright():
     cramped = plan_placement(
         layout,
         card,
-        8 * GIB,
+        4 * GIB,
         32768,
         opts = gated(host = HostProfile(threads = 6), min_penalty_reduction = 0.0),
     )
@@ -288,8 +368,57 @@ def test_the_ram_refusal_counts_the_bytes_the_load_really_puts_on_the_host():
     layout = dense_layout()
     opts = gated(host = HostProfile(threads = 6), min_penalty_reduction = 0.0)
     # Sized so the spill alone fits but the spill plus token_embd does not.
-    plan = plan_placement(layout, [14848 * 1024 * 1024], 16 * GIB, 32768, opts = opts)
+    plan = plan_placement(layout, [18688 * 1024 * 1024], 4608 * MIB, 32768, opts = opts)
     if not plan.spills_anything:
         assert "host RAM" in plan.reason
         needed = float(plan.reason.split("needs ")[1].split(" GiB")[0])
         assert needed >= layout.token_embd_bytes / GIB
+
+
+def test_the_fitter_keeps_lm_head_on_the_device():
+    """A partial ``--fit on`` never moves the output tensor, so it is never charged.
+
+    llama.cpp keeps rows ``[i_gpu_start, i_gpu_start + act_gpu_layers)`` with
+    ``i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0)``, and takes the
+    output row's device from ``get_layer_buft_list(n_layer_all)``
+    (llama-model.cpp:1467-1492). Substituting any ``n_gpu_layers >= 1`` leaves
+    row ``n_layer_all`` inside the window, so lm_head is resident for EVERY
+    partial fit -- it is the last row to leave, not the first.
+
+    Charging it did two wrong things at once: it credited the fallback with
+    freeing bytes ``-ngl`` cannot free, so the fallback appeared to fit a layer
+    or two early, and then billed it a host lm_head at SINGLE_MATVEC rates that
+    llama.cpp never pays. Both inflate the fallback's score, which is the
+    direction that lets a spill through this gate.
+    """
+    layout = dense_layout()
+    opts = gated(host = HostProfile(threads = 6))
+    placement = _fit_fallback_placement(
+        layout,
+        opts,
+        13 * GIB,
+        32768,
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_on_host = False,
+    )
+    assert placement is not None
+    assert "lm_head" not in {group.name for group in placement.host_groups}
+    assert placement.host_groups, "the fallback still moves layers, just not the output row"
+
+
+def test_a_spill_the_real_fitter_beats_is_declined_at_the_margin():
+    """The decision, not just the placement: this cell used to be planned.
+
+    A 27B on a 18.8 GiB card is the '#9861 nearly fitted anyway' shape -- the
+    fitter has one or two layers to move and the spill has 22 blocks. Billing
+    the fallback a host lm_head made it look 1.6x more expensive than it is and
+    the gate took the spill; without that charge the fallback wins and the
+    planner correctly stands down.
+    """
+    layout = dense_layout()
+    plan = plan_placement(
+        layout, [18800 * 1024 * 1024], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6))
+    )
+    assert not plan.spills_anything
+    assert "not worth it" in plan.reason

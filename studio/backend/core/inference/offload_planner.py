@@ -293,8 +293,14 @@ def _fit_fallback_placement(
     lowers the offloaded layer count until the load fits -- moving WHOLE layers,
     attention and FFN together, and dragging each moved layer's share of the
     attention cache to the host with it (``-ngl`` drags the cache off, ``-ot``
-    does not). The output tensor rides the layer list at ``n_layer_all``, so it
-    is the first thing to leave once the count drops below the layer count.
+    does not). The output tensor rides the layer list at ``n_layer_all``, and
+    that row is the LAST to leave, not the first: llama.cpp keeps rows
+    ``[i_gpu_start, i_gpu_start + act_gpu_layers)`` with
+    ``i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0)``
+    (llama-model.cpp:1467-1492), so row ``n_layer_all`` -- and therefore
+    ``lm_head`` -- stays on the device for every ``n_gpu_layers >= 1``. Every
+    placement this loop can return is a partial fit with at least one layer
+    resident, so lm_head is resident in all of them.
 
     Modelling it matters because the fallback is CHEAPER than a spill whenever
     the model nearly fitted anyway: few layers move, the cache mostly stays, and
@@ -335,8 +341,22 @@ def _fit_fallback_placement(
     # about 2.2K ever live. Feasibility above still uses the full reservation,
     # because llama.cpp really does allocate it.
     live_tokens = min(n_ctx, max(1, opts.workload_prompt_tokens + opts.workload_generated_tokens))
+    # Scaled by whatever correction ``kv_bytes_floor`` applied to the RESERVED
+    # size, so both sides of this function describe one cache. The floor is the
+    # caller's byte-accurate measurement at the requested context, and where it
+    # exceeds the layout's plain f16 GQA product it is carrying a real term the
+    # product has no expression for -- cache dtype, SWA's second cache, MLA's
+    # compressed latent, slot padding, flash-attention padding (see
+    # :func:`cache_bytes`). Those terms scale with the live prefix exactly as
+    # they scale with the reservation, so reading the live size off the bare
+    # product while the freed size uses the floor made the fitter FREE a
+    # correctly sized cache and be CHARGED for an undersized one. On MLA -- the
+    # huge-MoE shape this planner exists for, where the product models a K-only
+    # latent as a full K+V pair -- the two differ by more than 2x.
+    reserved_product = cache_bytes(layout, n_ctx, kv_quantised = quantised)
+    floor_scale = (kv_total / reserved_product) if reserved_product > 0 else 1.0
     kv_live_per_layer = (
-        cache_bytes(layout, live_tokens, kv_quantised = quantised) / len(blocks)
+        cache_bytes(layout, live_tokens, kv_quantised = quantised) * floor_scale / len(blocks)
         if not kv_on_host
         else 0.0
     )
@@ -377,12 +397,44 @@ def _fit_fallback_placement(
     # GPU with it. llama.cpp keeps the LAST n_gpu_layers on the device, so the
     # host takes the leading ones; walking from the end is equivalent here
     # because only the count enters the cost.
+    #
+    # The recurrent state follows its layer exactly as the cache does: for layer
+    # ``i`` llama.cpp takes ``ggml_backend_dev_buffer_type(model.dev_layer(i))``
+    # when offload is on and the CPU buffer otherwise
+    # (llama-memory-recurrent.cpp:85-89, the same branch llama-kv-cache.cpp:214-225
+    # uses for the attention cache), which is what ``ModelLayout.recurrent_bytes``
+    # already documents. So a layer the fitter moves takes its share of the state
+    # to the host, and the fallback has to free it and then pay for it.
+    #
+    # It did neither. ``all_resident_bytes`` counts the whole state in
+    # ``resident`` and this loop never freed any of it, so on a single-GPU dense
+    # hybrid -- which is not caught by the uneven-cache abstain, that one returns
+    # early on ``len(vram_bytes_per_device) <= 1`` -- the fallback had to move
+    # more layers than the fitter would to reach the same budget, and was scored
+    # on that heavier placement. Worst case it ran out of layers and returned
+    # ``None``, which the gate reads as "the fitter cannot place this either" and
+    # takes the spill WITHOUT any comparison at all. Reachable on any dense
+    # Mamba-hybrid GGUF that carries ``ssm.*`` and ``full_attention_interval``
+    # (Falcon-H1, Nemotron-H) on one card.
+    #
+    # Spread over every block, not over the recurrent layers alone, because the
+    # layout does not say which layers are recurrent -- the same approximation
+    # ``kv_per_layer`` already makes for a cache that likewise lives on only some
+    # of them.
+    recurrent_per_layer = layout.recurrent_bytes / len(blocks)
     host_weights = 0
     host_spillable = 0
     for moved, block in enumerate(reversed(blocks), start = 1):
         host_weights += block.spillable_bytes + block.resident_bytes
         host_spillable += block.spillable_bytes
-        freed = host_weights + int(kv_per_layer * moved) + layout.lm_head_bytes
+        host_recurrent = int(recurrent_per_layer * moved)
+        # lm_head is NOT in here: the output row stays on the device for any
+        # n_gpu_layers >= 1, so the fitter never frees it on a partial fit and
+        # never pays for it on the host either. Charging it did both -- the
+        # fallback appeared to fit a layer or two early AND was billed a host
+        # lm_head llama.cpp would not move, which inflated its score and let
+        # spills through this gate that the real fitter beats.
+        freed = host_weights + int(kv_per_layer * moved) + host_recurrent
         if resident - freed <= budget:
             groups: list[TensorGroup] = []
             if host_spillable:
@@ -391,21 +443,71 @@ def _fit_fallback_placement(
             if attention:
                 # Attention, norms and routers: dense, read in full every token.
                 groups.append(TensorGroup("layers", attention, Access.CONTIGUOUS))
-            if layout.lm_head_bytes:
-                groups.append(TensorGroup("lm_head", layout.lm_head_bytes, Access.SINGLE_MATVEC))
+            if host_recurrent:
+                # CONTIGUOUS, not the cache rate: this is a small fixed-size conv
+                # and SSM state read straight through by the scan, not attention
+                # over a prefix that grows with the conversation. It is also
+                # context independent, so unlike the cache there is no reserved
+                # versus live distinction to make.
+                groups.append(
+                    TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
+                )
             live_kv = int(kv_live_per_layer * moved)
-            if live_kv:
-                # NOT ``kv_host_bytes``. That field carries the 20.1x rate, which
-                # was calibrated on ``--no-kv-offload``: cache on the host while
-                # attention still runs on the GPU, so every token drags the whole
-                # thing back across the link. A layer the fitter moved is not in
-                # that regime -- its attention runs on the CPU backend, next to
-                # its own cache -- so it reads at host speed like any other host
-                # tensor. Charging it 20.1x instead made one moved layer score
-                # worse than two gigabytes of moved weights, and no plan could
-                # ever lose to the fitter.
-                groups.append(TensorGroup("kv (moved layers)", live_kv, Access.CONTIGUOUS))
-            return Placement(host_groups = groups)
+            # ``kv_host_bytes``, so this is charged at ``Access.KV_CACHE``'s
+            # calibrated 20.1x and not at the contiguous weight rate. This is the
+            # ONLY term that can see the planner's measured dense advantage, and
+            # an earlier revision charged it at 1.00x on the reasoning that a
+            # moved layer's attention runs on the CPU backend next to its own
+            # cache, so it never crosses the link. The residency claim is right
+            # (llama-kv-cache.cpp:214-225 gives layer ``il``'s cache the buffer
+            # type of ``model.dev_layer(il)``, so a host layer's cache is a host
+            # buffer), but the RATE that follows from it is not: 1.00x is
+            # ``REFERENCE_CONTIGUOUS_MS_PER_GIB``, measured on Q4 dense FFN, a
+            # contiguous quantised GEMM. Batch-1 attention over an f16 cache is a
+            # strided GEMV that parallelises over heads (4 KV heads here) rather
+            # than over rows, so it cannot reach that rate, and nothing in the
+            # model measures 1.00x for it. Charging it 1.00x made the model
+            # contradict every dense measurement we have: over the bench13 cells
+            # that reach this gate the fitter scored CHEAPER on 5 of 5 dense
+            # cells the hardware says the planner WINS, by 1.08x to 1.53x on
+            # generation, which would make ``-ot`` a MoE-only feature.
+            #
+            # 20.1x is the model's only calibrated constant for "attention cache
+            # read from host RAM", and it is the best-anchored one in the file
+            # (dense 119.7 against MoE 121.2 ms/GiB, agreeing to 1.3%). It is an
+            # UPPER bound for this regime, because that anchor is
+            # ``--no-kv-offload``, where the layer's weights stay on the GPU so
+            # the attention op stays there too and drags the cache over PCIe
+            # every token -- ggml only runs an op where its sources live for
+            # sources in a WEIGHTS buffer, and the cache is not one, with
+            # FLASH_ATTN_EXT excluded from that rule outright
+            # (ggml-backend.cpp:952-981). The true rate for CPU-side attention
+            # over a host cache is between 1.0x and 20.1x and is unmeasured.
+            #
+            # Taking the upper bound is the conservative end for a gate that has
+            # already been wrong in the other direction, and it still
+            # UNDER-predicts: it scores those five at 1.12x to 1.19x against a
+            # measured penalty ratio of 1.43x to 2.44x where a resident baseline
+            # exists to compute one (L4, Qwen3.8-27B Q4, 12/14/16 GiB). It
+            # also cannot rescue a cell it should not by much, because the term
+            # scales with how many layers the fitter has to move: where the load
+            # nearly fitted and the fitter moves almost nothing -- the #9861
+            # shape this gate exists to stop -- it contributes almost nothing.
+            # The two worst #9861 cells (Qwen3-8B Q4 near 11 GiB, measured 0.19x
+            # and 0.21x) decline at every thread count and context tried.
+            #
+            # It is NOT clean on the measured set, and that is stated here rather
+            # than in a commit message nobody reads at this line. Scored over the
+            # bench13 cells that reach this gate: 5 correct accepts, 0 false
+            # declines, and 2 FALSE ACCEPTS -- both gemma-4-E2B Q4 at 2 GiB,
+            # which is also the one cell that disagrees with itself across hosts
+            # (0.968 and 0.878 for the same placement). The threshold is not what
+            # is wrong there: E2B scores 1.465, HIGHER than every correct accept
+            # (1.12 to 1.19), so the ordering is wrong on that cell and no margin
+            # separates it. Left as a known miss rather than tuned away, because
+            # fitting a constant to two readings that disagree by 10% would be
+            # fitting noise.
+            return Placement(host_groups = groups, kv_host_bytes = live_kv)
     return None
 
 
