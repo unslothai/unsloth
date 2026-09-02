@@ -42,21 +42,15 @@ import {
 } from "../src/features/find-in-page/lib/find-text-index.ts";
 import { useFindInPageStore } from "../src/features/find-in-page/stores/find-in-page-store.ts";
 
-/** The feature's two component modules as one string. `FindBar` lives in its own module so it is
- *  its own chunk, loaded when the chord is first pressed rather than on the first screen. */
+/** The feature's component module as one string. */
 async function readComponentSource(): Promise<string> {
-  const parts = await Promise.all(
-    ["find-in-page.tsx", "find-bar.tsx"].map((name) =>
-      readFile(
-        new URL(
-          `../src/features/find-in-page/components/${name}`,
-          import.meta.url,
-        ),
-        "utf8",
-      ),
+  return await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
     ),
+    "utf8",
   );
-  return parts.join("\n");
 }
 
 // --- the hand-rolled tree ----------------------------------------------------------------------
@@ -1492,43 +1486,6 @@ test("a query too large to compile falls back instead of throwing on the first s
   );
   // No throw, and no matches: the literal scan is exact, so a spaced query simply finds nothing.
   assert.deepEqual(findMatches(index, query, 10), []);
-});
-
-test("the search engine is not on the first screen", async () => {
-  // The always-mounted half is the chord and the store. The index, the DOM half, the observer and
-  // the highlights belong to the bar, which exists only while a search is open, so they are its
-  // own chunk and are fetched when the chord is first pressed. Runtime-only splitting is not
-  // enough: one module means one chunk, and the whole engine ships to a reader who never searches.
-  const entry = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(entry, /lazy\(\(\) => import\("\.\/find-bar\.tsx"\)\)/);
-  // And nothing heavy pulled back in statically alongside it.
-  for (const eager of [
-    "../lib/find-text-index.ts",
-    "../lib/find-dom.ts",
-    "../hooks/use-find-in-page.ts",
-  ]) {
-    assert.equal(
-      entry.includes(`from "${eager}"`),
-      false,
-      `${eager} is imported statically by the always-mounted half`,
-    );
-  }
-  // The constants the rest of the app marks subtrees with are their own module for the same
-  // reason: a chat component should not pull the index in to spell an attribute name.
-  const attributes = await readFile(
-    new URL(
-      "../src/features/find-in-page/lib/find-attributes.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.equal(/^import /m.test(attributes), false);
 });
 
 test("a Hangul query finds the syllables it is looking at", () => {

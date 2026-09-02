@@ -112,12 +112,6 @@ def state(page) -> dict:
 
 def open_bar(page, mod: str) -> None:
     page.keyboard.press(f"{mod}+f")
-    # The bar is its own chunk, so the first press of a session waits for it to arrive rather than
-    # for a paint. Wait for the landmark, not a fixed sleep, or the first check races the fetch.
-    try:
-        page.locator('[role="search"]').wait_for(state = "attached", timeout = 10_000)
-    except Exception:
-        pass
     page.wait_for_timeout(250)
 
 

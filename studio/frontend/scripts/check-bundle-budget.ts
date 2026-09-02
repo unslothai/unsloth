@@ -38,8 +38,15 @@ const DIST = resolve(HERE, "..", "dist");
  */
 export const BUDGET = {
   // Measured 1,496.2 KB transfer / 5,207.2 KB raw at 17363f8a2, then 1,562.6 KB / 5,241.9 KB at
-  // 87ab4ed7c: the entry has grown into its headroom over many changes. Raised once here, with
-  // find in page's engine moved off the first screen in the same commit (3.6 KB back).
+  // 87ab4ed7c: the entry has grown into its headroom over many changes. Raised once here.
+  //
+  // Find in page is carried eagerly rather than split behind `lazy`, and the raise is what pays
+  // for that: 1,566.3 KB with the bar in the entry, 6.0 KB inside this ceiling. The split does
+  // work -- it takes the feature to +1.9 KB -- but the shell prevents the chord's default before
+  // the chunk exists, so a reader who presses it early gets no native find and no bar either.
+  // Warming on idle narrows that window without closing it, and never opens on Safari, which has
+  // had requestIdleCallback behind a feature flag in every shipping version. The smoke harness
+  // sees it: five webkit checks that the bar is a search landmark fail against a deferred build.
   transferBytes: 1_610_000,
   rawBytes: 5_500_000,
 };
