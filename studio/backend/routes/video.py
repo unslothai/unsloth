@@ -874,6 +874,22 @@ def _job_is_mine(job: "_VideoJob") -> bool:
     return (job.subject or LEGACY_WORKSPACE_SUBJECT) == current_workspace_subject()
 
 
+def forget_workspace_jobs(subject: str) -> None:
+    """Drop a retired account's OpenAI video jobs.
+
+    The route keeps its own map beside the backend's state, and retirement only
+    cleared the backend, so a namesake matched the reusable subject on these and
+    /v1/videos handed back the predecessor's prompt, model and error.
+    """
+    with _jobs_lock:
+        for job_id in [
+            job_id
+            for job_id, job in _jobs.items()
+            if getattr(job, "subject", None) == subject
+        ]:
+            _jobs.pop(job_id, None)
+
+
 def _my_jobs_locked() -> dict[str, "_VideoJob"]:
     return {job_id: job for job_id, job in _jobs.items() if _job_is_mine(job)}
 
@@ -1490,6 +1506,12 @@ async def _create_openai_video(
         status = await asyncio.to_thread(backend.status)
     if not status.get("loaded"):
         raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+    from routes.inference import _reject_foreign_private_resident_model
+
+    # Same question /api/video/generate asks. Omitting model here skips the
+    # switch entirely, so "some backend is loaded" was the only condition and the
+    # weights could be whatever another account's load left resident.
+    _reject_foreign_private_resident_model(status, "video")
     defaults = status.get("defaults") or {}
     num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex

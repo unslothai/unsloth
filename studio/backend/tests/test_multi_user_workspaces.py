@@ -5112,3 +5112,60 @@ def test_every_transcription_route_asks_the_ownership_question():
     guarded, _, rest = source.partition("_reject_private_stt_model_from_another_account")
     assert rest, "implicit transcription loads are unguarded"
     assert "load_stt" not in guarded
+
+
+def test_the_openai_video_route_asks_who_owns_the_resident_model():
+    import inspect
+
+    from routes import video as video_routes
+
+    # Omitting model skips the switch, so "some backend is loaded" was the only
+    # condition and the weights could be whatever another account left resident.
+    source = inspect.getsource(video_routes._create_openai_video)
+    guarded, _, rest = source.partition("_reject_foreign_private_resident_model")
+    assert rest, "the OpenAI video route does not check resident ownership"
+    assert "backend.begin_generate" not in guarded
+
+
+def test_openai_video_jobs_do_not_outlive_their_account():
+    from routes import video as video_routes
+
+    class _Job:
+        def __init__(self, subject: str) -> None:
+            self.subject = subject
+            self.status = "failed"
+
+    video_routes._jobs.clear()
+    video_routes._jobs["video_a"] = _Job("alice")
+    video_routes._jobs["video_b"] = _Job("bob")
+
+    # The route keeps this map beside the backend's state, and retirement only
+    # cleared the backend, so a namesake matched the subject and /v1/videos
+    # handed back the predecessor's prompt, model and error.
+    video_routes.forget_workspace_jobs("alice")
+    assert "video_a" not in video_routes._jobs
+    assert "video_b" in video_routes._jobs
+    video_routes._jobs.clear()
+
+
+def test_the_external_tool_loop_cancel_keys_are_scoped_once():
+    import inspect
+
+    from routes import inference as inference_routes
+
+    source = inspect.getsource(inference_routes._proxy_to_external_provider)
+    # _TrackedCancel scopes what it is given, so scoping here as well stored
+    # subject\0subject\0id while /cancel looks up subject\0id, and Stop could
+    # not reach these tool calls at all.
+    marker = "cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)"
+    assert marker in source
+
+
+def test_the_cache_paths_are_owner_only_in_both_directions():
+    import inspect
+
+    from routes import settings as settings_routes
+    for route in ("get_hugging_face_cache", "update_hugging_face_cache"):
+        signature = inspect.signature(getattr(settings_routes, route))
+        dependency = signature.parameters["current_subject"].default
+        assert dependency.dependency is settings_routes.require_install_admin, route

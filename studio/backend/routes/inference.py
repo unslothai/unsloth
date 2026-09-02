@@ -19935,9 +19935,10 @@ async def _proxy_to_external_provider(
             chat_messages = _append_to_system_message(chat_messages, _external_nudge)
 
     cancel_event = threading.Event()
-    cancel_keys = tuple(
-        _scoped_cancel_key(key) for key in (payload.cancel_id, payload.session_id) if key
-    )
+    # Raw, like every other _TrackedCancel caller: its constructor scopes them.
+    # Scoping here too stored subject\0subject\0id while /cancel looks up
+    # subject\0id, so Stop could not reach these tool calls at all.
+    cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
     async def _watch_disconnect() -> None:
         # A tool loop can sit for minutes inside execute_tool with no SSE line

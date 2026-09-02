@@ -1279,6 +1279,13 @@ def _retire_workspace_directory(username: str) -> bool:
         forget_stt_model_downloader(username)
     except Exception:  # noqa: BLE001 - same
         logger.warning("Could not clear dictation grants for %s", username, exc_info = True)
+    # The video route keeps its own job map beside the backend's state, and the
+    # quiescing above only reached the backend.
+    try:
+        from routes.video import forget_workspace_jobs
+        forget_workspace_jobs(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear video jobs for %s", username, exc_info = True)
     # Moving the files is not enough on its own: a worker still bound to this
     # subject recreates the pathname on its next lookup, and a namesake created
     # in between would then be sharing a workspace with a deleted account's job.

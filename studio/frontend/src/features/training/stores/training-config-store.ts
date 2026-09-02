@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ACCOUNT_CHANGED_EVENT } from "../../../lib/account-transition.ts";
 import {
   DEFAULT_HYPERPARAMS,
   LR_DEFAULT_FULL,
@@ -1386,4 +1387,14 @@ export function clearDeletedDataset(datasetName: string): boolean {
     default:
       return false;
   }
+}
+
+// The persisted key is cleared when a different account signs in, but this store
+// is already hydrated. Its filter drops credentials and keeps the rest, which is
+// the dataset system prompt, the manual column mapping, and the local model and
+// dataset paths the previous account selected.
+if (typeof window !== "undefined") {
+  window.addEventListener(ACCOUNT_CHANGED_EVENT, () => {
+    useTrainingConfigStore.getState().reset();
+  });
 }
