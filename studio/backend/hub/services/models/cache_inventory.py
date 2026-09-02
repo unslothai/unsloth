@@ -1229,7 +1229,11 @@ def _scan_cached_models(
                 # pipeline. Hand that trust exception an immutable snapshot, never the bare Hub
                 # id: refs/main can move after this structural scan and invalidate the manifest
                 # contract that admitted the row.
-                if pipeline_artifact_kind is not None and load_snapshot is not None:
+                if (
+                    row_task is None
+                    and pipeline_artifact_kind is not None
+                    and load_snapshot is not None
+                ):
                     row["load_id"] = str(load_snapshot)
                 # Native backend selection reads the load identity itself, so a custom native fork addressed only by
                 # repo id is indistinguishable from an ordinary LLM.

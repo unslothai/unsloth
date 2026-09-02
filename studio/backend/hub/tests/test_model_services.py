@@ -1952,7 +1952,7 @@ def _diffusion_scan(
         return task
 
     monkeypatch.setattr(cache_inventory, "_cached_row_task", row_task)
-    rows = cache_inventory._scan_cached_models()
+    rows = cache_inventory._scan_cached_models(active_hub_cache = tmp_path / "hub")
     assert len(rows) == 1
     assert selected_snapshots == ([snapshot] if expect_task_classification else [])
     return rows[0]
@@ -1999,6 +1999,7 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
 
     assert row["partial"] is False
     assert row["single_file"] is False
+    assert row["load_id"] == "Org/Pipeline-Complete"
 
 
 def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch, tmp_path):

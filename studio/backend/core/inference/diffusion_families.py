@@ -1394,13 +1394,27 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     return _installed_at_least(installed, minimum)
 
 
+def family_pipeline_strictly_available(fam: Optional[DiffusionFamily]) -> bool:
+    """Whether a selector may promise that this family can load through Diffusers here."""
+    if fam is None:
+        return False
+    pipeline_class = family_probe_class(fam)
+    if not pipeline_class:
+        return False
+    try:
+        assert_pipeline_class_available(pipeline_class, fam.name, strict = True)
+    except ValueError:
+        return False
+    return True
+
+
 def pipeline_available_family_names() -> tuple[str, ...]:
     """Family overrides whose diffusers pipeline can be built on this host.
 
     Unlike ``supported_family_names()``, this is suitable for a selector that reveals opaque
     pipeline roots: every name it advertises must survive the loader's pipeline-class gate.
     """
-    return tuple(fam.name for fam in _FAMILIES if family_pipeline_available(fam))
+    return tuple(fam.name for fam in _FAMILIES if family_pipeline_strictly_available(fam))
 
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:

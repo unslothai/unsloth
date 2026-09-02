@@ -164,13 +164,19 @@ def test_pipeline_available_names_filter_the_override_selector(monkeypatch):
     import core.inference.diffusion_families as families
     monkeypatch.setattr(
         families,
-        "family_pipeline_available",
+        "family_pipeline_strictly_available",
         lambda fam: fam.name not in {"krea-2", "flux.2-klein"},
     )
     assert set(supported_family_names()) - set(pipeline_available_family_names()) == {
         "krea-2",
         "flux.2-klein",
     }
+
+
+def test_pipeline_available_names_fail_closed_without_diffusers(monkeypatch):
+    monkeypatch.setitem(sys.modules, "diffusers", None)
+
+    assert pipeline_available_family_names() == ()
 
 
 def test_resolve_base_repo():
@@ -9535,7 +9541,9 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
     assert lowered.estimates["model_dense_mib"] < measured
 
 
-def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(fake_runtime, tmp_path):
+def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(
+    fake_runtime, tmp_path, monkeypatch
+):
     """A cache snapshot is a local load target but still has trustworthy Hub provenance.
 
     The inventory pins opaque pipelines to the exact snapshot it inspected. Treating that path as
@@ -9556,8 +9564,12 @@ def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(fake_ru
         supports_default_torch_compile = False,
         supports_pinned_transfer = False,
     )
-    snapshot = tmp_path / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
+    cache_root = tmp_path / "hub"
+    snapshot = cache_root / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents = True)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches", lambda: [cache_root]
+    )
     fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
     measured = 40_000
 
@@ -9566,6 +9578,42 @@ def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(fake_ru
     )
 
     assert sized.estimates["model_dense_mib"] < measured
+
+
+def test_the_resident_size_table_rejects_an_unconfigured_cache_shaped_path(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """A local derivative cannot borrow a smaller Hub table entry by mimicking its path shape."""
+    import torch
+
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    configured = tmp_path / "configured-hub"
+    lookalike = tmp_path / "srv" / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("b" * 40)
+    lookalike.mkdir(parents = True)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches", lambda: [configured]
+    )
+    measured = 40_000
+    sized = DiffusionBackend()._resident_sized_plan(
+        _plan_with_weights(measured),
+        detect_family("Tongyi-MAI/Z-Image-Turbo"),
+        str(lookalike),
+        target,
+        "pipeline",
+    )
+
+    assert sized.estimates["model_dense_mib"] == measured
 
 
 def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, monkeypatch):

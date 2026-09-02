@@ -5023,7 +5023,7 @@ class DiffusionBackend:
             # provenance is not caller-controlled. Ordinary local directories retain their
             # measured on-disk size and never borrow a coarse family estimate.
             local_base = _is_local_path(base)
-            table_base = hf_cache_repo_id(base) if local_base else base
+            table_base = self._configured_hf_cache_repo_id(base) if local_base else base
             if local_base and table_base is None:
                 return plan
             import torch
@@ -5069,6 +5069,31 @@ class DiffusionBackend:
             )
         except Exception:  # noqa: BLE001 - sizing aid only; refuse on the plan as built
             return plan
+
+    @staticmethod
+    def _configured_hf_cache_repo_id(path: str) -> Optional[str]:
+        """Recover a repo id only from a snapshot below a configured HF cache root.
+
+        ``hf_cache_repo_id`` deliberately recognizes the portable directory shape alone. That is
+        useful for display identity, but not sufficient provenance for memory sizing: an arbitrary
+        local derivative can mimic that shape while containing substantially larger weights.
+        """
+        repo_id = hf_cache_repo_id(path)
+        if repo_id is None:
+            return None
+        try:
+            from utils.hf_cache_settings import known_hf_hub_caches
+
+            candidate = Path(path).expanduser().resolve(strict = False)
+            for root in known_hf_hub_caches():
+                try:
+                    candidate.relative_to(Path(root).expanduser().resolve(strict = False))
+                    return repo_id
+                except (OSError, RuntimeError, ValueError):
+                    continue
+        except Exception:  # noqa: BLE001 -- an unreadable cache setting keeps measured sizing
+            return None
+        return None
 
     def declared_footprint_shortfall(
         self,

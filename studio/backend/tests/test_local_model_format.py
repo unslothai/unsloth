@@ -493,9 +493,11 @@ def test_hub_inventory_does_not_confuse_transformers_or_adapter_with_pipeline(tm
     (transformer / "config.json").write_text(
         '{"architectures":["Qwen3ForCausalLM"]}', encoding = "utf-8"
     )
+    _touch(transformer / "model_index.json")
     adapter = tmp_path / "adapter"
     _touch(adapter / "adapter_model.safetensors")
     (adapter / "adapter_config.json").write_text("{}", encoding = "utf-8")
+    _touch(adapter / "model_index.json")
 
     [transformer_row] = _classify_local_path(transformer, "custom")
     [adapter_row] = _classify_local_path(adapter, "custom")

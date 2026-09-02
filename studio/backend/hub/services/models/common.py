@@ -996,9 +996,6 @@ def _classify_local_path(
                 load_path = load_path,
                 source = source,
                 model_format = model_format,
-                artifact_kind = (
-                    _diffusers_pipeline_artifact_kind(scan_path) if scan_path.is_dir() else None
-                ),
                 display_name = display_name,
                 model_id = model_id,
                 updated_at = updated_at,
