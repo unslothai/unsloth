@@ -1089,9 +1089,12 @@ def test_a_sidecar_that_inherits_the_target_output_is_charged_nothing(
     gguf = backend._get_gguf_size_bytes(str(sidecar))
     host_pinned = backend._host_pinned_weight_bytes(str(sidecar))
     assert host_pinned == 8 * 64 * 4
-    assert backend._separate_drafter_weight_vram_bytes(
-        backend, str(sidecar), host_pinned_bytes = host_pinned
-    ) == gguf - host_pinned
+    assert (
+        backend._separate_drafter_weight_vram_bytes(
+            backend, str(sidecar), host_pinned_bytes = host_pinned
+        )
+        == gguf - host_pinned
+    )
 
 
 def test_an_unlisted_sidecar_arch_is_still_charged(backend, tmp_path: Path):
