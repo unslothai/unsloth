@@ -6996,11 +6996,18 @@ def _target_accepts_request_input(
     return _target_is_vision(load_path) if (needs_vision and need_image) else True
 
 
-def _target_speaks(
+def _target_speech_audio_type(
     load_path: str,
     is_gguf: bool,
     gguf_variant: Optional[str] = None,
-) -> bool:
+) -> Optional[str]:
+    """The codec this target would serve speech with, or None if it would not.
+
+    Returns the audio_type rather than a yes/no so the caller can also apply the
+    request-specific rules the post-load path enforces, and reject before the swap
+    instead of after it.
+    """
+    from core.inference.local_model_resolver import _host_serves_mlx
     from utils.models.model_config import (
         _find_local_gguf_by_variant,
         detect_audio_type,
@@ -7008,10 +7015,15 @@ def _target_speaks(
     )
     try:
         if not is_gguf:
+            # Non-GGUF weights go to the worker the device picks, and the MLX worker
+            # answers generate_audio with "not supported" -- a codec checkpoint still
+            # reaches it, so on Apple Silicon this swap would evict for nothing.
+            if _host_serves_mlx():
+                return None
             audio_type = detect_audio_type(
                 load_path, hf_token = os.environ.get("HF_TOKEN"), local_files_only = True
             )
-            return audio_type in _TRANSFORMERS_TTS_AUDIO_TYPES
+            return audio_type if audio_type in _TRANSFORMERS_TTS_AUDIO_TYPES else None
         from utils.models.gguf_metadata import read_gguf_tts_audio_type
 
         local_path = os.path.expanduser(load_path)
@@ -7019,10 +7031,11 @@ def _target_speaks(
             gguf_file = _find_local_gguf_by_variant(local_path, gguf_variant)
         else:
             gguf_file = detect_gguf_model(local_path)
-        return bool(gguf_file) and read_gguf_tts_audio_type(gguf_file) in _GGUF_TTS_AUDIO_TYPES
+        audio_type = read_gguf_tts_audio_type(gguf_file) if gguf_file else None
+        return audio_type if audio_type in _GGUF_TTS_AUDIO_TYPES else None
     except Exception as exc:
         logger.debug("auto-switch: speech probe failed for %s: %s", load_path, exc)
-        return False
+        return None
 
 
 _AUDIO_IMAGE_INPUT_DETAIL = (
@@ -7853,6 +7866,7 @@ async def _maybe_auto_switch_model(
     audio_preflight: Optional[dict] = None,
     image_preflight: Optional[dict] = None,
     require_speech: bool = False,
+    speech_has_instructions: bool = False,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -8179,20 +8193,32 @@ async def _maybe_auto_switch_model(
                     param = "model",
                 ),
             )
-        if (
-            require_speech
-            and resolved is not None
-            and not await asyncio.to_thread(_target_speaks, target_id, target_is_gguf, variant)
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
-                    "The requested model is not a text-to-speech model.",
-                    status = 400,
-                    code = "invalid_value",
-                    param = "model",
-                ),
+        if require_speech and resolved is not None:
+            speech_type = await asyncio.to_thread(
+                _target_speech_audio_type, target_id, target_is_gguf, variant
             )
+            if speech_type is None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "The requested model is not a text-to-speech model.",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "model",
+                    ),
+                )
+            # Same rule as the post-load check below, applied before the swap: MiniMax
+            # needs a description, and finding that out afterwards costs the resident model.
+            if speech_type == "minimax_music3" and not speech_has_instructions:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        _MINIMAX_NEEDS_DESCRIPTION,
+                        status = 400,
+                        code = "invalid_value",
+                        param = "instructions",
+                    ),
+                )
         # resolver branch only, like the probe above: a reload-stash restore changes no format.
         if audio_preflight is not None and resolved is not None:
             await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
@@ -16392,6 +16418,9 @@ _TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(
     )
 )
 _GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
+_MINIMAX_NEEDS_DESCRIPTION = (
+    "MiniMax Music 3 requires a music description in addition to lyrics."
+)
 
 
 async def _generate_tts_wav(
@@ -16405,13 +16434,18 @@ async def _generate_tts_wav(
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
     (wav_bytes, sample_rate, model_name, audio_type)."""
-    _raise_if_prompt_leaves_no_speech_budget(text)
+    # Only when the loaded model is the one that will answer: the budget reads the loaded
+    # context, so judging a request that names a different target measures the wrong model
+    # and would 400 a prompt that fits the target's larger context.
+    if requested_model == _RELOAD_ONLY_MODEL:
+        _raise_if_prompt_leaves_no_speech_budget(text)
     await _maybe_auto_switch_model(
         requested_model,
         request,
         current_subject,
         claim_resident = False,
         require_speech = True,
+        speech_has_instructions = bool(str(payload.audio_instructions or "").strip()),
     )
     # Again, now that a context exists to measure against. The check above runs before the
     # restore so an invalid request never triggers a reload, but with nothing loaded it has
@@ -16489,10 +16523,7 @@ async def _generate_tts_wav(
             detail = f"Active model does not support text-to-speech (audio_type={audio_type or 'unknown'}).",
         )
     if audio_type == "minimax_music3" and not str(payload.audio_instructions or "").strip():
-        raise HTTPException(
-            status_code = 400,
-            detail = "MiniMax Music 3 requires a music description in addition to lyrics.",
-        )
+        raise HTTPException(status_code = 400, detail = _MINIMAX_NEEDS_DESCRIPTION)
     if audio_type in ("higgs_tts2", "moss_tts_local"):
         prompt_for_budget = _native_tts_prompt_for_budget(
             text,

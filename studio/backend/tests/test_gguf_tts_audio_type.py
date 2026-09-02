@@ -124,10 +124,10 @@ def test_the_switch_probe_reads_the_variant_the_load_will_open(tmp_path, monkeyp
         "_find_local_gguf_by_variant",
         lambda _d, variant, *_a: speech if variant == "Q8_0" else text,
     )
-    assert inference_route._target_speaks(str(tmp_path), True, "Q8_0") is True
-    assert inference_route._target_speaks(str(tmp_path), True, "Q4_K_M") is False
+    assert inference_route._target_speech_audio_type(str(tmp_path), True, "Q8_0") == "bicodec"
+    assert inference_route._target_speech_audio_type(str(tmp_path), True, "Q4_K_M") is None
     monkeypatch.setattr(model_config, "detect_gguf_model", lambda _p, *_a: speech)
-    assert inference_route._target_speaks(speech, True) is True
+    assert inference_route._target_speech_audio_type(speech, True) == "bicodec"
 
 
 def test_the_switch_probe_asks_a_checkpoint_for_an_output_codec(monkeypatch):
@@ -141,10 +141,10 @@ def test_the_switch_probe_asks_a_checkpoint_for_an_output_codec(monkeypatch):
         return {"/srv/tts": "csm", "/srv/higgs": "higgs_tts2", "/srv/asr": "whisper"}.get(path)
 
     monkeypatch.setattr(model_config, "detect_audio_type", _detect)
-    assert inference_route._target_speaks("/srv/tts", False) is True
-    assert inference_route._target_speaks("/srv/higgs", False) is True
-    assert inference_route._target_speaks("/srv/asr", False) is False
-    assert inference_route._target_speaks("/srv/text", False) is False
+    assert inference_route._target_speech_audio_type("/srv/tts", False) == "csm"
+    assert inference_route._target_speech_audio_type("/srv/higgs", False) == "higgs_tts2"
+    assert inference_route._target_speech_audio_type("/srv/asr", False) is None
+    assert inference_route._target_speech_audio_type("/srv/text", False) is None
     assert seen["local_files_only"] is True
 
 
@@ -156,4 +156,29 @@ def test_a_failing_probe_refuses_rather_than_evicts(monkeypatch):
         raise RuntimeError("unreadable")
 
     monkeypatch.setattr(model_config, "detect_audio_type", _boom)
-    assert inference_route._target_speaks("/srv/tts", False) is False
+    assert inference_route._target_speech_audio_type("/srv/tts", False) is None
+
+
+def test_a_non_gguf_speech_target_is_refused_on_an_mlx_host(monkeypatch):
+    # The MLX worker answers generate_audio with "not supported", and a codec checkpoint
+    # still reaches it, so accepting the swap here would evict the resident model for a
+    # target that cannot speak. Checked before detect_audio_type, which never runs.
+    import routes.inference as inference_route
+    from core.inference import local_model_resolver
+    from utils.models import model_config
+
+    monkeypatch.setattr(local_model_resolver, "_host_serves_mlx", lambda: True)
+    monkeypatch.setattr(
+        model_config, "detect_audio_type", lambda *_a, **_kw: pytest.fail("probed on MLX")
+    )
+    assert inference_route._target_speech_audio_type("/srv/orpheus", False) is None
+
+
+def test_a_non_gguf_speech_target_is_allowed_off_mlx(monkeypatch):
+    import routes.inference as inference_route
+    from core.inference import local_model_resolver
+    from utils.models import model_config
+
+    monkeypatch.setattr(local_model_resolver, "_host_serves_mlx", lambda: False)
+    monkeypatch.setattr(model_config, "detect_audio_type", lambda *_a, **_kw: "snac")
+    assert inference_route._target_speech_audio_type("/srv/orpheus", False) == "snac"

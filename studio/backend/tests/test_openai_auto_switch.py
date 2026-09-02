@@ -3684,7 +3684,7 @@ def test_require_speech_rejects_a_text_target_before_switch(monkeypatch):
     )
     probed = []
     monkeypatch.setattr(
-        inference_route, "_target_speaks", lambda *args: probed.append(args) or False
+        inference_route, "_target_speech_audio_type", lambda *args: probed.append(args) or None
     )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
@@ -3708,9 +3708,62 @@ def test_require_speech_allows_a_speech_target(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(inference_route, "_target_speaks", lambda *_a: True)
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
     asyncio.run(
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_speech = True)
+    )
+    assert len(rec.calls) == 1
+
+
+def test_minimax_without_a_description_is_refused_before_the_switch(monkeypatch):
+    # The post-load path refuses MiniMax without a description. Reaching that only after
+    # the swap costs the resident speech model, so the same rule runs in the preflight.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/minimax", None, "org/minimax"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route, "_target_speech_audio_type", lambda *_a: "minimax_music3"
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/minimax", object(), "t", require_speech = True
+            )
+        )
+    assert exc.value.status_code == 400
+    assert "music description" in json.dumps(exc.value.detail)
+    assert rec.calls == []  # nothing was evicted
+
+
+def test_minimax_with_a_description_still_switches(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/minimax", None, "org/minimax"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route, "_target_speech_audio_type", lambda *_a: "minimax_music3"
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/minimax",
+            object(),
+            "t",
+            require_speech = True,
+            speech_has_instructions = True,
+        )
     )
     assert len(rec.calls) == 1
 
@@ -3725,7 +3778,9 @@ def test_require_speech_does_not_probe_a_reload_stash_restore(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(inference_route, "_target_speaks", lambda *_a: pytest.fail("speech probed"))
+    monkeypatch.setattr(
+        inference_route, "_target_speech_audio_type", lambda *_a: pytest.fail("speech probed")
+    )
     asyncio.run(
         inference_route._maybe_auto_switch_model(
             inference_route._RELOAD_ONLY_MODEL, object(), "t", require_speech = True

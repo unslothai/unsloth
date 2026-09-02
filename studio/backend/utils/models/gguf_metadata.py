@@ -654,7 +654,9 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
                         return None
                     raw = f.read(slen)
                     if index in snac_probe:
-                        snac_probe[index] = raw.startswith(b"<custom_token_")
+                        # Substring, not prefix: the detector asks what the id decodes
+                        # to, and a tokenizer decoration would sit in front of the marker.
+                        snac_probe[index] = b"<custom_token_" in raw
                     if raw[:1] != b"<":
                         continue
                     try:

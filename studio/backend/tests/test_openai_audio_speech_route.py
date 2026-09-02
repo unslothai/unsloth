@@ -8,8 +8,10 @@ gallery persistence and the raw-WAV response without torch, weights or a GPU."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -23,6 +25,18 @@ from routes.inference import router
 from utils.api_errors import install_api_error_handlers
 
 _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
+
+
+class _SpeechBudgetRequest:
+    def __init__(self):
+        self.state = SimpleNamespace(skip_api_monitor = True)
+
+
+class _SpeechBudgetPayload:
+    """The few fields _generate_tts_wav reads before it reaches the switch."""
+
+    audio_instructions = None
+    audio_language = None
 
 
 def _make_client(monkeypatch, generate = None):
@@ -215,6 +229,47 @@ def test_the_switch_hook_requires_a_speech_target():
     import inspect
     source = inspect.getsource(routes_module._generate_tts_wav)
     assert "require_speech = True" in source
+
+
+def test_a_named_target_is_not_budgeted_against_the_resident_model(monkeypatch):
+    """The pre-switch budget reads the loaded context, so it can only judge a request
+    that is not about to replace the loaded model. A 2K resident must not reject a
+    prompt the named 8K target would have taken."""
+    seen = []
+
+    async def _switch(model, *_a, **_kw):
+        seen.append(model)
+        raise RuntimeError("reached the switch")
+
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
+
+    payload = _SpeechBudgetPayload()
+    with pytest.raises(RuntimeError, match = "reached the switch"):
+        asyncio.run(
+            routes_module._generate_tts_wav(
+                "a long line", payload, _SpeechBudgetRequest(), "tester", requested_model = "org/B-GGUF"
+            )
+        )
+    assert seen == ["org/B-GGUF"]
+
+
+def test_a_reload_only_request_is_still_budgeted_first(monkeypatch):
+    from fastapi import HTTPException
+
+    async def _switch(*_a, **_kw):
+        pytest.fail("budget must reject before any reload")
+
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            routes_module._generate_tts_wav("a long line", _SpeechBudgetPayload(), _SpeechBudgetRequest(), "tester")
+        )
+    assert exc.value.status_code == 400
 
 
 def test_the_shared_core_guards_before_generating():
