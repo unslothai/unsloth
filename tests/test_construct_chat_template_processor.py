@@ -47,12 +47,16 @@ def _unwrap_branch():
 
 
 def _run(tokenizer):
-    namespace = {"tokenizer": tokenizer}
+    namespace = {"tokenizer": tokenizer, "ProcessorMixin": _ProcessorMixin}
     exec(
         compile(ast.Module(body = [_unwrap_branch()], type_ignores = []), CHAT_TEMPLATES_PATH, "exec"),
         namespace,
     )
     return namespace["tokenizer"]
+
+
+class _ProcessorMixin:
+    pass
 
 
 class _FakeTokenizer:
@@ -62,11 +66,18 @@ class _FakeTokenizer:
         return {"<eos>": 0}
 
 
-class _FakeProcessor:
+class _FakeProcessor(_ProcessorMixin):
     """A processor as this function sees one: a `.tokenizer`, and no get_vocab."""
 
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
+
+
+class _FakeTokenizerBackend(_FakeTokenizer):
+    """A tokenizer backend may expose `.tokenizer` without being a processor."""
+
+    def __init__(self):
+        self.tokenizer = object()
 
 
 def test_processor_is_unwrapped_to_its_inner_tokenizer():
@@ -79,6 +90,11 @@ def test_processor_is_unwrapped_to_its_inner_tokenizer():
 
 def test_a_plain_tokenizer_is_left_alone():
     tokenizer = _FakeTokenizer()
+    assert _run(tokenizer) is tokenizer
+
+
+def test_a_tokenizer_backend_with_a_tokenizer_attribute_is_left_alone():
+    tokenizer = _FakeTokenizerBackend()
     assert _run(tokenizer) is tokenizer
 
 

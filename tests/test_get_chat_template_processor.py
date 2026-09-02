@@ -83,11 +83,16 @@ def _reattach_branch():
 
 
 def _run(statements, **namespace):
+    namespace.setdefault("ProcessorMixin", _ProcessorMixin)
     exec(
         compile(ast.Module(body = statements, type_ignores = []), CHAT_TEMPLATES_PATH, "exec"),
         namespace,
     )
     return namespace
+
+
+class _ProcessorMixin:
+    pass
 
 
 class _FakeTokenizer:
@@ -104,7 +109,7 @@ class _FakeTokenizer:
         self.pad_token, self.pad_token_id = "<pad>", 2
 
 
-class _FakeProcessor:
+class _FakeProcessor(_ProcessorMixin):
     """A processor as this function sees one: a `.tokenizer`, plus the loader's mirror."""
 
     def __init__(self, tokenizer):
@@ -112,6 +117,14 @@ class _FakeProcessor:
         for token in ("bos_token", "eos_token", "pad_token"):
             setattr(self, token, getattr(tokenizer, token))
             setattr(self, token + "_id", getattr(tokenizer, token + "_id"))
+
+
+class _FakeTokenizerBackend(_FakeTokenizer):
+    """A tokenizer backend may expose `.tokenizer` without being a processor."""
+
+    def __init__(self):
+        super().__init__()
+        self.tokenizer = object()
 
 
 def _unwrap(tokenizer):
@@ -147,6 +160,14 @@ def test_old_tokenizer_is_the_inner_tokenizer_not_the_processor():
 
 def test_a_plain_tokenizer_is_left_alone():
     tokenizer = _FakeTokenizer()
+    namespace = _unwrap(tokenizer)
+    assert namespace["_processor"] is None
+    assert namespace["tokenizer"] is tokenizer
+    assert namespace["old_tokenizer"] is tokenizer
+
+
+def test_a_tokenizer_backend_with_a_tokenizer_attribute_is_left_alone():
+    tokenizer = _FakeTokenizerBackend()
     namespace = _unwrap(tokenizer)
     assert namespace["_processor"] is None
     assert namespace["tokenizer"] is tokenizer

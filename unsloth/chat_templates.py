@@ -27,6 +27,8 @@ __all__ = [
     "test_construct_chat_template",
 ]
 
+from transformers import ProcessorMixin
+
 from transformers.utils import logging
 try:
     from torch import LongTensor, FloatTensor
@@ -1915,8 +1917,10 @@ def get_chat_template(
     # which carries the text tokenizer in `.tokenizer` -- the same unwrap the save and
     # loader paths do. Everything below needs the tokenizer itself: the processor never
     # has the Rust backend the vocab edits use, nor, on MLX, a padding_side of its own.
+    # Match the processor type rather than the attribute: MistralCommonBackend is itself
+    # a tokenizer but also exposes its non-HF backend as `.tokenizer`.
     _processor = None
-    if hasattr(tokenizer, "tokenizer"):
+    if isinstance(tokenizer, ProcessorMixin):
         _processor = tokenizer
         tokenizer = tokenizer.tokenizer
 
@@ -2497,8 +2501,9 @@ extra_eos_tokens = None,
     # A multimodal checkpoint hands over a processor, which carries the text tokenizer
     # in `.tokenizer`. Everything below is tokenizer-shaped -- get_vocab, name_or_path,
     # calling it on a string -- and this returns a template, never the tokenizer, so
-    # unwrap one way and there is nothing to re-attach.
-    if hasattr(tokenizer, "tokenizer"):
+    # unwrap one way and there is nothing to re-attach. Match ProcessorMixin explicitly:
+    # tokenizer backends such as MistralCommonBackend also expose `.tokenizer`.
+    if isinstance(tokenizer, ProcessorMixin):
         tokenizer = tokenizer.tokenizer
 
     if extra_eos_tokens is None: extra_eos_tokens = []
