@@ -94,6 +94,14 @@ for arg in "$@"; do
         continue
     fi
     if [ "$_next_is_root" = true ]; then
+        # A directory is about to be created here, so a missing value must stop
+        # rather than be guessed at. Untreated, `--root --local` took --local as
+        # the path AND swallowed the flag, and `--root ""` quietly became a
+        # plain --portable somewhere the user never named.
+        case "$arg" in
+            "" ) echo "ERROR: --root requires a path argument." >&2; exit 1 ;;
+            -* ) echo "ERROR: --root requires a path argument, got the flag '$arg'." >&2; exit 1 ;;
+        esac
         _UNSLOTH_ROOT="$arg"
         _PORTABLE_MODE=true
         _next_is_root=false
@@ -110,7 +118,11 @@ for arg in "$@"; do
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
         --portable) _PORTABLE_MODE=true ;;
         --root) _next_is_root=true ;;
-        --root=*) _UNSLOTH_ROOT="${arg#--root=}"; _PORTABLE_MODE=true ;;
+        --root=*)
+            _UNSLOTH_ROOT="${arg#--root=}"
+            [ -n "$_UNSLOTH_ROOT" ] || { echo "ERROR: --root requires a path argument." >&2; exit 1; }
+            _PORTABLE_MODE=true
+            ;;
     esac
 done
 
@@ -118,6 +130,9 @@ done
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 case "${UNSLOTH_PORTABLE:-}" in 1|true|TRUE|yes|YES|on|ON) _PORTABLE_MODE=true ;; esac
+# `install.sh --root` with nothing after it. Silently this produced a plain
+# default install, which is the opposite of what was asked for.
+[ "$_next_is_root" = true ] && { echo "ERROR: --root requires a path argument." >&2; exit 1; }
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 [ -n "$_UNSLOTH_ROOT" ] && _PORTABLE_MODE=true
 # --portable with no --root keeps the install where it already is; the point of

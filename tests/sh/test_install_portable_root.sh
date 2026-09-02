@@ -158,6 +158,27 @@ out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
     UNSLOTH_PORTABLE=1 STUDIO_HOME="$H/unsloth" bash -c "$SNIP" _)"
 check "portable + STUDIO_HOME alias"                   "$H/unsloth"       "$(field "$out" 2)"
 
+# ── 6c. --root must refuse a missing or flag-shaped value ──
+# A directory gets created at whatever this resolves to. Untreated, `--root`
+# with nothing after it produced a plain default install (the opposite of the
+# request), `--root ""` quietly became --portable somewhere nobody named, and
+# `--root --local` took --local as the path AND swallowed the flag.
+reject() { # label args...
+    _label="$1"; shift
+    if out="$(resolve "$(new_home)" "$@" 2>&1)"; then
+        printf '  FAIL  %s : accepted, got [%s]\n' "$_label" "$out"; fails=$((fails+1))
+    else
+        case "$out" in
+            *"--root requires a path argument"*) printf '  PASS  %s\n' "$_label" ;;
+            *) printf '  FAIL  %s : wrong error [%s]\n' "$_label" "$out"; fails=$((fails+1)) ;;
+        esac
+    fi
+}
+reject "--root with no value"        --local --root
+reject "--root with an empty value"  --local --root ""
+reject "--root= with nothing after"  --local --root=
+reject "--root followed by a flag"   --root --local
+
 # ── 7. UNSLOTH_STUDIO_HOME alone still behaves exactly as before ──
 H="$(new_home)"
 mkdir -p "$H/custom"
