@@ -452,7 +452,7 @@ def _browser_initiated_elsewhere(request: Any) -> bool:
     try:
         site = request.headers.get("sec-fetch-site")
     except Exception:
-        return True  # unreadable headers: deny
+        return True
     if site is None:
         return False
     return site.strip().lower() != "same-origin"
@@ -506,7 +506,7 @@ def _host_authority_is_direct(request: Any, scope: str) -> bool:
     try:
         host = request.headers.get("host")
     except Exception:
-        return False  # unreadable headers: deny
+        return False
     if not host:
         return True
     host = host.strip()
@@ -526,11 +526,9 @@ def _host_authority_is_direct(request: Any, scope: str) -> bool:
         if separator and not _port_suffix_is_numeric(":" + suffix):
             return False
         literal = literal.lower()
-        # Exactly `localhost`, no trailing root-label dot. Secure Contexts lists
-        # `localhost.` as trustworthy, but WebKit's check is a plain string compare: measured
-        # on WebKit 26.5 a page dialling `http://localhost.:<port>` sends no `Sec-Fetch-*`
-        # while Chromium 151 and Firefox 153 send `cross-site`, so admitting the dotted form
-        # would reopen the absence gap on Safari alone. No client spells it.
+        # Exactly `localhost`, no trailing root-label dot.
+        # Measured on WebKit 26.5, a page dialling `http://localhost.:<port>` sends no `Sec-Fetch-*` while Chromium 151
+        # and Firefox 153 send `cross-site`. No client spells it.
         if literal == "localhost":
             return True
         try:
@@ -696,12 +694,8 @@ def asgi_request_is_keyless(asgi_scope, settings: Optional[tuple[str, bool]] = N
         return True
     if len(authorization) != 1:
         return False
-    # The same parser the dependency uses, not a second hand-rolled split. They disagreed on
-    # `Authorization: bearer  not-needed`: `partition(" ")` left the token as " not-needed"
-    # and reported not-keyless, while the dependency collapsed the space and admitted the
-    # dummy. That shape was therefore keyless to every route but not-keyless to
-    # `KeylessToolPolicyMiddleware`, which decides whether to clamp the tool grant, so it
-    # reached keyless admission with an unclamped tool policy.
+    # The same parser the dependency uses, not a second hand-rolled split: they disagreed on `bearer  not-needed`,
+    # making a shape keyless to every route but not-keyless to the middleware that clamps the tool grant.
     from fastapi.security.utils import get_authorization_scheme_param
 
     scheme, token = get_authorization_scheme_param(authorization[0])

@@ -51,8 +51,23 @@ function harness() {
           saved.push(record);
           return record;
         },
+        // delete-thread-message loads for real under the passthrough below, and it
+        // reads the thread back; nothing here drives that path.
+        listChatMessages: async () => [],
+      },
+      "@assistant-ui/core/internal": { MessageRepository: class {} },
+      // The persistence boundary. Cut here so the passthrough stops before db.ts and
+      // its IndexedDB driver, which no node test can load: this suite is about the
+      // record's shape and part order, not about storing it.
+      "./chat-history-storage": {
+        ensureStoredChatThread: async () => undefined,
+        syncStoredChatMessages: async () => undefined,
       },
     },
+    // The record this test asserts on is built by the real exportedItemToRecord, and
+    // the metadata it strips comes from the real RESEARCH_METADATA_KEYS, so those
+    // siblings load rather than being faked.
+    { relativePassthrough: true },
   );
   return { module, saved };
 }

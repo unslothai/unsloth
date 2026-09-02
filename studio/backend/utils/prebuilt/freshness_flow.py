@@ -24,8 +24,7 @@ logger = structlog.get_logger(__name__)
 
 # 24h TTL keeps the GitHub call off the hot path and within rate limits.
 RELEASE_CACHE_TTL_SECONDS = 24 * 60 * 60
-# Briefly memoize failed lookups so recurring status reads do not retry an
-# unreachable GitHub endpoint on every request.
+# Briefly memoize failed lookups so recurring status reads do not retry
 RELEASE_FAILURE_CACHE_TTL_SECONDS = 60
 
 
@@ -379,7 +378,6 @@ def reset_caches(
     if drop_disk:
         import shutil
 
-        # cache_dir() is a dedicated freshness-only subdir, re-created on the next
-        # save_disk_cache. ignore_errors so a missing/locked dir is a no-op rather
-        # than breaking an otherwise successful install.
+        # cache_dir() is a freshness-only subdir re-created on the next save_disk_cache, and
+        # ignore_errors so a missing or locked dir cannot break an otherwise successful install.
         shutil.rmtree(cache_dir(), ignore_errors = True)

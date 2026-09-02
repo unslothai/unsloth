@@ -681,10 +681,19 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # loosely, so a new row that forgets it is a failure here rather than a load
     # that silently follows the default ref. #7736 added the third: the collapsed
     # single-quant GGUF row. #7880 added the fourth: the per-quant VRAM bar, which
-    # has to price the pinned snapshot rather than the default ref.
-    assert picker.count("loadId: c.load_id") == 4, (
+    # has to price the pinned snapshot rather than the default ref. #10128 put three of
+    # them behind a torn-snapshot guard, so the guard is matched rather than one spelling.
+    pins = re.findall(r"loadId:\s*(?:(\w+)\s*\?\s*undefined\s*:\s*)?c\.load_id", picker)
+    assert len(pins) == 4, (
         "a row or gear that can start a load is missing the pin, or a new one was "
         "added and this count needs to follow it"
+    )
+    # #10128: the three that can START a load withhold the pin for a part-downloaded
+    # snapshot, since audio-page.tsx reads a forwarded loadId as proof the weights are
+    # on disk. The VRAM bar only prices what is there, so it pins unconditionally.
+    assert sorted(pins) == ["", "isPartial", "isPartial", "isPartial"], (
+        "a row that can start a load lost its partial-snapshot guard, or the VRAM bar "
+        f"gained one: {sorted(pins)}"
     )
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
