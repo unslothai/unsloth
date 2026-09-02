@@ -1,5 +1,30 @@
 import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/react";
 import { saveChatMessage } from "../api/chat-api";
+import type { MessageRecord } from "../types";
+import { exportedItemToRecord } from "./delete-thread-message";
+import { RESEARCH_METADATA_KEYS } from "./research-message-sync";
+
+// Mirrors studio_db._SERVER_MANAGED_LINK_KEYS. The backend detaches a finished run only when
+// the edit drops its ownership claim; display fields such as timing and incomplete stay.
+const SERVER_OWNED_METADATA_KEYS: readonly string[] = [
+  ...RESEARCH_METADATA_KEYS,
+  "generationRunId",
+  "generationSeq",
+  "generationStatus",
+  "generationSettled",
+];
+
+function withoutServerOwnership(record: MessageRecord): MessageRecord {
+  const metadata = record.metadata as Record<string, unknown> | undefined;
+  if (!metadata) return record;
+  const kept = Object.fromEntries(
+    Object.entries(metadata).filter(
+      ([key]) => !SERVER_OWNED_METADATA_KEYS.includes(key),
+    ),
+  );
+  const { metadata: _owned, ...rest } = record;
+  return Object.keys(kept).length > 0 ? { ...rest, metadata: kept } : rest;
+}
 
 type ThreadImportExport = {
   export: () => ExportedMessageRepository;
@@ -137,7 +162,6 @@ export async function updateThreadMessage(args: {
   }
 
   const { parentId: originalParentId } = targetMessageEntry;
-  const { createdAt: originalCreatedAt } = targetMessageEntry.message;
 
   const updatedMessages = currentExport.messages.map((m) => {
     if (m.message.id !== messageId) return m;
@@ -201,18 +225,15 @@ export async function updateThreadMessage(args: {
   const originalExport = currentExport;
   thread.import({ ...currentExport, messages: updatedMessages });
 
+  const editedMessage = updatedMessages.find(m => m.message.id === messageId)?.message;
+
   // If it's NOT incognito, we attempt to save to the DB regardless of the ID.
-  if (remoteId && !isIncognito) {
+  if (remoteId && !isIncognito && editedMessage) {
     try {
       await saveChatMessage(
-        {
-          id: messageId,
-          threadId: remoteId,
-          parentId: originalParentId,
-          role: "assistant",
-          content: (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [],
-          createdAt: originalCreatedAt ? Number(originalCreatedAt) : Date.now(),
-        },
+        withoutServerOwnership(
+          exportedItemToRecord(remoteId, originalParentId, editedMessage),
+        ),
         { allowGenerationEdit: true },
       );
     } catch (e) {
