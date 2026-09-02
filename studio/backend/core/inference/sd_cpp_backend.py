@@ -1227,7 +1227,7 @@ class SdCppDiffusionBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
-        # Accepted for interface parity; native is text-to-image only, so image-conditioned requests are rejected below.
+        # Accepted for interface parity; native is GGUF-only (router forces diffusers otherwise).
         model_kind: Optional[str] = None,
         # Parity with the diffusers load-time LoRA bake; native applies LoRA per generation, so a load-time selection is
         # ignored.

@@ -3463,8 +3463,7 @@ class VideoBackend:
             # Same fence unload() takes, raised BEFORE the barrier: a queued generation holds no cancel event, so the
             # signal above cannot reach it and it would slip through the moment the barrier released _generate_lock.
             self._teardown_waiters += 1
-        # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free
-        # while the clip still holds it. Teardown runs INSIDE the barrier: releasing first would hand out one last clip.
+        # Barrier: wait for the signalled generation to exit before teardown, or two models coexist in VRAM.
         with self._generate_lock:
             with self._lock:
                 try:
