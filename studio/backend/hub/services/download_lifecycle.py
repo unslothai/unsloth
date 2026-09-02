@@ -1318,14 +1318,27 @@ _download_initiators: dict[str, set[str]] = {}
 _download_initiators_lock = threading.Lock()
 
 
-def note_download_initiator(key: str) -> None:
-    """Record a workspace as one of this download's initiators."""
+def note_download_initiator(
+    key: str,
+    registry: Optional[download_registry.DownloadRegistry] = None,
+) -> None:
+    """Record a workspace as one of this download's initiators.
+
+    A key names a repository, so it outlives the job that held it. Adding to the
+    set unconditionally carried yesterday's downloaders into today's job, which
+    kept their cancel rights and showed them somebody else's transfer. Passing
+    *registry* claims the key for a new job instead: with no live job on it, the
+    previous set belonged to a finished one and is dropped.
+    """
     from utils.workspace_context import current_workspace_subject
     with _download_initiators_lock:
+        if registry is not None and not registry.adoptable(key):
+            _download_initiators.pop(key, None)
         _download_initiators.setdefault(key, set()).add(current_workspace_subject())
 
 
 def forget_download_initiator(key: str) -> None:
+    """Drop a key's initiators outright, for a caller that knows the job is gone."""
     with _download_initiators_lock:
         _download_initiators.pop(key, None)
 

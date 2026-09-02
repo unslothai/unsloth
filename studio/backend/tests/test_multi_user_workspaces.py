@@ -4237,3 +4237,169 @@ def test_a_refused_recipe_start_leaves_the_previous_job_intact(monkeypatch):
     assert service._workspace_subject == "alice"
     assert service._job is not None and service._job.job_id == "alice-job"
     assert list(service._events) == [{"seq": 1}]
+
+
+def test_a_shared_cache_path_still_answers_for_the_repo_it_holds(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+    from routes import models as models_routes
+
+    shared_cache = tmp_path / "shared" / "hf"
+    private_snapshot = shared_cache / "models--org--private" / "snapshots" / "abc"
+    public_snapshot = shared_cache / "models--org--public" / "snapshots" / "def"
+    plain_folder = shared_cache / "just-a-folder"
+    for path in (private_snapshot, public_snapshot, plain_folder):
+        path.mkdir(parents = True)
+
+    monkeypatch.setattr(
+        models_routes,
+        "advertised_shared_model_roots",
+        lambda: [str(shared_cache.resolve())],
+    )
+    monkeypatch.setattr(
+        inference_routes,
+        "_hub_repo_is_anonymously_readable",
+        lambda repo_id, repo_type: repo_id != "org/private",
+    )
+
+    token = _bind("alice")
+    try:
+        # Alice's private pull lands in the install-wide cache, and its snapshot
+        # path is then in the catalog every account browses. Accepting the path
+        # because the catalog offered it also skipped the credential question,
+        # since by then it is an existing local path and not a repository id.
+        with pytest.raises(HTTPException) as exc:
+            inference_routes._reject_uncontained_local_path(str(private_snapshot), "load")
+        assert exc.value.status_code == 403
+        # A public repo in the same cache is unchanged, and a cache directory that
+        # names no repository is an ordinary shared folder.
+        inference_routes._reject_uncontained_local_path(str(public_snapshot), "load")
+        inference_routes._reject_uncontained_local_path(str(plain_folder), "load")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        inference_routes._reject_uncontained_local_path(str(private_snapshot), "load")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_dictation_download_keeps_its_owner_while_it_runs(monkeypatch):
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_STT_DOWNLOAD_INITIATORS", {}, raising = False)
+
+    class _Module:
+        def __init__(self) -> None:
+            self.downloading = False
+
+        def download_status(self) -> dict:
+            return {"downloading": self.downloading}
+
+    module = _Module()
+
+    token = _bind("alice")
+    try:
+        assert inference_routes._claim_stt_download("transformers", module) is True
+        module.downloading = True
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # Recording unconditionally handed Alice's running transfer to whoever
+        # asked next, who could then cancel it.
+        assert inference_routes._claim_stt_download("transformers", module) is False
+        assert inference_routes._STT_DOWNLOAD_INITIATORS["transformers"] == "alice"
+        # Once it settles the slot is free, and a start that never happens gives
+        # it straight back rather than leaving a stale owner behind.
+        module.downloading = False
+        assert inference_routes._claim_stt_download("transformers", module) is True
+        inference_routes._release_stt_download_claim("transformers", "bob")
+        assert "transformers" not in inference_routes._STT_DOWNLOAD_INITIATORS
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_cached_private_dictation_model_stays_with_its_downloader(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_STT_MODEL_DOWNLOADERS", {}, raising = False)
+    monkeypatch.setattr(
+        inference_routes,
+        "_hub_repo_is_anonymously_readable",
+        lambda repo_id, repo_type: repo_id != "alice/private-whisper",
+    )
+
+    token = _bind("alice")
+    try:
+        inference_routes._note_stt_model_downloader("alice/private-whisper")
+        inference_routes._reject_private_stt_model_from_another_account("alice/private-whisper")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # The load route carries no Hub credential and the sidecar reuses any
+        # complete snapshot it finds, so the repository name was the whole lock.
+        with pytest.raises(HTTPException) as exc:
+            inference_routes._reject_private_stt_model_from_another_account(
+                "alice/private-whisper"
+            )
+        assert exc.value.status_code == 403
+        # Public checkpoints, which is every curated id, load as before.
+        inference_routes._reject_private_stt_model_from_another_account("openai/whisper-large-v3")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        inference_routes._reject_private_stt_model_from_another_account("alice/private-whisper")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_finished_download_does_not_hand_its_key_to_the_next_job(monkeypatch):
+    from hub.services import download_lifecycle
+
+    monkeypatch.setattr(download_lifecycle, "_download_initiators", {}, raising = False)
+
+    class _Registry:
+        def __init__(self) -> None:
+            self.live = True
+
+        def adoptable(self, key: str) -> bool:
+            return self.live
+
+    registry = _Registry()
+
+    token = _bind("alice")
+    try:
+        download_lifecycle.note_download_initiator("org/model", registry)
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # While Alice's job runs, Bob adopting the same repository joins it.
+        download_lifecycle.note_download_initiator("org/model", registry)
+        assert download_lifecycle.download_is_visible_to_caller("org/model") is True
+
+        # Once it finishes the key is free, and claiming it for a new job leaves
+        # yesterday's downloaders behind rather than carrying their cancel rights
+        # and their view of somebody else's transfer into it.
+        registry.live = False
+        download_lifecycle.note_download_initiator("org/model", registry)
+        assert download_lifecycle._download_initiators["org/model"] == {"bob"}
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("alice")
+    try:
+        assert download_lifecycle.download_is_visible_to_caller("org/model") is False
+    finally:
+        reset_workspace_subject(token)

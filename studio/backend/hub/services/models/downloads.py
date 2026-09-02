@@ -333,7 +333,7 @@ async def download_model_response(
     label = f"{repo_id}{f' [{variant}]' if variant else ''}"
     # Recorded before the launch, on the request's own thread, so the cancel route
     # can tell this account's download from another's.
-    download_lifecycle.note_download_initiator(key)
+    download_lifecycle.note_download_initiator(key, _registry)
 
     state = download_lifecycle.launch_worker(
         _registry,

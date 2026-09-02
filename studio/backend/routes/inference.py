@@ -6703,6 +6703,18 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
     # the picker showed models that 403ed on load, and OpenAI auto-switch
     # resolved one and then failed at the same gate.
     if is_advertised_shared_model_path(candidate):
+        # A Hub cache path is a repository under another name. Alice downloading a
+        # private repo with her token lands its snapshot in the shared cache, and
+        # naming that path skipped the credential check below because by then it
+        # is an existing local path, not a repo id. So ask the same question the
+        # repo id would have been asked, and let a path that names no repository
+        # through: ./models and the LM Studio directories are ordinary folders.
+        repo_id = _hub_repo_id_for_cache_path(candidate)
+        if repo_id is None:
+            return
+        _reject_private_hub_repo_without_an_account_token(
+            repo_id, None, shared_cache_answers_offline = False,
+        )
         return
     raise HTTPException(
         status_code = 403,
@@ -6711,6 +6723,26 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
             "or the shared model cache."
         ),
     )
+
+
+def _hub_repo_id_for_cache_path(candidate: str) -> Optional[str]:
+    """The repository a Hugging Face cache path belongs to, or None.
+
+    Cache layout is ``<cache>/models--Org--Name/snapshots/<sha>/...``, so the
+    repository is recoverable from any path inside it. None for a path that is
+    not in that layout, which is every ordinary model folder.
+    """
+    from hub.utils.inventory_scan import _hf_repo_identity
+
+    try:
+        parts = Path(os.path.realpath(os.path.expanduser(candidate))).parts
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for part in parts:
+        identity = _hf_repo_identity(part)
+        if identity is not None and identity[0] == "model":
+            return identity[1]
+    return None
 
 
 # Answered once per (repo, kind) per process: a managed load without a token pays
@@ -6763,6 +6795,7 @@ def _reject_private_hub_repo_without_an_account_token(
     hf_token: Any,
     *,
     repo_type: str = "model",
+    shared_cache_answers_offline: bool = True,
 ) -> None:
     """A managed account may not reach a non-public repo on the server's credential.
 
@@ -6779,7 +6812,10 @@ def _reject_private_hub_repo_without_an_account_token(
     Unanswerable (offline, or the Hub unreachable) falls back to whether the repo
     is already in the shared cache. That cache is install-wide by design here,
     alongside model weights and executables, so a resident model is not a new
-    disclosure; anything else is refused rather than guessed at.
+    disclosure; anything else is refused rather than guessed at. Callers whose
+    question is *about* a cached snapshot pass
+    ``shared_cache_answers_offline = False``: for them the cache is the thing in
+    doubt, so it cannot also be the answer.
     """
     from auth.storage import is_installation_owner
 
@@ -6796,7 +6832,11 @@ def _reject_private_hub_repo_without_an_account_token(
     readable = _hub_repo_is_anonymously_readable(candidate, repo_type)
     if readable:
         return
-    if readable is None and _repo_is_in_the_shared_cache(candidate, repo_type):
+    if (
+        readable is None
+        and shared_cache_answers_offline
+        and _repo_is_in_the_shared_cache(candidate, repo_type)
+    ):
         return
     raise HTTPException(
         status_code = 403,
@@ -17503,6 +17543,7 @@ def _prepare_runtime_fallback_checkpoint(
     try:
         _note_stt_download_initiator("transformers")
         stt_sidecar.start_model_download(model, hf_token)
+        _note_stt_model_downloader(model)
     except Exception as exc:  # noqa: BLE001 - preparation is best effort, never fatal
         # Another dictation model already downloading is the common case, and the caller
         # is about to report "not downloaded" anyway.
@@ -17653,14 +17694,17 @@ async def stt_download(
 
     engine = _resolve_serving_stt_engine(payload.engine)
     module = _stt_download_module(engine)
+    # Claimed before the transfer starts, on the request's own thread, so the cancel
+    # route can tell this account's download from another's, and released again if
+    # nothing ends up running under it.
+    claimed = _claim_stt_download(engine, module)
+    claimant = current_workspace_subject()
+    started = False
     try:
         # Transformers accepts custom `owner/model` repos, so confirm the repo is
         # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
         # possibly-large non-STT repo into the shared cache. Curated ids
         # short-circuit; GGUF and mtmd accept curated ids only, so they skip it.
-        # Recorded before the transfer starts, on the request's own thread, so the
-        # cancel route can tell this account's download from another's.
-        _note_stt_download_initiator(engine)
         if engine == "transformers":
             validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
             # Pin the download to the commit that was just validated so the
@@ -17673,10 +17717,15 @@ async def stt_download(
             )
         else:
             await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
+        started = True
+        _note_stt_model_downloader(payload.model)
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
+    finally:
+        if claimed and not started:
+            _release_stt_download_claim(engine, claimant)
     return JSONResponse(content = module.download_status())
 
 
@@ -17687,9 +17736,76 @@ _STT_DOWNLOAD_INITIATORS: dict[str, str] = {}
 _STT_DOWNLOAD_INITIATORS_LOCK = threading.Lock()
 
 
+# Dictation model id -> the accounts that have downloaded it on this installation.
+# The snapshot lands in the install-wide cache and /audio/stt/load carries no Hub
+# credential, so this is what tells a private repo's own downloader apart from an
+# account that merely learned its name.
+_STT_MODEL_DOWNLOADERS: dict[str, set[str]] = {}
+
+
+def _note_stt_model_downloader(model: Any) -> None:
+    if not isinstance(model, str) or not model.strip():
+        return
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        _STT_MODEL_DOWNLOADERS.setdefault(model.strip(), set()).add(current_workspace_subject())
+
+
+def _reject_private_stt_model_from_another_account(model: Any) -> None:
+    """A cached private dictation repo stays with the account that fetched it.
+
+    WhisperSttSidecar reuses any complete snapshot it finds in the shared cache,
+    and this route asks for no token, so naming Alice's private Whisper
+    repository was enough for Bob to run her weights. An account that downloaded
+    the repo here keeps its own access; everyone else has to be able to read it
+    anonymously. Curated ids are public, so they answer readable and pass.
+    """
+    if not isinstance(model, str) or not model.strip():
+        return
+    candidate = model.strip()
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        downloaders = _STT_MODEL_DOWNLOADERS.get(candidate)
+    if downloaders and current_workspace_subject() in downloaders:
+        return
+    _reject_private_hub_repo_without_an_account_token(
+        candidate, None, shared_cache_answers_offline = False,
+    )
+
+
+def _claim_stt_download(engine: str, module) -> bool:
+    """Take ownership of the engine's download slot if no transfer holds it.
+
+    Recording unconditionally handed the slot to whoever asked last, so a second
+    account naming the same engine took over a transfer already running under
+    somebody else's token and could then cancel it. The registry has one slot per
+    engine, so an already-running transfer keeps its owner and this returns False.
+    The status read happens under the lock: it is the test the claim is made on.
+    """
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        try:
+            in_flight = bool(module.download_status().get("downloading"))
+        except Exception:  # noqa: BLE001 - an unreadable status must not block a download
+            in_flight = False
+        if in_flight and _STT_DOWNLOAD_INITIATORS.get(engine) is not None:
+            return False
+        _STT_DOWNLOAD_INITIATORS[engine] = current_workspace_subject()
+        return True
+
+
+def _release_stt_download_claim(engine: str, subject: str) -> None:
+    """Give the slot back when the start it was taken for never happened.
+
+    Validation rejecting the repo, or the downloader declining to start, leaves
+    nothing to own, and a stale owner would outlive the request and take the
+    cancel authority for whatever runs next.
+    """
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        if _STT_DOWNLOAD_INITIATORS.get(engine) == subject:
+            _STT_DOWNLOAD_INITIATORS.pop(engine, None)
+
+
 def _note_stt_download_initiator(engine: str) -> None:
     with _STT_DOWNLOAD_INITIATORS_LOCK:
-        _STT_DOWNLOAD_INITIATORS[engine] = current_workspace_subject()
+        _STT_DOWNLOAD_INITIATORS.setdefault(engine, current_workspace_subject())
 
 
 def _require_stt_download_cancel_permission(engine: str) -> None:
@@ -17754,6 +17870,7 @@ async def stt_load(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    _reject_private_stt_model_from_another_account(payload.model)
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
         payload.engine,

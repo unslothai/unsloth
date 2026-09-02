@@ -214,7 +214,7 @@ async def download_dataset_response(
 
     # Recorded before the launch, on the request's own thread, so the cancel route
     # can tell this account's download from another's.
-    download_lifecycle.note_download_initiator(key)
+    download_lifecycle.note_download_initiator(key, _registry)
 
     state = download_lifecycle.launch_worker(
         _registry,
