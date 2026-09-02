@@ -192,6 +192,10 @@ async def download_dataset_response(
         # also the only case that attached to anything; an in-progress delete
         # leaves no job, so both come from ``adoptable``.
         adoptable = _registry.adoptable(key)
+        if adoptable:
+            # The adopter is an initiator too, so the account that asked for this
+            # download sees it in its own activity list.
+            download_lifecycle.note_download_initiator(key, _registry)
         return {
             "repo_id": repo_id,
             "state": claim_state,
@@ -205,16 +209,16 @@ async def download_dataset_response(
             # still cancels into a restart-only partial.
             "cancel_transport": _registry.job_cancel_transport(key),
         }
+    # Immediately after the claim, not just before the launch: claim() publishes
+    # the job as running, and a cancel arriving before this saw no initiator and
+    # was authorized to stop it.
+    download_lifecycle.note_download_initiator(key, _registry)
     download_manifest.clear_cancel_marker(
         "dataset",
         repo_id,
         None,
         hub_cache = cache_paths.hub_cache,
     )
-
-    # Recorded before the launch, on the request's own thread, so the cancel route
-    # can tell this account's download from another's.
-    download_lifecycle.note_download_initiator(key, _registry)
 
     state = download_lifecycle.launch_worker(
         _registry,
@@ -262,7 +266,7 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
 
     # Only the account that started it, or the owner: the registry is keyed by
     # repository alone, so naming one was enough to abort somebody else's pull.
-    download_lifecycle.require_download_cancel_permission(key)
+    download_lifecycle.require_download_cancel_permission(key, _registry)
 
     state = download_lifecycle.cancel_worker(
         _registry,

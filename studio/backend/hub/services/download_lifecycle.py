@@ -1342,11 +1342,19 @@ def forget_download_initiator(key: str) -> None:
         _download_initiators.pop(key, None)
 
 
-def require_download_cancel_permission(key: str) -> None:
+def require_download_cancel_permission(
+    key: str,
+    registry: Optional[download_registry.DownloadRegistry] = None,
+) -> None:
     """Only the account that started a download, or the owner, may cancel it.
 
     An unknown key is left cancellable: a download from before a restart has no
     recorded initiator, and refusing those would strand jobs nobody could stop.
+    A key the registry reports as *live* is the exception. The registry publishes
+    a job inside claim(), a moment before the caller records itself, so a cancel
+    landing in that window found no initiator and was allowed to kill somebody
+    else's transfer; repeated cancels can aim for it. Nothing is stranded by
+    refusing those, since the owner can still stop them.
     """
     from auth.storage import is_installation_owner
     from utils.workspace_context import current_workspace_subject
@@ -1355,7 +1363,15 @@ def require_download_cancel_permission(key: str) -> None:
         return
     with _download_initiators_lock:
         initiators = _download_initiators.get(key)
-    if not initiators or current_workspace_subject() in initiators:
+    if not initiators:
+        if registry is not None and registry.adoptable(key):
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code = 409,
+                detail = "This download is still starting. Try again in a moment.",
+            )
+        return
+    if current_workspace_subject() in initiators:
         return
     from fastapi import HTTPException
 

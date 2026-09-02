@@ -1189,6 +1189,14 @@ def _retire_workspace_directory(username: str) -> bool:
     from storage import schema_cache
 
     schema_cache.forget_all()
+    # Same reasoning one level up: process-lifetime memos keyed by the username
+    # outlive the files, so a namesake would resolve its embedding model to the
+    # previous holder's weights and index documents in the wrong space.
+    try:
+        from utils.embedding_model_settings import forget_workspace as forget_embedding_memos
+        forget_embedding_memos(username)
+    except Exception:  # noqa: BLE001 - a cache we cannot reach must not block a deletion
+        logger.warning("Could not clear embedding memos for %s", username, exc_info = True)
     # Moving the files is not enough on its own: a worker still bound to this
     # subject recreates the pathname on its next lookup, and a namesake created
     # in between would then be sharing a workspace with a deleted account's job.

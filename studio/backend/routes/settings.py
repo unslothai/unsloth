@@ -3171,7 +3171,11 @@ def update_lan_access_auto_start(
 def update_lan_access_port(
     request: Request,
     payload: LanAccessPortPayload,
-    current_subject: str = Depends(get_current_subject),
+    # Owner only, like every sibling here: the listener is installation-wide, so
+    # a managed account setting its port cleared the shared bind failure the
+    # owner needs to diagnose, and wrote the choice into its own workspace rather
+    # than the configuration the listener actually starts from.
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     try:

@@ -4401,3 +4401,109 @@ def test_a_finished_download_does_not_hand_its_key_to_the_next_job(monkeypatch):
         assert download_lifecycle.download_is_visible_to_caller("org/model") is False
     finally:
         reset_workspace_subject(token)
+
+
+def test_a_retired_username_leaves_no_embedding_memo_behind(monkeypatch):
+    from utils import embedding_model_settings
+
+    monkeypatch.setattr(embedding_model_settings, "_resolved_gguf_memo", {}, raising = False)
+    monkeypatch.setattr(embedding_model_settings, "_cached", {}, raising = False)
+
+    embedding_model_settings._resolved_gguf_memo[("alice", "bge-m3")] = (
+        "alice/private-embeddings",
+        "gguf",
+        False,
+        ["model.gguf"],
+    )
+    embedding_model_settings._resolved_gguf_memo[("bob", "bge-m3")] = (None, None, False, None)
+    embedding_model_settings._cached["alice"] = (0.0, (None, None, None, None, False, None))
+
+    # A username is reusable, so without this the namesake resolves the same
+    # model to the previous holder's repository and indexes in its embedding
+    # space, and a reset can persist that into the replacement's own database.
+    embedding_model_settings.forget_workspace("alice")
+
+    assert ("alice", "bge-m3") not in embedding_model_settings._resolved_gguf_memo
+    assert ("bob", "bge-m3") in embedding_model_settings._resolved_gguf_memo
+    assert "alice" not in embedding_model_settings._cached
+
+
+def test_a_download_that_is_still_starting_is_not_cancellable_by_anyone(monkeypatch):
+    from fastapi import HTTPException
+
+    from hub.services import download_lifecycle
+
+    monkeypatch.setattr(download_lifecycle, "_download_initiators", {}, raising = False)
+
+    class _Registry:
+        def __init__(self) -> None:
+            self.live = True
+
+        def adoptable(self, key: str) -> bool:
+            return self.live
+
+    registry = _Registry()
+
+    token = _bind("bob")
+    try:
+        # claim() publishes the job before the caller records itself, so a cancel
+        # aimed at that window found no initiator and was authorized to kill a
+        # transfer that was not its own.
+        with pytest.raises(HTTPException) as exc:
+            download_lifecycle.require_download_cancel_permission("org/model", registry)
+        assert exc.value.status_code == 409
+        # A key with no live job behind it stays cancellable: a download from
+        # before a restart has no initiator either, and refusing those strands it.
+        registry.live = False
+        download_lifecycle.require_download_cancel_permission("org/model", registry)
+        download_lifecycle.require_download_cancel_permission("org/model")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        registry.live = True
+        download_lifecycle.require_download_cancel_permission("org/model", registry)
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_model_inspection_routes_contain_the_paths_they_read(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+    from routes import models as models_routes
+
+    elsewhere = tmp_path / "someone-elses" / "workspace" / "adapter"
+    elsewhere.mkdir(parents = True)
+    monkeypatch.setattr(models_routes, "advertised_shared_model_roots", lambda: [])
+
+    token = _bind("alice")
+    try:
+        # get_gguf_variants walks the directory and reports its GGUF filenames,
+        # sizes and quantizations; get_lora_base_model reads adapter_config.json
+        # and returns the private base model it names.
+        with pytest.raises(HTTPException) as exc:
+            inference_routes._reject_uncontained_local_path(str(elsewhere), "inspect")
+        assert exc.value.status_code == 403
+        # A Hub repo id is not a path and is left alone, as is a path that does
+        # not exist: neither reads anything.
+        inference_routes._reject_uncontained_local_path("unsloth/gemma-3-4b-it-GGUF", "inspect")
+        inference_routes._reject_uncontained_local_path(str(tmp_path / "absent"), "inspect")
+        inference_routes._reject_uncontained_local_path(None, "inspect")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_lan_port_is_owner_only_like_the_rest_of_lan_access():
+    import inspect
+
+    from routes import settings as settings_routes
+
+    # The listener is installation-wide: save_lan_access_port clears the shared
+    # bind failure and writes the choice where the listener starts from, so a
+    # managed session reaching it erased state only the owner can act on.
+    for route in ("update_lan_access_port", "update_lan_access_auto_start"):
+        signature = inspect.signature(getattr(settings_routes, route))
+        dependency = signature.parameters["current_subject"].default
+        assert dependency.dependency is settings_routes._require_install_admin, route

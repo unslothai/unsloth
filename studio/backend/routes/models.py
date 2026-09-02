@@ -3515,6 +3515,12 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 
     This endpoint wraps the backend get_base_model_from_lora function.
     """
+    from routes.inference import _reject_uncontained_local_path
+
+    # The adapter directory is read straight from this path, so without the same
+    # containment the load path applies, a managed caller naming a sibling
+    # workspace got back that adapter's private base model identifier.
+    _reject_uncontained_local_path(lora_path, "inspect")
     try:
         base_model = get_base_model_from_lora(lora_path)
 
@@ -4544,6 +4550,12 @@ async def get_gguf_variants(
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
+    from routes.inference import _reject_uncontained_local_path
+
+    # Both identifiers reach the local branch, which walks the directory and
+    # reports its GGUF filenames, sizes, quantizations and vision metadata.
+    for candidate in (repo_id, local_path):
+        _reject_uncontained_local_path(candidate, "inspect")
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants

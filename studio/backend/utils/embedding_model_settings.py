@@ -64,6 +64,23 @@ _resolved_gguf_memo: dict[
 ] = {}
 
 
+def forget_workspace(subject: str) -> None:
+    """Drop everything this process remembers for one account's embedding model.
+
+    Both maps are keyed by the username, which is reusable: after a deletion a
+    recreated namesake selecting the same model inherited the previous holder's
+    GGUF repository, backend, pending flag and file list, and a reset could
+    persist that remembered resolution into the replacement's fresh database.
+    Called from account retirement, where the files move aside for the same
+    reason.
+    """
+    with _lock:
+        _cached.pop(subject, None)
+        _generation[subject] = _generation.get(subject, 0) + 1
+        for key in [key for key in _resolved_gguf_memo if key[0] == subject]:
+            _resolved_gguf_memo.pop(key, None)
+
+
 def _invalidate_cache() -> None:
     subject = current_workspace_subject()
     with _lock:
