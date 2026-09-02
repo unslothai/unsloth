@@ -57,6 +57,29 @@ function nonNegativeNumber(value: unknown, fallback = 0): number {
   return Math.max(0, finiteNumber(value, fallback));
 }
 
+function presentationOfPersisted(value: Record<string, unknown>) {
+  if (!isRecord(value.presentation)) return {};
+  const { label, filename, expectedBytes } = value.presentation;
+  if (
+    typeof label !== "string" ||
+    !label.trim() ||
+    typeof filename !== "string" ||
+    !filename.trim() ||
+    typeof expectedBytes !== "number" ||
+    !Number.isFinite(expectedBytes) ||
+    expectedBytes <= 0
+  ) {
+    return {};
+  }
+  return {
+    presentation: {
+      label: label.trim(),
+      filename: filename.trim(),
+      expectedBytes,
+    },
+  };
+}
+
 /**
  * Inventory kind of a persisted job. Records written before the field carry `scopedFiles`, the same evidence
  * `startJob` classifies a fresh scoped request from: without it a scoped GGUF download comes back as a model
@@ -106,6 +129,7 @@ function sanitizePersistedJob(
     completedBytes: nonNegativeNumber(value.completedBytes),
     completeOnDisk: false,
     expectedBytes: nonNegativeNumber(value.expectedBytes),
+    ...presentationOfPersisted(value),
     fraction: Math.min(Math.max(finiteNumber(value.fraction, 0), 0), 1),
     bytesPerSec: 0,
     etaSeconds: 0,
@@ -168,6 +192,9 @@ function toPersistedJob(
     downloadedBytes: job.downloadedBytes,
     completedBytes: job.completedBytes,
     expectedBytes: job.expectedBytes,
+    ...(job.presentation !== undefined
+      ? { presentation: job.presentation }
+      : {}),
     fraction: job.fraction,
     error: job.error,
     startedAt: job.startedAt,

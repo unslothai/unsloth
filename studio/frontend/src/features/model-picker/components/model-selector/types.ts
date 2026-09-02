@@ -50,6 +50,13 @@ export interface ModelSelectorChangeMeta {
   ggufFilename?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  /** Presentation for a companion-only managed download. The manager still
+   *  owns one atomic GGUF job, but names the bytes actually crossing the wire. */
+  downloadPresentation?: {
+    label: string;
+    filename: string;
+    expectedBytes: number;
+  };
   /** Native GGUF context, threaded so a staged pick can seed the slider. */
   contextLength?: number | null;
   /** Direct local .gguf file picked without a variant (custom folder / LM

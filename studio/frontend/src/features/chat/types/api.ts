@@ -182,6 +182,9 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  /** The only missing artifact when the main GGUF is already cached. */
+  pending_drafter_filename?: string | null;
+  pending_drafter_size_bytes?: number;
   shard_count?: number;
   downloaded?: boolean;
   update_available?: boolean;

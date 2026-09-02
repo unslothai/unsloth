@@ -4713,12 +4713,16 @@ def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(monke
     before = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
     assert before.variants[0].downloaded is False
     assert before.variants[0].download_size_bytes == 120
+    assert before.variants[0].pending_drafter_filename == mtp_name
+    assert before.variants[0].pending_drafter_size_bytes == 20
 
     companion = snapshot / mtp_name
     companion.parent.mkdir()
     companion.write_bytes(b"d" * 20)
     after = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
     assert after.variants[0].downloaded is True
+    assert after.variants[0].pending_drafter_filename is None
+    assert after.variants[0].pending_drafter_size_bytes == 0
 
 
 def test_download_registry_repo_keys_are_case_insensitive():

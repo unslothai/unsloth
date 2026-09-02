@@ -32,6 +32,7 @@ import {
   useDownloadManagerStore,
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
+import { presentedProgress } from "./download-presentation";
 
 function createOrderedJobKeysSelector(): (state: {
   jobs: Record<string, ManagedDownload>;
@@ -125,6 +126,7 @@ function resumeRequestFromJob(job: ManagedDownload): DownloadRequest {
       ? { files: job.scopedFiles }
       : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
+    ...(job.presentation ? { presentation: job.presentation } : {}),
   };
 }
 
@@ -174,6 +176,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
     job.state === "cancelled" ||
     job.state === "error";
   const showProgress = active || resumable;
+  const progress = presentedProgress(job);
   const resolveTransportConflict = (action: "resume" | "restart") => {
     setResumePending(true);
     const resolution =
@@ -192,8 +195,10 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
-          {job.repoId}
-          <span className="text-muted-foreground">{variantSuffix(job)}</span>
+          {job.presentation?.label ?? job.repoId}
+          <span className="text-muted-foreground">
+            {job.presentation ? ` · ${job.repoId}` : variantSuffix(job)}
+          </span>
         </span>
         {job.state === "complete" && (
           <HugeiconsIcon
@@ -278,13 +283,14 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           </TooltipContent>
         </Tooltip>
       </div>
+      {job.presentation ? (
+        <div className="truncate text-ui-10p5 text-muted-foreground">
+          {job.presentation.filename}
+        </div>
+      ) : null}
       {showProgress ? (
         <DownloadProgressBar
-          progress={{
-            expectedBytes: job.expectedBytes,
-            downloadedBytes: job.downloadedBytes,
-            fraction: job.fraction,
-          }}
+          progress={progress}
           bytesPerSec={job.bytesPerSec}
           cancelling={job.state === "cancelling"}
           etaSeconds={job.etaSeconds}

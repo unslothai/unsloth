@@ -1489,6 +1489,42 @@ async def get_gguf_variants_answer(
                 for by_quant in cached_quant_bytes_by_snapshot
             )
 
+        def _non_mmproj_companions(requirement: Optional[_GgufVariantRequirement]) -> tuple:
+            if requirement is None:
+                return ()
+            return tuple(
+                file
+                for file in requirement.expected_files
+                if _is_mtp_drafter_path(file.path) and not _is_mmproj_filename(file.path)
+            )
+
+        def _companions_ready(companions: tuple) -> bool:
+            return not companions or _filenames_cached(
+                frozenset(file.path for file in companions),
+                sum(max(0, int(file.size or 0)) for file in companions),
+            )
+
+        def _pending_drafter(requirement: Optional[_GgufVariantRequirement]):
+            """Name one companion-only transfer without mislabelling a model pull."""
+            if requirement is None or not _filenames_cached(
+                requirement.main_filenames,
+                requirement.main_size_bytes,
+            ):
+                return None
+            if requirement.mmproj_filenames and not _any_mmproj_cached(
+                requirement.mmproj_filenames
+            ):
+                return None
+            missing = tuple(
+                file
+                for file in _non_mmproj_companions(requirement)
+                if not _filenames_cached(
+                    frozenset({file.path}),
+                    max(0, int(file.size or 0)),
+                )
+            )
+            return missing[0] if len(missing) == 1 else None
+
         def _is_fully_downloaded(variant) -> bool:
             quant = variant.quant.lower()
             requirement = requirements_by_quant.get(quant)
@@ -1500,19 +1536,7 @@ async def get_gguf_variants_answer(
             # with no Downloads-panel row. Keep the existing any-precision
             # mmproj rule below; the loader can genuinely use any compatible
             # projector, while it selects one exact planned drafter.
-            non_mmproj_companions = (
-                tuple(
-                    file
-                    for file in requirement.expected_files
-                    if _is_mtp_drafter_path(file.path) and not _is_mmproj_filename(file.path)
-                )
-                if requirement is not None
-                else ()
-            )
-            companions_ready = not non_mmproj_companions or _filenames_cached(
-                frozenset(file.path for file in non_mmproj_companions),
-                sum(max(0, int(file.size or 0)) for file in non_mmproj_companions),
-            )
+            companions_ready = _companions_ready(_non_mmproj_companions(requirement))
             # Vision repos ship an mmproj adapter; any precision on disk suffices.
             if (
                 requirement is not None
@@ -1638,6 +1662,7 @@ async def get_gguf_variants_answer(
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
             downloaded = _is_fully_downloaded(v) and not is_partial
+            pending_drafter = _pending_drafter(requirement) if not is_partial else None
             return GgufVariantDetail(
                 filename = v.filename,
                 quant = v.quant,
@@ -1646,6 +1671,12 @@ async def get_gguf_variants_answer(
                 shard_count = int(getattr(v, "shard_count", 0) or 0),
                 download_size_bytes = (
                     requirement.download_size_bytes if requirement is not None else v.size_bytes
+                ),
+                pending_drafter_filename = (
+                    pending_drafter.path if pending_drafter is not None else None
+                ),
+                pending_drafter_size_bytes = (
+                    max(0, int(pending_drafter.size or 0)) if pending_drafter is not None else 0
                 ),
                 # Scanned per partial variant only: repos carry one, and the scan walks blobs/.
                 download_remaining_bytes = (

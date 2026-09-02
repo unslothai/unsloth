@@ -10,6 +10,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 /* eslint-disable no-restricted-imports -- the harness exercises these internal boundaries directly */
 import { AUTH_TOKEN_KEY } from "@/features/auth/session";
 import { wantsDownloadManagerStaging } from "@/features/chat/utils/model-download-staging";
+import { pendingDrafterPresentation } from "./src/features/model-picker/components/model-selector/variant-download-presentation";
 import {
   DownloadManagerPanel,
   __resetDownloadManagerForTests,
@@ -33,7 +34,9 @@ const REPO_ID = "unsloth/Qwen3.8-Flash-Next-GGUF";
 type Variant = {
   quant: string;
   downloaded: boolean;
-} & Record<"download_size_bytes", number>;
+} & Record<"download_size_bytes", number> &
+  Partial<Record<"pending_drafter_filename", string | null>> &
+  Partial<Record<"pending_drafter_size_bytes", number>>;
 
 declare global {
   interface Window {
@@ -74,11 +77,13 @@ window.__mtpDownloadSmoke = {
     });
     let outcome: string | null = null;
     if (staged) {
+      const presentation = pendingDrafterPresentation(variant);
       outcome = await downloadManager.requestStart({
         kind: "model",
         repoId: REPO_ID,
         variant: variant.quant,
         expectedBytes: variant.download_size_bytes,
+        ...(presentation ? { presentation } : {}),
       });
     }
     return {

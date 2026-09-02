@@ -161,6 +161,13 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label above.
+    pending_drafter_filename: Optional[str] = Field(
+        None, description = "Missing separate drafter when the main GGUF is already cached"
+    )
+    pending_drafter_size_bytes: int = Field(
+        0, description = "Remote size of pending_drafter_filename"
+    )
     shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"

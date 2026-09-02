@@ -232,13 +232,22 @@ def main() -> None:
                     "outcome": "started",
                 }, result
                 page.get_by_text("Downloading 1 item", exact = True).wait_for()
-                page.get_by_text(REPO_ID, exact = False).wait_for()
+                panel = page.locator(".hub-download-panel")
+                panel.get_by_text("MTP companion", exact = False).wait_for()
+                panel.get_by_text(MTP_FILENAME.rsplit("/", 1)[-1], exact = True).wait_for()
+                panel.get_by_text("540 MB / 2.8 GB", exact = True).wait_for()
                 jobs = page.evaluate("window.__mtpDownloadSmoke.jobs()")
                 assert len(jobs["jobs"]) == 1, jobs
 
             assert not page_errors, page_errors
             raw_path = ART_DIR / f"{SIDE.lower()}.png"
-            page.screenshot(path = str(raw_path), full_page = True)
+            # The effect lives in the bottom-right overlay. A fixed clip keeps
+            # its filename and byte counters legible in a PR comment instead
+            # of shrinking them into a mostly empty full-page comparison.
+            page.screenshot(
+                path = str(raw_path),
+                clip = {"x": 740, "y": 520, "width": 700, "height": 380},
+            )
 
             raw = Image.open(raw_path).convert("RGB")
             labelled = Image.new("RGB", (raw.width, raw.height + 64), "#101114")
@@ -246,9 +255,9 @@ def main() -> None:
             draw = ImageDraw.Draw(labelled)
             font = ImageFont.load_default(size = 24)
             label = (
-                "BEFORE - cached quant bypasses manager; MTP download is silent"
+                "BEFORE - no active MTP download is shown"
                 if SIDE == "BEFORE"
-                else "AFTER - missing MTP is staged and visible in Downloads"
+                else "AFTER - MTP file and its own progress are explicit"
             )
             draw.text((24, 20), label, fill = "white", font = font)
             labelled.save(ART_DIR / f"{SIDE.lower()}-labelled.png")
@@ -258,6 +267,8 @@ def main() -> None:
                 "repo_dir": str(REPO_DIR),
                 "backend_downloaded": variant["downloaded"],
                 "download_size_bytes": variant["download_size_bytes"],
+                "pending_drafter_filename": variant.get("pending_drafter_filename"),
+                "pending_drafter_size_bytes": variant.get("pending_drafter_size_bytes", 0),
                 "main_bytes_cached": MAIN_BYTES,
                 "mtp_bytes_missing": MTP_BYTES,
                 "staged": result["staged"],
