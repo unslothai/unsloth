@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { legacyBrowserDataBelongsToCurrentAccount } from "../../../lib/account-transition.ts";
 import {
   getChatSettings,
   saveChatSettingsPatch,
@@ -103,6 +104,11 @@ function getStorageItem(key: string): string | null {
 }
 
 function isLegacySettingsImportDone(): boolean {
+  // Same rule as the legacy chat merge: presets and system prompts written
+  // before accounts existed belong to the account that owns this browser's
+  // pre-accounts data, and for anyone else the import would copy them into a
+  // workspace permanently.
+  if (!legacyBrowserDataBelongsToCurrentAccount()) return true;
   return getStorageItem(LEGACY_CHAT_SETTINGS_IMPORT_KEY) === "true";
 }
 

@@ -31,6 +31,11 @@ function harness(options: { rejectIds?: Set<string>; failWith?: Error } = {}) {
       import.meta.url,
     ),
     {
+      "../../../lib/account-transition.ts": {
+        // This browser has only ever had one account in these tests, so the
+        // legacy rows are its own.
+        legacyBrowserDataBelongsToCurrentAccount: () => true,
+      },
       "../api/chat-api": {
         ChatMessageProtectedError: FakeProtectedError,
         saveChatMessage: async (message: { id: string }) => {

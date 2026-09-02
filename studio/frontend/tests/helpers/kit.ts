@@ -23,6 +23,8 @@ export type StorageFake = {
   getItem: (key: string) => string | null;
   setItem: (key: string, value: string) => void;
   removeItem: (key: string) => void;
+  readonly length: number;
+  key: (index: number) => string | null;
 };
 
 /**
@@ -46,6 +48,12 @@ export function installLocalStorageFake(): {
     removeItem: (key: string) => {
       store.delete(key);
     },
+    // Real localStorage is enumerable, and code that clears a key family needs
+    // to be able to walk it.
+    get length() {
+      return store.size;
+    },
+    key: (index: number) => [...store.keys()][index] ?? null,
   };
   const listeners = new Map<string, Set<(event: unknown) => void>>();
   Object.assign(globalThis, {

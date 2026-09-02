@@ -26,6 +26,7 @@ import {
   type ChatThreadWritePatch,
   updateChatThread,
 } from "../api/chat-api";
+import { legacyBrowserDataBelongsToCurrentAccount } from "../../../lib/account-transition.ts";
 import { DEXIE_DB_NAME, db } from "../db";
 import type {
   MessageRecord,
@@ -158,6 +159,12 @@ function hasOwn(value: object, key: string): boolean {
 }
 
 function isLegacyChatImportDone(): boolean {
+  // Another account's browser data is not migration input for this one: the
+  // marker is origin-wide, and every listing path falls back to Dexie rows
+  // whenever the signing-in account's own list is empty. Answering "done"
+  // suppresses the merge without touching the rows, so the account they belong
+  // to still gets them.
+  if (!legacyBrowserDataBelongsToCurrentAccount()) return true;
   if (!canUseStorage()) return true;
   try {
     return localStorage.getItem(LEGACY_CHAT_IMPORT_KEY) === "true";

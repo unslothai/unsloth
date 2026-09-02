@@ -11,7 +11,8 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
-import { refreshSession } from "../api";
+import { noteAuthSessionReplaced, refreshSession } from "../api";
+import { notifyAccountAuthenticated } from "../../../lib/account-transition.ts";
 import {
   deadlineFromStatus,
   formatCountdown,
@@ -351,6 +352,15 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         setMustChangePassword(false);
       } else {
         setMustChangePassword(token.must_change_password);
+      }
+      // Before the new session mounts: this browser's localStorage is origin-wide,
+      // so an account that is not the one that left it there would otherwise read
+      // the previous account's drafts, dictation history and provider metadata,
+      // and have its legacy chats, chat settings and Hugging Face token migrated
+      // into its own workspace.
+      if (notifyAccountAuthenticated(isLoginMode ? username : (username || ""))) {
+        // A request still waiting on a 401 belongs to the account that sent it.
+        noteAuthSessionReplaced();
       }
       storeAuthTokens(token.access_token, token.refresh_token);
       navigate({ to: getPostAuthRoute() });

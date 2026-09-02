@@ -248,6 +248,16 @@ export async function authFetch(
   options?: AuthFetchOptions,
 ): Promise<Response> {
   const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
+  // The session this request belongs to. A 401 can arrive after the account has
+  // changed, and every recovery path below resends the original method, URL and
+  // body: without this the retry carried Alice's write into Bob's workspace on
+  // Bob's token. The logoutGeneration check inside refreshSession only covers a
+  // refresh that was already running, not a request that outlived its session.
+  // Compared on the epoch alone: a refresh rotates the stored token within the
+  // same session, and two requests in flight together legitimately see each
+  // other's rotation, so the token is not the identity of the session.
+  const startGeneration = logoutGeneration;
+  const sessionUnchanged = () => startGeneration === logoutGeneration;
   const headers = new Headers(init?.headers);
   addBrowserTimezoneHeaders(headers);
   const accessToken = getAuthToken();
@@ -285,6 +295,9 @@ export async function authFetch(
     return response;
   }
   if (response.status !== 401) return response;
+  // Answered for a session that is gone. Hand the 401 back rather than
+  // authenticate it as whoever holds the browser now.
+  if (!sessionUnchanged()) return response;
 
   const refreshToken = getRefreshToken();
   const refreshed = await refreshSession();
@@ -319,6 +332,7 @@ export async function authFetch(
     return response;
   }
 
+  if (!sessionUnchanged()) return response;
   if (!getAuthToken()) clearAuthTokens();
   return retryWithCurrentToken(
     resolvedInput,
@@ -341,6 +355,17 @@ async function postLogout(
   } catch {
     return null;
   }
+}
+
+/**
+ * End the current auth session for the purposes of in-flight requests.
+ *
+ * Called when a different account signs in without a logout in between: a
+ * request already waiting on a 401 belongs to the session that started it, and
+ * without a bump here its retry would be authenticated as the new account.
+ */
+export function noteAuthSessionReplaced(): void {
+  logoutGeneration += 1;
 }
 
 export async function logout(): Promise<void> {
