@@ -1198,6 +1198,22 @@ class VideoBackend:
                         f"can be applied and the dense weights cannot be quantized in place. "
                         f"{hint}"
                     )
+        # Validate a local pipeline's structural contract before probing optional Diffusers
+        # classes. A malformed local pick is a request error even on hosts where Diffusers is
+        # absent or too old, and it must fail before the resident pipeline is evicted.
+        if kind == "pipeline":
+            root = Path(repo_id).expanduser()
+            # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
+            indexes = (
+                ("modular_model_index.json",) if fam.modular_workflow else ("model_index.json",)
+            )
+            if root.exists() and not (
+                root.is_dir() and any((root / name).is_file() for name in indexes)
+            ):
+                raise ValueError(
+                    f"Local pipeline path is not a diffusers directory "
+                    f"(no {' or '.join(indexes)}): {repo_id}"
+                )
         from .video_minimax_h3 import is_h3_native, validate_h3_transformer_filename
 
         if is_h3_native(fam, kind):
@@ -1283,20 +1299,6 @@ class VideoBackend:
                     )
             elif path_shaped:
                 raise ValueError(f"Local model path '{repo_id}' does not exist.")
-        # A local pipeline pick must be a diffusers directory (model_index.json), else it would only fail after eviction.
-        if kind == "pipeline":
-            root = Path(repo_id).expanduser()
-            # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
-            indexes = (
-                ("modular_model_index.json",) if fam.modular_workflow else ("model_index.json",)
-            )
-            if root.exists() and not (
-                root.is_dir() and any((root / name).is_file() for name in indexes)
-            ):
-                raise ValueError(
-                    f"Local pipeline path is not a diffusers directory "
-                    f"(no {' or '.join(indexes)}): {repo_id}"
-                )
         # Reject a malformed transformer_quant cheaply, before the handoff (pipeline-kind only, matching the image backend).
         normalize_transformer_quant(transformer_quant)
         # Reject a malformed text_encoder_quant the same way. Every kind: an unsupported scheme is

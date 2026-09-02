@@ -2024,6 +2024,11 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         [_file("config.json", 1_000), _file("model.safetensors", 9_000)],
         tmp_path / "models--unsloth--Llama-3.2-1B-Instruct",
     )
+    snapshot = diffusion.repo_path / "snapshots" / "revision"
+    (snapshot / "transformer").mkdir(parents = True)
+    (snapshot / "model_index.json").write_text("{}")
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    diffusion.revisions[0].snapshot_path = snapshot
 
     monkeypatch.setattr(
         models_route,

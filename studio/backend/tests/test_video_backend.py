@@ -726,13 +726,28 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     assert fam.name == "ltx-2"
 
 
-def test_validate_modular_family_requires_modular_manifest(tmp_path):
+def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtime, monkeypatch):
     backend = VideoBackend()
     root = tmp_path / "opaque-h3"
     root.mkdir()
     (root / "model_index.json").write_text("{}")
-    with pytest.raises(ValueError, match = "modular_model_index.json"):
-        backend.validate_load_request(str(root), family_override = "minimax-h3")
+
+    original_import = builtins.__import__
+
+    def _no_diffusers_import(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError(f"No module named '{name}'", name = name)
+        return original_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as no_diffusers:
+        no_diffusers.delitem(sys.modules, "diffusers")
+        no_diffusers.setattr(builtins, "__import__", _no_diffusers_import)
+        with pytest.raises(ValueError, match = "modular_model_index.json"):
+            backend.validate_load_request(str(root), family_override = "minimax-h3")
+
+    diffusers = sys.modules["diffusers"]
+    diffusers.ModularPipeline = _FakeModularPipeline
+    diffusers.MiniMaxH3Transformer3DModel = _FakeTransformer
     (root / "modular_model_index.json").write_text("{}")
     assert (
         backend.validate_load_request(str(root), family_override = "minimax-h3").name == "minimax-h3"
