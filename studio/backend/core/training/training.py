@@ -1287,6 +1287,30 @@ class TrainingBackend:
         with self._lock:
             return self._active_workspace_subject in (None, subject)
 
+    def reset_retained_state(self, subject: str) -> None:
+        """Drop a finished run's state and its ownership, for a deleted account.
+
+        is_training_active() is false once a run is terminal, so the delete path's
+        stop had nothing to stop and the singleton went on holding the subject
+        beside the run's job identity, metrics and status. A recreated namesake
+        passes owns_workspace() on the reused username and reads it back from
+        /status and /metrics.
+
+        Refuses while a worker is alive, so this can never discard another
+        account's live run; the delete path stops the run first.
+        """
+        with self._lock:
+            if self._active_workspace_subject not in (None, subject):
+                return
+            proc = self._proc
+            if self._spawn_in_progress or (proc is not None and proc.is_alive()):
+                return
+        # Outside the lock: reset_training_state takes it itself.
+        self.reset_training_state()
+        with self._lock:
+            self._active_workspace_subject = None
+            self._current_start_key = None
+
     @property
     def current_start_request_id(self) -> Optional[str]:
         """The active run's start request id, without its workspace."""

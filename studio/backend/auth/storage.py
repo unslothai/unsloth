@@ -1028,6 +1028,29 @@ def _media_load_active(backend, username: str) -> bool:
     return probe(subject = username).get("phase") not in _MEDIA_LOAD_IDLE_PHASES
 
 
+# Fields a media backend reports a loaded model under. A repo id is install-wide
+# and shared by design; only a filesystem path can name one account's private
+# weights.
+_MEDIA_STATUS_PATH_FIELDS = ("repo_id", "base_repo", "model_path", "local_path", "resolved")
+
+
+def _status_names_a_path_under(status: dict, root: str) -> bool:
+    """Whether any model field in ``status`` resolves inside ``root``."""
+    import os
+
+    for field in _MEDIA_STATUS_PATH_FIELDS:
+        value = status.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            real = os.path.realpath(os.path.expanduser(value.strip()))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if real == root or real.startswith(root + os.sep):
+            return True
+    return False
+
+
 def _workspace_jobs_active(username: str) -> bool:
     """Whether anything is still running under this account's workspace.
 
@@ -1212,6 +1235,76 @@ def _quiesce_workspace_jobs(username: str) -> None:
         from core.inference.mcp_client import close_mcp_sessions
         close_mcp_sessions()
 
+    def _shutdown_idle_export_worker() -> None:
+        # is_export_active() is false once a checkpoint has finished loading, so
+        # the cancel above left the subprocess and the account's private
+        # checkpoint resident. A recreated namesake passes the username-based
+        # owns_workspace() and can export from it.
+        from core.export import get_export_backend
+
+        orchestrator = get_export_backend()
+        if not orchestrator.owns_workspace(username):
+            return
+        if orchestrator.is_export_active():
+            return
+        if orchestrator.is_worker_alive() or orchestrator.current_checkpoint:
+            orchestrator._shutdown_subprocess()
+        orchestrator.current_checkpoint = None
+        orchestrator.is_vision = False
+        orchestrator.is_peft = False
+        with orchestrator._workspace_guard():
+            orchestrator._workspace_subject = None
+
+    def _reset_training() -> None:
+        # Same shape as the diffusion service below: a terminal run is not active,
+        # so nothing above stopped it, and the singleton kept the subject beside
+        # the job identity, metrics and status a namesake then read back.
+        from core.training.training import get_training_backend
+        backend = get_training_backend()
+        if backend.owns_workspace(username):
+            backend.reset_retained_state(username)
+
+    def _reset_recipe_state() -> None:
+        # cancel() on a terminal job succeeds without clearing _job or the
+        # ownership subject, so /jobs/current handed a namesake the old job id and
+        # its rows and analysis came back with it.
+        from core.data_recipe.jobs.manager import get_job_manager
+        get_job_manager().reset_retained_state(username)
+
+    def _forget_terminal_video() -> None:
+        # A completed record holds the whole recipe: prompt, negative prompt,
+        # model and settings. generate_progress reports it as inactive, so the
+        # cancel above left it for whoever takes the name next.
+        from core.inference.video import get_video_backend
+        get_video_backend().forget_terminal_video(subject = username)
+
+    def _clear_api_monitor() -> None:
+        # Up to fifty entries of prompts and replies, several thousand characters
+        # each, authorized only by the stored subject string.
+        from core.inference.api_monitor import api_monitor
+        api_monitor.clear(subject = username)
+
+    def _unload_private_resident_media() -> None:
+        # An idle pipeline loaded from the account's own workspace stays resident,
+        # and a namesake derives the same workspace root, so the old local path
+        # reads as theirs and the model is usable from /images/generate or the
+        # video equivalent.
+        from utils.paths.storage_roots import workspace_root
+        try:
+            private_root = str(run_in_workspace(username, workspace_root).resolve())
+        except (OSError, RuntimeError, ValueError):
+            return
+        for backend in _loaded_media_backends():
+            try:
+                status = backend.status()
+            except Exception:  # noqa: BLE001 - an engine that cannot answer is left alone
+                continue
+            if not isinstance(status, dict) or not status.get("loaded"):
+                continue
+            if not _status_names_a_path_under(status, private_root):
+                continue
+            backend.unload()
+
     def _reset_diffusion_training() -> None:
         # is_active() is false once a run reaches a terminal state, so the stop
         # above skipped it and the singleton kept the subject alongside the whole
@@ -1245,7 +1338,16 @@ def _quiesce_workspace_jobs(username: str) -> None:
         ("media renders", _stop_media_renders),
         ("data recipe job", _stop_recipe_job),
         ("cached MCP sessions", _close_mcp_sessions),
+        # Everything below is state that OUTLIVES the work rather than state that
+        # is running: nothing above stops it, because by then there is nothing
+        # left to stop. It is what a recreated namesake would otherwise inherit.
         ("retained diffusion training state", _reset_diffusion_training),
+        ("retained training state", _reset_training),
+        ("idle export worker", _shutdown_idle_export_worker),
+        ("retained recipe job", _reset_recipe_state),
+        ("completed video record", _forget_terminal_video),
+        ("API monitor entries", _clear_api_monitor),
+        ("private resident media models", _unload_private_resident_media),
     ):
         try:
             run_in_workspace(username, stop)

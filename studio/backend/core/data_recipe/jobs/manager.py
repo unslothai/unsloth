@@ -197,6 +197,29 @@ class JobManager:
             return None
         return retained
 
+    def reset_retained_state(self, subject: str) -> None:
+        """Forget everything this account left behind, for a deleted account.
+
+        cancel() on a terminal job returns success without clearing _job or the
+        ownership subject, and the liveness probe then reads the manager as idle,
+        so the name was released while the finished run was still resolvable. A
+        recreated namesake called /jobs/current for the old id and read its rows
+        and analysis back, since ownership is keyed on the reused username.
+
+        Refuses while the worker is alive; the delete path cancels first.
+        """
+        with self._lock:
+            if self._proc is not None and self._proc.is_alive():
+                return
+            self._finished_jobs.pop(subject, None)
+            if self._workspace_subject not in (None, subject):
+                return
+            self._job = None
+            self._workspace_subject = None
+            self._events.clear()
+            self._subs.clear()
+            self._seq = 0
+
     def _workspace_owned_locked(self) -> bool:
         return getattr(self, "_workspace_subject", None) in {
             None,

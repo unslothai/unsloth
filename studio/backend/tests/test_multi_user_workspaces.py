@@ -3956,3 +3956,128 @@ def test_a_finished_recipe_job_survives_another_accounts_start():
         assert manager.get_analysis("alice-job") is None
     finally:
         reset_workspace_subject(token)
+
+
+def test_the_delete_path_also_clears_state_that_outlived_the_work(monkeypatch):
+    import inspect
+
+    from auth import storage as auth_storage
+
+    source = inspect.getsource(auth_storage._quiesce_workspace_jobs)
+    # Everything above the divider stops something that is running. These clear
+    # what a finished job leaves behind, which nothing above reaches because by
+    # then there is nothing left to stop.
+    for step in (
+        "retained diffusion training state",
+        "retained training state",
+        "idle export worker",
+        "retained recipe job",
+        "completed video record",
+        "API monitor entries",
+        "private resident media models",
+    ):
+        assert step in source, step
+
+
+def test_a_finished_training_run_does_not_outlive_its_account():
+    import threading as _threading
+
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend.__new__(TrainingBackend)
+    backend._lock = _threading.RLock()
+    backend._proc = None
+    backend._spawn_in_progress = False
+    backend._active_workspace_subject = "alice"
+    backend._current_start_key = ("alice", "req-1")
+    reset_calls = []
+    backend.reset_training_state = lambda *a, **k: reset_calls.append(a) or "ok"
+
+    # Another account's state is not this account's to drop.
+    backend.reset_retained_state("bob")
+    assert backend._active_workspace_subject == "alice"
+    assert reset_calls == []
+
+    backend.reset_retained_state("alice")
+    assert backend._active_workspace_subject is None
+    assert backend._current_start_key is None
+    assert len(reset_calls) == 1
+
+    # A live run is refused, whoever asks: the delete path stops it first.
+    backend._active_workspace_subject = "alice"
+    backend._spawn_in_progress = True
+    backend.reset_retained_state("alice")
+    assert backend._active_workspace_subject == "alice"
+
+
+def test_a_finished_recipe_job_does_not_outlive_its_account():
+    import threading as _threading
+    from collections import deque
+
+    from core.data_recipe.jobs.manager import Job, JobManager
+
+    manager = JobManager.__new__(JobManager)
+    manager._lock = _threading.RLock()
+    manager._proc = None
+    manager._job = Job(job_id = "alice-job", status = "completed", started_at = 0.0)
+    manager._events = deque([{"seq": 1}])
+    manager._subs = [object()]
+    manager._seq = 3
+    manager._workspace_subject = "alice"
+    manager._finished_jobs = {"alice": Job(job_id = "older", status = "completed", started_at = 0.0)}
+
+    # cancel() on a terminal job succeeds without clearing any of this, so
+    # /jobs/current handed a namesake the old id and its rows came back with it.
+    manager.reset_retained_state("alice")
+    assert manager._job is None
+    assert manager._workspace_subject is None
+    assert manager._finished_jobs == {}
+    assert list(manager._events) == []
+    assert manager._subs == []
+
+
+def test_a_completed_video_record_does_not_outlive_its_account():
+    import threading as _threading
+
+    from core.inference.video import VideoBackend
+
+    backend = VideoBackend.__new__(VideoBackend)
+    backend._lock = _threading.RLock()
+    backend._generate_job_active = False
+    backend._gen_subject = "alice"
+    backend._gen = {"phase": "completed", "video": {"id": "vid-1", "prompt": "secret"}}
+
+    # The record carries the whole recipe, and generate_progress reports it as
+    # inactive, so nothing that stops a render reaches it.
+    assert backend.forget_terminal_video(subject = "bob") is False
+    assert backend._gen["phase"] == "completed"
+    assert backend.forget_terminal_video(subject = "alice") is True
+    assert backend._gen == {"active": False}
+
+
+def test_only_media_loaded_from_the_deleted_workspace_is_unloaded(tmp_path):
+    from auth import storage as auth_storage
+
+    private = tmp_path / "workspaces" / "alice-0123456789ab"
+    private.mkdir(parents = True)
+    root = str(private.resolve())
+
+    # A local path names one account's private weights.
+    assert (
+        auth_storage._status_names_a_path_under(
+            {"repo_id": str(private / "models" / "mine")}, root
+        )
+        is True
+    )
+    # A hub repo id is install-wide by design and must not be torn down.
+    assert (
+        auth_storage._status_names_a_path_under({"repo_id": "Shakker-Labs/FLUX.1"}, root) is False
+    )
+    # Neither is another account's path, nor an empty status.
+    assert (
+        auth_storage._status_names_a_path_under(
+            {"repo_id": str(tmp_path / "workspaces" / "bob-x" / "m")}, root
+        )
+        is False
+    )
+    assert auth_storage._status_names_a_path_under({"repo_id": None}, root) is False

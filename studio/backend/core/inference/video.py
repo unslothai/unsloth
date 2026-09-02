@@ -6308,7 +6308,9 @@ class VideoBackend:
         gen["fraction"] = min(1.0, step / total) if total > 0 else 0.0
         return gen
 
-    def forget_terminal_video(self, video_id: Optional[str] = None) -> bool:
+    def forget_terminal_video(
+        self, video_id: Optional[str] = None, subject: Optional[str] = None
+    ) -> bool:
         """Drop the completed terminal record when its clip leaves the gallery.
 
         ``generate_progress()`` keeps the last completed job until the next one starts, and the
@@ -6320,6 +6322,12 @@ class VideoBackend:
         with self._lock:
             gen = self._gen
             if self._generate_job_active or not isinstance(gen, dict):
+                return False
+            # ``subject`` limits this to one account's record. Account deletion
+            # passes it: a completed record holds the whole recipe, prompt,
+            # negative prompt, model and settings, and a recreated namesake passed
+            # the subject check and read it from /video/generate-progress.
+            if subject is not None and self._gen_subject != subject:
                 return False
             if gen.get("phase") != "completed":
                 return False
