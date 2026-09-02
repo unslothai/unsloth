@@ -5133,21 +5133,25 @@ def _strip_tool_xml_for_display(
     so literal markup inside a value is data), then the ``_TOOL_XML_RE`` arms cover the
     DeepSeek / Kimi / orphan forms. ``<think>`` blocks are preserved verbatim and the
     ``\\Z``-anchored tail arms run only on the last segment (prose ``foo[ARGS]`` before a
-    block survives). ``enabled_tool_names`` (when not None) gates the ambiguous bare-rehearsal
-    ``NAME[ARGS]{...}`` and wrapper-less Gemma ``call:NAME{...}`` strips on the active tool
-    list; an inactive NAME is prose and is kept. The ``[TOOL_CALLS]`` control-token arms strip
+    block survives). The ambiguous bare-rehearsal ``NAME[ARGS]{...}`` and wrapper-less Gemma
+    ``call:NAME{...}`` strips run only on a markerless-promotable NAME, so prose is kept: a
+    name outside ``enabled_tool_names`` (when not None), or an execution-class one, which the
+    parser never promotes bare even when enabled. The ``[TOOL_CALLS]`` control-token arms strip
     unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
-    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
+    from core.tool_healing import (
+        _markerless_promotable,
+        _strip_bracket_tag_calls,
+        strip_outside_think,
+    )
 
     def _keep_inactive_rehearsal(m) -> str:
-        # Only the bare-rehearsal arm captures ``reh``; with a tool list an inactive
-        # NAME[ARGS]{...} is prose -- keep it.
-        if enabled_tool_names is not None:
-            name = m.groupdict().get("reh")
-            if name is not None and name not in enabled_tool_names:
-                return m.group(0)
+        # Only the bare-rehearsal arm captures ``reh``. A NAME[ARGS]{...} the parser will not
+        # promote is prose, and deleting it leaves the turn with no call AND no text.
+        name = m.groupdict().get("reh")
+        if name is not None and not _markerless_promotable(name, enabled_tool_names):
+            return m.group(0)
         return ""
 
     def _strip_segment(seg: str, is_last: bool) -> str:

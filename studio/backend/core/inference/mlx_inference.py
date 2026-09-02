@@ -12,6 +12,12 @@ import threading
 from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
+from core.inference.native_tool_tokens import (
+    NativeToolTokenDecoder,
+    closes_an_open_envelope,
+    decoder_preserves_token,
+    reasoning_control_tokens,
+)
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
     runtime_context_length,
@@ -2267,7 +2273,14 @@ class MLXInferenceBackend:
         # An open <think> prefilled by the template lives in the prompt, not
         # the generated tokens; re-emit it so the frontend renders the block.
         think_prefix = detect_think_prefill(
-            prompt, getattr(self._tokenizer, "all_special_tokens", None)
+            prompt,
+            getattr(self._tokenizer, "all_special_tokens", None),
+            # Matches native_token_decoder below: when it runs </think> survives, so the
+            # prefilled opener has to be re-emitted with it.
+            preserves_think_close = (bool(tools) or reasoning_channel_markers is not None)
+            and decoder_preserves_token(
+                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+            ),
         )
         if seed is None:
             sampler = make_sampler(
@@ -2293,6 +2306,14 @@ class MLXInferenceBackend:
         )
 
         preserve_native_channels = reasoning_channel_markers is not None
+        native_token_decoder = (
+            NativeToolTokenDecoder(
+                self._tokenizer,
+                preserved_tokens = reasoning_control_tokens(reasoning_channel_markers),
+            )
+            if tools or preserve_native_channels
+            else None
+        )
         token_ids = []
         normalizer = (
             make_reasoning_normalizer(
@@ -2355,7 +2376,9 @@ class MLXInferenceBackend:
                     final_response = response
                     token_ids.append(response.token)
                     if preserve_native_channels:
-                        sampled += getattr(response, "text", None) or ""
+                        sampled += native_token_decoder.decode_stream_token(
+                            response.token, getattr(response, "text", None) or ""
+                        )
                         if sequences:
                             cut, stopped = _mlx_stop_cut(sampled, sequences)
                         else:
@@ -2371,10 +2394,26 @@ class MLXInferenceBackend:
                         # Re-decoding every id rebuilds rather than extends, so an
                         # invalid byte sequence can revise characters already shown.
                         # Predates stop handling and affects plain replies too.
-                        sampled = self._tokenizer.decode(
-                            token_ids,
-                            skip_special_tokens = True,
-                        )
+                        if native_token_decoder is not None:
+                            # The decoder keeps allowlisted controls, and some runtimes stop
+                            # on one (TML Inkling's <|end_message|>). Drop only the TRAILING
+                            # stop id, so the marker still closes a real tool envelope.
+                            _ids = list(token_ids)
+                            if _ids and _ids[-1] in _mlx_stop_token_ids(
+                                self._tokenizer, self._model
+                            ):
+                                # Only with no tool markup in the turn: the same marker can be
+                                # the closer strict parsing needs.
+                                _whole = native_token_decoder.decode(_ids)
+                                _closer = _whole[len(native_token_decoder.decode(_ids[:-1])) :]
+                                if not closes_an_open_envelope(_whole, _closer):
+                                    _ids = _ids[:-1]
+                            sampled = native_token_decoder.decode(_ids)
+                        else:
+                            sampled = self._tokenizer.decode(
+                                token_ids,
+                                skip_special_tokens = True,
+                            )
                         if not sequences:
                             yield think_prefix + sampled
                         else:
@@ -2594,8 +2633,15 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import detect_think_prefill
 
+        # Detected once: the decoder keeps the delimiters the normalizer below consumes.
+        vlm_reasoning_markers = detect_reasoning_channel_markers(chat_target, tools = tools)
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
-        prefill = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
+        prefill = detect_think_prefill(
+            prompt,
+            getattr(chat_target, "all_special_tokens", None),
+            preserves_think_close = bool(tools)
+            and decoder_preserves_token(self._tokenizer, "</think>"),
+        )
         vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
@@ -2644,6 +2690,27 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
+        # The provenance the text path recovers: mlx-vlm's ``response.text`` has dropped the
+        # native tool controls, so a genuine wrapped call would reach the parser markerless and
+        # the guard would refuse it. Text-only requests on a VLM come through here too.
+        # Delimiters that are special-token ids need preserving too, as on the text path:
+        # ``decode_stream_token`` drops any special id outside the preserved set.
+        vlm_token_decoder = (
+            NativeToolTokenDecoder(
+                self._tokenizer,
+                preserved_tokens = reasoning_control_tokens(vlm_reasoning_markers),
+            )
+            if tools and self._tokenizer
+            else None
+        )
+        # The runtime EOS can itself be an allowlisted control, and this path appends every
+        # decoded token into the snapshot, so it would trail each answer. As in _generate_text.
+        vlm_stop_ids = (
+            _mlx_stop_token_ids(self._tokenizer, self._model)
+            if vlm_token_decoder is not None
+            else ()
+        )
+
         def _stream_vlm_snapshots():
             nonlocal stopped
             sampled = ""
@@ -2669,6 +2736,17 @@ class MLXInferenceBackend:
                     ):
                         final_response = response
                         token_text = response.text if hasattr(response, "text") else str(response)
+                        token_id = getattr(response, "token", None)
+                        if vlm_token_decoder is not None and token_id is not None:
+                            # Only a special id is re-decoded; ordinary ids keep mlx-vlm's text.
+                            _decoded = vlm_token_decoder.decode_stream_token(token_id, token_text)
+                            # A stop token is dropped unless it closes an open envelope.
+                            token_text = (
+                                ""
+                                if int(token_id) in vlm_stop_ids
+                                and not closes_an_open_envelope(sampled + _decoded, _decoded)
+                                else _decoded
+                            )
                         sampled += token_text
                         if not sequences:
                             yield prefill + sampled
@@ -2709,6 +2787,7 @@ class MLXInferenceBackend:
             _stream_vlm_snapshots(),
             chat_target,
             cancel_event,
+            markers = vlm_reasoning_markers,
             tools = tools,
             prompt = prompt,
             continued = vlm_continued,

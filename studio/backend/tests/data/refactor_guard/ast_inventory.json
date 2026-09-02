@@ -29,6 +29,9 @@
       "CountAborted": {
         "kind": "class"
       },
+      "GgufDownloadCancelled": {
+        "kind": "class"
+      },
       "GgufLoadIntent": {
         "kind": "class"
       },
@@ -101,6 +104,9 @@
       "_CTX_FIT_VRAM_FRACTION": {
         "kind": "assign"
       },
+      "_CombinedCancelEvent": {
+        "kind": "class"
+      },
       "_CpuFallbackRuntime": {
         "kind": "class"
       },
@@ -155,6 +161,9 @@
       "_GEMMA_MTP_FAMILY_RE": {
         "kind": "assign"
       },
+      "_GENERATION_CPU_AFFINITY_FLAGS": {
+        "kind": "assign"
+      },
       "_GGML_GPU_BACKEND_RE": {
         "kind": "assign"
       },
@@ -164,6 +173,15 @@
       "_GGUF_KNOWN_QUANT_RE": {
         "kind": "assign"
       },
+      "_GGUF_METADATA_LOGGED": {
+        "kind": "assign"
+      },
+      "_GGUF_METADATA_LOGGED_LOCK": {
+        "kind": "assign"
+      },
+      "_GGUF_METADATA_LOGGED_MAX": {
+        "kind": "assign"
+      },
       "_GGUF_REHEARSAL_ARGS_RE": {
         "kind": "assign"
       },
@@ -171,6 +189,9 @@
         "kind": "assign"
       },
       "_GPU_DEVICE_PREFIXES": {
+        "kind": "assign"
+      },
+      "_GPU_MODEL_BUFFER_RE": {
         "kind": "assign"
       },
       "_GPU_OFFLOAD_MARKERS": {
@@ -215,7 +236,13 @@
       "_LLAMA_ARG_TRUE_VALUES": {
         "kind": "assign"
       },
+      "_LLAMA_FIT_MIN_CTX": {
+        "kind": "assign"
+      },
       "_LLAMA_FIT_TARGET_DEFAULT_MIB": {
+        "kind": "assign"
+      },
+      "_LLAMA_RANDOM_SEED": {
         "kind": "assign"
       },
       "_LOADS_IN_FLIGHT": {
@@ -245,6 +272,9 @@
       "_MISS": {
         "kind": "assign"
       },
+      "_MLA_MTP_FAST_ARCHS": {
+        "kind": "assign"
+      },
       "_MMPROJ_OFFLOAD_ENV_VAR": {
         "kind": "assign"
       },
@@ -257,6 +287,9 @@
       "_MTP_MIN_SIZE_B": {
         "kind": "assign"
       },
+      "_MTP_SHARD_SUFFIX_RE": {
+        "kind": "assign"
+      },
       "_MTP_VRAM_RESERVE_FRAC": {
         "kind": "assign"
       },
@@ -264,6 +297,12 @@
         "kind": "assign"
       },
       "_OVERRIDE_TENSOR_FLAGS": {
+        "kind": "assign"
+      },
+      "_PAGEABLE_OVERRIDE_NOTE": {
+        "kind": "assign"
+      },
+      "_PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE": {
         "kind": "assign"
       },
       "_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR": {
@@ -341,6 +380,9 @@
       "_UNRECOVERABLE_LOCAL_ERRNOS": {
         "kind": "assign"
       },
+      "_UNSET": {
+        "kind": "assign"
+      },
       "_VALID_CACHE_TYPES": {
         "kind": "assign"
       },
@@ -356,6 +398,9 @@
       "_WINDOW_NOTICE_MARKER": {
         "kind": "assign"
       },
+      "_ZERO_ROOM_MARKER": {
+        "kind": "assign"
+      },
       "_accumulated_spec_types": {
         "kind": "def"
       },
@@ -368,7 +413,16 @@
       "_apply_igpu_host_reserve_mib": {
         "kind": "def"
       },
+      "_apply_seeded_llama_request": {
+        "kind": "def"
+      },
       "_arch_aliases": {
+        "kind": "def"
+      },
+      "_arch_has_fast_mla_mtp": {
+        "kind": "def"
+      },
+      "_arch_mtp_skips_target_kv_copy": {
         "kind": "def"
       },
       "_archive_and_recall": {
@@ -396,6 +450,9 @@
         "kind": "def"
       },
       "_backfill_usage_from_timings": {
+        "kind": "def"
+      },
+      "_boundary_metadata": {
         "kind": "def"
       },
       "_branch_boundary": {
@@ -446,6 +503,9 @@
       "_coerce_reasoning_effort": {
         "kind": "def"
       },
+      "_compaction_fit_kwargs": {
+        "kind": "def"
+      },
       "_companion_snapshot_sibling": {
         "kind": "def"
       },
@@ -468,6 +528,9 @@
         "kind": "def"
       },
       "_drafter_set_bytes": {
+        "kind": "def"
+      },
+      "_effective_headroom_ratio": {
         "kind": "def"
       },
       "_effective_main_cache_types": {
@@ -635,6 +698,9 @@
       "_hub_download_in_flight": {
         "kind": "def"
       },
+      "_idle_slot_clearing_active": {
+        "kind": "def"
+      },
       "_inject_recall": {
         "kind": "def"
       },
@@ -671,6 +737,9 @@
       "_is_positive_int": {
         "kind": "def"
       },
+      "_is_published_mtp_drafter_name": {
+        "kind": "def"
+      },
       "_is_rehearsal_prefix": {
         "kind": "def"
       },
@@ -698,6 +767,9 @@
       "_lib_dir_has_ggml_backend": {
         "kind": "def"
       },
+      "_linux_math_core_count": {
+        "kind": "def"
+      },
       "_llama_lib_dir": {
         "kind": "def"
       },
@@ -708,6 +780,9 @@
         "kind": "def"
       },
       "_memory_tool_withheld": {
+        "kind": "def"
+      },
+      "_metal_capable_host": {
         "kind": "def"
       },
       "_metal_device_is_paravirtual": {
@@ -723,6 +798,9 @@
         "kind": "def"
       },
       "_normalized_load_mode": {
+        "kind": "def"
+      },
+      "_note_gguf_metadata_read": {
         "kind": "def"
       },
       "_pad_kv_cells": {
@@ -755,6 +833,9 @@
       "_pick_mtp": {
         "kind": "def"
       },
+      "_pick_mtp_root_only": {
+        "kind": "def"
+      },
       "_pipeline_parallel_disabled_by_args": {
         "kind": "def"
       },
@@ -783,6 +864,9 @@
         "kind": "def"
       },
       "_report_live_llama_timings": {
+        "kind": "def"
+      },
+      "_request_uses_checkpoint": {
         "kind": "def"
       },
       "_resolve_llama_binary": {
@@ -836,10 +920,16 @@
       "_source_declares_option": {
         "kind": "def"
       },
+      "_spilled_decode_threads": {
+        "kind": "def"
+      },
       "_split_mode_confines_to_one_device": {
         "kind": "def"
       },
       "_sticky_compaction_boundary": {
+        "kind": "def"
+      },
+      "_sticky_compaction_state": {
         "kind": "def"
       },
       "_strip_flag_pairs": {
@@ -957,6 +1047,9 @@
       "_coerce_arguments_with_provenance": {
         "kind": "def"
       },
+      "_dense_message_tokens": {
+        "kind": "def"
+      },
       "_detect_render_html_tool_start": {
         "kind": "def"
       },
@@ -985,6 +1078,9 @@
         "kind": "def"
       },
       "_search_images_kwargs": {
+        "kind": "def"
+      },
+      "_spent_prompt_tokens": {
         "kind": "def"
       },
       "_status_for_tool": {
@@ -1352,6 +1448,9 @@
       "_LLAMA3_WS_RE": {
         "kind": "assign"
       },
+      "_MAX_GEMMA_PREFIX_TAIL": {
+        "kind": "assign"
+      },
       "_MISTRAL_ARGS_MARKER": {
         "kind": "assign"
       },
@@ -1451,7 +1550,7 @@
       "_first_sentinel": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, start: int"
+        "signature": "text: str, start: int, enabled_tool_names=None"
       },
       "_gemma_balanced_brace_end": {
         "decorators": [],
@@ -1513,6 +1612,11 @@
         "kind": "def",
         "signature": "text: str, found: int"
       },
+      "_last_bare_call_word": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
       "_leading_json_value_end": {
         "decorators": [],
         "kind": "def",
@@ -1527,6 +1631,12 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, enabled_tool_names: Optional[set]=None"
+      },
+      "_markerless_blocked_execution": {
+        "kind": "assign"
+      },
+      "_markerless_promotable": {
+        "kind": "assign"
       },
       "_mistral_region_end": {
         "decorators": [],
@@ -1603,6 +1713,16 @@
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
       },
+      "_partial_call_word_len": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_promotable_gemma_call_pos": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, enabled_tool_names"
+      },
       "_safe_cut": {
         "decorators": [],
         "kind": "def",
@@ -1671,15 +1791,35 @@
         "kind": "def",
         "signature": "content: str"
       },
+      "blocked_bare_json_chain_may_continue": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
+      },
+      "blocked_gemma_chain_may_continue": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
+      },
       "continue_after_length_message": {
         "decorators": [],
         "kind": "def",
         "signature": ""
       },
+      "gemma_tail_may_hide_a_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "tail: str, enabled_tool_names: Optional[set]"
+      },
       "has_tool_signal": {
         "decorators": [],
         "kind": "def",
         "signature": "text: str"
+      },
+      "held_bare_gemma_tail_len": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
       },
       "is_reprompt_repeat": {
         "decorators": [],
@@ -1696,10 +1836,25 @@
         "kind": "def",
         "signature": "text: str"
       },
+      "leading_bare_gemma_call_is_promotable": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "stripped: str, enabled_tool_names"
+      },
+      "leading_blocked_bare_json_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
+      },
       "parse_tool_calls_from_text": {
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int=0, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
+      },
+      "promotable_gemma_call_pos": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names, start: int=0"
       },
       "reasoning_cap_spent_message": {
         "decorators": [],
@@ -1834,6 +1989,9 @@
       "re.search('<tool_call>\\\\s*$', content[:span_start])": 1
     },
     "symbols": {
+      "EXECUTION_CLASS_TOOL_NAMES": {
+        "kind": "assign"
+      },
       "_BRACKETED_JSON_ONE_LEVEL": {
         "kind": "assign"
       },
@@ -1850,6 +2008,9 @@
         "kind": "assign"
       },
       "_MAX_BRACKET_SCAN_CHARS": {
+        "kind": "assign"
+      },
+      "_MCP_TOOL_PREFIX": {
         "kind": "assign"
       },
       "_MISTRAL_ARRAY_RE": {
@@ -1994,6 +2155,16 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, markers"
+      },
+      "_markerless_blocked_execution": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name, enabled_tool_names"
+      },
+      "_markerless_promotable": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name, enabled_tool_names"
       },
       "_normalise_gemma_quoted_strings": {
         "decorators": [],

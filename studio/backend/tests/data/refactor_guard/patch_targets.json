@@ -29,9 +29,21 @@
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py"
   ],
   "core.inference.chat_template_helpers.detect_think_prefill": [
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py"
@@ -40,7 +52,15 @@
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py"
+  ],
+  "core.inference.checkpoint.enabled": [
+    "tests/test_checkpoint_compaction.py",
+    "tests/test_checkpoint_compaction.py",
+    "tests/test_checkpoint_compaction.py",
+    "tests/test_checkpoint_compaction.py"
   ],
   "core.inference.defaults.get_default_models": [
     "tests/test_warm_window_review_fixes.py",
@@ -161,6 +181,7 @@
     "tests/test_gguf_variant_dependency_key.py"
   ],
   "core.inference.diffusion_engine_router.get_active_diffusion_engine": [
+    "tests/test_chat_load_during_training.py",
     "tests/test_diffusion_training.py"
   ],
   "core.inference.diffusion_families._upstream_is_cached": [
@@ -213,6 +234,9 @@
     "tests/test_training_cached_start.py",
     "tests/test_training_cached_start.py",
     "tests/test_training_raw_support.py"
+  ],
+  "core.inference.gpu_arbiter.owner_snapshot": [
+    "tests/test_chat_load_during_training.py"
   ],
   "core.inference.llama_cpp.LlamaCppBackend._is_vulkan_backend": [
     "tests/test_gpu_selection.py",
@@ -338,6 +362,41 @@
     "tests/test_diffusion_training.py",
     "tests/test_diffusion_training.py"
   ],
+  "core.inference.local_model_resolver.local_load_dir": [
+    "tests/test_openai_models_servable_cache.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py"
+  ],
+  "core.inference.local_model_resolver.local_servable_model": [
+    "tests/test_openai_models_servable_cache.py",
+    "tests/test_openai_models_servable_cache.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py",
+    "tests/test_openai_models_servable_cache_edges.py"
+  ],
   "core.inference.local_model_resolver.resolve_local_gguf": [
     "tests/test_openai_auto_download.py",
     "tests/test_openai_auto_download.py",
@@ -348,6 +407,30 @@
     "tests/test_openai_auto_download.py",
     "tests/test_openai_auto_download.py",
     "tests/test_openai_auto_download.py"
+  ],
+  "core.inference.mlx_inference._temporary_mlx_adapter_state": [
+    "tests/test_mlx_inference_backend.py"
+  ],
+  "core.inference.native_audio._higgs_tts3_codec_target": [
+    "tests/test_native_audio.py"
+  ],
+  "core.inference.native_audio._moss_transformers5_config_compat": [
+    "tests/test_native_audio.py"
+  ],
+  "core.inference.native_audio._native_audio_file_is_cached": [
+    "tests/test_native_audio.py",
+    "tests/test_native_audio.py",
+    "tests/test_native_audio.py"
+  ],
+  "core.inference.native_audio._read_audio_metadata": [
+    "tests/test_native_audio.py"
+  ],
+  "core.inference.native_audio.native_audio_security_targets": [
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py"
+  ],
+  "core.inference.native_audio.sys.version_info": [
+    "tests/test_native_audio.py"
   ],
   "core.inference.orchestrator.prepare_gpu_selection": [
     "tests/test_gpu_selection.py",
@@ -531,6 +614,12 @@
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
@@ -539,7 +628,12 @@
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
-    "tests/test_tool_output_streaming.py"
+    "tests/test_no_progress_tool_results.py",
+    "tests/test_no_progress_tool_results.py",
+    "tests/test_no_progress_tool_results.py",
+    "tests/test_no_progress_tool_results.py",
+    "tests/test_tool_output_streaming.py",
+    "tests/test_truncated_answer_continuation.py"
   ],
   "core.inference.tools.get_enabled_mcp_tools": [
     "tests/test_external_hosted_tool_passthrough.py",
@@ -940,7 +1034,9 @@
     "tests/test_cached_gguf_routes.py",
     "tests/test_cached_gguf_routes.py",
     "tests/test_cached_gguf_routes.py",
+    "tests/test_local_model_format.py",
     "tests/test_mtp_drafter_companion.py",
+    "tests/test_openai_auto_switch.py",
     "tests/test_openai_auto_switch.py"
   ],
   "storage.studio_db.mark_run_cancel_requested": [
@@ -1003,6 +1099,7 @@
     "tests/test_chat_load_during_training.py",
     "tests/test_chat_load_during_training.py",
     "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
     "tests/test_training_vram_coexistence.py",
     "tests/test_training_vram_coexistence.py",
     "tests/test_training_vram_coexistence.py"
@@ -1025,6 +1122,9 @@
     "tests/test_chat_load_during_training.py",
     "tests/test_chat_load_during_training.py",
     "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
     "tests/test_training_vram_coexistence.py",
@@ -1039,6 +1139,8 @@
     "tests/test_chat_load_during_training.py",
     "tests/test_chat_load_during_training.py",
     "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
     "tests/test_training_vram_coexistence.py"
   ],
   "utils.hardware.hardware.DEVICE": [
@@ -1048,6 +1150,11 @@
   ],
   "utils.hardware.hardware.IS_ROCM": [
     "tests/test_memory_estimate_platforms.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py",
     "tests/test_utils.py"
   ],
   "utils.hardware.hardware._context_free_cuda_memory_info": [
@@ -1159,7 +1266,9 @@
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
-    "tests/test_gpu_selection.py"
+    "tests/test_gpu_selection.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py"
   ],
   "utils.hardware.hardware.get_device": [
     "tests/test_gpu_selection.py",
@@ -1185,6 +1294,16 @@
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py",
     "tests/test_utils.py",
     "tests/test_utils.py",
     "tests/test_utils.py",
@@ -1205,7 +1324,9 @@
   "utils.hardware.hardware.get_parent_visible_gpu_ids": [
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
-    "tests/test_gpu_selection.py"
+    "tests/test_gpu_selection.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py"
   ],
   "utils.hardware.hardware.get_physical_gpu_count": [
     "tests/test_gpu_selection.py",
@@ -1220,7 +1341,11 @@
     "tests/test_gpu_selection_sandbox.py",
     "tests/test_gpu_selection_sandbox.py",
     "tests/test_gpu_selection_sandbox.py",
-    "tests/test_gpu_selection_sandbox.py"
+    "tests/test_gpu_selection_sandbox.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py"
   ],
   "utils.hardware.hardware.get_visible_gpu_count": [
     "tests/test_gpu_selection.py",
@@ -1231,7 +1356,9 @@
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
-    "tests/test_gpu_selection.py"
+    "tests/test_gpu_selection.py",
+    "tests/test_training_gpu_arch_gate.py",
+    "tests/test_training_gpu_arch_gate.py"
   ],
   "utils.hardware.hardware.is_apple_silicon": [
     "tests/test_utils.py",
@@ -1247,6 +1374,9 @@
   "utils.hardware.hardware.resolve_requested_gpu_ids": [
     "tests/test_gpu_selection.py"
   ],
+  "utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels": [
+    "tests/test_training_gpu_arch_gate.py"
+  ],
   "utils.hardware.hardware.trusted_mem_get_info": [
     "tests/test_utils.py",
     "tests/test_utils.py",
@@ -1259,7 +1389,12 @@
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py"
   ],
+  "utils.hardware.prepare_gpu_selection": [
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py"
+  ],
   "utils.hardware.resolve_requested_gpu_ids": [
+    "tests/test_chat_load_during_training.py",
     "tests/test_chat_load_during_training.py",
     "tests/test_chat_load_during_training.py",
     "tests/test_gpu_selection.py",
@@ -1273,6 +1408,9 @@
   "utils.hf_cache_settings.active_hf_hub_cache": [
     "tests/test_chat_load_during_training.py",
     "tests/test_chat_load_during_training.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
     "tests/test_diffusion_backend.py",
     "tests/test_rag_embeddings.py",
     "tests/test_rag_embeddings.py",
@@ -1309,6 +1447,7 @@
     "tests/test_hf_cache_dangling_refs.py",
     "tests/test_hf_cache_dangling_refs.py",
     "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
     "tests/test_model_update_robustness.py",
     "tests/test_model_update_robustness.py",
     "tests/test_offline_embedding_minimal.py",
@@ -1328,6 +1467,9 @@
     "tests/test_models_get_model_config_case_resolution.py",
     "tests/test_models_get_model_config_case_resolution.py",
     "tests/test_resolve_quant_gguf.py"
+  ],
+  "utils.hf_probe.hf_file_definitely_absent": [
+    "tests/test_hub_token_caller_identity.py"
   ],
   "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback": [
     "tests/test_diffusion_backend.py",
@@ -1361,6 +1503,7 @@
   ],
   "utils.models.gguf_metadata.read_gguf_context_length": [
     "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
     "tests/test_cached_gguf_routes.py"
   ],
   "utils.models.model_config._env_offline": [
@@ -1393,6 +1536,8 @@
     "tests/test_cached_gguf_routes.py"
   ],
   "utils.models.model_config._iter_hf_cache_snapshots": [
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
     "tests/test_mtp_drafter_companion.py",
     "tests/test_mtp_drafter_companion.py",
     "tests/test_mtp_drafter_companion.py",
@@ -1517,6 +1662,9 @@
   ],
   "utils.paths.outputs_root": [
     "tests/test_export_size_estimate.py"
+  ],
+  "utils.paths.path_utils.file_contents_available_locally": [
+    "tests/test_cached_gguf_routes.py"
   ],
   "utils.paths.resolve_cached_repo_id_case": [
     "tests/test_offline_gguf_cache_fallback.py",
@@ -1767,6 +1915,8 @@
     "tests/test_offline_gguf_cache_fallback.py"
   ],
   "utils.utils.hf_env_offline": [
+    "tests/test_hub_token_caller_identity.py",
+    "tests/test_hub_token_caller_identity.py",
     "tests/test_training_cached_start.py",
     "tests/test_training_cached_start.py",
     "tests/test_training_cached_start.py"

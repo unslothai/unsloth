@@ -898,6 +898,172 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     assert render["kwargs"]["preserve_thinking"] is True
 
 
+def test_mlx_tool_turn_preserves_native_gemma_special_token_ids(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = None,
+        ),
+        raising = True,
+    )
+
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kwargs: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
+
+    token_ids = (1, 2, 3, 4, 3, 5, 6, 7)
+
+    def _stream_generate(_model, _tokenizer, **_kwargs):
+        for token_id in token_ids:
+            yield SimpleNamespace(token = token_id)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _Tokenizer:
+        chat_template = "x"
+        all_special_ids = [1, 3, 6, 7]
+        all_special_tokens = ["<|tool_call>", '<|"|>', "<tool_call|>", "<eos>"]
+        pieces = {
+            1: "<|tool_call>",
+            2: "call:terminal{command:",
+            3: '<|"|>',
+            4: "id",
+            5: "}",
+            6: "<tool_call|>",
+            7: "<eos>",
+        }
+
+        def convert_ids_to_tokens(self, token_id):
+            return self.pieces[token_id]
+
+        def decode(
+            self,
+            ids,
+            *,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            special = set(self.all_special_ids) if skip_special_tokens else set()
+            return "".join(
+                self.pieces[int(token_id)] for token_id in ids if token_id not in special
+            )
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tokenizer()
+    backend._is_vlm = False
+
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            max_new_tokens = len(token_ids),
+        )
+    )
+    assert snapshots[-1] == '<|tool_call>call:terminal{command:<|"|>id<|"|>}<tool_call|>'
+    calls = parse_tool_calls_from_text(snapshots[-1], enabled_tool_names = {"terminal"})
+    assert [call["function"]["name"] for call in calls] == ["terminal"]
+
+
+def test_mlx_reasoning_tool_turn_filters_special_ids_by_provenance(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = ("<|channel>thought", "<channel|>"),
+        ),
+        raising = True,
+    )
+
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kwargs: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
+
+    pieces = {
+        1: "<|channel>",
+        2: "thought\n",
+        3: "reasoned",
+        4: "<channel|>",
+        5: "<|tool_call>",
+        6: "call:terminal{command:id}",
+        7: "<tool_call|>",
+        8: "<eos>",
+    }
+    special_ids = {1, 4, 5, 7, 8}
+
+    def _stream_generate(_model, _tokenizer, **_kwargs):
+        for token_id, piece in pieces.items():
+            # Special-token text is deliberately wrong: production must trust
+            # response.token provenance and decode that id itself.
+            text = "untrusted-special-text" if token_id in special_ids else piece
+            yield SimpleNamespace(token = token_id, text = text)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _Tokenizer:
+        chat_template = "x"
+        all_special_ids = list(special_ids)
+        all_special_tokens = [pieces[token_id] for token_id in special_ids]
+
+        def convert_ids_to_tokens(self, token_id):
+            return pieces[token_id]
+
+        def decode(
+            self,
+            ids,
+            *,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            skipped = special_ids if skip_special_tokens else set()
+            return "".join(pieces[int(token_id)] for token_id in ids if token_id not in skipped)
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tokenizer()
+    backend._is_vlm = False
+
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            max_new_tokens = len(pieces),
+        )
+    )
+    assert snapshots[-1] == (
+        "<think>reasoned</think><|tool_call>call:terminal{command:id}<tool_call|>"
+    )
+    assert "<eos>" not in snapshots[-1]
+    assert "untrusted-special-text" not in snapshots[-1]
+    calls = parse_tool_calls_from_text(snapshots[-1], enabled_tool_names = {"terminal"})
+    assert [call["function"]["name"] for call in calls] == ["terminal"]
+
+
 def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatch):
     _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -4094,3 +4260,413 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     guard = body.index("async with mcp_server_snapshot_guard():")
     snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
+    """mlx-vlm's ``response.text`` has already dropped the native tool controls. Without recovering
+    them the wrapper never reaches the parser, so a genuine
+    ``<|tool_call>call:terminal{..}<tool_call|>`` arrives markerless and the execution guard
+    refuses it. Text-only requests on a model classified as a VLM use this route too."""
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+
+    class _Tok:
+        # 7/8 are the Gemma wrapper; mlx-vlm reports them as empty text.
+        _IDS = {7: "<|tool_call>", 8: "<tool_call|>", 9: "<eos>"}
+        all_special_ids = tuple(_IDS)
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_k,
+        ):
+            return "".join(
+                self._IDS.get(i, "")
+                for i in token_ids
+                if not (skip_special_tokens and i in self.all_special_ids)
+            )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        for token_id, text in (
+            (7, ""),
+            (None, 'call:terminal{command:"id"}'),
+            (8, ""),
+        ):
+            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = _Tok())
+    backend._tokenizer = _Tok()
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+
+    snapshots = list(
+        backend._generate_vlm(
+            *args,
+            _adapter_state = False,
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+        )
+    )
+    assert snapshots[-1] == '<|tool_call>call:terminal{command:"id"}<tool_call|>'
+
+
+def test_mlx_drops_a_trailing_stop_token_from_the_preserved_decode(monkeypatch):
+    """``skip_special_tokens`` used to swallow the stop id; the decoder keeps controls. Some
+    runtimes stop on an allowlisted one (TML Inkling's ``<|end_message|>``), so without filtering
+    it an ordinary answer is delivered with the protocol marker appended."""
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    class _Tok:
+        _IDS = {5: "<|end_message|>"}
+        all_special_ids = (5,)
+        eos_token_id = 5
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            return "".join(
+                ""
+                if (skip_special_tokens and i in self.all_special_ids)
+                else self._IDS.get(i, chr(i))
+                for i in token_ids
+            )
+
+    tok = _Tok()
+    decoder = mlx_inference.NativeToolTokenDecoder(tok)
+    stop_ids = mlx_inference._mlx_stop_token_ids(tok, None)
+    assert 5 in stop_ids, stop_ids
+
+    ids = [ord("h"), ord("i"), 5]
+    assert decoder.decode(ids) == "hi<|end_message|>"
+    trimmed = ids[:-1] if ids[-1] in stop_ids else ids
+    assert decoder.decode(trimmed) == "hi"
+    # The marker still survives when it is not the turn's final token.
+    assert decoder.decode([ord("h"), 5, ord("i")]) == "h<|end_message|>i"
+
+
+def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
+    """The VLM path appends each decoded token straight into the snapshot. So an allowlisted control
+    used as the runtime EOS would trail every ordinary answer; ``_generate_text`` drops it at its
+    final re-decode and this route needs the same."""
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+
+    class _Tok:
+        _IDS = {5: "<|end_message|>"}
+        all_special_ids = (5,)
+        eos_token_id = 5
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            return "".join(
+                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
+                for i in token_ids
+            )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        for token_id, text in ((None, "hi"), (5, "")):
+            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = _Tok())
+    backend._tokenizer = _Tok()
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+
+    snapshots = list(
+        backend._generate_vlm(
+            *args,
+            _adapter_state = False,
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+        )
+    )
+    assert snapshots[-1] == "hi"
+
+
+def test_mlx_vlm_keeps_a_stop_token_that_closes_a_tool_envelope(monkeypatch):
+    """The suppression is for a turn with NO tool markup. TML Inkling uses ``<|end_message|>`` both
+    as the required close for ``<|content_invoke_tool_json|>`` and as a possible EOS, and strict
+    parsing rejects the call without it, so blanking it unconditionally loses a complete call."""
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+
+    class _Tok:
+        _IDS = {5: "<|end_message|>"}
+        all_special_ids = (5,)
+        eos_token_id = 5
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            return "".join(
+                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
+                for i in token_ids
+            )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    envelope = '<|content_invoke_tool_json|>{"name": "get_weather", "args": {}}'
+
+    def _vlm_stream(*_a, **_k):
+        for token_id, text in ((None, envelope), (5, "")):
+            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = _Tok())
+    backend._tokenizer = _Tok()
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+
+    snapshots = list(
+        backend._generate_vlm(
+            *args,
+            _adapter_state = False,
+            tools = [{"type": "function", "function": {"name": "get_weather"}}],
+        )
+    )
+    assert snapshots[-1] == envelope + "<|end_message|>"
+
+
+def test_mlx_vlm_drops_an_orphan_closer_that_opened_nothing(monkeypatch):
+    """ "the turn mentions a marker" is not enough to keep a closer. An ordinary answer that merely
+    writes ``[ARGS]`` opened no envelope, so a trailing ``<|end_message|>`` is orphan markup and
+    must not reach the user."""
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+
+    class _Tok:
+        _IDS = {5: "<|end_message|>"}
+        all_special_ids = (5,)
+        eos_token_id = 5
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            return "".join(
+                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
+                for i in token_ids
+            )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        for token_id, text in ((None, "The [ARGS] marker is neat"), (5, "")):
+            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = _Tok())
+    backend._tokenizer = _Tok()
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+
+    snapshots = list(
+        backend._generate_vlm(
+            *args,
+            _adapter_state = False,
+            tools = [{"type": "function", "function": {"name": "get_weather"}}],
+        )
+    )
+    assert snapshots[-1] == "The [ARGS] marker is neat"
+
+
+def test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn(monkeypatch):
+    """The VLM decoder drops every special id outside its preserved set. A turn that combines tools
+    with a native reasoning protocol therefore loses the delimiters
+    ``normalize_reasoning_snapshots`` is waiting for, and the thought is emitted as ordinary
+    answer text. The text path already passes the protocol's controls."""
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+
+    class _Tok:
+        # The delimiters are special-token ids, as they are in the real vocabulary.
+        _IDS = {1: "<|channel>", 2: "<channel|>", 9: "<eos>"}
+        all_special_ids = (1, 2, 9)
+        eos_token_id = 9
+        chat_template = "...<|channel>thought\n...<channel|>"
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            return "".join(
+                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
+                for i in token_ids
+            )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        for token_id, text in (
+            (1, "<|channel>"),
+            (None, "thought\n"),
+            (None, "weighing it"),
+            (2, "<channel|>"),
+            (None, " the answer"),
+        ):
+            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = _Tok(), chat_template = _Tok.chat_template)
+    backend._tokenizer = _Tok()
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 8, 1, None)
+
+    snapshots = list(
+        backend._generate_vlm(
+            *args,
+            _adapter_state = False,
+            tools = [{"type": "function", "function": {"name": "get_weather"}}],
+        )
+    )
+    # The thought is a closed reasoning block, not answer text.
+    assert snapshots[-1] == "<think>weighing it</think> the answer"

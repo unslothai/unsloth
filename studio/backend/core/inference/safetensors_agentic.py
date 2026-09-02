@@ -25,8 +25,12 @@ from loggers import get_logger
 
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
-    _GEMMA_BARE_TC_RE,
     _balanced_brace_end,
+    blocked_bare_json_chain_may_continue,
+    blocked_gemma_chain_may_continue,
+    held_bare_gemma_tail_len,
+    leading_bare_gemma_call_is_promotable,
+    promotable_gemma_call_pos,
     _strip_mistral_reasoning,
     strip_segment as _parser_strip_segment,
     BUDGET_EXHAUSTED_NUDGE,
@@ -47,6 +51,8 @@ from core.inference.tool_call_parser import (
 )
 
 from core.tool_healing import (
+    EXECUTION_CLASS_TOOL_NAMES,
+    _markerless_promotable,
     _THINK_CLOSE_RE,
     _think_spans_outside_tool_markup,
     strip_outside_think,
@@ -115,12 +121,23 @@ def _is_rehearsal_prefix(
 ) -> bool:
     """True if ``stripped`` is a (possibly partial) prefix of a ``NAME[ARGS]``
     rehearsal split across chunks (``web_search`` then ``[ARGS]{...}``). A space
-    means prose. Unrestricted mode accepts any identifier; else NAME must be active."""
+    means prose. Unrestricted mode accepts any identifier; else NAME must be active.
+    Either way NAME must be markerless-promotable, so a bare execution-class name the
+    parser will never promote streams as prose instead of being held."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     if unrestricted:
-        return _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is not None
+        if _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is None:
+            return False
+        name, bracket, _ = stripped.partition("[")
+        # Until the ``[`` lands the name is still open: ``terminal`` may yet become
+        # ``terminal_logs``, which IS promotable. Hold it and decide once the shape settles.
+        return not bracket or _markerless_promotable(name, None)
     for name in _active_tool_names(active_tools):
+        # Active by construction, so only the class is left, and it must stay an O(1) test:
+        # this loop runs per streamed chunk over the whole catalog.
+        if name in EXECUTION_CLASS_TOOL_NAMES:
+            continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True
     return False
@@ -134,15 +151,24 @@ def _held_rehearsal_tail_len(
 ) -> int:
     """Length of a trailing bare tool-name token that may be a split rehearsal call
     (``...web_search`` with ``[ARGS]{...}`` still to arrive), so STREAMING can hold it
-    instead of leaking the name. Returns 0 for ordinary prose."""
+    instead of leaking the name. Returns 0 for ordinary prose.
+
+    A trailing bare-Gemma ``call:NAME{..`` is held on the same footing: the signal scan only
+    sees it once its ``{`` arrives, so the prefix would otherwise stream ahead of the call."""
     i = len(text)
     while i > 0 and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
-    return (
+    held = (
         len(tail)
         if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
         else 0
+    )
+    return max(
+        held,
+        held_bare_gemma_tail_len(
+            text, lambda: None if unrestricted else _active_tool_names(active_tools)
+        ),
     )
 
 
@@ -155,14 +181,16 @@ def _rehearsal_name_start(
 ) -> int:
     """For an ``[ARGS]`` signal at ``signal_pos``, return the start of the preceding
     bare tool-name token (``NAME[ARGS]``), else ``signal_pos`` unchanged when the
-    signal is not ``[ARGS]`` or NAME is not an active tool (restricted mode)."""
+    signal is not ``[ARGS]`` or NAME is not markerless-promotable -- not an active tool
+    (restricted mode), or execution-class, which the parser never promotes from a bare
+    span, so draining on it would withhold the turn for a call that never comes."""
     if not candidate.startswith("[ARGS]", signal_pos):
         return signal_pos
     j = signal_pos
     while j > 0 and (candidate[j - 1].isalnum() or candidate[j - 1] in "_-"):
         j -= 1
-    if j < signal_pos and (
-        unrestricted or candidate[j:signal_pos] in _active_tool_names(active_tools)
+    if j < signal_pos and _markerless_promotable(
+        candidate[j:signal_pos], None if unrestricted else _active_tool_names(active_tools)
     ):
         return j
     return signal_pos
@@ -204,6 +232,13 @@ def _earliest_tool_signal(
                 break
             # Bare/prose [ARGS]: skip it so a later real call in the same chunk is still found.
             from_idx = p + len("[ARGS]")
+    # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
+    # mid-prose one has to be a boundary too.
+    gemma = promotable_gemma_call_pos(
+        candidate, None if unrestricted else _active_tool_names(active_tools), start
+    )
+    if gemma >= 0 and (best < 0 or gemma < best):
+        best = gemma
     return best
 
 
@@ -943,11 +978,22 @@ def run_safetensors_tool_loop(
                     # Closed object that parses as a bare-JSON call -- drain silently.
                     detect_state = _state_draining
                     continue
+                elif blocked_bare_json_chain_may_continue(content_buffer, _enabled_tool_names):
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue
+                    # The chain outgrew the bounded private buffer: fail closed rather than
+                    # stream content a later peer could make executable.
+                    detect_state = _state_draining
+                    continue
                 # Closed non-call object (or oversized non-call) -- stream as text.
 
             # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
             # buffer it here or it streams raw until the end-of-turn safety net.
             # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-tolerant.
+            # The completed shape takes the parser's gate, so a name it will not promote
+            # streams instead of draining the turn.
+            _gemma_lead = leading_bare_gemma_call_is_promotable(stripped, _enabled_tool_names)
+            _gemma_chain = blocked_gemma_chain_may_continue(stripped, _enabled_tool_names)
             if (
                 not is_match
                 and not is_prefix
@@ -955,10 +1001,26 @@ def run_safetensors_tool_loop(
                 and (
                     "call:".startswith(stripped)
                     or _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None
-                    or _GEMMA_BARE_TC_RE.match(stripped) is not None
+                    or _gemma_lead
+                    or _gemma_chain
                 )
             ):
-                if _GEMMA_BARE_TC_RE.match(stripped):
+                if _gemma_lead:
+                    detect_state = _state_draining
+                    continue
+                if _gemma_chain:
+                    # A promotable peer behind a blocked call must not stream before the
+                    # end-of-turn parser promotes it.
+                    if parse_tool_calls_from_text(
+                        stripped,
+                        id_offset = next_call_id,
+                        allow_incomplete = auto_heal_tool_calls,
+                        enabled_tool_names = _enabled_tool_names,
+                    ):
+                        detect_state = _state_draining
+                        continue
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue
                     detect_state = _state_draining
                     continue
                 # A ``call:`` / ``call:partial_name`` prefix with no ``{`` yet: keep

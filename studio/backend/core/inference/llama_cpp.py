@@ -385,8 +385,13 @@ def _fit_with_instruction_pins(
 # catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
-    _GEMMA_BARE_TC_RE,
     _balanced_brace_end,
+    blocked_bare_json_chain_may_continue,
+    blocked_gemma_chain_may_continue,
+    held_bare_gemma_tail_len,
+    leading_blocked_bare_json_end,
+    leading_bare_gemma_call_is_promotable,
+    promotable_gemma_call_pos,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -396,6 +401,10 @@ from core.inference.tool_call_parser import (
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
+)
+from core.tool_healing import (
+    EXECUTION_CLASS_TOOL_NAMES,
+    _markerless_promotable,
 )
 
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -1722,14 +1731,15 @@ _GGUF_REHEARSAL_ARGS_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]")
 
 
 def _gguf_rehearsal_signal_pos(text: str, active_tools: list[dict]) -> int:
-    """Index of the first ``NAME[ARGS]`` whose NAME is an active tool, else -1. A
-    bare/inactive-name ``foo[ARGS]`` in prose is not a call; mirrors the safetensors
-    ``_earliest_tool_signal`` name-gating (no unrestricted GGUF mode)."""
+    """Index of the first ``NAME[ARGS]`` whose NAME is markerless-promotable, else -1. A
+    bare/inactive-name ``foo[ARGS]`` in prose is not a call, and neither is an
+    execution-class ``terminal[ARGS]`` the parser refuses to promote from a bare span;
+    mirrors the safetensors ``_earliest_tool_signal`` gating (no unrestricted GGUF mode)."""
     active = set(_gguf_active_tool_names(active_tools))
     if not active:
         return -1
     for m in _GGUF_REHEARSAL_ARGS_RE.finditer(text):
-        if m.group(1) in active:
+        if _markerless_promotable(m.group(1), active):
             return m.start()
     return -1
 
@@ -1747,7 +1757,9 @@ def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) 
             continue
         if sig in text:
             return True
-    return False
+    # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
+    # mid-prose one is a boundary too.
+    return promotable_gemma_call_pos(text, set(_gguf_active_tool_names(active_tools))) >= 0
 
 
 _TEXT_TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w.\-]+)"')
@@ -1758,26 +1770,40 @@ _TEXT_TOOL_REHEARSAL_RE = re.compile(r"\s*([\w.\-]+)\s*\[ARGS\]")
 def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     """Best-effort tool name from a partially drained TEXT tool call, gated on
     enabled names so prose can never spawn a card. Used only to open the live
-    argument pane early; the authoritative parse still happens at stream end."""
+    argument pane early; the authoritative parse still happens at stream end.
+
+    The two anchored arms only match a MARKERLESS leading call (a wrapper pushes the shape
+    off position 0), so they take the parser's gate: a card for a bare ``call:terminal{``
+    would show a terminal call that never runs. The ``"name":`` arm searches the whole prefix
+    and also sees a trusted ``[TOOL_CALLS][{"name":"terminal",..}]``, and the markerless
+    bare-JSON form cannot reach it -- ``strip_leading_bare_json_call`` refuses to drain it."""
+    # A blocked leading object will NOT run, so naming the card after it gives the client a
+    # terminal card that the real web_search call then reuses by id.
+    text = text[leading_blocked_bare_json_end(text, enabled_names) :]
     m = _TEXT_TOOL_NAME_RE.search(text[:4096])
     if m and m.group(1) in enabled_names:
         return m.group(1)
     m = _TEXT_TOOL_GEMMA_RE.match(text[:256])
-    if m and m.group(1) in enabled_names:
+    if m and _markerless_promotable(m.group(1), enabled_names):
         return m.group(1)
     m = _TEXT_TOOL_REHEARSAL_RE.match(text[:256])
-    if m and m.group(1) in enabled_names:
+    if m and _markerless_promotable(m.group(1), enabled_names):
         return m.group(1)
     return ""
 
 
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
-    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
-    active tool -- the bare tool name arriving in its own chunk before ``[ARGS]{...}``.
-    Mirrors the safetensors loop so the split rehearsal call is not streamed."""
+    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for a
+    markerless-promotable tool -- the bare tool name arriving in its own chunk before
+    ``[ARGS]{...}``. An execution-class name is prose here, so it streams rather than being
+    held. Mirrors the safetensors loop so the split rehearsal is not leaked."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     for name in _gguf_active_tool_names(active_tools):
+        # Active by construction, so only the class is left, and it must stay an O(1) test:
+        # this loop runs per streamed chunk over the whole catalog.
+        if name in EXECUTION_CLASS_TOOL_NAMES:
+            continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True
     return False
@@ -1786,12 +1812,16 @@ def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
 def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Length of a trailing bare tool-name token that may be a split rehearsal call
     (``...web_search`` with ``[ARGS]{...}`` still to arrive), so STREAMING can hold it
-    instead of leaking the name. Returns 0 for ordinary prose. Mirrors safetensors."""
+    instead of leaking the name. Returns 0 for ordinary prose. Mirrors safetensors, including
+    the trailing bare-Gemma ``call:NAME{..`` the signal scan cannot see until its ``{``."""
     i = len(text)
     while i > 0 and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
-    return len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
+    held = len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
+    return max(
+        held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
+    )
 
 
 def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:
@@ -28221,6 +28251,10 @@ class LlamaCppBackend:
         # names stay visible). Set per iteration; None = pre-loop name-agnostic.
         _enabled_tool_names = None
 
+        def _gemma_lead_promotable(text: str) -> bool:
+            # Reads _enabled_tool_names at call time: it is rebound each tool iteration.
+            return leading_bare_gemma_call_is_promotable(text, _enabled_tool_names)
+
         def _strip_tool_markup(
             text: str,
             *,
@@ -29426,15 +29460,44 @@ class LlamaCppBackend:
                                                     enabled_tool_names = _enabled_tool_names,
                                                 ):
                                                     _drain_silently = True
+                                                elif blocked_bare_json_chain_may_continue(
+                                                    content_buffer, _enabled_tool_names
+                                                ):
+                                                    if len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    else:
+                                                        # Bound the private buffer and fail
+                                                        # closed instead of exposing text a
+                                                        # later peer could make executable.
+                                                        _drain_silently = True
                                             elif (
                                                 "call:".startswith(stripped_buf)
                                                 or _GEMMA_BARE_TC_PREFIX_RE.match(stripped_buf)
                                                 is not None
-                                                or _GEMMA_BARE_TC_RE.match(stripped_buf) is not None
+                                                or _gemma_lead_promotable(stripped_buf)
+                                                or blocked_gemma_chain_may_continue(
+                                                    stripped_buf, _enabled_tool_names
+                                                )
                                             ):
-                                                # Whitespace-tolerant like the parser.
-                                                if _GEMMA_BARE_TC_RE.match(stripped_buf):
+                                                # Whitespace-tolerant like the parser, and on
+                                                # its gate: a rejected name streams as prose.
+                                                if _gemma_lead_promotable(stripped_buf):
                                                     _drain_silently = True
+                                                elif blocked_gemma_chain_may_continue(
+                                                    stripped_buf, _enabled_tool_names
+                                                ):
+                                                    # A promotable peer behind a blocked call
+                                                    # must not stream before promotion.
+                                                    if self._parse_tool_calls_from_text(
+                                                        content_buffer,
+                                                        allow_incomplete = auto_heal_tool_calls,
+                                                        enabled_tool_names = _enabled_tool_names,
+                                                    ):
+                                                        _drain_silently = True
+                                                    elif len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    else:
+                                                        _drain_silently = True
                                                 elif len(stripped_buf) < _MAX_BUFFER_CHARS:
                                                     _hold_buffer = True
 

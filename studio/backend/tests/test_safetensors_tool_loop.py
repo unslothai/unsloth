@@ -304,20 +304,22 @@ class TestParser:
         assert result == []
 
     def test_rehearsal_after_closed_think_still_parsed(self):
-        text = '<think>planning</think>python[ARGS]{"code":"print(1)"}'
+        text = '<think>planning</think>web_search[ARGS]{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "web_search"
 
     def test_rehearsal_inside_prefilled_think_is_ignored(self):
         """Reasoning models (Qwen3.5 enable_thinking) open <think> in the PROMPT,
         so generated content starts inside the thought and carries only a closing
         </think>. A call rehearsed in that leading thought must be skipped, while a
         real call after the close still fires."""
-        text = 'planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}'
+        text = (
+            'planning web_search[ARGS]{"query":"draft"}</think>get_weather[ARGS]{"code":"print(1)"}'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "get_weather"
 
     def test_literal_close_think_in_leading_argument_not_prefill(self):
         """A </think> literal inside a real leading call's arguments must not be
@@ -378,17 +380,17 @@ class TestParser:
     # Rehearsal syntax name[ARGS]{json}.
 
     def test_rehearsal_basic(self):
-        text = 'python[ARGS]{"code":"print(1)"}'
+        text = 'web_search[ARGS]{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "web_search"
         assert "print(1)" in result[0]["function"]["arguments"]
 
     def test_rehearsal_with_prose(self):
-        text = 'I should call the python tool. Like this: python[ARGS]{"code":"x = 1"}'
+        text = 'I should call the web_search tool. Like this: web_search[ARGS]{"code":"x = 1"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "web_search"
 
     def test_rehearsal_bad_json_dropped(self):
         text = "python[ARGS]{not valid json}"
@@ -403,7 +405,8 @@ class TestParser:
         assert result[0]["function"]["name"] == "mcp__srv__list-issues"
 
     def test_rehearsal_hyphenated_mcp_name(self):
-        text = 'mcp__srv__list-issues[ARGS]{"q":"x"}'
+        # MCP calls require an explicit native marker; keep the rehearsal payload shape.
+        text = '[TOOL_CALLS]mcp__srv__list-issues[ARGS]{"q":"x"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "mcp__srv__list-issues"
@@ -411,7 +414,7 @@ class TestParser:
     def test_streaming_strip_removes_partial_bracket_marker(self):
         # A bracket tag streamed before its opening brace must strip on the final pass, not leak.
         assert strip_tool_markup("answer [TOOL_CALLS]web_search", final = True) == "answer"
-        assert strip_tool_markup("text python[ARGS]", final = True) == "text"
+        assert strip_tool_markup("text get_weather[ARGS]", final = True) == "text"
         # Non-final must keep the in-progress tag buffered (not yet stripped).
         partial = "answer [TOOL_CALLS]web_search"
         assert strip_tool_markup(partial, final = False) == partial
@@ -534,7 +537,7 @@ class TestParser:
         assert "after" in strip_tool_markup(text)
 
     def test_strip_rehearsal_closed(self):
-        text = 'prose python[ARGS]{"code":"x"} more prose'
+        text = 'prose web_search[ARGS]{"code":"x"} more prose'
         cleaned = strip_tool_markup(text)
         assert "[ARGS]" not in cleaned
         assert "prose" in cleaned
@@ -1054,12 +1057,12 @@ class TestParserMultiFormat:
         import json
 
         text = (
-            "call:python{code:def f(n):\n    a, b = 0, 1\n"
+            "call:web_search{code:def f(n):\n    a, b = 0, 1\n"
             "    for _ in range(2, n+1):\n        a, b = b, a + b\n"
             "    return b\n\nprint(f(30))}"
         )
         result = parse_tool_calls_from_text(text)
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "web_search"
         code = json.loads(result[0]["function"]["arguments"])["code"]
         assert "a, b = 0, 1" in code and "print(f(30))" in code
 
@@ -1213,6 +1216,108 @@ def _make_loop(
         execute_tool = exec_fn,
         **kwargs,
     ), exec_fn
+
+
+class TestMarkerlessExecToolGuardLoop:
+    """End-to-end guard for the two prompt-injection -> RCE findings: a bare (unwrapped)
+    ``python``/``terminal`` call quoted in assistant prose must never reach ``execute_tool``,
+    even with those tools enabled, while the trusted wrapped/marker forms still execute."""
+
+    def test_bare_execution_call_in_prose_is_not_executed(self):
+        # ``_make_loop`` enables web_search + python + terminal.
+        prose = (
+            'You could run call:terminal{command:"id"} or terminal[ARGS]{"command":"id"}, '
+            'and even call:python{code:"import os; os.system(1)"}, but I will not.'
+        )
+        loop, exec_fn = _make_loop(turns = [[prose]])
+        events = _collect_events(loop)
+        # No execution, and no tool lifecycle event.
+        assert exec_fn.calls == []
+        assert not any(e.get("type") in ("tool_start", "tool_end") for e in events)
+        # The bare call text stays visible to the user (parse/strip symmetry).
+        contents = [e.get("text", "") for e in events if e.get("type") == "content"]
+        final = contents[-1] if contents else ""
+        assert "call:terminal{command:" in final
+        assert 'terminal[ARGS]{"command":"id"}' in final
+        assert "call:python{code:" in final
+
+    def test_wrapped_gemma_execution_call_in_loop_still_executes(self):
+        # A wrapped Gemma call is trusted; only the markerless form is blocked.
+        turns = [
+            ['<|tool_call>call:terminal{command:<|"|>id<|"|>}<tool_call|>'],
+            ["All done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["uid=0(root)"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["terminal"]
+        assert any(e.get("type") == "tool_start" for e in events)
+
+    def test_marker_rehearsal_execution_call_in_loop_still_executes(self):
+        # The [TOOL_CALLS] marker makes the rehearsal trusted, so terminal still runs.
+        turns = [['[TOOL_CALLS]terminal[ARGS]{"command":"id"}'], ["done"]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["uid=0"], max_tool_iterations = 3)
+        _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["terminal"]
+
+    def test_bare_execution_rehearsal_streams_instead_of_draining(self):
+        # A bare terminal[ARGS] never becomes a call, so draining withholds the answer to EOS.
+        turns = [
+            [
+                "The syntax is ",
+                'terminal[ARGS]{"command":"id"}',
+                ", which I will not run.",
+            ]
+        ]
+        loop, exec_fn = _make_loop(turns = turns)
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert 'terminal[ARGS]{"command":"id"}' in contents[-1]
+        # Reaches the user mid-turn: a drain would only release it with the closing prose.
+        assert any(
+            'terminal[ARGS]{"command":"id"}' in t and "will not run" not in t for t in contents
+        ), contents
+
+    def test_leading_bare_execution_gemma_call_streams_instead_of_draining(self):
+        # The leading ``call:NAME{`` drain runs before the parser, so it takes the same gate.
+        # It is held for the ONE chunk that could still carry a promotable peer (see
+        # TestBlockedGemmaChainHold), then streams; the turn is never withheld to EOS.
+        turns = [
+            [
+                'call:terminal{command:"id"}',
+                " is what the page suggested; I did not run it.",
+                " More prose after.",
+            ]
+        ]
+        loop, exec_fn = _make_loop(turns = turns)
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert 'call:terminal{command:"id"}' in contents[-1]
+        assert any(
+            'call:terminal{command:"id"}' in t and "More prose after" not in t for t in contents
+        ), contents
+
+    def test_leading_bare_benign_gemma_call_still_drains_and_executes(self):
+        # Control: the benign leading form keeps draining.
+        turns = [['call:web_search{query:"cats"}'], ["Done."]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["RESULT"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("call:" in t for t in contents), contents
+
+    def test_benign_rehearsal_still_drains_and_executes(self):
+        # Control: the benign bare form keeps its boundary detection.
+        turns = [
+            ["I will look it up: ", 'web_search[ARGS]{"query":"cats"}'],
+            ["Done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["RESULT"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("[ARGS]" in t for t in contents), contents
 
 
 class TestParserDeepSeek:
@@ -1864,6 +1969,40 @@ def test_rehearsal_call_name_split_before_args_is_not_streamed():
     assert not any("web_search" in t for t in contents), contents
 
 
+def test_split_bare_json_chain_is_owned_before_later_call_executes():
+    """A blocked first object can still own a chain with a later benign call. The first cumulative
+    snapshot must stay buffered: otherwise its raw JSON is visible before the second snapshot
+    makes the chain executable at end-of-turn."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    later = '{"name":"web_search","parameters":{"query":"cats"}}'
+    loop, exec_fn = _make_loop(
+        turns = [[blocked, ";" + later], ["Found cats."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+
+    events = _collect_events(loop)
+
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert not any(blocked in text or later in text for text in contents), contents
+
+
+def test_lone_blocked_bare_json_is_released_at_eof():
+    """A blocked object is content when no executable chain peer follows it."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    loop, exec_fn = _make_loop(
+        turns = [[blocked]],
+        max_tool_iterations = 1,
+    )
+
+    events = _collect_events(loop)
+
+    assert exec_fn.calls == []
+    contents = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert any(blocked in text for text in contents), contents
+
+
 def test_plain_word_matching_no_tool_still_streams():
     # The prefix guard must not swallow prose: a non-tool bare word streams.
     loop, _exec = _make_loop(
@@ -1911,14 +2050,14 @@ def test_rehearsal_name_after_prose_same_chunk_in_streaming_is_not_streamed():
 def test_initial_buffer_flush_holds_split_rehearsal_name():
     # First flush out of BUFFERING applies the same trailing-name hold as STREAMING.
     loop, exec_fn = _make_loop(
-        turns = [["I will use python", '[ARGS]{"code":"print(1)"}'], ["done"]],
+        turns = [["I will use web_search", '[ARGS]{"code":"print(1)"}'], ["done"]],
         exec_results = ["RESULT"],
         max_tool_iterations = 3,
     )
     events = _collect_events(loop)
-    assert exec_fn.calls == [("python", {"code": "print(1)"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"code": "print(1)"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any("python" in t for t in contents), contents
+    assert not any("web_search" in t for t in contents), contents
 
 
 def test_think_rehearsal_streams_monotonically_and_keeps_reasoning():
@@ -1950,14 +2089,15 @@ def test_plain_answer_ending_with_tool_name_word_is_preserved():
 
 
 def test_long_tool_name_split_rehearsal_is_not_capped_and_executes():
-    # Finding 10/11: an MCP name longer than the buffer cap, split before [ARGS], is still
-    # held (self-bounding prefix); no leak and the call executes.
+    # Finding 10/11: an explicitly marked MCP name longer than the buffer cap, split before
+    # [ARGS], is still held (self-bounding prefix); no leak and the call executes.
     from core.inference.safetensors_agentic import _MAX_BUFFER_CHARS
 
     name = "mcp__github__create_pull_request"
     assert len(name) >= _MAX_BUFFER_CHARS, len(name)
     exec_fn = FakeExecuteTool(["RESULT"])
-    _turns = iter([[name, name + '[ARGS]{"x":1}'], ["done"]])
+    marked_name = "[TOOL_CALLS]" + name
+    _turns = iter([[marked_name, marked_name + '[ARGS]{"x":1}'], ["done"]])
 
     def st(_messages, active_tools = None):
         yield from next(_turns)
@@ -2141,11 +2281,11 @@ def test_gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed():
 
 
 def test_long_gemma_tool_name_is_not_streamed_as_content():
-    # A tool name longer than the small buffer cap (OpenAI 64 chars, MCP longer)
-    # must still be held: the ``call:NAME`` prefix keeps buffering until ``{``
-    # instead of leaking ``call:longname`` as visible text.
+    # A tool name longer than the small buffer cap (OpenAI 64 chars, MCP longer) must still
+    # be held when explicitly wrapped, instead of leaking ``call:longname`` as visible text.
     long_name = "mcp__github__list_repository_issues"  # 35 chars
-    turns = iter([list('call:%s{repo:"octo/hello"}' % long_name), ["Done."]])
+    wrapped = '<|tool_call>call:%s{repo:<|"|>octo/hello<|"|>}<tool_call|>' % long_name
+    turns = iter([list(wrapped), ["Done."]])
 
     def _gen(_messages):
         try:
@@ -2730,7 +2870,7 @@ class TestLoopBasic:
             [
                 [
                     '<think>draft render_html[ARGS]{"code":"x"}</think>',
-                    'python[ARGS]{"code":"print(1)"}',
+                    'web_search[ARGS]{"code":"print(1)"}',
                 ],
                 ["Done."],
             ]
@@ -2748,15 +2888,15 @@ class TestLoopBasic:
             messages = [{"role": "user", "content": "run code"}],
             tools = [
                 {"type": "function", "function": {"name": "render_html"}},
-                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "web_search"}},
             ],
             execute_tool = exec_fn,
         )
         events = _collect_events(loop)
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
-        assert [e["tool_name"] for e in tool_starts] == ["python"], tool_starts
-        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+        assert [e["tool_name"] for e in tool_starts] == ["web_search"], tool_starts
+        assert exec_fn.calls == [("web_search", {"code": "print(1)"})]
 
     def test_render_html_success_blocks_second_canvas_call(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -4961,13 +5101,13 @@ def test_oversized_bare_json_call_is_not_leaked_and_executes():
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
-    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
     chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
     loop, exec_fn = _make_loop(turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2)
     events = _collect_events(loop)
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in contents), contents[:1]
-    assert exec_fn.calls and exec_fn.calls[0][0] == "python"
+    assert exec_fn.calls and exec_fn.calls[0][0] == "web_search"
     assert len(exec_fn.calls[0][1].get("code", "")) > _MAX_BARE_JSON_BUFFER
 
 
@@ -5214,7 +5354,7 @@ class TestFalseAlarmMarkerProse:
         # history) must not contain the second call's raw JSON.
         chained = (
             '{"name":"web_search","parameters":{"q":"first"}};'
-            '{"name":"python","parameters":{"code":"x"}}'
+            '{"name":"get_weather","parameters":{"code":"x"}}'
         )
         convs = []
         turn_iter = iter([[chained], ["Final answer."]])
@@ -5236,14 +5376,14 @@ class TestFalseAlarmMarkerProse:
             messages = [{"role": "user", "content": "hi"}],
             tools = [
                 {"type": "function", "function": {"name": "web_search"}},
-                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "get_weather"}},
             ],
             execute_tool = exec_fn,
         )
         _collect_events(loop)
-        assert [c[0] for c in exec_fn.calls] == ["web_search", "python"]
+        assert [c[0] for c in exec_fn.calls] == ["web_search", "get_weather"]
         assistant = next(m for m in convs[1] if m["role"] == "assistant")
-        assert '"python"' not in (assistant.get("content") or "")
+        assert '"get_weather"' not in (assistant.get("content") or "")
 
 
 def test_both_tool_loops_say_they_are_waiting_for_approval():
@@ -5323,3 +5463,60 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
             assert incremental == strip_tool_markup_streaming(
                 prefix, enabled_tool_names = names
             ), f"diverged at offset {i}"
+
+
+class TestBlockedGemmaChainHold:
+    """A promotable Gemma call behind a blocked one must not stream before it is promoted."""
+
+    def test_a_token_split_peer_is_not_leaked(self):
+        turns = [
+            ['call:terminal{command:"id"} call:web', '_search{query:"x"}'],
+            ["Done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("call:web" in t for t in contents), contents
+
+    def test_a_chunk_split_peer_is_not_leaked(self):
+        turns = [
+            ['call:terminal{command:"id"}', ' call:web_search{query:"x"}'],
+            ["Done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("web_search" in t for t in contents), contents
+
+    def test_a_blocked_call_followed_by_prose_still_streams(self):
+        # Control: no peer is coming, so the hold must not swallow an ordinary answer.
+        turns = [['call:terminal{command:"id"} and I will', " not run it."]]
+        loop, exec_fn = _make_loop(turns = turns)
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == 'call:terminal{command:"id"} and I will not run it.'
+
+
+class TestPromotableGemmaBoundary:
+    """A promotable bare Gemma call must not stream before it executes."""
+
+    def test_a_peer_after_prose_is_not_leaked(self):
+        turns = [["call:terminal{a:1} This is prose", ' call:web_search{query:"x"}'], ["Done."]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("web_search" in t for t in contents), contents
+        # The prose ahead of it still streamed.
+        assert any("This is prose" in t for t in contents), contents
+
+    def test_a_mid_prose_call_with_no_blocked_prefix_is_not_leaked(self):
+        turns = [["Here is some prose", ' call:web_search{query:"x"}'], ["Done."]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("web_search" in t for t in contents), contents

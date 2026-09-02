@@ -48,6 +48,12 @@ from core.inference.generation_timing import (
     build_generation_timings,
     with_prefill_boundary_processor,
 )
+from core.inference.native_tool_tokens import (
+    NativeToolTokenDecoder,
+    closes_an_open_envelope,
+    decoder_preserves_token,
+    reasoning_control_tokens,
+)
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -217,7 +223,12 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         **decode_kwargs,
     ):
         decode_kwargs["skip_special_tokens"] = False
-        super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
+        stream_tokenizer = NativeToolTokenDecoder(
+            tokenizer, preserved_tokens = reasoning_control_tokens(markers)
+        )
+        super().__init__(
+            stream_tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs
+        )
         self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
         self._cancel_event = cancel_event
         self._aborted = False
@@ -1287,6 +1298,7 @@ class InferenceBackend:
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
             continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
+            preserve_tool_tokens = bool(tools),
         )
 
     def _generate_vision_response(
@@ -1493,8 +1505,15 @@ class InferenceBackend:
         try:
             # Re-emit an open <think> prefill swallowed by skip_prompt (see
             # generate_stream).
+            # An image request carries client tools too, so the wrapper survives here as well.
+            _preserve_tool_tokens = bool(tools)
             think_prefix = detect_think_prefill(
-                prompt_text, getattr(raw_tokenizer, "all_special_tokens", None)
+                prompt_text,
+                getattr(raw_tokenizer, "all_special_tokens", None),
+                # Ask the decoder, not the policy: with no usable all_special_ids it falls back
+                # to skip_special_tokens=True and drops the closer anyway.
+                preserves_think_close = _preserve_tool_tokens
+                and decoder_preserves_token(raw_tokenizer, "</think>"),
             )
             import threading
 
@@ -1515,6 +1534,7 @@ class InferenceBackend:
                 timeout = 0.2,
                 cancel_event = cancel_event,
                 use_harmony = self._is_gpt_oss_model(),
+                preserve_tool_tokens = _preserve_tool_tokens,
             )
 
             generation_kwargs = dict(
@@ -1878,6 +1898,7 @@ class InferenceBackend:
         timeout: float = 0.2,
         cancel_event = None,
         use_harmony: bool = False,
+        preserve_tool_tokens: bool = False,
     ):
         """Create the streamer matching this model's native response protocol."""
         if use_harmony:
@@ -1911,10 +1932,11 @@ class InferenceBackend:
                 cancel_event = cancel_event,
                 in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
             )
+        stream_tokenizer = NativeToolTokenDecoder(tokenizer) if preserve_tool_tokens else tokenizer
         return TextIteratorStreamer(
-            tokenizer,
+            stream_tokenizer,
             skip_prompt = skip_prompt,
-            skip_special_tokens = True,
+            skip_special_tokens = not preserve_tool_tokens,
             timeout = timeout,
         )
 
@@ -1963,6 +1985,7 @@ class InferenceBackend:
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
         continued: bool = False,
+        preserve_tool_tokens: bool = False,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
@@ -1995,7 +2018,16 @@ class InferenceBackend:
             think_prefix = (
                 ""
                 if self._is_gpt_oss_model()
-                else detect_think_prefill(prompt, getattr(tokenizer, "all_special_tokens", None))
+                else detect_think_prefill(
+                    prompt,
+                    getattr(tokenizer, "all_special_tokens", None),
+                    # Both streamers keep </think> through NativeToolTokenDecoder, so the
+                    # opener has to be re-emitted.
+                    preserves_think_close = (
+                        preserve_tool_tokens or reasoning_channel_markers is not None
+                    )
+                    and decoder_preserves_token(tokenizer, "</think>"),
+                )
             )
 
             streamer = self._make_text_streamer(
@@ -2009,6 +2041,7 @@ class InferenceBackend:
                 timeout = 0.2,
                 cancel_event = cancel_event,
                 use_harmony = self._is_gpt_oss_model(),
+                preserve_tool_tokens = preserve_tool_tokens,
             )
 
             generation_kwargs = dict(
@@ -2924,6 +2957,11 @@ class InferenceBackend:
                 except Exception:
                     token = None
                 if isinstance(token, str) and token and text.endswith(token):
+                    if closes_an_open_envelope(text, token):
+                        # A native CLOSER that is also the stop token still closes the envelope
+                        # the parser is about to read, and strict parsing needs it. Its own
+                        # opener must be present, or an orphan closer stays on screen.
+                        continue
                     text = text[: -len(token)]
                 elif (
                     isinstance(token, str)

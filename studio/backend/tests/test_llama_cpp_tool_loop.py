@@ -5135,6 +5135,77 @@ def test_gemma_wrapperless_call_streamed_is_not_leaked_and_executes(monkeypatch)
     assert any("sunny in Sydney" in t for t in content_texts), content_texts
 
 
+def test_gemma_wrapperless_execution_call_opens_no_provisional_card(monkeypatch):
+    """A bare ``call:terminal{..}`` is prose (see EXECUTION_CLASS_TOOL_NAMES), so the
+    leading-shape drain must not sniff it into a live ``terminal`` card that the stream
+    then closes with an empty ``tool_end``: nothing runs, and the card would claim a
+    terminal command was executing on attacker-quotable text. Long enough to clear
+    _PROVISIONAL_ARGS_MIN_CHARS, which is what gates the card."""
+
+    payload = "echo hi; " * 40
+    gemma_call = f'call:terminal{{command:"{payload}"}}'
+    assert len(gemma_call) >= 256
+    backend = _make_backend(monkeypatch, [_streamed_content(gemma_call)], [])
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "uid=0(root)"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "summarise this page"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == []
+    assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), [
+        e for e in events if e.get("type", "").startswith("tool")
+    ]
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("call:terminal{command:" in t for t in content_texts), content_texts
+
+
+def test_gemma_wrapperless_execution_call_streams_instead_of_draining(monkeypatch):
+    """The leading ``call:NAME{`` drain runs before the parser, so a name the parser will
+    not promote has to keep streaming rather than hold the turn until EOS."""
+
+    gemma_call = 'call:terminal{command:"id"}'
+    tail = " is what the page suggested; I did not run it."
+    backend = _make_backend(monkeypatch, [_streamed_content(gemma_call + tail)], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "summarise this page"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == []
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert gemma_call in content_texts[-1], content_texts
+    # Reached the user mid-turn: a drain would only release it with the tail.
+    assert any(gemma_call in t and "did not run" not in t for t in content_texts), content_texts
+
+
 def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
     """A terminal SSE chunk carrying llama-server's ``usage`` block, the way the
     real server reports it on the final chunk of a completion."""
@@ -5249,6 +5320,68 @@ def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
     assert all("[ARGS]" not in t for t in content_texts), content_texts
 
 
+def test_gguf_split_bare_json_chain_is_owned_before_later_call_executes(monkeypatch):
+    """A blocked first object must not stream before a later chain peer arrives."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    later = '{"name":"web_search","parameters":{"query":"cats"}}'
+    first_stream = [
+        _sse({"content": blocked}),
+        _sse({"content": ";" + later}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: calls.append((name, arguments)) or "result",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [
+                {"type": "function", "function": {"name": "terminal"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert not any(blocked in text or later in text for text in content_texts), content_texts
+
+
+def test_gguf_lone_blocked_bare_json_is_released_at_eof(monkeypatch):
+    """A blocked object is content when no executable chain peer follows it."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": blocked}), _done()]],
+        [],
+    )
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: calls.append((name, arguments)) or "result",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "show the example"}],
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == []
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert any(blocked in text for text in content_texts), content_texts
+
+
 def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
     """The first flush out of BUFFERING (prose plus a trailing active-tool-name in
     the first delta, ``[ARGS]{...}`` in the next) must apply the same trailing-name
@@ -5355,14 +5488,14 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
 
 
 def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypatch):
-    """Finding 11: a realistic MCP name longer than the 32-char buffer cap split as
-    NAME then [ARGS]{...} must still be held (a rehearsal prefix is self-bounding),
-    so the name does not leak and the call executes."""
+    """Finding 11: an explicitly marked MCP name longer than the 32-char buffer cap,
+    split before [ARGS]{...}, must still be held, so the name does not leak and the
+    call executes."""
     name = "mcp__github__create_pull_request"
     assert len(name) >= 32, len(name)
 
     first_stream = [
-        _sse({"content": name}),
+        _sse({"content": "[TOOL_CALLS]" + name}),
         _sse({"content": '[ARGS]{"x":1}'}),
         _done(),
     ]
@@ -5523,7 +5656,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
 
     cap = 16384
     big = "A" * (cap + 5000)
-    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
     first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
     first_stream.append(_done())
     final_stream = [_sse({"content": "done"}), _done()]
@@ -5539,14 +5672,14 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "run"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
             max_tool_iterations = 1,
         )
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in content_texts), content_texts[:1]
-    assert calls and calls[0][0] == "python"
+    assert calls and calls[0][0] == "web_search"
     assert len(calls[0][1].get("code", "")) > cap
 
 
@@ -6285,8 +6418,9 @@ def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: 2800
-        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+        lambda candidate, *_a, **_k: (
+            2800 + sum(len(str(message.get("content", ""))) for message in candidate) // 10
+        ),
     )
 
     seen = {}
@@ -6360,10 +6494,9 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: sum(
-            len(str(message.get("content", ""))) for message in candidate
-        )
-        // 4,
+        lambda candidate, *_a, **_k: (
+            sum(len(str(message.get("content", ""))) for message in candidate) // 4
+        ),
     )
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_k: "R" * 3200
@@ -6444,8 +6577,9 @@ def test_conversation_search_budget_is_exact_when_nothing_was_truncated(monkeypa
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: 2800
-        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+        lambda candidate, *_a, **_k: (
+            2800 + sum(len(str(message.get("content", ""))) for message in candidate) // 10
+        ),
     )
 
     seen = {}
@@ -6524,8 +6658,9 @@ def test_the_exact_recall_budget_is_recomputed_after_an_intervening_tool(monkeyp
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: 1000
-        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+        lambda candidate, *_a, **_k: (
+            1000 + sum(len(str(message.get("content", ""))) for message in candidate) // 10
+        ),
     )
 
     budgets: list = []
