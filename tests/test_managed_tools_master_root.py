@@ -111,7 +111,10 @@ def test_a_studio_home_outside_the_master_root_still_warns(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     r = _resolve(
-        {"UNSLOTH_HOME": str(tmp_path / "portable"), "UNSLOTH_STUDIO_HOME": str(tmp_path / "elsewhere")},
+        {
+            "UNSLOTH_HOME": str(tmp_path / "portable"),
+            "UNSLOTH_STUDIO_HOME": str(tmp_path / "elsewhere"),
+        },
         home,
     )
     assert any("not self-contained" in w for w in r["warnings"])

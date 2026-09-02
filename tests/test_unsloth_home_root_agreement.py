@@ -157,7 +157,11 @@ def _main_probe(env_overrides: dict) -> dict:
     source = _MAIN_PROBE.format(backend = str(REPO_ROOT / "studio" / "backend"))
     out = subprocess.run(
         [sys.executable, "-c", source],
-        capture_output = True, text = True, cwd = str(REPO_ROOT), env = env, check = True,
+        capture_output = True,
+        text = True,
+        cwd = str(REPO_ROOT),
+        env = env,
+        check = True,
     )
     return json.loads(out.stdout.strip().splitlines()[-1])
 
