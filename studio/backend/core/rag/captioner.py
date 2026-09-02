@@ -54,7 +54,7 @@ def _collapse_runaway(
     for line in text.splitlines():
         key = line.strip()
         if not key:
-            if prev == "":  # collapse runs of blank lines to a single separator
+            if prev == "":
                 continue
             prev = ""
             out.append("")

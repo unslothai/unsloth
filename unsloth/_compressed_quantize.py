@@ -65,9 +65,8 @@ def compressed_ignore_patterns(config):
     class name) match.
     """
     ignore = ["lm_head"]
-    # Skip the same modules RedHatAI/NVIDIA skip for the Qwen3.5 / Qwen3-Next family (these also
-    # have shapes not divisible by the grouped-scheme group_size, which would otherwise error).
-    # No-ops elsewhere. Hybrid linear attention, VLM vision tower, and the MTP/speculative head.
+    # Skip the same modules RedHatAI/NVIDIA skip for the Qwen3.5 / Qwen3-Next family: their shapes are
+    # not divisible by the grouped-scheme group_size and would error. No-ops elsewhere.
     ignore += ["re:.*\\.linear_attn\\..*", "re:.*\\.visual\\..*", "re:.*mtp.*"]
     if _is_moe(config):
         # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
@@ -96,8 +95,8 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
         except (ValueError, KeyError):
             from datasets import get_dataset_split_names
             try:
-                # Resolve the first split name so only num_samples rows are fetched, instead of
-                # downloading/materializing the whole dataset just to take a small slice.
+                # Resolve the first split name so only num_samples rows are fetched, instead of materializing the
+                # whole dataset just to take a small slice.
                 split = get_dataset_split_names(value)[0]
                 ds = load_dataset(value, split = f"{split}[:{num_samples}]")
             except Exception:
@@ -136,16 +135,16 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
 
     cols = set(ds.column_names)
     if "input_ids" in cols:
-        # Drop non-model-input columns (e.g. a leftover 'messages' list) so llm-compressor's
-        # collator does not try to batch them.
+        # Drop non-model-input columns (e.g. a leftover 'messages' list) so llm-compressor's collator does
+        # not try to batch them.
         keep = {"input_ids", "attention_mask", "labels", "position_ids"}
         extra = [c for c in ds.column_names if c not in keep]
         if extra:
             ds = ds.remove_columns(extra)
         return ds
     if "messages" in cols:
-        # Base / non-chat tokenizers have no chat template; concatenate message contents instead
-        # of calling apply_chat_template (which would raise).
+        # Base / non-chat tokenizers have no chat template, and apply_chat_template would raise, so
+        # concatenate message contents instead.
         has_chat_template = bool(getattr(_tok, "chat_template", None))
 
         def _content_to_text(content):
@@ -233,8 +232,8 @@ def main():
     from llmcompressor import oneshot
     from llmcompressor.modifiers.quantization import QuantizationModifier
 
-    # Import the VLM auto-class only when needed - some transformers versions lack it, and the
-    # text path must not fail just because that newer class is unavailable.
+    # Import the VLM auto-class only when needed: some transformers versions lack it, and the text path
+    # must not fail over a newer class.
     if args.is_vlm:
         from transformers import AutoProcessor
         try:
@@ -255,8 +254,8 @@ def main():
     model.eval()
     # A tokenizer may be absent if the caller saved it separately; only calibration needs one.
     try:
-        # The tokenizer/processor has its own trust flag: consent for one component must not
-        # let the other's custom code run.
+        # The tokenizer/processor has its own trust flag: consent for one component must not let the other's
+        # custom code run.
         tokenizer = auto_proc.from_pretrained(
             args.model, trust_remote_code = args.trust_remote_code_tokenizer
         )
@@ -268,8 +267,8 @@ def main():
             )
         tokenizer = None
 
-    # MoE models: keep the router/gate unquantized (it decides expert routing) and calibrate every
-    # expert even if the sample set does not route tokens to all of them.
+    # MoE models: keep the router/gate unquantized and calibrate every expert even if the sample set
+    # does not route tokens to all of them.
     config = getattr(model, "config", None)
     is_moe = _is_moe(config)
     ignore = compressed_ignore_patterns(config)
@@ -286,10 +285,9 @@ def main():
             args.num_calibration_samples,
             args.max_seq_length,
         )
-        # Use the sequential pipeline: it onloads layer-by-layer, so models that do not fit in
-        # memory at once can still calibrate. Running here in a clean process (Unsloth's attention
-        # patches are absent) means tracing works; fall back to the memory-hungry "basic" pipeline
-        # only if tracing fails.
+        # The sequential pipeline onloads layer-by-layer, so a model that does not fit at once still
+        # calibrates; tracing works only because this runs in a clean process without Unsloth's attention
+        # patches. Fall back to the memory-hungry "basic" pipeline only if tracing fails.
         try:
             oneshot(
                 model = model,
@@ -306,10 +304,8 @@ def main():
                 "retrying with the 'basic' pipeline (needs the full model to fit in memory).",
                 flush = True,
             )
-            # Free the partially-processed model before loading a fresh copy, so the fallback does
-            # not transiently hold two copies on GPU. llm-compressor keeps the model in a global
-            # session after a failed run, so reset it first; also drop the traceback frames (e) and
-            # the local reference that pin the model.
+            # Free the partially-processed model before loading a fresh copy so the fallback never holds two
+            # on GPU: llm-compressor keeps the model in a global session after a failed run.
             import gc as _gc
             import torch as _torch
 
