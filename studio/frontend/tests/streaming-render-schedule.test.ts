@@ -301,6 +301,41 @@ test("a fence marker inside a raw HTML block is literal content", () => {
   }
 });
 
+test("the block split is shared per reply without leaking between replies", () => {
+  // `blocksOf` keeps one slot at module scope. Two messages streaming at once interleave
+  // their calls through it, so the only thing keeping that honest is that the slot is keyed
+  // on the exact reply text: a miss recomputes, it never answers for the wrong reply.
+  const plain = "Message A.\n\n```ts\nconst a = grid[r][c];\n```\n";
+  const withReference = "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
+  const other = "Message C.\n\n```js\nconst c = 1;\n```\n";
+
+  for (const reply of [plain, withReference, other, withReference, plain]) {
+    markdownRenderKey(reply);
+  }
+
+  assert.equal(markdownRenderScope(plain), "blocks");
+  assert.equal(markdownRenderScope(other), "blocks");
+  assert.equal(markdownRenderScope(withReference), "document");
+  assert.deepEqual(
+    parseMarkdownIntoRenderableBlocks(plain),
+    parseMarkdownIntoBlocks(plain),
+  );
+  assert.deepEqual(parseMarkdownIntoRenderableBlocks(withReference), [
+    withReference,
+  ]);
+});
+
+test("the shared split is not handed out for the caller to mutate", () => {
+  const reply = "Message A.\n\n```ts\nconst a = 1;\n```\n";
+  const first = parseMarkdownIntoRenderableBlocks(reply);
+  first.push("mutated");
+
+  assert.deepEqual(
+    parseMarkdownIntoRenderableBlocks(reply),
+    parseMarkdownIntoBlocks(reply),
+  );
+});
+
 test("link references and definitions stay in one rendered document", () => {
   const usage = `Before [reference][math-ref].\n\n${paragraphs(20)}`;
   const cache = new IncrementalMarkdownCache();
