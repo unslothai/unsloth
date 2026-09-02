@@ -512,6 +512,15 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
         # root that would still write outside the volume.
         "HF_ASSETS_CACHE": str(root / "huggingface" / "assets"),
         "TORCH_HOME": str(root / "torch"),
+        # Project workspaces are the last Unsloth-owned thing outside the root:
+        # they default under ~/Documents, which is neither a cache nor something
+        # the user would think to look for when clearing Unsloth out. Set as the
+        # documented override so an explicit one still wins.
+        #
+        # documents_root() itself is deliberately NOT pinned -- that is the
+        # user's own Documents folder, used as a browse root for picking their
+        # files, not a directory Unsloth owns.
+        "UNSLOTH_STUDIO_PROJECTS_HOME": str(root.parent / "projects"),
     }
 
 
