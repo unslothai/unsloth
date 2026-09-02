@@ -14085,9 +14085,7 @@ async def _load_model_impl(
         # its memory is back, which is both after the danger and before the download.
         # The post-load release below stays: this cannot cover a claim re-taken
         # during the load.
-        _release_chat_after_teardown = (
-            (lambda: release(CHAT)) if not chat_load_needs_gpu else None
-        )
+        _release_chat_after_teardown = (lambda: release(CHAT)) if not chat_load_needs_gpu else None
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
