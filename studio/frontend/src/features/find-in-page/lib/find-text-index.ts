@@ -552,12 +552,8 @@ function escapeForRegex(text: string): string {
 function matchPattern(variants: string[], needle: string): RegExp | null {
   const dotted = variants.some((variant) => variant.includes(COMBINING_DOT));
   if (variants.length === 1 && !/\s/.test(needle)) return null;
-  const escaped = [canonicalSource(needle, dotted)];
   try {
-    const pattern = new RegExp(
-      escaped.length === 1 ? escaped[0] : `(?:${escaped.join("|")})`,
-      "g",
-    );
+    const pattern = new RegExp(canonicalSource(needle, dotted), "g");
     // V8 compiles lazily, so an oversized pattern is accepted here and throws on the first `exec`
     // instead, back outside this `try`. One run against nothing forces the compile while it can
     // still be caught, and leaves `lastIndex` at 0 for the real scan.
