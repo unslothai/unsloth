@@ -592,9 +592,15 @@ def test_ordinary_audio_keeps_its_block_size(monkeypatch):
     assert sizes == [48_000, 48_000, 48_000, 48_000]
 
 
-def _wav_header(sample_rate: int, channels: int, bits: int, data_bytes: int) -> bytes:
+def _wav_header(
+    sample_rate: int,
+    channels: int,
+    bits: int,
+    data_bytes: int,
+    byte_rate: int = 0,
+) -> bytes:
     block_align = channels * bits // 8
-    byte_rate = sample_rate * block_align
+    byte_rate = byte_rate or sample_rate * block_align
     return (
         b"RIFF"
         + (36 + data_bytes).to_bytes(4, "little")
@@ -671,12 +677,75 @@ def test_the_frame_walk_stops_at_the_cap(monkeypatch):
     assert 60.0 < seconds < 61.0
 
 
-def test_a_container_that_cannot_say_is_still_forwarded():
-    """Refuse what can be proved, and invent nothing for the rest."""
+def test_a_container_that_cannot_say_reports_nothing():
+    """None means the walk established no length, not that there is none."""
     assert inference_route._wav_seconds(b"RIFF\x00\x00\x00\x00WAVE") is None
     assert inference_route._mp3_seconds(b"not a frame at all", 60.0) is None
     # A tag with no frames behind it reads as no audio, not as a duration.
     assert inference_route._mp3_seconds(_id3_prefix(), 60.0) is None
+
+
+def _decode_instead_of_forwarding(monkeypatch):
+    """Replace the decoder with a marker, so a transcode is visible as one."""
+    monkeypatch.setattr(
+        inference_route,
+        "_decode_audio_mono",
+        lambda _raw: (np.zeros(8_000, dtype = np.float32), 8_000),
+    )
+
+
+def test_a_container_that_cannot_say_is_decoded_rather_than_forwarded(monkeypatch):
+    """Forwarding an unreadable header applied the cap only to files honest
+    enough to describe themselves, which is the wrong way round. A transcode
+    costs a decode and puts the file back under both ceilings."""
+    _decode_instead_of_forwarding(monkeypatch)
+    unreadable = _mp3_frames(5) + b"\x01\x02\x03\x04"
+    assert inference_route._mp3_seconds(unreadable, 60.0) is None
+    _encoded, container = inference_route._prepare_audio_for_llama(
+        base64.b64encode(unreadable).decode()
+    )
+    assert container == "wav"
+
+
+def test_junk_between_frames_cannot_shorten_a_forwarded_mp3(monkeypatch):
+    """A decoder resynchronises past junk and plays the rest. Counting only the
+    frames before it let four stray bytes present two hours as two seconds."""
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 60)
+    _decode_instead_of_forwarding(monkeypatch)
+    one_frame = len(_mp3_frames(576 / 8_000))
+    spiked = _mp3_frames(120)
+    spiked = spiked[: one_frame * 10] + b"\x00\x00\x00\x00" + spiked[one_frame * 10 :]
+    assert inference_route._mp3_seconds(spiked, 60.0) is None
+    _encoded, container = inference_route._prepare_audio_for_llama(
+        base64.b64encode(spiked).decode()
+    )
+    assert container == "wav"
+
+
+def test_a_free_format_frame_does_not_authorise_a_passthrough():
+    """Bitrate index 0 carries no length in the header, so the walk cannot
+    establish one and the file has to be bounded by decoding it instead."""
+    free = bytes([0xFF, 0xE0 | (0x00 << 3) | (0x01 << 1) | 0x01, 0x00, 0x00])
+    assert inference_route._mp3_seconds(free + _mp3_frames(5), 60.0) is None
+
+
+def test_a_forged_byte_rate_cannot_shorten_a_forwarded_wav(monkeypatch):
+    """nAvgBytesPerSec is redundant with the fields around it, so it is the one
+    that can be moved alone. Multiplied by ten thousand it made a long recording
+    read as a fraction of a second, and a short file is forwarded untouched."""
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 1)
+    payload = b"\x80" * (8_000 * 2)
+    honest = _wav_header(8_000, 1, 8, len(payload)) + payload
+    assert inference_route._wav_seconds(honest) > 1
+
+    forged = _wav_header(8_000, 1, 8, len(payload), byte_rate = 8_000 * 10_000) + payload
+    assert inference_route._wav_seconds(forged) == inference_route._wav_seconds(honest)
+    try:
+        inference_route._prepare_audio_for_llama(base64.b64encode(forged).decode())
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("a forged byte rate walked past the duration limit")
 
 
 def test_an_id3v1_trailer_does_not_hide_the_duration():
@@ -916,3 +985,73 @@ def test_a_header_past_the_duration_cap_is_not_preallocated(monkeypatch):
     else:
         raise AssertionError("expected the duration cap to refuse this decode")
     assert sizes == [], sizes
+
+
+def test_a_header_that_undercounts_keeps_the_samples_in_order(monkeypatch):
+    """The buffer is closed by the first block that does not fit it.
+
+    Re-testing the fit for every block let a short final block drop back into
+    the unused tail and be emitted ahead of the blocks that overflowed before
+    it. The length stayed right, so nothing downstream noticed, and what
+    reached the model was the same audio with a piece of it moved.
+    """
+    class _VaryingSoundFile:
+        samplerate = 8_000
+        channels = 1
+        frames = 2_500
+
+        def __init__(self, _source):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def blocks(self, **_kwargs):
+            at = 0
+            for length in (1_000, 1_000, 1_000, 500):
+                yield np.arange(at, at + length, dtype = np.float32)
+                at += length
+
+    monkeypatch.setitem(
+        sys.modules, "soundfile", types.SimpleNamespace(SoundFile = _VaryingSoundFile)
+    )
+    arr, rate = inference_route._decode_audio_mono_with_soundfile(b"undercounted")
+    assert rate == 8_000
+    # A ramp in, so a reorder is a descent out.
+    assert np.array_equal(arr, np.arange(3_500, dtype = np.float32))
+
+
+def test_torchaudio_alone_can_still_decode_audio(monkeypatch):
+    """Backwards compatibility for an install that predates PyAV.
+
+    Before the bounded readers existed this path called torchaudio.load()
+    outright, so torchaudio on its own was enough. torchaudio 2.9 removed
+    info(), which is what sends such an install to the streaming chain, and
+    that chain needs libsndfile, PyAV or librosa. Losing audio on upgrade is
+    not an acceptable way to gain a memory bound.
+    """
+    import torch
+
+    loaded = []
+
+    class _FakeTorchaudio:
+        @staticmethod
+        def load(path, **kwargs):
+            loaded.append(path)
+            return torch.zeros(1, 8_000), 16_000
+
+        class transforms:
+            pass
+
+    monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+    for absent in ("soundfile", "av", "librosa"):
+        monkeypatch.setitem(sys.modules, absent, None)
+
+    payload = b"\x80" * 8_000
+    raw = _wav_header(8_000, 1, 8, len(payload)) + payload
+    decoded = inference_route._decode_audio_base64(base64.b64encode(raw).decode())
+    assert loaded, "torchaudio.load was never reached"
+    assert decoded.shape[0] == 8_000

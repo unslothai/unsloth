@@ -17413,8 +17413,19 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
             waveform, sr = torchaudio.load(tmp_path, num_frames = read_frames + 1)
         else:
             import torch
-            samples, sr = _decode_audio_mono(raw)
-            waveform = torch.from_numpy(samples).unsqueeze(0)
+            try:
+                samples, sr = _decode_audio_mono(raw)
+            except RuntimeError:
+                # No libsndfile, no PyAV, no librosa. This function used to call
+                # torchaudio.load() outright, so an environment carrying only
+                # torchaudio could decode audio, and an install predating PyAV
+                # as a base requirement must not lose that on upgrade. It is
+                # torchaudio 2.9 dropping info() that routes such an install
+                # here to begin with, so the probe above learned nothing about
+                # the file and the backstop below is what bounds this read.
+                waveform, sr = torchaudio.load(tmp_path)
+            else:
+                waveform = torch.from_numpy(samples).unsqueeze(0)
     finally:
         os.unlink(tmp_path)
 
@@ -17543,7 +17554,18 @@ def _wav_seconds(raw: bytes) -> Optional[float]:
         size = int.from_bytes(raw[offset + 4 : offset + 8], "little")
         body = offset + 8
         if chunk == b"fmt " and size >= 16 and body + 16 <= len(raw):
-            byte_rate = int.from_bytes(raw[body + 8 : body + 12], "little")
+            channels = int.from_bytes(raw[body + 2 : body + 4], "little")
+            sample_rate = int.from_bytes(raw[body + 4 : body + 8], "little")
+            declared_rate = int.from_bytes(raw[body + 8 : body + 12], "little")
+            block_align = int.from_bytes(raw[body + 12 : body + 14], "little")
+            bits = int.from_bytes(raw[body + 14 : body + 16], "little")
+            # nAvgBytesPerSec is redundant with the fields around it, so it is
+            # the one that can be moved on its own. Multiplied by ten thousand
+            # it made half an hour of PCM read as a quarter of a second, and a
+            # quarter of a second is forwarded untouched. Recompute it, and take
+            # the declaration only where it agrees.
+            computed = sample_rate * (block_align or channels * (bits // 8))
+            byte_rate = computed if computed > 0 and declared_rate != computed else declared_rate
         elif chunk == b"data":
             if byte_rate <= 0:
                 return None
@@ -17556,13 +17578,25 @@ def _wav_seconds(raw: bytes) -> Optional[float]:
     return None
 
 
+# Trailers that legitimately follow the last audio frame. Anything else left
+# over means the walk stopped early and has not read the whole recording.
+_MP3_TRAILER_MAGICS = (b"TAG", b"APETAGEX", b"ID3", b"LYRICSBEGIN")
+
+
 def _mp3_seconds(raw: bytes, cap: float) -> Optional[float]:
     """Seconds of audio an MPEG stream holds, walking frame headers only.
 
     Returns as soon as the running total passes `cap`, so proving a file too long
-    costs a fraction of the walk. A tail that is not a frame ends the count: an
-    ID3v1 or APE trailer is metadata, not audio. None when not one frame reads,
-    since nothing has then been established.
+    costs a fraction of the walk.
+
+    None means "this walk established no length", and the caller has to bound the
+    file some other way rather than forward it. That covers a stream with no
+    readable frame, a free-format frame (bitrate index 0 carries no length), and
+    a walk that hit bytes it could not read partway through. The last one is what
+    matters: a decoder resynchronises past junk and plays the rest, so returning
+    only what was counted before it let four stray bytes present half an hour of
+    audio as two seconds. A known metadata trailer is not junk and still ends the
+    count cleanly.
     """
     offset = _id3_tag_length(raw)
     seconds = 0.0
@@ -17589,7 +17623,13 @@ def _mp3_seconds(raw: bytes, cap: float) -> Optional[float]:
         if seconds > cap:
             return seconds
         offset += length
-    return seconds if frames else None
+    if not frames:
+        return None
+    # Fewer than four bytes cannot begin a frame, so a short tail is the end.
+    remainder = raw[offset:]
+    if len(remainder) < 4 or remainder.startswith(_MP3_TRAILER_MAGICS):
+        return seconds
+    return None
 
 
 def _passthrough_audio_seconds(raw: bytes, container: str, cap: float) -> Optional[float]:
@@ -17727,6 +17767,10 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
         declared = int(getattr(source, "frames", 0) or 0)
         if declared > min(sample_rate * _MAX_AUDIO_SECONDS, _MAX_DECODED_SAMPLES):
             declared = 0
+        # Latched by the first block the buffer could not hold. From then on the
+        # buffer is closed: the tail is chronological, and refilling the space
+        # left in it would put later audio in front of earlier audio.
+        overflowed = False
         for block in source.blocks(
             blocksize = block_frames,
             dtype = "float32",
@@ -17751,11 +17795,22 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
                     joined[filled : filled + len(held)] = held
                     filled += len(held)
                 chunks.clear()
-            if joined is not None and filled + len(block) <= declared:
+            if joined is None or overflowed:
+                # Either the buffer does not exist yet, in which case this block
+                # is absorbed into it when it is allocated above, or it has been
+                # closed and the tail is being collected instead.
+                chunks.append(block)
+            elif filled + len(block) <= declared:
                 joined[filled : filled + len(block)] = block
                 filled += len(block)
             else:
-                # The header under-counted; the rest joins the ordinary way.
+                # The header under-counted. From here the buffer is closed and
+                # every later block joins the tail, whether or not it would fit.
+                # Re-testing the fit per block let a short final block drop back
+                # into the space left over and be emitted ahead of the blocks
+                # that overflowed before it, reordering the audio while keeping
+                # its length, so nothing downstream could notice.
+                overflowed = True
                 chunks.append(block)
     if filled:
         if not chunks:
@@ -17892,14 +17947,21 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
         # Forwarding skips every bounded decoder, so the duration cap has to be
         # applied from the headers instead. A 16 kbps MP3 holds hours inside the
         # 25 MB upload cap, and llama-server was left to decode all of it. A
-        # container whose headers cannot say stays forwarded, as before: this
-        # refuses what it can prove, and invents nothing.
+        # 25 MB upload cap, and llama-server was left to decode all of it.
         seconds = _passthrough_audio_seconds(raw, passthrough, _MAX_AUDIO_SECONDS)
         if seconds is not None and seconds > _MAX_AUDIO_SECONDS:
             raise _DecodedAudioTooLongError(
                 f"audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
-        return b64, passthrough
+        # Headers that cannot state a length do not earn a free pass. Forwarding
+        # them anyway meant the cap held only for containers honest enough to
+        # describe themselves, which is the wrong way round: four junk bytes in
+        # an MPEG stream, or a WAV with no data chunk, ended the header walk and
+        # took the whole recording through with it. Decoding costs a transcode
+        # and nothing else, and puts the file back under both ceilings, so it
+        # still reaches the model.
+        if seconds is not None:
+            return b64, passthrough
 
     arr, sr = _decode_audio_mono(raw)
     arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr)
