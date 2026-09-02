@@ -123,7 +123,6 @@ def _process_rss_bytes() -> Optional[int]:
     """Best-effort current-process RSS, without making the benchmark depend on psutil."""
     try:
         import psutil
-
         return int(psutil.Process().memory_info().rss)
     except Exception:
         pass
@@ -482,7 +481,6 @@ def _compare(args: argparse.Namespace) -> int:
     }
     out_dir.mkdir(parents = True, exist_ok = True)
     (out_dir / "compare.json").write_text(json.dumps(metrics, indent = 2))
-
 
     if failures:
         print("\n  FAIL: " + "; ".join(failures), flush = True)

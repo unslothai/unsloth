@@ -6536,7 +6536,12 @@ def test_generate_reclaims_model_offload_memory_once_after_success(
         backend.generate(prompt = "failed")
 
     class _CancellingPipe(_FakePipe):
-        def __call__(self, *, prompt = None, **kwargs):
+        def __call__(
+            self,
+            *,
+            prompt = None,
+            **kwargs,
+        ):
             assert backend.cancel_generate() is True
             return super().__call__(prompt = prompt, **kwargs)
 

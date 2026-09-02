@@ -114,7 +114,6 @@ def test_host_memory_reclaimer_uses_and_caches_the_native_api(
     assert native.argtypes is not None and native.restype is not None
 
 
-
 def test_host_memory_reclaimer_windows_falls_back_and_logs_heap_failure_once(monkeypatch):
     native = _FakeNativeFunction(result = -1)
     library_loads = []
@@ -144,7 +143,9 @@ def test_host_memory_reclaimer_windows_falls_back_and_logs_heap_failure_once(mon
 
 def test_host_memory_reclaimer_is_policy_scoped_and_best_effort(monkeypatch):
     calls = []
-    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: lambda: calls.append(0))
+    monkeypatch.setattr(
+        diffusion_memory, "_resolve_host_memory_reclaimer", lambda: lambda: calls.append(0)
+    )
 
     for policy in (OFFLOAD_NONE, OFFLOAD_GROUP, OFFLOAD_STREAMING, OFFLOAD_SEQUENTIAL):
         assert diffusion_memory.reclaim_offload_host_memory(policy) is False
