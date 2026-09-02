@@ -20,6 +20,7 @@ from core.inference.checkpoint import (
     fit_checkpoint_context,
     render_checkpoint,
 )
+from core.inference.context_window import estimate_message_tokens
 
 INSTRUCTION = (
     "Standing instruction for the rest of this task: always report results as a markdown "
@@ -3865,3 +3866,117 @@ def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypat
     # A reply that STOPPED on reasoning carries nothing and is dropped, so it stays exempt.
     rows[2]["metadata"] = {"incomplete": {"reason": "cancelled"}, **_checkpoint_metadata(30)}
     assert llama_cpp._sticky_compaction_state("t1", branch) == (30, True)
+
+
+def _image_turn(text, *, payload = 30000):
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": text},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64," + "A" * payload},
+            },
+        ],
+    }
+
+
+def test_an_instruction_typed_beside_an_image_is_still_carried():
+    items = carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024)
+
+    assert items == [INSTRUCTION]
+
+
+def test_an_image_turn_costs_the_same_as_the_words_it_carries():
+    """At the EXACT price of the bullet, so the assertion is about the price.
+
+    A roomy cap passes whatever the turn is charged, which is the assertion this test
+    was named for. One token below the bullet's own cost neither shape fits; at that
+    cost both do, and any surcharge for the attachment shows up as the image side
+    dropping out.
+    """
+    cost = estimate_message_tokens({"role": "user", "content": INSTRUCTION})
+    plain = carried_forward_items([{"role": "user", "content": INSTRUCTION}], max_tokens = cost)
+
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = cost - 1) == []
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = cost) == [INSTRUCTION]
+    assert plain == [INSTRUCTION]
+
+
+def test_a_text_only_turn_costs_the_same_whether_it_arrives_as_a_list_or_a_string():
+    """The same words, priced the same, however the client wrapped them.
+
+    An attachment is the loud case, but the `[{"type": "text", ...}]` shape is the
+    ordinary OpenAI wire form and carries no image at all. Pricing the whole message
+    charged that turn for its JSON part wrapper -- 50 tokens against the 43 the words
+    cost -- so between those two caps an instruction was carried when the client sent a
+    string and dropped when it sent the identical text as a list.
+    """
+    cost = estimate_message_tokens({"role": "user", "content": INSTRUCTION})
+    listed = {"role": "user", "content": [{"type": "text", "text": INSTRUCTION}]}
+
+    assert estimate_message_tokens(listed) > cost
+    assert carried_forward_items([listed], max_tokens = cost) == [INSTRUCTION]
+
+
+def test_the_block_is_priced_with_the_estimator_the_caller_passed_in():
+    """`fit_checkpoint_context` takes the pricing rule; the block has to honour it.
+
+    The carried block used to price itself with the module-level estimate whatever the
+    caller asked for, so a caller counting a shape differently sized this block by a
+    rule it had already replaced.
+    """
+    charged = []
+
+    def double(message):
+        charged.append(message)
+        return 2 * estimate_message_tokens(message)
+
+    cost = estimate_message_tokens({"role": "user", "content": INSTRUCTION})
+    turn = [{"role": "user", "content": INSTRUCTION}]
+
+    assert carried_forward_items(turn, max_tokens = cost) == [INSTRUCTION]
+    assert carried_forward_items(turn, max_tokens = cost, estimate_message = double) == []
+    assert charged
+
+
+def test_a_thread_opened_with_a_screenshot_still_names_its_task_after_a_reset():
+    messages = [
+        {"role": "system", "content": "you are helpful"},
+        _image_turn(INSTRUCTION),
+        {"role": "assistant", "content": "Understood."},
+    ]
+    for index in range(8):
+        messages += [
+            {"role": "user", "content": f"Section {index}. " + "x" * 600},
+            {"role": "assistant", "content": f"Section {index} noted."},
+        ]
+    messages += [{"role": "user", "content": "continue"}]
+
+    fitted, truncation = _fit(messages)
+
+    assert truncation["checkpoint_started"] is True
+    assert INSTRUCTION in fitted[0]["content"]
+
+
+def test_an_oversized_instruction_is_still_excluded_whole():
+    long_instruction = "Always " + "w " * 2000
+
+    items = carried_forward_items([_image_turn(long_instruction)], max_tokens = 64)
+
+    assert items == []
+
+
+def test_a_nudge_sent_with_an_image_is_not_quoted_as_an_instruction():
+    """`is_substantive` passes any turn carrying an attachment, which is right for a
+    recall query and wrong here: the attachment never reaches the block, so only the
+    words can earn a bullet. Pricing the whole message used to hide this by making such
+    a turn unaffordable."""
+    items = carried_forward_items([_image_turn("ok")], max_tokens = 1024)
+
+    assert items == []
+
+
+def test_an_image_turn_is_judged_on_its_words_not_its_attachment():
+    assert carried_forward_items([_image_turn("continue")], max_tokens = 1024) == []
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024) == [INSTRUCTION]
