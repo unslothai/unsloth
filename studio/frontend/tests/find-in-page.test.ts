@@ -1392,6 +1392,61 @@ test("Hangul clusters keep every Jamo, and only a real syllable is fenced", () =
   );
 });
 
+test("a Hangul match starts and stops on grapheme boundaries", () => {
+  const index = (body: string) =>
+    buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  const GAG = "\uac01"; // 각
+  const GA = "\uac00"; // 가
+  const LEAD = "\u1100"; // a bare leading Jamo
+
+  // Not stopping inside one. A query carrying its own trailing Jamo could still match the prefix
+  // of a grapheme that carries two, so the fence belongs after closed syllables as well as open.
+  for (const body of [`${GAG}\u11a8`, `${LEAD}\u1161\u11a8\u11a8`]) {
+    assert.deepEqual(findMatches(index(body), GAG, 10), [], escape(body));
+  }
+  // Nor starting inside one: a grapheme can carry more than one leading Jamo, and a match that
+  // begins at the second highlights only its tail.
+  for (const body of [`${LEAD}${GA}`, `${LEAD}${LEAD}\u1161`]) {
+    assert.deepEqual(findMatches(index(body), GA, 10), [], escape(body));
+  }
+  // The fence is on the first cluster only, so a query that itself opens with a bare leading Jamo
+  // still finds exactly that text.
+  assert.deepEqual(findMatches(index(`${LEAD}${GA}`), `${LEAD}${GA}`, 10), [
+    { start: 0, end: 2 },
+  ]);
+  // And an ordinary syllable is still found where it really stands alone.
+  assert.deepEqual(findMatches(index(`${GA} hello`), GA, 10), [
+    { start: 0, end: 1 },
+  ]);
+});
+
+test("an engine without lookbehind falls back rather than throwing", () => {
+  // The grapheme fence uses lookbehind, which JavaScriptCore only shipped in Safari 16.4. The
+  // pattern is built from a string, so an older engine throws at construction, where `matchPattern`
+  // already catches it and hands the search to the literal scan.
+  const real = globalThis.RegExp;
+  const refuseLookbehind = function (source: string, flags?: string) {
+    if (typeof source === "string" && source.includes("(?<")) {
+      throw new SyntaxError("Invalid regular expression");
+    }
+    return new real(source, flags);
+  };
+  refuseLookbehind.prototype = real.prototype;
+  globalThis.RegExp = refuseLookbehind as unknown as RegExpConstructor;
+  try {
+    const index = buildTextIndex(
+      el("DIV", [el("P", [text("\uac00\ub098\ub2e4 hello")])]),
+    );
+    // Exact queries still work; what is lost is only the flexing the pattern would have added.
+    assert.deepEqual(findMatches(index, "\uac00\ub098\ub2e4", 10), [
+      { start: 0, end: 3 },
+    ]);
+    assert.deepEqual(findMatches(index, "hello", 10), [{ start: 4, end: 9 }]);
+  } finally {
+    globalThis.RegExp = real;
+  }
+});
+
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
   const dom = await readFile(
     new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),

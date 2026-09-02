@@ -394,7 +394,9 @@ const CLUSTER_PATTERN =
  *  The vowel is required: a bare leading Jamo is its own grapheme, not a syllable waiting to be
  *  closed, so a trailing Jamo after one belongs to something else and must not be fenced off. */
 const HANGUL_TRAILING_PATTERN = /[\u11a8-\u11ff\ud7cb-\ud7fb]/;
-const HANGUL_OPEN_PATTERN =
+/** A leading Jamo, and a leading Jamo followed by the vowel that makes the two a syllable. */
+const HANGUL_LEADING_PATTERN = /^[\u1100-\u115f\ua960-\ua97c]/;
+const HANGUL_SYLLABLE_PATTERN =
   /^[\u1100-\u115f\ua960-\ua97c][\u1160-\u11a7\ud7b0-\ud7c6]/;
 
 /**
@@ -425,14 +427,21 @@ function canonicalSource(needle: string, dotted: boolean): string {
         cluster.slice(trailing.index);
       if (!spellings.includes(half)) spellings.push(half);
     }
+    // A match may not START inside a grapheme. Only the first cluster needs it: the rest are
+    // anchored by the text already matched before them. Built as a string, so an engine without
+    // lookbehind throws where `matchPattern` catches it and falls back to the literal scan.
+    if (out === "" && HANGUL_LEADING_PATTERN.test(cluster)) {
+      out += "(?<![\\u1100-\\u115f\\ua960-\\ua97c])";
+    }
     out +=
       spellings.length === 1
         ? escapeForRegex(spellings[0])
         : `(?:${spellings.map(escapeForRegex).join("|")})`;
-    // An open syllable must not stop short of a trailing Jamo that completes the one on screen:
-    // decomposed, `\uac00` would otherwise match the first two thirds of `\uac01` and highlight
-    // part of a letter. Composed text never had this, since there the syllable is one code point.
-    if (trailing === null && HANGUL_OPEN_PATTERN.test(cluster)) {
+    // ... nor may it STOP inside one. Closed as well as open: a query carrying one trailing Jamo
+    // could otherwise match the prefix of a grapheme that carries two, highlighting part of a
+    // letter. A bare leading Jamo is exempt, being its own grapheme rather than a syllable
+    // waiting to be closed.
+    if (HANGUL_SYLLABLE_PATTERN.test(cluster)) {
       out += "(?![\\u11a8-\\u11ff\\ud7cb-\\ud7fb])";
     }
   }
