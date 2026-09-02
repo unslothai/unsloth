@@ -332,24 +332,30 @@ def test_a_gpu_resident_mtmd_server_is_never_reported_as_holding_no_vram():
     let training start beside a model that holds the whole checkpoint in VRAM.
     """
     resident_on_gpu = types.SimpleNamespace(
-        device = "llama.cpp", _gpu_disabled = False, _forced_cpu = True,
+        device = "llama.cpp",
+        _gpu_disabled = False,
+        _forced_cpu = True,
     )
     assert _stt_sidecar_holds_no_vram(resident_on_gpu) is False
 
     really_cpu = types.SimpleNamespace(
-        device = "llama.cpp", _gpu_disabled = True, _forced_cpu = True,
+        device = "llama.cpp",
+        _gpu_disabled = True,
+        _forced_cpu = True,
     )
     assert _stt_sidecar_holds_no_vram(really_cpu) is True
 
 
 def test_whisper_cpp_still_exempts_a_server_started_with_no_gpu():
     """ggml has no separate wish: _forced_cpu sits next to the spawned --no-gpu."""
-    assert _stt_sidecar_holds_no_vram(
-        types.SimpleNamespace(device = "whisper.cpp", _forced_cpu = True)
-    ) is True
-    assert _stt_sidecar_holds_no_vram(
-        types.SimpleNamespace(device = "whisper.cpp", _forced_cpu = False)
-    ) is False
+    assert (
+        _stt_sidecar_holds_no_vram(types.SimpleNamespace(device = "whisper.cpp", _forced_cpu = True))
+        is True
+    )
+    assert (
+        _stt_sidecar_holds_no_vram(types.SimpleNamespace(device = "whisper.cpp", _forced_cpu = False))
+        is False
+    )
 
 
 def test_a_forced_cpu_native_audio_load_selects_no_gpu():
