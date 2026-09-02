@@ -194,6 +194,7 @@ def _health(mod, bodies):
 # The regression Codex found:
 # --------------------------------------------------------------------------------
 
+
 def test_greyed_row_fails_even_though_the_warm_window_already_shut(tmp_path, monkeypatch):
     """The vacuous-pass case. Health has settled, so the real-warm sampler observes
     nothing and breaks on its first iteration; the row is blacked out exactly as it was
@@ -284,6 +285,7 @@ def test_unreadable_health_fails_rather_than_returning_early(tmp_path, monkeypat
 # The real-warm sampler still has to fail when it does catch a grey-out.
 # --------------------------------------------------------------------------------
 
+
 def test_real_warm_grey_out_still_fails(tmp_path, monkeypatch):
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [UNMEASURED, SETTLED])
@@ -322,6 +324,7 @@ def test_missed_warm_window_alone_is_not_a_failure(tmp_path, monkeypatch):
 # The tab walk: a pinned row that is not there means the tab checked nothing.
 # --------------------------------------------------------------------------------
 
+
 def test_drive_tabs_fails_when_the_pinned_rows_never_render(tmp_path, monkeypatch):
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [SETTLED])
@@ -350,6 +353,7 @@ def test_drive_tabs_does_not_fail_on_the_rows_that_live_under_more(tmp_path, mon
 
 # Drift guard: the row asserted on has to be one the sidebar actually pins.
 # --------------------------------------------------------------------------------
+
 
 def test_inline_row_ids_match_the_frontends_default_pinned_set():
     """If a row is unpinned in the store, it stops rendering a data-testid and every
@@ -646,6 +650,7 @@ def test_the_watchdog_replay_is_gone():
 # The post-run watch, which is what stops the window boundary deciding the verdict.
 # --------------------------------------------------------------------------------
 
+
 def _scripted_probes(mod, kinds):
     """Point _get_json at a scripted sequence of outcomes; the last one repeats."""
     seq = list(kinds)
@@ -739,6 +744,7 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
 
 # The watch has to be bounded, paced, and honest about what it saw.
 # --------------------------------------------------------------------------------
+
 
 def _serve(
     handler_body,

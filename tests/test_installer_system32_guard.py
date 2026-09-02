@@ -40,6 +40,7 @@ _system_dir_guard = _load_guard_module()
 
 # ── install.ps1: relocate before doing any work ──
 
+
 def _install_ps1() -> str:
     return INSTALL_PS1.read_text(encoding = "utf-8")
 
@@ -322,6 +323,7 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
 
 
 # ── unsloth_cli: the message the user actually reads ──
+
 
 def _expand_windows_user(value: str, environ: dict[str, str]) -> str:
     """The real ntpath.expanduser, against the fake environment."""

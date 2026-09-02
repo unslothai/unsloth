@@ -56,6 +56,7 @@ collect_evidence = _load("studio_ci_collect_evidence", CI_DIR / "collect_evidenc
 
 # --------------------------------------------------------------- nvidia-smi
 
+
 def test_compute_apps_parses_the_bare_csv_the_payload_asks_for():
     apps = gpu_assert.parse_compute_apps("1234, 2048\n5678, 96\n")
     assert apps == {1234: 2048, 5678: 96}
@@ -77,6 +78,7 @@ def test_no_compute_apps_at_all_is_an_empty_dict_not_a_crash():
 
 
 # ------------------------------------------------------------ llama.cpp log
+
 
 def test_the_offload_line_is_read_from_the_most_recent_load():
     """A session loads more than once: the chat model, then the export."""
@@ -104,6 +106,7 @@ def test_a_cpu_only_log_reports_no_device_buffer():
 
 
 # ------------------------------------------------------------ install kinds
+
 
 def test_a_cuda_bundle_is_recognised_from_its_marker(tmp_path):
     """Written against a marker the installer actually produces.
@@ -146,6 +149,7 @@ def test_a_missing_or_unreadable_marker_is_not_a_cuda_install(tmp_path):
 
 # -------------------------------------------------------------- GGUF magic
 
+
 def test_a_real_gguf_header_passes_and_a_truncated_one_does_not(tmp_path):
     good = tmp_path / "a.gguf"
     good.write_bytes(b"GGUF\x03\x00\x00\x00")
@@ -157,6 +161,7 @@ def test_a_real_gguf_header_passes_and_a_truncated_one_does_not(tmp_path):
 
 
 # ----------------------------------------------------------- offload verdict
+
 
 def _verdict(**kw):
     base = {
@@ -244,6 +249,7 @@ def test_auto_mode_gpu_layers_of_minus_one_is_not_treated_as_zero():
 
 # ------------------------------------------------------------------ health
 
+
 def test_health_is_not_ready_until_hardware_detection_settles():
     """Unsloth answers healthy while still detecting, and refuses to start a
     training run or an export in that window."""
@@ -254,6 +260,7 @@ def test_health_is_not_ready_until_hardware_detection_settles():
 
 
 # -------------------------------------------------------------------- wait
+
 
 def test_wait_returns_as_soon_as_the_predicate_holds():
     values = iter([1, 2, 3])
@@ -319,6 +326,7 @@ def test_a_probe_that_raises_is_retried_rather_than_fatal():
 
 # ---------------------------------------------------------------- training
 
+
 def test_a_running_job_is_not_terminal():
     for phase in (
         "idle",
@@ -352,6 +360,7 @@ def test_steps_with_a_logged_loss_are_counted_and_nulls_are_not():
 
 
 # ------------------------------------------------------------------ export
+
 
 def test_an_export_that_has_not_started_is_not_read_as_finished():
     """is_export_active is false before the job starts as well as after it
@@ -398,6 +407,7 @@ def test_the_newest_gguf_is_found_recursively(tmp_path):
 
 
 # ----------------------------------------------------------------- adapter
+
 
 def _adapter(
     tmp_path,
@@ -449,6 +459,7 @@ def test_an_output_dir_that_does_not_exist_fails(tmp_path):
 
 
 # ----------------------------------------------------------- kernel builder
+
 
 def _build(tmp_path, **kw):
     out = tmp_path / "kernel.ipynb"
@@ -599,6 +610,7 @@ def test_the_result_prefix_matches_the_shared_launcher():
 
 
 # ---------------------------------------------------------------- evidence
+
 
 def _bundle(names: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
@@ -751,6 +763,7 @@ def test_a_complete_later_copy_repairs_a_truncated_earlier_one():
 
 
 # ---------------------------------------------------------------- workflow
+
 
 def _workflow() -> dict:
     yaml = pytest.importorskip("yaml")
@@ -973,6 +986,7 @@ _LEG = [{"label": "control", "passed": False, "steps": []}]
 
 # ------------------------------------------------------------------ report
 
+
 @pytest.mark.parametrize(
     ("verdict", "reports", "expected_exit"),
     [
@@ -1065,6 +1079,7 @@ def test_the_reporter_survives_the_shared_module_being_unavailable(monkeypatch, 
 
 
 # ------------------------------------------------- the forced password change
+
 
 class _RecordingStudio(studio_client.Studio):
     """An Unsloth whose HTTP layer is a script, so login can be driven off-box."""
@@ -1649,6 +1664,7 @@ def test_a_nested_executed_notebook_is_read_too(tmp_path):
 
 # ------------------------------------------------------- a diverged training run
 
+
 def test_a_nan_loss_is_not_a_trained_step():
     """A T4 has no bf16, so this trains in fp16, and an fp16 run that diverges
     logs NaN for every step while still reaching `completed` and still saving
@@ -1671,6 +1687,7 @@ def test_real_losses_still_count():
 
 
 # ------------------------------------------------------ which Unsloth gets started
+
 
 def test_studio_is_launched_from_the_interpreter_running_the_payload(tmp_path, monkeypatch):
     """The payload runs under the Unsloth venv, whose bin is NOT on PATH. A
@@ -1714,6 +1731,7 @@ def test_without_a_console_script_the_same_interpreter_runs_the_module(tmp_path,
 
 
 # ------------------------------------------------------- the llama-server pid
+
 
 def test_the_payload_never_reads_a_pid_the_status_response_does_not_declare():
     """InferenceStatusResponse declares no llama_server_pid and no pid, and
@@ -1778,6 +1796,7 @@ def test_the_payload_can_find_a_llama_server_in_the_process_table(tmp_path):
 
 # ------------------------------------------- evidence belongs to the load it follows
 
+
 def test_an_earlier_loads_offload_line_is_not_evidence_for_the_next(tmp_path):
     """The exported-model reload used to inherit the chat model's
     `offloaded 29/29` when its own load logged nothing, so the GPU check
@@ -1811,6 +1830,7 @@ def test_a_log_that_was_rotated_under_us_is_read_whole(tmp_path):
 
 
 # ---------------------------------------------- the log across the UI restart
+
 
 def test_the_restart_that_reseeds_the_account_keeps_the_earlier_log(tmp_path, monkeypatch):
     """assert_chat_ui() restarts Unsloth, and a truncating open threw away the
@@ -1847,6 +1867,7 @@ class _DeadProc:
 
 
 # ------------------------------------------------- an export that outlives its request
+
 
 def _export_session(module, tmp_path, studio):
     session = _session(
@@ -1930,6 +1951,7 @@ def test_an_export_that_outlives_its_http_request_is_still_polled(tmp_path, monk
 
 # ---------------------------------------------------- the oversized bundle
 
+
 def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
     """The fallback used to rebuild with the report ALONE while its message
     said it was shipping logs, discarding studio.log and the driver log in
@@ -1962,6 +1984,7 @@ def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------- one report, and it is the last
+
 
 def test_a_crash_while_packaging_the_evidence_does_not_publish_a_pass(tmp_path, monkeypatch):
     """extract_reports keeps the FIRST report per label|model, so printing a
@@ -2000,6 +2023,7 @@ def test_a_crash_while_packaging_the_evidence_does_not_publish_a_pass(tmp_path, 
 
 
 # ------------------------------------- an installer failure is a failure, not infra
+
 
 def _cell_source(driver: dict, needle: str) -> str:
     for cell in _payload_notebook(driver)["cells"]:
@@ -2199,6 +2223,7 @@ def test_a_timeout_before_the_payload_started_is_still_infra(tmp_path):
 
 
 # ---------------------------------------------------------------- the gate flags
+
 
 def test_the_gate_is_told_how_many_kernels_this_leg_actually_pushes():
     """This leg pushes ONE kernel and leaves the second T4 idle. The gate

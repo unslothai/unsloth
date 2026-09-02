@@ -562,6 +562,7 @@ _OBFUSC_BLOB = re.compile(
 
 # ─────────────────────────────────────────────────────────────────────
 
+
 def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     """Return (entries, structural_findings).
 
@@ -657,6 +658,7 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
 
 # ─────────────────────────────────────────────────────────────────────
 
+
 def _decode_integrity(integrity: str) -> tuple[str, bytes] | None:
     """Parse SRI integrity 'sha512-<base64>' -> (algo, digest_bytes)."""
     if "-" not in integrity:
@@ -739,6 +741,7 @@ def download_tarball(
 
 
 # ─────────────────────────────────────────────────────────────────────
+
 
 def _is_within(root: Path, candidate: Path) -> bool:
     try:
@@ -1706,6 +1709,7 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
 
 
 # ─────────────────────────────────────────────────────────────────────
+
 
 def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | None]:
     """Download + extract + scan a single package; cleans up its dir.

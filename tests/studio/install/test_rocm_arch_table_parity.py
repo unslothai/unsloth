@@ -72,6 +72,7 @@ stack_mod = _load_stack_module()
 
 # ── Source extraction helpers ────────────────────────────────────────────────
 
+
 def _sh_function_body(source: str, name: str) -> str:
     """Return a POSIX-shell function body by brace matching (same idea as
     _extract_sh_function_body in test_rocm_support.py, kept local so this file
@@ -126,6 +127,7 @@ def _strip_sh_comment(line: str) -> str:
 
 
 # ── Table 1: gfx -> AMD index family ─────────────────────────────────────────
+
 
 def _gfx_family_map_sh() -> dict[str, str]:
     body = _sh_function_body(
@@ -661,6 +663,7 @@ class TestNoUnregisteredArchTable:
 
 
 # ── Table 3: the torch>=2.11 pin allowlist ───────────────────────────────────
+
 
 class TestTorch211PinAllowlistParity:
     """gfx120X-all / gfx1151 / gfx1150 / gfx1152 (and rocm7.2) ship the null

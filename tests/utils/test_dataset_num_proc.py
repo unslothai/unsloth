@@ -131,6 +131,7 @@ def test_fork_start_method_honours_explicit_value(monkeypatch, dnp):
 
 # ---------- the 1 -> None normalisation ----------
 
+
 @pytest.mark.parametrize("value", [1, 0, -4])
 def test_non_positive_and_one_normalise_to_none(monkeypatch, dnp, value):
     _force_start_method(monkeypatch, dnp, "fork")
@@ -227,6 +228,7 @@ def test_low_memory_auto_path_returns_none_not_one(monkeypatch, dnp):
 
 # ---------- auto sizing ----------
 
+
 def test_auto_value_is_capped(monkeypatch, dnp):
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
@@ -305,6 +307,7 @@ def test_bool_is_not_treated_as_an_int(monkeypatch, dnp):
 
 # ---------- environment escape hatch ----------
 
+
 def test_env_override_beats_start_method_veto(monkeypatch, dnp):
     # A user who knows their workload is fork-safe is never downgraded.
     _force_start_method(monkeypatch, dnp, "spawn")
@@ -351,6 +354,7 @@ def test_invalid_env_override_is_ignored_with_a_warning(monkeypatch, dnp, capsys
 
 
 # ---------- start-method probing must not mutate global state ----------
+
 
 def test_start_method_probe_prefers_multiprocess_and_has_no_side_effects(dnp):
     """datasets does `from multiprocess import Pool`, so `multiprocess` -- not
@@ -465,6 +469,7 @@ def test_start_method_probe_matches_the_pool_multiprocess_would_build(dnp):
 
 
 # ---------- the generated trainer's import must match the real module ----------
+
 
 def _rl_serial_as_none(tree, source, trainer_file):
     """Evaluate rl.py's own serial_as_none rule rather than restating it.
@@ -658,6 +663,7 @@ def test_the_narrow_num_proc_anchor_still_matches_the_installed_zoo():
 
 
 # ---------- what the layered anchor actually does to a drifted Zoo ----------
+
 
 def _load_anchor_helpers():
     """Exec just the anchor helpers out of rl_replacements.py.
@@ -1132,6 +1138,7 @@ class _Split:
 
 # ---------- containers: the host is not what this process may use ----------
 
+
 def test_memory_budget_follows_the_cgroup_not_the_host(monkeypatch, dnp):
     """psutil reports the HOST inside a container.
 
@@ -1201,6 +1208,7 @@ def test_the_cgroup_readers_never_raise(dnp):
 
 
 # ---------- the zoo reads the other module ----------
+
 
 def _force_stdlib_start_method(monkeypatch, dnp, method):
     real = dnp._module_start_method

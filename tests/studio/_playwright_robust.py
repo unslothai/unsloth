@@ -373,6 +373,7 @@ def recover_or_replace_page(
 
 # ─────────────────────────────────────────────────────────────────────
 
+
 def click_and_wait_for_response(
     page: Any,
     *,
@@ -491,6 +492,7 @@ def echo_browser_errors(page: Any, info: Callable[[str], None]) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
+
 
 def dump_diagnostics(
     page: Any,

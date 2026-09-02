@@ -65,6 +65,7 @@ class _Config:
 
 # ------------------------------- rule one: nobody rewrites the checkpoint's own list
 
+
 def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
     """The regression this file exists for.
 
@@ -127,6 +128,7 @@ def test_the_bnb_config_chain_is_still_one_piece():
 
 
 # ------------------------------------ rule two: the saved config matches the load
+
 
 def test_the_stamp_keeps_the_list_the_load_actually_used():
     """A dynamic-quant repo's per-layer entries have to survive into the saved config, or

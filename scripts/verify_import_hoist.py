@@ -410,6 +410,7 @@ class _Builder(ast.NodeVisitor):
 
 # ---------------------------------------------------------------- resolution
 
+
 def _any_star(scope: Scope) -> bool:
     c = scope
     while c is not None:
@@ -474,6 +475,7 @@ def _legb_chain(scope: Scope) -> list[Scope]:
 
 
 # ---------------------------------------------------------------- analysis
+
 
 def _analyze(src: str):
     tree = ast.parse(src)

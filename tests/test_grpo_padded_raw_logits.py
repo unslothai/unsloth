@@ -45,7 +45,6 @@ from _grpo_dispatch_source import load_dispatch_helpers  # noqa: E402
 _DISPATCH_HELPERS = load_dispatch_helpers()
 
 
-
 # ── The block under test, lifted structurally out of the live source ─────────
 
 _SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py"
@@ -118,6 +117,7 @@ _BLOCK_CODE = compile(_BLOCK_SOURCE, "<rl_replacements padded loop>", "exec")
 
 
 # ── Helpers: the real unsloth_zoo ones when available, eager mirrors when not ─
+
 
 def _eager_chunked_hidden_states_selective_log_softmax(
     hidden_states,
@@ -352,6 +352,7 @@ def _run_padded_loop(
 
 
 # ── Tests ────────────────────────────────────────────────────────────────────
+
 
 def test_extracted_block_is_the_padded_loop():
     """The lifted segment is the padded loop, located by shape and not by text search."""

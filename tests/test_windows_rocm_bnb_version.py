@@ -68,6 +68,7 @@ def _force(import_fixes, monkeypatch, *, win, rocm, detected):
 # _detect_installed_bnb_rocm_version ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
+
 def test_detect_picks_highest_rocm_suffix(import_fixes, tmp_path, monkeypatch):
     pkg = tmp_path / "bitsandbytes"
     pkg.mkdir()
@@ -99,6 +100,7 @@ def test_detect_none_when_bnb_absent(import_fixes, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+
 
 def test_sets_bnb_version_on_windows_rocm(import_fixes, clean_env):
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
@@ -202,6 +204,7 @@ def test_empty_string_value_without_marker_is_respected(import_fixes, clean_env)
 # (regression for the HIP-SDK-on-a-CUDA-box false positive).
 # _is_hip_torch_build: strict gate;
 # ---------------------------------------------------------------------------
+
 
 def _fake_torch(hip):
     return types.SimpleNamespace(version = types.SimpleNamespace(hip = hip))

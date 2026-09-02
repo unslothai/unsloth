@@ -293,6 +293,7 @@ def _latest_of(tmp_path):
 
 # ------------------------------------------------------------------ the gate
 
+
 def _run_gate(tmp_path, *, release_tag, assets, repair_pointer):
     state_path = _world(
         tmp_path,
@@ -364,6 +365,7 @@ def test_the_gate_fails_closed_when_the_release_cannot_be_read(tmp_path):
 
 
 # ---------------------------------------------------------------- the repair
+
 
 def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(tmp_path):
     result, commands = _run(

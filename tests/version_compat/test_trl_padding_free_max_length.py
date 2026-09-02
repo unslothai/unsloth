@@ -693,6 +693,7 @@ def test_the_cap_check_reads_the_whole_split():
 
 # --- what the fourth review round found -------------------------------------
 
+
 def test_a_raw_train_split_does_not_excuse_a_tokenized_eval_split(tmp_path, trl_has_guard):
     """`_unsloth_prep_truncates` is decided from the train split. A raw train set
     beside a pre-tokenized eval set skipped the whole truncation block, cleared
@@ -759,6 +760,7 @@ def test_an_unrewritable_stream_is_refused_not_assumed(tmp_path, trl_has_guard):
 
 
 # --- what the fifth review round found ---------------------------------------
+
 
 def test_keep_end_truncation_keeps_the_end(tmp_path, trl_has_guard):
     """TRL slices `[-max_length:]` for `truncation_mode = 'keep_end'`, which is
@@ -863,6 +865,7 @@ def test_a_column_that_is_not_per_token_is_left_alone(tmp_path, trl_has_guard):
 
 
 # --- what the third review round found ---------------------------------------
+
 
 def _scalar_torch_formatted_dataset(tok):
     """A tokenized split with a scalar id column, read as torch tensors.
@@ -2089,6 +2092,7 @@ def test_a_split_is_only_scanned_once():
 
 # --- round 7: pickling, mutation, predict's contract, single-pass probes -----
 
+
 def _late_cap_helpers():
     """`evaluate`/`predict` wrapped onto a stub, so the late cap can be driven
     without standing up a real trainer."""
@@ -2731,6 +2735,7 @@ def test_the_pretokenized_probe_does_not_eat_a_one_shot_row():
 
 # ── round fourteen: capping once, and not cutting what we cannot honour ──────
 
+
 def test_capping_a_one_shot_stream_twice_does_not_eat_its_rows():
     """`evaluate()` caps the split and stores it, then Transformers calls
     `get_eval_dataloader`, which this module also wraps -- so one call reaches
@@ -2849,6 +2854,7 @@ def test_a_transformed_eval_split_keeps_its_cap(tmp_path, trl_has_guard):
 
 
 # ── round fifteen: alignment, laziness, the cache key, and unknown modes ─────
+
 
 def test_a_one_shot_stream_slices_every_aligned_column():
     """`_column_names` already read a row off the stream, and discarding it left

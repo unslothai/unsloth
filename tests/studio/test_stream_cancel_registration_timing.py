@@ -24,6 +24,7 @@ _TREE = ast.parse(SRC)
 
 # ── Structural (AST) helpers ─────────────────────────────────
 
+
 def _collect_async_functions(tree: ast.AST):
     return [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)]
 
@@ -76,6 +77,7 @@ def _calls_name(node: ast.AST, name: str) -> bool:
 
 
 # ── Structural tests ─────────────────────────────────────────
+
 
 def test_no_tracker_enter_inside_async_generators():
     offenders = []
@@ -362,6 +364,7 @@ async def _post_fix_gguf_loop(cancel_event):
 
 # ── Behavioral tests ─────────────────────────────────────────
 
+
 def test_finally_cleanup_on_normal_completion():
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
@@ -486,6 +489,7 @@ def test_cancel_during_streaming_stops_iteration_promptly():
 
 
 # ── Cancel-event responsiveness in the streaming loops ───────
+
 
 def _loop_has_cancel_event_check(fn) -> bool:
     # a cancel POST can't interrupt, since Colab-style proxies drop request.is_disconnected().
@@ -750,6 +754,7 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
 
 
 # ── Behavioral simulations for the iter-1 fixes ──────────────
+
 
 def test_unsloth_stream_loop_breaks_on_external_cancel_event():
     cancel_event = threading.Event()

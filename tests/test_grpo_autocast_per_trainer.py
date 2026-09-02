@@ -50,6 +50,7 @@ REPL_SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 # ---- the two pieces of source under test ---------------------------------
 
+
 def _mixed_precision_source() -> str:
     """The `mixed_precision = (...)` literal rl.py compiles into __init__."""
     for node in ast.walk(ast.parse(RL_SRC)):
@@ -102,6 +103,7 @@ class _pretend_cuda:
 
 
 # ---- a trainer, as far as any of this code can tell ----------------------
+
 
 class _Args:
     """The fields of TrainingArguments that rl.py writes and the header reads.
@@ -220,9 +222,8 @@ def _generate(trainer, env, has_bf16):
     return scope["seen"][0]
 
 
-
-
 # ---- the bug -------------------------------------------------------------
+
 
 @pytest.mark.parametrize("has_mixed_precision", [True, False])
 def test_a_later_trainer_cannot_re_enable_this_trainers_autocast(has_mixed_precision):
@@ -341,6 +342,7 @@ def test_the_trainer_init_prefers_the_finetuning_stamp_over_the_shared_flag():
 
 
 # ---- the same question again, inside native generation -------------------
+
 
 def _fast_generate_autocast_source() -> str:
     """The autocast unsloth_base_fast_generate builds around _old_generate."""
@@ -597,6 +599,7 @@ def test_the_diffusion_dispatch_stamps_both_answers():
 
 
 # ---- everything that must NOT change -------------------------------------
+
 
 def test_a_float16_trainer_alone_still_autocasts():
     env = {}

@@ -37,6 +37,7 @@ _PYSTACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
 # ── _hf_resolve_url_parts ────────────────────────────────────────────────────
 
+
 def test_hf_resolve_url_parts_valid():
     assert prebuilt._hf_resolve_url_parts(
         "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
@@ -57,6 +58,7 @@ def test_hf_resolve_url_parts_non_hf_returns_none(url):
 
 
 # ── _fetch_validation_model_bytes ────────────────────────────────────────────
+
 
 def test_fetch_validation_model_prefers_huggingface_hub(tmp_path):
     model = tmp_path / "stories260K.gguf"
@@ -82,6 +84,7 @@ def test_fetch_validation_model_falls_back_to_urllib_on_hf_failure():
 
 
 # ── run_capture amd-smi RunAsInvoker injection ───────────────────────────────
+
 
 def _capture_env(command, system):
     captured = {"env": "sentinel"}
@@ -118,6 +121,7 @@ def test_run_capture_no_injection_on_linux():
 
 
 # ── name->arch table parity (install.ps1 vs setup.ps1) ───────────────────────
+
 
 def _ps_name_arch_rows(text):
     return re.findall(r'@\{\s*P\s*=\s*"([^"]*)"\s*;\s*A\s*=\s*"(gfx[0-9a-z]+)"', text)
@@ -564,6 +568,7 @@ def test_install_ps1_installs_rocm_torch_for_known_arch():
 
 
 # ── PR #6296 follow-ups (review-bot findings) ────────────────────────────────
+
 
 def test_external_hipinfo_strips_quoted_path_entries(tmp_path):
     # Windows PATH entries can carry surrounding double quotes;

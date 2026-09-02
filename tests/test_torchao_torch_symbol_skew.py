@@ -47,6 +47,7 @@ GPU_INIT = ROOT / "unsloth" / "_gpu_init.py"
 
 # ---- the placeholder ------------------------------------------------------
 
+
 def test_it_can_be_imported():
     """The whole point: satisfy `from torch.nn.functional import X`."""
     ph = _make_torch_symbol_placeholder("ScalingType", "detail here")
@@ -89,6 +90,7 @@ def test_it_is_marked_as_ours():
 
 
 # ---- the gating -----------------------------------------------------------
+
 
 def test_it_is_a_no_op_when_torch_already_has_the_symbols():
     """On torch >= 2.10 overwriting the real enum with a raising placeholder
@@ -137,6 +139,7 @@ def test_calling_it_twice_is_stable():
 
 # ---- the wiring -----------------------------------------------------------
 
+
 def test_it_runs_before_unsloth_zoo_is_imported():
     """unsloth_zoo pulls in transformers and therefore torchao, so calling the
     fix after that import would be pointless."""
@@ -181,6 +184,7 @@ def test_symbols_torch_already_provides_are_never_replaced():
 
 
 # ---- the fix actually unblocks the import --------------------------------
+
 
 def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     """The decisive test: run torchao 0.18's own import line on this torch and
@@ -289,6 +293,7 @@ def test_the_mlx_call_cannot_break_the_import():
 
 
 # ---- version gating across the strings that actually ship ----------------
+
 
 @pytest.mark.parametrize(
     "version,affected",

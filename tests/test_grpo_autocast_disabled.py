@@ -81,6 +81,7 @@ def test_disabling_autocast_skips_that_check():
 
 # ---- _prepare_inputs, which is injected as source ------------------------
 
+
 def _prepare_inputs_snippet() -> str:
     """The `with` header grpo_trainer__prepare_inputs splices into TRL."""
     start = SRC.index('"with torch.inference_mode(), "')
@@ -151,6 +152,7 @@ def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, exp
 
 # _get_per_token_logps and friends, which run as ordinary code --------
 # ---- _get_per_token_logps and friends, which run as ordinary code --------
+
 
 def test_every_autocast_call_passes_enabled():
     """Five call sites share one `self._autocast_dtype`; one left behind would

@@ -47,6 +47,7 @@ HANDOFF = "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF"
 
 # ── extracting the shipped source, so these tests exercise it rather than a copy ──────────────
 
+
 def _balanced(src: str, start: int, opener: str, closer: str) -> str:
     """Slice from `start` through the delimiter that closes the first `opener` after it."""
     depth, i = 0, src.index(opener, start)
@@ -125,6 +126,7 @@ def _prelude(src: str) -> str:
 
 
 # ── the driver: run the shipped blocks against a stubbed adapter list ─────────────────────────
+
 
 def _driver(
     src: str,
@@ -205,6 +207,7 @@ def _run(
 
 
 # ── source assertions ─────────────────────────────────────────────────────────────────────────
+
 
 def test_scan_wraps_the_whole_if_in_an_array():
     """The unwrapped form is the bug, so keep it out of the source."""
@@ -420,6 +423,7 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
 
 # ── runtime: install.ps1 picks the adapter setup would keep ───────────────────────────────────
 
+
 def _installer_scan_block() -> str:
     """install.ps1's own `if (-not $HasROCm)` WMI fallback plus the name table it feeds.
     The report-only peer scan added for #8529 is a SEPARATE block, deliberately outside
@@ -506,6 +510,7 @@ def test_the_installer_and_setup_agree_on_which_adapter_is_active(tmp_path):
 
 
 # ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
+
 
 def _handoff_lifecycle_block() -> str:
     """install.ps1's save / set / try / finally around the setup call, as shipped."""

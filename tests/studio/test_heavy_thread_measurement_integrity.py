@@ -452,6 +452,7 @@ def test_the_menu_growth_value_has_both_floors_removed() -> None:
 
 # ── a null repetition is a failure, not a sample to drop ──────────────
 
+
 def menu_repetition(open_ms: float | None) -> dict:
     close_ms = 40.0
     total = None if open_ms is None else open_ms + close_ms
@@ -494,6 +495,7 @@ def test_the_median_of_three_good_repetitions_is_unchanged() -> None:
 
 
 # ── the verdict must reject an action that never settled ──────────────
+
 
 def clean_cell() -> dict:
     """One (engine, size) cell that harness_failures() has nothing to say about."""
@@ -636,6 +638,7 @@ def test_a_jump_that_never_settled_is_a_harness_failure() -> None:
 
 
 # ── the per-repetition fixture ────────────────────────────────────────
+
 
 class StubLocator:
     def __init__(self, log: list, selector: str) -> None:
@@ -899,6 +902,7 @@ def test_an_action_that_ran_without_a_count_is_still_reported() -> None:
 # the wall axes carry the floor they actually paid ──────────────────
 # ── the wall axes carry the floor they actually paid ──────────────────
 
+
 def wall_cells(
     paint_waits: int,
     floor_ms: float = 33.0,
@@ -953,6 +957,7 @@ def test_a_missing_wait_count_subtracts_nothing_rather_than_crashing() -> None:
 
 
 # ── an application exception is not engine chatter ────────────────────
+
 
 def error_cell(seed_errors = 0, action_errors = 0) -> dict:
     cell = copy.deepcopy(clean_cell())
@@ -1226,6 +1231,7 @@ def wall_cells_for_report(paint_waits: int) -> dict:
 
 
 # ── halves, and counters that never left the noise ────────────────────
+
 
 def test_a_fractional_median_wait_count_is_not_truncated() -> None:
     """`summarise` medians the wait count across repetitions, so an even-repetition run whose

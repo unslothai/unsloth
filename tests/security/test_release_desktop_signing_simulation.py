@@ -97,6 +97,7 @@ def run_step(script, env):
 
 # ── a local stand-in for the GitHub release asset ────────────────────────────
 
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     payload = b""
     truncate = False
@@ -166,6 +167,7 @@ def installed_binary(sandbox):
 
 # ── static contracts on the PR ───────────────────────────────────────────────
 
+
 def test_pin_is_a_full_sha256_and_a_versioned_url():
     url, digest = pinned()
     assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
@@ -204,6 +206,7 @@ def test_the_install_step_never_interpolates_workflow_expressions():
 
 
 # ── the happy path ───────────────────────────────────────────────────────────
+
 
 def test_a_matching_digest_installs_and_publishes_the_path(sandbox, asset_server):
     url, handler = asset_server
@@ -260,6 +263,7 @@ def test_a_path_containing_spaces_still_works(tmp_path, asset_server):
 
 # ── every way it must fail closed ────────────────────────────────────────────
 
+
 def test_a_tampered_asset_fails_the_release(sandbox, asset_server):
     url, _ = asset_server
     code, out = run_step(sandbox["install"], install_env(sandbox, url, "0" * 64))
@@ -313,6 +317,7 @@ def test_an_empty_digest_pin_cannot_pass(sandbox, asset_server):
 
 
 # ── the verify step ──────────────────────────────────────────────────────────
+
 
 def _fake_on_path(directory, name, script):
     directory.mkdir(parents = True, exist_ok = True)

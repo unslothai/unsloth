@@ -226,6 +226,7 @@ def _install_fake_model_info(monkeypatch, filenames):
 
 # ----- Finding P: variant-aware weight-format selection -----
 
+
 def test_variant_keeps_bin_when_only_default_safetensors(monkeypatch):
     """A default model.safetensors must not prove a variant .bin redundant; without a variant it does."""
     _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.fp16.bin"])
@@ -768,6 +769,7 @@ def test_gguf_file_warm_keeps_gguf(capture):
 
 
 # ----- Finding Q: adapter weight-format selection -----
+
 
 def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):
     """A mixed-format adapter repo warms only the safetensors PeftModel reads, not both formats."""

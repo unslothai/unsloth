@@ -173,6 +173,7 @@ def test_an_unset_switch_plans_so_a_bare_from_pretrained_needs_no_device_map(mon
 
 # ------------------------------------------------------- where planning cannot apply
 
+
 @pytest.mark.parametrize(
     "kwargs,why",
     [
@@ -444,6 +445,7 @@ def test_the_default_device_map_still_resolves_to_the_plain_sentinel():
 
 # ------------------------------------------------------------- when it does plan
 
+
 def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
     seen = {}
 
@@ -712,6 +714,7 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
 
 # Planning by default reaches paths the opt-in never did.
 # --------------------------------------------------------------------------------------
+
 
 def _helpers():
     """`planner_kwargs_with_max_memory` / `planner_hub_kwargs`, without importing torch."""

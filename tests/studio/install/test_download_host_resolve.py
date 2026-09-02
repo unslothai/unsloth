@@ -244,6 +244,7 @@ def test_resolved_release_manifest_404_falls_back(monkeypatch):
 
 # --- _download_host_latest_release_tag (redirect resolution) -------------------
 
+
 class _FakeResponse:
     def __init__(self, url):
         self._url = url

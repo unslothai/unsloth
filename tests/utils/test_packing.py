@@ -174,9 +174,8 @@ def test_configure_padding_free():
     assert config.remove_unused_columns is False
 
 
-
-
 # --- Hybrid linear-attention guard + varlen shim (PR #7211 / #7249) ---------------
+
 
 def _hybrid_config_model():
     # Qwen3.5 / Qwen3-Next style:

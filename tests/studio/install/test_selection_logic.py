@@ -267,6 +267,7 @@ def mock_windows_runtime(monkeypatch, lines):
 
 # ===========================================================================
 
+
 class TestStudioLocalhostIpv6Warning:
     def _prepare_loopback(self, run_module, monkeypatch):
         # Unsloth confirmed answering on the IPv4 loopback.
@@ -441,6 +442,7 @@ class TestStudioLocalhostIpv6Warning:
 
 # ===========================================================================
 
+
 def test_core_helper_aliases_bound_to_prebuilt_core():
     import prebuilt_core as _core
     for name in (
@@ -456,6 +458,7 @@ def test_core_helper_aliases_bound_to_prebuilt_core():
 
 
 # ===========================================================================
+
 
 class TestPickWindowsCudaRuntime:
     def test_no_driver(self):
@@ -509,6 +512,7 @@ class TestCompatibleWindowsRuntimeLines:
 
 
 # ===========================================================================
+
 
 class TestApplyApprovedHashes:
     def _choice(self, name):
@@ -622,6 +626,7 @@ class TestApplyApprovedHashes:
 
 
 # ===========================================================================
+
 
 class TestPublishedReleaseResolution:
     def test_latest_skips_invalid_release_and_uses_next_valid(self, monkeypatch):
@@ -997,6 +1002,7 @@ class TestValidatedChecksumsForBundle:
 
 
 # ===========================================================================
+
 
 class TestLinuxCudaChoiceFromRelease:
     def test_no_runtime_lines_detected(self, monkeypatch):
@@ -1513,6 +1519,7 @@ class TestLinuxCudaChoiceFromRelease:
 
 
 # ===========================================================================
+
 
 class TestResolveInstallAttempts:
     def test_windows_cuda_prefers_published_asset_from_selected_release(self, monkeypatch):
@@ -2142,6 +2149,7 @@ class TestResolveInstallReleasePlans:
 
 # ===========================================================================
 
+
 class TestWindowsCudaAttempts:
     TAG = "b8508"
 
@@ -2347,6 +2355,7 @@ class TestWindowsCudaAttempts:
 
 # ===========================================================================
 
+
 class TestWindowsCudaAttemptCoversBlackwell:
     """A windows-cuda attempt covers Blackwell only when its toolkit minor (from the asset name) is >= 12.8, or, for app-named bundles without a toolkit minor, its declared max_sm reaches sm_120."""
 
@@ -2423,6 +2432,7 @@ class TestWindowsCudaAttemptCoversBlackwell:
 
 
 # ===========================================================================
+
 
 class TestDirectUpstreamBlackwellPin:
     """On the simple/upstream path a Blackwell host drops the sm_120-incapable cuda-12.4 attempt; with no pinned fallback it falls through to the windows-cpu build, while an in-release cuda-13.3 build is taken when present."""
@@ -2635,6 +2645,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
 
 # ===========================================================================
 
+
 class TestPublishedWindowsCudaAttemptsDynamicMajor:
     """The ordering seed is derived from the release's published minors, so a future CUDA major is selectable, not hidden by a hardcoded cuda12/cuda13 seed."""
 
@@ -2695,6 +2706,7 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
 
 
 # ===========================================================================
+
 
 class TestResolveReleaseAssetChoicePin:
     """The manifest install path drops sm_120-incapable windows-cuda attempts on Blackwell exactly like the filename path; with no pinned fallback a 13.1 host left with only cuda-12.4 has no usable CUDA attempt and walks back, while a 13.3 host keeps its in-release cuda-13.3 build."""
@@ -3139,6 +3151,7 @@ class TestPublishedMacosForkSelection:
 
 # ===========================================================================
 
+
 class TestApplyApprovedHashesRuntimePair:
     """Runtime archive inherits a manifest hash, or is dropped."""
 
@@ -3209,6 +3222,7 @@ class TestApplyApprovedHashesRuntimePair:
 
 
 # ===========================================================================
+
 
 class TestResolveUpstreamAssetChoice:
     TAG = "b8508"
@@ -3373,6 +3387,7 @@ class TestResolveUpstreamAssetChoice:
 
 # ===========================================================================
 
+
 def _macos_host(machine = "arm64", version = (15, 5)):
     return make_host(
         system = "Darwin",
@@ -3481,6 +3496,7 @@ class TestResolveSimpleMacosPin:
 # Linux arm64 + GPU must not install the x64-only fork bundle
 # ===========================================================================
 
+
 class TestLinuxArm64ForkFallsBackToSource:
     """The fork ships linux-arm64-cuda bundles; an arm64 Linux fork host delegates to the manifest-aware resolver (arm64 CUDA bundle, or source if none matches) instead of hard-failing."""
 
@@ -3533,6 +3549,7 @@ class TestLinuxArm64ForkFallsBackToSource:
 
 
 # ===========================================================================
+
 
 class TestCpuFallback:
     """--cpu-fallback drops GPU attributes so the host's OS/arch CPU prebuilt is selected, letting an arm64 GPU host install the fork's arm64 CPU bundle when its source build produced no binary."""
@@ -3628,6 +3645,7 @@ class TestCpuFallback:
 
 
 # ===========================================================================
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "bash-only Unsloth installer tests")
 class TestCudaDriverToolkitMismatchMessage:

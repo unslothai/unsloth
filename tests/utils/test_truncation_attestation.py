@@ -225,6 +225,7 @@ if __name__ == "__main__":
 # ------------------------------------------- the generated block must still parse
 # ------------------------------------------------- the copy rl.py inlines
 
+
 def test_the_generated_max_length_block_is_valid_python():
     """The block only exists as string literals, so a stray indent or unclosed
     bracket stays invisible until a user gets a `SyntaxError` from a generated

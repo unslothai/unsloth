@@ -46,6 +46,7 @@ from unsloth import import_fixes as IF  # noqa: E402
 
 # ---- the generated sitecustomize -----------------------------------------
 
+
 def test_it_is_valid_python():
     """A syntax error breaks every subprocess on the machine, which is far
     worse than the bug being fixed."""
@@ -111,6 +112,7 @@ def test_it_only_imports_the_stdlib_and_torch():
 
 
 # ---- staging ---------------------------------------------------------------
+
 
 @pytest.fixture(autouse = True)
 def _restore_pythonpath():
@@ -183,6 +185,7 @@ def test_it_is_idempotent_on_pythonpath():
 
 
 # ---- the directory it writes into -----------------------------------------
+
 
 def test_the_directory_is_private_to_this_user():
     """The temp dir is shared and everything on PYTHONPATH runs in every
@@ -264,6 +267,7 @@ def test_the_refusal_does_not_propagate_as_a_crash(monkeypatch):
 
 
 # ---- behaviour, with real interpreters ------------------------------------
+
 
 @pytest.fixture
 def staged(tmp_path):
@@ -497,6 +501,7 @@ if __name__ == "__main__":
 
 # ---- the in-process fix must not disable this one -------------------------
 
+
 def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp_path):
     """_gpu_init.py runs fix_torchao_torch_symbol_skew() immediately before
     this one, so a gate asking only `hasattr` would read its placeholders as a
@@ -545,6 +550,7 @@ def test_a_placeholder_does_not_count_as_a_real_torch_symbol():
 
 # a hook file planted before the directory was tightened ---------------
 # ---- a hook file planted before the directory was tightened ---------------
+
 
 def _plant(directory, kind, source):
     """A `sitecustomize.py` as it could survive a once-writable directory."""
@@ -700,6 +706,7 @@ def test_the_staging_file_is_private_and_leaves_nothing_behind(tmp_path):
 
 # the chained sitecustomize keeps its own name -------------------------
 # ---- the chained sitecustomize keeps its own name -------------------------
+
 
 def test_a_chained_package_stays_importable(staged, tmp_path):
     """Restoring our module under `sitecustomize` would hide the real one from

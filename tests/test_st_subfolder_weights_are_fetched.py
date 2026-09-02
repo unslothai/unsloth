@@ -76,6 +76,7 @@ def modules_json(tmp_path, monkeypatch):
 
 # ---- detection -----------------------------------------------------------
 
+
 def test_embeddinggemma_layout_is_detected(modules_json):
     modules_json(EMBEDDINGGEMMA)
     assert U._repo_has_weighted_st_subfolders("unsloth/embeddinggemma-300m") is True
@@ -136,6 +137,7 @@ def test_the_taxonomy_is_shared_with_unsloth_zoo_not_restated():
 
 # the behaviour that actually changed ---------------------------------
 # ---- the behaviour that actually changed ---------------------------------
+
 
 def _ignores(
     model_name,

@@ -58,6 +58,7 @@ make_q_galore_param_groups = _adamw_mod.make_q_galore_param_groups
 
 # ======================================================================
 
+
 class TestGaLoreProjector:
     """Tests for the GaLore low-rank gradient projector."""
 
@@ -148,6 +149,7 @@ class TestGaLoreProjector:
 
 # ======================================================================
 
+
 class TestQuantizationUtils:
     """Tests for _quantize, _dequantize, _quantize_stochastic."""
 
@@ -197,6 +199,7 @@ class TestQuantizationUtils:
 
 
 # ======================================================================
+
 
 class TestParamGroupHelper:
     """Tests for make_q_galore_param_groups."""
@@ -275,6 +278,7 @@ class TestParamGroupHelper:
 
 
 # ======================================================================
+
 
 class TestQGaLoreIntegration:
     """Integration tests that work without bitsandbytes on CPU."""

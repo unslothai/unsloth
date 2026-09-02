@@ -86,6 +86,7 @@ _ROUTABLE_ARCHES = [("gfx1030", "gfx103X-all"), ("gfx1100", "gfx110X-all")]
 
 # ── The Python resolvers, called rather than inspected ───────────────────────
 
+
 @pytest.fixture(autouse = True)
 def _no_index_mirror():
     """Both resolvers honour a mirror override, and a host that has one set would
@@ -145,6 +146,7 @@ class TestPythonIndexResolversAreAskedDirectly:
 
 
 # ── install.sh's case table, executed under sh ───────────────────────────────
+
 
 def _sh_function_body(source: str, name: str) -> str:
     """Same extraction as test_rdna1_unsupported_message_8529.py: take the function
@@ -372,6 +374,7 @@ def test_setup_sh_never_assigns_an_unsupported_arch_to_the_routed_variable(arch)
 
 
 # ── The PowerShell copies of the same map ────────────────────────────────────
+
 
 def _ps_block(source: str, header: str, opener: str, closer: str) -> str:
     """The literal `@{...}` or `@(...)` that `header` opens, balanced."""
