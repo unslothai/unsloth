@@ -69,7 +69,10 @@ export type ShortcutId =
   | "forkChat"
   | "searchChats"
   | "renameChat"
-  | "openKeyboardShortcuts";
+  | "openKeyboardShortcuts"
+  | "zoomIn"
+  | "zoomOut"
+  | "resetZoom";
 
 /** Which of an action's two chords a value belongs to. */
 export type ShortcutSlot = "primary" | "alternate";
@@ -209,6 +212,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+Shift+KeyM",
   }),
   def("toggleSidebar", "Mod+KeyB"),
+  def("zoomIn", "Mod+Equal"),
+  def("zoomOut", "Mod+Minus"),
+  def("resetZoom", "Mod+Digit0"),
   def("openMcpServers", null),
   // ⇧Esc is Chrome's and Edge's task manager off macOS.
   def("clearAllUnreads", "Shift+Escape", {
@@ -543,6 +549,7 @@ function keyToCode(key: string): string {
     "\\": "Backslash",
     "-": "Minus",
     "=": "Equal",
+    "+": "Equal",
     "`": "Backquote",
   };
   return punctuation[key] ?? key;
@@ -562,7 +569,6 @@ export function matchesBinding(
   mac = isMacPlatform(),
 ): boolean {
   const code = event.code || keyToCode(event.key ?? "");
-  if (code !== binding.code) return false;
   // Off macOS a Ctrl chord is unreachable, and without this a value stored on
   // a Mac would fall through the checks below and fire on the bare key.
   if (!mac && binding.ctrl) return false;
@@ -577,6 +583,32 @@ export function matchesBinding(
   } else if (otherModHeld) {
     return false;
   }
+
+  // Equal / Zoom in: '+' is Shift+'=' on standard layouts, so allow shift when matching Equal
+  if (
+    binding.code === "Equal" &&
+    (code === "Equal" || code === "NumpadAdd" || event.key === "+" || event.key === "=")
+  ) {
+    return event.altKey === binding.alt;
+  }
+
+  // Minus / Zoom out: allow NumpadSubtract
+  if (
+    binding.code === "Minus" &&
+    (code === "Minus" || code === "NumpadSubtract" || event.key === "-")
+  ) {
+    return event.shiftKey === binding.shift && event.altKey === binding.alt;
+  }
+
+  // Digit0 / Reset zoom: allow Numpad0
+  if (
+    binding.code === "Digit0" &&
+    (code === "Digit0" || code === "Numpad0" || event.key === "0")
+  ) {
+    return event.shiftKey === binding.shift && event.altKey === binding.alt;
+  }
+
+  if (code !== binding.code) return false;
   return event.shiftKey === binding.shift && event.altKey === binding.alt;
 }
 

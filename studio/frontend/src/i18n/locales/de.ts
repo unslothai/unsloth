@@ -226,6 +226,18 @@ export const de = {
       browserReserved:
         "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
       actions: {
+        zoomIn: {
+          label: "Vergrößern",
+          description: "Benutzeroberfläche vergrößern",
+        },
+        zoomOut: {
+          label: "Verkleinern",
+          description: "Benutzeroberfläche verkleinern",
+        },
+        resetZoom: {
+          label: "Zoom zurücksetzen",
+          description: "Benutzeroberfläche auf 100 % zurücksetzen",
+        },
         openSettings: {
           label: "Einstellungen öffnen",
           description: "Den Einstellungsdialog öffnen",

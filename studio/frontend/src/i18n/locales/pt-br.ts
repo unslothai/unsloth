@@ -224,6 +224,18 @@ export const ptBR = {
       browserReserved:
         "Seu navegador pode reservar essa combinação. No app para desktop ela funciona.",
       actions: {
+        zoomIn: {
+          label: "Aumentar zoom",
+          description: "Aumentar escala da interface",
+        },
+        zoomOut: {
+          label: "Diminuir zoom",
+          description: "Diminuir escala da interface",
+        },
+        resetZoom: {
+          label: "Redefinir zoom",
+          description: "Restaurar escala da interface para 100%",
+        },
         openSettings: {
           label: "Abrir configurações",
           description: "Abrir a janela de configurações",

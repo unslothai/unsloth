@@ -222,6 +222,18 @@ export const ko = {
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
       actions: {
+        zoomIn: {
+          label: "확대",
+          description: "UI 배율을 확대합니다",
+        },
+        zoomOut: {
+          label: "축소",
+          description: "UI 배율을 축소합니다",
+        },
+        resetZoom: {
+          label: "확대/축소 초기화",
+          description: "UI 배율을 100%로 초기화합니다",
+        },
         openSettings: {
           label: "설정 열기",
           description: "설정 창을 엽니다",

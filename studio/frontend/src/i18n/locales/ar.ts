@@ -222,6 +222,18 @@ export const ar = {
       browserReserved:
         "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
       actions: {
+        zoomIn: {
+          label: "تكبير",
+          description: "تكبير واجهة المستخدم",
+        },
+        zoomOut: {
+          label: "تصغير",
+          description: "تصغير واجهة المستخدم",
+        },
+        resetZoom: {
+          label: "إعادة ضبط التكبير",
+          description: "إعادة ضبط مقياس الواجهة إلى 100%",
+        },
         openSettings: {
           label: "فتح الإعدادات",
           description: "فتح مربع حوار الإعدادات",

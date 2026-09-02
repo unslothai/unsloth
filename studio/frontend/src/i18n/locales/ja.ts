@@ -224,6 +224,18 @@ export const ja = {
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       actions: {
+        zoomIn: {
+          label: "拡大",
+          description: "UIの表示倍率を拡大します",
+        },
+        zoomOut: {
+          label: "縮小",
+          description: "UIの表示倍率を縮小します",
+        },
+        resetZoom: {
+          label: "ズームをリセット",
+          description: "UIの表示倍率を100%にリセットします",
+        },
         openSettings: {
           label: "設定を開く",
           description: "設定ダイアログを開きます",
