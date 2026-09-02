@@ -70,7 +70,9 @@ def test_a_non_gguf_file_is_not_a_speech_model(tmp_path):
 def test_the_verdict_is_cached_per_file(tmp_path, monkeypatch):
     path = _write_gguf(tmp_path / "spark.gguf", ["<|bicodec_semantic_0|>", "<|bicodec_global_0|>"])
     assert read_gguf_tts_audio_type(path) == "bicodec"
-    monkeypatch.setattr(gguf_metadata, "_parse_gguf_marker_tokens", lambda _p: pytest.fail("reparsed"))
+    monkeypatch.setattr(
+        gguf_metadata, "_parse_gguf_marker_tokens", lambda _p: pytest.fail("reparsed")
+    )
     assert read_gguf_tts_audio_type(path) == "bicodec"
 
 
@@ -78,7 +80,9 @@ def test_the_switch_probe_reads_the_variant_the_load_will_open(tmp_path, monkeyp
     import routes.inference as inference_route
     from utils.models import model_config
 
-    speech = _write_gguf(tmp_path / "model-Q8_0.gguf", ["<|bicodec_semantic_0|>", "<|bicodec_global_0|>"])
+    speech = _write_gguf(
+        tmp_path / "model-Q8_0.gguf", ["<|bicodec_semantic_0|>", "<|bicodec_global_0|>"]
+    )
     text = _write_gguf(tmp_path / "model-Q4_K_M.gguf", ["<|im_start|>"])
     monkeypatch.setattr(
         model_config,

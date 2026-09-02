@@ -6996,13 +6996,16 @@ def _target_accepts_request_input(
     return _target_is_vision(load_path) if (needs_vision and need_image) else True
 
 
-def _target_speaks(load_path: str, is_gguf: bool, gguf_variant: Optional[str] = None) -> bool:
+def _target_speaks(
+    load_path: str,
+    is_gguf: bool,
+    gguf_variant: Optional[str] = None,
+) -> bool:
     from utils.models.model_config import (
         _find_local_gguf_by_variant,
         detect_audio_type,
         detect_gguf_model,
     )
-
     try:
         if not is_gguf:
             audio_type = detect_audio_type(

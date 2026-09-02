@@ -199,7 +199,9 @@ def test_an_over_context_prompt_is_a_client_error(monkeypatch):
 
 def test_the_named_model_reaches_the_switch_hook(monkeypatch):
     cli, calls, _saved = _make_client(monkeypatch)
-    assert cli.post("/v1/audio/speech", json = {"input": "hi", "model": "org/B-GGUF"}).status_code == 200
+    assert (
+        cli.post("/v1/audio/speech", json = {"input": "hi", "model": "org/B-GGUF"}).status_code == 200
+    )
     assert calls[0]["requested_model"] == "org/B-GGUF"
 
 
@@ -211,7 +213,6 @@ def test_an_omitted_model_only_restores_an_idle_evicted_model(monkeypatch):
 
 def test_the_switch_hook_requires_a_speech_target():
     import inspect
-
     source = inspect.getsource(routes_module._generate_tts_wav)
     assert "require_speech = True" in source
 
@@ -238,9 +239,7 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
         if "_raise_if_prompt_leaves_no_speech_budget(text)" in line
     ]
     restore = next(
-        i
-        for i, line in enumerate(source.splitlines())
-        if "await _maybe_auto_switch_model(" in line
+        i for i, line in enumerate(source.splitlines()) if "await _maybe_auto_switch_model(" in line
     )
     assert len(guards) == 2, "one check before the restore, one after"
     assert guards[0] < restore < guards[1]

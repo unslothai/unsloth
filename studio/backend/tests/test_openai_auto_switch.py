@@ -3725,9 +3725,7 @@ def test_require_speech_does_not_probe_a_reload_stash_restore(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(
-        inference_route, "_target_speaks", lambda *_a: pytest.fail("speech probed")
-    )
+    monkeypatch.setattr(inference_route, "_target_speaks", lambda *_a: pytest.fail("speech probed"))
     asyncio.run(
         inference_route._maybe_auto_switch_model(
             inference_route._RELOAD_ONLY_MODEL, object(), "t", require_speech = True
