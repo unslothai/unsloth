@@ -598,20 +598,34 @@ def _wav_header(
     bits: int,
     data_bytes: int,
     byte_rate: int = 0,
+    format_tag: int = 0x0001,
+    sub_format: int = 0,
 ) -> bytes:
     block_align = channels * bits // 8
     byte_rate = byte_rate or sample_rate * block_align
+    # WAVE_FORMAT_EXTENSIBLE needs its 22-byte extension to name a sub-format.
+    extension = b""
+    if sub_format:
+        extension = (
+            (22).to_bytes(2, "little")
+            + bits.to_bytes(2, "little")
+            + (0).to_bytes(4, "little")
+            + sub_format.to_bytes(2, "little")
+            + bytes(14)
+        )
+    fmt_size = 16 + len(extension)
     return (
         b"RIFF"
-        + (36 + data_bytes).to_bytes(4, "little")
+        + (20 + fmt_size + data_bytes).to_bytes(4, "little")
         + b"WAVEfmt "
-        + (16).to_bytes(4, "little")
-        + (1).to_bytes(2, "little")
+        + fmt_size.to_bytes(4, "little")
+        + format_tag.to_bytes(2, "little")
         + channels.to_bytes(2, "little")
         + sample_rate.to_bytes(4, "little")
         + byte_rate.to_bytes(4, "little")
         + block_align.to_bytes(2, "little")
         + bits.to_bytes(2, "little")
+        + extension
         + b"data"
         + data_bytes.to_bytes(4, "little")
     )
@@ -720,6 +734,136 @@ def test_junk_between_frames_cannot_shorten_a_forwarded_mp3(monkeypatch):
         base64.b64encode(spiked).decode()
     )
     assert container == "wav"
+
+
+def test_a_compressed_wav_is_not_measured_with_pcm_arithmetic(monkeypatch):
+    """Only WAVE_FORMAT_PCM fixes nBlockAlign as one sample frame.
+
+    An IMA ADPCM block holds around 505 frames, so rate * blockAlign overstates
+    its byte rate 505-fold and made three hours of audio read as twenty-one
+    seconds, which is short enough to forward. Nothing here can read a codec's
+    own header, so a non-PCM tag reports no duration and is decoded instead.
+    """
+    rate, block_align, samples_per_block = 8_000, 256, 505
+    byte_rate = round(rate / samples_per_block * block_align)
+    payload = b"\x00" * (byte_rate * 120)
+    adpcm = (
+        _wav_header(rate, 1, 4, len(payload), byte_rate = byte_rate, format_tag = 0x11)
+        + payload
+    )
+    assert inference_route._wav_seconds(adpcm) is None
+
+    _decode_instead_of_forwarding(monkeypatch)
+    _encoded, container = inference_route._prepare_audio_for_llama(
+        base64.b64encode(adpcm).decode()
+    )
+    assert container == "wav"
+
+    # Uncompressed tags keep their header arithmetic, extensible included.
+    for tag in (0x0001, 0x0003):
+        pcm = _wav_header(8_000, 1, 8, 8_000, format_tag = tag) + b"\x80" * 8_000
+        assert inference_route._wav_seconds(pcm) == pytest.approx(1.0, rel = 1e-6)
+
+
+def test_an_extensible_wav_is_measured_by_its_sub_format():
+    """WAVE_FORMAT_EXTENSIBLE carries the real tag in its SubFormat GUID, and a
+    file claiming the tag without the extension has not said what it holds."""
+    payload = b"\x80" * 8_000
+    pcm_sub = _wav_header(
+        8_000, 1, 8, len(payload), format_tag = 0xFFFE, sub_format = 0x0001
+    ) + payload
+    assert inference_route._wav_seconds(pcm_sub) == pytest.approx(1.0, rel = 1e-6)
+
+    adpcm_sub = _wav_header(
+        8_000, 1, 8, len(payload), format_tag = 0xFFFE, sub_format = 0x0011
+    ) + payload
+    assert inference_route._wav_seconds(adpcm_sub) is None
+
+    bare = _wav_header(8_000, 1, 8, len(payload), format_tag = 0xFFFE) + payload
+    assert inference_route._wav_seconds(bare) is None
+
+
+def test_the_last_resort_decoder_reads_a_bounded_range(monkeypatch):
+    """torchaudio 2.9's load() is load_with_torchcodec, which calls
+    get_all_samples() and only then slices to num_frames, so the argument bounds
+    the return value and not the allocation. The fallback asks torchcodec for
+    the metadata and reads a range instead."""
+    import torch
+
+    ranges: list = []
+
+    class _Metadata:
+        sample_rate = 16_000
+        num_channels = 1
+        duration_seconds = 5.0
+
+    class _Samples:
+        data = torch.zeros(1, 8_000)
+
+    class _AudioDecoder:
+        def __init__(self, _path):
+            self.metadata = _Metadata()
+
+        def get_samples_played_in_range(self, start, stop):
+            ranges.append((start, stop))
+            return _Samples()
+
+    monkeypatch.setitem(
+        sys.modules, "torchcodec", types.SimpleNamespace(decoders = None)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torchcodec.decoders",
+        types.SimpleNamespace(AudioDecoder = _AudioDecoder),
+    )
+    waveform, rate = inference_route._decode_audio_with_torchcodec("ignored")
+    assert rate == 16_000
+    assert waveform.shape[-1] == 8_000
+    assert len(ranges) == 1
+    start, stop = ranges[0]
+    assert start == 0.0
+    assert stop <= inference_route._MAX_AUDIO_SECONDS + 1
+
+
+def test_the_last_resort_decoder_refuses_an_overlong_file(monkeypatch):
+    class _Metadata:
+        sample_rate = 16_000
+        num_channels = 1
+        duration_seconds = inference_route._MAX_AUDIO_SECONDS + 60
+
+    class _AudioDecoder:
+        def __init__(self, _path):
+            self.metadata = _Metadata()
+
+        def get_samples_played_in_range(self, _start, _stop):
+            raise AssertionError("an over-limit file must not be decoded")
+
+    monkeypatch.setitem(
+        sys.modules, "torchcodec", types.SimpleNamespace(decoders = None)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torchcodec.decoders",
+        types.SimpleNamespace(AudioDecoder = _AudioDecoder),
+    )
+    try:
+        inference_route._decode_audio_with_torchcodec("ignored")
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected the duration limit to refuse this file")
+
+
+def test_the_last_resort_decoder_refuses_without_torchcodec(monkeypatch):
+    """No bounded reader means no read, not an unbounded one."""
+    monkeypatch.setitem(sys.modules, "torchcodec", None)
+    monkeypatch.setitem(sys.modules, "torchcodec.decoders", None)
+    try:
+        inference_route._decode_audio_with_torchcodec("ignored")
+    except RuntimeError as error:
+        assert "could not be decoded" in str(error)
+    else:
+        raise AssertionError("expected a refusal with no bounded reader")
 
 
 def test_a_free_format_frame_does_not_authorise_a_passthrough():
@@ -1032,27 +1176,43 @@ def test_torchaudio_alone_can_still_decode_audio(monkeypatch):
     outright, so torchaudio on its own was enough. torchaudio 2.9 removed
     info(), which is what sends such an install to the streaming chain, and
     that chain needs libsndfile, PyAV or librosa. Losing audio on upgrade is
-    not an acceptable way to gain a memory bound.
+    not an acceptable way to gain a memory bound, so it falls back to the
+    bounded torchcodec reader that 2.9's own load() decodes through.
     """
     import torch
 
-    loaded = []
+    class _Metadata:
+        sample_rate = 16_000
+        num_channels = 1
+        duration_seconds = 0.5
+
+    class _Samples:
+        data = torch.zeros(1, 8_000)
+
+    class _AudioDecoder:
+        def __init__(self, _path):
+            self.metadata = _Metadata()
+
+        def get_samples_played_in_range(self, _start, _stop):
+            return _Samples()
 
     class _FakeTorchaudio:
-        @staticmethod
-        def load(path, **kwargs):
-            loaded.append(path)
-            return torch.zeros(1, 8_000), 16_000
-
         class transforms:
             pass
 
     monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+    monkeypatch.setitem(
+        sys.modules, "torchcodec", types.SimpleNamespace(decoders = None)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torchcodec.decoders",
+        types.SimpleNamespace(AudioDecoder = _AudioDecoder),
+    )
     for absent in ("soundfile", "av", "librosa"):
         monkeypatch.setitem(sys.modules, absent, None)
 
     payload = b"\x80" * 8_000
     raw = _wav_header(8_000, 1, 8, len(payload)) + payload
     decoded = inference_route._decode_audio_base64(base64.b64encode(raw).decode())
-    assert loaded, "torchaudio.load was never reached"
     assert decoded.shape[0] == 8_000

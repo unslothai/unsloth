@@ -17419,11 +17419,18 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
                 # No libsndfile, no PyAV, no librosa. This function used to call
                 # torchaudio.load() outright, so an environment carrying only
                 # torchaudio could decode audio, and an install predating PyAV
-                # as a base requirement must not lose that on upgrade. It is
-                # torchaudio 2.9 dropping info() that routes such an install
-                # here to begin with, so the probe above learned nothing about
-                # the file and the backstop below is what bounds this read.
-                waveform, sr = torchaudio.load(tmp_path)
+                # as a base requirement must not lose that on upgrade.
+                #
+                # It cannot simply call load() again, though. What routes an
+                # install here is torchaudio 2.9 dropping info(), and 2.9's
+                # load() is an alias for load_with_torchcodec, which decodes the
+                # whole file with get_all_samples() and only then slices to
+                # num_frames -- so the argument bounds the return value and not
+                # the allocation, and a 25 MB Opus upload holding hours of audio
+                # exhausts the backend before any check below runs. Ask
+                # torchcodec what the file is first, and read only a bounded
+                # range of it.
+                waveform, sr = _decode_audio_with_torchcodec(tmp_path)
             else:
                 waveform = torch.from_numpy(samples).unsqueeze(0)
     finally:
@@ -17539,6 +17546,63 @@ _MPEG_SAMPLE_RATES = {
 }
 
 
+def _decode_audio_with_torchcodec(path: str) -> "tuple[Any, int]":
+    """Read a bounded range of an audio file with torchcodec, or refuse.
+
+    The last resort for an install carrying torchaudio and no other decoder.
+    torchcodec is what torchaudio 2.9's own load() decodes through, so it is
+    present wherever that load() would have worked, and its metadata answers
+    the rate and duration without decoding anything.
+    """
+    try:
+        from torchcodec.decoders import AudioDecoder
+    except Exception as e:  # noqa: BLE001 - no bounded reader, so no read
+        raise RuntimeError(
+            "this audio format could not be decoded; run `unsloth studio update` "
+            "to install PyAV or convert it to wav, mp3, ogg or flac"
+        ) from e
+
+    decoder = AudioDecoder(path)
+    metadata = decoder.metadata
+    rate = int(getattr(metadata, "sample_rate", 0) or 0)
+    if rate <= 0:
+        raise RuntimeError(
+            "this audio file does not report a sample rate, so it cannot be "
+            "decoded within the size limit; convert it to wav or mp3"
+        )
+    duration = float(getattr(metadata, "duration_seconds", 0.0) or 0.0)
+    if duration > _MAX_AUDIO_SECONDS:
+        raise _DecodedAudioTooLongError(
+            f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+        )
+    # Both ceilings, and a second past the clock so a container understating its
+    # own duration is still cut rather than believed.
+    channels = max(1, int(getattr(metadata, "num_channels", 1) or 1))
+    seconds = min(_MAX_AUDIO_SECONDS + 1, _MAX_DECODED_SAMPLES / (rate * channels) + 1)
+    samples = decoder.get_samples_played_in_range(0.0, seconds)
+    return samples.data, rate
+
+
+_WAVE_FORMAT_PCM = 0x0001
+_WAVE_FORMAT_IEEE_FLOAT = 0x0003
+_WAVE_FORMAT_EXTENSIBLE = 0xFFFE
+
+
+def _wav_format_is_pcm(raw: bytes, body: int, size: int, format_tag: int) -> bool:
+    """Whether a fmt chunk describes uncompressed samples.
+
+    WAVE_FORMAT_EXTENSIBLE carries the real tag in the first two bytes of its
+    SubFormat GUID, 24 bytes into the extension. A file that claims the tag
+    without carrying the extension has not said what it holds.
+    """
+    if format_tag in (_WAVE_FORMAT_PCM, _WAVE_FORMAT_IEEE_FLOAT):
+        return True
+    if format_tag != _WAVE_FORMAT_EXTENSIBLE or size < 40 or body + 26 > len(raw):
+        return False
+    sub_format = int.from_bytes(raw[body + 24 : body + 26], "little")
+    return sub_format in (_WAVE_FORMAT_PCM, _WAVE_FORMAT_IEEE_FLOAT)
+
+
 def _wav_seconds(raw: bytes) -> Optional[float]:
     """Seconds of PCM a RIFF/WAVE header describes, or None if it cannot say.
 
@@ -17554,16 +17618,26 @@ def _wav_seconds(raw: bytes) -> Optional[float]:
         size = int.from_bytes(raw[offset + 4 : offset + 8], "little")
         body = offset + 8
         if chunk == b"fmt " and size >= 16 and body + 16 <= len(raw):
+            format_tag = int.from_bytes(raw[body : body + 2], "little")
             channels = int.from_bytes(raw[body + 2 : body + 4], "little")
             sample_rate = int.from_bytes(raw[body + 4 : body + 8], "little")
             declared_rate = int.from_bytes(raw[body + 8 : body + 12], "little")
             block_align = int.from_bytes(raw[body + 12 : body + 14], "little")
             bits = int.from_bytes(raw[body + 14 : body + 16], "little")
-            # nAvgBytesPerSec is redundant with the fields around it, so it is
-            # the one that can be moved on its own. Multiplied by ten thousand
-            # it made half an hour of PCM read as a quarter of a second, and a
-            # quarter of a second is forwarded untouched. Recompute it, and take
-            # the declaration only where it agrees.
+            if not _wav_format_is_pcm(raw, body, size, format_tag):
+                # Only WAVE_FORMAT_PCM fixes nBlockAlign as one sample frame and
+                # nAvgBytesPerSec as rate * blockAlign; for every other tag both
+                # are the codec's business (mmeapi WAVEFORMATEX). An IMA ADPCM
+                # block holds ~505 frames, so PCM arithmetic overstates its rate
+                # 505-fold and read three hours as twenty-one seconds. Nothing
+                # here can check a codec's own header, so say so and let the
+                # bounded decoder have it.
+                return None
+            # Among the PCM fields nAvgBytesPerSec is the redundant one, so it
+            # is the one that can be moved alone. Multiplied by ten thousand it
+            # made half an hour read as a quarter of a second, and a quarter of
+            # a second is forwarded untouched. Recompute it, and take the
+            # declaration only where it agrees.
             computed = sample_rate * (block_align or channels * (bits // 8))
             byte_rate = computed if computed > 0 and declared_rate != computed else declared_rate
         elif chunk == b"data":
