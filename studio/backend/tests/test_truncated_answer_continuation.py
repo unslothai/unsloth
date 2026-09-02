@@ -297,9 +297,14 @@ def test_the_final_continuation_turns_the_generation_prompt_off(monkeypatch):
     _run_no_tools(backend)
 
     assert len(payloads) == 2, "the final answer was left mid-sentence"
-    for payload in payloads:
-        if payload.get("continue_final_message"):
-            assert payload.get("add_generation_prompt") is False
+    # Named, not scanned for: a continuation that stopped carrying
+    # `continue_final_message` would satisfy a loop over the payloads while
+    # saying nothing about the flag this test exists for.
+    assert payloads[1]["continue_final_message"] is True
+    assert payloads[1]["add_generation_prompt"] is False
+    # The first pass ends on the user turn, where the generation prompt is what
+    # makes the model answer at all, so it must keep llama-server's default.
+    assert "add_generation_prompt" not in payloads[0]
 
 
 def test_the_final_continuation_is_capped(monkeypatch):
