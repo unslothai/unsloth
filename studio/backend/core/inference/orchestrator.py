@@ -1722,10 +1722,9 @@ class InferenceOrchestrator:
                     # not something the worker reports back. Only native audio
                     # reads the preference; marking anything else would tell
                     # training a GPU-resident model holds no VRAM.
-                    self.models[self.active_model_name]["audio_cpu"] = (
-                        model_info.get("audio_type") in NATIVE_AUDIO_TYPES
-                        and audio_device_forces_cpu(audio_device)
-                    )
+                    self.models[self.active_model_name]["audio_cpu"] = model_info.get(
+                        "audio_type"
+                    ) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(audio_device)
                     self.models[self.active_model_name].update(
                         _mlx_runtime_mirror_fields(model_info)
                     )

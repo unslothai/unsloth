@@ -28,7 +28,17 @@ from fastapi import (
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, Collection, List, Literal, NamedTuple, Optional, TYPE_CHECKING, Union
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    TYPE_CHECKING,
+    Union,
+)
 import functools
 import json
 import httpx
@@ -11899,7 +11909,9 @@ def _resident_audio_holds_no_gpu(backend) -> bool:
     from core.inference.native_audio import NATIVE_AUDIO_TYPES
 
     resident = backend.models.get(backend.active_model_name, {})
-    return resident.get("audio_type") in NATIVE_AUDIO_TYPES and bool(resident.get("audio_cpu", False))
+    return resident.get("audio_type") in NATIVE_AUDIO_TYPES and bool(
+        resident.get("audio_cpu", False)
+    )
 
 
 async def _preflight_native_audio_placement(

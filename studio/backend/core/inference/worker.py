@@ -1122,7 +1122,6 @@ def run_inference_process(
             audio_device_forces_cpu,
             mask_accelerators_for_cpu_audio,
         )
-
         if audio_device_forces_cpu(config.get("audio_device")):
             mask_accelerators_for_cpu_audio(os.environ)
             logger.info("Audio model '%s' pinned to CPU RAM; accelerators hidden", model_name)

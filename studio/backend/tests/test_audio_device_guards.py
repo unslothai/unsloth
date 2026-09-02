@@ -288,7 +288,12 @@ def test_every_http_device_field_pins_the_three_canonical_values():
     import inspect
     import typing
 
-    from models.inference import LoadRequest, SttLoadRequest, TranscribeRequest, ValidateModelRequest
+    from models.inference import (
+        LoadRequest,
+        SttLoadRequest,
+        TranscribeRequest,
+        ValidateModelRequest,
+    )
 
     expected = typing.Optional[typing.Literal["auto", "cpu", "gpu"]]
     for model, field in (
@@ -300,6 +305,4 @@ def test_every_http_device_field_pins_the_three_canonical_values():
         assert model.model_fields[field].annotation == expected, f"{model.__name__}.{field}"
     # The raw endpoint takes it as a query param, so it is annotated rather than
     # declared on a model; it must not be the odd one out.
-    assert (
-        inspect.signature(ri.transcribe_audio_raw).parameters["device"].annotation == expected
-    )
+    assert inspect.signature(ri.transcribe_audio_raw).parameters["device"].annotation == expected
