@@ -445,18 +445,32 @@ export interface FindMatch {
 /** Regex metacharacters, so a query of "a.b" does not match "axb". */
 const REGEX_META_PATTERN = /[.*+?^${}()|[\]\\]/g;
 
+/** Combining dot above, the tail of a decomposed dotted I. */
+const COMBINING_DOT = "̇";
+
 /**
  * The canonically equivalent spellings of `needle`, longest first so the fuller one wins.
  *
  * Composed and decomposed spellings look identical on screen and both turn up in one thread.
  * Normalizing the index would change its length, and every offset stands for one document
  * character, so the variants go into the pattern instead and the document is left alone.
+ *
+ * `dotted` adds the spelling a decomposed dotted I leaves behind. U+0130 decomposes to `I` plus a
+ * combining dot, which folds to `i` plus that dot, and `i` + dot has no precomposed form, so NFC
+ * cannot put it back and the plain query misses a word plainly on screen. Only offered when the
+ * index carries a combining dot, so an ordinary document keeps the single-variant `indexOf` path.
  */
-function canonicalVariants(needle: string): string[] {
+function canonicalVariants(needle: string, dotted: boolean): string[] {
   const variants = [needle];
   for (const form of ["NFC", "NFD"] as const) {
     const variant = needle.normalize(form);
     if (!variants.includes(variant)) variants.push(variant);
+  }
+  if (dotted && needle.includes("i")) {
+    for (const variant of [...variants]) {
+      const dottedVariant = variant.replace(/i/g, `i${COMBINING_DOT}`);
+      if (!variants.includes(dottedVariant)) variants.push(dottedVariant);
+    }
   }
   if (variants.length > 1) variants.sort((a, b) => b.length - a.length);
   return variants;
@@ -474,10 +488,19 @@ function matchPattern(variants: string[], needle: string): RegExp | null {
   const escaped = variants.map((variant) =>
     variant.replace(REGEX_META_PATTERN, "\\$&").replace(/\s+/g, "\\s+"),
   );
-  return new RegExp(
-    escaped.length === 1 ? escaped[0] : `(?:${escaped.join("|")})`,
-    "g",
-  );
+  try {
+    return new RegExp(
+      escaped.length === 1 ? escaped[0] : `(?:${escaped.join("|")})`,
+      "g",
+    );
+  } catch {
+    // Every engine caps how large a pattern it will compile, and the cap is its own business:
+    // the spec sets none, so there is no length to test against that would be right everywhere.
+    // A pasted log reaches it -- measured at 15,651 characters on V8 -- and the throw came out
+    // through the keystroke that caused it and took the bar down with it. Falling back to the
+    // literal scan below costs the flexed whitespace and keeps the search working.
+    return null;
+  }
 }
 
 /**
@@ -493,7 +516,18 @@ function eachMatch(
   needle: string,
   visit: (start: number, end: number) => boolean,
 ): void {
-  const variants = canonicalVariants(needle);
+  const variants = canonicalVariants(
+    needle,
+    index.text.includes(COMBINING_DOT),
+  );
+  // Nothing longer than the haystack can be inside it. Measured against the SHORTEST spelling,
+  // since a decomposed query is longer than the precomposed text it is meant to find. This is
+  // ahead of `matchPattern` because that is the expensive half: escaping a pasted log, repeating
+  // it once per variant and handing the result to the regex compiler.
+  if (
+    Math.min(...variants.map((variant) => variant.length)) > index.text.length
+  )
+    return;
   const pattern = matchPattern(variants, needle);
   if (pattern) {
     for (;;) {

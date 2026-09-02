@@ -752,6 +752,50 @@ test("the match window anchor is resolved only once the cap bites", () => {
   assert.deepEqual(capped, findMatches(index, "a", 3, 6));
 });
 
+test("a decomposed dotted I is found by the ordinary query", () => {
+  // U+0130 decomposes to `I` + a combining dot, which folds to `i` + that dot. `i` + dot has no
+  // precomposed form, so NFC cannot put it back and the plain query missed a word on screen while
+  // the precomposed spelling of the same word matched.
+  const decomposed = "\u0049\u0307stanbul";
+  // The fold is what strands it: `I` + dot lowercases to `i` + dot, and THAT has no precomposed
+  // form, so no amount of normalizing the query reaches it.
+  assert.equal("\u0069\u0307".normalize("NFC"), "\u0069\u0307");
+  const index = buildTextIndex(el("P", [text(`Welcome to ${decomposed}`)]));
+  for (const query of ["istanbul", "ISTANBUL", "\u0130stanbul"]) {
+    assert.equal(findMatches(index, query).length, 1, query);
+  }
+});
+
+test("the dotted variant costs nothing on a document without combining marks", () => {
+  // It is only offered when the index carries a combining dot, so an ordinary thread keeps the
+  // single-variant `indexOf` path.
+  const index = buildTextIndex(el("P", [text("indexing is fine here")]));
+  assert.equal(findMatches(index, "indexing").length, 1);
+  assert.equal(findMatches(index, "i").length, 4);
+});
+
+test("a query too large to compile falls back instead of throwing", () => {
+  // Every engine caps the pattern size it will compile and the spec sets none, so there is no
+  // length that is right everywhere. Measured on V8: a whitespace-bearing query throws at 15,651
+  // characters, and the throw came out through the keystroke and took the bar down with it.
+  const index = buildTextIndex(el("P", [text("a small thread about unsloth")]));
+  const huge = "some log line with spaces ".repeat(4000);
+  assert.ok(huge.length > 15_651, "premise: past the measured V8 ceiling");
+  assert.doesNotThrow(() => findMatches(index, huge));
+  assert.deepEqual(findMatches(index, huge), []);
+});
+
+test("a needle longer than the haystack is rejected before any of the work", () => {
+  const index = buildTextIndex(el("P", [text("short")]));
+  assert.deepEqual(findMatches(index, "x".repeat(500)), []);
+  // Measured against the shortest spelling: a decomposed query is longer than the precomposed
+  // text it is meant to find, so the raw length is the wrong thing to test.
+  const cafe = buildTextIndex(el("P", [text("caf\u00e9")]));
+  assert.equal(findMatches(cafe, "cafe\u0301").length, 1);
+  // And a needle that still fits is unaffected.
+  assert.equal(findMatches(index, "short").length, 1);
+});
+
 test("a numeric anchor still means what it always did", () => {
   // The thunk is additive. Every existing caller passes a number and must be unaffected.
   const index = buildTextIndex(el("P", [text("b b b b b b b b")]));
