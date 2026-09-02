@@ -4813,8 +4813,7 @@ def test_another_accounts_dictation_model_is_not_named_in_status(monkeypatch):
     try:
         inference_routes._note_stt_model_downloader("alice/private-whisper")
         assert (
-            inference_routes._redacted_stt_model("alice/private-whisper")
-            == "alice/private-whisper"
+            inference_routes._redacted_stt_model("alice/private-whisper") == "alice/private-whisper"
         )
     finally:
         reset_workspace_subject(token)
@@ -4837,8 +4836,7 @@ def test_another_accounts_dictation_model_is_not_named_in_status(monkeypatch):
     token = _bind(LEGACY_WORKSPACE_SUBJECT)
     try:
         assert (
-            inference_routes._redacted_stt_model("alice/private-whisper")
-            == "alice/private-whisper"
+            inference_routes._redacted_stt_model("alice/private-whisper") == "alice/private-whisper"
         )
     finally:
         reset_workspace_subject(token)
