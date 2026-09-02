@@ -60,18 +60,27 @@ def run(env_extra: dict, home: Path) -> dict:
     env.update({k: v for k, v in env_extra.items() if v is not None})
     proc = subprocess.run(
         [sys.executable, "-c", PROBE],
-        env = env, capture_output = True, text = True, timeout = 180,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 180,
     )
     for line in proc.stdout.splitlines():
         if line.startswith("__JSON__"):
-            return json.loads(line[len("__JSON__"):])
-    raise RuntimeError(f"probe failed rc={proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-3000:]}")
+            return json.loads(line[len("__JSON__") :])
+    raise RuntimeError(
+        f"probe failed rc={proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-3000:]}"
+    )
 
 
 FAILS: list[str] = []
 
 
-def check(label: str, cond: bool, detail: str = "") -> None:
+def check(
+    label: str,
+    cond: bool,
+    detail: str = "",
+) -> None:
     if cond:
         print(f"  PASS  {label}")
     else:
@@ -89,18 +98,34 @@ def inside(child: str, parent: str) -> bool:
 
 # Every cache variable that must land inside the root once portable mode is on.
 CONTAINED = (
-    "UNSLOTH_COMPILE_LOCATION", "UV_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR",
-    "TRITON_HOME", "TRITON_CACHE_DIR", "MPLCONFIGDIR", "NUMBA_CACHE_DIR",
-    "CUDA_CACHE_PATH", "TORCH_EXTENSIONS_DIR", "DATA_DESIGNER_HOME",
-    "HF_HUB_CACHE", "HF_DATASETS_CACHE", "TORCH_HOME",
+    "UNSLOTH_COMPILE_LOCATION",
+    "UV_CACHE_DIR",
+    "TORCHINDUCTOR_CACHE_DIR",
+    "TRITON_HOME",
+    "TRITON_CACHE_DIR",
+    "MPLCONFIGDIR",
+    "NUMBA_CACHE_DIR",
+    "CUDA_CACHE_PATH",
+    "TORCH_EXTENSIONS_DIR",
+    "DATA_DESIGNER_HOME",
+    "HF_HUB_CACHE",
+    "HF_DATASETS_CACHE",
+    "TORCH_HOME",
     "UNSLOTH_STUDIO_PROJECTS_HOME",
 )
 
 # Regenerable caches pinned in EVERY mode, portable or not.
 ALWAYS = (
-    "UNSLOTH_COMPILE_LOCATION", "UV_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR",
-    "TRITON_HOME", "TRITON_CACHE_DIR", "MPLCONFIGDIR", "NUMBA_CACHE_DIR",
-    "CUDA_CACHE_PATH", "TORCH_EXTENSIONS_DIR", "DATA_DESIGNER_HOME",
+    "UNSLOTH_COMPILE_LOCATION",
+    "UV_CACHE_DIR",
+    "TORCHINDUCTOR_CACHE_DIR",
+    "TRITON_HOME",
+    "TRITON_CACHE_DIR",
+    "MPLCONFIGDIR",
+    "NUMBA_CACHE_DIR",
+    "CUDA_CACHE_PATH",
+    "TORCH_EXTENSIONS_DIR",
+    "DATA_DESIGNER_HOME",
 )
 
 
@@ -121,98 +146,169 @@ def main() -> int:
             root = tmp / f"r_{plat}_{gpu}"
             gpu_env = {
                 "nvidia": {"CUDA_VISIBLE_DEVICES": "0", "CUDA_PATH": "/usr/local/cuda"},
-                "amd": {"HIP_VISIBLE_DEVICES": "0", "ROCM_PATH": "/opt/rocm",
-                        "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+                "amd": {
+                    "HIP_VISIBLE_DEVICES": "0",
+                    "ROCM_PATH": "/opt/rocm",
+                    "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
+                },
                 "cpu": {"CUDA_VISIBLE_DEVICES": ""},
             }[gpu]
             wsl_env = {"WSL_DISTRO_NAME": "Ubuntu", "WSLENV": ""} if plat == "wsl" else {}
             r = run({"UNSLOTH_HOME": str(root), **gpu_env, **wsl_env}, home)
-            shape = {k: (v.replace(str(root), "<ROOT>").replace(str(home), "<HOME>")
-                         if isinstance(v, str) else v)
-                     for k, v in r.items()}
+            shape = {
+                k: (
+                    v.replace(str(root), "<ROOT>").replace(str(home), "<HOME>")
+                    if isinstance(v, str)
+                    else v
+                )
+                for k, v in r.items()
+            }
             if baseline is None:
                 baseline = shape
                 print(f"  base  {plat}/{gpu} -> studio_root={shape['studio_root']}")
             else:
-                check(f"{plat}/{gpu} resolves identically to baseline",
-                      shape == baseline,
-                      json.dumps({k: (baseline.get(k), v) for k, v in shape.items()
-                                  if baseline.get(k) != v})[:300])
+                check(
+                    f"{plat}/{gpu} resolves identically to baseline",
+                    shape == baseline,
+                    json.dumps(
+                        {k: (baseline.get(k), v) for k, v in shape.items() if baseline.get(k) != v}
+                    )[:300],
+                )
 
     # ---------------------------------------------------------------- containment
     print("\n[2] portable mode contains every cache variable")
-    home = tmp / "h_contain"; home.mkdir()
+    home = tmp / "h_contain"
+    home.mkdir()
     root = tmp / "r_contain"
     r = run({"UNSLOTH_HOME": str(root)}, home)
     for key in CONTAINED:
         v = r.get(key)
         check(f"{key} inside the root", bool(v) and inside(v, str(root)), f"got {v}")
-    check("HF_HOME stays out of the root (owns the token)",
-          bool(r["HF_HOME"]) and not inside(r["HF_HOME"], str(root)), f"got {r['HF_HOME']}")
-    check("documents_root stays the user's own folder",
-          not inside(r["documents"], str(root)), f"got {r['documents']}")
+    check(
+        "HF_HOME stays out of the root (owns the token)",
+        bool(r["HF_HOME"]) and not inside(r["HF_HOME"], str(root)),
+        f"got {r['HF_HOME']}",
+    )
+    check(
+        "documents_root stays the user's own folder",
+        not inside(r["documents"], str(root)),
+        f"got {r['documents']}",
+    )
 
     # ---------------------------------------------------------------- default install
     print("\n[3] default install is unchanged (backwards compatibility)")
-    home = tmp / "h_default"; home.mkdir()
+    home = tmp / "h_default"
+    home.mkdir()
     r = run({}, home)
-    check("studio_root is the legacy ~/.unsloth/studio",
-          r["studio_root"] == str(home / ".unsloth" / "studio"), r["studio_root"])
+    check(
+        "studio_root is the legacy ~/.unsloth/studio",
+        r["studio_root"] == str(home / ".unsloth" / "studio"),
+        r["studio_root"],
+    )
     check("portable mode is off", r["portable"] is False)
-    check("HF hub cache stays shared with other tools",
-          r["HF_HUB_CACHE"] == str(home / ".cache" / "huggingface" / "hub"), r["HF_HUB_CACHE"])
-    check("projects stay in ~/Documents",
-          r["projects"] == str(home / "Documents" / "Unsloth Studio" / "Projects"), r["projects"])
-    check("TORCH_HOME is not pinned on a default install", r["TORCH_HOME"] is None, str(r["TORCH_HOME"]))
+    check(
+        "HF hub cache stays shared with other tools",
+        r["HF_HUB_CACHE"] == str(home / ".cache" / "huggingface" / "hub"),
+        r["HF_HUB_CACHE"],
+    )
+    check(
+        "projects stay in ~/Documents",
+        r["projects"] == str(home / "Documents" / "Unsloth Studio" / "Projects"),
+        r["projects"],
+    )
+    check(
+        "TORCH_HOME is not pinned on a default install",
+        r["TORCH_HOME"] is None,
+        str(r["TORCH_HOME"]),
+    )
     for key in ALWAYS:
         v = r.get(key)
-        check(f"{key} still pinned under the studio root",
-              bool(v) and inside(v, str(home / ".unsloth" / "studio")), f"got {v}")
+        check(
+            f"{key} still pinned under the studio root",
+            bool(v) and inside(v, str(home / ".unsloth" / "studio")),
+            f"got {v}",
+        )
 
     # ---------------------------------------------------------------- old installs
     print("\n[4] existing installs keep resolving where they already are")
-    home = tmp / "h_legacy"; (home / ".unsloth" / "studio").mkdir(parents = True)
+    home = tmp / "h_legacy"
+    (home / ".unsloth" / "studio").mkdir(parents = True)
     (home / ".unsloth" / "studio" / "studio.db").write_text("x")
     r = run({}, home)
-    check("legacy tree untouched", r["studio_root"] == str(home / ".unsloth" / "studio"), r["studio_root"])
+    check(
+        "legacy tree untouched",
+        r["studio_root"] == str(home / ".unsloth" / "studio"),
+        r["studio_root"],
+    )
 
-    home = tmp / "h_custom"; home.mkdir()
-    custom = tmp / "custom studio"; custom.mkdir()
+    home = tmp / "h_custom"
+    home.mkdir()
+    custom = tmp / "custom studio"
+    custom.mkdir()
     r = run({"UNSLOTH_STUDIO_HOME": str(custom)}, home)
-    check("UNSLOTH_STUDIO_HOME install unchanged", r["studio_root"] == str(custom), r["studio_root"])
+    check(
+        "UNSLOTH_STUDIO_HOME install unchanged", r["studio_root"] == str(custom), r["studio_root"]
+    )
     check("and is NOT silently made portable", r["portable"] is False)
-    check("and keeps the shared HF cache",
-          r["HF_HUB_CACHE"] == str(home / ".cache" / "huggingface" / "hub"), r["HF_HUB_CACHE"])
+    check(
+        "and keeps the shared HF cache",
+        r["HF_HUB_CACHE"] == str(home / ".cache" / "huggingface" / "hub"),
+        r["HF_HUB_CACHE"],
+    )
 
     # ---------------------------------------------------------------- portable shapes
     print("\n[5] portable shapes: nested, flat, marker-only")
-    home = tmp / "h_nested"; home.mkdir()
-    root = tmp / "r_nested"; (root / "studio").mkdir(parents = True)
+    home = tmp / "h_nested"
+    home.mkdir()
+    root = tmp / "r_nested"
+    (root / "studio").mkdir(parents = True)
     r = run({"UNSLOTH_HOME": str(root)}, home)
-    check("nested: studio is <root>/studio", r["studio_root"] == str(root / "studio"), r["studio_root"])
+    check(
+        "nested: studio is <root>/studio",
+        r["studio_root"] == str(root / "studio"),
+        r["studio_root"],
+    )
 
-    home = tmp / "h_flat"; home.mkdir()
-    flat = tmp / "r_flat"; (flat / "unsloth_studio").mkdir(parents = True)
+    home = tmp / "h_flat"
+    home.mkdir()
+    flat = tmp / "r_flat"
+    (flat / "unsloth_studio").mkdir(parents = True)
     r = run({"UNSLOTH_HOME": str(flat)}, home)
-    check("flat: root holding a venv IS the studio root", r["studio_root"] == str(flat), r["studio_root"])
+    check(
+        "flat: root holding a venv IS the studio root",
+        r["studio_root"] == str(flat),
+        r["studio_root"],
+    )
 
-    home = tmp / "h_marker"; home.mkdir()
-    mroot = tmp / "r_marker"; (mroot / "studio").mkdir(parents = True)
+    home = tmp / "h_marker"
+    home.mkdir()
+    mroot = tmp / "r_marker"
+    (mroot / "studio").mkdir(parents = True)
     (mroot / ".unsloth-portable-root").write_text(str(mroot))
     r = run({"UNSLOTH_STUDIO_HOME": str(mroot / "studio")}, home)
     check("marker alone enables portable mode with no env", r["portable"] is True)
-    check("marker alone finds the master root", r["unsloth_home"] == str(mroot), str(r["unsloth_home"]))
+    check(
+        "marker alone finds the master root",
+        r["unsloth_home"] == str(mroot),
+        str(r["unsloth_home"]),
+    )
 
     # ---------------------------------------------------------------- precedence
     print("\n[6] precedence: explicit env always wins")
-    home = tmp / "h_prec"; home.mkdir()
+    home = tmp / "h_prec"
+    home.mkdir()
     root = tmp / "r_prec"
     chosen = tmp / "chosen hub"
     r = run({"UNSLOTH_HOME": str(root), "HF_HUB_CACHE": str(chosen)}, home)
-    check("explicit HF_HUB_CACHE beats portable", r["HF_HUB_CACHE"] == str(chosen), r["HF_HUB_CACHE"])
+    check(
+        "explicit HF_HUB_CACHE beats portable", r["HF_HUB_CACHE"] == str(chosen), r["HF_HUB_CACHE"]
+    )
     r = run({"UNSLOTH_HOME": str(root), "TORCHINDUCTOR_CACHE_DIR": str(chosen)}, home)
-    check("explicit TORCHINDUCTOR_CACHE_DIR beats portable",
-          r["TORCHINDUCTOR_CACHE_DIR"] == str(chosen), r["TORCHINDUCTOR_CACHE_DIR"])
+    check(
+        "explicit TORCHINDUCTOR_CACHE_DIR beats portable",
+        r["TORCHINDUCTOR_CACHE_DIR"] == str(chosen),
+        r["TORCHINDUCTOR_CACHE_DIR"],
+    )
     r = run({"UNSLOTH_HOME": str(root), "UNSLOTH_STUDIO_PROJECTS_HOME": str(chosen)}, home)
     check("explicit projects home beats portable", r["projects"] == str(chosen), r["projects"])
     r = run({"UNSLOTH_HOME": str(root), "MPLCONFIGDIR": "   "}, home)
@@ -231,40 +327,60 @@ def main() -> int:
         "deep": "a/b/c/d/e/f/g",
     }
     for label, name in cases.items():
-        home = tmp / f"h_{label}"; home.mkdir()
+        home = tmp / f"h_{label}"
+        home.mkdir()
         root = tmp / "roots" / name
         try:
             r = run({"UNSLOTH_HOME": str(root)}, home)
         except Exception as exc:  # noqa: BLE001 - the point is to report, not raise
-            check(f"root with {label}", False, repr(exc)[:200]); continue
+            check(f"root with {label}", False, repr(exc)[:200])
+            continue
         ok = all(inside(r.get(k) or "", str(root)) for k in CONTAINED)
-        check(f"root with {label} contains everything", ok,
-              json.dumps({k: r.get(k) for k in CONTAINED if not inside(r.get(k) or "", str(root))})[:200])
+        check(
+            f"root with {label} contains everything",
+            ok,
+            json.dumps({k: r.get(k) for k in CONTAINED if not inside(r.get(k) or "", str(root))})[
+                :200
+            ],
+        )
 
     # trailing slash and "~" are parsed, not literal
-    home = tmp / "h_slash"; home.mkdir()
-    root = tmp / "r_slash"; root.mkdir()
+    home = tmp / "h_slash"
+    home.mkdir()
+    root = tmp / "r_slash"
+    root.mkdir()
     r = run({"UNSLOTH_HOME": str(root) + "/"}, home)
     check("trailing slash normalises", r["studio_root"] == str(root / "studio"), r["studio_root"])
 
-    home = tmp / "h_tilde"; (home / "tilde_root").mkdir(parents = True)
+    home = tmp / "h_tilde"
+    (home / "tilde_root").mkdir(parents = True)
     r = run({"UNSLOTH_HOME": "~/tilde_root"}, home)
     check("~ expands", r["studio_root"] == str(home / "tilde_root" / "studio"), r["studio_root"])
 
     # symlinked root must resolve to its target, not double-count
-    home = tmp / "h_link"; home.mkdir()
-    real = tmp / "real_root"; real.mkdir()
-    link = tmp / "link_root"; link.symlink_to(real)
+    home = tmp / "h_link"
+    home.mkdir()
+    real = tmp / "real_root"
+    real.mkdir()
+    link = tmp / "link_root"
+    link.symlink_to(real)
     r = run({"UNSLOTH_HOME": str(link)}, home)
-    check("symlinked root resolves", inside(r["studio_root"], str(real)) or inside(r["studio_root"], str(link)),
-          r["studio_root"])
+    check(
+        "symlinked root resolves",
+        inside(r["studio_root"], str(real)) or inside(r["studio_root"], str(link)),
+        r["studio_root"],
+    )
 
     # ---------------------------------------------------------------- degenerate env
     print("\n[8] degenerate environments")
-    home = tmp / "h_blank"; home.mkdir()
+    home = tmp / "h_blank"
+    home.mkdir()
     r = run({"UNSLOTH_HOME": "   "}, home)
-    check("blank UNSLOTH_HOME is treated as unset",
-          r["studio_root"] == str(home / ".unsloth" / "studio") and r["portable"] is False, r["studio_root"])
+    check(
+        "blank UNSLOTH_HOME is treated as unset",
+        r["studio_root"] == str(home / ".unsloth" / "studio") and r["portable"] is False,
+        r["studio_root"],
+    )
     r = run({"UNSLOTH_PORTABLE": "0"}, home)
     check("UNSLOTH_PORTABLE=0 is off", r["portable"] is False)
     r = run({"UNSLOTH_PORTABLE": "false"}, home)
@@ -273,12 +389,18 @@ def main() -> int:
     check("UNSLOTH_PORTABLE=1 is on", r["portable"] is True)
 
     # A read-only root must not crash startup; caches just cannot be created.
-    ro = tmp / "ro_root"; ro.mkdir(); os.chmod(ro, 0o500)
+    ro = tmp / "ro_root"
+    ro.mkdir()
+    os.chmod(ro, 0o500)
     try:
-        home = tmp / "h_ro"; home.mkdir()
+        home = tmp / "h_ro"
+        home.mkdir()
         r = run({"UNSLOTH_HOME": str(ro)}, home)
-        check("read-only root does not crash the resolver", "setup_error" not in r,
-              str(r.get("setup_error"))[:200])
+        check(
+            "read-only root does not crash the resolver",
+            "setup_error" not in r,
+            str(r.get("setup_error"))[:200],
+        )
     finally:
         os.chmod(ro, 0o700)
 
