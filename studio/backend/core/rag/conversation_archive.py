@@ -906,6 +906,9 @@ _SEARCH_IMAGE_SOURCE = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
 _SEARCH_IMAGE_TOKEN = re.compile(
     r"\n\n[ \t]*\[\[img:[0-9a-f]{12}\]\][ \t]*(?=\n\n|\n?\Z)|\[\[img:[0-9a-f]{12}\]\]"
 )
+# `sanitizeAssistantReplayText`. An audio model answers with an `<audio-player src=...>`
+# tag holding the whole wav inline, and the serializer sends `[audio]` in its place.
+_REPLAY_AUDIO_DATA_URI = re.compile(r"data:audio/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
 
 
 def _server_builtin(part: dict) -> tuple[bool, bool]:
@@ -991,12 +994,45 @@ def _strip_search_image_tokens(text: str) -> str:
     it, so the frontend drops them rather than replay an unresolvable id.
 
     Its code-block carve-out is NOT mirrored: deciding it takes the frontend's whole
-    markdown scanner, and a token only lands in code where a region is still open when the
-    tool appends them -- which reconstructs as it did before anything here stripped.
+    markdown scanner, and nothing that reaches this writes a token into code. The tool
+    cannot open a region (`_web_search` collapses every title and snippet behind a label,
+    and the url branch returns before an envelope is appended); a reply that fences one
+    reconstructs exactly as it did before anything here stripped.
     """
     if "[[img:" not in text:
         return text
     return _SEARCH_IMAGE_TOKEN.sub("", text)
+
+
+def _sanitised_assistant_text(text: str) -> str:
+    """`sanitizeAssistantReplayText`: an assistant reply as the serializer replays it.
+
+    The same two substitutions the tool result gets, for the same reason. A reply that
+    shows a picture carries the token that placed it, and an audio turn carries its whole
+    wav, so a stored reply reconstructed verbatim described a message the request never
+    sent and the turn matched no transcript seat.
+    """
+    return _REPLAY_AUDIO_DATA_URI.sub("[audio]", _strip_search_image_tokens(text))
+
+
+def _sanitised_assistant_content(content):
+    """`content` with every part `_probe_text` reads as text sanitised, others untouched.
+
+    Keyed on the `text` field rather than on the type, as `_probe_text` is, so a part
+    shape it renders cannot slip past this one.
+    """
+    if isinstance(content, str):
+        return _sanitised_assistant_text(content)
+    if not isinstance(content, list):
+        return content
+    return [
+        {**part, "text": _sanitised_assistant_text(part["text"])}
+        if isinstance(part, dict)
+        and part.get("type") not in ("reasoning", "tool-call")
+        and isinstance(part.get("text"), str)
+        else part
+        for part in content
+    ]
 
 
 def _unwrapped(result, tool_name: str):
@@ -1121,6 +1157,9 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 if not (isinstance(part, dict) and part.get("type") == "reasoning")
             ]
             content = parts
+        if str(message.get("role") or "") == "assistant":
+            content = _sanitised_assistant_content(content)
+            parts = content if isinstance(content, list) else None
         # A provider-side builtin with no native part is not replayed, so it is not a call
         # here either: counting it invented an exchange the request never carried. Any
         # other tool-call part takes the replay loop even when the serializer drops it,

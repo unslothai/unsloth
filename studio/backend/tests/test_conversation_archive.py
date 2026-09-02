@@ -3683,7 +3683,10 @@ _SEARCH_TEXT_REPLAYED = (
 )
 
 
-def _image_search_row(result, tool_name = "web_search"):
+_ANSWER = "A ZQXVARA123 ragdoll weighs 6 kg."
+
+
+def _image_search_row(result, tool_name = "web_search", answer = _ANSWER):
     return [
         {
             "role": "assistant",
@@ -3695,7 +3698,7 @@ def _image_search_row(result, tool_name = "web_search"):
                     "args": {"query": "ragdoll ZQXVARA123"},
                     "result": result,
                 },
-                {"type": "text", "text": "A ZQXVARA123 ragdoll weighs 6 kg."},
+                {"type": "text", "text": answer},
             ],
         }
     ]
@@ -3798,7 +3801,7 @@ def test_a_result_that_is_two_wrappers_at_once_is_still_stripped():
     ]
 
 
-def _persist_image_search_turn():
+def _persist_image_search_turn(answer = _ANSWER):
     """The stored rows for one web_search turn, in the shape assistant-ui saves."""
     from storage import studio_db
 
@@ -3811,7 +3814,9 @@ def _persist_image_search_turn():
             "a0",
             "u0",
             "assistant",
-            _image_search_row({"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY]})[0]["content"],
+            _image_search_row(
+                {"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY]}, answer = answer
+            )[0]["content"],
         ),
     ]
     for index, (identifier, parent, role, content) in enumerate(rows):
@@ -3875,6 +3880,46 @@ def test_a_recalled_turn_that_returned_pictures_survives_the_branch_filter(conn)
     assert with_branch is not None and "6 kg" in with_branch[0]
     assert without_branch is not None, "the stored rows rejected a turn that is on branch"
     assert "6 kg" in without_branch[0]
+
+
+def test_a_reply_that_shows_the_picture_still_finds_its_transcript_seat(conn):
+    """The other half of the same turn: the reply carries the token that placed the image.
+
+    Showing a picture IS writing the token -- the tool result says to -- and the serializer
+    strips it from the replayed reply, so a turn whose picture actually rendered still
+    matched no seat while only the `tool` message was mirrored.
+    """
+    answer = "%s\n\n[[img:%s]]" % (_ANSWER, _IMAGE_ID)
+    _persist_image_search_turn(answer = answer)
+
+    positions = conversation_archive._transcript_positions(THREAD)
+
+    assert conversation_archive._occurrences(positions, _IMAGE_SEARCH_WIRE[1:]) == [1], positions
+
+
+def test_an_audio_reply_is_replayed_as_the_sentinel_the_request_carried():
+    """`sanitizeAssistantReplayText` also substitutes inline audio, and for the same reason.
+
+    An audio model answers with the whole wav in an `<audio-player>` tag, so every such
+    turn reconstructed as a message megabytes longer than the one that was sent.
+    """
+    row = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": '<audio-player src="data:audio/wav;base64,QUJD" />'}
+            ],
+        }
+    ]
+
+    assert conversation_archive._probe_text(conversation_archive._as_wire(row)[0]) == (
+        '<audio-player src="[audio]" />'
+    )
+    # The assistant side only: the serializer sanitises replies, not what the user typed.
+    user = [{"role": "user", "content": [{"type": "text", "text": "[[img:%s]]" % _IMAGE_ID}]}]
+    assert conversation_archive._probe_text(conversation_archive._as_wire(user)[0]) == (
+        "[[img:%s]]" % _IMAGE_ID
+    )
 
 
 def test_the_branch_seed_scores_an_in_order_run_not_a_set(conn):
