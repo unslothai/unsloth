@@ -5169,3 +5169,62 @@ def test_the_cache_paths_are_owner_only_in_both_directions():
         signature = inspect.signature(getattr(settings_routes, route))
         dependency = signature.parameters["current_subject"].default
         assert dependency.dependency is settings_routes.require_install_admin, route
+
+
+def test_the_image_load_asks_the_same_credential_question():
+    import inspect
+
+    from routes import inference as inference_routes
+
+    source = inspect.getsource(inference_routes.load_diffusion_model_gated)
+    # load_pipeline normalises a missing token to None and the Hub client then
+    # sends the installation's implicit login, so a managed account naming an
+    # owner-private repo downloaded and ran it. Containment lets a Hub id
+    # through on purpose, which is exactly why the credential question has to be
+    # asked here too, as the video load already does.
+    assert "_reject_private_hub_repo_without_an_account_token(request.model_path" in source
+    assert "_reject_private_hub_repo_without_an_account_token(request.base_repo" in source
+
+
+def test_generation_time_adapters_are_not_fetched_on_the_loaders_token(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+
+    answers = {"org/public-lora": True, "org/alices-private-lora": False}
+    monkeypatch.setattr(
+        inference_routes,
+        "_hub_repo_is_anonymously_readable",
+        lambda repo, kind: answers[repo],
+    )
+    guard = inference_routes._reject_private_generation_time_repo
+
+    token = _bind("bob")
+    try:
+        # Alice loads a public base model with her own token. Bob may use the
+        # resident pipeline, and a public adapter with it, unchanged.
+        guard("org/public-lora", "LoRA")
+        # But a private adapter Bob names is resolved inside the engine with
+        # Alice's resident token, so her credential would download weights he
+        # cannot read. Same for a ControlNet, which takes the same path.
+        with pytest.raises(HTTPException) as exc:
+            guard("org/alices-private-lora", "ControlNet")
+        assert exc.value.status_code == 403
+        # His own token answers it.
+        guard("org/alices-private-lora", "LoRA", "hf_bobs_own_token")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_image_routes_ask_about_every_adapter_they_pass_down():
+    import inspect
+
+    from routes import inference as inference_routes
+
+    generate = inspect.getsource(inference_routes.generate_diffusion_image)
+    # The resident-model guard answers for the model. These arrive per request.
+    assert "_reject_private_generation_time_repo(_lora.id" in generate
+    assert "_reject_private_generation_time_repo(request.controlnet.id" in generate
+    load = inspect.getsource(inference_routes.load_diffusion_model_gated)
+    # And the load bakes its own selection in on the same credential.
+    assert "_reject_private_generation_time_repo(_lora.id" in load

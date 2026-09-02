@@ -6921,6 +6921,34 @@ def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
     )
 
 
+def _reject_private_generation_time_repo(
+    identifier: Any, what: str, hf_token: Any = None
+) -> None:
+    """A repo named at generation time is fetched on the LOADER's credential.
+
+    The resident-model guard above asks about the model that was loaded. LoRA and
+    ControlNet ids arrive per request and are resolved inside the engine with the
+    resident ``state.hf_token``, which belongs to whoever loaded the pipeline. So
+    a second account could name a private adapter repo it cannot read and have
+    the first account's token download and run it.
+
+    Asked with no caller token on the generation route because those requests
+    carry none: a public repo resolves exactly as before, and a non-public one
+    now needs the caller to own the pipeline's credential, which only its loader
+    does. The load route passes its own request token, since the adapters it
+    bakes in are fetched with that.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        return
+    candidate = identifier.strip()
+    # A catalog id can be a local stem rather than a repo; containment governs
+    # those, and the per-account catalog roots already answer it.
+    if _looks_like_a_local_model_path(candidate):
+        _reject_uncontained_local_path(candidate, f"use a {what} from")
+        return
+    _reject_private_hub_repo_without_an_account_token(candidate, hf_token)
+
+
 # Everything in a status payload that can name, or spell out the path to, a model
 # somebody else loaded privately.
 _PRIVATE_STATUS_FIELDS = ("repo_id", "base_repo", "resolved", "local_path")
@@ -33423,6 +33451,18 @@ async def load_diffusion_model_gated(
     # the media ones never went near it, and their validators accept any existing
     # local path, so an absolute path here deserialized another account's weights.
     _reject_uncontained_local_path(request.model_path, "load")
+    # And the same credential rule the video load already applies. A Hub id is
+    # deliberately allowed through the containment check above, but
+    # DiffusionBackend.load_pipeline normalises a missing token to None, and
+    # huggingface_hub then sends the installation's implicit login, so a managed
+    # account naming one of the owner's private repos downloaded and ran it.
+    _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
+    if request.base_repo:
+        # Fetched the same way, under a separate identifier.
+        _reject_private_hub_repo_without_an_account_token(request.base_repo, request.hf_token)
+    # Adapters baked in at load time are fetched on the same credential.
+    for _lora in request.loras or ():
+        _reject_private_generation_time_repo(_lora.id, "LoRA", request.hf_token)
     backend = get_diffusion_backend()
     try:
         # Resolve the load kind once (gguf / single_file / pipeline) so validation, engine selection and the load agree. A bad kind raises here, so a 400.
@@ -33699,6 +33739,12 @@ async def generate_diffusion_image(
     # containment check is not enough on its own.
     authorised_status = backend.status()
     _reject_foreign_private_resident_model(authorised_status, "image")
+    # The resident check covers the model. These two arrive per request and are
+    # downloaded on the resident pipeline's token, so they get their own.
+    for _lora in request.loras or ():
+        _reject_private_generation_time_repo(_lora.id, "LoRA")
+    if request.controlnet:
+        _reject_private_generation_time_repo(request.controlnet.id, "ControlNet")
     # Pinned to the model that check just authorised. A private load committing
     # between the check and the generation slot would otherwise be adopted by this
     # request, which never named a model at all; the slot compares this identity
