@@ -6,6 +6,7 @@
 // the runner is `node --test` over a hand-rolled document.
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -1674,10 +1675,10 @@ test("a long run of regional indicators keeps its parity", () => {
   assert.deepEqual(findMatches(index, "\u{1f1e8}\u{1f1e9}", 10), []);
 });
 
-test("a capped search does not segment the same block twice", () => {
+test("a capped search does not pay twice for the same segmentation", () => {
   // A capped search walks its candidates more than once, to count them and again to take the
-  // window around the viewport. Segmenting per candidate made that quadratic; the block is
-  // segmented once and remembered for as long as the index lives.
+  // window around the viewport. The segmentation is made once and kept for as long as the index
+  // lives, and is asked one offset at a time rather than block by block.
   const body = "\uac00\ub098\ub2e4".repeat(20_000);
   const index = buildTextIndex(el("DIV", [el("P", [text(body)])]));
   const anchor = () => index.text.length - 10;
@@ -1694,6 +1695,83 @@ test("a capped search does not segment the same block twice", () => {
     Date.now() - second <= cost + 50,
     `second search took ${Date.now() - second}ms against ${cost}ms`,
   );
+});
+
+test("a cluster is offered its longest spelling first", () => {
+  // `i` and `i` plus a combining dot are both spellings of the same cluster, and alternation takes
+  // the first that fits. Shortest first, the bare `i` won, the match ended between the letter and
+  // its dot, and the boundary check then threw the occurrence away rather than reaching for the
+  // longer spelling: dotted capital I, the first thing this file ever had to fold, stopped matching.
+  const dotted = buildTextIndex(el("DIV", [el("P", [text("İstanbul")])]));
+  assert.deepEqual(findMatches(dotted, "i", 10), [{ start: 0, end: 2 }]);
+  assert.deepEqual(findMatches(dotted, "istanbul", 10), [{ start: 0, end: 9 }]);
+});
+
+test("a clipped tail cannot vouch for its own last offset", () => {
+  // A node cut at `MAX_NODE_CHARS` ends where the walk stopped, not where the text does. What was
+  // left out is still on the page, and here it is the trailing Jamo that closes the syllable the
+  // index now ends on, so a match on the bare vowel form would paint over half a character.
+  const node = text(`${"a".repeat(MAX_NODE_CHARS - 1)}각`);
+  const index = buildTextIndex(el("DIV", [el("P", [node])]));
+  assert.equal(index.clipped, true);
+  assert.equal(index.text.length, MAX_NODE_CHARS);
+  assert.deepEqual(findMatches(index, "가", 10), []);
+  // An index that ends because the document does keeps its last offset.
+  const whole = buildTextIndex(el("DIV", [el("P", [text("가")])]));
+  assert.equal(whole.clipped, false);
+  assert.deepEqual(findMatches(whole, "가", 10), [{ start: 0, end: 1 }]);
+});
+
+test("an engine with no segmenter still fences a grapheme", () => {
+  // Firefox shipped `Intl.Segmenter` in 125 and Vite's default target reaches back to 114, so this
+  // is a supported build, not a hypothetical one. In its own process: the module remembers whether
+  // the platform has a segmenter the first time it asks.
+  const probe = `
+    delete Intl.Segmenter;
+    const { buildTextIndex, findMatches } = await import(${JSON.stringify(
+      new URL(
+        "../src/features/find-in-page/lib/find-text-index.ts",
+        import.meta.url,
+      ).href,
+    )});
+    const el = (tagName, childNodes) => ({
+      nodeType: 1, tagName, childNodes, getAttribute: () => null,
+    });
+    const index = (body) =>
+      buildTextIndex(el("DIV", [el("P", [{ nodeType: 3, data: body }])]));
+    const fenced = [
+      ["가́", "가"],
+      ["가ा", "가"],
+      ["각ᆨ", "각"],
+      ["ᄀ가", "가"],
+      ["؀가", "가"],
+      ["\u{1f469}‍\u{1f469}", "\u{1f469}"],
+      ["\u{1f1e6}\u{1f1e7}", "\u{1f1e6}"],
+    ];
+    for (const [body, query] of fenced) {
+      if (findMatches(index(body), query, 10).length !== 0) {
+        throw new Error("not fenced: " + escape(body));
+      }
+    }
+    // And still finds what is whole, or the fence has eaten the feature it protects.
+    const found = [
+      ["가나다", "나"],
+      ["\u{1f1e6}\u{1f1e7}\u{1f1e8}\u{1f1e9}", "\u{1f1e8}\u{1f1e9}"],
+      ["가 ᆨ", "가 "],
+      ["hello", "ell"],
+    ];
+    for (const [body, query] of found) {
+      if (findMatches(index(body), query, 10).length !== 1) {
+        throw new Error("not found: " + escape(body));
+      }
+    }
+  `;
+  const run = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, run.stderr);
 });
 
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {

@@ -130,12 +130,17 @@ export interface FindTextIndex {
   /** Sorted by `start`, gapped wherever a separator was written. */
   segments: TextSegment[];
   truncated: boolean;
+  /** Whether the walk stopped part way through a text node, so the last offset in `text` is not
+   *  known to be the end of anything. `truncated` is wider: it is also set when a node was cut in
+   *  the middle of the document, which leaves the end intact. */
+  clipped: boolean;
 }
 
 export const EMPTY_TEXT_INDEX: FindTextIndex = {
   text: "",
   segments: [],
   truncated: false,
+  clipped: false,
 };
 
 /** The only code point whose `toLowerCase` grows. Mapped to the Turkic fold, a bare `i`, since one
@@ -266,6 +271,8 @@ export function buildTextIndex(
   const segments: TextSegment[] = [];
   let length = 0;
   let truncated = false;
+  /** Whether the last text emitted was cut short. See `startsGrapheme`. */
+  let clipped = false;
   /** The ceiling, the only thing that stops the walk. */
   let full = false;
   let ceiling =
@@ -301,6 +308,7 @@ export function buildTextIndex(
         // `slice(0, negative)` takes all but the last character of the next node.
         if (length >= ceiling) {
           truncated = true;
+          clipped = true;
           full = true;
           return;
         }
@@ -315,6 +323,7 @@ export function buildTextIndex(
         const take = Math.min(ceiling - length, MAX_NODE_CHARS);
         if (take <= 0) {
           truncated = true;
+          clipped = true;
           full = true;
           return;
         }
@@ -323,7 +332,8 @@ export function buildTextIndex(
         segments.push({ node, start: length, length: raw.length, preserved });
         length += raw.length;
         // What was dropped must leave a boundary, or a match across the seam paints over the gap.
-        if (raw.length < data.length) {
+        clipped = raw.length < data.length;
+        if (clipped) {
           truncated = true;
           pendingSeparator = true;
         }
@@ -345,7 +355,7 @@ export function buildTextIndex(
     visit(extra, false);
   }
   // Folded once over the joined document: a fold is context-sensitive and cannot go node at a time.
-  return { text: foldText(parts.join("")), segments, truncated };
+  return { text: foldText(parts.join("")), segments, truncated, clipped };
 }
 
 /** Null when the query cannot match: empty, or carrying the separator (only a paste can). */
@@ -394,34 +404,71 @@ const CLUSTER_PATTERN =
  *  The vowel is required: a bare leading Jamo is its own grapheme, not a syllable waiting to be
  *  closed, so a trailing Jamo after one belongs to something else and must not be fenced off. */
 const HANGUL_TRAILING_PATTERN = /[\u11a8-\u11ff\ud7cb-\ud7fb]/;
-/** A leading Jamo, and a leading Jamo followed by the vowel that makes the two a syllable. */
-const HANGUL_LEADING_PATTERN = /^[\u1100-\u115f\ua960-\ua97c]/;
-/** Characters that join to whatever follows them (UAX 29 Prepend), plus the leading Jamo that
- *  joins a syllable. Checked in code rather than as a lookbehind: JavaScriptCore only shipped
- *  lookbehind in Safari 16.4, and an engine without it fell back to an unfenced scan. */
+/** A leading Jamo, and the vowel that makes it a syllable. */
+const HANGUL_LEADING_PATTERN = /[\u1100-\u115f\ua960-\ua97c]/;
+const HANGUL_VOWEL_PATTERN = /[\u1160-\u11a7\ud7b0-\ud7c6]/;
+/** Characters that join to whatever follows them (UAX 29 Prepend). */
 const PREPEND_PATTERN = /[\u0600-\u0605\u06dd\u070f\u0890\u0891\u08e2\u0d4e]/;
+/** Breaks on both sides of itself, whatever that is (GB4/GB5). `BLOCK_SEPARATOR` is one, which is
+ *  what makes searching across blocks safe. */
+const CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+/** Never begins a grapheme: Extend and ZWJ (GB9), SpacingMark (GB9a), and the trailing half of a
+ *  surrogate pair, which is not a character at all. */
+const EXTENDS_LEFT_PATTERN = /[\p{Mn}\p{Me}\p{Mc}\u200d\udc00-\udfff]/u;
+const REGIONAL_INDICATOR_PATTERN = /^[\u{1f1e6}-\u{1f1ff}]/u;
 
-/** True when a match at `at` would begin part way through the grapheme before it. */
-function beginsInsideGrapheme(text: string, at: number): boolean {
-  if (at === 0) return false;
-  const before = text[at - 1];
-  return PREPEND_PATTERN.test(before) || HANGUL_LEADING_PATTERN.test(before);
+/** L, V, T, and the precomposed syllables, which are LV when nothing trails and LVT when a Jamo
+ *  does. Hangul fills 28 code points a syllable, the first of them the bare LV. */
+function hangulClass(ch: string): string | null {
+  if (HANGUL_LEADING_PATTERN.test(ch)) return "L";
+  if (HANGUL_VOWEL_PATTERN.test(ch)) return "V";
+  if (HANGUL_TRAILING_PATTERN.test(ch)) return "T";
+  const cp = ch.charCodeAt(0);
+  if (cp < 0xac00 || cp > 0xd7a3) return null;
+  return (cp - 0xac00) % 28 === 0 ? "LV" : "LVT";
 }
 
-/** Any Hangul Jamo or precomposed syllable. */
-const HANGUL_ANY_PATTERN =
-  /[\u1100-\u11ff\ua960-\ua97c\ud7b0-\ud7fb\uac00-\ud7a3]/;
+/** GB6 (L before anything but a trailing Jamo), GB7 and GB8. */
+function hangulJoins(before: string, after: string | null): boolean {
+  if (after === null) return false;
+  if (before === "L") return after !== "T";
+  if (before === "V" || before === "LV") return after === "V" || after === "T";
+  return after === "T";
+}
 
-/** What may still join a grapheme, by the last Jamo the query got to (UAX 29 GB6/GB7/GB8). */
-const HANGUL_AFTER_L =
-  "(?![\\u1100-\\u115f\\ua960-\\ua97c\\u1160-\\u11a7\\ud7b0-\\ud7c6\\uac00-\\ud7a3\\u0300-\\u036f\\u0483-\\u0489\\u0591-\\u05bd\\u0610-\\u061a\\u064b-\\u065f\\u0670\\u06d6-\\u06dc\\u0e31\\u0e34-\\u0e3a\\u1ab0-\\u1aff\\u1dc0-\\u1dff\\u20d0-\\u20f0\\ufe00-\\ufe0f\\ufe20-\\ufe2f\\u200d])";
-const HANGUL_AFTER_V =
-  "(?![\\u1160-\\u11ff\\ud7b0-\\ud7c6\\ud7cb-\\ud7fb\\u0300-\\u036f\\u0483-\\u0489\\u0591-\\u05bd\\u0610-\\u061a\\u064b-\\u065f\\u0670\\u06d6-\\u06dc\\u0e31\\u0e34-\\u0e3a\\u1ab0-\\u1aff\\u1dc0-\\u1dff\\u20d0-\\u20f0\\ufe00-\\ufe0f\\ufe20-\\ufe2f\\u200d])";
-const HANGUL_AFTER_T =
-  "(?![\\u11a8-\\u11ff\\ud7cb-\\ud7fb\\u0300-\\u036f\\u0483-\\u0489\\u0591-\\u05bd\\u0610-\\u061a\\u064b-\\u065f\\u0670\\u06d6-\\u06dc\\u0e31\\u0e34-\\u0e3a\\u1ab0-\\u1aff\\u1dc0-\\u1dff\\u20d0-\\u20f0\\ufe00-\\ufe0f\\ufe20-\\ufe2f\\u200d])";
-
-const HANGUL_SYLLABLE_PATTERN =
-  /^[\u1100-\u115f\ua960-\ua97c]+[\u1160-\u11a7\ud7b0-\ud7c6]/;
+/**
+ * Whether a grapheme carries on across `at`, for engines with no `Intl.Segmenter`: Firefox shipped
+ * one only in 125, Vite's default target reaches back to 114, and ESR 115 is still in the field. On
+ * those the alternative is taking every candidate unchecked, which is the defect this file exists
+ * to fix.
+ *
+ * The rules this feature can actually run into, by Unicode property rather than by hand-listed
+ * range: the joiners, Prepend, Hangul and regional indicator parity. The aksara and pictographic
+ * rules are left to the engines that have a segmenter, so an Indic cluster can still be split here.
+ */
+function continuesGrapheme(text: string, at: number): boolean {
+  const before = text[at - 1];
+  const after = text[at];
+  if (CONTROL_PATTERN.test(before) || CONTROL_PATTERN.test(after)) return false;
+  if (EXTENDS_LEFT_PATTERN.test(after)) return true;
+  // GB11, taken as written rather than only before a pictograph: a ZWJ never ends a grapheme.
+  if (before === "\u200d" || PREPEND_PATTERN.test(before)) return true;
+  if (REGIONAL_INDICATOR_PATTERN.test(text.slice(at, at + 2))) {
+    // A run pairs off from its start, so it is the count behind that decides (GB12/GB13). Two code
+    // units apiece, and `after` is already known not to be a lone trailing half.
+    let run = 0;
+    while (
+      REGIONAL_INDICATOR_PATTERN.test(
+        text.slice(at - 2 - run * 2, at - run * 2),
+      )
+    ) {
+      run += 1;
+    }
+    return run % 2 === 1;
+  }
+  const left = hangulClass(before);
+  return left !== null && hangulJoins(left, hangulClass(after));
+}
 
 /**
  * Per cluster, because alternating whole spellings of the WHOLE query reaches only all-composed or
@@ -451,6 +498,11 @@ function canonicalSource(needle: string, dotted: boolean): string {
         cluster.slice(trailing.index);
       if (!spellings.includes(half)) spellings.push(half);
     }
+    // Longest first, as `canonicalVariants` is: alternation takes the first that fits, so a short
+    // spelling that is a prefix of a long one wins and the rest of the cluster is left outside the
+    // match. `i` before `i` plus its combining dot ended the match inside the grapheme, and the
+    // boundary check then threw the occurrence away rather than reaching for the longer spelling.
+    if (spellings.length > 1) spellings.sort((a, b) => b.length - a.length);
     out +=
       spellings.length === 1
         ? escapeForRegex(spellings[0])
@@ -459,34 +511,20 @@ function canonicalSource(needle: string, dotted: boolean): string {
   return out;
 }
 
-/** Grapheme boundaries per block, built once and kept for as long as the index lives, plus where
- *  the blocks start: finding that by searching back from each match is what made a capped search
- *  slow, not the segmenting. */
-interface BoundaryCache {
-  starts: number[];
-  blocks: Map<number, Uint8Array>;
-}
-const boundaryCache = new WeakMap<FindTextIndex, BoundaryCache>();
-
-/** The start of the block containing `at`, by binary search over the separator positions. */
-function blockStart(starts: number[], at: number): number {
-  let low = 0;
-  let high = starts.length - 1;
-  while (low < high) {
-    const mid = (low + high + 1) >> 1;
-    if (starts[mid] <= at) low = mid;
-    else high = mid - 1;
-  }
-  return starts[low];
-}
+/** The index's segmentation, made at the first match that needs one and kept for as long as the
+ *  index lives. Making it walks nothing: `containing` seeks to the offset asked about, so a 4M
+ *  index costs 4ms once and a fraction of a microsecond a question, where segmenting a block to
+ *  fill a table of its boundaries cost 250ms for every block a match landed in. */
+const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
 
 /** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
 const JOINS_GRAPHEME = /[^\u0000-\u02ff]/;
 
-let segmenter:
-  | { segment(input: string): Iterable<{ index: number }> }
-  | null
-  | undefined;
+interface GraphemeSegments {
+  containing(at: number): { index: number } | undefined;
+}
+
+let segmenter: { segment(input: string): GraphemeSegments } | null | undefined;
 
 /** The platform's own grapheme segmenter, or null where there is none. */
 function graphemeSegmenter() {
@@ -508,15 +546,10 @@ function graphemeSegmenter() {
  * inside a cluster, each a Unicode range that had not been enumerated, and there is no end to that
  * list. The segmenter already knows the whole of UAX 29 and is kept current with it.
  *
- * Segmented one block at a time and remembered, not per match: a capped search walks its candidates
- * more than once, and segmenting each of them separately took 6.3 seconds on a 1M character
- * Hangul index. A block is segmented at most once however many matches fall in it.
- *
- * The block, and not a window around the match, because the walk has to start somewhere that is a
- * boundary for certain. Whitespace is not: a combining mark joins a preceding space, a Prepend
- * joins a following one, and a run of regional indicators pairs by its own parity however long it
- * is. `BLOCK_SEPARATOR` is a control character, which UAX 29 breaks on either side unconditionally,
- * so it is the one place the segmentation can be picked up cleanly.
+ * Asked one offset at a time, not by segmenting anything: the segmentation seeks, so neither the
+ * size of the index nor where in it the match landed costs anything. Segmenting whole blocks to
+ * fill a table of their boundaries, which is what this did before, paid 250ms per block for the
+ * one or two offsets a match actually asks about, and paid it again on every reindex.
  */
 function alignsToGraphemes(
   index: FindTextIndex,
@@ -537,38 +570,25 @@ function alignsToGraphemes(
   ) {
     return true;
   }
-  const segments = graphemeSegmenter();
-  if (segments === null) return true;
+  return startsGrapheme(index, start) && startsGrapheme(index, end);
+}
 
-  let cache = boundaryCache.get(index);
-  if (cache === undefined) {
-    const starts = [0];
-    for (
-      let at = text.indexOf(BLOCK_SEPARATOR);
-      at !== -1;
-      at = text.indexOf(BLOCK_SEPARATOR, at + 1)
-    ) {
-      starts.push(at + 1);
-    }
-    cache = { starts, blocks: new Map() };
-    boundaryCache.set(index, cache);
+/** True when a grapheme starts at `at`. */
+function startsGrapheme(index: FindTextIndex, at: number): boolean {
+  const text = index.text;
+  if (at === 0) return true;
+  // The end of the index is a boundary only when it is the end of the text. Where the walk stopped
+  // short, what it left out is still on the page and may well join what the match ends on, so a
+  // clipped tail cannot vouch for its own last offset.
+  if (at === text.length) return !index.clipped;
+  const platform = graphemeSegmenter();
+  if (platform === null) return !continuesGrapheme(text, at);
+  let segments = segmentsCache.get(index);
+  if (segments === undefined) {
+    segments = platform.segment(text);
+    segmentsCache.set(index, segments);
   }
-  const from = blockStart(cache.starts, start);
-  const blocks = cache.blocks;
-  let marks = blocks.get(from);
-  if (marks === undefined) {
-    let to = text.indexOf(BLOCK_SEPARATOR, from);
-    if (to === -1) to = text.length;
-    marks = new Uint8Array(to - from + 1);
-    for (const { index: at } of segments.segment(text.slice(from, to))) {
-      marks[at] = 1;
-    }
-    marks[to - from] = 1;
-    blocks.set(from, marks);
-  }
-  // A match that reaches past the block cannot be aligned inside it; the separator is a boundary,
-  // so anything crossing it is not one grapheme anyway.
-  return marks[start - from] === 1 && marks[end - from] === 1;
+  return segments.containing(at)?.index === at;
 }
 
 function escapeForRegex(text: string): string {
