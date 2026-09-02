@@ -33,6 +33,7 @@ _CHAT_TEMPLATE_KWARGS_FLAG = "--chat-template-kwargs"
 _ENABLE_THINKING_KWARG = "enable_thinking"
 _REASONING_ON = "on"
 _REASONING_OFF = "off"
+_REASONING_AUTO = "auto"
 _SERVER_COMMAND = "llama-server"
 _MODERN_HELP = "--reasoning VALUE\n"
 _MISSING_BINARY_FILENAME = "missing"
@@ -124,6 +125,7 @@ def _backend(style = _REASONING_STYLE, supports_preserve = False):
     backend._architecture = None
     backend._supports_preserve_thinking = supports_preserve
     backend._preserve_thinking_default = False
+    backend._reasoning_default = True
     return backend
 
 
@@ -135,15 +137,48 @@ def test_modern_launch_honors_reasoning_env_override(
     monkeypatch, thinking_default, reasoning_override
 ):
     monkeypatch.setenv(_LLAMA_REASONING_ENV, reasoning_override)
+    backend = _backend()
     command = [_SERVER_COMMAND]
 
-    _backend()._append_launch_reasoning_args(
+    backend._append_launch_reasoning_args(
         command,
         thinking_default,
         {_REASONING_CAPABILITY: True},
     )
 
     assert _REASONING_FLAG not in command
+    assert backend._reasoning_default is (reasoning_override == _REASONING_ON)
+
+
+def test_modern_launch_treats_auto_env_as_absent_override(monkeypatch):
+    monkeypatch.setenv(_LLAMA_REASONING_ENV, _REASONING_AUTO)
+    command = [_SERVER_COMMAND]
+
+    _backend()._append_launch_reasoning_args(
+        command,
+        False,
+        {_REASONING_CAPABILITY: True},
+    )
+
+    assert command == [_SERVER_COMMAND, _REASONING_FLAG, _REASONING_OFF]
+
+
+def test_inconclusive_probe_preserves_explicit_reasoning_env(monkeypatch):
+    monkeypatch.setenv(_LLAMA_REASONING_ENV, _REASONING_ON)
+    backend = _backend()
+    command = [_SERVER_COMMAND]
+
+    backend._append_launch_reasoning_args(
+        command,
+        False,
+        {
+            _REASONING_CAPABILITY: False,
+            _PROBE_INCONCLUSIVE_CAPABILITY: True,
+        },
+    )
+
+    assert command == [_SERVER_COMMAND]
+    assert backend._reasoning_default is True
 
 
 def test_launch_reasoning_args_use_modern_flag_with_old_binary_fallback(tmp_path, monkeypatch):
