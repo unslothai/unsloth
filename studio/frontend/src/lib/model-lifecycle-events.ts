@@ -89,6 +89,17 @@ export async function withModelLoadNotice<T>(
   }
 }
 
+/** Announce a successful release after the backend has cleared its runtime. */
+export async function withModelUnloadNotice<T>(
+  runtime: ModelRuntime,
+  model: string | null,
+  run: () => Promise<T>,
+): Promise<T> {
+  const result = await run();
+  notifyModelLifecycle({ runtime, loading: false, model });
+  return result;
+}
+
 /**
  * What a `load-progress` endpoint reports. `null` is terminal once a load has
  * started: all three engines return it only for "nothing loading and nothing

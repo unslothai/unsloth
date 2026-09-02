@@ -26,17 +26,19 @@ import sys
 _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
 
 
-def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]:
+def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str], list[bool]]:
     """Per-device integrated-GPU flags and descriptions via ggml's backend registry.
 
     The Vulkan reg enumerates devices in the same order as
     ``ggml_backend_vk_get_device_memory`` (each context uses ``ctx->device =
     i``), so reg index == device ordinal. Returns all-False / empty-name on any
     failure so the reader never over-caps a discrete card and the memory
-    readings still get through.
+    readings still get through. The third list says whether each type lookup
+    succeeded, so an unknown device is not mistaken for a discrete one.
     """
     flags = [False] * count
     names = [""] * count
+    type_known = [False] * count
     try:
         lib.ggml_backend_vk_reg.restype = ctypes.c_void_p
         lib.ggml_backend_vk_reg.argtypes = []
@@ -48,12 +50,12 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
         base.ggml_backend_dev_type.argtypes = [ctypes.c_void_p]
         reg = lib.ggml_backend_vk_reg()
         if not reg:
-            return flags, names
+            return flags, names, type_known
         dev_count = base.ggml_backend_reg_dev_count(reg)
     except Exception:
         # Best-effort: any failure degrades to "discrete"/"unnamed" so the memory readings still get through instead of
         # crashing the probe.
-        return flags, names
+        return flags, names, type_known
 
     # bound outside the try above: a ggml-base without the description symbol must degrade to unnamed
     # Bound outside the type-detection try above: a ggml-base without the description symbol (older/custom build) must
@@ -78,6 +80,7 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
             continue
         try:
             flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
+            type_known[i] = True
         except Exception:
             pass
         for function in name_functions:
@@ -90,7 +93,7 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
                 name = raw_name.decode("utf-8", errors = "replace")
                 names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
                 break
-    return flags, names
+    return flags, names, type_known
 
 
 def main() -> int:
@@ -152,12 +155,15 @@ def main() -> int:
     ]
 
     count = lib.ggml_backend_vk_get_device_count()
-    igpu, names = _igpu_flags_and_names(base, lib, count)
+    igpu, names, type_known = _igpu_flags_and_names(base, lib, count)
     rows = []
     for i in range(count):
         free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
         lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free), ctypes.byref(total))
-        rows.append("%d\t%d\t%d\t%d\t%s" % (i, free.value, int(igpu[i]), total.value, names[i]))
+        rows.append(
+            "%d\t%d\t%d\t%d\t%s\t%d"
+            % (i, free.value, int(igpu[i]), total.value, names[i], int(type_known[i]))
+        )
     sys.stdout.write("\n".join(rows))
     return 0
 

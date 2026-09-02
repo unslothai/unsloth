@@ -2713,7 +2713,7 @@ def test_the_launched_load_mode_is_recorded_in_the_memory_state(tmp_path, monkey
     assert backend._memory_state == (False, True)
 
     # Both consumers now see the child contradicting the setting.
-    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
     assert (
         memory_state_satisfies_settings(
             backend._memory_state,
@@ -2752,7 +2752,7 @@ def test_a_fit_derived_load_mode_is_recorded_too(tmp_path, monkeypatch):
     assert backend._fit_load_mode_flags == ["--load-mode", "none"]
     assert backend._memory_state == (False, True)
 
-    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
     assert (
         memory_state_satisfies_settings(
             backend._memory_state,

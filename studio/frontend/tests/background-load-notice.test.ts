@@ -18,9 +18,11 @@ class FakeWindow extends EventTarget {}
 const originalWindow = (globalThis as { window?: unknown }).window;
 (globalThis as { window?: unknown }).window = new FakeWindow();
 
-const { subscribeModelLifecycle, withBackgroundLoadNotice } = await import(
-  "../src/lib/model-lifecycle-events.ts"
-);
+const {
+  subscribeModelLifecycle,
+  withBackgroundLoadNotice,
+  withModelUnloadNotice,
+} = await import("../src/lib/model-lifecycle-events.ts");
 
 /** The real cadences are 2s / 10s; these drive the same loop without waiting. */
 const TIMING = { pollMs: 1, readTimeoutMs: 25, stallMs: 5000 };
@@ -140,6 +142,32 @@ test("a load that never started settles at once, not from the poll", async () =>
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal(polled, false);
   assert.equal(seen.length, 2);
+  stop();
+});
+
+test("a successful unload announces the settled runtime", async () => {
+  const { seen, stop } = record();
+  const result = await withModelUnloadNotice(
+    "chat",
+    "unsloth/model",
+    async () => "released",
+  );
+  assert.equal(result, "released");
+  assert.deepEqual(seen, [
+    { runtime: "chat", loading: false, model: "unsloth/model" },
+  ]);
+  stop();
+});
+
+test("a failed unload does not announce a release", async () => {
+  const { seen, stop } = record();
+  await assert.rejects(
+    withModelUnloadNotice("video", null, async () => {
+      throw new Error("409 generation active");
+    }),
+    /generation active/,
+  );
+  assert.deepEqual(seen, []);
   stop();
 });
 

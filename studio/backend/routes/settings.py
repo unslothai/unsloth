@@ -76,7 +76,6 @@ from utils.model_memory_settings import (
     get_model_memory_settings,
     memlock_limit_bytes,
     set_model_memory_settings,
-    should_mlock,
 )
 from utils.vram_budget_settings import (
     VRAM_FRACTION_DEFAULT,
@@ -650,6 +649,14 @@ class ModelMemoryResponse(BaseModel):
     # Whether --mlock is passed on the next load. False when no_ram_reserve
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
+    # False when the loaded model is fully offloaded to a discrete GPU: nothing in
+    # host RAM to pin, so the lock is skipped on purpose and the idle-unload veto
+    # carries residency alone. True with nothing loaded, like mlock_active, which
+    # reports the intent until a launch exists.
+    mlock_applicable: bool = True
+    # Lets the UI distinguish a full GPU offload from a runner that does not use
+    # llama.cpp memory controls. Optional/defaulted for mixed-version clients.
+    mlock_skip_reason: Optional[Literal["full_gpu_offload", "ungoverned"]] = None
     reload_required: bool
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns
     # that residency will not fully pin a model larger than this. None means
@@ -903,6 +910,34 @@ def _chat_preferences_response(enabled: bool | None = None) -> ChatPreferencesRe
 _NO_LAUNCH = object()
 
 
+def _media_model_is_resident() -> bool:
+    """Whether an image or video model is loaded.
+
+    The GPU arbiter does not answer this: a CPU-only diffusion or video load
+    releases ownership on purpose (routes/inference.py, routes/video.py), so
+    current_owner() is None while the pipeline is still resident. Read through
+    media_keepwarm, which returns None until the backend module is imported, so
+    an Unsloth that never opened those pages pays nothing and never pulls torch
+    in just to answer this.
+    """
+    from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+    from core.inference.media_keepwarm import engine_if_imported
+
+    for owner in (DIFFUSION, VIDEO):
+        try:
+            backend = engine_if_imported(owner)
+            if backend is None:
+                continue
+            loaded = getattr(backend, "is_loaded", None)
+            if loaded is None:
+                loaded = bool(backend.status().get("loaded"))
+        except Exception:  # noqa: BLE001 - a probe must never block reading settings
+            continue
+        if loaded:
+            return True
+    return False
+
+
 def _active_launch_placement():
     """``(state, policy_active, mlock_applicable)`` for the running child.
 
@@ -915,17 +950,41 @@ def _active_launch_placement():
         backend = get_llama_cpp_backend()
         pending = bool(getattr(backend, "_memory_launch_pending", False))
         if not backend.is_active and not pending:
+            from core.inference.gpu_arbiter import DIFFUSION, VIDEO, current_owner
+            from core.inference.orchestrator import peek_inference_backend
+
+            orchestrator = peek_inference_backend()
+            resident_stt_model = getattr(orchestrator, "resident_stt_model", None)
+            stt_status = resident_stt_model() if callable(resident_stt_model) else None
+            # The registry answers with all four keys whether or not a sidecar is up,
+            # so the dict itself is always truthy; only these two say one is there.
+            stt_model_loaded = bool(
+                stt_status and (stt_status.get("model") or stt_status.get("loading"))
+            )
+            if (
+                # Media only. The chat claim outlives its model, since no unload path
+                # releases it, so reading it as a live runtime turns every unloaded
+                # session ungoverned; backend.is_active above already answers for chat.
+                current_owner() in (DIFFUSION, VIDEO)
+                or bool(getattr(orchestrator, "active_model_name", None))
+                or bool(getattr(orchestrator, "loading_models", None))
+                or stt_model_loaded
+                or _media_model_is_resident()
+            ):
+                return None, False, False
             return _NO_LAUNCH, False, True
+        state = getattr(backend, "_memory_state", None)
+        reserves_ram = bool(isinstance(state, (tuple, list)) and len(state) >= 2 and state[1])
         return (
-            getattr(backend, "_memory_state", None),
+            state,
             bool(getattr(backend, "_memory_policy_active", False)),
-            bool(getattr(backend, "_memory_mlock_applicable", True)),
+            bool(getattr(backend, "_memory_mlock_applicable", True) or reserves_ram),
         )
     except Exception:
         return _NO_LAUNCH, False, True
 
 
-def _model_memory_reload_required() -> bool:
+def _model_memory_reload_required(placement = None, settings = None) -> bool:
     """True when the loaded process's memory placement contradicts the settings.
 
     Compares the state the child ACTUALLY launched with -- env defaults plus
@@ -939,17 +998,24 @@ def _model_memory_reload_required() -> bool:
     same window before Popen, where the placement is decided but _process is
     still None.
     """
-    state, policy_active, mlock_applicable = _active_launch_placement()
+    if placement is None:
+        placement = _active_launch_placement()
+    state, policy_active, mlock_applicable = placement
     if state is _NO_LAUNCH:
         return False
 
     # Same predicate the duplicate-load comparator uses.
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
-    return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
+    return not memory_state_satisfies_settings(
+        state,
+        policy_active,
+        mlock_applicable,
+        settings,
+    )
 
 
-def _model_memory_mlock_active(want_mlock: bool) -> bool:
+def _model_memory_mlock_active(want_mlock: bool, placement = None) -> bool:
     """Whether page-locking is actually in force, not merely asked for.
 
     This drives the locked-memory cap warning, so taking it from the toggles
@@ -960,22 +1026,59 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     otherwise would warn about ulimit -l for a lock nobody took. A user's own
     --mlock counts, since the resolver reads the launched argv.
     """
-    if not want_mlock:
-        return False
-    state, _policy_active, _applicable = _active_launch_placement()
+    if placement is None:
+        placement = _active_launch_placement()
+    state, _policy_active, _applicable = placement
+    if state is _NO_LAUNCH:
+        return want_mlock
+    return bool(state and state[0])
+
+
+def _model_memory_mlock_applicable(placement = None) -> bool:
+    """Whether the running launch has anything for page-locking to act on.
+
+    False when the launch has no host weights to lock or does not use llama.cpp
+    memory controls. With nothing running there is no launch to describe, so
+    this reports True, matching _model_memory_mlock_active.
+    """
+    if placement is None:
+        placement = _active_launch_placement()
+    state, _policy_active, applicable = placement
     if state is _NO_LAUNCH:
         return True
-    return bool(state and state[0])
+    if state is None:
+        return False
+    return applicable
+
+
+def _model_memory_mlock_skip_reason(placement = None):
+    if placement is None:
+        placement = _active_launch_placement()
+    state, _policy_active, applicable = placement
+    if state is None:
+        return "ungoverned"
+    if state is not _NO_LAUNCH and not applicable:
+        return "full_gpu_offload"
+    return None
 
 
 def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
-    mlock_active = _model_memory_mlock_active(should_mlock())
+    placement = _active_launch_placement()
+    mlock_active = _model_memory_mlock_active(
+        keep_resident and not no_ram_reserve,
+        placement,
+    )
     return ModelMemoryResponse(
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
         mlock_active = mlock_active,
-        reload_required = _model_memory_reload_required(),
+        mlock_applicable = _model_memory_mlock_applicable(placement),
+        mlock_skip_reason = _model_memory_mlock_skip_reason(placement),
+        reload_required = _model_memory_reload_required(
+            placement,
+            (keep_resident, no_ram_reserve),
+        ),
         memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )
 

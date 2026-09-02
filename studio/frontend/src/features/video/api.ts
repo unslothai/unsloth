@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
+import {
+  withBackgroundLoadNotice,
+  withModelUnloadNotice,
+} from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Same plan shape as the images backend: both /download-plan routes share a response model.
 import type { DiffusionDownloadPlan } from "@/features/images/api";
@@ -301,7 +304,9 @@ export async function cancelVideoGeneration(): Promise<{ cancelled: boolean }> {
 }
 
 export async function unloadVideoModel(): Promise<VideoStatus> {
-  return parseJson(await authFetch("/api/inference/video/unload", { method: "POST" }));
+  return withModelUnloadNotice("video", null, async () =>
+    parseJson(await authFetch("/api/inference/video/unload", { method: "POST" })),
+  );
 }
 
 export interface VideoGalleryPage {

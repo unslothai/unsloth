@@ -80,10 +80,11 @@ def test_missing_description_symbol_keeps_igpu_detection():
     )
     lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
 
-    flags, names = _igpu_flags_and_names(base, lib, 1)
+    flags, names, type_known = _igpu_flags_and_names(base, lib, 1)
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
+    assert type_known == [True]
 
 
 def _make_vulkan_install(tmp_path: Path) -> str:
@@ -122,9 +123,12 @@ def _row(
     is_igpu: int,
     total_bytes: int = 0,
     name: str | None = None,
+    type_known: int | None = 1,
 ) -> str:
     row = f"{idx}\t{free_bytes}\t{is_igpu}\t{total_bytes}"
-    return f"{row}\t{name}" if name is not None else row
+    if type_known is None:
+        return f"{row}\t{name}" if name is not None else row
+    return f"{row}\t{name or ''}\t{type_known}"
 
 
 def _host_memory(monkeypatch, *, available_mib, total_mib):
@@ -216,6 +220,41 @@ def test_discrete_gpu_free_is_untouched_and_total_passed_through(tmp_path):
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert gpus == [(0, 6 * 1024, 24 * 1024)], gpus
+
+
+def test_failed_device_type_lookup_keeps_the_snapshot_unknown(tmp_path):
+    binary = _make_vulkan_install(tmp_path)
+    rows = [_row(0, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB, type_known = 0)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 6 * 1024, 24 * 1024)]
+    assert gpus.known_vulkan_igpus is None
+
+
+@pytest.mark.parametrize("columns", [4, 5], ids = ["no-name", "named"])
+def test_a_legacy_row_keeps_its_own_device_type(tmp_path, columns):
+    """A probe from before the status column still asked ggml; it just did not
+    report whether the answer held. Reading its absence as unclassified made
+    _vulkan_targets_are_igpus answer True for a discrete card, so Keep Resident
+    page-locked a model-sized host copy of a launch fully offloaded to it."""
+    binary = _make_vulkan_install(tmp_path)
+    rows = [
+        _row(
+            0,
+            6 * GIB,
+            is_igpu = 0,
+            total_bytes = 24 * GIB,
+            name = "Radeon" if columns == 5 else None,
+            type_known = None,
+        )
+    ]
+    with _mock_probe(rows):
+        assert LlamaCppBackend._run_vulkan_probe(binary)[0]["type_known"] is True
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus.known_vulkan_igpus == set()
+    with _mock_probe(rows):
+        assert LlamaCppBackend._vulkan_targets_are_igpus(binary, [0]) is False
 
 
 def test_large_discrete_gpu_is_untouched(tmp_path):

@@ -4,39 +4,112 @@
 import { Switch } from "@/components/ui/switch";
 import { formatBytes } from "@/features/hub/lib/format";
 import { useT } from "@/i18n";
+import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { useEffect, useState } from "react";
 import {
   type ModelMemorySettings,
   loadModelMemorySettings,
+  subscribeModelMemorySettings,
   updateModelMemorySettings,
 } from "../api/model-memory";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
+const MODEL_MEMORY_POLL_MS = 5000;
+
+function coalesceRefreshes(refreshOnce: () => Promise<void>): () => void {
+  let refreshInFlight = false;
+  let refreshQueued = false;
+  const finishRefresh = () => {
+    refreshInFlight = false;
+    if (refreshQueued) {
+      refreshQueued = false;
+      refresh();
+    }
+  };
+  const refresh = () => {
+    if (refreshInFlight) {
+      refreshQueued = true;
+      return;
+    }
+    refreshInFlight = true;
+    refreshOnce().then(finishRefresh, finishRefresh);
+  };
+  return refresh;
+}
+
+async function refreshModelMemoryState(
+  isCurrent: () => boolean,
+  setSettings: (settings: ModelMemorySettings) => void,
+  setError: (error: string | null) => void,
+  fallbackError: string,
+): Promise<void> {
+  try {
+    const loaded = await loadModelMemorySettings({ force: true });
+    if (!isCurrent()) {
+      return;
+    }
+    setSettings(loaded);
+    setError(null);
+  } catch (loadError) {
+    if (!isCurrent()) {
+      return;
+    }
+    setError(loadError instanceof Error ? loadError.message : fallbackError);
+  }
+}
+
+function isRefreshCurrent(
+  cancelled: boolean,
+  currentGeneration: number,
+  expectedGeneration: number,
+): boolean {
+  return !cancelled && currentGeneration === expectedGeneration;
+}
+
 export function ModelMemorySection() {
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void loadModelMemorySettings()
-      .then((loaded) => {
-        if (cancelled) return;
-        setSettings(loaded);
-        setError(null);
-      })
-      .catch((loadError) => {
-        if (cancelled) return;
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : t("settings.resources.modelMemory.loadError"),
-        );
-      });
+    let refreshGeneration = 0;
+    const refresh = coalesceRefreshes(async () => {
+      const generation = ++refreshGeneration;
+      await refreshModelMemoryState(
+        () => isRefreshCurrent(cancelled, refreshGeneration, generation),
+        setSettings,
+        setLoadError,
+        t("settings.resources.modelMemory.loadError"),
+      );
+    });
+
+    refresh();
+    const unsubscribeSettings = subscribeModelMemorySettings((next) => {
+      if (cancelled) return;
+      refreshGeneration += 1;
+      setSettings(next);
+      setLoadError(null);
+    });
+    const unsubscribeLifecycle = subscribeModelLifecycle(refresh);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) refresh();
+    }, MODEL_MEMORY_POLL_MS);
+    const onWake = () => {
+      if (!document.hidden) refresh();
+    };
+    window.addEventListener("focus", onWake);
+    document.addEventListener("visibilitychange", onWake);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onWake);
+      document.removeEventListener("visibilitychange", onWake);
+      unsubscribeLifecycle();
+      unsubscribeSettings();
     };
   }, [t]);
 
@@ -44,13 +117,13 @@ export function ModelMemorySection() {
     patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
   ) => {
     setIsSaving(true);
-    setError(null);
+    setSaveError(null);
     try {
       setSettings(await updateModelMemorySettings(patch));
-    } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
+    } catch (saveFailure) {
+      setSaveError(
+        saveFailure instanceof Error
+          ? saveFailure.message
           : t("settings.resources.modelMemory.saveError"),
       );
     } finally {
@@ -58,18 +131,30 @@ export function ModelMemorySection() {
     }
   };
 
-  // Both on suppresses --mlock. Say so, rather than looking like a no-op.
-  // Keyed on the toggles, not mlockActive: that now also reads false when the
-  // running model simply had nothing in host RAM to lock, which is a different
-  // reason than the one this line gives.
+  // A loaded child may stay locked until reload, so show the veto only after it took effect.
   const mlockVetoed =
-    settings?.keepResident === true && settings.noRamReserve === true;
+    settings?.keepResident === true &&
+    settings.noRamReserve === true &&
+    settings.mlockActive === false;
   // A finite locked-memory cap means llama.cpp logs "failed to mlock" and
   // carries on, so residency would look enabled but do nothing.
   const memlockCap =
     settings?.mlockActive === true && settings.memlockLimitBytes !== null
       ? settings.memlockLimitBytes
       : null;
+  // Not shown when no-reserve is the only setting on, or a lock is already
+  // active: either one would make "there is nothing to pin" false.
+  const mlockNotApplicable =
+    settings?.mlockSkipReason === "full_gpu_offload" &&
+    settings.keepResident === true &&
+    settings.noRamReserve === false &&
+    settings.mlockActive === false;
+  const mlockUngoverned =
+    settings?.mlockSkipReason === "ungoverned" &&
+    settings.keepResident === true &&
+    settings.noRamReserve === false &&
+    settings.mlockActive === false;
+  const error = saveError ?? loadError;
 
   return (
     <SettingsSection title={t("settings.resources.modelMemory.title")}>
@@ -108,6 +193,16 @@ export function ModelMemorySection() {
           {mlockVetoed ? (
             <p className="pb-1 text-xs text-muted-foreground">
               {t("settings.resources.modelMemory.mlockVetoed")}
+            </p>
+          ) : null}
+          {mlockNotApplicable ? (
+            <p className="pb-1 text-xs text-muted-foreground">
+              {t("settings.resources.modelMemory.mlockNotApplicable")}
+            </p>
+          ) : null}
+          {mlockUngoverned ? (
+            <p className="pb-1 text-xs text-muted-foreground">
+              {t("settings.resources.modelMemory.mlockUngoverned")}
             </p>
           ) : null}
           {memlockCap !== null ? (

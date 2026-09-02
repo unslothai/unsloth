@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
+import {
+  withModelLoadNotice,
+  withModelUnloadNotice,
+} from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -381,22 +384,24 @@ export function unloadSttModel(
   engine?: SttEngine,
   model?: string,
 ): Promise<void> {
-  return queueSttLifecycle(async () => {
-    const params = new URLSearchParams();
-    if (engine) params.set("engine", engine);
-    if (model) params.set("model", model);
-    const query = params.size ? `?${params}` : "";
-    const response = await authFetch(
-      `/api/inference/audio/stt/unload${query}`,
-      { method: "POST" },
-    );
-    if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as {
-        detail?: string;
-      } | null;
-      throw new Error(body?.detail ?? `HTTP ${response.status}`);
-    }
-  });
+  return queueSttLifecycle(() =>
+    withModelUnloadNotice("stt", model ?? null, async () => {
+      const params = new URLSearchParams();
+      if (engine) params.set("engine", engine);
+      if (model) params.set("model", model);
+      const query = params.size ? `?${params}` : "";
+      const response = await authFetch(
+        `/api/inference/audio/stt/unload${query}`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          detail?: string;
+        } | null;
+        throw new Error(body?.detail ?? `HTTP ${response.status}`);
+      }
+    }),
+  );
 }
 
 /**

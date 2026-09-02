@@ -1200,6 +1200,7 @@ def apply_model_memory_policy(
     *,
     supports_load_mode: bool = False,
     weights_in_host_memory: bool = True,
+    model_memory_settings: Optional[tuple[bool, bool]] = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve the Model Memory settings into llama-server flags.
 
@@ -1222,15 +1223,14 @@ def apply_model_memory_policy(
     The per-model Mmap/Mlock control is resolved separately, by
     ``apply_load_mode_policy``, which runs after this and defers to it.
     """
-    try:
-        from utils.model_memory_settings import get_model_memory_settings
-    except Exception:
-        # Settings unavailable (bare unit-test import): behave as before.
-        return [], list(extra_args or [])
-
-    # One snapshot for both decisions: read separately, a save landing between them strips for one setting and locks for
-    # the other, so a saved --mlock could survive a committed no-reserve.
-    keep_resident, no_ram_reserve = get_model_memory_settings()
+    if model_memory_settings is None:
+        try:
+            from utils.model_memory_settings import get_model_memory_settings
+            model_memory_settings = get_model_memory_settings()
+        except Exception:
+            # Settings unavailable (bare unit-test import): behave as before.
+            return [], list(extra_args or [])
+    keep_resident, no_ram_reserve = model_memory_settings
     tokens = list(extra_args or [])
     if no_ram_reserve:
         tokens = strip_shadowing_flags(
@@ -1270,6 +1270,7 @@ def apply_load_mode_policy(
     supports_load_mode: bool = False,
     weights_in_host_memory: bool = True,
     requested_load_mode: Optional[str] = None,
+    model_memory_settings: Optional[tuple[bool, bool]] = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve the per-model Mmap/Mlock control into llama-server flags.
 
@@ -1290,12 +1291,14 @@ def apply_load_mode_policy(
     mode = _normalize_load_mode_value(requested_load_mode)
     if not mode:
         return [], tokens
-    try:
-        from utils.model_memory_settings import get_model_memory_settings
-        keep_resident, no_ram_reserve = get_model_memory_settings()
-    except Exception:
-        # Settings unavailable (bare unit-test import): nothing to defer to.
-        keep_resident, no_ram_reserve = False, False
+    if model_memory_settings is None:
+        try:
+            from utils.model_memory_settings import get_model_memory_settings
+            model_memory_settings = get_model_memory_settings()
+        except Exception:
+            # Settings unavailable (bare unit-test import): nothing to defer to.
+            model_memory_settings = (False, False)
+    keep_resident, no_ram_reserve = model_memory_settings
     if keep_resident and not no_ram_reserve and weights_in_host_memory:
         logger.info(
             "Model Memory: 'Keep model in GPU memory' owns the load mode; "
@@ -1320,6 +1323,30 @@ def apply_load_mode_policy(
     # appended after and last-wins, which is what the panel's diagnostics promise. An INHERITED copy is a different
     # thing, and the route drops that one before it ever reaches here.
     return ["--load-mode", mode], tokens
+
+
+def model_memory_suppresses_load_mode(
+    requested_load_mode: Optional[str],
+    *,
+    supports_load_mode: bool,
+    weights_in_host_memory: bool,
+    model_memory_settings: Optional[tuple[bool, bool]] = None,
+) -> bool:
+    """Whether Model Memory suppressed a per-model mode this build could emit."""
+    mode = _normalize_load_mode_value(requested_load_mode)
+    if not mode or (not supports_load_mode and mode not in _LEGACY_LOAD_MODE_FLAGS):
+        return False
+    if model_memory_settings is None:
+        try:
+            from utils.model_memory_settings import get_model_memory_settings
+            model_memory_settings = get_model_memory_settings()
+        except Exception:
+            return False
+    keep_resident, no_ram_reserve = model_memory_settings
+    return bool(
+        (keep_resident and not no_ram_reserve and weights_in_host_memory)
+        or (no_ram_reserve and mode in _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES)
+    )
 
 
 def _normalize_load_mode_value(value: Optional[str]) -> str:
@@ -1838,6 +1865,7 @@ def memory_state_satisfies_settings(
     state: Optional[tuple[bool, bool]],
     policy_active: bool = False,
     mlock_applicable: bool = True,
+    settings: Optional[tuple[bool, bool]] = None,
 ) -> bool:
     """True when a launched ``(mlock, reserves_ram)`` matches the settings.
 
@@ -1863,14 +1891,17 @@ def memory_state_satisfies_settings(
     """
     if state is None:
         return True
-    try:
-        from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
-    except Exception:
-        return True
+    if settings is None:
+        try:
+            from utils.model_memory_settings import get_model_memory_settings
+            settings = get_model_memory_settings()
+        except Exception:
+            return True
+    keep_resident, no_ram_reserve = settings
     mlock, reserves_ram = state
-    if get_no_ram_reserve():
+    if no_ram_reserve:
         # mlock_applicable only excuses a MISSING lock; a live reservation still has to go, wherever the weights are
         return not (mlock or reserves_ram)
-    if get_keep_resident():
+    if keep_resident:
         return mlock or not mlock_applicable
     return not policy_active
