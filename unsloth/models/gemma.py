@@ -63,23 +63,18 @@ torch_nn_functional_gelu = torch.nn.functional.gelu
 
 
 def fast_geglu_inference(self, X):
-    # gate = self.gate_proj(X)
-    # up   = self.up_proj(X)
     bsz, _, hd = X.shape
-    # mlp_size = self.config.intermediate_size
-    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
 
-    gate = fast_linear_forward(self.gate_proj, X)  # , out = temp[0])
-    up = fast_linear_forward(self.up_proj, X)  # , out = temp[1])
+    gate = fast_linear_forward(self.gate_proj, X)
+    up = fast_linear_forward(self.up_proj, X)
     gate = torch_nn_functional_gelu(gate, approximate = "tanh")
     gate *= up
 
-    # X = self.down_proj(gate)
     down = fast_linear_forward(self.down_proj, gate, out = up[:, :, :hd])
     return down
 
 
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
+# Ported from transformers models/llama/modeling_llama.py#L590
 def GemmaDecoderLayer_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -93,14 +88,13 @@ def GemmaDecoderLayer_fast_forward(
     *args,
     **kwargs,
 ):
-    if use_cache and hasattr(self, "_flag_for_generation"):  # past_key_value is not None:
+    if use_cache and hasattr(self, "_flag_for_generation"):
         out_weight = torch.empty(
             self.input_layernorm.weight.shape,
             dtype = torch.float32,
             device = f"{DEVICE_TYPE_TORCH}:0",
         )
 
-        # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.input_layernorm, hidden_states, out_weight
@@ -118,7 +112,6 @@ def GemmaDecoderLayer_fast_forward(
         )
         hidden_states += residual
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_attention_layernorm, hidden_states, out_weight
@@ -141,7 +134,6 @@ def GemmaDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = self.mlp(hidden_states)
@@ -158,8 +150,7 @@ def GemmaDecoderLayer_fast_forward(
 from math import sqrt as math_sqrt
 
 
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-# @torch.inference_mode
+# Ported from transformers models/llama/modeling_llama.py#L825
 def GemmaModel_fast_forward_inference(
     self,
     input_ids,
@@ -179,8 +170,7 @@ def GemmaModel_fast_forward_inference(
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
-    # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
-    # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
+    # 3072**0.5 is 55.5000 in bfloat16 against 55.4256 in float32, and 2048**0.5 is 45.2500 against 45.2548.
     hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
 
     bsz, q_len, hd = hidden_states.shape
@@ -193,11 +183,11 @@ def GemmaModel_fast_forward_inference(
             hidden_states,
             seq_len,
         )
-        # Pre-convert to bool once for all layers (avoids per-layer .eq(0))
+        # Pre-convert to bool once for all layers, avoiding a per-layer .eq(0).
         if attention_mask is not None and attention_mask.dtype != torch.bool:
             attention_mask = attention_mask.eq(0)
 
-    # Compute rotary_seq_len once to avoid per-layer GPU-CPU sync from .item()
+    # Compute rotary_seq_len once to avoid a per-layer GPU-CPU sync from .item().
     rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
     next_decoder_cache = []
@@ -242,27 +232,24 @@ def GemmaModel_fast_forward_inference(
     )
 
 
-# Follows line by line https://github.com/google-deepmind/gemma/blob/main/gemma/positional_embeddings.py#L45
-# Formulates cos and sin differently from Llama!
+# Follows google-deepmind/gemma positional_embeddings.py#L45 line by line, which formulates cos and
+# sin differently from Llama.
 class GemmaFixedRotaryEmbedding(torch.nn.Module):
-    # Fixes https://github.com/huggingface/transformers/pull/28837
-    # https://github.com/microsoft/DeepSpeed/issues/4932
-    # The precision of RoPE buffers is not correct, so we cast to int64.
+    # RoPE buffer precision is wrong, so cast to int64; see huggingface/transformers#28837 and microsoft/DeepSpeed#4932.
     def __init__(
         self,
         dim = None,
         max_position_embeddings = 2048,
         base = 10000,
         device = None,
-        config = None,  # [TODO] Hack to pass in config - need to remove later
+        config = None,
     ):
         super().__init__()
-        # In transformers 5.0+, RotaryEmbedding(config) passes config as first positional arg (dim)
+        # In transformers 5.0+, RotaryEmbedding(config) passes config as the first positional arg (dim).
         if config is None and dim is not None and hasattr(dim, "max_position_embeddings"):
             config = dim
             dim = None
         if config is not None:
-            # [TODO] Hack to pass in config - need to remove later
             base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
@@ -275,7 +262,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
+        # Dynamic RoPE starts at a max of 4 * 8192 tokens and grows iteratively in increments of 8192.
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
         self.multi_gpu_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
@@ -288,7 +275,6 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
                 dtype = torch.get_default_dtype(),
             )
 
-        # dummy so that patch_utils doesn't fail for now
         self.cos_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
@@ -297,8 +283,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
-        # in FP32. They are applied (multiplied) in FP32 as well.
+        # The original Llama codebase creates these on the target device in FP32 and multiplies in FP32; the
+        # difference here is explicit division t/x rather than t * (1/x).
         self.current_rope_size = seq_len
 
         # The difference is we do division explicitly instead of t * (1/x) ie we do t/x.
@@ -311,9 +297,9 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         radians_new = radians_new.squeeze(0)
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
-        # We must do RoPE in float32!
-        cos = emb.cos().to(device = device, non_blocking = True)  # , dtype = dtype)
-        sin = emb.sin().to(device = device, non_blocking = True)  # , dtype = dtype)
+        # RoPE must be done in float32.
+        cos = emb.cos().to(device = device, non_blocking = True)
+        sin = emb.sin().to(device = device, non_blocking = True)
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
@@ -324,7 +310,6 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         position_ids = None,
         seq_len = None,
     ):
-        # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len = seq_len, device = x.device, dtype = x.dtype)
 
@@ -358,9 +343,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
     """LlamaRotaryEmbedding extended with linear scaling. Credits to the Reddit user /u/kaiokendev"""
 
-    # Fixes https://github.com/huggingface/transformers/pull/28837
-    # https://github.com/microsoft/DeepSpeed/issues/4932
-    # The precision of RoPE buffers is not correct, so we cast to int64.
+    # RoPE buffer precision is wrong, so cast to int64; see huggingface/transformers#28837 and microsoft/DeepSpeed#4932.
     def __init__(
         self,
         dim = None,
@@ -368,7 +351,7 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
         base = 10000,
         device = None,
         scaling_factor = 1.0,
-        config = None,  # [TODO] Hack to pass in config - need to remove later
+        config = None,
     ):
         self.scaling_factor = scaling_factor
         super().__init__(
@@ -380,8 +363,8 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
-        # in FP32. They are applied (multiplied) in FP32 as well.
+        # The original Llama codebase creates these on the target device in FP32 and multiplies in FP32; the
+        # difference here is explicit division t/x rather than t * (1/x).
         self.current_rope_size = seq_len
 
         # The difference is we do division explicitly instead of t * (1/x) ie we do t/x.
@@ -395,9 +378,9 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
         radians_new = radians_new.squeeze(0)
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
-        # We must do RoPE in float32!
-        cos = emb.cos().to(device = device, non_blocking = True)  # , dtype = dtype)
-        sin = emb.sin().to(device = device, non_blocking = True)  # , dtype = dtype)
+        # RoPE must be done in float32.
+        cos = emb.cos().to(device = device, non_blocking = True)
+        sin = emb.sin().to(device = device, non_blocking = True)
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
@@ -424,11 +407,8 @@ class FastGemmaModel(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(GemmaForCausalLM)
 
-        # Solves https://github.com/unslothai/unsloth/issues/168
-        # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
-        # https://github.com/huggingface/transformers/pull/27931
-        # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
+        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
+        # huggingface/transformers#27931), so the old rotary embeddings are retained.
         import transformers.models.gemma.modeling_gemma
 
         transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = GemmaFixedRotaryEmbedding
@@ -440,18 +420,15 @@ class FastGemmaModel(FastLlamaModel):
         tokenizer,
         correct_dtype = None,
     ):
-        # Gemma does not downcast RoPE
+        # Gemma does not downcast RoPE.
         model, tokenizer = patch_model_and_tokenizer(
             model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
 
-        # Add 1 to weight
-        # return output * (1 + self.weight)
-        # https://github.com/huggingface/transformers/blob/main/src/transformers/models/gemma/modeling_gemma.py#L89
+        # Gemma returns output * (1 + self.weight); see transformers models/gemma/modeling_gemma.py#L89.
         from transformers.models.gemma.modeling_gemma import GemmaRMSNorm
 
-        # Freeze all parameters except LoRA
-        # We do this first since += 1 seems to not be liked by requires_grad = True
+        # Freeze all parameters except LoRA first, since += 1 does not agree with requires_grad = True.
         for name, param in model.named_parameters():
             if ".lora_A." in name or ".lora_B." in name:
                 param.requires_grad_(True)
@@ -461,15 +438,11 @@ class FastGemmaModel(FastLlamaModel):
         # Patch RMS Layernorm
         for name, module in model.named_modules():
             if isinstance(module, GemmaRMSNorm):
-                # Must be in float32
-                # https://github.com/keras-team/keras-nlp/blob/v0.8.2/keras_nlp/models/gemma/rms_normalization.py#L36
-                # module = module.to(torch.float32)
-                # Leave + 1 to Triton kernel itself
-                # module.weight += 1.0 # return output * (1 + self.weight)
+                # Must be in float32 (keras-nlp gemma/rms_normalization.py#L36); the +1 is left to the Triton kernel
+                # itself.
                 if not hasattr(module, "variance_epsilon"):
                     module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
 
-        # Clear deleted GPU items
         import gc
 
         for _ in range(3):

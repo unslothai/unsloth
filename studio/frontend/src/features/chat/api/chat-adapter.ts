@@ -152,6 +152,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
+import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -4507,7 +4508,11 @@ export function createOpenAIStreamAdapter(
           await saveStoredChatMessage({
             id: userMessage.id,
             threadId: resolvedThreadId,
-            parentId: storedUserMessage?.parentId ?? userMessageParentId,
+            // A stored null is an edited root; `??` would reparent it.
+            parentId:
+              storedUserMessage && storedUserMessage.parentId !== undefined
+                ? storedUserMessage.parentId
+                : userMessageParentId,
             role: "user",
             content: userMessage.content,
             ...(userMessage.attachments?.length
@@ -6292,10 +6297,11 @@ export function createOpenAIStreamAdapter(
                             ...(ragAutoInject === "off"
                               ? { whole_doc: false }
                               : {}),
-                            context_length:
-                              runtime.loadedContextLength ??
-                              params.maxSeqLength ??
-                              undefined,
+                            context_length: ragScopeContextLength({
+                              isExternalRequest,
+                              loadedContextLength: runtime.loadedContextLength,
+                              maxSeqLength: params.maxSeqLength,
+                            }),
                           },
                         }
                       : {}),
@@ -6514,10 +6520,11 @@ export function createOpenAIStreamAdapter(
                           ...(ragAutoInject === "off"
                             ? { whole_doc: false }
                             : {}),
-                          context_length:
-                            runtime.loadedContextLength ??
-                            params.maxSeqLength ??
-                            undefined,
+                          context_length: ragScopeContextLength({
+                            isExternalRequest,
+                            loadedContextLength: runtime.loadedContextLength,
+                            maxSeqLength: params.maxSeqLength,
+                          }),
                         },
                       }
                     : {}),

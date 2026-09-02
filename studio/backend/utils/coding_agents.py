@@ -12,18 +12,15 @@ default to one the user can run immediately.
 
 import shutil
 
-# Keep in sync with the `unsloth start <agent>` subcommands defined in
-# unsloth_cli/commands/start.py. Each entry is the exact executable name that
-# subcommand launches, so a hit here means `unsloth start <agent>` can find the
-# binary on PATH without the user installing anything first.
+# Keep in sync with the `unsloth start <agent>` subcommands defined in unsloth_cli/commands/start.py. Each entry is the
+# exact executable name that subcommand launches, so a hit here means the binary is on PATH without the user installing
+# anything first.
 CODING_AGENTS: tuple[str, ...] = ("claude", "codex", "openclaw", "opencode", "hermes", "pi")
 
 
 def _is_on_path(agent: str) -> bool:
-    # shutil.which is documented to return None on a miss, but PATH lookups can
-    # still raise (e.g. a permission error while probing a directory entry);
-    # this is an advisory check, so a lookup failure should read as "not
-    # installed" instead of breaking the settings endpoint.
+    # shutil.which returns None on a miss but PATH lookups can still raise, and this is advisory, so a lookup failure
+    # reads as "not installed" rather than breaking the endpoint.
     try:
         return shutil.which(agent) is not None
     except OSError:

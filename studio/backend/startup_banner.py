@@ -114,12 +114,11 @@ def print_studio_access_banner(
     else:
         external_url = f"http://{display_host}:{port}"
 
-    # The exact aliases the canned loopback_url below is valid for; any other bind
-    # (e.g. a specific LAN IP) must show its real address, not http://127.0.0.1.
+    # The exact aliases the canned loopback_url is valid for; any other bind (e.g. a specific LAN IP)
+    # must show its real address, not http://127.0.0.1.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
 
-    # Use the loopback URL only when reachable on loopback; otherwise show
-    # the actual bound address.
+    # Use the loopback URL only when reachable on loopback; otherwise show the actual bound address.
     primary_url = loopback_url if listen_all or loopback_bind else external_url
     api_base = primary_url
 

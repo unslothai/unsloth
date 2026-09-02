@@ -130,7 +130,7 @@ def enforce_bootstrap_password_deadline(
     except Exception:
         return False
     if not still_default:
-        return False  # password changed in time -> leave Unsloth running
+        return False
 
     message = (
         "\nUnsloth Studio was exposed on the network but its default admin "

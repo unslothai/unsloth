@@ -351,7 +351,7 @@ class _IOReportEnergy:
         # group (matches macmon); fall back if the OS leaves it unset.
         self._sample_channels = subscribed if subscribed else self._channels
         self._channels_key = _cfstr(self._cf, "IOReportChannels")
-        self._prev: Optional[tuple[int, float]] = None  # (sample ref, monotonic s)
+        self._prev: Optional[tuple[int, float]] = None
 
     def gpu_power_w(self) -> Optional[float]:
         sample = self._ior.IOReportCreateSamples(self._sub, self._sample_channels, None)
@@ -386,7 +386,7 @@ class _IOReportEnergy:
             watts = _watts(energy, unit, elapsed_s)
             if watts is not None:
                 total = (total or 0.0) + watts
-        if total is None or total < 0:  # negative = counter reset; show -- not a bogus draw
+        if total is None or total < 0:
             return None
         return round(total, 1)
 

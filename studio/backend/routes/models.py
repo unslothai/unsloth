@@ -2940,7 +2940,7 @@ def _scan_loras_sync(
             )
         )
 
-    # Scan exported models (merged, LoRA, base — skips GGUF)
+    # Scan exported models (merged, LoRA, base - skips GGUF)
     exported = scan_exported_models(exports_dir = resolved_exports_dir)
     for display_name, model_path, export_type, base_model in exported:
         lora_list.append(
@@ -3817,7 +3817,12 @@ def _resolve_mtp_drafter(
     and it rejects an incomplete split set. Never raises: a drafter we cannot
     find just costs a segment.
     """
+
     try:
+        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+
+        if (read_gguf_nextn_predict_layers(main_gguf_path) or 0) > 0:
+            return None, 0
         from core.inference.llama_cpp import (
             LlamaCppBackend,
             _companion_snapshot_sibling,
