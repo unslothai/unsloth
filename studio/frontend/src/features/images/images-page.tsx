@@ -54,6 +54,9 @@ import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import {
+  familyOverrideArtifactKind,
+} from "@/features/model-picker/components/model-selector/family-override-local-candidate";
 import { familyOverrideOptions } from "@/features/model-picker/components/model-selector/family-override-options";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
@@ -125,8 +128,8 @@ import {
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
+import { diffusionPipelineLoadTarget } from "@/lib/diffusion-pipeline-load-target";
 import {
-  diffusionPipelineLoadTarget,
   routedGgufFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
@@ -1328,6 +1331,10 @@ export function ImagesPage({
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const overrideArtifactKind = useMemo(
+    () => familyOverrideArtifactKind(familyOverride, "image"),
+    [familyOverride],
+  );
   const selectorModelId =
     status?.loaded && status.repo_id
       ? (status.display_repo_id ?? status.repo_id)
@@ -3732,7 +3739,7 @@ export function ImagesPage({
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
-                familyOverride={familyOverride}
+                opaqueKind={overrideArtifactKind}
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}

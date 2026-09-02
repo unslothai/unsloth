@@ -43,7 +43,7 @@ export interface CachedInventoryRow {
   repo: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  artifactKind: LocalArtifactKind;
+  artifact: LocalArtifactKind;
   runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
@@ -89,7 +89,7 @@ export interface LocalInventoryRow {
   path: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  artifactKind: LocalArtifactKind;
+  artifact: LocalArtifactKind;
   runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;

@@ -18,7 +18,7 @@ for (const [name, page] of [
     const text = source(page);
     assert.ok(text.includes('"family_override"'));
     assert.ok(text.includes("family_override: advanced.family_override"));
-    assert.ok(text.includes("familyOverride={familyOverride}"));
+    assert.ok(text.includes("opaqueKind={overrideArtifactKind}"));
     assert.ok(
       text.includes("familyOverrideOptions(status?.supported_families)"),
     );
@@ -55,7 +55,12 @@ test("pinned pipeline paths retain their Hub selector identity across remounts",
   const picker = source(
     "../src/features/model-picker/components/model-selector/pickers.tsx",
   );
+  const inventory = source(
+    "../src/features/model-picker/inventory/use-chat-picker-inventory.ts",
+  );
   const images = source("../src/features/images/images-page.tsx");
   assert.ok(images.includes("displayRepoId: status.display_repo_id ?? undefined"));
-  assert.ok(picker.includes("isPinnedDiffusionLoadId(c.repo_id, c.load_id)"));
+  assert.ok(picker.includes("c.load_id.trim() !== c.repo_id.trim()"));
+  assert.ok(inventory.includes("row.artifact === options.opaqueKind"));
+  assert.ok(picker.includes("c.opaque === true"));
 });

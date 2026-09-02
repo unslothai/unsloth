@@ -5,10 +5,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  type DiffusionRouteSearch,
   diffusionPipelineLoadTarget,
-  diffusionRouteSearch,
   isPinnedDiffusionLoadId,
+} from "../src/lib/diffusion-pipeline-load-target.ts";
+import {
+  type DiffusionRouteSearch,
+  diffusionRouteSearch,
   routedGgufFilename,
   routedGgufLabel,
 } from "../src/lib/diffusion-route-search.ts";

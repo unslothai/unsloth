@@ -607,18 +607,8 @@ export interface LocalModelInfo {
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
-  /** Structural scanner contract. Diffusers manifest kinds prove this directory is a pipeline
-   * root and distinguish conventional from Modular loading; file format alone cannot distinguish
-   * a checkpoint from an encoder or shard. */
-  artifact_kind?:
-    | "diffusers_pipeline"
-    | "diffusers_modular_pipeline"
-    | "transformers_model"
-    | "single_file_checkpoint"
-    | "gguf"
-    | "adapter"
-    | "unknown"
-    | null;
+  /** This task picker admitted the row using its structural artifact contract. */
+  opaque?: boolean;
   // Set when a cached snapshot holds an incomplete download, so consumers skip unloadable weights.
   partial?: boolean;
   updated_at?: number | null;
@@ -657,8 +647,8 @@ export interface CachedModelRepo {
   /** Weights format; "adapter" is a LoRA with no base weights of its own.
    * Optional for older-backend compatibility. */
   model_format?: string | null;
-  /** Structural scanner contract for the selected cached snapshot. */
-  artifact_kind?: LocalModelInfo["artifact_kind"];
+  /** This task picker admitted the row using its structural artifact contract. */
+  opaque?: boolean;
   /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */

@@ -9,7 +9,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { isCustomProviderType } from "@/features/chat";
+import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { useT } from "@/i18n";
@@ -18,7 +18,6 @@ import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
   CloudIcon,
-  DashboardSquare01Icon,
   Download01Icon,
   RemoveCircleIcon,
   StarIcon,
@@ -61,65 +60,6 @@ import type {
   ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
-
-const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
-  openai: "svg",
-  mistral: "svg",
-  gemini: "svg",
-  anthropic: "svg",
-  deepseek: "svg",
-  huggingface: "svg",
-  kimi: "jpg",
-  qwen: "png",
-  openrouter: "svg",
-  vllm: "svg",
-  ollama: "svg",
-  llama_cpp: "svg",
-};
-
-function providerLogoSrc(providerType: string | undefined): string | undefined {
-  if (!providerType) return undefined;
-  const ext = PROVIDER_LOGO_EXT[providerType];
-  if (!ext) return undefined;
-  return `${import.meta.env.BASE_URL}provider-logos/${providerType}.${ext}`;
-}
-
-function ExternalProviderLogo({
-  providerType,
-  className,
-  title,
-}: {
-  providerType: string | undefined;
-  className?: string;
-  title?: string;
-}) {
-  const src = providerLogoSrc(providerType);
-  if (!src && isCustomProviderType(providerType)) {
-    return (
-      <span title={title} aria-hidden={true} className="inline-flex shrink-0">
-        <HugeiconsIcon
-          icon={DashboardSquare01Icon}
-          className={cn("shrink-0", className)}
-        />
-      </span>
-    );
-  }
-
-  if (!src) return null;
-  return (
-    <img
-      src={src}
-      alt=""
-      title={title}
-      aria-hidden={true}
-      className={cn(
-        "shrink-0 object-contain",
-        providerType === "openai" && "dark:invert",
-        className,
-      )}
-    />
-  );
-}
 
 export type {
   DeletedModelRef,
@@ -183,11 +123,8 @@ interface ModelSelectorProps {
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages
    *  whose runtime loads arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
-  /** Explicit media family. Only positively typed Diffusers pipeline directories may use it
-   * to bypass an otherwise unknown task classification. */
-  familyOverride?: string;
-  /** Backend-derived families whose loader accepts Modular Diffusers roots on this host. */
-  modularFamilyOverrides?: readonly string[];
+  /** The one opaque on-device artifact kind this task runtime may load. */
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
@@ -383,8 +320,7 @@ function ModelSelectorContent({
   task,
   catalog,
   communityModelPolicy,
-  familyOverride,
-  modularFamilyOverrides,
+  opaqueKind,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -410,8 +346,7 @@ function ModelSelectorContent({
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
-  familyOverride?: string;
-  modularFamilyOverrides?: readonly string[];
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
@@ -634,8 +569,7 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
-              familyOverride={familyOverride}
-              modularFamilyOverrides={modularFamilyOverrides}
+              opaqueKind={opaqueKind}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
@@ -694,8 +628,7 @@ export function ModelSelector({
   task,
   catalog,
   communityModelPolicy = "none",
-  familyOverride,
-  modularFamilyOverrides,
+  opaqueKind,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -746,7 +679,7 @@ export function ModelSelector({
         ...externalModel,
         description: externalModel.providerName,
         icon: (
-          <ExternalProviderLogo
+          <ApiProviderLogo
             providerType={externalModel.providerType}
             className="size-4"
             title={externalModel.providerName}
@@ -866,8 +799,7 @@ export function ModelSelector({
         task={task}
         catalog={catalog}
         communityModelPolicy={communityModelPolicy}
-        familyOverride={familyOverride}
-        modularFamilyOverrides={modularFamilyOverrides}
+        opaqueKind={opaqueKind}
       />
     </Popover>
   );

@@ -226,7 +226,7 @@ export function buildCachedInventoryRow(
     repo: row.repo_id.includes("/") ? repoOf(row.repo_id) : row.repo_id,
     isGguf: modelFormat === "gguf",
     modelFormat,
-    artifactKind: row.artifact_kind ?? "unknown",
+    artifact: row.artifact_kind ?? "unknown",
     runtime: normalizeRuntime(
       inferredFromEndpoint ? null : row.runtime,
       modelFormat,
@@ -311,7 +311,7 @@ export function buildLocalInventoryRows(
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
-        artifactKind: model.artifact_kind ?? "unknown",
+        artifact: model.artifact_kind ?? "unknown",
         runtime: normalizeRuntime(model.runtime, modelFormat),
         formatVariant: model.format_variant ?? null,
         capabilities,

@@ -5,133 +5,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  isFamilyOverrideLocalCandidate,
-  localArtifactPassesOverrideGate,
+  familyOverrideArtifactKind,
 } from "../src/features/model-picker/components/model-selector/family-override-local-candidate.ts";
 import { familyOverrideOptions } from "../src/features/model-picker/components/model-selector/family-override-options.ts";
 
-const row = (
-  artifactKind:
-    | "diffusers_pipeline"
-    | "diffusers_modular_pipeline"
-    | "transformers_model"
-    | "single_file_checkpoint"
-    | "gguf"
-    | "adapter"
-    | "unknown",
-  task: string | null = null,
-) => ({ artifact_kind: artifactKind, task });
-
-test("only an opaque pipeline directory qualifies under an explicit family", () => {
+test("an explicit family selects exactly one structurally loadable artifact kind", () => {
+  assert.equal(familyOverrideArtifactKind("auto", "image"), undefined);
+  assert.equal(familyOverrideArtifactKind(undefined, "video"), undefined);
   assert.equal(
-    isFamilyOverrideLocalCandidate(row("diffusers_pipeline"), "z-image", "image"),
-    true,
+    familyOverrideArtifactKind("z-image", "image"),
+    "diffusers_pipeline",
   );
   assert.equal(
-    isFamilyOverrideLocalCandidate(row("diffusers_pipeline"), "auto", "image"),
-    false,
+    familyOverrideArtifactKind("ltx-2", "video", ["minimax-h3"]),
+    "diffusers_pipeline",
   );
   assert.equal(
-    isFamilyOverrideLocalCandidate(row("diffusers_pipeline"), undefined, "image"),
-    false,
-  );
-  assert.equal(
-    isFamilyOverrideLocalCandidate(
-      row("diffusers_pipeline", "text-to-image"),
-      "z-image",
-      "image",
-    ),
-    false,
-  );
-});
-
-test("the same structural contract qualifies an opaque cached snapshot", () => {
-  const cachedSnapshot = {
-    repo_id: "unsloth/custom-finetune",
-    artifact_kind: "diffusers_pipeline" as const,
-    task: null,
-  };
-  assert.equal(isFamilyOverrideLocalCandidate(cachedSnapshot, "z-image", "image"), true);
-});
-
-test("components, shards, adapters and ordinary model directories never qualify", () => {
-  for (const kind of [
-    "transformers_model",
-    "single_file_checkpoint",
-    "gguf",
-    "adapter",
-    "unknown",
-  ] as const) {
-    assert.equal(
-      isFamilyOverrideLocalCandidate(row(kind), "z-image", "image"),
-      false,
-      kind,
-    );
-  }
-});
-
-test("an opaque pipeline stays hidden until the explicit contract applies", () => {
-  assert.equal(
-    localArtifactPassesOverrideGate(row("diffusers_pipeline"), "auto", "image"),
-    false,
-  );
-  assert.equal(
-    localArtifactPassesOverrideGate(row("diffusers_pipeline"), "z-image", "image"),
-    true,
-  );
-  assert.equal(
-    localArtifactPassesOverrideGate(row("transformers_model"), "auto", "image"),
-    true,
-  );
-});
-
-test("a modular-only root requires a modular-capable video family", () => {
-  const modular = row("diffusers_modular_pipeline");
-  assert.equal(
-    isFamilyOverrideLocalCandidate(modular, "z-image", "image"),
-    false,
-  );
-  assert.equal(
-    isFamilyOverrideLocalCandidate(modular, "ltx-2", "video", ["minimax-h3"]),
-    false,
-  );
-  assert.equal(
-    isFamilyOverrideLocalCandidate(modular, "minimax-h3", "video", ["minimax-h3"]),
-    true,
-  );
-  assert.equal(
-    isFamilyOverrideLocalCandidate(modular, "auto", "video"),
-    false,
-  );
-  assert.equal(
-    localArtifactPassesOverrideGate(modular, "z-image", "image"),
-    false,
-  );
-  assert.equal(
-    localArtifactPassesOverrideGate(modular, "minimax-h3", "video", ["minimax-h3"]),
-    true,
-  );
-});
-
-test("a modular-only family rejects a conventional pipeline root", () => {
-  const conventional = row("diffusers_pipeline");
-  assert.equal(
-    isFamilyOverrideLocalCandidate(
-      conventional,
-      "minimax-h3",
-      "video",
-      ["minimax-h3"],
-    ),
-    false,
-  );
-  assert.equal(
-    localArtifactPassesOverrideGate(
-      conventional,
-      "minimax-h3",
-      "video",
-      ["minimax-h3"],
-    ),
-    false,
+    familyOverrideArtifactKind(" MINIMAX-H3 ", "video", ["minimax-h3"]),
+    "diffusers_modular_pipeline",
   );
 });
 
