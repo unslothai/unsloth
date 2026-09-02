@@ -4186,9 +4186,11 @@ def blocked_replace_hint(winerror: object, path: Path) -> str:
     """
     if winerror == 5:
         return (
-            "access is denied -- if it does not clear, this tree's permissions are broken: "
-            f'run takeown /F "{path}" /R /D Y, then icacls "{path}" /reset /T, in an '
-            "elevated PowerShell. Antivirus or Controlled folder access can deny it too"
+            "access is denied -- if it does not clear, this tree's permissions are broken. "
+            "In an elevated PowerShell, run each command:\n"
+            f'takeown /F "{path}" /R /D Y\n'
+            f'icacls "{path}" /reset /T\n'
+            "Antivirus or Controlled folder access can deny it too"
         )
     if winerror == 145:
         return "the directory is not empty yet -- an earlier copy is still being removed"
@@ -4223,9 +4225,13 @@ def replace_with_busy_retry(
             transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
             if not transient or attempt == attempts - 1:
                 raise
+            # The hint names the tree being renamed: it exists and is where the
+            # denied ACLs live. The aside-move's dst is a freshly generated
+            # rollback path that does not exist yet, so pointing the repair at
+            # it could never unblock the rename.
             log(
                 f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
-                f"{delay:.2f}s -- {blocked_replace_hint(exc.winerror, dst)}"
+                f"{delay:.2f}s -- {blocked_replace_hint(exc.winerror, src)}"
             )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)

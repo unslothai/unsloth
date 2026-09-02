@@ -1067,6 +1067,11 @@ def test_blocked_replace_hint_only_blames_a_scanner_for_a_sharing_violation(tmp_
     assert "access is denied" in denied
     assert f'takeown /F "{target}" /R /D Y' in denied
     assert f'icacls "{target}" /reset /T' in denied
+    # Each repair command sits on its own line so it can be pasted as-is,
+    # matching the PowerShell access-denied flow's convention.
+    command_lines = [line.strip() for line in denied.splitlines()]
+    assert f'takeown /F "{target}" /R /D Y' in command_lines
+    assert f'icacls "{target}" /reset /T' in command_lines
 
     not_empty = blocked_replace_hint(145, target)
     assert "scanner" not in not_empty
@@ -1106,6 +1111,11 @@ def test_replace_with_busy_retry_reports_denied_access_as_permissions(
     assert retry_lines, logged
     assert "takeown" in retry_lines[0]
     assert "scanner" not in retry_lines[0]
+    # The ACL hint names the tree being renamed (src). The aside-move's dst is
+    # a freshly generated path that does not exist yet, so repairing it could
+    # never unblock the rename.
+    assert f'"{source}"' in retry_lines[0]
+    assert f'"{destination}"' not in retry_lines[0]
 
 
 def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
