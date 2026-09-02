@@ -995,6 +995,7 @@ def test_a_header_that_undercounts_keeps_the_samples_in_order(monkeypatch):
     it. The length stayed right, so nothing downstream noticed, and what
     reached the model was the same audio with a piece of it moved.
     """
+
     class _VaryingSoundFile:
         samplerate = 8_000
         channels = 1
