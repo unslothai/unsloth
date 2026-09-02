@@ -64,6 +64,18 @@ _MAX_TRACKED_START_REQUESTS = 64
 _MAX_START_CANCEL_TOMBSTONES = 1024
 _START_CANCEL_TOMBSTONE_TTL_S = 300.0
 _START_CANCELLED_ERROR_CODE = "training_start_cancelled"
+DEFAULT_TRAINING_OPTIMIZER = "adamw_8bit"
+XPU_SAFE_TRAINING_OPTIMIZER = "adamw_torch"
+XPU_DEVICE_BACKEND = "xpu"
+PAGED_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_8bit"
+ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER = "adamw_bnb_8bit"
+XPU_UNSUPPORTED_8BIT_OPTIMIZERS = frozenset(
+    (
+        DEFAULT_TRAINING_OPTIMIZER,
+        PAGED_BITSANDBYTES_TRAINING_OPTIMIZER,
+        ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER,
+    )
+)
 
 _pyplot = None
 _pyplot_failed = False
@@ -168,8 +180,22 @@ def should_use_mlx_training_backend(*, device: Optional[Any] = None) -> bool:
     return is_apple_silicon_training_platform()
 
 
+def normalize_training_optimizer_for_device(optimizer: Any, *, device_backend: str) -> Any:
+    if not isinstance(optimizer, str):
+        return optimizer
+    optimizer_key = optimizer.strip().lower().replace("-", "_")
+    if device_backend == XPU_DEVICE_BACKEND and optimizer_key in XPU_UNSUPPORTED_8BIT_OPTIMIZERS:
+        return XPU_SAFE_TRAINING_OPTIMIZER
+    return optimizer
+
+
 def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     """Build the normalized worker config shared by Unsloth and the CLI adapter."""
+    device_backend = get_device().value
+    optimizer = normalize_training_optimizer_for_device(
+        values.get("optim", DEFAULT_TRAINING_OPTIMIZER),
+        device_backend = device_backend,
+    )
     config = {
         "model_name": values["model_name"],
         "project_name": values.get("project_name"),
@@ -228,7 +254,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         ),
         "random_seed": _coerce_seed(values.get("random_seed")),
         "packing": values.get("packing", False),
-        "optim": values.get("optim", "adamw_8bit"),
+        "optim": optimizer,
         "lr_scheduler_type": values.get("lr_scheduler_type", "linear"),
         "use_lora": values.get("use_lora", True),
         "lora_r": values.get("lora_r", 16),
@@ -267,7 +293,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
     # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.
-    config["device_backend"] = get_device().value
+    config["device_backend"] = device_backend
     return config
 
 
@@ -1630,7 +1656,7 @@ class TrainingBackend:
             lora_rank = config.get("lora_r", 16),
             target_modules = config.get("target_modules"),
             gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-            optimizer = config.get("optim", "adamw_8bit"),
+            optimizer = config.get("optim", DEFAULT_TRAINING_OPTIMIZER),
         )
 
         defer_auto_selection = False
