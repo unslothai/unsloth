@@ -8350,9 +8350,10 @@ async def _maybe_auto_switch_model(
                             param = "input",
                         ),
                     )
-            if speech_type == "minimax_music3" and not str(
-                (speech_budget or {}).get("instructions") or ""
-            ).strip():
+            if (
+                speech_type == "minimax_music3"
+                and not str((speech_budget or {}).get("instructions") or "").strip()
+            ):
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
