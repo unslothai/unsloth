@@ -18,11 +18,13 @@ class _FakeExportBackend:
     """Stand-in for ExportBackend: export_* return the 3-tuple, load_checkpoint stays a 2-tuple."""
 
     last_call: dict = {}
+    last_load: dict = {}
 
     def __init__(self) -> None:
         self.loaded: str | None = None
 
     def load_checkpoint(self, **kwargs):
+        _FakeExportBackend.last_load = dict(kwargs)
         self.loaded = kwargs.get("checkpoint_path")
         return True, f"Loaded {self.loaded}"
 
@@ -63,6 +65,7 @@ def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
 def cli_app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
     """Typer app wrapping unsloth_cli.commands.export.export."""
     _FakeExportBackend.last_call = {}
+    _FakeExportBackend.last_load = {}
     _install_fake_studio_backend(monkeypatch)
     from unsloth_cli.commands import export as export_cmd
 
@@ -161,3 +164,22 @@ def test_cli_export_forwards_private_flag(
     assert result.exit_code == 0, f"CLI error:\n{result.output}"
     assert _FakeExportBackend.last_call.get("method") == expected_method
     assert _FakeExportBackend.last_call.get("kwargs", {}).get("private") is True
+
+
+def test_cli_export_forwards_hf_token_to_checkpoint_load(
+    cli_app: typer.Typer,
+    runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    """--hf-token reaches load_checkpoint, not just the Hub push."""
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        cli_app,
+        ["export", str(ckpt), str(out), "--hf-token", "hf_cli_token"],
+    )
+
+    assert result.exit_code == 0, f"CLI error:\n{result.output}"
+    assert _FakeExportBackend.last_load.get("hf_token") == "hf_cli_token"
