@@ -327,6 +327,7 @@ def test_a_respawn_refit_during_a_continuation_drops_the_flags(monkeypatch):
     )
     # The refit only runs once a preflight has been attempted, and it counts tokens.
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
+
     def _respawned() -> bool:
         # The replacement server came back with a smaller window, which is what makes
         # the refit do its work rather than return early.
