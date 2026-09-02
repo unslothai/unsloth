@@ -4890,16 +4890,14 @@ def test_a_foreign_load_in_flight_is_not_named_in_status(monkeypatch):
 
     alices = _Attempt("/home/alice/workspace/secret.gguf", "alice")
     monkeypatch.setattr(inference_routes, "_running_load_attempt", alices, raising = False)
-    monkeypatch.setattr(
-        inference_routes, "_pending_load_attempts", {"t": alices}, raising = False
-    )
+    monkeypatch.setattr(inference_routes, "_pending_load_attempts", {"t": alices}, raising = False)
 
     # The residency check cannot see this: the model is not resident yet, and the
     # attempt carries the repository id or the local checkpoint's basename.
     import inspect
 
     source = inspect.getsource(inference_routes.get_status)
-    assert "_mine(" in source and "getattr(attempt, \"subject\"" in source
+    assert "_mine(" in source and 'getattr(attempt, "subject"' in source
 
 
 def test_remote_code_grants_do_not_outlive_the_account_that_earned_them():

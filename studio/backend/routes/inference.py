@@ -16715,9 +16715,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 _running_load_attempt.model_path if _mine(_running_load_attempt) else ""
             )
             if not _tracked_loading_id:
-                _queued = next(
-                    (a for a in _pending_load_attempts.values() if _mine(a)), None
-                )
+                _queued = next((a for a in _pending_load_attempts.values() if _mine(a)), None)
                 _tracked_loading_id = _queued.model_path if _queued is not None else ""
         # The attempt holds what the client sent, which for an on-device model is a path.
         _tracked_loading_id = _loading_public_id(_tracked_loading_id) or ""

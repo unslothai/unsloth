@@ -2531,7 +2531,9 @@ def _reject_private_embedding_repo(resolved: str, token: Optional[str]) -> None:
     if _looks_like_a_local_model_path(resolved):
         return
     _reject_private_hub_repo_without_an_account_token(
-        resolved, token, shared_cache_answers_offline = False,
+        resolved,
+        token,
+        shared_cache_answers_offline = False,
     )
 
 
