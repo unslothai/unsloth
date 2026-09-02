@@ -30,6 +30,7 @@ from ._custom_dtype import register_custom_dtype
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger, _vllm_will_load_weights
 from .mistral import FastMistralModel
+from .. import llmman
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
@@ -475,6 +476,14 @@ class FastLanguageModel(FastLlamaModel):
             if q_load_in_8bit:
                 load_in_8bit = True
                 load_in_4bit = False
+
+        # A CNCF ModelPack artifact is pulled through an llmman daemon and
+        # extracted; from here it is an ordinary local directory. The name
+        # mappers only understand HuggingFace repo ids, so they are skipped for
+        # it -- there is no pre-quantized Unsloth mirror of a private artifact.
+        if llmman.is_oci_ref(model_name):
+            model_name = llmman.resolve_model(model_name)
+            use_exact_model_name = True
 
         # Login to allow private models
         # Before normalization: dtype is also derived below from a 4bit config's
@@ -1315,6 +1324,14 @@ class FastModel(FastBaseModel):
             if q_load_in_8bit:
                 load_in_8bit = True
                 load_in_4bit = False
+
+        # A CNCF ModelPack artifact is pulled through an llmman daemon and
+        # extracted; from here it is an ordinary local directory. The name
+        # mappers only understand HuggingFace repo ids, so they are skipped for
+        # it -- there is no pre-quantized Unsloth mirror of a private artifact.
+        if llmman.is_oci_ref(model_name):
+            model_name = llmman.resolve_model(model_name)
+            use_exact_model_name = True
 
         # Login to allow private models
         # Before normalization: dtype is also derived below from a 4bit config's
