@@ -11,6 +11,8 @@ the apply flow (job lifecycle, installer invocation, post-swap re-read).
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,6 +26,7 @@ if str(_BACKEND) not in sys.path:
 
 import utils.llama_cpp_freshness as freshness  # noqa: E402
 import utils.llama_cpp_update as upd  # noqa: E402
+import utils.process_lifetime as process_lifetime  # noqa: E402
 
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
 
@@ -59,6 +62,14 @@ class _FakeInstallerPopen:
         pass
 
 
+# Bound before any patch, so a delegated spawn reaches the real one.
+_REAL_POPEN = subprocess.Popen
+
+
+def _installer_command(cmd) -> bool:
+    return any("install_llama_prebuilt" in str(part) for part in cmd)
+
+
 def _patch_installer_popen(
     monkeypatch,
     *,
@@ -66,19 +77,33 @@ def _patch_installer_popen(
     lines = None,
     on_start = None,
     captured_kwargs = None,
+    spawned = None,
 ):
-    monkeypatch.setattr(
-        upd.subprocess,
-        "Popen",
-        lambda cmd, **kw: _FakeInstallerPopen(
+    """Replace Popen for the installer only; everything else gets the real one.
+
+    subprocess is shared, so this patch catches every spawn in the process, and
+    _run_llama_phase adopts the installer pid right after starting it: on macOS
+    that identity lookup shells out to `ps`, which would otherwise reach on_start
+    and overwrite the installer argv a caller captured (#8170). Delegating rather
+    than faking keeps that lookup working, since a stand-in owes subprocess.run
+    the whole protocol and _pid_identity swallows whatever it does not get.
+    """
+
+    def _popen(cmd, **kw):
+        if spawned is not None:
+            spawned.append(list(cmd))
+        if not _installer_command(cmd):
+            return _REAL_POPEN(cmd, **kw)
+        return _FakeInstallerPopen(
             cmd,
             returncode = returncode,
             lines = lines,
             on_start = on_start,
             captured_kwargs = captured_kwargs,
             **kw,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(upd.subprocess, "Popen", _popen)
 
 
 def _write_install(
@@ -472,6 +497,43 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
 
 
+def test_a_second_spawn_during_the_update_does_not_overwrite_the_installer_argv(
+    monkeypatch, tmp_path
+):
+    """The installer is not the only thing the phase spawns.
+
+    _run_llama_phase adopts the installer pid, and on a host with no /proc that
+    identity lookup runs `ps`. Forced here because CI runs this file on Linux
+    only, so the macOS ordering is otherwise never exercised.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(process_lifetime.sys, "platform", "darwin", raising = False)
+
+    captured: dict = {}
+    spawned: list = []
+
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        _write_install(install_dir, "b9518")
+
+    _patch_installer_popen(monkeypatch, on_start = _on_start, spawned = spawned)
+
+    job = _run_start_update_to_completion()
+    assert job["state"] == "success", job
+    # Without the ps spawn the ordering this guards cannot happen, so a green
+    # run that never reached it would prove nothing. It has to complete, not
+    # just start: a stand-in missing part of the Popen protocol raises into
+    # _pid_identity's bare except and disables the very lookup being exercised.
+    assert any(cmd and cmd[0] == "ps" for cmd in spawned), spawned
+    assert process_lifetime._pid_identity(os.getpid()), "the ps lookup did not complete"
+    assert "--install-dir" in captured["cmd"], captured["cmd"]
+    assert str(install_dir) in captured["cmd"], captured["cmd"]
+
+
 @pytest.mark.parametrize(
     "marker_fields, expected_choice",
     [
@@ -593,6 +655,38 @@ def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
     assert "Updated llama.cpp to b9596-mix-e6f2453." in job["message"]
 
 
+def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
+    monkeypatch, tmp_path
+):
+    """Exit 0 no longer implies the release changed: the installer answers a transient
+    failure by keeping the tree and exiting 0, so "Updated llama.cpp to <tag>" would name
+    the release the user already had. Reporting it as current is just as wrong, since the
+    phase only starts when a newer release was offered and the retry is still pending."""
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595", release_tag = "b9595-mix-aaaaaaa")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
+    )
+
+    # macOS is the reachable case: no pin is passed there, so the mismatch guard is silent.
+    monkeypatch.setattr(upd.sys, "platform", "darwin")
+
+    # Exit 0 having changed nothing, which is what the keep path does.
+    _patch_installer_popen(monkeypatch, on_start = lambda cmd: None)
+
+    job = _run_start_update_to_completion()
+    assert job["state"] == "success", job
+    assert job["to_tag"] == "b9595-mix-aaaaaaa"
+    assert "Updated llama.cpp to" not in job["message"], job["message"]
+    assert "up to date" not in job["message"], job["message"]
+    assert "could not be updated" in job["message"], job["message"]
+    assert "Try again later" in job["message"], job["message"]
+
+
 def _run_start_update_to_completion():
     res = upd.start_update()
     assert res["started"] is True
@@ -663,6 +757,130 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
         time.sleep(0.05)
     assert job["state"] == "error"
     assert "boom" in (job["error"] or "")
+
+
+def test_start_update_rate_limit_reports_actionable_error(monkeypatch, tmp_path):
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 403 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518; "
+        "set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits\n",
+        "windows_runtime_dirs=C:\\\\very\\\\long\\\\path\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    assert "GH_TOKEN" in (job["error"] or "")
+    assert "windows_runtime_dirs" not in (job["error"] or "")
+
+
+def test_start_update_reports_a_github_429_as_a_rate_limit(monkeypatch, tmp_path):
+    # GitHub answers an exceeded rate limit with 403 or 429.
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 429 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518; "
+        "set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    assert "GH_TOKEN" in (job["error"] or "")
+
+
+def test_start_update_tells_an_authenticated_run_to_wait_for_the_limit(monkeypatch, tmp_path):
+    # An authenticated run has spent the larger quota (or tripped a secondary
+    # limit); it already holds the token this message used to ask it to set.
+    monkeypatch.setenv("GH_TOKEN", "x")
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 429 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    error = job["error"] or ""
+    assert "rate-limiting" in error
+    assert "GH_TOKEN" not in error
+    assert "Wait for the limit to reset" in error
+
+
+def test_start_update_does_not_blame_github_for_a_hugging_face_rate_limit(monkeypatch, tmp_path):
+    # The tiny validation model comes from huggingface.co, whose own rate limit
+    # also surfaces as installer exit 2. GH_TOKEN cannot fix that one.
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: validation model unavailable: "
+        "429 Client Error: Too Many Requests for url "
+        "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf "
+        "(Rate limit reached)\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    error = job["error"] or ""
+    assert "GH_TOKEN" not in error
+    assert "validation model unavailable" in error
 
 
 # --- installer-argument construction (mirrors the post-#5963 setup scripts) ---

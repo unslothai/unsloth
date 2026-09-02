@@ -161,6 +161,7 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -220,7 +221,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -253,7 +254,7 @@ class LocalModelInfo(BaseModel):
     )
     audio_type: Optional[str] = Field(
         None,
-        description = "Detected output-audio codec used to decide whether Audio can run the row",
+        description = "Detected output-audio architecture or codec used by Audio runtime policy",
     )
 
 

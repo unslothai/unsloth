@@ -412,6 +412,7 @@ async def export_gguf(
             hf_token = request.hf_token,
             imatrix_file = imatrix_file,
             private = request.private,
+            gguf_shard_size = request.gguf_shard_size,
         )
 
         if not success:

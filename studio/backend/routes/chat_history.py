@@ -24,7 +24,14 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
-from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import (
+    BATCH_MAX,
+    BATCH_MIN,
+    CACHE_RAM_MAX_MIB,
+    CTX_CHECKPOINTS_MAX,
+    PARALLEL_MAX,
+    PARALLEL_MIN,
+)
 from loggers import get_logger
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
@@ -67,6 +74,7 @@ from storage.studio_db import (
     upsert_chat_legacy_imports,
     upsert_chat_message,
     upsert_chat_settings_merge,
+    upsert_chat_settings_merge_if_current,
     write_chat_thread_settings,
     upsert_chat_thread,
 )
@@ -423,7 +431,15 @@ class ChatPresetLoadConfig(BaseModel):
     # preset carrying a loadConfig, including one that only pinned nParallel.
     nBatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     nUbatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    # Same forbid trap as nBatch/nUbatch: normalizePresetLoadConfig always emits these
+    # keys (null included). Without them, saving a named system-prompt preset that
+    # carries any loadConfig 400s the whole customPresets write (#9879).
+    loadMode: Optional[Literal["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"]] = None
+    specDraftCacheDtype: Optional[str] = None
+    ctxCheckpoints: NotABoolean = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cacheRam: NotABoolean = Field(default = None, ge = -1, le = CACHE_RAM_MAX_MIB)
     tensorParallel: Optional[bool] = None
+    disableVision: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
@@ -543,6 +559,38 @@ class ChatSettingsResponse(BaseModel):
     settings: dict[str, Any]
 
 
+class ConditionalChatSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    expected: ChatSettingsPayload
+    expectedAbsent: list[str] = Field(default_factory = list)
+    expectedAbsentPaths: list[list[str]] = Field(default_factory = list)
+    patch: ChatSettingsPayload
+
+    @field_validator("expectedAbsent")
+    @classmethod
+    def _known_absent_fields(cls, value: list[str]) -> list[str]:
+        unknown = set(value) - set(ChatSettingsPayload.model_fields)
+        if unknown:
+            unknown_names = ", ".join(sorted(unknown))
+            raise ValueError(f"Unknown chat settings field(s): {unknown_names}")
+        return value
+
+    @field_validator("expectedAbsentPaths")
+    @classmethod
+    def _known_absent_paths(cls, value: list[list[str]]) -> list[list[str]]:
+        for path in value:
+            if len(path) < 2 or any(not segment for segment in path):
+                raise ValueError("Expected-absent paths require at least two non-empty segments")
+            if path[0] not in ChatSettingsPayload.model_fields:
+                raise ValueError(f"Unknown chat settings field: {path[0]}")
+        return value
+
+
+class ConditionalChatSettingsResponse(ChatSettingsResponse):
+    applied: bool
+
+
 class ChatMessagesBatchRequest(BaseModel):
     threadIds: list[str]
 
@@ -565,6 +613,17 @@ class ChatImportLedgerRecordResponse(BaseModel):
     # (ON CONFLICT DO NOTHING skips already-recorded ids).
     accepted: int
     inserted: int
+
+
+# Both conflicts are 409 and mean opposite things: protected means stop resending, a thread
+# collision means surface the failure. In a header, not the body, so `detail` stays a plain
+# string for existing clients; main.py must expose it for a cross-origin Studio to read it.
+CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
+
+
+def _conflict_headers(exc: Exception) -> dict:
+    kind = "protected" if isinstance(exc, ChatMessageProtectedError) else "thread-collision"
+    return {CONFLICT_KIND_HEADER: kind}
 
 
 @router.get("/threads", response_model = ChatThreadListResponse)
@@ -1016,6 +1075,7 @@ def delete_attachment(
             safe_curated_detail(exc),
             event = "chat_history.delete_attachment_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
@@ -1336,6 +1396,7 @@ def save_thread_message(
             safe_curated_detail(exc),
             event = "chat_history.save_message_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 
@@ -1379,6 +1440,7 @@ def replace_thread_messages(
             safe_curated_detail(exc),
             event = "chat_history.replace_messages_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 
@@ -1543,6 +1605,35 @@ async def clear_history(
 @router.get("/settings", response_model = ChatSettingsResponse)
 def get_settings(current_subject: str = Depends(get_current_subject)):
     return ChatSettingsResponse(settings = list_chat_settings())
+
+
+@router.post("/settings/compare-and-set", response_model = ConditionalChatSettingsResponse)
+def compare_and_set_settings(
+    payload: dict[str, Any], current_subject: str = Depends(get_current_subject)
+):
+    # A raw dict, as put_settings takes: automatic validation of a typed body
+    # renders the offending input back, and Starlette dumps with allow_nan =
+    # False, so a rejected NaN would 500 a request the validator refused.
+    try:
+        parsed = ConditionalChatSettingsPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
+    try:
+        settings, applied = upsert_chat_settings_merge_if_current(
+            parsed.expected.model_dump(exclude_unset = True),
+            parsed.patch.model_dump(exclude_unset = True),
+            parsed.expectedAbsent,
+            parsed.expectedAbsentPaths,
+        )
+        return ConditionalChatSettingsResponse(settings = settings, applied = applied)
+    except CorruptSettingsError as exc:
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.compare_and_set_settings_conflict",
+            log = logger,
+        ) from exc
 
 
 @router.put("/settings", response_model = ChatSettingsResponse)

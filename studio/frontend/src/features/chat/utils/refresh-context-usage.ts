@@ -180,10 +180,11 @@ type RefreshOptions =
       threadId?: string;
       /** When true, skip the modelLoading guard (post-load recount). */
       afterModelLoad?: boolean;
+      invalidate?: boolean;
     }
   | undefined;
 
-/** Re-count prompt tokens for the active local GGUF chat and fill the usage bar. */
+/** Re-count prompt tokens for the active local chat and fill the usage bar. */
 export async function refreshContextUsage(
   options?: RefreshOptions,
 ): Promise<void> {
@@ -195,7 +196,7 @@ export async function refreshContextUsage(
     !checkpoint ||
     isExternalModelId(checkpoint) ||
     (!options?.afterModelLoad && store.modelLoading) ||
-    store.ggufContextLength == null
+    store.loadedContextLength == null
   ) {
     return;
   }
@@ -206,6 +207,8 @@ export async function refreshContextUsage(
     (model: { id: string }) => model.id === checkpoint,
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
+
+  if (options?.invalidate) store.setContextUsage(null);
 
   // Never count while anything is generating: the endpoint refuses, and the recount effect depends
   // on this, so the last run finishing re-fires it. runningByThreadId, not the narrower

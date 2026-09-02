@@ -23,6 +23,7 @@ import {
   parseCompactionStyle,
 } from "@/features/chat/utils/auto-compaction";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
+import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
@@ -38,8 +39,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import {
+  type CurrentDatePromptSettings,
+  loadCurrentDatePrompt,
+  updateCurrentDatePrompt,
+} from "../api/current-date-prompt";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -248,6 +254,13 @@ export function ChatTab() {
   const setCollapseThinkingByDefault = useChatPreferencesStore(
     (state) => state.setCollapseThinkingByDefault,
   );
+  const [currentDatePrompt, setCurrentDatePrompt] =
+    useState<CurrentDatePromptSettings | null>(null);
+  const [currentDatePromptError, setCurrentDatePromptError] = useState<
+    string | null
+  >(null);
+  const [isSavingCurrentDatePrompt, setIsSavingCurrentDatePrompt] =
+    useState(false);
   const collapseToolActivityByDefault = useChatPreferencesStore(
     (state) => state.collapseToolActivityByDefault,
   );
@@ -273,6 +286,48 @@ export function ChatTab() {
     void hydratePersistedSettings();
     refreshModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadCurrentDatePrompt(t("settings.chat.currentDate.loadError"))
+      .then((settings) => {
+        if (cancelled) return;
+        setCurrentDatePrompt(settings);
+        setCurrentDatePromptError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setCurrentDatePromptError(
+          error instanceof Error
+            ? error.message
+            : t("settings.chat.currentDate.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const saveCurrentDatePrompt = async (enabled: boolean) => {
+    setIsSavingCurrentDatePrompt(true);
+    setCurrentDatePromptError(null);
+    try {
+      const settings = await updateCurrentDatePrompt(
+        enabled,
+        t("settings.chat.currentDate.saveError"),
+      );
+      setCurrentDatePrompt(settings);
+      void refreshContextUsage({ invalidate: true });
+    } catch (error) {
+      setCurrentDatePromptError(
+        error instanceof Error
+          ? error.message
+          : t("settings.chat.currentDate.saveError"),
+      );
+    } finally {
+      setIsSavingCurrentDatePrompt(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -340,6 +395,27 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.chat.currentDate.label")}
+          description={t("settings.chat.currentDate.description")}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              aria-label={t("settings.chat.currentDate.label")}
+              checked={currentDatePrompt?.enabled ?? false}
+              disabled={!currentDatePrompt || isSavingCurrentDatePrompt}
+              onCheckedChange={(enabled) => void saveCurrentDatePrompt(enabled)}
+            />
+            {currentDatePromptError ? (
+              <span
+                role="alert"
+                className="max-w-[260px] text-right text-xs text-destructive"
+              >
+                {currentDatePromptError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.projectsSection")}
           description={t("settings.chat.projectsSectionDescription")}

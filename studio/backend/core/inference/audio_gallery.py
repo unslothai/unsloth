@@ -18,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference import gallery_flags
 from loggers import get_logger
 from utils.paths import ensure_dir, studio_root
 
@@ -106,39 +107,66 @@ def _clip_bytes(audio_id: str) -> int:
 def _prune_to_cap() -> int:
     """Drop the oldest owned pairs beyond the count or byte cap; return the count removed.
 
-    Best-effort: a save must not fail because housekeeping did. Only Unsloth-owned pairs are
-    considered, so a foreign or orphan wav is never destroyed.
+    Best-effort, so a save never fails on housekeeping. Only Unsloth-owned pairs are eligible,
+    archived clips are exempt, and an unreadable flag store skips the prune rather than guess.
     """
     cap = _max_clips()
     byte_cap = _max_bytes()
     if cap <= 0 and byte_cap <= 0:
         return 0
-    try:
-        entries = _list_audio_entries()
-    except Exception:  # noqa: BLE001 - never fail the save that triggered this
-        return 0
-
-    # Newest first, so the index where either budget runs out is the cut point. The newest
-    # clip is always kept: it is the one the caller just generated, and dropping it would
-    # make a single oversized request look like a silent failure.
-    keep = len(entries) if cap <= 0 else min(cap, len(entries))
-    if byte_cap > 0:
-        running = 0
-        for index, (record, _cursor) in enumerate(entries[:keep]):
-            running += _clip_bytes(record["id"])
-            if running > byte_cap and index > 0:
-                keep = index
-                break
-    if keep >= len(entries):
-        return 0
-
+    directory = gallery_dir()
     removed = 0
-    for record, _cursor in entries[keep:]:
-        try:
-            if delete(record["id"]):
+    try:
+        # Select AND delete under one lock, as clear() does. Choosing victims from a snapshot and
+        # unlinking after it leaves a window where an archive lands and is deleted anyway.
+        with gallery_flags.exclusive(directory, require_file_lock = True):
+            entries = _list_audio_entries()
+
+            # Newest first, so the index where either budget runs out is the cut point. The newest
+            # is always kept: dropping what the caller just generated looks like a silent failure.
+            keep = len(entries) if cap <= 0 else min(cap, len(entries))
+            if byte_cap > 0:
+                running = 0
+                for index, (record, _cursor) in enumerate(entries[:keep]):
+                    running += _clip_bytes(record["id"])
+                    if running > byte_cap and index > 0:
+                        keep = index
+                        break
+            if keep >= len(entries):
+                return 0
+
+            # Re-read TRUSTED immediately before deleting: read() answers "nothing is archived"
+            # for a store it cannot parse, which here would drop the clips the shelf exists to
+            # keep. It also covers filesystems where the cross-process lock degrades to a no-op.
+            flags = gallery_flags.read_trusted(directory)
+            pruned: list[str] = []
+            for record, _cursor in entries[keep:]:
+                audio_id = record["id"]
+                if gallery_flags.is_archived(flags, audio_id):
+                    continue
+                # Not delete(): it takes the flag lock on a second descriptor and would block here.
+                path = audio_path(audio_id)
+                if path is None or _read_meta(_sidecar_path(audio_id)) is None:
+                    continue
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    logger.warning("audio_gallery.delete_failed: %s", exc)
+                    continue
                 removed += 1
-        except Exception:  # noqa: BLE001
-            continue
+                pruned.append(audio_id)
+                try:
+                    _sidecar_path(audio_id).unlink()
+                except OSError:
+                    pass
+            if pruned:
+                gallery_flags.forget_locked(directory, pruned)
+    except gallery_flags.FlagsUnavailable:
+        logger.warning("audio_gallery.prune_skipped: the archive flags could not be read")
+        return 0
+    except Exception:  # noqa: BLE001 - never fail the save that triggered this
+        return removed
+
     if removed:
         logger.info(
             "audio_gallery.pruned: removed %d clip(s) over the %d clip / %d byte cap",
@@ -149,11 +177,18 @@ def _prune_to_cap() -> int:
     return removed
 
 
-def _record(audio_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+def _record(
+    audio_id: str,
+    meta: dict[str, Any],
+    flags: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    if flags is None:
+        flags = gallery_flags.read(gallery_dir())
     return {
         **meta,
         "id": audio_id,
         "url": f"/api/inference/audio/gallery/{audio_id}/file",
+        "archived": gallery_flags.is_archived(flags, audio_id),
     }
 
 
@@ -227,11 +262,14 @@ def _list_audio_entries(
     *,
     before: Optional[GalleryCursor] = None,
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+    archived: bool = False,
 ) -> list[tuple[dict[str, Any], GalleryCursor]]:
     try:
         paths = list(gallery_dir().glob("*.wav"))
     except OSError:
         return []
+    flags = gallery_flags.read(gallery_dir())
+    paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     keyed_paths = [((_mtime(path), path.stem), path) for path in paths]
     keyed_paths.sort(key = lambda item: item[0], reverse = True)
     want = None if limit is None else offset + limit
@@ -242,7 +280,7 @@ def _list_audio_entries(
         meta = _read_meta(_sidecar_path(path.stem))
         if meta is None:
             continue
-        record = _record(path.stem, meta)
+        record = _record(path.stem, meta, flags)
         if valid is not None and not valid(record):
             continue
         entries.append((record, cursor))
@@ -257,14 +295,20 @@ def list_audio(
     *,
     before: Optional[GalleryCursor] = None,
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+    archived: bool = False,
 ) -> list[dict[str, Any]]:
     """A newest-first window of clips for infinite scroll.
 
-    Ordered by WAV mtime; only the window's sidecars are read, and a file without its
-    pair is skipped. ``valid`` filters BEFORE pagination, so offset, limit and has_more
-    all count over the accepted-record domain. ``before`` is an exclusive, stable cursor
-    for callers that must tolerate deletions between pages."""
-    return [record for record, _ in _list_audio_entries(limit, offset, before = before, valid = valid)]
+    Ordered by WAV mtime; a file without its pair is skipped. ``valid`` filters BEFORE pagination,
+    so offset, limit and has_more count over the accepted records. ``before`` is an exclusive,
+    stable cursor for callers that must tolerate deletions between pages, and ``archived`` picks
+    the shelf."""
+    return [
+        record
+        for record, _ in _list_audio_entries(
+            limit, offset, before = before, valid = valid, archived = archived
+        )
+    ]
 
 
 def list_audio_page(
@@ -273,9 +317,22 @@ def list_audio_page(
     *,
     before: Optional[GalleryCursor] = None,
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+    archived: bool = False,
 ) -> list[tuple[dict[str, Any], GalleryCursor]]:
     """Return records with their stable pagination keys for the HTTP route."""
-    return _list_audio_entries(limit, offset, before = before, valid = valid)
+    return _list_audio_entries(limit, offset, before = before, valid = valid, archived = archived)
+
+
+def set_flags(audio_id: str, *, archived: Optional[bool] = None) -> Optional[dict[str, Any]]:
+    """Archive or restore one owned clip; None when the id is not an Unsloth-owned clip."""
+    with gallery_flags.exclusive(gallery_dir()):
+        if owned_audio_path(audio_id) is None:
+            return None
+        gallery_flags.set_flags_locked(gallery_dir(), audio_id, archived = archived)
+        meta = _read_meta(_sidecar_path(audio_id))
+    if meta is None:
+        return None
+    return _record(audio_id, meta)
 
 
 def delete(audio_id: str) -> bool:
@@ -298,28 +355,43 @@ def delete(audio_id: str) -> bool:
         _sidecar_path(audio_id).unlink()
     except OSError:
         pass
+    gallery_flags.forget(gallery_dir(), [audio_id])
     return True
 
 
-def clear() -> int:
-    """Delete every Unsloth-owned pair (readable sidecar); return the count removed.
-    Foreign and orphan WAVs are preserved, since list_audio already hides them."""
+def clear(include_archived: bool = False) -> int:
+    """Delete every Unsloth-owned pair (readable sidecar); return the count removed. Foreign and
+    orphan WAVs are preserved, since list_audio already hides them.
+
+    Archived clips are spared unless ``include_archived``, and sparing them raises
+    FlagsUnavailable when the flag store cannot be read."""
     removed = 0
-    try:
-        paths = list(gallery_dir().glob("*.wav"))
-    except OSError:
-        return 0
-    for path in paths:
-        if _read_meta(_sidecar_path(path.stem)) is None:
-            continue
-        # wav first; if it cannot be unlinked, leave the sidecar so the clip stays listable
+    directory = gallery_dir()
+    with gallery_flags.exclusive(directory, require_file_lock = not include_archived):
+        flags = {} if include_archived else gallery_flags.read_trusted(directory)
         try:
-            path.unlink()
+            paths = list(directory.glob("*.wav"))
         except OSError:
-            continue
-        removed += 1
-        try:
-            _sidecar_path(path.stem).unlink()
-        except OSError:
-            pass
+            return 0
+        cleared: list[str] = []
+        for path in paths:
+            if _read_meta(_sidecar_path(path.stem)) is None:
+                continue
+            if not include_archived and gallery_flags.is_archived(flags, path.stem):
+                continue
+            # wav first; if it cannot be unlinked, leave the sidecar so the clip stays listable
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            removed += 1
+            cleared.append(path.stem)
+            try:
+                _sidecar_path(path.stem).unlink()
+            except OSError:
+                pass
+        if include_archived and not gallery_flags.is_trusted(directory):
+            gallery_flags.reset_locked(directory)
+        else:
+            gallery_flags.forget_locked(directory, cleared)
     return removed

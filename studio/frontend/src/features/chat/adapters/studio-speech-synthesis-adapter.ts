@@ -348,7 +348,10 @@ export async function generateCustomTtsAudio(
     } | null;
     throw new Error(body?.detail ?? `HTTP ${response.status}`);
   }
-  return URL.createObjectURL(await response.blob());
+  const bytes = await response.arrayBuffer();
+  const contentType =
+    response.headers.get("content-type")?.split(";")[0]?.trim() || "audio/wav";
+  return URL.createObjectURL(new Blob([bytes], { type: contentType }));
 }
 
 /** Release a URL returned by the generate helpers (data URLs need nothing). */

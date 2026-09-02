@@ -18,7 +18,16 @@ from typing import Any, Optional
 # The mirror carries the Qwen3-VL encoder quants as well as the denoisers, so this repo alone
 # satisfies h3_native_hub_files' first two entries.
 H3_GGUF_REPO = "unsloth/MiniMax-H3-GGUF"
-H3_COMPONENT_REPO = "Comfy-Org/MiniMax-H3"
+# The VAEs live beside the denoisers, so the native pick is one repo we control end to end. It was
+# Comfy-Org/MiniMax-H3, which put a community repack in the download path of BOTH H3 paths; an
+# install that already holds those bytes keeps using them through h3_component_source below,
+# because the HF cache is keyed by repo id and repointing alone re-downloads ~6 GB.
+H3_COMPONENT_REPO = "unsloth/MiniMax-H3-GGUF"
+# Where the component files came from originally. Only for reusing an existing cache entry: a
+# fresh install never reads it. The pairing itself lives in diffusion_families'
+# _SD_CPP_LEGACY_SOURCES, which owns this decision for every mirrored asset; this name is what the
+# delete-cached claims read, and a test pins the two together.
+H3_LEGACY_COMPONENT_REPO = "Comfy-Org/MiniMax-H3"
 H3_VIDEO_VAE = "vae/minimax_h3_video_vae_fp16.safetensors"
 H3_AUDIO_VAE = "vae/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
@@ -1059,13 +1068,56 @@ def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
     )
 
 
+def h3_component_source(*files: str) -> str:
+    """The repo to fetch the shared VAEs from: our mirror, or the repack it was mirrored from
+    when an existing install already holds those exact bytes under the old id.
+
+    The HF cache is keyed by repo id, so moving the id alone would re-download ~5.8 GB on upgrade
+    and fail outright offline. The mirror is byte identical (same sha256), so reusing the old
+    entry loads the same weights. Fresh installs never take this branch.
+
+    ``prefer_cached_legacy_source`` rather than a probe of our own: it already owns this exact
+    mirror-to-repack decision for every other sd.cpp asset, and it counts BOTH cache roots.
+    That second part is the reason it has to be this one. The native fetch below passes
+    ``reuse_other_cache_root``, so a repack left behind by a cache-folder change is still
+    perfectly usable -- but only the OLD repo id can reach it, and a live-root-only probe would
+    call it absent and re-pull ~5.8 GB (offline, fail).
+
+    Answered for the files GIVEN, and the native loop asks one at a time because that is how it
+    downloads them. A pre-move pull interrupted between the two VAEs leaves only one under the old
+    id; asking for the pair calls the old id useless and re-pulls the 5.2 GB already on disk,
+    while asking per file reuses it and takes only the other from the mirror. With no argument it
+    answers for the pair, for callers describing the pair rather than fetching it.
+
+    PURE: table lookup plus a local stat, no network, so a download plan and the fetch that
+    follows it agree on the source.
+    """
+    wanted = files or (H3_VIDEO_VAE, H3_AUDIO_VAE)
+    try:
+        from .diffusion_families import prefer_cached_legacy_source
+        return prefer_cached_legacy_source(H3_COMPONENT_REPO, wanted)
+    except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
+        return H3_COMPONENT_REPO
+
+
+def h3_component_metadata_repo(repo_id: str) -> str:
+    """Which repo to read a shared VAE's SIZE from, given the repo its bytes will come from.
+
+    The repack is a source of bytes ALREADY ON DISK, never of network metadata. It may since have
+    been renamed or taken down -- the exact failure this move exists to survive -- and a
+    ``model_info`` against it would fail the download plan for a load its own cache can still
+    satisfy. The mirror's copy is byte identical, so the number is the same.
+    """
+    return H3_COMPONENT_REPO if repo_id == H3_LEGACY_COMPONENT_REPO else repo_id
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
     return (
         (H3_GGUF_REPO, transformer_filename),
         (H3_GGUF_REPO, h3_text_encoder_filename(transformer_filename)),
-        (H3_COMPONENT_REPO, H3_VIDEO_VAE),
-        (H3_COMPONENT_REPO, H3_AUDIO_VAE),
+        (h3_component_source(H3_VIDEO_VAE), H3_VIDEO_VAE),
+        (h3_component_source(H3_AUDIO_VAE), H3_AUDIO_VAE),
     )
 
 

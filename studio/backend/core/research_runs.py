@@ -56,7 +56,12 @@ from core.research.prompts import (
 )
 from loggers import get_logger
 from storage import research_runs_db as db
-from storage.studio_db import get_chat_message, list_chat_messages, upsert_chat_message
+from storage.studio_db import (
+    get_chat_message,
+    is_sqlite_busy_error,
+    list_chat_messages,
+    upsert_chat_message,
+)
 
 logger = get_logger(__name__)
 _URL_BLOCK = re.compile(
@@ -1116,6 +1121,16 @@ class ResearchSupervisor:
                 await self._process(run)
             except asyncio.CancelledError:
                 raise
+            except sqlite3.OperationalError as exc:
+                # Losing the writer lock is normal for polling, not a fault, and produced
+                # six tracebacks in one session. Only that case is quietened. Neither may
+                # re-raise: that escapes the while loop and stops the supervisor for the
+                # life of the process, and the sibling `except Exception` cannot catch it.
+                if is_sqlite_busy_error(exc):
+                    logger.warning("research.supervisor_db_busy: %s", exc)
+                else:
+                    logger.exception("research.supervisor_iteration_failed")
+                await asyncio.sleep(1)
             except Exception:
                 logger.exception("research.supervisor_iteration_failed")
                 await asyncio.sleep(1)
@@ -1901,8 +1916,6 @@ class ResearchSupervisor:
             preview_labels = True,
         )
         plan = _parse_and_validate_plan(response, planning_reasoning, max_steps)
-        # Arming research in the composer is the approval, so the plan is queued as it is
-        # stored rather than parked for a second confirmation.
         try:
             result = await asyncio.to_thread(
                 db.set_plan,
@@ -1910,7 +1923,6 @@ class ResearchSupervisor:
                 plan,
                 None,
                 self.worker_id,
-                auto_approve = True,
             )
         except db.ResearchConflictError:
             if await asyncio.to_thread(db.is_cancel_requested, run["id"]):

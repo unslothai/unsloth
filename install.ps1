@@ -1596,8 +1596,13 @@ public static class UnslothStudioFinalPathV2
             (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
     }
 
-    # Shared default cache, or the custom Unsloth home's llama.cpp tree.
+    # Explicit staging root, shared default cache, or the custom Unsloth home's tree.
     function Get-ManagedLlamaCppDir {
+        param([AllowNull()][string]$StagingRoot = $null)
+
+        if ($StagingRoot) {
+            return (Join-Path $StagingRoot "llama.cpp")
+        }
         if (-not (Test-StudioHomeIsCustom)) {
             return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
         }
@@ -1606,9 +1611,11 @@ public static class UnslothStudioFinalPathV2
 
     # Failure reason when the managed tree is denied; never touches its ACLs.
     function Invoke-ManagedLlamaCppPreflight {
+        param([AllowNull()][string]$StagingRoot = $null)
+
         # Let the existing profile validation handle a missing USERPROFILE later.
         if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
-        $dir = Get-ManagedLlamaCppDir
+        $dir = Get-ManagedLlamaCppDir -StagingRoot $StagingRoot
         if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
         Write-StudioLine ""
         # A denied custom home cannot be claimed as an Unsloth-managed cache.

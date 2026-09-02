@@ -885,6 +885,10 @@ class _SdState:
     # ``offload_flags`` still describe the build the load committed to. None on the server path,
     # which asks the same question at start time against its own local copy.
     sd_accelerator: Optional[str] = None
+    # Physical card behind the server's single resolved CUDA/ROCm backend.
+    # None for CPU/Metal/Vulkan, an unresolved pin, automatic multi-GPU, and
+    # one-shot mode; those shapes cannot safely consume the startup VRAM floor.
+    physical_gpu_id: Optional[int] = None
 
 
 def _offload_with_device_pin_impl(
@@ -895,6 +899,42 @@ def _offload_with_device_pin_impl(
     if ordinal is None:
         return flags
     return [*flags, *device_backend_flags(sd_cpp_device_name_for_ordinal(binary, ordinal), flags)]
+
+
+def _resolved_server_physical_gpu_id(
+    binary: Optional[str], device: str, ordinal: Optional[int], committed_flags: tuple[str, ...]
+) -> Optional[int]:
+    """Physical id for a provably single-device resident sd-server."""
+    if device != "cuda" or "--offload-to-cpu" in committed_flags:
+        return None
+    try:
+        from utils.hardware import get_parent_visible_gpu_ids
+        visible = [int(i) for i in get_parent_visible_gpu_ids()]
+    except Exception:
+        return None
+    local_ordinal = ordinal
+    if local_ordinal is None:
+        if len(visible) != 1:
+            return None
+        local_ordinal = 0
+    if local_ordinal < 0 or local_ordinal >= len(visible):
+        return None
+    device_name = sd_cpp_device_name_for_ordinal(binary, local_ordinal)
+    if device_name is None:
+        return None
+    if ordinal is not None:
+        # An explicit request is attributable only when the committed argv
+        # actually contains the resolved per-module pin. If the probe failed,
+        # sd.cpp falls back to its own default and the requested ordinal is not
+        # evidence of placement.
+        specs = [
+            committed_flags[index + 1]
+            for index, flag in enumerate(committed_flags[:-1])
+            if flag == "--backend"
+        ]
+        if not any(device_name in spec for spec in specs):
+            return None
+    return visible[local_ordinal]
 
 
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
@@ -1664,6 +1704,13 @@ class SdCppDiffusionBackend:
                         "The stable-diffusion.cpp binary was replaced by an install for a "
                         "different accelerator while this model was loading. Try the load again."
                     )
+                committed_offload_flags = tuple(
+                    _offload_with_device_pin_impl(
+                        offload,
+                        server_binary if mode == "server" else getattr(engine, "binary", None),
+                        gpu_ordinal,
+                    )
+                )
                 state = _SdState(
                     repo_id = repo_id,
                     base_repo = base,
@@ -1674,13 +1721,7 @@ class SdCppDiffusionBackend:
                     native_speed = native_speed,
                     # Pinned against the binary this load COMMITTED to, which a deferred install or
                     # a one-shot fallback may have changed since the policy was built.
-                    offload_flags = tuple(
-                        _offload_with_device_pin_impl(
-                            offload,
-                            server_binary if mode == "server" else getattr(engine, "binary", None),
-                            gpu_ordinal,
-                        )
-                    ),
+                    offload_flags = committed_offload_flags,
                     # One-shot sd-cli reads this per generation; pin to physical cores.
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
@@ -1693,6 +1734,16 @@ class SdCppDiffusionBackend:
                     # Only the one-shot path needs to carry it: it re-resolves sd-cli per image,
                     # long after this decision, and has nothing else to check the answer against.
                     sd_accelerator = engine_accelerator if mode == "oneshot" else None,
+                    physical_gpu_id = (
+                        _resolved_server_physical_gpu_id(
+                            server_binary,
+                            device,
+                            gpu_ordinal,
+                            committed_offload_flags,
+                        )
+                        if mode == "server"
+                        else None
+                    ),
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None

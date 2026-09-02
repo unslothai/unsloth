@@ -22,7 +22,7 @@ from hub.storage.scan_folders import (
     list_scan_folders,
     remove_scan_folder,
 )
-from hub.utils import download_manifest, inventory_scan as hf_cache_scan
+from hub.utils import download_manifest, gguf, inventory_scan as hf_cache_scan
 from hub.utils.paths import (
     hf_default_cache_dir,
     legacy_hf_cache_dir,
@@ -584,6 +584,11 @@ def _inventory_path_identity(raw_path: str) -> str:
         return os.path.normcase(raw)
 
 
+def _inventory_physical_identity(raw_path: str) -> str:
+    """physical identity for an existing discovered path without lossy name folding."""
+    return gguf.local_path_physical_identity(raw_path)
+
+
 def _coerce_scan_folder_path(raw_path: str) -> str:
     """Normalize a scan registration target; the registry stores directories, so a pasted weight-file path is reduced to its parent folder."""
     if not raw_path or not raw_path.strip():
@@ -803,6 +808,8 @@ def _scan_custom_folder(
                 selectable.append(model)
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
             selectable.append(model)
+
+    selectable = gguf.dedupe_custom_gguf_rows(selectable)
     remaining = _MAX_MODELS_PER_CUSTOM_FOLDER - len(selectable)
     if remaining > 0:
         selectable.extend(scan_ollama_dir(folder_path, limit = remaining))
@@ -856,9 +863,16 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                     model.format_variant or "",
                 )
             )
+        elif model.source == "custom":
+            key = _local_inventory_id(
+                "custom",
+                model.model_format,
+                _inventory_physical_identity(model.path),
+                None,
+            )
         else:
             row_key = model.inventory_id or model.id
-            key = f"{row_key}\x00custom" if model.source == "custom" else row_key
+            key = row_key
         existing = deduped.get(key)
         prefer_candidate = existing is None
         if existing is not None:
@@ -875,8 +889,12 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                 )
         if prefer_candidate:
             deduped[key] = model
+
+    deduped_values = list(deduped.values())
+    custom_values = [model for model in deduped_values if model.source == "custom"]
     return sorted(
-        deduped.values(),
+        [model for model in deduped_values if model.source != "custom"]
+        + gguf.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )
@@ -894,6 +912,10 @@ def _filter_hidden_models(local_models: List[LocalModelInfo]) -> list[LocalModel
         if not is_hidden_model(model.id, model.model_id, model.path, resolved_cache_path):
             visible.append(model)
     return visible
+
+
+def _filter_and_dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
+    return _dedupe_local_models(_filter_hidden_models(local_models))
 
 
 async def _scan_local_models_response(
@@ -925,7 +947,7 @@ async def _scan_local_models_response(
             known_hf_caches,
             custom_folders,
         )
-        models = _dedupe_local_models(_filter_hidden_models(local_models))
+        models = await asyncio.to_thread(_filter_and_dedupe_local_models, local_models)
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
@@ -950,8 +972,6 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         # for a response that is actually about to be served.
         # Classification reads GGUF headers, so keep it off the event loop too.
         try:
-            # Module-qualified for the same reason as _cached_row_task: binding the bare
-            # name re-points a load that resolved to routes.models before the move.
             from hub.services.models import catalog_classification
 
             models = []

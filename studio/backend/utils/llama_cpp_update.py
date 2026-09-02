@@ -66,6 +66,8 @@ _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + build/validate
 _EXIT_NO_SPACE = 4
 # A concrete backend selection could not be satisfied.
 _EXIT_BACKEND_UNAVAILABLE = 5
+# Prebuilt path failed; setup scripts source-build, but the in-app updater cannot.
+_EXIT_FALLBACK = 2
 
 
 class _LlamaPhaseError(RuntimeError):
@@ -613,6 +615,10 @@ def _run_llama_phase(
     backend = None
     model_was_active = False
     mtmd_guard = ExitStack()
+    # The installer exits 0 for a transient failure it answered by keeping the tree, so
+    # success no longer implies a new release. Read as the post-install check reads it.
+    prior_marker = read_install_marker(_find_binary())
+    prior_tag = (prior_marker or {}).get("release_tag") or (prior_marker or {}).get("tag")
     try:
         # Block loads and free the binary while the installer swaps it.
         try:
@@ -716,17 +722,31 @@ def _run_llama_phase(
                     f"{new_backend or 'an unknown backend'}"
                 )
 
-        logger.info("llama update: success", to_tag = new_tag, backend = new_backend)
+        kept_existing = backend_request is None and new_tag is not None and new_tag == prior_tag
+        logger.info(
+            "llama update: success",
+            to_tag = new_tag,
+            backend = new_backend,
+            kept_existing = kept_existing,
+        )
         reload_hint = " Reload your model to use it." if model_was_active else ""
+        if backend_request is not None:
+            message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
+        elif kept_existing:
+            # The phase only runs when a newer release was offered, so naming the kept
+            # release as current would send the user looking for a fix it does not have.
+            message = (
+                f"llama.cpp could not be updated right now, so the existing {new_tag} "
+                "install was kept. Try again later."
+            )
+        else:
+            message = f"Updated llama.cpp to {new_tag}.{reload_hint}"
         return {
             "to_tag": new_tag,
             "backend": new_backend,
             "reload_required": model_was_active,
-            "message": (
-                f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
-                if backend_request is not None
-                else f"Updated llama.cpp to {new_tag}.{reload_hint}"
-            ),
+            "kept_existing": kept_existing,
+            "message": message,
         }
     except _flow.InstallerExit as exc:
         # Raw "installer exited 4: <log tail>" says nothing actionable in the UI.
@@ -749,6 +769,30 @@ def _run_llama_phase(
             raise _LlamaPhaseError(
                 f"Could not install the {backend_label} llama.cpp build on this machine. "
                 "The installed backend was kept.",
+                reload_required = model_was_active,
+            ) from exc
+        if exc.returncode == _EXIT_FALLBACK:
+            message = str(exc)
+            # Same predicate the formatter uses: exit 2 also carries failures
+            # like a rate-limited huggingface.co validation-model fetch, which
+            # GH_TOKEN cannot fix.
+            if _flow.is_github_rate_limit_text(message):
+                token_present = _flow.github_token_present(env)
+                logger.warning("llama update: GitHub rate limit", authenticated = token_present)
+                advice = (
+                    "Wait for the limit to reset and try again."
+                    if token_present
+                    else "Set GH_TOKEN or GITHUB_TOKEN in your environment and try again."
+                )
+                raise _LlamaPhaseError(
+                    "Could not update llama.cpp: GitHub is rate-limiting release downloads. "
+                    f"{advice}",
+                    reload_required = model_was_active,
+                ) from exc
+            logger.warning("llama update: prebuilt fallback", error = message)
+            detail = message.split(": ", 1)[-1] if ": " in message else message
+            raise _LlamaPhaseError(
+                f"Could not update llama.cpp from the prebuilt bundle. {detail}",
                 reload_required = model_was_active,
             ) from exc
         logger.warning("llama update: failed", error = str(exc))
@@ -1164,6 +1208,13 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             whisper_run = (
                 (lambda set_progress: _whisper.run_repair_phase(whisper_spec, set_progress))
                 if whisper_spec.get("repair")
+                # The plan left pairing unchecked because llama runs first.
+                else (
+                    lambda set_progress: _whisper.run_chained_phase_after_llama(
+                        whisper_spec, set_progress
+                    )
+                )
+                if llama_spec is not None
                 else (lambda set_progress: _whisper.run_chained_phase(whisper_spec, set_progress))
             )
 

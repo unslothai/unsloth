@@ -11,7 +11,15 @@ from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+    field_validator,
+)
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -120,8 +128,14 @@ from utils.preview_sharing_settings import (
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
 )
+from utils.current_date_prompt_settings import (
+    DEFAULT_CURRENT_DATE_PROMPT_ENABLED,
+    get_current_date_prompt_enabled,
+    set_current_date_prompt_enabled,
+)
 from utils.lan_access_settings import (
     lan_access_status,
+    save_lan_access_port,
     set_lan_access_auto_start,
     start_lan_access,
     stop_lan_access,
@@ -2886,6 +2900,15 @@ class PreviewSharingResponse(BaseModel):
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
 
 
+class CurrentDatePromptPayload(BaseModel):
+    enabled: StrictBool
+
+
+class CurrentDatePromptResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_CURRENT_DATE_PROMPT_ENABLED
+
+
 class RemoteAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
 
@@ -2982,16 +3005,25 @@ class LanAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
 
 
+class LanAccessPortPayload(BaseModel):
+    port: Optional[StrictInt] = Field(ge = 1, le = 65535)
+
+
 class LanAccessResponse(BaseModel):
     state: Literal["off", "online", "error"]
     urls: list[str] = []
     public_urls: list[str] = []
     error: Optional[str] = None
     auto_start: bool
+
+    configured_port: Optional[int] = None
+    active_port: Optional[int] = None
     managed_by: Optional[Literal["launch", "settings"]] = None
     can_start: bool
     can_stop: bool
     block_reason: Optional[str] = None
+    bind_host: Optional[str] = None
+    wildcard_bind: bool = False
     serves_web_ui: bool = True
     keyless_lan_eligible: bool = False
     keyless_scope: Literal["off", "inference", "full"] = "off"
@@ -3057,6 +3089,25 @@ def update_lan_access_auto_start(
     return _lan_access_response(request)
 
 
+@router.put("/lan-access/port", response_model = LanAccessResponse)
+def update_lan_access_port(
+    request: Request,
+    payload: LanAccessPortPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**save_lan_access_port(request.app, payload.port))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info(
+        "settings.lan_access_port_updated subject=%s port=%s",
+        current_subject,
+        payload.port if payload.port is not None else "automatic",
+    )
+    return response
+
+
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
 def get_preview_sharing(
     current_subject: str = Depends(get_current_subject),
@@ -3081,6 +3132,34 @@ def update_preview_sharing(
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+@router.get("/current-date-prompt", response_model = CurrentDatePromptResponse)
+def get_current_date_prompt(
+    current_subject: str = Depends(get_current_subject),
+) -> CurrentDatePromptResponse:
+    return CurrentDatePromptResponse(enabled = get_current_date_prompt_enabled())
+
+
+@router.put("/current-date-prompt", response_model = CurrentDatePromptResponse)
+def update_current_date_prompt(
+    payload: CurrentDatePromptPayload, current_subject: str = Depends(get_current_subject)
+) -> CurrentDatePromptResponse:
+    """Enable/disable telling the model today's date in chat and Deep Research prompts."""
+    try:
+        enabled = set_current_date_prompt_enabled(payload.enabled)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid current date prompt setting."),
+            event = "settings.update_current_date_prompt_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.current_date_prompt_updated subject=%s enabled=%s", current_subject, enabled
+    )
+    return CurrentDatePromptResponse(enabled = enabled)
 
 
 def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:

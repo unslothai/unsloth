@@ -29,6 +29,7 @@ from typing import Iterator, Optional
 
 from loggers import get_logger
 
+from hub.utils.hf_tokens import normalize_token
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
@@ -444,7 +445,7 @@ class _MtmdDownloadState:
             for filename in (spec.model_file, spec.mmproj_file):
                 meta = get_hf_file_metadata(
                     hf_hub_url(spec.repo, filename, revision = revision),
-                    token = hf_token or None,
+                    token = normalize_token(hf_token),
                 )
                 if revision is None:
                     revision = meta.commit_hash
@@ -483,7 +484,7 @@ class _MtmdDownloadState:
             args = ["--repo-id", spec.repo, "--revision", revision]
             for item in selected:
                 args.extend(("--filename", item.path))
-            process = spawn_download(args, hf_token = hf_token or None, hub_cache = hub_cache)
+            process = spawn_download(args, hf_token = normalize_token(hf_token), hub_cache = hub_cache)
             with self._lock:
                 if self._cancelled:
                     terminate_download(process)

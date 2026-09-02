@@ -825,6 +825,16 @@ export const it = {
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
       },
+      repairInstall: {
+        label: "Ripara l'installazione",
+        description:
+          "Riesegue il programma di installazione sull'ambiente gestito. Utile se la GPU non viene rilevata o se l'app non si avvia.",
+        action: "Ripara installazione",
+        confirmTitle: "Riparare questa installazione?",
+        confirmDescription:
+          "Arresta il server e riesegue il programma di installazione, che reinstalla PyTorch per la GPU di questa macchina. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
+        confirmAction: "Ripara ora",
+      },
       resetPreferences: {
         sectionTitle: "Zona pericolosa",
         label: "Reimposta tutte le preferenze locali",
@@ -1078,6 +1088,8 @@ export const it = {
         currentLoad: "Carico attuale",
         free: "Disponibili: {value}",
         noGpu: "Nessuna GPU visibile",
+        gpuUnusable: "GPU non utilizzabile",
+        gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
       },
       gpu: {
         title: "Dispositivi GPU",
@@ -1087,6 +1099,12 @@ export const it = {
         unreadable: "Impossibile leggere l'hardware di questo server.",
         noGpu:
           "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
+        noUsableGpu: "Nessuna GPU di questa macchina è utilizzabile da PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch è una build solo CPU ({version}), quindi le GPU sottostanti non possono essere usate. Ripara l'installazione per ripristinare il supporto GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) non riesce a inizializzare le GPU sottostanti, quindi non possono essere usate. Controlla il driver della GPU o ripara l'installazione.",
+        unusableDevice: "non utilizzabile",
         unknownDevice: "GPU sconosciuta",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1384,6 +1402,13 @@ export const it = {
         collapseByDefaultDescription:
           "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
       },
+      currentDate: {
+        label: "Comunica al modello la data di oggi",
+        description:
+          "Aggiunge la data corrente al prompt in modo che la ricerca web e Deep Research cerchino fonti recenti invece di basarsi sulla data di fine addestramento del modello.",
+        loadError: "Impossibile caricare le impostazioni della data corrente",
+        saveError: "Impossibile aggiornare le impostazioni della data corrente",
+      },
       tools: {
         collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
         collapseByDefaultDescription:
@@ -1485,6 +1510,8 @@ export const it = {
       archivedImagesDescription: "Visualizza e gestisci le immagini che hai archiviato.",
       archivedVideos: "Video archiviati",
       archivedVideosDescription: "Visualizza e gestisci i video che hai archiviato.",
+      archivedAudio: "Audio archiviati",
+      archivedAudioDescription: "Visualizza e gestisci le clip audio che hai archiviato.",
       manageAction: "Gestisci",
       manageChats: "Gestisci chat",
       manageChatsDescription:
@@ -1675,7 +1702,7 @@ export const it = {
         desktopAvailable:
           "È disponibile la versione {version} dell'app desktop",
         desktopAvailableDescription:
-          "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
+          "Aggiorna ora per prepararlo in background. Puoi continuare a lavorare e riavviare quando è pronto.",
         desktopExternalServer:
           "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
         desktopManualInstall:
@@ -1686,11 +1713,20 @@ export const it = {
         desktopCurrent: "L'app desktop è aggiornata",
         desktopCurrentDescription:
           "Unsloth continuerà a verificare automaticamente la disponibilità di aggiornamenti.",
+        desktopPreparingDescription:
+          "L'aggiornamento viene preparato in background. Puoi continuare a lavorare.",
+        desktopReadyToRestartDescription:
+          "È tutto pronto. Riavvia per completare l'installazione dell'aggiornamento.",
+        desktopReadyToInstallDescription:
+          "L'aggiornamento dell'app è stato scaricato. Completa l'aggiornamento del backend per installarlo.",
         checkForUpdates: "Verifica aggiornamenti",
         checkAgain: "Verifica di nuovo",
         retryCheck: "Riprova",
         checking: "Verifica in corso...",
+        preparing: "Preparazione...",
         updateNow: "Aggiorna ora",
+        restartToUpdate: "Riavvia per aggiornare",
+        finishUpdate: "Completa aggiornamento",
         openReleasePage: "Apri la pagina della release",
         unknownInstall:
           "Impossibile rilevare come è stato installato Unsloth. Per installazioni tramite installer o PyPI, usa i comandi sopra.",

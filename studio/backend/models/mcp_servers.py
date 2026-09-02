@@ -3,7 +3,7 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr
 
 
 class McpServerCreate(BaseModel):
@@ -38,6 +38,19 @@ class McpServerTestRequest(BaseModel):
     url: str
     headers: Optional[dict[str, str]] = None
     use_oauth: bool = False
+
+
+class McpStdioDecodeRequest(BaseModel):
+    url: StrictStr
+
+
+class McpStdioCommand(BaseModel):
+    command: StrictStr
+    arguments: list[StrictStr] = Field(default_factory = list)
+
+
+class McpStdioEncodeResponse(BaseModel):
+    url: str
 
 
 class McpServerProbeResult(BaseModel):

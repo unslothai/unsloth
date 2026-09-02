@@ -24,6 +24,11 @@ VIDEO = "video"
 
 _lock = threading.Lock()
 _owner: Optional[str] = None
+_owner_epoch = 0
+
+
+class OwnerChangedError(RuntimeError):
+    """The outgoing GPU owner changed after a pre-handoff capacity snapshot."""
 
 
 def _evict_chat() -> None:
@@ -79,6 +84,7 @@ def acquire_for(
     owner: str,
     register: Optional[Callable[[], Any]] = None,
     *,
+    expected_current: Optional[tuple[Optional[str], int]] = None,
     allow_evict: bool = True,
 ) -> Any:
     """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
@@ -89,25 +95,29 @@ def acquire_for(
     letting both loaders allocate VRAM at once. It must be quick and not re-enter the arbiter; if it
     raises, ownership stays with ``owner``.
     """
-    global _owner
+    global _owner, _owner_epoch
     if owner not in _EVICTORS:
         raise ValueError(f"unknown GPU owner: {owner!r}")
     with _lock:
+        if expected_current is not None and (_owner, _owner_epoch) != expected_current:
+            raise OwnerChangedError("The resident GPU model changed; retry the load.")
         if _owner is not None and _owner != owner:
             if not allow_evict:
                 raise GpuOwnerBusyError(_owner)
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
         _owner = owner
+        _owner_epoch += 1
         return register() if register is not None else None
 
 
 def release(owner: str) -> None:
     """Drop ``owner``'s claim (no-op if it isn't the current owner)."""
-    global _owner
+    global _owner, _owner_epoch
     with _lock:
         if _owner == owner:
             _owner = None
+            _owner_epoch += 1
 
 
 def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
@@ -117,13 +127,19 @@ def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
     whose ``acquire_for(register=...)`` re-registers ownership under this lock; evaluating the
     predicate under the lock keeps them atomic so ``release`` never clears the newer claim.
     ``predicate`` must be quick and not re-enter the arbiter. Returns True iff ownership was dropped."""
-    global _owner
+    global _owner, _owner_epoch
     with _lock:
         if _owner != owner or not predicate():
             return False
         _owner = None
+        _owner_epoch += 1
         return True
 
 
 def current_owner() -> Optional[str]:
     return _owner
+
+
+def owner_snapshot() -> tuple[Optional[str], int]:
+    with _lock:
+        return _owner, _owner_epoch

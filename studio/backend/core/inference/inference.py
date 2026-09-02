@@ -34,7 +34,7 @@ from core.inference.chat_eos import (
     resolve_chat_turn_end_eos_ids_using,
 )
 from core.inference.chat_template_helpers import (
-    ReasoningChannelNormalizer,
+    make_reasoning_normalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
     neutralize_control_markup_in_messages,
@@ -209,7 +209,7 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         self,
         tokenizer,
         *,
-        markers: tuple[str, str],
+        markers: tuple[str, ...],
         skip_prompt: bool = True,
         timeout: float = 0.2,
         cancel_event = None,
@@ -218,7 +218,7 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
     ):
         decode_kwargs["skip_special_tokens"] = False
         super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
-        self._normalizer = ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
+        self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
         self._cancel_event = cancel_event
         self._aborted = False
 
@@ -973,30 +973,39 @@ class InferenceBackend:
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
+        # The usage of the LATEST turn, so the loop can size a search against a real
+        # token count. Cleared before every turn and written when that turn ends, so a
+        # turn that failed or reported nothing leaves it empty rather than stale.
+        _turn_stats: dict = {}
+
         def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
             # conv already has the system message -- avoid double-prepend.
             # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
             # tools such as render_html can be removed from later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
-            yield from self._generate_chat_response_inner(
-                messages = conv,
-                system_prompt = "",
-                temperature = temperature,
-                top_p = top_p,
-                top_k = top_k,
-                min_p = min_p,
-                max_new_tokens = max_new_tokens,
-                repetition_penalty = repetition_penalty,
-                cancel_event = cancel_event,
-                tools = turn_tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-                # Self-limiting: after a tool call the conversation ends on a tool
-                # result, so later turns render as ordinary new turns.
-                continue_final_message = continue_final_message,
-                presence_penalty = presence_penalty,
-            )
+            _turn_stats["stats"] = None
+            try:
+                yield from self._generate_chat_response_inner(
+                    messages = conv,
+                    system_prompt = "",
+                    temperature = temperature,
+                    top_p = top_p,
+                    top_k = top_k,
+                    min_p = min_p,
+                    max_new_tokens = max_new_tokens,
+                    repetition_penalty = repetition_penalty,
+                    cancel_event = cancel_event,
+                    tools = turn_tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    # Self-limiting: after a tool call the conversation ends on a tool
+                    # result, so later turns render as ordinary new turns.
+                    continue_final_message = continue_final_message,
+                    presence_penalty = presence_penalty,
+                )
+            finally:
+                _turn_stats["stats"] = self.last_generation_stats
 
         initial = list(messages)
         if system_prompt:
@@ -1042,6 +1051,7 @@ class InferenceBackend:
             # So a conversation search can be sized against what this model can hold.
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
+            generation_stats_holder = _turn_stats,
         )
 
     def generate_chat_response(
@@ -1148,6 +1158,7 @@ class InferenceBackend:
                     cancel_event = cancel_event,
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
+                    tools = tools,
                 )
                 return
             else:
@@ -1292,6 +1303,7 @@ class InferenceBackend:
         cancel_event = None,
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1308,8 +1320,12 @@ class InferenceBackend:
         # prompts from the turn that asked the question.
         from core.inference.chat_template_helpers import (
             last_user_text,
+            messages_have_tool_history,
+            messages_with_attached_image,
+            render_advertising_tools,
             render_prompt_with_boundary,
             trailing_assistant_text,
+            vlm_prompt_issue,
         )
 
         user_message = last_user_text(messages)
@@ -1320,61 +1336,144 @@ class InferenceBackend:
 
         # Prepare vision messages
         if image:
-            user_msg = {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": user_message},
-                ],
-            }
-            if system_prompt:
-                vision_messages = [
-                    {
-                        "role": "system",
-                        "content": [{"type": "text", "text": system_prompt}],
-                    },
-                    user_msg,
-                ]
-            else:
-                vision_messages = [user_msg]
-
-            # Resume the partial answer instead of opening a new turn.
-            if continue_partial:
-                vision_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": continue_partial}],
-                    }
-                )
-
-            # Processor's own template skips the choke point (#7066). Rebind user_msg
-            # so the no-system retry keeps the copy. Profiled from the processor, so a
-            # vision request is gated on the loaded model exactly as the text path is.
-            from core.inference.chat_template_helpers import markup_for_tokenizer
-
-            vision_messages = neutralize_control_markup_in_messages(
-                vision_messages, None, markup_for_tokenizer(processor)
+            # Ordinary vision turns keep the historic collapse; full history is unbounded.
+            has_tool_history = messages_have_tool_history(messages)
+            # Client-tools route signature: tool_choice="none" and a forced unknown name
+            # also arrive tools=None, and the catalog alone missed them (#10092).
+            folded_system = not system_prompt and any(
+                isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages
             )
-            user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
-
-            def _render_vision(msgs):
-                # Partial taken from the swept msgs, not the raw pre-sweep capture.
-                return render_prompt_with_boundary(
-                    processor, msgs, continue_final_message = bool(continue_partial)
+            if bool(tools) or has_tool_history or folded_system:
+                # Rebuilding from newest user TEXT dropped the system turn and the tool
+                # history an OpenAI tool loop replays (#10092).
+                vision_messages = messages_with_attached_image(
+                    messages,
+                    system_prompt = system_prompt,
+                    fallback_user_text = user_message,
+                    structured_content = True,
                 )
 
-            try:
-                input_text = _render_vision(vision_messages)
-            except Exception as e:
-                if system_prompt:
-                    logger.warning(
-                        f"Vision processor for '{self.active_model_name}' may not support "
-                        f"system messages; retrying without. Original error: {e}"
+                # The conversation the LAST render used, not the no-tools probe's (#10092).
+                rendered_with: dict = {"messages": vision_messages}
+
+                def _render_vision(catalog):
+                    rendered_with["messages"] = vision_messages
+                    try:
+                        rendered = self._apply_chat_template_for_generation(
+                            processor,
+                            vision_messages,
+                            tools = catalog,
+                            continue_final_message = bool(continue_partial),
+                        )
+                    except Exception as e:  # noqa: F841 -- read by the fallback below
+                        without_system = [
+                            m
+                            for m in vision_messages
+                            if not (isinstance(m, dict) and m.get("role") == "system")
+                        ]
+                        # Only where an unsupported system role is the last explanation.
+                        if (
+                            has_tool_history
+                            or rendered_with.get("system_ok")
+                            or len(without_system) == len(vision_messages)
+                        ):
+                            raise
+                        logger.warning(
+                            f"Vision processor for '{self.active_model_name}' may not support "
+                            f"system messages; retrying without. Original error: {e}"
+                        )
+                        rendered = self._apply_chat_template_for_generation(
+                            processor,
+                            without_system,
+                            tools = catalog,
+                            continue_final_message = bool(continue_partial),
+                        )
+                        rendered_with["messages"] = without_system
+                        return rendered
+                    else:
+                        # A render that kept the system turn proves the role is supported.
+                        if any(
+                            isinstance(m, dict) and m.get("role") == "system"
+                            for m in vision_messages
+                        ):
+                            rendered_with["system_ok"] = True
+                        return rendered
+
+                input_text, tools_advertised = render_advertising_tools(_render_vision, tools)
+                vision_messages = rendered_with["messages"]
+
+                prompt_issue = vlm_prompt_issue(input_text, vision_messages)
+                if prompt_issue and has_tool_history:
+                    raise RuntimeError(
+                        f"Vision chat template returned {prompt_issue} and cannot be recovered "
+                        "without dropping tool-call history."
                     )
-                    vision_messages = [m for m in vision_messages if m.get("role") != "system"]
-                    input_text = _render_vision(vision_messages)
+                if prompt_issue:
+                    raise RuntimeError(f"Vision chat template returned {prompt_issue}.")
+
+                if tools and not tools_advertised:
+                    # Served anyway: refusing turns an answerable question into an error.
+                    logger.warning(
+                        "Vision chat template for '%s' rendered the same prompt with and "
+                        "without the requested tools; serving the turn without the catalog.",
+                        self.active_model_name,
+                    )
+            else:
+                user_msg = {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": user_message},
+                    ],
+                }
+                if system_prompt:
+                    vision_messages = [
+                        {
+                            "role": "system",
+                            "content": [{"type": "text", "text": system_prompt}],
+                        },
+                        user_msg,
+                    ]
                 else:
-                    raise
+                    vision_messages = [user_msg]
+
+                # Resume the partial answer instead of opening a new turn.
+                if continue_partial:
+                    vision_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": continue_partial}],
+                        }
+                    )
+
+                # Processor's own template skips the choke point (#7066). Rebind user_msg
+                # so the no-system retry keeps the copy.
+                from core.inference.chat_template_helpers import markup_for_tokenizer
+
+                vision_messages = neutralize_control_markup_in_messages(
+                    vision_messages, None, markup_for_tokenizer(processor)
+                )
+                user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
+
+                def _render_collapsed_vision(msgs):
+                    # Partial taken from the swept msgs, not the raw pre-sweep capture.
+                    return render_prompt_with_boundary(
+                        processor, msgs, continue_final_message = bool(continue_partial)
+                    )
+
+                try:
+                    input_text = _render_collapsed_vision(vision_messages)
+                except Exception as e:
+                    # Safe here: no catalog and no tool history to hide a failure behind.
+                    if system_prompt:
+                        logger.warning(
+                            f"Vision processor for '{self.active_model_name}' may not support "
+                            f"system messages; retrying without. Original error: {e}"
+                        )
+                        vision_messages = [m for m in vision_messages if m.get("role") != "system"]
+                        input_text = _render_collapsed_vision(vision_messages)
+                    else:
+                        raise
             inputs = processor(
                 image,
                 input_text,
@@ -1404,8 +1503,9 @@ class InferenceBackend:
                 protocol_source = processor,
                 # The text-only VLM fallback above did not render with the
                 # processor template, so its native markers do not describe
-                # this request's response protocol.
-                reasoning_channel_markers = detect_reasoning_channel_markers(processor)
+                # this request's response protocol. Passing *tools* matches the
+                # render: a named template selects "tool_use", not "default".
+                reasoning_channel_markers = detect_reasoning_channel_markers(processor, tools = tools)
                 if image
                 else None,
                 reasoning_channel_markers_resolved = True,
@@ -2062,10 +2162,16 @@ class InferenceBackend:
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        instructions: Optional[str] = None,
+        language: Optional[str] = None,
+        seed: Optional[int] = None,
     ) -> Tuple[bytes, int]:
         """Generate audio from text for TTS models.
         Returns (wav_bytes, sample_rate). Blocking — full audio before return.
         """
+        # Reserved for native audio architectures; codec-backed TTS models do
+        # not currently expose scene instructions or deterministic seeding.
+        del instructions, language, seed
         if not self.active_model_name:
             raise RuntimeError("No active model")
 
@@ -2839,7 +2945,29 @@ class InferenceBackend:
             "format_type": "generic",
             "special_tokens": {},
             "template_name": None,
+            # An image turn renders through the PROCESSOR, a different template file for
+            # most VLMs, and this mirrored dict is all the route ever sees (#10092, #7066).
+            "processor_template": None,
+            # Distinct from processor_template: a template-less processor still places
+            # the image, falling back to the tokenizer body.
+            "renders_image": False,
         }
+        processor = self.models[model_name].get("processor")
+        # Same predicate as the image-ignoring fallback: FastVisionModel may return a raw
+        # tokenizer, whose body an image render never selects.
+        try:
+            from transformers import ProcessorMixin
+            processes_images = processor is not None and (
+                isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")
+            )
+        except Exception:
+            processes_images = processor is not None and hasattr(processor, "image_processor")
+        chat_template_info["renders_image"] = bool(processes_images)
+        if processes_images:
+            processor_template = getattr(processor, "chat_template", None)
+            # Narrowing the named-template list form away disables the image-turn override.
+            if isinstance(processor_template, (str, dict, list, tuple)) and processor_template:
+                chat_template_info["processor_template"] = processor_template
 
         try:
             from utils.datasets import MODEL_TO_TEMPLATE_MAPPER

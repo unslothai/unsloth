@@ -9,6 +9,13 @@ import sys as _sys
 # behaviour and must not reach into a host application that imports us.
 _entry_base = _os.path.basename(_sys.argv[0]).lower() if _sys.argv else ""
 _is_entry_point = _entry_base in {"unsloth", "unsloth.exe"}
+_windows_studio_mutation_entry = (
+    _sys.platform == "win32"
+    and (_is_entry_point or _entry_base == "-m")
+    and len(_sys.argv) >= 3
+    and _sys.argv[1] == "studio"
+    and _sys.argv[2] in {"setup", "update"}
+)
 
 
 _streams_reconfigured = False
@@ -66,16 +73,19 @@ import typer
 from importlib.metadata import version as package_version, PackageNotFoundError
 
 
-from unsloth_cli.commands.train import train
-from unsloth_cli.commands.inference import inference
-from unsloth_cli.commands.chat import chat
-from unsloth_cli.commands.start import start_app
-from unsloth_cli.commands.export import export, list_checkpoints
-from unsloth_cli.commands.studio import (
-    run as studio_run,
-    studio_app,
-    _expand_attached_np_short,
-)
+if _windows_studio_mutation_entry:
+    from unsloth_cli.commands.studio import studio_app, _expand_attached_np_short
+else:
+    from unsloth_cli.commands.train import train
+    from unsloth_cli.commands.inference import inference
+    from unsloth_cli.commands.chat import chat
+    from unsloth_cli.commands.start import start_app
+    from unsloth_cli.commands.export import export, list_checkpoints
+    from unsloth_cli.commands.studio import (
+        run as studio_run,
+        studio_app,
+        _expand_attached_np_short,
+    )
 
 
 _entry_point_prepared = False
@@ -203,32 +213,33 @@ def main(
         raise typer.Exit(code = 1)
 
 
-app.command()(train)
-app.command()(inference)
-app.command()(chat)
-app.command()(export)
-app.command("list-checkpoints")(list_checkpoints)
 app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
-app.add_typer(
-    start_app,
-    name = "start",
-    help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi) against Unsloth.",
-)
-# Backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
-app.add_typer(
-    start_app,
-    name = "connect",
-    hidden = True,
-    help = "Deprecated alias for `unsloth start`.",
-)
+if not _windows_studio_mutation_entry:
+    app.command()(train)
+    app.command()(inference)
+    app.command()(chat)
+    app.command()(export)
+    app.command("list-checkpoints")(list_checkpoints)
+    app.add_typer(
+        start_app,
+        name = "start",
+        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi) against Unsloth.",
+    )
+    # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
+    app.add_typer(
+        start_app,
+        name = "connect",
+        hidden = True,
+        help = "Deprecated alias for `unsloth start`.",
+    )
 
-# Top-level `unsloth run` aliases `unsloth studio run`; same context
-# so unknown flags still pass through to llama-server.
-app.command(
-    "run",
-    context_settings = {
-        "allow_extra_args": True,
-        "ignore_unknown_options": True,
-    },
-    help = "Alias for `unsloth studio run`.",
-)(studio_run)
+    # top-level `unsloth run` aliases `unsloth studio run`; same context
+    # so unknown flags still pass through to llama-server.
+    app.command(
+        "run",
+        context_settings = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        },
+        help = "Alias for `unsloth studio run`.",
+    )(studio_run)
