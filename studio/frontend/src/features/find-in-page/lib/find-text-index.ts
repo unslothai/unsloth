@@ -502,8 +502,16 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
   return variants;
 }
 
-/** A base character with the combining marks that belong to it, which compose or decompose as one. */
-const CLUSTER_PATTERN = /[\s\S][̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
+/**
+ * A base character with the combining marks that belong to it, which compose or decompose as one.
+ *
+ * Hangul first, and by its own rule: NFD takes a syllable apart into leading, vowel and trailing
+ * Jamo, none of which are combining marks, so the general branch would make three clusters out of
+ * one syllable and compose none of them back. Every Korean query then missed text plainly on
+ * screen, an exact one-syllable query included.
+ */
+const CLUSTER_PATTERN =
+  /[\u1100-\u115f\ua960-\ua97c][\u1160-\u11a7\ud7b0-\ud7c6]*[\u11a8-\u11ff\ud7cb-\ud7fb]*|[\s\S][̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
 
 /**
  * The needle as a regex source in which each cluster may match either of its spellings.
