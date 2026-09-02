@@ -119,8 +119,9 @@ def test_wma_and_amr_decode_with_no_librosa(monkeypatch):
 
 def test_pyav_output_is_not_held_twice(monkeypatch):
     """np.concatenate keeps the block list and its result live at once, so a
-    30-minute upload at the sample ceiling held two 346 MB arrays. The blocks
-    are dropped as they are copied, and the order is the decode order."""
+    30-minute upload at the sample ceiling held two 346 MB arrays. Each block is
+    written into the output as it arrives, in decode order, and nothing joins a
+    list at the end."""
     raw = _encode_amr()
     monkeypatch.setitem(sys.modules, "soundfile", None)
     monkeypatch.setitem(sys.modules, "librosa", None)
@@ -283,7 +284,9 @@ def test_a_wide_container_inside_the_clock_is_streamed_not_refused(monkeypatch):
 
 
 def test_audio_input_decode_passes_a_short_recording_through(monkeypatch):
-    import torch
+    # torch is only a source of fake tensors for the fake torchaudio below, so
+    # a machine without it should skip rather than fail, as the av cases do.
+    torch = pytest.importorskip("torch")
 
     class _FakeTorchaudio:
         transforms = types.SimpleNamespace()
@@ -306,7 +309,9 @@ def test_a_load_is_capped_by_the_sample_ceiling_not_only_by_the_clock(monkeypatc
     """num_frames is the value being distrusted, so a container that understates
     it must not license a read up to the rate-relative limit: at 192 kHz that is
     four times the sample ceiling."""
-    import torch
+    # torch is only a source of fake tensors for the fake torchaudio below, so
+    # a machine without it should skip rather than fail, as the av cases do.
+    torch = pytest.importorskip("torch")
 
     loads: list[dict] = []
     ceiling = 64
@@ -341,7 +346,9 @@ def test_a_load_is_capped_by_the_sample_ceiling_not_only_by_the_clock(monkeypatc
 def test_an_honest_length_is_still_read_in_full(monkeypatch):
     """Capping by both limits must not truncate a file that fits: the read window
     stays at or above what info() reported."""
-    import torch
+    # torch is only a source of fake tensors for the fake torchaudio below, so
+    # a machine without it should skip rather than fail, as the av cases do.
+    torch = pytest.importorskip("torch")
 
     loads: list[dict] = []
 
@@ -799,7 +806,9 @@ def test_the_last_resort_decoder_reads_a_bounded_range(monkeypatch):
     get_all_samples() and only then slices to num_frames, so the argument bounds
     the return value and not the allocation. The fallback asks torchcodec for
     the metadata and reads a range instead."""
-    import torch
+    # torch is only a source of fake tensors for the fake torchaudio below, so
+    # a machine without it should skip rather than fail, as the av cases do.
+    torch = pytest.importorskip("torch")
 
     ranges: list = []
 
@@ -957,7 +966,9 @@ def test_every_path_names_the_limit_the_same_way(monkeypatch):
     """One message, so a client sees one answer wherever the limit was found."""
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 90 * 60)
     assert inference_route._audio_too_long_detail() == "Audio is too long (max 90 minutes)."
-    source = (pathlib.Path(inference_route.__file__)).read_text()
+    # Explicitly UTF-8: read_text() follows the locale encoding, which is cp1252
+    # on a stock Windows runner, and the module holds bytes cp1252 cannot decode.
+    source = (pathlib.Path(inference_route.__file__)).read_text(encoding = "utf-8")
     assert source.count('f"Audio is too long') == 1
 
 
@@ -1186,7 +1197,9 @@ def test_torchaudio_alone_can_still_decode_audio(monkeypatch):
     not an acceptable way to gain a memory bound, so it falls back to the
     bounded torchcodec reader that 2.9's own load() decodes through.
     """
-    import torch
+    # torch is only a source of fake tensors for the fake torchaudio below, so
+    # a machine without it should skip rather than fail, as the av cases do.
+    torch = pytest.importorskip("torch")
 
     class _Metadata:
         sample_rate = 16_000
