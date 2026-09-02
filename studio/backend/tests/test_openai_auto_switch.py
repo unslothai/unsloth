@@ -3722,9 +3722,7 @@ def test_an_explicitly_empty_audio_model_still_restores_the_stash(monkeypatch):
     from models.inference import ChatCompletionRequest
 
     reached, captured = _capture_audio_switch(monkeypatch)
-    payload = ChatCompletionRequest(
-        model = "", messages = [{"role": "user", "content": "say hi"}]
-    )
+    payload = ChatCompletionRequest(model = "", messages = [{"role": "user", "content": "say hi"}])
     with pytest.raises(reached):
         asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
     assert captured["model"] == inference_route._RELOAD_ONLY_MODEL
