@@ -17845,10 +17845,8 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
     import numpy as np
     import soundfile as sf
 
-    chunks = []
     sample_count = 0
     joined = None
-    filled = 0
     with sf.SoundFile(io.BytesIO(raw)) as source:
         sample_rate = int(source.samplerate)
         if sample_rate <= 0:
@@ -17862,65 +17860,55 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
         # about 20 channels.
         channels = max(1, int(getattr(source, "channels", 1) or 1))
         block_frames = max(1, min(sample_rate, 65_536, _MAX_DECODE_BLOCK_SAMPLES // channels))
+        ceiling = _decoded_sample_ceiling(sample_rate)
         # The length the header claims, kept only while it is one this decode is
-        # allowed to reach. Holding every block and then joining them meant a
-        # second copy of the whole recording at the end; filling one array
-        # instead costs a 30-minute upload a third of a gigabyte less.
+        # allowed to reach. It is a hint that saves growth copies, never a
+        # promise: a header that under-counts, over-counts or says nothing at all
+        # only changes how often the buffer is resized.
         declared = int(getattr(source, "frames", 0) or 0)
-        if declared > min(sample_rate * _MAX_AUDIO_SECONDS, _MAX_DECODED_SAMPLES):
+        if declared > ceiling:
             declared = 0
-        # Latched by the first block the buffer could not hold. From then on the
-        # buffer is closed: the tail is chronological, and refilling the space
-        # left in it would put later audio in front of earlier audio.
-        overflowed = False
         for block in source.blocks(
             blocksize = block_frames,
             dtype = "float32",
             always_2d = False,
         ):
             sample_count += len(block)
-            if (
-                sample_count > sample_rate * _MAX_AUDIO_SECONDS
-                or sample_count > _MAX_DECODED_SAMPLES
-            ):
+            if sample_count > ceiling:
                 raise _DecodedAudioTooLongError(
                     f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
                 )
             if block.ndim > 1:
                 block = block.mean(axis = 1)
-            # Not before the decode has produced half of it: a header may claim
-            # any length, and sizing a buffer from an unread one is how a small
-            # file asks for a large allocation.
-            if joined is None and declared and sample_count * 2 >= declared:
-                joined = np.empty(declared, dtype = np.float32)
-                for held in chunks:
-                    joined[filled : filled + len(held)] = held
-                    filled += len(held)
-                chunks.clear()
-            if joined is None or overflowed:
-                # Either the buffer does not exist yet, in which case this block
-                # is absorbed into it when it is allocated above, or it has been
-                # closed and the tail is being collected instead.
-                chunks.append(block)
-            elif filled + len(block) <= declared:
-                joined[filled : filled + len(block)] = block
-                filled += len(block)
-            else:
-                # The header under-counted. From here the buffer is closed and
-                # every later block joins the tail, whether or not it would fit.
-                # Re-testing the fit per block let a short final block drop back
-                # into the space left over and be emitted ahead of the blocks
-                # that overflowed before it, reordering the audio while keeping
-                # its length, so nothing downstream could notice.
-                overflowed = True
-                chunks.append(block)
-    if filled:
-        if not chunks:
-            return joined[:filled], sample_rate
-        chunks.insert(0, joined[:filled])
-    if not chunks:
+            if joined is None:
+                joined = np.empty(min(max(len(block), 1), ceiling), dtype = np.float32)
+            if sample_count > len(joined):
+                # Doubling keeps the resizes amortised when the header is absent
+                # or short. Adopting the declared length instead, once it is the
+                # larger target, spends one allocation on an honest header rather
+                # than a run of them; not before the decode has produced half of
+                # it, because sizing a buffer from an unread header is how a small
+                # file asks for a large allocation.
+                target = max(sample_count, 2 * len(joined))
+                if declared > target and sample_count * 2 >= declared:
+                    target = declared
+                grown = np.empty(min(target, ceiling), dtype = np.float32)
+                grown[: sample_count - len(block)] = joined[: sample_count - len(block)]
+                joined = grown
+            # One append-only buffer, so the samples are in decode order by
+            # construction. The previous shape kept overflow blocks in a separate
+            # list and re-tested the fit per block, which let a short final block
+            # drop back into the space left over and be emitted ahead of the
+            # blocks that overflowed before it: the audio was reordered while its
+            # length stayed right, so nothing downstream could notice.
+            joined[sample_count - len(block) : sample_count] = block
+    if not sample_count:
         raise ValueError("audio container decoded to no samples")
-    return np.concatenate(chunks, axis = 0).astype(np.float32, copy = False), sample_rate
+    # A slice keeps the whole allocation alive, which is free when the length was
+    # known and wasteful when the buffer had to be guessed at.
+    if sample_count * 2 < len(joined):
+        return joined[:sample_count].copy(), sample_rate
+    return joined[:sample_count], sample_rate
 
 
 def _decoded_sample_ceiling(sample_rate: int) -> int:

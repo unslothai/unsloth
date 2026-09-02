@@ -1119,17 +1119,25 @@ def test_a_header_claiming_more_than_it_holds_buys_no_buffer(monkeypatch):
 
 
 def test_a_header_that_undercounts_still_returns_every_sample(monkeypatch):
-    """The buffer takes what it can hold and the rest joins the ordinary way."""
+    """The buffer grows past a short header rather than spilling into a list.
+
+    Collecting the overflow and joining it at the end allocated a second copy of
+    the whole recording, which is what the growing buffer exists to avoid, so a
+    short header must cost a resize and never a final join."""
     arr, _rate, joins = _decode_with(
         monkeypatch, blocks_yielded = 5, declared_frames = 3, block_len = 1_000
     )
     assert len(arr) == 5_000
-    assert joins != []
+    assert joins == []
     assert np.array_equal(arr[::1_000], np.array([0.0, 1.0, 2.0, 3.0, 4.0], dtype = np.float32))
 
 
 def test_a_header_past_the_duration_cap_is_not_preallocated(monkeypatch):
-    """The cap refuses the audio anyway; it must not buy the array first."""
+    """The cap refuses the audio anyway; it must not buy that much array first.
+
+    The buffer still grows with what has actually been decoded, so the guarantee
+    is not that nothing is allocated but that nothing the header claims is: every
+    allocation stays inside the ceiling the decode is about to refuse at."""
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 1)
     sizes = []
     real_empty = np.empty
@@ -1146,7 +1154,11 @@ def test_a_header_past_the_duration_cap_is_not_preallocated(monkeypatch):
         pass
     else:
         raise AssertionError("expected the duration cap to refuse this decode")
-    assert sizes == [], sizes
+    # 8 kHz against a one-second cap, so the ceiling is 8000 and the header's
+    # 12000 is well past it.
+    ceiling = inference_route._decoded_sample_ceiling(8_000)
+    assert sizes, "the decoder allocated nothing at all"
+    assert max(sizes) <= ceiling, sizes
 
 
 def test_a_header_that_undercounts_keeps_the_samples_in_order(monkeypatch):
