@@ -9,7 +9,12 @@ mixed handlers explicitly send their database transaction through Starlette's th
 """
 
 import asyncio
+from functools import wraps
+import os
 import sqlite3
+import time
+import uuid
+from pathlib import Path
 from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -24,6 +29,29 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
+from core.agent_workspace.background import manager as agent_background_manager
+from core.agent_workspace.common import AgentWorkspaceError, project_workspace
+from core.agent_workspace.project_context import (
+    fence_project_context_snapshots_for_deletion,
+)
+from core.agent_workspace.git_service import (
+    _workspace_writer_slot,
+    begin_project_deletion as begin_checkpoint_project_deletion,
+    finish_project_deletion as finish_checkpoint_project_deletion,
+    reconcile_project_checkpoints_for_deletion,
+)
+from core.agent_workspace.state import list_active_worktrees
+from core.agent_workspace.verification import (
+    GOAL_COMPLETION_VERIFICATION_DETAIL,
+    begin_project_deletion as begin_verification_project_deletion,
+    cancel_project_verifications_and_wait,
+    finish_project_deletion as finish_verification_project_deletion,
+    require_goal_completion_verification,
+)
+from core.agent_workspace.worktrees import (
+    begin_project_deletion as begin_worktree_project_deletion,
+    finish_project_deletion as finish_worktree_project_deletion,
+)
 from core.inference.llama_server_args import (
     BATCH_MAX,
     BATCH_MIN,
@@ -36,12 +64,18 @@ from loggers import get_logger
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
+    ChatProjectAlreadyExistsError,
+    ChatProjectRevisionConflictError,
     ChatMessageConflictError,
     ChatMessageProtectedError,
     ChatThreadDeletedError,
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
     ProjectWorkspaceError,
+    ProjectWorkspaceOverlapError,
+    acquire_managed_root_lifecycle,
+    acquire_project_lifecycle,
+    managed_root_lifecycle_scope,
     build_chat_history_export,
     clear_chat_history,
     clear_chat_history_with_replay_status,
@@ -50,6 +84,7 @@ from storage.studio_db import (
     unreaped_clear_operation_image_ids,
     count_chat_threads,
     count_forks_for_message,
+    create_or_reuse_folder_chat_project,
     delete_chat_attachment,
     delete_chat_project,
     delete_chat_threads_with_active_runs,
@@ -322,11 +357,41 @@ class ChatMessage(BaseModel):
 
 
 class ChatProject(BaseModel):
+    """Renderer-safe project view.
+
+    Filesystem locations and persistent path identity stay in the storage
+    record. They are deliberately absent here so no project response can hand
+    a canonical local path to the renderer.
+    """
+
+    model_config = ConfigDict(extra = "forbid")
+
     id: str
     name: str
     instructions: str = ""
-    rootPath: Optional[str] = None
-    sandboxPath: Optional[str] = None
+    workspaceKind: Literal["managed", "folder"] = "managed"
+    workspaceAvailable: bool = True
+    workspaceError: Optional[str] = None
+    goal: Optional[str] = Field(default = None, max_length = 12_000)
+    goalStatus: Optional[Literal["active", "paused", "completed"]] = None
+    goalUpdatedAt: Optional[int] = None
+    goalRevision: int = Field(default = 0, ge = 0)
+    archived: bool = False
+    createdAt: int
+    updatedAt: int
+
+
+class ChatProjectCreate(BaseModel):
+    """Managed-project fields accepted from the renderer."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    id: str
+    name: str
+    instructions: str = ""
+    goal: Optional[str] = Field(default = None, max_length = 12_000)
+    goalStatus: Optional[Literal["active", "paused", "completed"]] = None
+    goalUpdatedAt: Optional[int] = None
     archived: bool = False
     createdAt: int
     updatedAt: int
@@ -335,15 +400,39 @@ class ChatProject(BaseModel):
 class ChatProjectDeleted(ChatProject):
     """The deleted project, plus the member sandboxes that still hold files."""
 
-    sandboxes_kept: list[str] = []
+    sandboxes_kept: list[str] = Field(default_factory = list)
+
+
+def _public_project(project: dict) -> ChatProject:
+    return ChatProject(
+        **{field: project[field] for field in ChatProject.model_fields if field in project}
+    )
+
+
+def _public_deleted_project(project: dict, sandboxes_kept: list[str]) -> ChatProjectDeleted:
+    return ChatProjectDeleted(
+        **{field: project[field] for field in ChatProject.model_fields if field in project},
+        sandboxes_kept = sandboxes_kept,
+    )
 
 
 class ChatProjectPatch(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
     name: Optional[str] = None
     instructions: Optional[str] = None
+    goal: Optional[str] = Field(default = None, max_length = 12_000)
+    goalStatus: Optional[Literal["active", "paused", "completed"]] = None
+    goalUpdatedAt: Optional[int] = None
     archived: Optional[bool] = None
     createdAt: Optional[int] = None
     updatedAt: Optional[int] = None
+
+
+class OpenProjectFolderRequest(BaseModel):
+    nativePathLease: str = Field(min_length = 1)
+    name: str = Field(min_length = 1, max_length = 120)
+    model_config = {"extra": "forbid"}
 
 
 class ChatThreadListResponse(BaseModel):
@@ -796,10 +885,13 @@ def _cancel_active_generations(thread_ids: list[str]) -> None:
     if not thread_ids:
         return
     try:
+        from models.inference import is_reserved_agent_task_session_id
         from state import active_generations
     except Exception:  # noqa: BLE001 - never block a delete on this
         return
     for thread_id in thread_ids:
+        if is_reserved_agent_task_session_id(thread_id):
+            continue
         try:
             active_generations.cancel_thread(thread_id)
         except Exception:  # noqa: BLE001
@@ -1082,22 +1174,116 @@ def delete_attachment(
     return {"ok": True}
 
 
+def _project_view(project: dict) -> dict:
+    if project.get("workspaceKind") == "folder" and not project.get("workspaceAvailable", True):
+        return project
+    try:
+        return ensure_chat_project_workspace(project["id"]) or project
+    except ProjectWorkspaceError:
+        return {
+            **project,
+            "workspaceAvailable": False,
+            "workspaceError": (
+                "The selected project folder is unavailable. "
+                "Reconnect the drive or reopen the folder."
+            ),
+        }
+
+
 @router.get("/projects", response_model = ChatProjectListResponse)
 def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
     return ChatProjectListResponse(
         projects = [
-            ChatProject(**(ensure_chat_project_workspace(project["id"]) or project))
+            _public_project(_project_view(project))
             for project in list_chat_projects(include_archived = include_archived)
         ]
     )
 
 
-@router.post("/projects", response_model = ChatProject)
-def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+def _resolve_project_folder_path(
+    native_path_lease: str, *, verifier = None
+) -> tuple[str, str, str | None, str | None]:
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
+    verify = verifier or verify_native_path_lease
     try:
-        return ChatProject(**upsert_chat_project(payload.model_dump()))
+        grant = verify(
+            native_path_lease,
+            operation = "open-project",
+            expected_kind = "document-folder",
+            expected_path_type = "directory",
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    device_id = getattr(grant, "device_id", None)
+    file_id = getattr(grant, "file_id", None)
+    return (
+        str(grant.canonical_path),
+        str(grant.display_label or ""),
+        str(device_id) if device_id is not None else None,
+        str(file_id) if file_id is not None else None,
+    )
+
+
+def _canonical_project_path(value: str | None) -> Path | None:
+    if not value:
+        return None
+    try:
+        return Path(os.path.realpath(value))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _paths_overlap(first: str | None, second: str | None) -> bool:
+    left = _canonical_project_path(first)
+    right = _canonical_project_path(second)
+    if left is None or right is None:
+        return False
+    try:
+        if os.path.samefile(left, right):
+            return True
+    except OSError:
+        if os.path.normcase(str(left)) == os.path.normcase(str(right)):
+            return True
+    try:
+        return any(os.path.samefile(left, parent) for parent in right.parents) or any(
+            os.path.samefile(right, parent) for parent in left.parents
+        )
+    except (OSError, RuntimeError, ValueError):
+        return left in right.parents or right in left.parents
+
+
+def _same_project_path(first: str | None, second: str | None) -> bool:
+    left = _canonical_project_path(first)
+    right = _canonical_project_path(second)
+    if left is None or right is None:
+        return False
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
+@router.post("/projects", response_model = ChatProject)
+def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)):
+    try:
+        values = payload.model_dump()
+        project = {
+            field: values[field] for field in ChatProjectCreate.model_fields if field in values
+        }
+        project["workspaceKind"] = "managed"
+        project["workspaceAvailable"] = True
+        project["workspaceError"] = None
+        return _public_project(upsert_chat_project(project, create_only = True))
+    except ChatProjectAlreadyExistsError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ProjectWorkspaceOverlapError as exc:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The managed project workspace is already owned by another project.",
+        ) from exc
     except ProjectWorkspaceError as exc:
         # A project is the only thing Unsloth writes to Documents, so a folder it
         # cannot create there fails here and nowhere else. Only this error, and
@@ -1114,15 +1300,74 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
         ) from exc
 
 
+@router.post("/projects/open-folder", response_model = ChatProject)
+def open_project_folder(
+    payload: OpenProjectFolderRequest, current_subject: str = Depends(get_current_subject)
+):
+    root_path, display_label, device_id, file_id = _resolve_project_folder_path(
+        payload.nativePathLease
+    )
+    now = int(time.time() * 1000)
+    name = payload.name.strip() or display_label.strip() or Path(root_path).name or "Project"
+    project = {
+        "id": str(uuid.uuid4()),
+        "name": name[:120],
+        "instructions": "",
+        "rootPath": root_path,
+        "workspaceKind": "folder",
+        "workspaceAvailable": True,
+        "workspaceError": None,
+        "workspaceDeviceId": device_id,
+        "workspaceFileId": file_id,
+        "goal": None,
+        "goalStatus": None,
+        "goalUpdatedAt": None,
+        "archived": False,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    try:
+        return _public_project(create_or_reuse_folder_chat_project(project))
+    except ProjectWorkspaceOverlapError as exc:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "The selected folder overlaps another project's workspace. "
+                "Choose a separate repository or folder."
+            ),
+        ) from exc
+    except ProjectWorkspaceError as exc:
+        raise log_and_http_error(
+            exc,
+            409,
+            (
+                "Could not open the selected project folder. "
+                "Check that it still exists and is accessible."
+            ),
+            event = "chat_history.open_project_folder_failed",
+            log = logger,
+        ) from exc
+
+
 @router.get("/projects/{project_id}", response_model = ChatProject)
 def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
-    project = ensure_chat_project_workspace(project_id)
+    project = get_chat_project(project_id)
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    try:
+        project = ensure_chat_project_workspace(project_id) or project
+    except ProjectWorkspaceError as exc:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "The selected project folder is unavailable. "
+                "Reconnect the drive or create a project from the folder again."
+            ),
+        ) from exc
+    return _public_project(project)
 
 
 @router.patch("/projects/{project_id}", response_model = ChatProject)
@@ -1132,18 +1377,66 @@ def patch_project(
     current_subject: str = Depends(get_current_subject),
 ):
     patch = payload.model_dump(exclude_unset = True)
+    existing = get_chat_project(project_id)
+    if existing is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Project {project_id} not found",
+        )
     for field in ("name", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
-    project = update_chat_project(project_id, patch)
+    if "goal" in patch:
+        patch["goal"] = patch["goal"].strip() if patch["goal"] else None
+        if not patch["goal"]:
+            patch["goalStatus"] = None
+        elif "goalStatus" not in patch or patch["goalStatus"] is None:
+            patch["goalStatus"] = "active"
+    target_goal = patch.get("goal", existing.get("goal"))
+    target_goal_status = patch.get("goalStatus", existing.get("goalStatus"))
+    completing_goal = (
+        target_goal
+        and target_goal_status == "completed"
+        and existing.get("goalStatus") != "completed"
+    )
+    goal_mutation = bool({"goal", "goalStatus", "goalUpdatedAt"} & patch.keys())
+    expected_goal_revision = int(existing.get("goalRevision") or 0)
+    try:
+        if completing_goal:
+            workspace = project_workspace(project_id)
+            with _workspace_writer_slot(workspace.root):
+                verification_revision = require_goal_completion_verification(project_id)
+                project = update_chat_project(
+                    project_id,
+                    patch,
+                    expected_goal_revision = expected_goal_revision,
+                    expected_verification_revision = verification_revision,
+                )
+        else:
+            project = update_chat_project(
+                project_id,
+                patch,
+                expected_goal_revision = (expected_goal_revision if goal_mutation else None),
+            )
+    except ChatProjectRevisionConflictError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except AgentWorkspaceError as exc:
+        if not completing_goal:
+            raise
+        detail = (
+            GOAL_COMPLETION_VERIFICATION_DETAIL
+            if str(exc) == GOAL_COMPLETION_VERIFICATION_DETAIL
+            else str(exc)
+        )
+        raise HTTPException(status_code = 409, detail = detail) from exc
     if project is not None:
-        project = ensure_chat_project_workspace(project_id)
+        project = _project_view(project)
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    return _public_project(project)
 
 
 def _delete_project_rag_sources(project_id: str) -> None:
@@ -1163,7 +1456,88 @@ def _delete_project_rag_sources(project_id: str) -> None:
         folder_sync.delete_retired_scope(scope)
 
 
+def _fence_project_tool_session(handler):
+    """Hold the shared project tool-session fence for the entire delete route."""
+
+    @wraps(handler)
+    async def fenced(project_id: str, *args, **kwargs):
+        from core.inference.tools import (
+            ProjectSessionDeleting,
+            begin_project_session_deletion,
+            finish_project_session_deletion,
+        )
+        try:
+            begin_project_session_deletion(project_id)
+        except ProjectSessionDeleting as exc:
+            raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        try:
+            return await handler(project_id, *args, **kwargs)
+        finally:
+            # This is a lock-only operation. Keep it synchronous so task
+            # cancellation cannot interrupt an awaited cleanup and leak the
+            # project fence.
+            finish_project_session_deletion(project_id)
+
+    return fenced
+
+
+def _delete_project_row_with_snapshot_fence(project_id: str) -> dict | None:
+    with fence_project_context_snapshots_for_deletion(project_id):
+        return delete_chat_project(project_id, delete_files = False)
+
+
+def _release_cancelled_lifecycle_acquire(task: asyncio.Task) -> None:
+    try:
+        lease = task.result()
+    except BaseException:
+        return
+    lease.release()
+
+
+async def _acquire_lifecycle(acquirer, value: str):
+    acquisition = asyncio.create_task(asyncio.to_thread(acquirer, value))
+    try:
+        return await asyncio.shield(acquisition)
+    except asyncio.CancelledError:
+        # The worker cannot cancel threading.Lock.acquire(). Release the lease
+        # when it eventually acquires so cancellation cannot leak a fence.
+        acquisition.add_done_callback(_release_cancelled_lifecycle_acquire)
+        raise
+
+
+def _serialize_project_lifecycle(handler):
+    """Serialize one project id without blocking unrelated project routes."""
+
+    @wraps(handler)
+    async def serialized(project_id: str, *args, **kwargs):
+        project_lease = await _acquire_lifecycle(acquire_project_lifecycle, project_id)
+        managed_root_lease = None
+        try:
+            project = await asyncio.to_thread(get_chat_project, project_id)
+            if (
+                project is not None
+                and project.get("workspaceKind", "managed") == "managed"
+                and project.get("rootPath")
+            ):
+                managed_root_lease = await _acquire_lifecycle(
+                    acquire_managed_root_lifecycle,
+                    str(project["rootPath"]),
+                )
+            if managed_root_lease is None:
+                return await handler(project_id, *args, **kwargs)
+            with managed_root_lifecycle_scope(str(project["rootPath"])):
+                return await handler(project_id, *args, **kwargs)
+        finally:
+            if managed_root_lease is not None:
+                managed_root_lease.release()
+            project_lease.release()
+
+    return serialized
+
+
 @router.delete("/projects/{project_id}", response_model = ChatProjectDeleted)
+@_serialize_project_lifecycle
+@_fence_project_tool_session
 async def delete_project(
     project_id: str,
     request: Request,
@@ -1177,25 +1551,99 @@ async def delete_project(
     # leaves what it writes next in a directory no project owns.
     cutoff = _archive_cutoff()
     try:
-        project = await run_in_threadpool(
-            lambda: delete_chat_project(project_id, delete_files = False)
-        )
-    except Exception:
-        # the row transaction may still have committed, and an ownerless scope has to be
-        # retired by someone; periodic reconciliation is the fallback if this also fails
-        try:
-            if await run_in_threadpool(get_chat_project, project_id) is None:
-                await run_in_threadpool(_delete_project_rag_sources, project_id)
-        except Exception:  # noqa: BLE001 - preserve the original deletion error
-            logger.warning(
-                "failed to delete RAG sources for committed project %s", project_id, exc_info = True
+        await run_in_threadpool(agent_background_manager.begin_project_deletion, project_id)
+    except AgentWorkspaceError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    try:
+        await run_in_threadpool(begin_verification_project_deletion, project_id)
+    except AgentWorkspaceError as exc:
+        await run_in_threadpool(agent_background_manager.finish_project_deletion, project_id)
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    try:
+        await run_in_threadpool(begin_checkpoint_project_deletion, project_id)
+    except AgentWorkspaceError as exc:
+        await run_in_threadpool(finish_verification_project_deletion, project_id)
+        await run_in_threadpool(agent_background_manager.finish_project_deletion, project_id)
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    try:
+        await run_in_threadpool(begin_worktree_project_deletion, project_id)
+    except AgentWorkspaceError as exc:
+        await run_in_threadpool(finish_checkpoint_project_deletion, project_id)
+        await run_in_threadpool(finish_verification_project_deletion, project_id)
+        await run_in_threadpool(agent_background_manager.finish_project_deletion, project_id)
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    try:
+        active_worktrees = await run_in_threadpool(list_active_worktrees, project_id)
+        if active_worktrees:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Clean up or recover this project's active and unresolved Studio "
+                    "worktrees before deleting it. "
+                    "Dirty worktrees are preserved."
+                ),
             )
-        raise
+        stop_results = await asyncio.gather(
+            run_in_threadpool(
+                agent_background_manager.cancel_project_tasks_and_wait,
+                project_id,
+            ),
+            run_in_threadpool(cancel_project_verifications_and_wait, project_id),
+            return_exceptions = True,
+        )
+        for result in stop_results:
+            if isinstance(result, AgentWorkspaceError):
+                raise HTTPException(status_code = 409, detail = str(result)) from result
+            if isinstance(result, BaseException):
+                raise result
+        # Check again after cancellation. A background task may have finished
+        # creating an owned worktree immediately before its cancellation landed.
+        active_worktrees = await run_in_threadpool(list_active_worktrees, project_id)
+        if active_worktrees:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Clean up or recover this project's active and unresolved Studio "
+                    "worktrees before deleting it. "
+                    "Dirty worktrees are preserved."
+                ),
+            )
+        try:
+            await run_in_threadpool(
+                reconcile_project_checkpoints_for_deletion,
+                project_id,
+            )
+        except AgentWorkspaceError as exc:
+            raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        try:
+            project = await run_in_threadpool(
+                _delete_project_row_with_snapshot_fence,
+                project_id,
+            )
+        except Exception:
+            # the row transaction may still have committed, and an ownerless scope has to be
+            # retired by someone; periodic reconciliation is the fallback if this also fails
+            try:
+                if await run_in_threadpool(get_chat_project, project_id) is None:
+                    await run_in_threadpool(_delete_project_rag_sources, project_id)
+            except Exception:  # noqa: BLE001 - preserve the original deletion error
+                logger.warning(
+                    "failed to delete RAG sources for committed project %s",
+                    project_id,
+                    exc_info = True,
+                )
+            raise
+    finally:
+        await run_in_threadpool(finish_worktree_project_deletion, project_id)
+        await run_in_threadpool(finish_checkpoint_project_deletion, project_id)
+        await run_in_threadpool(finish_verification_project_deletion, project_id)
+        await run_in_threadpool(agent_background_manager.finish_project_deletion, project_id)
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    delete_workspace_files = delete_files and project.get("workspaceKind", "managed") == "managed"
     # The transaction is authoritative about membership and captured the worker ids before its
     # cascades. Signal them before any potentially slow RAG or workspace cleanup.
     member_ids = list(project.get("memberIds") or [])
@@ -1213,7 +1661,15 @@ async def delete_project(
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     # The project's chats go with it, so their archives have to as well.
     await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
+    owns_managed_workspace = False
     if project.get("sandboxPath"):
+        # A folder-backed workspace is user-owned. Once its project row is
+        # gone, do not register that repository as an orphaned Studio sandbox:
+        # orphan collection and file-card recovery are ownership mechanisms
+        # for managed workspaces and must never gain authority over a user
+        # repository.
+        owns_managed_workspace = project.get("workspaceKind", "managed") == "managed"
+    if owns_managed_workspace:
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
             forget_orphaned_project,
@@ -1234,7 +1690,7 @@ async def delete_project(
         shared = project_session_id(project_id)
         idle = (
             await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
-            if delete_files
+            if delete_workspace_files
             else True
         )
         # A chat forked out of the project still shows cards for the shared
@@ -1244,7 +1700,7 @@ async def delete_project(
         # id in the window. It resolves to the same default path, and a tool
         # call of its own may be writing in there right now.
         recreated = await run_in_threadpool(get_chat_project, project_id) is not None
-        if not delete_files:
+        if not delete_workspace_files:
             # The files stay, so the only job here is making them reachable: the
             # row that held a custom path is gone, and a fork's cards still name
             # this session.
@@ -1254,6 +1710,8 @@ async def delete_project(
                 project["sandboxPath"],
                 False,
                 project.get("rootPath"),
+                project.get("managedRootDeviceId"),
+                project.get("managedRootFileId"),
             )
         elif recreated:
             logger.warning(
@@ -1273,7 +1731,7 @@ async def delete_project(
                 "Kept project workspace %s: a surviving chat still shows its files",
                 project_id,
             )
-        if delete_files and idle and not referenced and not recreated:
+        if delete_workspace_files and idle and not referenced and not recreated:
             # Written down first: the delete can decline an unexpected path or
             # stop at a locked file, and the row that knew where this workspace
             # lives has already gone. The record is the only way back to it.
@@ -1283,6 +1741,8 @@ async def delete_project(
                 project["sandboxPath"],
                 True,
                 project.get("rootPath"),
+                project.get("managedRootDeviceId"),
+                project.get("managedRootFileId"),
             )
             # Once more, next to the delete itself: the record write above is
             # an await, and a project created in that window resolves to this
@@ -1310,7 +1770,7 @@ async def delete_project(
                     project["sandboxPath"],
                     project.get("rootPath"),
                 )
-        elif delete_files and not recreated:
+        elif delete_workspace_files and not recreated:
             # Written down so it can be resolved and later collected: the row
             # that knew where it lives is gone. The root too, since the deferred
             # delete removes what the immediate one would; not for a live id.
@@ -1320,6 +1780,8 @@ async def delete_project(
                 project["sandboxPath"],
                 True,
                 project.get("rootPath"),
+                project.get("managedRootDeviceId"),
+                project.get("managedRootFileId"),
             )
             if not idle:
                 # Nothing else would come back to it: the collection otherwise
@@ -1330,7 +1792,7 @@ async def delete_project(
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)
     # Those folders are reachable from nothing now, so the caller is told which
     # ones survived and can offer the delete once.
-    return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
+    return _public_deleted_project(project, sandboxes_kept)
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -1767,7 +2229,7 @@ def export_history(current_subject: str = Depends(get_current_subject)):
         exportedAt = datetime.now(timezone.utc).isoformat(),
         version = 1,
         threadCount = len(threads),
-        projects = [ChatProject(**project) for project in projects],
+        projects = [_public_project(project) for project in projects],
         threads = [thread_from_row(thread) for thread in threads],
         messages = [ChatMessage(**message) for message in messages],
     )

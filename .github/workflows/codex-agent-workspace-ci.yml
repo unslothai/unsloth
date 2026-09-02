@@ -1,0 +1,407 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Cross-platform source and contract checks for the Codex-style project workspace.
+# Provider and model tests use executable fakes at the production dispatch seams.
+# This workflow does not download a model, contact a provider, package the desktop
+# app, or certify physical hardware. Those release gates run as separate smokes.
+# Full command behavior runs on POSIX. Windows executes handle-verified
+# repository and AGENTS.md traversal plus native grant, path identity, long-path,
+# process-tree cleanup, and explicit fail-closed command-boundary contracts.
+
+name: Codex Agent Workspace CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/agent_workspace/**'
+      - 'studio/backend/core/research_runs.py'
+      - 'studio/backend/core/inference/runtime_registry.py'
+      - 'studio/backend/core/inference/tools.py'
+      - 'studio/backend/core/inference/mcp_client.py'
+      - 'studio/backend/main.py'
+      - 'studio/backend/models/inference.py'
+      - 'studio/backend/routes/__init__.py'
+      - 'studio/backend/routes/agent_workspace.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/routes/inference.py'
+      - 'studio/backend/routes/mcp_servers.py'
+      - 'studio/backend/routes/research_runs.py'
+      - 'studio/backend/requirements/studio.txt'
+      - 'studio/backend/storage/credential_secrets.py'
+      - 'studio/backend/storage/research_runs_db.py'
+      - 'studio/backend/storage/studio_db.py'
+      - 'studio/backend/utils/native_path_leases.py'
+      - 'studio/backend/loggers/handlers.py'
+      - 'studio/backend/scripts/**'
+      - 'studio/backend/tests/test_agent_workspace_*.py'
+      - 'studio/backend/tests/conftest.py'
+      - 'studio/backend/tests/test_chat_history_routes.py'
+      - 'studio/backend/tests/test_chat_history_storage.py'
+      - 'studio/backend/tests/test_credential_secrets.py'
+      - 'studio/backend/tests/test_deep_research_handoff_simulation.py'
+      - 'studio/backend/tests/test_edit_file_tool.py'
+      - 'studio/backend/tests/test_log_filter_no_truncation.py'
+      - 'studio/backend/tests/test_mcp_stdio_api_key_gate.py'
+      - 'studio/backend/tests/test_native_path_lease_replay.py'
+      - 'studio/backend/tests/fixtures/native_path_lease_v2_rust.json'
+      - 'studio/backend/tests/test_project_context_transport.py'
+      - 'studio/backend/tests/test_project_folder_workspace.py'
+      - 'studio/backend/tests/test_project_workspace_location.py'
+      - 'studio/backend/tests/test_research_progress_events.py'
+      - 'studio/backend/tests/test_research_project_context.py'
+      - 'studio/backend/tests/test_research_runs_storage.py'
+      - 'tests/studio/test_codex_agent_workspace_ci_matrix.py'
+      - 'studio/frontend/src/components/assistant-ui/sandbox-files.ts'
+      - 'studio/frontend/src/components/assistant-ui/thread.tsx'
+      - 'studio/frontend/src/components/app-sidebar.tsx'
+      - 'studio/frontend/src/features/chat/**'
+      - 'studio/frontend/src/features/native-intents/**'
+      - 'studio/frontend/src/features/rag/**'
+      - 'studio/frontend/tests/agent-workspace-review.test.ts'
+      - 'studio/frontend/tests/agent-workspace-ui.test.ts'
+      - 'studio/frontend/tests/new-project-dialog-controller.test.ts'
+      - 'studio/frontend/tests/project-compare-context.test.ts'
+      - 'studio/frontend/tests/project-folder-workspace.test.ts'
+      - 'studio/frontend/tests/project-slash-commands.test.ts'
+      - 'studio/frontend/tests/project-workspace-ux.test.ts'
+      - 'studio/frontend/tests/project-research-request-types.test.ts'
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/frontend/tsconfig*.json'
+      - 'studio/frontend/eslint.config.js'
+      - 'studio/frontend/biome.json'
+      - 'studio/src-tauri/**'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/workflows/codex-agent-workspace-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'studio/backend/core/agent_workspace/**'
+      - 'studio/backend/core/research_runs.py'
+      - 'studio/backend/core/inference/runtime_registry.py'
+      - 'studio/backend/core/inference/tools.py'
+      - 'studio/backend/core/inference/mcp_client.py'
+      - 'studio/backend/main.py'
+      - 'studio/backend/models/inference.py'
+      - 'studio/backend/routes/__init__.py'
+      - 'studio/backend/routes/agent_workspace.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/routes/inference.py'
+      - 'studio/backend/routes/mcp_servers.py'
+      - 'studio/backend/routes/research_runs.py'
+      - 'studio/backend/requirements/studio.txt'
+      - 'studio/backend/storage/credential_secrets.py'
+      - 'studio/backend/storage/research_runs_db.py'
+      - 'studio/backend/storage/studio_db.py'
+      - 'studio/backend/utils/native_path_leases.py'
+      - 'studio/backend/loggers/handlers.py'
+      - 'studio/backend/scripts/**'
+      - 'studio/backend/tests/test_agent_workspace_*.py'
+      - 'studio/backend/tests/conftest.py'
+      - 'studio/backend/tests/test_chat_history_routes.py'
+      - 'studio/backend/tests/test_chat_history_storage.py'
+      - 'studio/backend/tests/test_credential_secrets.py'
+      - 'studio/backend/tests/test_deep_research_handoff_simulation.py'
+      - 'studio/backend/tests/test_edit_file_tool.py'
+      - 'studio/backend/tests/test_log_filter_no_truncation.py'
+      - 'studio/backend/tests/test_mcp_stdio_api_key_gate.py'
+      - 'studio/backend/tests/test_native_path_lease_replay.py'
+      - 'studio/backend/tests/fixtures/native_path_lease_v2_rust.json'
+      - 'studio/backend/tests/test_project_context_transport.py'
+      - 'studio/backend/tests/test_project_folder_workspace.py'
+      - 'studio/backend/tests/test_project_workspace_location.py'
+      - 'studio/backend/tests/test_research_progress_events.py'
+      - 'studio/backend/tests/test_research_project_context.py'
+      - 'studio/backend/tests/test_research_runs_storage.py'
+      - 'tests/studio/test_codex_agent_workspace_ci_matrix.py'
+      - 'studio/frontend/src/components/assistant-ui/sandbox-files.ts'
+      - 'studio/frontend/src/components/assistant-ui/thread.tsx'
+      - 'studio/frontend/src/components/app-sidebar.tsx'
+      - 'studio/frontend/src/features/chat/**'
+      - 'studio/frontend/src/features/native-intents/**'
+      - 'studio/frontend/src/features/rag/**'
+      - 'studio/frontend/tests/agent-workspace-review.test.ts'
+      - 'studio/frontend/tests/agent-workspace-ui.test.ts'
+      - 'studio/frontend/tests/new-project-dialog-controller.test.ts'
+      - 'studio/frontend/tests/project-compare-context.test.ts'
+      - 'studio/frontend/tests/project-folder-workspace.test.ts'
+      - 'studio/frontend/tests/project-slash-commands.test.ts'
+      - 'studio/frontend/tests/project-workspace-ux.test.ts'
+      - 'studio/frontend/tests/project-research-request-types.test.ts'
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/frontend/tsconfig*.json'
+      - 'studio/frontend/eslint.config.js'
+      - 'studio/frontend/biome.json'
+      - 'studio/src-tauri/**'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/workflows/codex-agent-workspace-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  workspace-contracts:
+    name: Workspace contracts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    env:
+      PYTHONPATH: ${{ github.workspace }}/studio/backend
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - name: Install backend contract dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r studio/backend/requirements/studio.txt
+          python -m pip install python-multipart aiofiles sqlalchemy psutil pyyaml requests mammoth unpdf pytest pytest-asyncio httpx
+
+      - name: Install CPU torch on Linux and Windows
+        if: runner.os != 'macOS'
+        shell: bash
+        run: python -m pip install 'torch>=2.4,<2.11' --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+
+      - name: Install CPU torch on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python -m pip install 'torch>=2.4,<2.11'
+
+      - name: Install inference route dependencies
+        shell: bash
+        run: python -m pip install 'transformers>=4.51,<5.5' 'peft>=0.18,<0.19'
+
+      - name: Guard the complete agent workspace matrix
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python -m pytest -q tests/studio/test_codex_agent_workspace_ci_matrix.py
+
+      - name: Install Linux project sandbox
+        if: runner.os == 'Linux'
+        timeout-minutes: 11
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '240'
+        shell: bash
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y bubblewrap || { apt-get update && apt-get install -y bubblewrap; }'
+
+      - name: Run POSIX backend behavioral contracts
+        if: runner.os != 'Windows'
+        shell: bash
+        run: >-
+          python -m pytest -q
+          studio/backend/tests/test_agent_workspace_background_inference.py
+          studio/backend/tests/test_agent_workspace_context.py
+          studio/backend/tests/test_agent_workspace_durable_agents.py
+          studio/backend/tests/test_agent_workspace_discovery_routes.py
+          studio/backend/tests/test_agent_workspace_execution.py
+          studio/backend/tests/test_agent_workspace_github_handoff.py
+          studio/backend/tests/test_agent_workspace_git.py
+          studio/backend/tests/test_agent_workspace_routes.py
+          studio/backend/tests/test_agent_workspace_state_and_verification.py
+          studio/backend/tests/test_agent_workspace_worktree_recovery.py
+          studio/backend/tests/test_agent_workspace_worktree_task_safety.py
+          studio/backend/tests/test_chat_history_routes.py
+          studio/backend/tests/test_edit_file_tool.py
+          studio/backend/tests/test_project_context_transport.py
+          studio/backend/tests/test_project_folder_workspace.py
+
+      - name: Run cross-platform native grant contracts
+        shell: bash
+        run: >-
+          python -m pytest -q
+          studio/backend/tests/test_native_path_lease_replay.py
+          studio/backend/tests/test_log_filter_no_truncation.py
+
+      - name: Run project persistence contracts
+        shell: bash
+        run: >-
+          python -m pytest -q
+          studio/backend/tests/test_chat_history_storage.py
+          studio/backend/tests/test_project_workspace_location.py
+          studio/backend/tests/test_research_project_context.py
+
+      - name: Run durable research workspace contracts
+        shell: bash
+        run: >-
+          python -m pytest -q
+          studio/backend/tests/test_deep_research_handoff_simulation.py
+          studio/backend/tests/test_research_progress_events.py
+          studio/backend/tests/test_research_runs_storage.py
+
+      - name: Run credential and connector boundary contracts
+        shell: bash
+        run: >-
+          python -m pytest -q
+          studio/backend/tests/test_agent_workspace_auth_boundaries.py
+          studio/backend/tests/test_credential_secrets.py
+          studio/backend/tests/test_mcp_stdio_api_key_gate.py
+
+      - name: Run large repository bound fixture
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python studio/backend/scripts/qa_agent_workspace_large_repository.py
+
+      - name: Run Windows secure workspace contracts
+        if: runner.os == 'Windows'
+        shell: bash
+        run: >-
+          python -m pytest -q
+          studio/backend/tests/test_agent_workspace_windows.py
+          studio/backend/tests/test_agent_workspace_routes.py::test_unsupported_execution_host_disables_and_rejects_command_routes
+          studio/backend/tests/test_agent_workspace_routes.py::test_workspace_capabilities_gate_secure_traversal_support
+          studio/backend/tests/test_project_folder_workspace.py::test_project_folder_lease_requires_exact_operation_kind_and_type
+          studio/backend/tests/test_project_folder_workspace.py::test_managed_project_api_rejects_renderer_filesystem_paths
+          studio/backend/tests/test_project_folder_workspace.py::test_valid_project_folder_lease_is_signed_identity_bound_and_single_use
+          studio/backend/tests/test_project_folder_workspace.py::test_overlapping_folder_roots_are_rejected
+
+      - name: Install frontend dependencies
+        working-directory: studio/frontend
+        shell: bash
+        run: npm ci --no-fund --no-audit
+
+      - name: Run full frontend contract suite
+        working-directory: studio/frontend
+        shell: bash
+        run: npm test
+
+      - name: Typecheck frontend workspace integration
+        working-directory: studio/frontend
+        shell: bash
+        run: npm run typecheck
+
+      - name: Lint frontend workspace integration
+        working-directory: studio/frontend
+        shell: bash
+        run: >-
+          npx --no-install eslint
+          src/features/chat/api/agent-workspace-api.ts
+          src/features/chat/api/agent-workspace-requests.ts
+          src/features/chat/components/agent-workspace-panel.tsx
+          src/features/chat/components/agent-workspace-state.ts
+          src/features/chat/components/new-project-dialog-controller.ts
+          src/features/chat/components/new-project-dialog.tsx
+          src/features/chat/components/new-project-workspace.ts
+          src/features/chat/components/project-goal-bar.tsx
+          src/features/chat/components/project-goal-state.ts
+          src/features/chat/components/project-landing-state.ts
+          src/features/chat/utils/slash-commands.ts
+          tests/agent-workspace-review.test.ts
+          tests/agent-workspace-ui.test.ts
+          tests/new-project-dialog-controller.test.ts
+          tests/project-compare-context.test.ts
+          tests/project-folder-workspace.test.ts
+          tests/project-slash-commands.test.ts
+          tests/project-workspace-ux.test.ts
+          tests/project-research-request-types.test.ts
+
+      - name: Biome frontend workspace integration
+        working-directory: studio/frontend
+        shell: bash
+        run: >-
+          npm run biome:check --
+          src/features/chat/api/agent-workspace-api.ts
+          src/features/chat/api/agent-workspace-requests.ts
+          src/features/chat/components/agent-workspace-panel.tsx
+          src/features/chat/components/agent-workspace-state.ts
+          src/features/chat/components/new-project-dialog-controller.ts
+          src/features/chat/components/new-project-dialog.tsx
+          src/features/chat/components/new-project-workspace.ts
+          src/features/chat/components/project-goal-bar.tsx
+          src/features/chat/components/project-goal-state.ts
+          src/features/chat/components/project-landing-state.ts
+          src/features/chat/utils/slash-commands.ts
+          tests/agent-workspace-review.test.ts
+          tests/agent-workspace-ui.test.ts
+          tests/new-project-dialog-controller.test.ts
+          tests/project-compare-context.test.ts
+          tests/project-folder-workspace.test.ts
+          tests/project-slash-commands.test.ts
+          tests/project-workspace-ux.test.ts
+          tests/project-research-request-types.test.ts
+
+  native-contracts:
+    name: Native grants (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - name: Build frontend required by Tauri
+        working-directory: studio/frontend
+        shell: bash
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev || { apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev; }'
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+        with:
+          toolchain: '1.89.0'
+          components: rustfmt
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: studio/src-tauri -> target
+
+      - name: Check agent workspace Rust formatting
+        working-directory: studio/src-tauri
+        run: >-
+          rustfmt --edition 2021 --config skip_children=true --check
+          src/diagnostics/redaction.rs
+          src/main.rs
+          src/native_backend_lease.rs
+          src/native_intents.rs
+          src/native_path_policy.rs
+
+      - name: Run full Tauri contract suite
+        working-directory: studio/src-tauri
+        run: cargo test -- --test-threads=1

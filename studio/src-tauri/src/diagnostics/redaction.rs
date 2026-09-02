@@ -148,7 +148,7 @@ fn native_path_lease_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"#,
+            r#"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)(?:[A-Za-z0-9_-]+\.){1,2}[A-Za-z0-9_-]+"#,
         )
         .unwrap()
     })
@@ -193,7 +193,7 @@ mod tests {
             "Cookie: session=abcdef\n",
             "HF_TOKEN=hf_abcdefghijklmnopqrstuvwxyz\n",
             "API_KEY=secret123\n",
-            "native_path_lease=abc.DEF_123\n",
+            "native_path_lease=2.abc.DEF_123\n",
             "url=https://user:pass@example.com/path\n",
             "signed=https://example.com/object?X-Amz-Signature=presignedvalue987&version=1#fragmentsecret\n",
             "email=alex@example.com\n",
@@ -208,7 +208,7 @@ mod tests {
         assert!(!redacted.contains("session=abcdef"));
         assert!(!redacted.contains("hf_abcdefghijklmnopqrstuvwxyz"));
         assert!(!redacted.contains("secret123"));
-        assert!(!redacted.contains("abc.DEF_123"));
+        assert!(!redacted.contains("2.abc.DEF_123"));
         assert!(redacted.contains("native_path_lease=<redacted native path lease>"));
         assert!(redacted.contains("https://<redacted>@example.com/path"));
         assert!(!redacted.contains("presignedvalue987"));

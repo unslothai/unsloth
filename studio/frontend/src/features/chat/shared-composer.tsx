@@ -62,6 +62,10 @@ import {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+import {
+  interceptCompareProjectSlashCommand,
+  parseProjectSlashCommand,
+} from "./utils/slash-commands";
 import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
@@ -131,6 +135,12 @@ import {
   loadModel,
   validateModel,
 } from "./api/chat-api";
+import { executeLocalProjectSlashCommand } from "./api/chat-adapter";
+import { createAgentProjectContextSnapshot } from "./api/agent-workspace-api";
+import {
+  bindCompareContextSnapshot,
+  releaseCompareContextSnapshot,
+} from "./utils/compare-context-snapshot";
 import {
   loadedContextForParams,
   resolveExplicitCtxPin,
@@ -202,6 +212,8 @@ export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
   /** Append a user message without triggering generation. */
   appendMessage: (content: CompareMessagePart[]) => void;
+  /** Append a deterministic local assistant response without inference. */
+  appendAssistantMessage: (text: string) => void;
   /** Trigger generation on the current thread (after appendMessage). */
   startRun: () => void;
   cancel: () => void;
@@ -413,6 +425,15 @@ export function RegisterCompareHandle({
             createdAt: new Date(),
             startRun: false,
           } as never),
+      appendAssistantMessage: (text) =>
+        aui
+          .thread()
+          .append({
+            role: "assistant",
+            content: [{ type: "text", text }],
+            createdAt: new Date(),
+            startRun: false,
+          } as never),
       startRun: () => {
         const msgs = aui.thread().getState().messages;
         const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
@@ -539,6 +560,8 @@ export function SharedComposer({
   model1,
   model2,
   onExitCompare,
+  pairId,
+  projectId,
   model1ThreadId,
   model2ThreadId,
   sendUnavailableReason,
@@ -548,6 +571,8 @@ export function SharedComposer({
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
+  pairId: string;
+  projectId?: string | null;
   model1ThreadId?: string;
   model2ThreadId?: string;
   sendUnavailableReason?: string;
@@ -605,6 +630,7 @@ export function SharedComposer({
   const prevComparingRef = useRef(false);
   const compareStepSucceededRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
+  const localCommandRunningRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1072,6 +1098,10 @@ export function SharedComposer({
       resetPromptQueue();
       return;
     }
+    if (localCommandRunningRef.current) {
+      resetPromptQueue();
+      return;
+    }
     const submittedText = text;
     const submittedImages = pendingImages;
     const submittedAudio = pendingAudio;
@@ -1096,6 +1126,90 @@ export function SharedComposer({
     const submittedCompareCheckpoint = requireStableCheckpoint
       ? useChatRuntimeStore.getState().params.checkpoint
       : undefined;
+
+    const content: CompareMessagePart[] = [];
+    for (const { file } of submittedImages) {
+      try {
+        const image = await fileToBase64DataURL(file);
+        content.push({ type: "image", image });
+      } catch {
+        // skip failed image
+      }
+    }
+    if (submittedAudio) {
+      content.push({
+        type: "audio",
+        name: submittedAudio.name,
+        audio: `data:${submittedAudio.contentType};base64,${submittedAudio.base64}`,
+      });
+    }
+    if (msg) {
+      content.push({ type: "text", text: msg });
+    }
+    if (content.length === 0) {
+      resetPromptQueue();
+      return;
+    }
+
+    const clearSubmittedDraft = () => {
+      setText("");
+      setPendingImages([]);
+      setPendingAudio(null);
+      clearPendingAudioStore();
+      textareaRef.current?.focus();
+    };
+
+    const compareCommandHandles = Object.values(handlesRef.current);
+    const compareSlashCommand = parseProjectSlashCommand(msg);
+    if (compareSlashCommand && compareCommandHandles.length !== 2) {
+      toast.info("Comparison is still opening", {
+        description: "Wait for both panes to finish opening, then retry the command.",
+      });
+      resetPromptQueue();
+      return;
+    }
+    if (compareSlashCommand) {
+      const [firstHandle, secondHandle] = compareCommandHandles;
+      const composerProjectIdAtSend =
+        useChatRuntimeStore.getState().activeProjectId ?? null;
+      let commandIntercepted = false;
+      try {
+        commandIntercepted = await interceptCompareProjectSlashCommand({
+          input: msg,
+          userContent: content,
+          panes: [
+            {
+              appendUserMessage: firstHandle.appendMessage,
+              appendAssistantMessage: firstHandle.appendAssistantMessage,
+            },
+            {
+              appendUserMessage: secondHandle.appendMessage,
+              appendAssistantMessage: secondHandle.appendAssistantMessage,
+            },
+          ],
+          onIntercept: () => {
+            localCommandRunningRef.current = true;
+            setComparing(true);
+            clearSubmittedDraft();
+          },
+          execute: (command) =>
+            executeLocalProjectSlashCommand(command, {
+              threadId: model1ThreadId ?? model2ThreadId,
+              composerProjectId: composerProjectIdAtSend,
+            }),
+        });
+      } finally {
+        if (localCommandRunningRef.current) {
+          compareStepSucceededRef.current = commandIntercepted;
+          localCommandRunningRef.current = false;
+          setComparing(false);
+        }
+      }
+      if (commandIntercepted) {
+        resetPromptQueue();
+        return;
+      }
+    }
 
     // Generalized compare requires both panes to have a model. A half-
     // selected send either races to an empty bubble with bogus tok/s (#5569)
@@ -1125,29 +1239,19 @@ export function SharedComposer({
       return;
     }
 
-    const content: CompareMessagePart[] = [];
-    for (const { file } of submittedImages) {
-      try {
-        const image = await fileToBase64DataURL(file);
-        content.push({ type: "image", image });
-      } catch {
-        // skip failed image
+    let compareContextSnapshotId: string | null = null;
+    const bindProjectContextSnapshot = async () => {
+      if (!projectId) return;
+      const snapshot = await createAgentProjectContextSnapshot(projectId, msg);
+      compareContextSnapshotId = snapshot.id;
+      bindCompareContextSnapshot(pairId, snapshot.id);
+    };
+    const releaseProjectContextSnapshot = () => {
+      if (compareContextSnapshotId) {
+        releaseCompareContextSnapshot(pairId, compareContextSnapshotId);
+        compareContextSnapshotId = null;
       }
-    }
-    if (submittedAudio) {
-      content.push({
-        type: "audio",
-        name: submittedAudio.name,
-        audio: `data:${submittedAudio.contentType};base64,${submittedAudio.base64}`,
-      });
-    }
-    if (msg) {
-      content.push({ type: "text", text: msg });
-    }
-    if (content.length === 0) {
-      resetPromptQueue();
-      return;
-    }
+    };
 
     let compareLifecycleLease: ModelLifecycleLease | null = null;
     if (isGeneralizedCompare) {
@@ -1190,13 +1294,6 @@ export function SharedComposer({
       toast.info("Message changed while preparing", {
         description: "Your updated draft was kept. Send it again when ready.",
       });
-    };
-    const clearSubmittedDraft = () => {
-      setText("");
-      setPendingImages([]);
-      setPendingAudio(null);
-      clearPendingAudioStore();
-      textareaRef.current?.focus();
     };
 
     let compareStopDecision: Awaited<
@@ -1788,6 +1885,20 @@ export function SharedComposer({
       const handle1 = handlesRef.current["model1"];
       const handle2 = handlesRef.current["model2"];
 
+      try {
+        await bindProjectContextSnapshot();
+      } catch (error) {
+        releaseCompareModelLifecycle();
+        resetPromptQueue();
+        toast.error("Compare failed", {
+          description:
+            error instanceof Error
+              ? error.message
+              : "Project context could not be frozen.",
+        });
+        return;
+      }
+
       // Show user messages immediately on both sides
       if (handle1) handle1.appendMessage(content);
       if (handle2) handle2.appendMessage(content);
@@ -1865,6 +1976,7 @@ export function SharedComposer({
           duration: 4000,
         });
       } finally {
+        releaseProjectContextSnapshot();
         releaseCompareModelLifecycle();
         setComparing(false);
       }
@@ -1906,10 +2018,27 @@ export function SharedComposer({
           reservations.push(token);
         }
       }
+      try {
+        await bindProjectContextSnapshot();
+      } catch (error) {
+        for (const reservation of reservations) {
+          releasePreStreamRunReservation(reservation);
+        }
+        resetPromptQueue();
+        toast.error("Compare failed", {
+          description:
+            error instanceof Error
+              ? error.message
+              : "Project context could not be frozen.",
+        });
+        return;
+      }
       clearSubmittedDraft();
+      const completions = handles.map((handle) => handle.waitForRunEnd());
       for (const handle of handles) {
         handle.append(content);
       }
+      void Promise.allSettled(completions).finally(releaseProjectContextSnapshot);
     }
   }
   sendRef.current = send;

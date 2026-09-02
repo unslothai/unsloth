@@ -65,4 +65,3 @@ test("a restored external checkpoint does not claim the shared global snapshot",
     [],
   );
 });
-

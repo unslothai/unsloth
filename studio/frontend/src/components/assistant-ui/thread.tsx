@@ -112,6 +112,7 @@ import {
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
+import { ProjectGoalBar } from "@/features/chat/components/project-goal-bar";
 import { ResearchMessage } from "@/features/chat/components/research-message";
 import {
   DeepResearchComposerButton,
@@ -4862,6 +4863,7 @@ const Composer: FC<{
           onClose={() => setYoutubeLink(null)}
         />
       ) : null}
+      <ProjectGoalBar />
       {isTauri ? (
         // Phase 1 native model owns Tauri local-path drops. Restore browser
         // attachment drops in Tauri once Phase 1d adds token bridging.

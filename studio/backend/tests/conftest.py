@@ -111,6 +111,95 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
             monkeypatch.setattr(module, "_schema_ready", False)
 
 
+@pytest.fixture
+def local_verification_execution_boundary(monkeypatch):
+    """Run verification subprocess behavior without weakening the production sandbox.
+
+    Hosted Linux runners commonly install bubblewrap but prohibit user namespaces.
+    The production boundary correctly fails closed there. Verification lifecycle tests
+    still need to exercise cancellation, output bounds, evidence, and environment
+    isolation, so they opt into this explicit process-local boundary. Dedicated
+    execution-boundary tests continue to exercise the real fail-closed policy.
+    """
+    import tempfile
+
+    from core.agent_workspace import execution as execution_module
+    from core.agent_workspace import verification as verification_module
+    from core.agent_workspace.execution import ProjectExecutionUnavailable
+
+    class LocalVerificationBoundary:
+        def __init__(
+            self,
+            root,
+            expected_identity = None,
+        ):
+            self.root = Path(root).resolve(strict = True)
+            metadata = self.root.stat()
+            self.identity = (int(metadata.st_dev), int(metadata.st_ino))
+            if expected_identity is not None and self.identity != (
+                int(expected_identity[0]),
+                int(expected_identity[1]),
+            ):
+                raise ProjectExecutionUnavailable(
+                    "The project folder identity changed before the command could start."
+                )
+            self.scratch = Path(
+                tempfile.mkdtemp(prefix = "unsloth-verification-test-boundary-")
+            ).resolve(strict = True)
+            self._slot = False
+            self._closed = False
+
+        def acquire_execution_slot(self, cancel_event = None):
+            if self._slot:
+                return True
+            if not execution_module.acquire_workspace_execution_slot(self.identity, cancel_event):
+                return False
+            self._slot = True
+            return True
+
+        def apply_environment(self, env):
+            isolated = dict(env)
+            scratch = str(self.scratch)
+            for name in (
+                "HOME",
+                "USERPROFILE",
+                "APPDATA",
+                "LOCALAPPDATA",
+                "TMP",
+                "TEMP",
+                "TMPDIR",
+            ):
+                isolated[name] = scratch
+            return isolated
+
+        def popen_kwargs(self, preexec_fn = None):
+            options = {"cwd": str(self.root)}
+            if preexec_fn is not None:
+                options["preexec_fn"] = preexec_fn
+            return options
+
+        @staticmethod
+        def wrap_argv(argv):
+            return [str(part) for part in argv]
+
+        def close(self):
+            if self._closed:
+                return
+            self._closed = True
+            if self._slot:
+                execution_module.release_workspace_execution_slot(self.identity)
+                self._slot = False
+            shutil.rmtree(self.scratch, ignore_errors = True)
+
+    class BoundaryFactory:
+        @staticmethod
+        def open(root, expected_identity = None):
+            return LocalVerificationBoundary(root, expected_identity)
+
+    monkeypatch.setattr(verification_module, "ProjectExecutionBoundary", BoundaryFactory)
+    return BoundaryFactory
+
+
 # Pytest CLI options
 
 

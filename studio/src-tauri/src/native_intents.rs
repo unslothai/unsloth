@@ -66,6 +66,7 @@ enum NativePathValidationPolicy {
     Model,
     Dataset,
     Attachment,
+    DocumentFolder,
     Artifact(NativeArtifactKind),
 }
 
@@ -217,16 +218,20 @@ impl NativeIntakeState {
         Ok(entry.to_ref())
     }
 
-    fn sign_document_folder_path(
+    fn sign_folder_path(
         &self,
         path: impl AsRef<Path>,
+        operation: NativePathOperation,
     ) -> Result<NativeDocumentFolderSelection, String> {
         let classified = classify_native_document_folder(path.as_ref())?;
+        if !classified.allowed_operations.contains(&operation) {
+            return Err("The selected folder does not allow that operation.".to_string());
+        }
         let token = random_token("path_");
         let lease = sign_path_lease(
             &self.lease_secret,
             NativePathLeaseRequest {
-                operation: NativePathOperation::LinkDocuments,
+                operation,
                 canonical_path: portable_path_string(&classified.canonical_path),
                 path_kind: classified.path_kind,
                 path_type: classified.path_type,
@@ -242,6 +247,33 @@ impl NativeIntakeState {
         Ok(NativeDocumentFolderSelection {
             token: lease.native_path_lease,
             display_name: lease.display_label,
+        })
+    }
+
+    fn sign_document_folder_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<NativeDocumentFolderSelection, String> {
+        self.sign_folder_path(path, NativePathOperation::LinkDocuments)
+    }
+
+    fn register_project_folder_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<NativeDocumentFolderSelection, String> {
+        let mut classified = classify_native_document_folder(path.as_ref())?;
+        // The dialog choice is a longer-lived renderer token, not backend
+        // authority. Keep it purpose-bound and sign the short backend lease
+        // only when the user commits project creation.
+        classified.allowed_operations = vec![NativePathOperation::OpenProject];
+        let entry = self.insert_entry(
+            classified,
+            NativePathSourceKind::Dialog,
+            NativePathValidationPolicy::DocumentFolder,
+        )?;
+        Ok(NativeDocumentFolderSelection {
+            token: entry.token,
+            display_name: entry.display_label,
         })
     }
 
@@ -312,18 +344,42 @@ impl NativeIntakeState {
         Ok(entry.clone())
     }
 
+    fn consume_entry_for_operation(
+        &self,
+        token: &str,
+        operation: NativePathOperation,
+    ) -> Result<NativePathEntry, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        prune_expired(&mut inner);
+        let entry = inner
+            .tokens
+            .get(token)
+            .ok_or_else(|| "Native path token is unavailable or expired.".to_string())?;
+        if !entry.allowed_operations.contains(&operation) {
+            return Err("Native path token does not allow this operation.".to_string());
+        }
+        inner
+            .tokens
+            .remove(token)
+            .ok_or_else(|| "Native path token is unavailable or expired.".to_string())
+    }
+
     fn sign_grant(
         &self,
         token: &str,
         operation: NativePathOperation,
     ) -> Result<NativePathLeaseResponse, String> {
-        let entry = self.entry_for_operation(token, operation)?;
+        let entry = if operation == NativePathOperation::OpenProject {
+            self.consume_entry_for_operation(token, operation)?
+        } else {
+            self.entry_for_operation(token, operation)?
+        };
         validate_entry_path(&entry, operation)?;
         sign_path_lease(
             &self.lease_secret,
             NativePathLeaseRequest {
                 operation,
-                canonical_path: entry.canonical_path.to_string_lossy().to_string(),
+                canonical_path: portable_path_string(&entry.canonical_path),
                 path_kind: entry.path_kind,
                 path_type: entry.path_type,
                 source_kind: entry.source_kind,
@@ -357,6 +413,9 @@ fn validate_entry_path(
         NativePathValidationPolicy::Dataset => classify_native_dataset_path(&entry.canonical_path)?,
         NativePathValidationPolicy::Attachment => {
             classify_native_attachment_path(&entry.canonical_path)?
+        }
+        NativePathValidationPolicy::DocumentFolder => {
+            classify_native_document_folder(&entry.canonical_path)?
         }
         NativePathValidationPolicy::Artifact(kind) => {
             classify_artifact_path(kind, &entry.canonical_path)?
@@ -524,6 +583,29 @@ pub async fn pick_native_document_folder(
         .into_path()
         .map_err(|_| "Only local filesystem folders are supported.".to_string())?;
     state.sign_document_folder_path(path).map(Some)
+}
+
+#[tauri::command]
+pub async fn pick_native_project_folder(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: tauri::State<'_, NativeIntakeState>,
+) -> Result<Option<NativeDocumentFolderSelection>, String> {
+    ensure_main_window(&window)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Use existing project folder")
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(folder_path) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
+        return Ok(None);
+    };
+    let path = folder_path
+        .into_path()
+        .map_err(|_| "Only local filesystem folders are supported.".to_string())?;
+    state.register_project_folder_path(path).map(Some)
 }
 
 #[tauri::command]
@@ -774,7 +856,6 @@ pub async fn read_native_attachment_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1089,16 +1170,10 @@ mod tests {
 
         let lease = state.sign_document_folder_path(&path).unwrap();
         assert!(lease.token.contains('.'));
-        let payload = lease.token.split('.').next().unwrap();
-        let payload: serde_json::Value =
-            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
-        assert!(payload["modified_ms"].is_null());
-        assert!(payload["device_id"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty()));
-        assert!(payload["file_id"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty()));
+        let parts: Vec<&str> = lease.token.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "2");
+        assert!(!lease.token.contains(&path.to_string_lossy().to_string()));
         assert_eq!(
             lease.display_name,
             path.file_name().unwrap().to_string_lossy()
@@ -1110,6 +1185,38 @@ mod tests {
         assert!(state
             .entry_for_operation("path_token", NativePathOperation::LinkDocuments)
             .is_err());
+        let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn project_folder_picker_token_is_purpose_bound_and_signed_on_commit() {
+        let state = new_native_intake_state();
+        let path = temp_path("project-folder");
+        fs::create_dir(&path).unwrap();
+
+        let selection = state.register_project_folder_path(&path).unwrap();
+        assert!(!selection.token.contains('.'));
+        assert!(state
+            .entry_for_operation(&selection.token, NativePathOperation::LinkDocuments)
+            .is_err());
+
+        let lease = state
+            .sign_grant(&selection.token, NativePathOperation::OpenProject)
+            .unwrap();
+        let parts: Vec<&str> = lease.native_path_lease.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "2");
+        assert!(!lease
+            .native_path_lease
+            .contains(&path.to_string_lossy().to_string()));
+        assert_eq!(
+            selection.display_name,
+            path.file_name().unwrap().to_string_lossy()
+        );
+        assert!(state
+            .sign_grant(&selection.token, NativePathOperation::OpenProject)
+            .is_err());
+
         let _ = fs::remove_dir(path);
     }
 

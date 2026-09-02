@@ -66,6 +66,12 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       "./generation-length.ts": {},
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },
+      "./project-folder-request": {
+        buildOpenProjectFolderRequestFromToken: async () => ({
+          input: "/api/chat/projects/open-folder",
+          init: {},
+        }),
+      },
       "@/features/hf-auth": { prepareHfTokenForUse: async () => undefined },
       "@/features/hub/lib/abort-signals": {},
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },

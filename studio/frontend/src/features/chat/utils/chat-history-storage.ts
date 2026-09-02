@@ -17,6 +17,7 @@ import {
   listChatProjects,
   listChatThreads,
   notifyChatHistoryUpdated,
+  openChatProjectFolder,
   recordChatImportLedger,
   saveChatMessage,
   saveChatProject,
@@ -30,6 +31,7 @@ import { DEXIE_DB_NAME, db } from "../db";
 import type {
   MessageRecord,
   ModelType,
+  ProjectPatch,
   ProjectRecord,
   ThreadRecord,
 } from "../types";
@@ -911,9 +913,16 @@ export async function createStoredChatProject(
   });
 }
 
+export async function openStoredChatProjectFolder(
+  nativePathToken: string,
+  name: string,
+): Promise<ProjectRecord> {
+  return openChatProjectFolder(nativePathToken, name);
+}
+
 export async function updateStoredChatProject(
   projectId: string,
-  patch: Partial<ProjectRecord>,
+  patch: Partial<ProjectPatch>,
 ): Promise<ProjectRecord> {
   return updateChatProject(projectId, {
     ...patch,
