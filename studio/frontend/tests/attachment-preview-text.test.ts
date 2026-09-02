@@ -956,3 +956,35 @@ test("parseAttachmentText keeps an unterminated tag as plain text", () => {
     truncated: false,
   });
 });
+
+test("a preview is never stricter than the adapter that took the file", async () => {
+  // .html belongs to the HTML adapter, which sends a legacy page happily. The
+  // preview went through the strict text decoder and threw on the same file,
+  // so opening an attachment that had already been accepted failed.
+  const head = new TextEncoder().encode(
+    '<!doctype html><meta charset="windows-1252"><body>Caf',
+  );
+  const bytes = new Uint8Array([
+    ...head,
+    0xe9,
+    ...new TextEncoder().encode("</body>"),
+  ]);
+  const page = new File([bytes], "page.html", { type: "text/html" });
+  const preview = await readAttachmentText(page, page.name, page.type);
+  assert.equal(typeof preview.text, "string");
+  assert.ok(preview.text.includes("Caf"));
+
+  // A file the text adapter does own stays strict: mojibake reaching the model
+  // is worse than a message saying the encoding could not be read.
+  const { UndecodableTextError } = await import(
+    "../src/features/chat/text-attachment-accept.ts"
+  );
+  await assert.rejects(
+    readAttachmentText(
+      new File([bytes], "notes.srt"),
+      "notes.srt",
+      "text/plain",
+    ),
+    (error: Error) => error instanceof UndecodableTextError,
+  );
+});

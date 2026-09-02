@@ -17936,7 +17936,17 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
                 append_resampled(resampled)
     if not chunks:
         raise ValueError("audio container decoded to no samples")
-    return np.concatenate(chunks).astype(np.float32, copy = False), sample_rate
+    # np.concatenate holds the list and its result at once, so a 30-minute
+    # upload at the 48 kHz ceiling kept two 346 MB arrays live. Filling the
+    # output while dropping each block as it is copied costs one array and a
+    # block, and the copy order is the decode order.
+    joined = np.empty(sum(len(block) for block in chunks), dtype = np.float32)
+    filled = 0
+    for index, block in enumerate(chunks):
+        joined[filled : filled + len(block)] = block
+        filled += len(block)
+        chunks[index] = None
+    return joined, sample_rate
 
 
 def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":

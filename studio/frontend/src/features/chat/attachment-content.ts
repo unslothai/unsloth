@@ -5,6 +5,7 @@ import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
 import {
   TEXT_ATTACHMENT_ACCEPT,
   decodeTextAttachmentBytes,
+  isTextAttachmentName,
 } from "./text-attachment-accept";
 
 import {
@@ -868,6 +869,15 @@ async function readBoundedText(
 ): Promise<{ text: string; truncated: boolean }> {
   const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
   const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
+  // Strict decoding belongs to the files the text adapter owns, where refusing
+  // is better than sending mojibake to the model. A preview of someone else's
+  // file may not be stricter than the adapter that accepted it: .html goes to
+  // the HTML adapter, which sends a windows-1252 page happily, and reading the
+  // preview through the strict path meant opening one threw where it used to
+  // render.
+  if (!isTextAttachmentName(file.name)) {
+    return { text: await slice.text(), truncated };
+  }
   const bytes = new Uint8Array(await slice.arrayBuffer());
   // The declaration can sit past the preview slice, and looking for it inside
   // the slice reported an error for a file the attachment itself decodes. Only

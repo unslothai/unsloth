@@ -117,6 +117,24 @@ def test_wma_and_amr_decode_with_no_librosa(monkeypatch):
         assert np.max(np.abs(samples)) > 0
 
 
+def test_pyav_output_is_not_held_twice(monkeypatch):
+    """np.concatenate keeps the block list and its result live at once, so a
+    30-minute upload at the sample ceiling held two 346 MB arrays. The blocks
+    are dropped as they are copied, and the order is the decode order."""
+    raw = _encode_amr()
+    monkeypatch.setitem(sys.modules, "soundfile", None)
+    monkeypatch.setitem(sys.modules, "librosa", None)
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the PyAV path must not concatenate its blocks")
+
+    monkeypatch.setattr(np, "concatenate", refuse)
+    samples, sample_rate = inference_route._decode_audio_mono(raw)
+    assert sample_rate == 8_000
+    assert samples.dtype == np.float32
+    assert np.max(np.abs(samples)) > 0
+
+
 def test_pyav_duration_limit_stops_before_concatenating(monkeypatch):
     raw = _encode_amr()
     monkeypatch.setitem(sys.modules, "soundfile", None)
