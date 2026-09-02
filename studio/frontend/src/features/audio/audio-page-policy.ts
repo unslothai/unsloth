@@ -269,9 +269,8 @@ export function exactGgufLoadSelector(
 
 /** Whether a TTS pick loads through llama.cpp.
  *
- * A direct .gguf file and a GGUF repo id carry no variant filename, so a check
- * that only looks at the selector misses both. The picker's own `meta.isGguf`
- * is authoritative where a caller has it; this covers the callers that do not.
+ * A direct .gguf file and a GGUF repo id carry no variant filename, so the selector
+ * alone misses both. `meta.isGguf` wins where a caller has it; this covers the rest.
  */
 export function isGgufTtsTarget({
   repoId,
@@ -283,8 +282,7 @@ export function isGgufTtsTarget({
   ggufFilename?: string | null;
   loadId?: string | null;
   /** The catalog's own answer, when the caller has one. The tests below are
-   * name heuristics: a GGUF repo with no exact variant, whose ids neither
-   * contain "gguf" nor end in ".gguf", is invisible to them. */
+   * name heuristics, blind to a GGUF repo whose ids do not spell it. */
   isGguf?: boolean | null;
 }): boolean {
   const endsWithGguf = (value: string | null | undefined): boolean =>

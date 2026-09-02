@@ -530,8 +530,7 @@ export function AudioPage({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_audio_advanced_open",
   );
-  // Read at load time. The handler below ejects the resident model so a
-  // change actually takes effect.
+  // Read at load time; the handler below ejects so a change takes effect.
   const [audioDevice, setAudioDeviceState] = usePersistedChoice(
     "unsloth_audio_device",
     "auto",
@@ -904,10 +903,7 @@ export function AudioPage({
       loadId?: string | null,
       audioType?: string | null,
       remoteCodeApproval?: RemoteCodeApproval,
-      // The picker already decided this from the catalog. Recomputing it here from
-      // the ids alone loses a GGUF repo with no exact variant whose ids do not spell
-      // "gguf", and a CPU RAM load of one would then omit the zero-offload fields and
-      // land on the GPU anyway.
+      // The catalog's answer: the ids alone miss a GGUF repo that does not spell it.
       isGguf?: boolean | null,
     ) => {
       // A routed pick that arrives while a previous load is still tearing down would
@@ -1025,11 +1021,9 @@ export function AudioPage({
             trust_remote_code: trustRemoteCode,
             approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
             audio_device: wantsCpu ? "cpu" : "auto",
-            // GGUF ignores audio_device: llama.cpp offloads unless it is told
-            // not to, so the same choice has to become zero layers there.
-            // speculative_type must be an explicit "off": an absent one resolves
-            // to "auto", which may still attach a GPU drafter, and the backend
-            // then reads the load as GPU-bearing and evicts image/video for it.
+            // GGUF ignores audio_device: llama.cpp offloads unless told not to.
+            // An absent speculative_type resolves to "auto", which may attach a GPU
+            // drafter, and the backend then evicts image/video for a CPU load.
             ...(wantsCpu && isGgufLoad
               ? // biome-ignore lint/style/useNamingConvention: API schema
                 {
@@ -1059,8 +1053,7 @@ export function AudioPage({
           toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
             id: toastId,
           });
-          // Only the native runtime and GGUF can be held in RAM. Say so rather
-          // than leave the control claiming a placement that did not happen.
+          // Only the native runtime and GGUF can be held in RAM.
           if (
             wantsCpu &&
             !isGgufLoad &&
@@ -2687,19 +2680,13 @@ export function AudioPage({
                   <PillTabs
                     ariaLabel="Load model into"
                     value={audioDevice === "cpu" ? "cpu" : "auto"}
-                    // Disabled while a task runs: the eject below is the only
-                    // thing that applies the change, and it cannot interrupt a
-                    // load or a generation. Enabled again once the work settles.
+                    // The eject below applies the change and cannot interrupt a load.
                     disabled={busy !== null || isRecording}
                     onValueChange={(value) => {
                       const next = value === "cpu" ? "cpu" : "auto";
                       if (next === audioDevice) return;
-                      // MiniMax's runtime needs CUDA, so the backend refuses a CPU
-                      // load in preflight. That refusal is deliberately early and
-                      // non-destructive, but it cannot save a model this handler has
-                      // already ejected, and the reload it would need is the one that
-                      // gets refused. Keep the working model instead of trading it for
-                      // a load that cannot succeed.
+                      // MiniMax needs CUDA, and the backend's refusal cannot save a
+                      // model already ejected here.
                       if (next === "cpu" && status?.audio_type === "minimax_music3") {
                         toast.info(
                           "MiniMax Music 3 needs a GPU, so it cannot be held in CPU RAM.",
@@ -2707,7 +2694,6 @@ export function AudioPage({
                         return;
                       }
                       setAudioDeviceState(next);
-                      // Otherwise the choice does nothing until the next swap.
                       if (ttsLoaded) handleEject();
                     }}
                     fit={true}

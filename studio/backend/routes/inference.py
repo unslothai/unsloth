@@ -11937,15 +11937,10 @@ async def _preflight_native_audio_placement(
             detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
         )
 
-    # After the runtime guards, before every VRAM question. A CPU load puts
-    # nothing on the card, and sizing it anyway would refuse the load on a full
-    # GPU, which is what this option is for. minimax_music3 is refused on CPU
-    # by the backend.
+    # Before every VRAM question: sizing a CPU load refuses it on a full GPU.
     if _native_audio_cpu_load(config, request):
         if audio_type == "minimax_music3":
-            # Refused here rather than in the worker: past this point the switch
-            # has already evicted the resident model, so a load that cannot
-            # succeed would cost the user the one they had.
+            # The switch already evicted the resident model, so a doomed load costs it.
             raise HTTPException(
                 status_code = 400,
                 detail = (
@@ -12216,9 +12211,7 @@ def _guard_chat_load_against_training(
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
 
-    # Nothing to budget: the weights go to CPU RAM. Ahead of the diffusion branch
-    # below, which refuses unconditionally and would 409 a load that takes no VRAM.
-    # Same reasoning as the paravirtual CPU pin further down.
+    # Ahead of the diffusion branch, which would 409 a load that takes no VRAM.
     if _native_audio_cpu_load(config, request):
         return
 
@@ -13405,8 +13398,7 @@ async def _load_model_impl(
                     backend.models.get(backend.active_model_name) or {},
                     request.max_seq_length,
                 )
-                # A resident GPU audio model does not satisfy a CPU request. Without
-                # this the route reports already_loaded and the weights stay put.
+                # Without this the route reports already_loaded and nothing moves.
                 and _resident_audio_placement_matches(backend, request)
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
@@ -13428,9 +13420,7 @@ async def _load_model_impl(
                 _sf_supports_reasoning = _sf_flags["supports_reasoning"]
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
                 # Requested chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted owner.
-                # Skipped for a CPU-placed audio model, like the zero-VRAM GGUF
-                # case above: it owns no GPU, so taking the arbiter would cancel
-                # an image or video generation for nothing.
+                # Owns no GPU, so the arbiter would cancel a generation for nothing.
                 if not _resident_audio_holds_no_gpu(backend):
                     await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
@@ -13694,9 +13684,7 @@ async def _load_model_impl(
         # ...but only when this load will actually use the GPU, exactly as the image and video loaders gate on their device:
         # a manual gpu_layers=0 load runs on CPU, so taking the arbiter would cancel an image/video generation for nothing.
         chat_load_needs_gpu = not (
-            # A CPU-placed native audio model is the non-GGUF case of the same
-            # thing: it takes no VRAM, so acquiring the arbiter would cancel an
-            # image or video generation for nothing.
+            # The non-GGUF case of the same thing: no VRAM, so no arbiter.
             _native_audio_cpu_load(config, request)
             or config.is_gguf
             and await asyncio.to_thread(
@@ -14045,11 +14033,8 @@ async def _load_model_impl(
             _restore_marker_if_prior_preview_still_resident()
             raise
 
-        # Shut down any export subprocess to free VRAM. Only when this load wants VRAM:
-        # a CPU-placed load masks the accelerators outright, so the export's memory is
-        # not in its way, and killing a running export to make room for something that
-        # needs no room loses the user's job for nothing. Same predicate that already
-        # keeps this load off the arbiter and out of the VRAM preflight.
+        # Free the export's VRAM, but only when this load wants VRAM: a CPU load masks
+        # the accelerators, so killing the user's export frees nothing it needs.
         try:
             from core.export import get_export_backend
             exp_backend = get_export_backend()
@@ -14073,18 +14058,10 @@ async def _load_model_impl(
         _prior_alias = getattr(backend, "_openai_advertised_id", None)
         _prior_active = getattr(backend, "active_model_name", None)
         backend._openai_advertised_id = None
-        # Dropped during the load rather than after it. A download and load run for
-        # minutes, and this load never needed the claim. Held across that window, an
-        # Images or Video acquire_for finds CHAT still owning the GPU and runs the
-        # chat evictor, which sees this model in loading_models and cancels it.
-        #
-        # Not before the load either: until the previous worker has exited, the claim
-        # is the only thing standing between a still-resident GPU model and a second
-        # pipeline allocating over it, since acquire_for evicts nobody when the
-        # arbiter has no owner. load_model calls this once that worker is gone and
-        # its memory is back, which is both after the danger and before the download.
-        # The post-load release below stays: this cannot cover a claim re-taken
-        # during the load.
+        # Not after the load (held across a long download, the chat evictor cancels
+        # this very load) and not before it (until the previous worker exits, this
+        # claim is all that stops a second pipeline allocating over a resident model).
+        # load_model fires it in between; the post-load release covers a re-taken claim.
         _release_chat_after_teardown = (lambda: release(CHAT)) if not chat_load_needs_gpu else None
         try:
             success = await asyncio.to_thread(
@@ -14134,9 +14111,7 @@ async def _load_model_impl(
             )
 
         # Same guard the GGUF branch runs above: an Images/Video acquire can land between this load's cancellation and its publish, so this load undoes itself.
-        # Gated like that branch: a load that never took the arbiter has no
-        # ownership to lose, and on a clean server the owner is None, so an
-        # ungated check would unload every CPU-placed audio model it just loaded.
+        # On a clean server the owner is None, so ungated this unloads what it loaded.
         if chat_load_needs_gpu and current_owner() != CHAT:
             await asyncio.to_thread(backend.unload_model, config.identifier)
             # The worker's base CUDA context outlives the model unload, so kill it too.
@@ -14149,10 +14124,8 @@ async def _load_model_impl(
                 ),
             )
         if not chat_load_needs_gpu:
-            # Drop the stale CHAT claim after any zero-GPU load, as the GGUF
-            # branch does. This load replaced whatever held it, so leaving the
-            # claim makes the next Images/Video acquire evict CHAT and unload
-            # the CPU-resident audio model that was never using the GPU.
+            # This load replaced whatever held CHAT; leaving the claim makes the next
+            # Images/Video acquire evict a model that never used the GPU.
             await asyncio.to_thread(release, CHAT)
 
         # Stamped here, not in backend.load_model: that entry is built in the load
@@ -17708,9 +17681,8 @@ async def transcribe_audio_raw(
     language: Optional[str] = None,
     fast: bool = False,
     engine: Optional[str] = None,
-    # Same literal as the JSON request models: a misspelled "cpu" that fell
-    # through to auto would silently put the model back on the GPU, which is the
-    # opposite of what was asked for. 422 says so instead.
+    # Same literal as the JSON models: a misspelled "cpu" falling through to auto
+    # would silently put the model back on the GPU. 422 instead.
     device: Optional[Literal["auto", "cpu", "gpu"]] = None,
     current_subject: str = Depends(get_current_subject),
 ):

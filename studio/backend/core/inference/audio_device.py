@@ -32,8 +32,7 @@ __all__ = [
 
 AUDIO_DEVICE_CHOICES = ("auto", "cpu", "gpu")
 
-# Spellings other Studio surfaces already use. The device names arrive from a
-# status string being echoed back at us.
+# Spellings other Studio surfaces already use; names arrive from a status echo.
 _CPU_ALIASES = frozenset({"cpu", "ram", "cpu_ram", "system", "system_ram"})
 _GPU_ALIASES = frozenset(
     {"gpu", "cuda", "rocm", "hip", "xpu", "mps", "metal", "accelerator", "accel"}

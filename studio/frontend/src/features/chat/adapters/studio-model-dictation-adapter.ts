@@ -182,7 +182,6 @@ export async function transcribeAudioBlob(
   const engine = options.engine ?? sttEngineFor(model);
   const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
-  // Dictation loads implicitly on first use, so the preference travels here too.
   params.set("device", settings.sttDevice);
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
@@ -315,7 +314,6 @@ export function loadSttModel(
   device?: SttDevice,
 ): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
-  // Read at call time, like the other voice settings here.
   const resolvedDevice = device ?? useVoiceSettingsStore.getState().sttDevice;
   // Announced so the indicator shows the load immediately, as the toast does.
   return queueSttLifecycle(() =>
@@ -396,8 +394,8 @@ export function unloadSttModel(
     const params = new URLSearchParams();
     if (engine) params.set("engine", engine);
     if (model) params.set("model", model);
-    // Opt-out only: the default drains an in-flight transcription, which is
-    // right when the caller needs the memory back now.
+    // Opt-out only: the default drains an in-flight transcription, right when the
+    // caller needs the memory back now.
     if (options?.wait === false) params.set("wait", "false");
     const query = params.size ? `?${params}` : "";
     const response = await authFetch(

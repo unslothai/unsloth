@@ -42,9 +42,6 @@ def _request(audio_device = None):
     return types.SimpleNamespace(audio_device = audio_device)
 
 
-# --- the gate itself -------------------------------------------------------
-
-
 def test_only_a_native_audio_model_counts_as_a_cpu_audio_load():
     assert ri._native_audio_cpu_load(_audio(), _request("cpu"))
     assert not ri._native_audio_cpu_load(_audio(), _request("auto"))
@@ -56,9 +53,6 @@ def test_a_chat_model_cannot_skip_the_guards_by_sending_audio_device():
     gated here, any load could set it and walk past the training guard."""
     assert not ri._native_audio_cpu_load(_audio(audio_type = None), _request("cpu"))
     assert not ri._native_audio_cpu_load(_audio(audio_type = "whisper"), _request("cpu"))
-
-
-# --- the training coexistence guard ----------------------------------------
 
 
 def test_a_cpu_audio_load_is_not_refused_while_training_runs(monkeypatch):
@@ -109,9 +103,6 @@ def test_a_gpu_audio_load_is_still_refused_during_diffusion_training(monkeypatch
     assert excinfo.value.status_code == 409
 
 
-# --- the memory preflight --------------------------------------------------
-
-
 def test_a_cpu_load_skips_the_vram_preflight_entirely(monkeypatch):
     """Sizing it would refuse the load on a full GPU, which is the case the
     option exists for. The probe must not even be reached."""
@@ -141,9 +132,6 @@ def test_minimax_on_cpu_is_refused_before_the_resident_model_is_evicted():
     assert "CPU RAM" in excinfo.value.detail
 
 
-# --- the already-loaded shortcut -------------------------------------------
-
-
 def _backend(audio_cpu, audio_type = "higgs_tts2"):
     entry = {"is_audio": True, "audio_type": audio_type}
     if audio_cpu is not None:
@@ -169,9 +157,6 @@ def test_a_non_audio_model_keeps_the_shortcut():
     assert ri._resident_audio_placement_matches(
         _backend(audio_cpu = None, audio_type = None), _request("cpu")
     )
-
-
-# --- training eviction -----------------------------------------------------
 
 
 def test_a_cpu_placed_sidecar_is_left_alone_when_training_claims_vram():
@@ -207,9 +192,6 @@ def test_the_shortcut_reads_the_resident_model_not_the_requested_config():
     ]
 
 
-# --- the GPU arbiter -------------------------------------------------------
-
-
 def test_a_cpu_placed_audio_model_never_takes_the_arbiter():
     """It holds no GPU, so acquiring would cancel an image or video run for nothing."""
     assert ri._resident_audio_holds_no_gpu(_backend(audio_cpu = True))
@@ -230,9 +212,8 @@ def test_nothing_resident_reads_as_holding_the_gpu():
 def _inference_source() -> str:
     import pathlib
 
-    # encoding is explicit: read_text() defaults to the locale encoding, which is
-    # cp1252 on Windows, and this file is UTF-8. Without it these tests die with a
-    # UnicodeDecodeError on windows-latest while passing everywhere else.
+    # Explicit encoding: read_text() defaults to the locale one, cp1252 on Windows,
+    # and this file is UTF-8.
     return pathlib.Path(ri.__file__).read_text(encoding = "utf-8")
 
 
@@ -247,9 +228,6 @@ def test_the_post_load_ownership_check_is_gated_like_the_gguf_one():
     src = _inference_source()
     assert "if chat_load_needs_gpu and current_owner() != CHAT:" in src
     assert "\n        if current_owner() != CHAT:" not in src
-
-
-# --- hiding the accelerators -----------------------------------------------
 
 
 def test_a_cpu_audio_worker_hides_cuda_and_hip():
@@ -472,8 +450,8 @@ def test_the_chat_claim_outlives_the_worker_that_earned_it():
     sig = inspect.signature(InferenceOrchestrator.load_model)
     assert "on_prior_worker_released" in sig.parameters
 
-    # It has to sit after both bail-outs: a worker that would not exit and memory
-    # that never came back both mean the card is still busy and the claim still true.
+    # After both bail-outs: either one means the card is still busy, so the claim is
+    # still true.
     load_src = inspect.getsource(InferenceOrchestrator.load_model)
     hook = load_src.index("on_prior_worker_released()")
     assert load_src.index("did not exit and still holds GPU") < hook

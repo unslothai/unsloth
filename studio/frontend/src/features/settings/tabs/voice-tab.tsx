@@ -407,8 +407,7 @@ export function VoiceTab() {
   const setDictationEngine = useVoiceSettingsStore((s) => s.setDictationEngine);
   const sttModel = useVoiceSettingsStore((s) => s.sttModel);
   const setSttModel = useVoiceSettingsStore((s) => s.setSttModel);
-  // Named apart from the `sttDevice` state below, which is what the sidecar
-  // reports back.
+  // Named apart from the `sttDevice` state below, which the sidecar reports back.
   const sttDevicePreference = useVoiceSettingsStore((s) => s.sttDevice);
   const setSttDevicePreference = useVoiceSettingsStore((s) => s.setSttDevice);
   const sttProviderId = useVoiceSettingsStore((s) => s.sttProviderId);
@@ -1149,13 +1148,9 @@ export function VoiceTab() {
               onValueChange={(value) => {
                 const next = value === "cpu" ? "cpu" : "auto";
                 if (next === sttDevicePreference) return;
-                // Frees the old device now rather than at the next dictation.
-                // Scoped to this model: another surface can swap the resident
-                // one before the request lands, and moving our own placement
-                // must not evict theirs. wait:false because this is only an
-                // early release: a dictation being decoded right now would
-                // otherwise be killed for a setting that the next load applies
-                // anyway.
+                // Scoped, so moving our placement cannot evict a model another surface
+                // swapped in. wait:false so a decoding dictation is not killed for a
+                // setting the next load applies anyway.
                 void unloadSttModel(sttEngineFor(sttModel), sttModel, {
                   wait: false,
                 }).catch(() => {});

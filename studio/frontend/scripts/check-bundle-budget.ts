@@ -38,15 +38,9 @@ const DIST = resolve(HERE, "..", "dist");
  */
 export const BUDGET = {
   // Measured 1,496.2 KB transfer / 5,207.2 KB raw at 17363f8a2.
-  //
-  // Raised for the audio placement control. Measured against this branch's own merge
-  // base, the same build both sides: base 1,560.9 KB transfer (1.6 KB to spare under
-  // the old 1,562.5 KB), branch 1,562.6 KB. The feature costs about 1.7 KB and the
-  // headroom left was 1.6 KB, so it crossed by a tenth of a kilobyte. CI, which builds
-  // against a main that has moved on, reads 1,568.2 KB; the extra is that drift, not
-  // this branch. What reaches the first screen here is the new control's en strings,
-  // its persisted voice-settings preference and the pill-tabs variant. The Audio page
-  // and the Voice settings tab are both already split out of the entry.
+  // Raised for the audio placement control: same build both sides, merge base
+  // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
+  // ceiling by a tenth of a kilobyte.
   transferBytes: 1_620_000,
   rawBytes: 5_500_000,
 };

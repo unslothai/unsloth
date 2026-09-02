@@ -1536,21 +1536,13 @@ class InferenceOrchestrator:
                 else None,
                 "mlx_kv_bits": mlx_kv_bits,
                 "chat_template_override": chat_template_override,
-                # Read in the worker: it hides the accelerators before hardware
-                # detection, then the native audio backend's constructor places
-                # the weights.
+                # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
             }
             if audio_device_forces_cpu(audio_device) and is_native_audio_model(model_name):
-                # A load that takes no card needs no card chosen for it, and choosing
-                # one does active harm twice over. Automatic selection returns every
-                # GPU needed to hold the checkpoint, and the worker forwards that list
-                # to NativeAudioBackend.load_model, which rejects more than one as
-                # unsupported sharding. Its required_gb also becomes expected_free_gb
-                # below, so the settle wait raises when an Images or Video pipeline
-                # holds the card, aborting the load after the previous worker is
-                # already gone. Both land in exactly the full-GPU case this option
-                # exists for.
+                # Choosing a card for a load that takes none harms it twice: several
+                # GPUs are rejected as unsupported sharding, and required_gb becomes
+                # expected_free_gb, so the settle wait raises on a busy card.
                 resolved_gpu_ids, gpu_selection = None, {"selection_mode": "cpu_audio"}
             else:
                 resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
@@ -1624,13 +1616,7 @@ class InferenceOrchestrator:
                         "not starting the replacement model. Retry shortly."
                     )
 
-            # The previous worker is gone and its VRAM is back. A caller holding a GPU
-            # claim on that worker's behalf can drop it here: this is the last moment
-            # before the download, which runs for minutes and is the whole reason the
-            # claim cannot simply be held until the load returns. Both raises above
-            # skip this deliberately -- a worker that would not exit, or memory that
-            # never came back, means the card is still occupied and the claim is still
-            # telling the truth.
+            # Previous worker gone, VRAM back: the last moment before a long download.
             if on_prior_worker_released is not None:
                 on_prior_worker_released()
 
@@ -1738,13 +1724,9 @@ class InferenceOrchestrator:
                     self.models[self.active_model_name] = _mirrored_model_entry(
                         model_info, model_name
                     )
-                    # Placement this model was loaded under, so the route's
-                    # already-loaded shortcut can tell a CPU request from the GPU
-                    # model it would otherwise report as satisfied. Set here, not
-                    # in _mirrored_model_entry: this is the parent's own request,
-                    # not something the worker reports back. Only native audio
-                    # reads the preference; marking anything else would tell
-                    # training a GPU-resident model holds no VRAM.
+                    # Lets the already-loaded shortcut tell a CPU request from the GPU
+                    # model it would otherwise report as satisfied. Native audio only:
+                    # marking anything else tells training a GPU model holds no VRAM.
                     self.models[self.active_model_name]["audio_cpu"] = model_info.get(
                         "audio_type"
                     ) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(audio_device)

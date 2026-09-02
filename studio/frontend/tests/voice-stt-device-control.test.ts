@@ -18,8 +18,7 @@ const adapter = readFileSync(
 );
 
 test("changing the dictation device releases only this tab's model", () => {
-  // Unscoped, this races another surface: the unload lands after that surface
-  // swapped the resident model and tears down one this tab never owned.
+  // Unscoped, the unload can tear down a model this tab never owned.
   assert.match(
     voiceTab,
     /void unloadSttModel\(sttEngineFor\(sttModel\), sttModel, \{\s*wait: false,\s*\}\)/,
@@ -27,9 +26,7 @@ test("changing the dictation device releases only this tab's model", () => {
 });
 
 test("switching device never kills a transcription being decoded", () => {
-  // The default drains the sidecar for 30s and then releases it anyway, which
-  // throws the recording away. This release is only an early one: the next load
-  // applies the setting regardless, so there is nothing to wait for.
+  // The default drains for 30s and releases anyway, throwing the recording away.
   assert.match(voiceTab, /wait: false/);
   assert.match(adapter, /if \(options\?\.wait === false\) params\.set\("wait", "false"\)/);
 });
@@ -43,8 +40,7 @@ test("the unload API still takes the engine and model that scoping needs", () =>
 });
 
 test("the device preference travels with every load and transcribe", () => {
-  // A load that omits it is read as "no opinion" server-side, so the setting
-  // would silently never apply.
+  // A load that omits it reads as "no opinion", so the setting never applies.
   assert.match(adapter, /device: resolvedDevice/);
   assert.match(adapter, /params\.set\("device", settings\.sttDevice\)/);
 });

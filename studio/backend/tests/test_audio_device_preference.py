@@ -36,9 +36,6 @@ def _neutral_audio_device_env(monkeypatch):
     monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
 
 
-# --- the preference itself -------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "value, expected",
     [
@@ -81,9 +78,6 @@ def test_without_the_environment_variable_nothing_is_forced_to_cpu(monkeypatch):
     monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
     assert audio_device_default() == "auto"
     assert not audio_device_forces_cpu(None)
-
-
-# --- the Transformers dictation sidecar ------------------------------------
 
 
 def _torch_with_cuda(monkeypatch):
@@ -205,9 +199,6 @@ def test_a_model_loaded_before_the_option_existed_is_not_reloaded(monkeypatch):
     assert sidecar.load("small", device = "auto") is resident
 
 
-# --- the registry forwards it ----------------------------------------------
-
-
 def test_the_registry_hands_the_preference_to_the_engines_sidecar(monkeypatch):
     from core.inference import stt_registry
 
@@ -230,9 +221,6 @@ def test_the_registry_hands_the_preference_to_the_engines_sidecar(monkeypatch):
     stt_registry.load("small", "transformers", threading.Event(), device = "cpu")
 
     assert seen == {"model": "small", "device": "cpu"}
-
-
-# --- native audio (TTS) ----------------------------------------------------
 
 
 def test_native_audio_holds_tts_weights_in_cpu_ram_when_asked(monkeypatch):
@@ -260,9 +248,6 @@ def test_minimax_music_explains_that_cpu_was_chosen_rather_than_missing(monkeypa
 
     with pytest.raises(RuntimeError, match = "cannot be loaded into CPU RAM"):
         backend.load_model(config)
-
-
-# --- a caller with no preference must not move a placed model ---------------
 
 
 def test_a_caller_that_sends_no_device_leaves_the_placement_alone(monkeypatch):

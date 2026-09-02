@@ -557,9 +557,7 @@ class MtmdSttSidecar:
         # Whether the resident server was launched with the GPU pinned off for training. Kept so a dictation after the
         # run does not stay on CPU.
         self._gpu_disabled = False
-        # The user's standing CPU choice, tracked apart from _gpu_disabled so
-        # training still drives a restart while their preference survives a
-        # caller that sends none.
+        # Apart from _gpu_disabled, so training restarts while the preference survives.
         self._forced_cpu = False
         self._load_cancel_event: Optional[threading.Event] = None
         self._load_owner_cancel_event: Optional[threading.Event] = None
@@ -840,9 +838,7 @@ class MtmdSttSidecar:
             from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
             path_revision = custom_llama_cpp_path_revision()
         with self._lock:
-            # None is no opinion: keep the standing choice (the server default
-            # when nothing is running) so a caller that sends none cannot
-            # restart the server onto the other device.
+            # None is no opinion: a caller sending none cannot move the server.
             if device is None:
                 forced_cpu = (
                     self._forced_cpu if self._process_alive() else audio_device_forces_cpu(None)
@@ -861,9 +857,7 @@ class MtmdSttSidecar:
                 # killing a running transcription for, so an in-flight request keeps the server it has and the next idle
                 # load picks the GPU back up.
                 if self._gpu_disabled == training or self._active_requests:
-                    # Record the choice even though nothing restarts: training
-                    # makes an explicit "cpu" look identical to the running
-                    # server, and dropping it here would send the next
+                    # Recorded though nothing restarts: dropping it sends the next
                     # device-less load back to the GPU once training ends.
                     self._forced_cpu = forced_cpu
                     self._schedule_idle_unload_locked()

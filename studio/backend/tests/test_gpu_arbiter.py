@@ -343,10 +343,9 @@ def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     unsloth_load = load_impl.index("success = await asyncio.to_thread(")
     tail = load_impl[unsloth_load:]
-    # Gated on chat_load_needs_gpu, exactly as the GGUF branch is: a load that
-    # never took the arbiter has no ownership to lose, and undoing itself over a
-    # None owner would 409 every CPU-placed audio load. Every GPU-bearing load
-    # still reaches the guard, which is what this covers.
+    # Gated on chat_load_needs_gpu like the GGUF branch: a load that never took the
+    # arbiter has no ownership to lose, and checking against a None owner would 409
+    # every CPU-placed audio load.
     guard = tail.index("if chat_load_needs_gpu and current_owner() != CHAT:")
     assert "await asyncio.to_thread(backend.unload_model, config.identifier)" in tail[guard:]
     assert tail.index("status_code = 409", guard) > guard

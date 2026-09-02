@@ -1153,8 +1153,6 @@ class WhisperSttSidecar:
         self._engine = None
         self._model_id: Optional[str] = None
         self._device: Optional[str] = None
-        # Preference the resident engine was loaded under. A different one
-        # reloads rather than reusing the old placement. None until loaded.
         self._device_preference: Optional[str] = None
         self._lock = threading.RLock()
         self._load_state_lock = threading.Lock()
@@ -1484,9 +1482,8 @@ class WhisperSttSidecar:
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         model_id = resolve_model_id(model)
-        # None is "no opinion", not "auto". A caller that never sends one (the
-        # OpenAI-compatible route) must not drag a model off the device another
-        # surface asked for, or the two thrash a reload apiece.
+        # None is "no opinion", not "auto": a caller sending none must not drag a model
+        # off the device another surface asked for.
         requested = None if device is None else normalize_audio_device(device)
         preference = audio_device_default() if requested is None else requested
         with self._lock:
@@ -1512,8 +1509,7 @@ class WhisperSttSidecar:
             self._start_survivor = None
             try:
                 self._raise_if_load_cancelled(cancel_event)
-                # The resident shortcut returns no path, and this load
-                # replaces that model anyway.
+                # The resident shortcut returns no path, and this load replaces it.
                 cached = self._ensure_model_downloaded(model_id, use_resident = placement_matches)
                 snapshot_path = cached.path
                 if snapshot_path is None:

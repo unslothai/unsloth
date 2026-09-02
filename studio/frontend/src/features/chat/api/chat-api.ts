@@ -370,8 +370,7 @@ export async function validateModel(
       tensor_parallel: payload.tensor_parallel ?? false,
       disable_vision: payload.disable_vision ?? false,
       gpu_ids: payload.gpu_ids,
-      // A CPU audio load takes no VRAM, so validate must not preflight it
-      // against the card and refuse what /load would accept.
+      // Takes no VRAM, so validate must not preflight it and refuse what /load takes.
       audio_device: payload.audio_device ?? null,
       // Manual placement is an explicit override: Auto layers use llama.cpp --fit, a pinned
       // layer count is owned by the user. Tell validate so it applies the same policy as /load.

@@ -56,11 +56,8 @@ class AudioCodecManager:
         self._bicodec_code_dir = None
         self._dac_audio_codec = None
         self._outetts_code_dir = None
-        # Where each codec's weights actually went, keyed by audio_type. Decoding has
-        # to build its input tensors on the same device as the codec, and the caller
-        # cannot infer that: the loaders below reuse an already-resident codec, so a
-        # later request asking for a different device gets the placement of the first
-        # load, not the one it asked for.
+        # The loaders reuse a resident codec, so a later request gets the first
+        # placement rather than the one it asked for.
         self._codec_devices: dict = {}
 
     def load_codec(

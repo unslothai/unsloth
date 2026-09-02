@@ -468,8 +468,7 @@ class ValidateModelRequest(BaseModel):
     # refuse a load that then fits.
     disable_vision: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
-    # Sized with too: a CPU-placed audio load takes no VRAM, so preflighting it
-    # against the card would refuse a load that never touches one.
+    # Sized with too: preflighting a CPU load would refuse one that takes no VRAM.
     audio_device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
         None,
         description = (

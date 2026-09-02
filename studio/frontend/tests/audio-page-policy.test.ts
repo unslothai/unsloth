@@ -738,8 +738,8 @@ test("a capped restore refresh invalidates a page fetched from the older cursor"
 });
 
 test("a direct .gguf pick is a GGUF target even without a variant filename", () => {
-  // The reported gap: local direct rows supply neither ggufFilename nor
-  // ggufVariant, so a check on the selector alone left them on GPU offload.
+  // Local direct rows supply neither ggufFilename nor ggufVariant, so a check on the
+  // selector alone left them on GPU offload.
   assert.equal(
     isGgufTtsTarget({ repoId: "/models/orpheus-3b-Q4_K_M.gguf" }),
     true,
@@ -756,16 +756,11 @@ test("a direct .gguf pick is a GGUF target even without a variant filename", () 
 });
 
 test("the catalog's own answer outranks the name heuristics", () => {
-  // A GGUF repo with no exact variant, whose repo and load ids neither contain
-  // "gguf" nor end in ".gguf", is invisible to every test below. The picker
-  // already knows better from the catalog; recomputing from the ids alone threw
-  // that away, and a CPU RAM load then omitted gpu_layers: 0 and landed on the
-  // GPU regardless of the placement the user chose.
+  // Invisible to every test below; only the catalog knows. Losing it dropped offload.
   assert.equal(
     isGgufTtsTarget({ repoId: "acme/voicebox", isGguf: true }),
     true,
   );
-  // Absent or false, the heuristics still decide; nothing is forced off GGUF.
   assert.equal(
     isGgufTtsTarget({ repoId: "acme/voicebox-GGUF", isGguf: false }),
     true,
@@ -784,10 +779,8 @@ test("a safetensors pick is not a GGUF target", () => {
 });
 
 test("a CPU GGUF audio load declares speculation off", () => {
-  // An absent speculative_type resolves to "auto" server-side, which can still
-  // attach a GPU drafter. zero_vram_chat_load then reads the load as
-  // GPU-bearing, takes the arbiter, and cancels a running image or video job
-  // for a load that was meant to stay in CPU RAM.
+  // An absent speculative_type resolves to "auto", which can attach a GPU drafter;
+  // zero_vram_chat_load then takes the arbiter and cancels an image or video job.
   assert.match(
     audioPageSource,
     /gpu_memory_mode: "manual" as const,\s*gpu_layers: 0,\s*speculative_type: "off" as const,/,
@@ -795,9 +788,7 @@ test("a CPU GGUF audio load declares speculation off", () => {
 });
 
 test("selecting CPU never ejects a resident MiniMax, which cannot load on CPU", () => {
-  // The backend refuses a CPU MiniMax load in preflight, deliberately before it
-  // evicts anything. That cannot help if the control already ejected the model:
-  // the reload needed to recover is the one that gets refused.
+  // The backend's refusal cannot help once ejected: recovery needs the refused load.
   const handler = audioPageSource.slice(
     audioPageSource.indexOf('const next = value === "cpu" ? "cpu" : "auto";'),
   );
