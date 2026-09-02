@@ -57,7 +57,10 @@ def export(
         None, "--repo-id", help = "HuggingFace repo ID (username/model-name)."
     ),
     hf_token: Optional[str] = typer.Option(
-        None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token."
+        None,
+        "--hf-token",
+        envvar = "HF_TOKEN",
+        help = "HuggingFace token, for gated or private checkpoints and Hub pushes.",
     ),
     private: bool = typer.Option(False, "--private", help = "Make the HuggingFace repo private."),
     max_seq_length: int = typer.Option(2048, "--max-seq-length"),
