@@ -1964,7 +1964,7 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
 
 
 def _engine_instance_luid(instance_name: str) -> Optional[int]:
-    """Same two halves ``_parse_adapter_luid`` reads, behind a ``pid_<pid>_`` prefix."""
+    """The LUID ``_parse_adapter_luid`` reads, behind a ``pid_<pid>_`` prefix."""
     head = instance_name.lower().find("luid_0x")
     if head < 0:
         return None
@@ -1974,10 +1974,9 @@ def _engine_instance_luid(instance_name: str) -> Optional[int]:
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
     """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes).
 
-    ``luid`` narrows the sum to one adapter's engines, matched here rather than in
-    the counter path so tests can reach it, as in ``..._vram_by_adapter``. The
-    engine type stays in the path: it is not what this narrows, and it is what
-    keeps the sample set to one type per process rather than all of them.
+    ``luid`` narrows the sum to one adapter's engines, matched here rather than in the
+    counter path so tests can reach it. The engine type stays in the path, where it
+    keeps the sample set to one type per process.
     """
     if platform.system() != "Windows":
         return None
@@ -2371,8 +2370,8 @@ def _match_adapter_used_by_hip_luid(
     them, so several ordinals under one LUID report unknown per device and
     contribute only to the aggregate, which the pairing does not change.
 
-    The third return is that LUID per device, but only where the device is the whole
-    of what it names, which is what the engine counters need to filter safely.
+    The third return is that LUID, only where the device is the whole adapter, which
+    is what the engine counters need to filter safely.
     """
     ordinals = [int(meta["visible_ordinal"]) for meta in dev_meta]
     identities = _rocm_windows_hip_adapter_ids(ordinals, [str(meta["name"]) for meta in dev_meta])
@@ -2419,12 +2418,10 @@ def _match_adapter_used_by_hip_luid(
         total_used += used
         if len(positions) == 1:
             assigned[positions[0]] = used
-            # Equal counts say how many nodes this ordinal owns, never which, and
-            # a visible node whose sample is missing alongside a hidden node whose
-            # sample is present counts the same. The mask names them (bit i is
-            # node i), so where it does the observed phys_N set has to BE those
-            # or the LUID covers a node this device does not own. A zero mask
-            # names nothing and keeps the count check alone.
+            # Counts say how many nodes this ordinal owns, never which. The mask
+            # names them (bit i is node i), so the observed phys_N set has to BE
+            # those or the LUID covers a node this device does not own; a zero
+            # mask names nothing and leaves the count check alone.
             named = {i for i in range(32) if identities[positions[0]][1] >> i & 1}
             if not named or named == physes_by_luid.get(luid, set()):
                 whole_adapter[positions[0]] = luid
