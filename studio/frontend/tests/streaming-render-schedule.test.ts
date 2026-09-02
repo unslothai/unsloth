@@ -160,6 +160,54 @@ test("mid-string remend repairs use the sticky full-document fallback", () => {
   }
 });
 
+test("code that only looks like a link definition keeps block-scoped rendering", () => {
+  const reply = [
+    "Here is the shape:",
+    "",
+    "```ts",
+    "interface Grid {",
+    "  [key: string]: number[][];",
+    "}",
+    "const cell = grid[row][col];",
+    "```",
+    "",
+    "That is all.",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "blocks");
+  assert.equal(markdownRenderKey(reply), "blocks");
+  assert.deepEqual(
+    parseMarkdownIntoRenderableBlocks(reply),
+    parseMarkdownIntoBlocks(reply),
+  );
+});
+
+test("a css selector in a fence is not a link definition", () => {
+  const reply = [
+    "Compare [one][two] below.",
+    "",
+    "```css",
+    "a[href]:hover { color: red; }",
+    "```",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "blocks");
+});
+
+test("a definition-looking line indented into a code block is not a definition", () => {
+  const reply = "Compare [one][two] below.\n\n    [two]: not-a-definition\n";
+
+  assert.equal(markdownRenderScope(reply), "blocks");
+});
+
+test("the document render key ignores definitions inside fences", () => {
+  const real = "See [one][two].\n\n[two]: https://example.com/two\n";
+  const withFence = `${real}\n\`\`\`ts\ntype T = { [k: string]: number };\n\`\`\`\n`;
+
+  assert.equal(markdownRenderScope(withFence), "document");
+  assert.equal(markdownRenderKey(withFence), markdownRenderKey(real));
+});
+
 test("link references and definitions stay in one rendered document", () => {
   const usage = `Before [reference][math-ref].\n\n${paragraphs(20)}`;
   const cache = new IncrementalMarkdownCache();

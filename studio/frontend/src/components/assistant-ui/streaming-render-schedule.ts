@@ -69,14 +69,37 @@ const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
+const LINK_DEFINITION_LINE_RE = /^ {0,3}\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
+function textOutsideFencedCode(markdown: string): string {
+  const lines: string[] = [];
+  let inFence = false;
+  for (const line of markdown.split("\n")) {
+    if (FENCED_CODE_BLOCK_RE.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) {
+      lines.push(line);
+    }
+  }
+  return lines.join("\n");
+}
+
+// A definition is a line, not a substring: `a[href]:hover` and a TypeScript index
+// signature are not one, and neither is anything inside a fence. The whole-string tests
+// stay in front so only replies they admit pay for the line scan.
 function hasGlobalLinkReference(markdown: string): boolean {
-  return LINK_REFERENCE_RE.test(markdown) && LINK_DEFINITION_RE.test(markdown);
+  if (!LINK_REFERENCE_RE.test(markdown) || !LINK_DEFINITION_RE.test(markdown)) {
+    return false;
+  }
+  const prose = textOutsideFencedCode(markdown);
+  return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose);
 }
 
 export function markdownRenderScope(markdown: string): "blocks" | "document" {
@@ -87,9 +110,9 @@ export function markdownRenderKey(markdown: string): string {
   if (markdownRenderScope(markdown) === "blocks") {
     return "blocks";
   }
-  return `document:${markdown
+  return `document:${textOutsideFencedCode(markdown)
     .split("\n")
-    .filter((line) => LINK_DEFINITION_RE.test(line))
+    .filter((line) => LINK_DEFINITION_LINE_RE.test(line))
     .join("\n")}`;
 }
 
