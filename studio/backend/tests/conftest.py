@@ -958,3 +958,28 @@ def _no_carried_over_hardware_measurements():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture(autouse = True)
+def _thumbnail_registry_does_not_outlive_a_test():
+    """Clear the search-image registry after every test, not just before.
+
+    It is one in-memory bucket per account for the life of the process, and tests
+    seed it directly through the state_for_tests seam. That seam replaced a
+    `monkeypatch.setattr(search_images, "_registry", {})`, which had been giving
+    them a teardown for free: monkeypatch put the original dict back, so entries a
+    test wrote never outlived it. Without that, a seeded entry survives into
+    whatever xdist schedules next on the same worker, whose clear then takes a
+    non-empty snapshot and reaps images it is not responsible for.
+
+    Only touched when the module is already imported, so this costs nothing for
+    the suites that never load it.
+    """
+    yield
+    module = sys.modules.get("core.inference.search_images")
+    if module is None:
+        return
+    try:
+        module.reset_registry_for_tests()
+    except Exception:  # noqa: BLE001 - a teardown must never fail the test it follows
+        pass
