@@ -676,16 +676,19 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
 
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "loadId={c.load_id}" in picker, "the quant list cannot pass on a pin it never gets"
-    # Every row that can start a load, and every gear beside one, reloads through
-    # the same meta and so has to carry the pin. Counted rather than matched
-    # loosely, so a new row that forgets it is a failure here rather than a load
-    # that silently follows the default ref. #7736 added the third: the collapsed
-    # single-quant GGUF row. #7880 added the fourth: the per-quant VRAM bar, which
-    # has to price the pinned snapshot rather than the default ref.
-    assert picker.count("loadId: c.load_id") == 4, (
-        "a row or gear that can start a load is missing the pin, or a new one was "
-        "added and this count needs to follow it"
+    # The collapsed single-quant GGUF row centralizes its load/configure metadata
+    # in selectMeta, so the row and gear cannot drift from one another. The VRAM
+    # bar still prices the pinned snapshot directly.
+    select_meta = re.search(
+        r"const selectMeta: ModelSelectorChangeMeta = \{.*?\n\s*\};", picker, re.S
     )
+    assert select_meta, "collapsed GGUF row lost its shared select metadata"
+    assert "loadId: isPartial ? undefined : c.load_id," in select_meta.group(
+        0
+    ), "collapsed GGUF row drops the pinned id"
+    assert "onClick={() => onSelect(c.repo_id, selectMeta)}" in picker
+    assert "onConfigure={() => onConfigure(c.repo_id, selectMeta)}" in picker
+    assert "loadId: c.load_id" in picker, "the VRAM bar no longer prices the pinned snapshot"
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
