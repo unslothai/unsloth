@@ -3715,6 +3715,31 @@ def test_require_speech_allows_a_speech_target(monkeypatch):
     assert len(rec.calls) == 1
 
 
+def test_an_explicitly_empty_audio_model_still_restores_the_stash(monkeypatch):
+    # A client that sends "model": "" must behave like one that omits it, as
+    # /v1/audio/speech already does; otherwise the hook stops at its falsey check and
+    # the idle-evicted speech model is never restored.
+    from models.inference import ChatCompletionRequest
+
+    reached, captured = _capture_audio_switch(monkeypatch)
+    payload = ChatCompletionRequest(
+        model = "", messages = [{"role": "user", "content": "say hi"}]
+    )
+    with pytest.raises(reached):
+        asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
+    assert captured["model"] == inference_route._RELOAD_ONLY_MODEL
+
+
+def test_the_pre_load_budget_uses_the_count_the_target_will_be_measured_by(monkeypatch):
+    # _prompt_token_estimate reads the resident tokenizer; comparing that with the
+    # target's context is what let an under-count evict and then 400.
+    monkeypatch.setattr(
+        inference_route, "_prompt_token_estimate", lambda _t: pytest.fail("resident tokenizer")
+    )
+    text = "a" * 40
+    assert inference_route._byte_fallback_prompt_tokens(text) == 40
+
+
 def test_a_prompt_too_long_for_the_target_is_refused_before_the_switch(monkeypatch):
     # The whole point of the gate: a request that cannot run must not cost the resident
     # model. The loaded-model guard cannot answer this one, since the target is different.

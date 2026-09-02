@@ -524,9 +524,16 @@ def _prompt_token_estimate(prompt: str) -> int:
                     return count
     except Exception:  # noqa: BLE001 - an estimate must never fail the request
         pass
-    # subprocess and llama-server tokenizers are not reachable here. UTF-8 bytes are a
-    # conservative upper bound for their byte-level fallbacks; under-counting can overflow
-    # the loaded context, while over-counting only shortens the requested clip.
+    return _byte_fallback_prompt_tokens(prompt)
+
+
+def _byte_fallback_prompt_tokens(prompt: str) -> int:
+    """The count used when no tokenizer is reachable.
+
+    subprocess and llama-server tokenizers are not reachable here. UTF-8 bytes are a
+    conservative upper bound for their byte-level fallbacks; under-counting can overflow
+    the loaded context, while over-counting only shortens the requested clip.
+    """
     return max(1, len(prompt.encode("utf-8")))
 
 
@@ -16497,8 +16504,13 @@ async def _generate_tts_wav(
         require_speech = True,
         speech_has_instructions = bool(str(payload.audio_instructions or "").strip()),
         # So a prompt that fits neither model is refused before the swap, not after it.
+        # Deliberately not _prompt_token_estimate: that reads the *resident* tokenizer,
+        # and this count is compared with the *target's* context. The pre-load answer has
+        # to be the one the post-switch guard will reach for the target, which for a
+        # llama.cpp model is this byte-level bound, or the two disagree and the
+        # disagreement is paid for with the resident model.
         speech_prompt_tokens = (
-            None if requested_model == _RELOAD_ONLY_MODEL else _prompt_token_estimate(text)
+            None if requested_model == _RELOAD_ONLY_MODEL else _byte_fallback_prompt_tokens(text)
         ),
     )
     # Again, now that a context exists to measure against. The check above runs before the
@@ -16721,7 +16733,10 @@ async def generate_audio(
         payload,
         request,
         current_subject,
-        requested_model = _switch_model_for_payload(payload),
+        # ``or`` like /v1/audio/speech: an explicitly empty model is accepted by the
+        # request model, and without this it stops the hook at its falsey check before
+        # the idle-stash restore, failing a request the sibling route serves.
+        requested_model = _switch_model_for_payload(payload) or _RELOAD_ONLY_MODEL,
     )
     persisted_clip = await asyncio.to_thread(
         _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
