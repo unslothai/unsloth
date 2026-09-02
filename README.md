@@ -76,6 +76,8 @@ Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU s
 * **Remote & LAN:** Access your local models from any device on [LAN](https://unsloth.ai/docs/basics/lan) or remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
 * **Connect:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api). Also connect your ChatGPT/Codex subscription and [cloud providers](https://unsloth.ai/docs/integrations/connections)
 
+Tool calling is not limited to Qwen, but the token-level generation-constraint function in the Qwen2.5 Coder tool-calling notebook is tokenizer-specific. Do not reuse that function unchanged with a generic `PreTrainedTokenizerFast` from Llama or Phi; use a model whose chat template supports tools and pass the tool schema through `tokenizer.apply_chat_template(..., tools=...)`.
+
 
 ### Train & Deploy
 * **Fine-tuning:** Train LLMs, diffusion, TTS, and embedding models 2× faster with 70% less VRAM with [no accuracy loss](https://unsloth.ai/blog#training)
