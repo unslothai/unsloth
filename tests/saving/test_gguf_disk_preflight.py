@@ -301,8 +301,8 @@ class TestKaggleRedirectWiring:
         )
         monkeypatch.setattr(S, "free_bytes", fake_free)
         S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
-        # directory the intermediate conversion is written to. What must never
         # The `_gguf` sibling is measured as well, and so is the working directory the intermediate conversion is
+        # written to. What must never be measured is the directory the redirect moved away from.
         assert probed[0] == "/tmp/unsloth_saves/model"
         assert "model" not in probed
         assert set(probed) <= {

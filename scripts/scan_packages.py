@@ -229,15 +229,20 @@ RE_ARCHIVE_STAGING = re.compile(
     re.DOTALL,
 )
 
-# Deliberately NO bare ``platform.system()`` branch:
-# Anti-analysis / sandbox evasion / debugger detection NB:
+# Anti-analysis / sandbox evasion / debugger detection.
+# Deliberately NO bare ``platform.system() ... Linux/Windows/Darwin`` branch: under re.DOTALL that matched across the
+# whole file -- any cross-platform library (typer, packaging, pandas, pymupdf, ...) trips it -- so it had ~zero
+# precision and only generated false positives. OS detection alone is not an anti-analysis signal; the debugger/VM/
+# long-sleep signals below are.
 RE_ANTI_ANALYSIS = re.compile(
     r"\bptrace\b"
     r"|\bsys\s*\.\s*gettrace\s*\("
     r"|\bsys\s*\.\s*settrace\b"
     r"|\bTracerPid\b"
-    # /proc/self/status is read to scrape TracerPid.
-    # \b here is unsatisfiable (\b never holds between a non-word boundary and
+    # /proc/self/status is read to scrape TracerPid for anti-debug. A leading \b here is unsatisfiable (\b never
+    # holds between a non-word boundary and "/"), so the old pattern was dead; a lookbehind that only forbids a
+    # preceding word char or path separator lets `open("/proc/self/status")` and `cat /proc/self/status` match
+    # while avoiding mid-path partials.
     r"|(?<![\w/])/proc/self/status\b"
     r"|\bIsDebuggerPresent\b"
     r"|\bvirtualbox\b.*\bhardware\b"
@@ -533,8 +538,8 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
     return findings
 
 
-# A string after `=` or `(` is real code and is never blanked.
-# A STRING after one of these tokens (and before a NEWLINE) is a bare docstring/doctest/prose statement -- the dominant
+# A STRING after one of these tokens (and before a NEWLINE) is a bare docstring/doctest/prose statement -- the
+# dominant FP source -- so we blank it. A string after `=` or `(` is real code and is never blanked.
 _LINE_START_TOKENS = frozenset({tokenize.NEWLINE, tokenize.NL, tokenize.INDENT, tokenize.DEDENT})
 
 

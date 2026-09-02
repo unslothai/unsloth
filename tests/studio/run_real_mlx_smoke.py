@@ -308,8 +308,8 @@ def cmd_train(args) -> int:
             f"expected train_steps={expected_logged_steps}, got " f"{train_result['train_steps']}"
         )
     for i, l in enumerate(losses_per_step):
-        # Allow exact 0.0:
         # Allow exact 0.0: fp16 loss underflows once the LoRA memorises the row (~step 10);
+        # that's success, so the lower bound is >= 0 not > 0.
         assert math.isfinite(l) and 0 <= l < 50, f"step {i+1} loss bad: {l}"
     assert (
         losses_per_step[-1] < losses_per_step[0] * 1.1

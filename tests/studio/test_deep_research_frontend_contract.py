@@ -125,6 +125,9 @@ def test_research_handoff_transition_honors_the_original_run_stop() -> None:
 
 
 def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
+    # A level the loaded model lacks is dropped by llama.cpp, so the durable run would silently fall back to the
+    # template default. Must use the same helper and levels as normal local chat so the two paths cannot drift
+    # apart again.
     adapter = source("features/chat/api/chat-adapter.ts")
     inference_request = source("features/chat/research-inference-request.ts")
     assert "buildResearchInferenceRequest({" in adapter
@@ -135,8 +138,6 @@ def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
 
 
 def test_research_presave_keeps_the_follow_up_parent() -> None:
-    # chat so the two paths cannot drift apart again.
-    # A level the loaded model lacks is dropped by llama.cpp, so the durable run would silently fall back to the
     adapter = source("features/chat/api/chat-adapter.ts")
     presave = adapter.split("const userMessage =", 1)[1].split(
         "const createdRun = await createResearchRun({", 1

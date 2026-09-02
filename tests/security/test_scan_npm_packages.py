@@ -819,7 +819,7 @@ def test_load_baseline_skips_non_dict_entries(tmp_path):
 
 def test_legacy_schema_baseline_is_ignored(tmp_path):
     # A pre-v2 baseline stored basenames, whose keys are ambiguous under package-relative matching, so a populated
-    # A pre-v2 baseline stored basenames;
+    # legacy file is ignored (fail closed) rather than silently suppressing a different same-named file.
     bl = tmp_path / "legacy.json"
     bl.write_text(
         json.dumps(

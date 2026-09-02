@@ -484,8 +484,8 @@ class TestKnown211SetParity:
 
     def test_install_ps1_pin_floor_is_only_rocm72(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        # The predicate is Major -eq 7 -and Minor -eq 2 (only rocm7.2).
-        # The pinned-ROCm install-spec floor must be Major -eq 7 -and Minor -eq 2, not the speculative >= 2 that would
+        # The pinned-ROCm install-spec floor must be Major -eq 7 -and Minor -eq 2, not the speculative >= 2 that
+        # would floor a non-existent rocm7.3.
         assert re.search(
             r"\$_pinRocm211 = \(\[int\]\$Matches\[1\] -eq 7 -and \[int\]\$Matches\[2\] -eq 2\)",
             text,

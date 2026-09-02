@@ -541,10 +541,9 @@ def test_a_backup_that_cannot_run_falls_back_to_the_moved_aside_copy(monkeypatch
 
 
 def test_a_setup_exception_restores_a_runnable_launcher(monkeypatch, studio, tmp_path):
-    # one back must not turn it into a reported success, which is how a
-    # restore-then-revalidate reads when it cannot tell "published nothing"
-    # Setup writing an unusable launcher is a real failure.
     # Backups are taken after only the two-byte header check, so an interrupted run can leave a PE-shaped but
+    # non-runnable backup. __exit__ took the first PE-shaped candidate, so that backup was installed over the
+    # working launcher this run had moved aside, and it could also undo a restore validate_launcher just made.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     bad_backup = b"MZ-unrunnable"
     (scripts / "unsloth.exe.update-backup").write_bytes(bad_backup)

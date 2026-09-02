@@ -667,8 +667,8 @@ def test_canon_evidence_keeps_bitwise_or_in_a_span():
 
 
 def test_extract_evidence_caps_long_line_but_binds_tail():
-    # A long (e.g.
-    # A long (e.g. minified) line is not dumped verbatim:
+    # A long (e.g. minified) line is not dumped verbatim: the display is bounded to a prefix, but a sha256 of the
+    # full line is appended so a payload past the cut still changes the key instead of being silently clipped.
     marker = "EXFIL_PAST_CAP"
     pad = "# " + " " * 300
     line = "requests.get('http://a')  " + pad + marker

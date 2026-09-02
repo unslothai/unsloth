@@ -1014,8 +1014,8 @@ with sync_playwright() as p:
         if search.count() == 0:
             soft_fail("model picker search input not found")
         else:
-            # typeahead actually filters (else an ignored-input regression
             # "qwen" then "llama" popover text must DIFFER, proving the typeahead actually filters (else an
+            # ignored-input regression would silently pass).
             def picker_visible_text():
                 return robust_evaluate(
                     page,
@@ -1283,15 +1283,16 @@ with sync_playwright() as p:
     if state["error"]:
         shoot("04-rapid-submit-no-composer")
         fail(f"could not send the follow-up: {state['error']}")
+    # queueSeen is the property under test; the hold is only the means of guaranteeing the first turn was still
+    # running. If the queue formed, it formed, whether or not the hold was needed. Only demand the interception
     # when it did not, so an unheld run cannot report a silent pass.
-    # queueSeen is the property under test;
     if not state["queueSeen"] and not state["intercepted"]:
         fail(
             "the first turn's request was never seen, so it was never held, "
             f"and no queue formed; saw {state['seen']}"
         )
-    # missing queue control is therefore a real regression, not timing.
-    # The follow-up went out after the first turn's request was issued and while its response was still held, so that
+    # The follow-up went out after the first turn's request was issued and while its response was still held, so
+    # that turn was necessarily running. A missing queue control is therefore a real regression, not timing.
     if not state["queueSeen"]:
         shoot("04-rapid-submit-no-queue")
         fail(

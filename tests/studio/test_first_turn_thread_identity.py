@@ -46,8 +46,8 @@ def test_wait_for_run_start_returns_the_id():
 
 
 def test_the_run_is_given_its_real_thread_id():
-    # The whole point:
-    # The whole point: the adapter must not start under the unresolved key when the id is already known by the time the
+    # The whole point: the adapter must not start under the unresolved key when the id is already known by the
+    # time the await above resolves.
     block = re.search(
         r"async \*run\(options\) \{.*?const result = adapter\.run\(.*?\);",
         PROVIDER,

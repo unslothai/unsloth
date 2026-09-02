@@ -42,8 +42,8 @@ def test_explicit_flex_is_honored_when_supported():
 
 
 def test_explicit_flex_falls_back_when_not_supported():
+    # flex_attention is False for known-broken/excluded configs (e.g. gpt_oss),
     # so an explicit flex request must not select that backend - it falls back.
-    # flex_attention is False for known-broken/excluded configs (e.g.
     config = {}
     result = _disable_flash_attention_if_needed(
         config,

@@ -281,7 +281,8 @@ CARGO_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 
 # Cargo non-registry source allowlist: `(crate_name, exact_source_string)`.
-# Unsloth's Tauri shell pulls `fix-path-env` from git because it is not published to crates.io;
+# Both must match verbatim; bumping the pinned SHA forces a re-review. Unsloth's Tauri shell pulls `fix-path-env`
+# from git because it is not published to crates.io; commit c4c45d5 was reviewed when it landed.
 CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
     (
         "fix-path-env",

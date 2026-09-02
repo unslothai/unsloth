@@ -95,10 +95,16 @@ PROBE_TIMEOUT_S = 10.0
 # In run 32862298967 one macOS runner produced four of them, at 10.03s, 25.1s, 27.75s and 33.2s, so a window that
 # decides "this one never ended" has to comfortably clear 33.2s.
 # 90s is a little under three times that.
-# This EXTENDS OBSERVATION;
+#
+# This EXTENDS OBSERVATION; it is not a retry. A retry re-asks a question that already has an answer and hopes for a
+# better one, which is how a flaky test hides a real failure. The question here has no answer yet: a probe that timed
+# out says only that nothing came back within its budget, and the run ended at an arbitrary point that may fall
+# mid-stall. A backend that is genuinely dead answers none of these probes either, so the window costs these seconds
+# only on a run that was already going to fail, and it cannot turn a real death into a pass.
 RECOVERY_WINDOW_S = 90.0
-# _transport_kind classifies a connection reset as a stall rather than a death on purpose, because a reset means a
 # Minimum spacing between recovery probes.
+# _transport_kind classifies a connection reset as a stall rather than a death on purpose, because a reset means a
+# listener accepted and then failed to finish.
 RECOVERY_PROBE_SPACING_S = 2.0
 # Health replies are a few hundred bytes; these bound a body read that is going wrong.
 _READ_CHUNK_BYTES = 65536

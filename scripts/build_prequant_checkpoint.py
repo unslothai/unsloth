@@ -179,8 +179,8 @@ def main(argv = None) -> int:
         require_bf16 = require_bf16,
     )
 
-    # sees the rotated distribution. The fqn list is recorded, never re-derived at load time.
-    # ConvRot, BEFORE quantize_:
+    # ConvRot, BEFORE quantize_: rotating the weights is only worth anything if the quantizer then sees the rotated
+    # distribution. The fqn list is recorded, never re-derived at load time.
     rotation: dict = {}
     if args.convrot_groupsize:
         from core.inference.diffusion_convrot import (

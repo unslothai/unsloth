@@ -1191,7 +1191,8 @@ def test_cpu_count_follows_the_affinity_mask(monkeypatch, dnp):
 
 
 def test_cpu_count_follows_a_fractional_cgroup_quota(monkeypatch, dnp):
-    # Kubernetes "cpu:
+    # Kubernetes "cpu: 500m" is cpu.max "50000 100000" = 0.5 cores. Requiring a whole core would fall back to the
+    # host count, so a half-core pod would size workers from every core on the machine.
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 128)
     monkeypatch.setattr(dnp.os, "sched_getaffinity", lambda pid: set(range(128)), raising = False)

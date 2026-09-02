@@ -432,8 +432,9 @@ def build_bin_to_pkg(head_lock: dict) -> dict[str, str]:
 
 _SCRIPT_TOKENIZE = re.compile(r"\s*(?:&&|\|\||;|\|(?!\|))\s*")
 
-# Script-name wrappers (concurrently, npm-run-all, turbo, nx) are excluded:
-# Wrappers that delegate to a real CLI in the same shell word list;
+# Wrappers that delegate to a real CLI in the same shell word list; we skip past them and their flags to find the
+# wrapped bin. Script-name wrappers (concurrently, npm-run-all, turbo, nx) are excluded: they reference script
+# names, so the real bin lives in the target script's chunk we already tokenize.
 _SCRIPT_WRAPPERS = {"cross-env", "dotenv", "dotenvx", "env-cmd"}
 _ENV_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 

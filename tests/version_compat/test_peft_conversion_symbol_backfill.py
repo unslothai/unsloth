@@ -262,8 +262,10 @@ def _peft_converter_source():
         if (exc.name or "") in (module, "peft.utils", "peft"):
             pytest.skip("this peft has no weight converter")
         raise
-    # imports -- the ones that would fail at startup -- are never read. That is
     # If peft turns the converter into a package, `getsource` returns only the `__init__.py` re-exports, and the
+    # implementation's own transformers imports -- the ones that would fail at startup -- are never read. That is
+    # the packaging churn this whole fallback exists for, so read the child modules too rather than a shim that
+    # imports nothing.
     sources = [inspect.getsource(loaded)]
     for path in getattr(loaded, "__path__", ()) or ():
         import pkgutil

@@ -170,6 +170,8 @@ def test_unwrap_model_for_generation_either_path(tag: str):
     )
 
 
+# trl.experimental.openenv: gated import (rl_replacements.py:1765-1770). When present, must export the symbols
+# unsloth patches.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_experimental_openenv_gated(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/experimental/openenv/__init__.py")
@@ -183,7 +185,6 @@ def test_trl_experimental_openenv_gated(tag: str):
     )
 
 
-# trl.experimental.openenv:
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_generation_vllm_generation_gated(tag: str):
     """VLLMGeneration + its _init_vllm/sync_weights/generate methods must
@@ -331,6 +332,8 @@ def test_trl_import_utils_available_pattern(tag: str):
     )
 
 
+# trl.experimental.openenv.utils generators - one of the two function names must exist
+# (rl_replacements.py:1775-1781 getattr()s for one).
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_openenv_utils_generators(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/experimental/openenv/utils.py")
@@ -377,8 +380,6 @@ def test_trl_grpo_trainer_required_methods(tag: str):
 # some patterns apply only to a subset of minors.
 
 
-# trl.experimental.openenv.utils generators - one of the two function names must exist (rl_replacements.py:1775-1781
-# trl.experimental.openenv: gated import (rl_replacements.py:1765-1770).
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_grpo_source_inference_mode_unwrap(tag: str):
     """`torch.inference_mode` and `self.accelerator.unwrap_model` must both
