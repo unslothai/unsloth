@@ -17923,14 +17923,25 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
     return np.concatenate(chunks, axis = 0).astype(np.float32, copy = False), sample_rate
 
 
-def _av_expected_samples(container, sample_rate: int) -> int:
+def _decoded_sample_ceiling(sample_rate: int) -> int:
+    """The most samples a decode may produce, in one place.
+
+    Two limits apply at once and neither implies the other: the clock, and a
+    rate-independent sample count that keeps a high-rate file from spending
+    thirty minutes' worth of memory. Nothing may allocate past the smaller of
+    them, because that is the point at which the decode refuses anyway.
+    """
+    return min(sample_rate * _MAX_AUDIO_SECONDS, _MAX_DECODED_SAMPLES)
+
+
+def _av_expected_samples(container, sample_rate: int, ceiling: int) -> int:
     """Samples to size the output buffer for, from the container's own duration.
 
     The duration is a hint, not a promise: it can be absent, wrong, or a lie. It
     only decides the first allocation, so being wrong costs a growth copy or some
-    untouched address space, never a wrong result. Clamping it to the decode
-    ceiling keeps a forged duration from asking for an allocation the decode
-    would have refused anyway.
+    untouched address space, never a wrong result. It is still clamped to the
+    ceiling, because a declared duration the decode would refuse must not be
+    allowed to size an allocation on the way to refusing it.
     """
     import av
 
@@ -17943,7 +17954,7 @@ def _av_expected_samples(container, sample_rate: int) -> int:
     if not (seconds > 0.0):
         # Nothing declared, so start at a minute and grow.
         seconds = 60.0
-    return int(min(seconds * sample_rate, _MAX_DECODED_SAMPLES)) + 1
+    return min(int(seconds * sample_rate) + 1, ceiling)
 
 
 def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
@@ -17963,21 +17974,24 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
     joined = None
     sample_rate = 0
     sample_count = 0
+    ceiling = 0
     resampler = None
 
     def append_resampled(resampled) -> None:
         nonlocal joined, sample_count
         block = resampled.to_ndarray().reshape(-1)
         sample_count += len(block)
-        if sample_count > sample_rate * _MAX_AUDIO_SECONDS or sample_count > _MAX_DECODED_SAMPLES:
+        if sample_count > ceiling:
             raise _DecodedAudioTooLongError(
                 f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
         if sample_count > len(joined):
             # The container under-reported its duration, or never declared one.
             # Doubling makes the growth copies amortised, and the transient is
-            # the old buffer plus the new one rather than the whole decode.
-            grown = np.empty(max(sample_count, 2 * len(joined)), dtype = np.float32)
+            # the old buffer plus the new one rather than the whole decode. The
+            # doubling is clamped too: the count that survived the check above is
+            # within the ceiling, but twice the buffer holding it need not be.
+            grown = np.empty(min(max(sample_count, 2 * len(joined)), ceiling), dtype = np.float32)
             grown[: sample_count - len(block)] = joined[: sample_count - len(block)]
             joined = grown
         joined[sample_count - len(block) : sample_count] = block
@@ -17995,7 +18009,10 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
                     layout = "mono",
                     rate = sample_rate,
                 )
-                joined = np.empty(_av_expected_samples(container, sample_rate), dtype = np.float32)
+                ceiling = _decoded_sample_ceiling(sample_rate)
+                joined = np.empty(
+                    _av_expected_samples(container, sample_rate, ceiling), dtype = np.float32
+                )
             for resampled in resampler.resample(frame):
                 append_resampled(resampled)
         if resampler is not None:

@@ -1309,12 +1309,59 @@ def test_a_forged_container_duration_cannot_ask_for_a_huge_buffer(monkeypatch):
         duration = 10**18
         streams = types.SimpleNamespace(audio = [_Stream()])
 
-    assert inference_route._av_expected_samples(_Container(), 48_000) == (
-        inference_route._MAX_DECODED_SAMPLES + 1
-    )
+    ceiling = inference_route._decoded_sample_ceiling(48_000)
+    assert inference_route._av_expected_samples(_Container(), 48_000, ceiling) == ceiling
 
     class _Undeclared(_Container):
         duration = 0
 
     # Nothing declared starts at a minute and grows from there.
-    assert inference_route._av_expected_samples(_Undeclared(), 48_000) == 60 * 48_000 + 1
+    assert (
+        inference_route._av_expected_samples(_Undeclared(), 48_000, ceiling) == 60 * 48_000 + 1
+    )
+
+
+def test_no_allocation_outgrows_the_limit_the_decode_enforces(monkeypatch):
+    """Both limits bind at once, and the smaller one is where the decode stops.
+
+    Sizing an allocation by only one of them let an 8 kHz file declaring three
+    hours reserve 86.4M floats (330 MB) on the way to being refused at 14.4M
+    (55 MB), and the doubling that covers an under-reported duration had no
+    ceiling at all: a 48 kHz file declaring twenty minutes and holding
+    twenty-one grew to 115.2M against an 86.4M limit, with the old buffer still
+    live for the copy.
+    """
+
+    class _Stream:
+        duration = None
+        time_base = None
+
+    class _Container:
+        duration = 3 * 3600 * 10**6
+        streams = types.SimpleNamespace(audio = [_Stream()])
+
+    # The clock binds below the sample ceiling at 8 kHz, and vice versa at 48.
+    assert inference_route._decoded_sample_ceiling(8_000) == 8_000 * 1800
+    assert inference_route._decoded_sample_ceiling(192_000) == inference_route._MAX_DECODED_SAMPLES
+
+    ceiling = inference_route._decoded_sample_ceiling(8_000)
+    assert inference_route._av_expected_samples(_Container(), 8_000, ceiling) == ceiling
+
+    # And the growth path stops there too rather than doubling past it.
+    raw = _encode_amr()
+    monkeypatch.setitem(sys.modules, "soundfile", None)
+    monkeypatch.setitem(sys.modules, "librosa", None)
+    sizes: list[int] = []
+    real_empty = np.empty
+
+    def record(shape, *args, **kwargs):
+        if isinstance(shape, int):
+            sizes.append(shape)
+        return real_empty(shape, *args, **kwargs)
+
+    monkeypatch.setattr(np, "empty", record)
+    monkeypatch.setattr(inference_route, "_av_expected_samples", lambda *_args: 1)
+    samples, rate = inference_route._decode_audio_mono(raw)
+    assert len(samples) > 0
+    assert sizes, "the decoder allocated nothing"
+    assert max(sizes) <= inference_route._decoded_sample_ceiling(rate)
