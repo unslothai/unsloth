@@ -82,6 +82,12 @@ const DEFINITION_CONTEXTS = [
   "- - [g]: /guide",
   "> - [g]: /guide",
   "- > - > [g]: /guide",
+  // Indented quote content, and a definition on a list item's continuation line: four columns
+  // absolute, but flush with the content column `10. ` opened.
+  ">  [g]: /guide",
+  ">   [g]: /guide",
+  "10. item\n\n    [g]: /guide",
+  "1. item\n\n   [g]: /guide",
 ];
 
 const NEUTRAL_BLOCKS = [
@@ -104,6 +110,11 @@ const NEUTRAL_BLOCKS = [
   "<!DOCTYPE html>",
   "    [g]: /indented-code-block",
   "| a | b |\n| - | - |\n| 1 | 2 |",
+  // A bare custom tag opens a type-7 HTML block, and raw HTML nests inside a list item.
+  "<x>\n```\n",
+  "<my-widget>\n```\n",
+  "- <pre>\n  ```\n  </pre>",
+  "> ```ts\n> [g]: number\n> ```",
 ];
 
 test("a reply whose reference only resolves in one piece is never split into blocks", () => {
@@ -130,6 +141,19 @@ test("a reply whose reference only resolves in one piece is never split into blo
     "these replies resolve their reference only when rendered in one piece, but the scan " +
       `split them into blocks, so the reference renders as literal text:\n${failures.join("\n")}`,
   );
+});
+
+test("line endings other than LF do not hide the definition", () => {
+  for (const reply of [
+    "~~~ts\rconst x = 1;\r~~~\r\rSee [guide][g].\r\r[g]: /guide\r",
+    "```ts\r\nconst x = 1;\r\n```\r\n\r\nSee [guide][g].\r\n\r\n[g]: /guide\r\n",
+    "See [guide][g].\r\r```ts\rconst x = 1;\r```\r\r[g]: /guide\r",
+  ]) {
+    if (asOneDocument(reply) <= asBlocks(reply)) {
+      continue;
+    }
+    assert.equal(markdownRenderScope(reply), "document", JSON.stringify(reply));
+  }
 });
 
 test("ordinary code is still rendered per block", () => {

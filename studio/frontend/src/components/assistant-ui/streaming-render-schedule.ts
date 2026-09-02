@@ -69,132 +69,59 @@ const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
-// A definition still counts inside a block quote or a list item -- marked registers it
-// document-wide either way -- so the container prefix is skipped before the label. The
-// four-space indent that means `code block` is deliberately not one of these prefixes.
-// Containers nest, and marked lexes them recursively, so `- > [g]: /x` registers the
-// definition just as `> [g]: /x` does. The leading indent stays capped at three: at four
-// the line is an indented code block, whatever follows it.
-const CONTAINER_PREFIX = "(?:(?:>[ \\t]?)|(?:(?:[-*+]|\\d{1,9}[.)])[ \\t]+))*";
-const LINK_DEFINITION_LINE_RE = new RegExp(
-  `^ {0,3}${CONTAINER_PREFIX}\\[(?:\\\\.|[^\\]\\n\\\\]){1,200}\\]:`,
-  "m",
-);
+// Inside a block marked did not lex as code, the container markers and their indentation
+// have already been accounted for, so the label may sit behind any mix of them.
+const LINK_DEFINITION_LINE_RE =
+  /^[ \t]*(?:(?:>|[-*+]|\d{1,9}[.)])[ \t]*)*\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
+// The two block shapes whose body is literal code: an opening fence, and a four-space indent.
+const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})| {4,}\S)/;
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
-const FENCED_CODE_BLOCK_RE = /^ {0,3}(`{3,}|~{3,})/;
-const FENCE_CLOSE_SUFFIX_RE = /^[ \t]*\r?$/;
-const BLANK_LINE_RE = /^[ \t]*\r?$/;
+// Still the first line of a single block, for `updateLinkDefinitionParity` below.
+const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
-// A marker only opens a fence if it is not a backtick run whose info string
-// carries another backtick, and only closes the one it opened: same character,
-// at least as long, nothing but whitespace after it. Toggling on any marker
-// instead desynchronises on the shapes that nest them -- a four-backtick
-// wrapper around a three-backtick example, a `~~~` line inside a ``` block --
-// and every line after the miscount is then dropped as if it were code.
-const opensFence = (line: string, marker: RegExpExecArray): boolean =>
-  marker[1][0] === "~" || !line.slice(marker[0].length).includes("`");
+// One split per reply, shared by all three exported entry points. markdown-text.tsx asks for
+// the key and then hands `parseMarkdownIntoRenderableBlocks` to Streamdown, which calls it with
+// the same string, so a single slot is all the reuse this needs -- and it keeps the blocks path
+// paying for exactly the one split it already paid for before any of this existed.
+let splitMarkdown: string | null = null;
+let splitBlocks: readonly string[] = [];
 
-const closesFence = (
-  line: string,
-  marker: RegExpExecArray,
-  fence: string,
-): boolean =>
-  marker[1][0] === fence[0] &&
-  marker[1].length >= fence.length &&
-  // CommonMark allows only spaces and tabs after a closing marker. `trim()` also eats
-  // U+00A0, which would close a fence marked is still treating as code content.
-  FENCE_CLOSE_SUFFIX_RE.test(line.slice(marker[0].length));
-
-// A raw HTML block holds its content literally, so a fence marker inside one is text and
-// must not move the fence state. The two CommonMark shapes that reach a chat reply are the
-// verbatim tags, which run to their own closing tag, and the block-level tags, which run to
-// a blank line.
-const HTML_VERBATIM_OPEN_RE = /^ {0,3}<(pre|script|style|textarea)[\s>/]/i;
-// The four bracketed forms marked also lexes as raw HTML. Each ends on its own terminator,
-// never on a blank line, so a fence marker between the two is literal text.
-const HTML_BRACKETED_OPENERS: readonly (readonly [RegExp, RegExp])[] = [
-  [/^ {0,3}<!--/, /-->/],
-  [/^ {0,3}<\?/, /\?>/],
-  [/^ {0,3}<!\[CDATA\[/, /\]\]>/],
-  [/^ {0,3}<![A-Za-z]/, />/],
-];
-// CommonMark's type-6 tag list, in full. A tag missing from it is read as an ordinary
-// paragraph, and a fence marker inside one would then move the fence state wrongly.
-const HTML_BLOCK_TAGS =
-  "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|" +
-  "details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|" +
-  "h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|" +
-  "optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|" +
-  "track|ul";
-const HTML_BLOCK_OPEN_RE = new RegExp(
-  `^ {0,3}</?(?:${HTML_BLOCK_TAGS})(?:[ \\t/>]|$)`,
-  "i",
-);
-
-function textOutsideFencedCode(markdown: string): string {
-  const lines: string[] = [];
-  let fence: string | null = null;
-  let htmlClose: RegExp | null = null;
-  for (const line of markdown.split("\n")) {
-    if (htmlClose !== null) {
-      lines.push(line);
-      if (htmlClose.test(line)) {
-        htmlClose = null;
-      }
-      continue;
-    }
-    const marker = fence === null ? null : FENCED_CODE_BLOCK_RE.exec(line);
-    if (fence !== null) {
-      if (marker !== null && closesFence(line, marker, fence)) {
-        fence = null;
-      }
-      continue;
-    }
-    const verbatim = HTML_VERBATIM_OPEN_RE.exec(line);
-    if (verbatim !== null) {
-      htmlClose = new RegExp(`</${verbatim[1]}>`, "i");
-      lines.push(line);
-      if (htmlClose.test(line)) {
-        htmlClose = null;
-      }
-      continue;
-    }
-    const bracketed = HTML_BRACKETED_OPENERS.find(([open]) => open.test(line));
-    if (bracketed !== undefined) {
-      htmlClose = bracketed[1];
-      lines.push(line);
-      if (htmlClose.test(line)) {
-        htmlClose = null;
-      }
-      continue;
-    }
-    if (HTML_BLOCK_OPEN_RE.test(line)) {
-      htmlClose = BLANK_LINE_RE;
-      lines.push(line);
-      continue;
-    }
-    const open = FENCED_CODE_BLOCK_RE.exec(line);
-    if (open !== null && opensFence(line, open)) {
-      fence = open[1];
-      continue;
-    }
-    lines.push(line);
+function blocksOf(markdown: string): readonly string[] {
+  if (splitMarkdown !== markdown) {
+    splitMarkdown = markdown;
+    splitBlocks = parseMarkdownIntoBlocks(markdown);
   }
-  return lines.join("\n");
+  return splitBlocks;
 }
 
-// A definition is a line, not a substring: `a[href]:hover` and a TypeScript index
-// signature are not one, and neither is anything inside a fence. The whole-string tests
-// stay in front so only replies they admit pay for the line scan. Returns the prose the
-// verdict was read off, so the render key can reuse it rather than scan a second time.
+// Which replies have to be lexed in one piece.
+//
+// marked keeps link reference definitions in one document-wide map and emits no token for a
+// label it has already seen, so a `[label][ref]` and its `[ref]: url` must reach the lexer
+// together or the reference survives as literal text. The question is therefore whether a real
+// definition exists outside code -- and the earlier answer, a hand-rolled scan for fences,
+// containers and raw HTML, kept disagreeing with marked at the seams: nested fences, the seven
+// HTML block shapes, list continuation indentation, lone-CR line endings.
+//
+// marked has already resolved every one of those by the time it hands back blocks, so the split
+// is the answer rather than something to re-derive. A fenced or indented block is code; anything
+// else is prose, and a definition line anywhere in the prose counts.
+//
+// Being wrong is not symmetric, which is why the residual imprecision sits where it does. Saying
+// `blocks` when the reply needed one document splits the pair apart and loses content. Saying
+// `document` when blocks would have done only costs that reply its per-code-block Copy and
+// Download controls -- which is what this path did for EVERY reply containing a `]:` substring
+// before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
 function documentProse(markdown: string): string | null {
   if (!LINK_REFERENCE_RE.test(markdown) || !LINK_DEFINITION_RE.test(markdown)) {
     return null;
   }
-  const prose = textOutsideFencedCode(markdown);
+  const prose = blocksOf(markdown)
+    .filter((block) => !CODE_BLOCK_RE.test(block))
+    .join("\n");
   return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
     ? prose
     : null;
@@ -218,7 +145,7 @@ export function markdownRenderKey(markdown: string): string {
 export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
   return markdownRenderScope(markdown) === "document"
     ? [markdown]
-    : parseMarkdownIntoBlocks(markdown);
+    : [...blocksOf(markdown)];
 }
 
 // Where remend believes the emphasis scan sits with respect to math.
