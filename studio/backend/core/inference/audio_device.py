@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Where an audio model's weights go: the accelerator, or plain CPU RAM.
 
 Audio loads take an accelerator whenever one exists. That is right until the GPU
